@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Literal
@@ -41,6 +41,7 @@ from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
     TrainingIndustryCounts,
+    TrainingSampleBatch,
     TrainingSampleMatrix,
 )
 
@@ -148,7 +149,14 @@ def FitIndustryModels(
                 if industry_counts is None:
                     continue
                 _fit_head_industry(samples, state, industry_counts, parameters, progress, compute_threads)
-    return tuple(_finish_head_fit(samples, state, progress, compute_threads) for state in states)
+    evaluations = (
+        _evaluate_validation_pairs(samples, states, progress, compute_threads)
+        if samples.execution_options.shared_validation else (None,) * len(states)
+    )
+    return tuple(
+        _finish_head_fit(samples, state, progress, compute_threads, evaluation=evaluation)
+        for state, evaluation in zip(states, evaluations, strict=True)
+    )
 
 
 @dataclass
@@ -183,11 +191,15 @@ def _fit_head_industry(
 
 def _finish_head_fit(
     samples: SQLiteTrainingSampleIndex, state: _HeadFitState, progress: TomorrowTrainingProgressPort | None, compute_threads: int,
+    *, evaluation: tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]] | None = None,
 ) -> IndustryFitResult:
     contract, workloads, models, failures = state.contract, state.workloads, state.models, state.failures
     heartbeat = partial(_publish, progress, contract, _FitProgress("running", len(workloads), len(workloads), len(models)))
     if models:
-        metrics, industry_metrics = _evaluate_validation(samples, contract, tuple(models), heartbeat, compute_threads)
+        metrics, industry_metrics = (
+            _evaluate_validation(samples, contract, tuple(models), heartbeat, compute_threads)
+            if evaluation is None else evaluation
+        )
         expected = {item.industry: item.validation for item in workloads}
         if any(value.predicted_rows != expected[industry] for industry, value in industry_metrics):
             raise ValueError("validation_sample_coverage_changed")
@@ -346,19 +358,28 @@ def _evaluate_validation(
     heartbeat: Callable[[], None],
     compute_threads: int,
 ) -> tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]]:
-    predictors = {item.industry: _ValidationPredictor(item.model, compute_threads) for item in models}
-    overall = PredictionMetricsAccumulator()
-    industries = {item.industry: PredictionMetricsAccumulator() for item in models}
+    evaluation = _ValidationEvaluation(models, compute_threads)
     for batch in samples.iter_validation_batches(contract):
         heartbeat()
+        evaluation.add_batch(batch)
+    return evaluation.finish()
+
+
+class _ValidationEvaluation:
+    def __init__(self, models: tuple[FittedIndustryModel, ...], compute_threads: int) -> None:
+        self._predictors = {item.industry: _ValidationPredictor(item.model, compute_threads) for item in models}
+        self._overall = PredictionMetricsAccumulator()
+        self._industries = {item.industry: PredictionMetricsAccumulator() for item in models}
+
+    def add_batch(self, batch: TrainingSampleBatch) -> None:
         predictions: list[float | None] = [None] * len(batch.codes)
         positions_by_industry: dict[str, list[int]] = {}
         for index, industry in enumerate(batch.industries):
-            if industry in predictors:
+            if industry in self._predictors:
                 positions_by_industry.setdefault(industry, []).append(index)
         for industry in sorted(positions_by_industry):
             positions = positions_by_industry[industry]
-            predicted = predictors[industry].predict(batch.features[positions])
+            predicted = self._predictors[industry].predict(batch.features[positions])
             if len(predicted) != len(positions):
                 raise ValueError("validation_prediction_count_invalid")
             for index, value in zip(positions, predicted, strict=True):
@@ -366,10 +387,35 @@ def _evaluate_validation(
         for index, prediction in enumerate(predictions):
             day, code, industry = batch.trade_dates[index], batch.codes[index], batch.industries[index]
             target = float(batch.labels[index])
-            overall.add(day, code, industry, target, prediction)
-            if industry in industries:
-                industries[industry].add(day, code, industry, target, prediction)
-    return overall.finish(), tuple((industry, value.finish()) for industry, value in sorted(industries.items()))
+            self._overall.add(day, code, industry, target, prediction)
+            if industry in self._industries:
+                self._industries[industry].add(day, code, industry, target, prediction)
+
+    def finish(self) -> tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]]:
+        return self._overall.finish(), tuple(
+            (industry, value.finish()) for industry, value in sorted(self._industries.items())
+        )
+
+
+def _evaluate_validation_pairs(
+    samples: SQLiteTrainingSampleIndex,
+    states: tuple[_HeadFitState, ...],
+    progress: TomorrowTrainingProgressPort | None,
+    compute_threads: int,
+) -> tuple[tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]] | None, ...]:
+    selected = tuple((position, state) for position, state in enumerate(states) if state.models)
+    evaluations = tuple(_ValidationEvaluation(tuple(state.models), compute_threads) for _position, state in selected)
+    if not selected:
+        return (None,) * len(states)
+    with closing(samples.iter_validation_pairs(tuple(state.contract for _position, state in selected))) as batches:
+        for head, batch in batches:
+            state = selected[head][1]
+            _publish(progress, state.contract, _FitProgress(
+                "running", len(state.workloads), len(state.workloads), len(state.models)
+            ))
+            evaluations[head].add_batch(batch)
+    completed = {position: evaluation.finish() for (position, _state), evaluation in zip(selected, evaluations, strict=True)}
+    return tuple(completed.get(position) for position in range(len(states)))
 
 
 def _ridge_coefficients(features: np.ndarray, labels: np.ndarray, penalty_value: float) -> np.ndarray:

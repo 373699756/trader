@@ -22,6 +22,8 @@ from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfi
 from trader.training.application.selected_training import SelectedTrainingTask, TrainingLocations
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.cpu_admission import TrainingCpuBudget
+from trader.training.application.resources import TrainingProfileThreads
+from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.selected_training import SelectedTrainingRequest, TrainSelectedProfiles
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from tests.helpers.configuration import TcnFittingParametersFixture
@@ -102,7 +104,8 @@ def test_shared_reader_closes_nested_streams_even_when_callers_retain_them(tmp_p
 
 
 @pytest.mark.parametrize("publication_exit", ("old_moved", "new_moved"))
-def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path, monkeypatch, publication_exit):
+@pytest.mark.parametrize("execution_case", ("baseline", "combined"))
+def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path, monkeypatch, publication_exit, execution_case):
     import torch
     from trader.training.infra.profile.v5 import network
 
@@ -153,6 +156,10 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
         return replace(result, fitting=fitting)
 
     monkeypatch.setattr("trader.training.infra.selected_training.LoadProfileTrainingSettings", settings)
+    candidate = execution_case == "combined"
+    cpu_settings = TrainingResourceSettingsFixture().cpu
+    if candidate:
+        cpu_settings = replace(cpu_settings, native_threads=1, profile_threads=TrainingProfileThreads(1, 1, 1))
     request = SelectedTrainingRequest(
         LoadRuntimeSettings(ROOT / "config/runtime.json"),
         ("v1", "v2", "v3", "v5"),
@@ -160,9 +167,11 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
         lambda: False,
         TrainingMemoryBudget(3 * 1024**3),
         TrainingLocations(history.history_root, tmp_path / "models", tmp_path / "samples"),
-        cpu_budget=TrainingCpuBudget(2, settings=TrainingResourceSettingsFixture().cpu),
+        cpu_budget=TrainingCpuBudget(4 if candidate else 2, settings=cpu_settings),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
         sample_settings=TrainingSampleSettingsFixture(),
+        memory_capacity_bytes=3 * 1024**3,
+        execution_options=TrainingExecutionOptions(*(candidate for _ in range(5))),
     )
     with ThreadPoolExecutor(max_workers=4) as executor:
         result = TrainSelectedProfiles(request, executor, sqlite_policy=SqlitePolicyFixture())
@@ -170,7 +179,7 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
     assert tuple(item.profile for item in result.outcomes) == request.profiles
     assert all(item.failure is None and item.result.status == "engineering_ready" for item in result.outcomes), result
     assert len(tuple((tmp_path / "models").rglob("model.json"))) == 8
-    assert request.cpu_budget.peak_reserved_threads == 1
+    assert 1 <= request.cpu_budget.peak_reserved_threads <= (3 if candidate else 1)
     assert all("[num_threads: 1]" in head.rank_model for head in result.outcomes[0].result.heads)
     assert tcn_threads == [1]
     assert torch.get_num_threads() == original_threads

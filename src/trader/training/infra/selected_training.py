@@ -47,6 +47,7 @@ from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
+from trader.training.infra.execution_options import TrainingExecutionOptions
 
 SelectedProfileResult = TrainingRunResult | V1TrainingResult
 
@@ -88,6 +89,8 @@ class SelectedTrainingRequest:
     sample_settings: TrainingSampleSettings = field(kw_only=True)
     on_outcome: Callable[[SelectedTrainingOutcome[SelectedProfileResult]], None] | None = None
     measurements: TrainingExecutionMeasurements | None = field(default=None, kw_only=True)
+    execution_options: TrainingExecutionOptions = field(default_factory=TrainingExecutionOptions, kw_only=True)
+    memory_capacity_bytes: int | None = field(default=None, kw_only=True)
 
 
 def TrainSelectedProfiles(
@@ -174,7 +177,10 @@ class _TrainingTaskFactory:
         paths = selection.paths
         calendar = self.history.snapshot.calendar.open_dates
         settings = LoadV1TrainingSettings(selection.runtime.project_root)
-        reused = InspectV1Training(self.history, paths.models, settings, cancel_requested=selection.cancelled)
+        reused = InspectV1Training(
+            self.history, paths.models, settings, cancel_requested=selection.cancelled,
+            compute_threads=selection.cpu_budget.profile_threads.v1,
+        )
         if reused is not None:
             return SelectedTrainingTask("v1", frozenset(), partial(_reused, reused))
         splits = tuple(BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=h) for h in (1, 5))
@@ -192,6 +198,8 @@ class _TrainingTaskFactory:
             cancel_requested=selection.cancelled,
             memory_admission=self.measurements.memory_admission("v1", selection.memory_admission),
             cpu_admission=self.measurements.cpu_admission("v1", selection.cpu_budget),
+            compute_threads=selection.cpu_budget.profile_threads.v1,
+            execution_options=selection.execution_options,
             sqlite_policy=self.sqlite_policy,
         )
         return SelectedTrainingTask("v1", dates, partial(_run_v1, execute))
@@ -236,6 +244,10 @@ class _TrainingTaskFactory:
                 sample_settings=selection.sample_settings,
                 memory_admission=self.measurements.memory_admission(profile, selection.memory_admission),
                 cpu_admission=self.measurements.cpu_admission(profile, selection.cpu_budget),
+                compute_threads=settings.fitting.compute_threads if isinstance(settings.fitting, TcnFittingParameters)
+                else selection.cpu_budget.profile_threads.for_profile(profile),
+                execution_options=selection.execution_options,
+                memory_capacity_bytes=selection.memory_capacity_bytes,
             ), sqlite_policy=self.sqlite_policy,
         )
         if reused is not None:

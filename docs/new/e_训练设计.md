@@ -341,6 +341,7 @@ P54本批按用户授权由C接通公共解析及训练组合根。`config/train
 | `cpu.coordinator_cpus` | 1，整数≥0，CPU | 从当前进程亲和性/cgroup可用CPU中预留；至少留下1个拟合槽 |
 | `cpu.maximum_threads` | null或整数≥1，线程；null不另加配置上限 | 总拟合预约容量再受当前机器可用CPU收紧 |
 | `cpu.native_threads` | 2，整数≥1，线程 | 环境变量及全作业原生库基线，实际不超过总预约容量 |
+| `cpu.profile_threads.v1/v2/v3` | 各2，整数≥1，线程 | 三档分别请求拟合CPU；V5仍只读原`tcn.compute_threads`，不允许在此重复定义 |
 | `memory.maximum_bytes` | 3221225472，整数≥1，字节 | 拟合预约上限，不是RSS硬隔离 |
 | `memory.reserve_bytes` | 1610612736，整数≥0，字节 | 当前宿主MemAvailable及每个可见cgroup限制减去此预留 |
 | `memory.minimum_available_bytes` | 268435456，整数1–maximum_bytes，字节 | 宿主低水位延续原行为；不抬高更紧的cgroup限制 |
@@ -355,7 +356,7 @@ P54本批按用户授权由C接通公共解析及训练组合根。`config/train
 | `samples.v1_batch_rows` | 4096，整数≥1，行 | V1具名矩阵有序流每次取行；跨批排序、query和负零不变 |
 | `samples.tcn_batch_memory_bytes` | 268435456，整数≥0，字节 | 单头训练/早停TCN批次超过此值映射；0允许强制映射 |
 
-`infra/settings/training.py`是根schema和资源解析唯一owner；仅训练启动及明确训练诊断读取，不让推荐或只读Web因训练资源错误而失效。不可变资源对象由bootstrap显式传至准入、训练请求及fanout，无消费者自行重读资源JSON。配置改后下次训练作业生效，不热切换运行中的作业。普通模型请求2线程及V5的`tcn.compute_threads/batch_size`仍是原拟合合同，未以运行批次覆盖；纯资源段不加入模型/样本参数身份。本次源码变化仍会改变既有宽范围implementation identity，不自动重训、发布或改写旧工件。线程设置可能影响实际数值路径，候选调值须核对数值/质量与D实测，不承诺任意调值逐位相等。
+`infra/settings/training.py`是根schema和资源解析唯一owner；仅训练启动及明确训练诊断读取，不让推荐或只读Web因训练资源错误而失效。不可变资源对象由bootstrap显式传至准入、训练请求及fanout，无消费者自行重读资源JSON。配置改后下次训练作业生效，不热切换运行中的作业。V1/V2/V3的请求线程数由必填`cpu.profile_threads`提供，默认仍各2；请求数进入各档模型复用身份，改变请求后不得误用原线程合同的模型。V5仍使用原`tcn.compute_threads/batch_size`，其它纯资源值不加入模型/样本参数身份。本次源码变化仍会改变既有宽范围implementation identity，不自动重训、发布或改写旧工件。线程设置可能影响实际数值路径，候选调值须核对数值/质量与C后台实测，不承诺任意调值逐位相等。
 
 阶段345接续将八项样本I/O运行参数按原值迁入现有资源段，由唯一解析器生成不可变`TrainingSampleSettings`，训练组合根显式传到四档、缓存及所有读写者；普通生产构造不补默认值。完整`hdd/ssd`段都须符合schema，缺字段、未知字段、bool/小数冒充整数及非法字节单位明确拒绝；本批实际验收仅在当前HDD，不改变SSD那台PC的验收进度或冒称已测最优值。训练诊断从同一配置边界注入，历史对照worker只按明确选定的冻结checkout及其已声明配置schema使用对应API，不向产品安装兼容分支。
 
@@ -552,6 +553,36 @@ P52/P55的候选由既有`sample_comparison_worker --construct-features`或完�
 使用既有统一入口的内部worker参数，在外部输出目录运行：`python3 -m scripts.tools --internal-worker scripts.training.samples.sample_comparison_worker -- --checkout <冻结版本> --root <全新仓库外目录> --size 64 --sessions 2000 --construct-features --computation-candidate combined --runtime-config <对应PC配置>`。baseline及两种单候选分别运行，不能只测组合后将收益归给某一项；该fixture最大128代码，不替代真实完整负载。
 
 完整三负载沿用同一个注册worker：`python3 -m scripts.tools --internal-worker scripts.training.jobs.training_alignment -- --history-root <本机合法历史> --work-root <全新仓库外目录> --profiles v1,v2,v3,v5 --product-checkout <冻结版本> --runtime-config <冻结且绑定本机资料的配置> --published-history-read-only --sample-cache-transfer hardlink --computation-candidate combined`。同一候选覆盖首次全训练、全工件复用及样本复用重拟合，保留每次资源计量、数值/指标指纹、源只读守卫和身份核对；V1样本复用仍明确不适用。baseline不安装候选钩子，单候选及combined分别与同输入baseline比较；这里只提供诊断选择，不授权生产启用、活动模型切换或调整10轮方案。
+
+### 7.5 四档总耗时的执行候选
+
+`training_alignment`及公开`--business training --module models --action alignment`支持显式`--execution-candidate`和`--cpu-candidate`。普通训练请求的五项执行选项均为false，不从环境变量或另一份配置暗中开启；诊断作用域只在主线程安装，等待四档工作完成后恢复函数绑定与原生线程环境。输入检查模式拒绝这些候选。
+
+| execution候选 | 对照内容 |
+| --- | --- |
+| baseline | 保留原准入、矩阵、验证及V5批次路径 |
+| resources | 先预约内存再预约CPU，内存等待不占拟合CPU；完成评价及暂存后，在目录发布前归还CPU，内存保留至原作用域退出 |
+| ram_matrices | 仅在已有矩阵阈值和本作业明确剩余预约预算内将行业公共矩阵放RAM；追加额计入同一次内存预约，未知预算或超限沿原mmap路径 |
+| shared_validation | 一次有序SQL/特征读取供双头验证，分别过滤空标签、按原256行组批并计算指标；增加同时持有两个预测器的内存裕量 |
+| normalized_tcn | 每行业每头完成原float64统计后，一次标准化并转换目标dtype；训练前释放raw输入，训练/早停批次跨epoch复用；早停标签仍float64，原RNG/顺序/优化器不变 |
+| combined | 同时比较上述四项，仍须先取得单项对照 |
+| selected | 用`--execution-components`给出已测胜者的非空子集；允许resources、ram_matrices、shared_validation、normalized_tcn，拒绝重复或未知值，记录固定顺序 |
+
+CPU候选为baseline、two_plus_one及three_single。后两者仅在诊断作用域将原生线程基线设1；two_plus_one保留配置中的三档请求（默认各2）及V5原请求1，three_single将前三档请求各设1。实际预约仍受可用CPU、协调者预留、总容量及原生floor约束，名称不保证任意机器都能同时运行相同数量任务。V5仍使用当前10轮，不缩短数据窗口、修改质量门或保留成功样本来制造收益。
+
+`--fanout-candidate`仅用于隔离诊断：baseline保持配置，batch_double只将当前batch_rows倍增，queue_double只将当前queue_batches倍增；实验上限分别2048和8，超限拒绝，不能同时倍增两个维度。只调整fanout时保持原CPU配置。先按本机完整baseline的分段及背压证据判断是否值得试验，慢消费者问题不能用扩大队列冒充解决；报告记录实际batch_rows/queue_batches和明确选择的执行子集。
+
+完整worker同时覆盖首次全训练、全工件复用与样本复用重拟合（V1样本复用不适用），每次报告所用选项及有效预算。公开`--business training --module resources --action performance`可给`--baseline-checkout <独立冻结基线>`、上述两项候选和`--training-benchmark-rounds 5`；每组顺序为baseline_before、candidate、baseline_after，候选参数只传candidate。基线必须支持同一必填配置schema；比较本批执行选项时，采用同一冻结源码的默认路径与显式候选，不能将新配置交给不识别它的旧版本。
+
+计算候选仍沿7.4的`--computation-candidate`，与执行combined分开记录。首个完整baseline完成后先核对热点；最终五组固定已测执行子集、CPU、计算和可选fanout组合，各角色的源码与有效配置跨组冻结，不默认把全部执行项合并。
+
+五组汇总锁定四档完整输入、配置、八头数值/指标和各自冻结实现/候选，核对源未改及复用零扫描；每组取前后基线较快值，至少4组初训胜出、初训比值中位数≤0.90、另外两负载比值中位数≤1.05才通过timing_acceptance。该值只证明计时门；performance_acceptance与生产授权仍为false，尚须C后台核对独占窗口、CPU/RSS/I/O/换页/空间和取消回收后裁决。样本/模型身份校验、当前2000日因果预热、实现身份范围及成功清理规则均保留。
+
+正常训练结果投影本次实际CPU容量、三档线程、内存与fanout预算；五组按基线和候选各自冻结，缺失或漂移拒绝比较。逐负载资源记录增加VmSwap采样峰值、当前进程major/minor缺页增量和整机pswpin/pswpout页数增量，无法取得时保留null；缺页包含文件映射读取，整机换页包含其它进程活动，采样峰值只表示已观察下界，核对时保留各自范围。
+
+完整三负载曾在同机耗9113秒，不能套通用工具外层7200秒上限。持久后台沿已注册`training_alignment`内部worker逐child执行，另设6小时监督上限并立即落盘stdout、stderr、GNU time和核对记录；不缩负载躲超时。核对成功才原子固定输入/配置/数值身份，恢复时重验原报告摘要；候选纯数值差异明确拒绝该候选，源/配置/缺证据或基线失败停止依赖轮次。只停止本队列实际拥有的子树，跨session也按进程出生身份核对，不按名称停止其它进程；监督期限使用持久单调起点，重启不重置，跨boot先核验再续。
+
+V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON，保留目标、树值、特征/类别信息及外层系数、校准、iteration和原报告；不把`num_threads`等拟合记录当预测数值。任何真实树值（含一个ULP）、变换、校准或指标变化仍拒绝等价，V3/V5保留原完整值。此投影只用于诊断比较，不改模型文件、正式身份或预测器。
 
 ## 8. 质量和收益的边界
 

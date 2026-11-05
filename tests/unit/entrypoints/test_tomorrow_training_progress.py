@@ -36,7 +36,7 @@ def test_training_progress_prints_real_rows_percent_duration_and_no_rss(capsys) 
     lines = capsys.readouterr().err.splitlines()
     assert lines == [
         "00:00:00 | Tomorrow训练 | 资源预检 | 1/1 (100.00%) | 完成 | 阶段耗时 00:00:00 "
-        "| 计算线程 2 | 峰值 RSS 上限 2048 MiB",
+        "| 峰值 RSS 上限 2048 MiB",
         "00:12:34 | Tomorrow训练 | 历史读取与训练样本生成 | 850/5453 (15.59%) | 运行中 "
         "| 阶段耗时 00:00:00 | 已生成样本 612",
     ]

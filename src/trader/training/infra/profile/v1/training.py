@@ -39,6 +39,8 @@ from trader.training.domain.v1.learned_rank import (
 )
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.implementation_identity import TrainingImplementationIdentity
+from trader.training.infra.execution_options import BASELINE_EXECUTION_OPTIONS, TrainingExecutionOptions
+from trader.training.infra.fitting_resources import ReserveTrainingFittingResources
 from trader.training.infra.profile.v1.fitting import FitLearnedRankHead, LearnedRankPartitions
 from trader.training.infra.profile.v1.models import (
     LearnedRankPredictor,
@@ -72,11 +74,15 @@ class V1TrainingResult:
     reused: bool = False
 
 
-def _training_identity(snapshot: HistoryTrainingInputSnapshot, settings: V1TrainingSettings) -> str:
+def _training_identity(
+    snapshot: HistoryTrainingInputSnapshot, settings: V1TrainingSettings,
+    compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
+) -> str:
     return ContentHash(
         (
             snapshot,
             settings,
+            compute_threads,
             LEARNED_RANK_CONTRACT,
             TrainingImplementationIdentity(),
             (platform.python_version(), version("numpy"), version("lightgbm")),
@@ -90,12 +96,15 @@ def InspectV1Training(
     settings: V1TrainingSettings,
     *,
     cancel_requested: Callable[[], bool] | None = None,
+    compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
 ) -> V1TrainingResult | None:
     """Reuse only a fully verified pair bound to this exact input and implementation."""
+    if type(compute_threads) is not int or compute_threads < 1:
+        raise ValueError("training_cpu_request_invalid")
     CheckV1Cancellation(cancel_requested)
     RecoverLearnedRankPublication(model_root)
     snapshot = source.snapshot
-    identity = _training_identity(snapshot, settings)
+    identity = _training_identity(snapshot, settings, compute_threads)
     try:
         pair = ReadLearnedRankPair(model_root)
         if (
@@ -136,8 +145,12 @@ def RunV1Training(
     aligned_rows: Iterator[HistoryTrainingRow] | None = None,
     memory_admission: TrainingMemoryAdmission | None = None, sqlite_policy: SqliteIoPolicy,
     cpu_admission: TrainingCpuAdmission | None = None,
+    compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
+    execution_options: TrainingExecutionOptions = BASELINE_EXECUTION_OPTIONS,
 ) -> V1TrainingResult:
     """Consume a pinned input; all disposable writes stay in the selected sample root."""
+    if type(compute_threads) is not int or compute_threads < 1:
+        raise ValueError("training_cpu_request_invalid")
 
     run_id = input_hash = ""
     counts: LearnedRankSampleCounts | None = None
@@ -154,8 +167,10 @@ def RunV1Training(
             source = input_factory()
             snapshot = source.snapshot
             input_hash = snapshot.snapshot_hash
-            run_id = _training_identity(snapshot, settings)
-            reused = InspectV1Training(source, model_root, settings, cancel_requested=cancel_requested)
+            run_id = _training_identity(snapshot, settings, compute_threads)
+            reused = InspectV1Training(
+                source, model_root, settings, cancel_requested=cancel_requested, compute_threads=compute_threads,
+            )
             if reused is not None:
                 return reused
             calendar = snapshot.calendar.open_dates
@@ -195,10 +210,14 @@ def RunV1Training(
                 ) * 512 + 256 * 1024**2
                 with (
                     closing(LearnedRankSampleIndex(sample_path, sample_settings=sample_settings, read_only=True, sqlite_policy=sqlite_policy)) as index,
-                    cpu_admission.reserve(TOMORROW_TRAINING_COMPUTE_THREADS, lambda: CheckV1Cancellation(cancel_requested))
-                    if cpu_admission is not None else nullcontext(TOMORROW_TRAINING_COMPUTE_THREADS) as compute_threads,
-                    memory_admission.reserve(required_bytes, lambda: CheckV1Cancellation(cancel_requested))
-                    if memory_admission is not None else nullcontext(),
+                    ReserveTrainingFittingResources(
+                        cpu_admission,
+                        memory_admission,
+                        compute_threads,
+                        lambda: required_bytes,
+                        lambda: CheckV1Cancellation(cancel_requested),
+                        memory_first=execution_options.memory_first,
+                    ) as reservation,
                     ExitStack() as resources,
                 ):
                     requests = tuple(
@@ -215,7 +234,7 @@ def RunV1Training(
                         heads.append(
                             FitLearnedRankHead(
                                 strategy, split, LearnedRankPartitions(*matrices[number * 4:number * 4 + 4]),
-                                settings, cancel_requested=cancel_requested, compute_threads=compute_threads,
+                                settings, cancel_requested=cancel_requested, compute_threads=reservation.compute_threads,
                             )
                         )
                         _progress(progress, "model_fit", "completed", strategy)

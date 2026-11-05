@@ -9,10 +9,31 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 
 
 @dataclass(frozen=True)
+class TrainingProfileThreads:
+    v1: int
+    v2: int
+    v3: int
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not int or value < 1 for value in (self.v1, self.v2, self.v3)):
+            raise ValueError("training_profile_threads_invalid")
+
+    def for_profile(self, profile: ScoringProfileId) -> int:
+        if profile == "v1":
+            return self.v1
+        if profile == "v2":
+            return self.v2
+        if profile == "v3":
+            return self.v3
+        raise ValueError("training_profile_threads_require_v1_v2_v3")
+
+
+@dataclass(frozen=True)
 class TrainingCpuSettings:
     coordinator_cpus: int
     maximum_threads: int | None
     native_threads: int
+    profile_threads: TrainingProfileThreads
 
     def __post_init__(self) -> None:
         if (
@@ -20,6 +41,7 @@ class TrainingCpuSettings:
             or self.coordinator_cpus < 0
             or type(self.native_threads) is not int
             or self.native_threads < 1
+            or not isinstance(self.profile_threads, TrainingProfileThreads)
             or (
                 self.maximum_threads is not None
                 and (type(self.maximum_threads) is not int or self.maximum_threads < 1)

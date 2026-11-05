@@ -338,7 +338,10 @@ def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, cap
     from trader.training.application.selected_training import SelectedTrainingOutcome, SelectedTrainingRun
     from trader.training.infra.profile.v1.training import V1TrainingResult
 
+    requests = []
+
     def train(request, executor, *, sqlite_policy):
+        requests.append(request)
         result = V1TrainingResult("engineering_ready", "fixture", "a" * 64, 0, reused=reused)
         return SelectedTrainingRun((SelectedTrainingOutcome("v1", result),), scans, rows)
 
@@ -355,6 +358,19 @@ def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, cap
     assert reports[1]["status"] == "completed"
     assert reports[1]["history_scan_passes"] == scans
     assert reports[1]["history_rows_read"] == rows
+    request, = requests
+    assert reports[1]["fitting_cpu_capacity"] == request.cpu_budget.capacity
+    assert reports[1]["native_threads"] == request.cpu_budget.native_threads
+    assert reports[1]["profile_threads"] == {
+        "v1": request.cpu_budget.profile_threads.v1,
+        "v2": request.cpu_budget.profile_threads.v2,
+        "v3": request.cpu_budget.profile_threads.v3,
+    }
+    assert reports[1]["memory_capacity_bytes"] == request.memory_capacity_bytes
+    assert reports[1]["fanout"] == {
+        "batch_rows": request.fanout_settings.batch_rows,
+        "queue_batches": request.fanout_settings.queue_batches,
+    }
 
 
 @pytest.mark.parametrize("error", (InterruptedError, CancelledError, RuntimeError))

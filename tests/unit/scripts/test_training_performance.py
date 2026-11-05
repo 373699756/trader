@@ -315,11 +315,14 @@ def test_checkout_comparison_rejects_incomplete_or_different_results(change):
 
 
 def test_model_numeric_fingerprints_include_components_and_metrics_but_not_identity(tmp_path):
+    from tests.unit.scripts.test_training_model_fingerprints import _fit_models
+
+    rank_model = _fit_models("v1").two_threads
     paths = []
     for strategy in ("tomorrow", "d25"):
         root = tmp_path / "v1" / strategy
         root.mkdir(parents=True)
-        model = {"components": {"ridge_coefficients": [0.1, 0.2]}, "content_hash": "old-source"}
+        model = {"components": {"ridge_coefficients": [0.1, 0.2], "rank_model": rank_model}, "content_hash": "old-source"}
         metadata = {"validation_report": {"validation": {"mean_absolute_error": 0.01}}, "content_hash": "old-source"}
         (root / "model.json").write_text(json.dumps(model))
         (root / "metadata.json").write_text(json.dumps(metadata))

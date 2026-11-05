@@ -6,7 +6,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import math
 import mmap
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import date
@@ -27,11 +27,13 @@ from trader.infra.sqlite_connection import (
 )
 from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.application.resources import TrainingSampleSettings
+from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.sample_sequences import SampleSequenceLayout, SampleSequenceReader, SampleSequenceWriter
 from trader.training.infra.sample_schema import SAMPLE_TARGET_COLUMNS, SampleFeatureHash, TrainingSampleSchema
 
 TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation", "holdout"]
+_BASELINE_EXECUTION_OPTIONS = TrainingExecutionOptions()
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,24 @@ class _IndustryRows:
     splits: tuple[str, ...]
 
 
+@dataclass
+class _ValidationRows:
+    features: list[np.ndarray]
+    labels: list[float]
+    dates: list[date]
+    codes: list[str]
+    industries: list[str]
+
+    def batch(self) -> TrainingSampleBatch:
+        return TrainingSampleBatch(
+            np.asarray(self.features, dtype=np.float64),
+            np.asarray(self.labels, dtype=np.float64),
+            tuple(self.dates),
+            tuple(self.codes),
+            tuple(self.industries),
+        )
+
+
 @dataclass(frozen=True)
 class TargetMetric:
     target: str
@@ -126,9 +146,17 @@ class SQLiteTrainingSampleIndex:
         sample_settings: TrainingSampleSettings,
         prepared_split_hash: str | None = None,
         sequence_layout: SampleSequenceLayout | None = None, sqlite_policy: SqliteIoPolicy,
+        execution_options: TrainingExecutionOptions = _BASELINE_EXECUTION_OPTIONS,
+        shared_matrix_budget_bytes: int = 0,
     ) -> None:
+        if type(shared_matrix_budget_bytes) is not int or shared_matrix_budget_bytes < 0:
+            raise ValueError("training_shared_matrix_budget_invalid")
         self._sqlite_policy = sqlite_policy
         self.sample_settings = sample_settings
+        self.execution_options = execution_options
+        self._shared_matrix_budget_bytes = shared_matrix_budget_bytes
+        self._shared_matrix_budget_configured = shared_matrix_budget_bytes > 0
+        self._shared_read_started = False
         self._feature_hash = SampleFeatureHash(feature_names, sequence_layout)
         self._path = path
         self._feature_names = feature_names
@@ -300,6 +328,73 @@ class SQLiteTrainingSampleIndex:
         """Read only the diagnostic confirmation proxy, in complete same-day population order."""
         yield from self._iter_batches(contract, "validation", industry=None, batch_size=batch_size)
 
+    def iter_validation_pairs(
+        self,
+        contracts: tuple[TrainedHeadContract, ...],
+        *,
+        batch_size: int = 256,
+    ) -> Generator[tuple[int, TrainingSampleBatch], None, None]:
+        """Read one ordered confirmation stream, preserving each head's original batch boundaries."""
+        if not contracts or len(contracts) > 2 or not 1 <= batch_size <= 256:
+            raise ValueError("training_paired_validation_contract_invalid")
+        targets = tuple(_require_target_column(contract.target_column) for contract in contracts)
+        for contract in contracts:
+            self._feature_columns(contract)
+        if len(set(targets)) != len(targets):
+            raise ValueError("training_paired_validation_contract_invalid")
+        positions = (
+            tuple(range(self._feature_count)) if self._sequence_layout is not None
+            else tuple(sorted({position for contract in contracts for position in contract.feature_positions}))
+        )
+        projections = tuple(
+            tuple(positions.index(position) for position in contract.feature_positions) for contract in contracts
+        )
+        column_positions = tuple(range(self._column_features)) if self._sequence_layout is not None else positions
+        columns = ",".join(f's."{self._feature_names[position]}"' for position in column_positions)
+        if self._sequence_layout is not None:
+            columns += ",s.sequence_start"
+        target_columns = ",".join(f"s.{target}" for target in targets)
+        selected = " OR ".join(f"s.{target} IS NOT NULL" for target in targets)
+        cursor = self._connection.run(
+            f"SELECT s.trade_date,s.code,s.industry,{columns},{target_columns} FROM samples s "
+            "JOIN sample_split_dates d ON d.trade_date=s.trade_date "
+            f"WHERE d.split_name='validation' AND ({selected}) ORDER BY s.trade_date,s.code"
+        )
+        decoder = (
+            SampleSequenceReader(self._connection, self._sequence_layout, cache_bytes=self.sample_settings.sequence_cache_bytes)
+            if self._sequence_layout else None
+        )
+        pending = [_ValidationRows([], [], [], [], []) for _contract in contracts]
+        try:
+            while rows := cursor.fetch_values(batch_size):
+                dates = self._decode_dates(cast(tuple[int, ...], tuple(row[0] for row in rows)))
+                features = np.empty((len(rows), len(positions)), dtype=np.float64)
+                features[:, :len(column_positions)] = [row[3:3 + len(column_positions)] for row in rows]
+                if decoder is not None:
+                    decoder.read(
+                        cast(tuple[tuple[str, int], ...], tuple((str(row[1]), row[3 + self._column_features]) for row in rows)),
+                        output=features[:, self._column_features:],
+                    )
+                for row_position, row in enumerate(rows):
+                    for head, projection in enumerate(projections):
+                        target = row[-len(targets) + head]
+                        if target is None:
+                            continue
+                        buffer = pending[head]
+                        buffer.features.append(features[row_position, projection])
+                        buffer.labels.append(float(target))
+                        buffer.dates.append(dates[row_position])
+                        buffer.codes.append(str(row[1]))
+                        buffer.industries.append(str(row[2]))
+                        if len(buffer.labels) == batch_size:
+                            yield head, buffer.batch()
+                            pending[head] = _ValidationRows([], [], [], [], [])
+            for head, buffer in enumerate(pending):
+                if buffer.labels:
+                    yield head, buffer.batch()
+        finally:
+            cursor.close()
+
     def _iter_batches(
         self,
         contract: TrainedHeadContract,
@@ -426,11 +521,21 @@ class SQLiteTrainingSampleIndex:
         """Decode common rows once, project independent heads, release at industry end."""
         if self._shared_rows is not None:
             raise RuntimeError("training industry read already in progress")
+        self._shared_read_started = True
         predicate = "FROM samples s JOIN sample_split_dates d ON d.trade_date=s.trade_date WHERE s.industry=? AND d.split_name IN ('training','early_stopping','calibration')"
         count = int(self._connection.run(f"SELECT COUNT(*) {predicate}", (industry,)).require_one()[0])
         with ExitStack() as resources:
             width = self._feature_count + len(SAMPLE_TARGET_COLUMNS)
-            directory = Path(resources.enter_context(TemporaryDirectory(prefix="sample-shared-", dir=self.workspace)))
+            required_bytes = count * (width + 1) * 8
+            use_memory = (
+                self.execution_options.shared_matrix_memory
+                and self._shared_matrix_budget_bytes > 0
+                and required_bytes <= min(self.sample_settings.matrix_memory_bytes, self._shared_matrix_budget_bytes)
+            )
+            directory = (
+                None if use_memory
+                else Path(resources.enter_context(TemporaryDirectory(prefix="sample-shared-", dir=self.workspace)))
+            )
             matrix = _empty_matrix(count, width, "common", directory, resources).features
             columns = ",".join(f's."{name}"' for name in self._feature_names[:self._column_features])
             if self._sequence_layout is not None:
@@ -476,6 +581,34 @@ class SQLiteTrainingSampleIndex:
                 yield
             finally:
                 self._shared_rows = None
+
+    def shared_matrix_memory_bytes(self) -> int:
+        """Return the largest threshold-eligible common matrix allocation to reserve before fitting."""
+        if not self.execution_options.shared_matrix_memory:
+            return 0
+        width = self._feature_count + len(SAMPLE_TARGET_COLUMNS) + 1
+        counts = self._connection.run(
+            "SELECT SUM(s.sample_count) FROM sample_statistics s "
+            "JOIN sample_split_dates d ON d.trade_date=s.trade_date "
+            "WHERE s.target='rows' AND d.split_name IN ('training','early_stopping','calibration') "
+            "GROUP BY s.industry"
+        )
+        try:
+            return max(
+                (int(row[0]) * width * 8 for row in counts if int(row[0]) * width * 8 <= self.sample_settings.matrix_memory_bytes),
+                default=0,
+            )
+        finally:
+            counts.close()
+
+    def configure_shared_matrix_budget(self, budget_bytes: int) -> None:
+        """Apply an already granted allocation once; never acquire resources from this reader."""
+        if type(budget_bytes) is not int or budget_bytes < 0:
+            raise ValueError("training_shared_matrix_budget_invalid")
+        if self._shared_matrix_budget_configured or self._shared_read_started:
+            raise RuntimeError("training_shared_matrix_budget_already_configured")
+        self._shared_matrix_budget_bytes = budget_bytes
+        self._shared_matrix_budget_configured = True
 
     @contextmanager
     def industry_data(

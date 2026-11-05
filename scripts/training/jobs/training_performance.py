@@ -5,7 +5,10 @@ from __future__ import annotations
 from scripts.core.paths import PROJECT_ROOT as TOOL_ROOT
 
 import math
+import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from statistics import median
 from typing import TypedDict
 
 from scripts.core.contracts import DiagnosticCommand
@@ -229,10 +232,31 @@ def _reuse_identity(value: object, profiles: Sequence[str]) -> tuple[tuple[str, 
 def BuildTrainingBenchmarkCommands(options: TrainingOptions, python_executable: str) -> tuple[DiagnosticCommand, ...]:
     if options.history_root is None or options.training_probe_directory is None:
         raise ValueError("training_benchmark_requires_history_and_output")
+    rounds = options.training_benchmark_rounds
+    if type(rounds) is not int or not 1 <= rounds <= 5:
+        raise ValueError("training_benchmark_rounds_invalid")
+    if (
+        rounds > 1 or options.execution_candidate != "baseline" or options.cpu_candidate != "baseline"
+        or options.fanout_candidate != "baseline" or options.computation_candidate != "baseline"
+    ) and options.baseline_checkout is None:
+        raise ValueError("training_execution_comparison_requires_baseline_checkout")
+    if rounds > 1:
+        if options.training_probe_directory.exists():
+            raise ValueError("training_benchmark_requires_external_history_copy_and_new_output")
+        commands = []
+        for number in range(1, rounds + 1):
+            round_options = replace(
+                options, training_benchmark_rounds=1,
+                training_probe_directory=options.training_probe_directory / f"round_{number}",
+            )
+            for command in BuildTrainingBenchmarkCommands(round_options, python_executable):
+                prefix, rest = command.name.split(":", 1)
+                commands.append(replace(command, name=f"{prefix}:round_{number}:{rest}"))
+        return tuple(commands)
     project = TOOL_ROOT
     history, work = options.history_root.resolve(), options.training_probe_directory.resolve()
     if (
-        history.is_relative_to(project)
+        (history.is_relative_to(project) and not options.published_history_read_only)
         or work.is_relative_to(project)
         or work.exists()
         or history.is_relative_to(work)
@@ -277,7 +301,19 @@ def BuildTrainingBenchmarkCommands(options: TrainingOptions, python_executable: 
                         str(checkout),
                         "--runtime-config",
                         str(options.runtime_config.resolve()),
-                    ),
+                    )
+                    + (("--published-history-read-only",) if options.published_history_read_only else ())
+                    + (("--sample-cache-transfer", options.sample_cache_transfer) if options.sample_cache_transfer != "copy" else ())
+                    + (("--execution-candidate", options.execution_candidate)
+                       if mode == "candidate" and options.execution_candidate != "baseline" else ())
+                    + (("--cpu-candidate", options.cpu_candidate)
+                       if mode == "candidate" and options.cpu_candidate != "baseline" else ())
+                    + (("--execution-components", ",".join(options.execution_components))
+                       if mode == "candidate" and options.execution_components else ())
+                    + (("--fanout-candidate", options.fanout_candidate)
+                       if mode == "candidate" and options.fanout_candidate != "baseline" else ())
+                    + (("--computation-candidate", options.computation_candidate)
+                       if mode == "candidate" and options.computation_candidate != "baseline" else ()),
                     options.command_timeout_seconds,
                 )
             )
@@ -285,6 +321,12 @@ def BuildTrainingBenchmarkCommands(options: TrainingOptions, python_executable: 
 
 
 def SummarizeTrainingBenchmark(results: Sequence[DiagnosticResult]) -> dict[str, object]:
+    if any(result.name.startswith("training_alignment:round_") for result in results):
+        return _summarize_repeated(results)
+    return _summarize_single(results)
+
+
+def _summarize_single(results: Sequence[DiagnosticResult]) -> dict[str, object]:
     if any(result.name.startswith("training_alignment:baseline_") for result in results):
         return _summarize_checkouts(results)
     modes = ("serial_before", "parallel", "serial_after")
@@ -386,6 +428,153 @@ def SummarizeTrainingBenchmark(results: Sequence[DiagnosticResult]) -> dict[str,
         "production_authority": False,
         "concurrency_enablement_gate": False,
     }
+
+
+def _summarize_repeated(results: Sequence[DiagnosticResult]) -> dict[str, object]:
+    groups: dict[int, list[DiagnosticResult]] = {}
+    malformed = False
+    for result in results:
+        parts = result.name.split(":")
+        if len(parts) != 4 or parts[0] != "training_alignment" or not parts[1].startswith("round_"):
+            malformed = True
+            continue
+        try:
+            number = int(parts[1].removeprefix("round_"))
+        except ValueError:
+            malformed = True
+            continue
+        if not 1 <= number <= 5:
+            malformed = True
+            continue
+        groups.setdefault(number, []).append(replace(result, name=":".join((parts[0], *parts[2:]))))
+    comparisons = [_summarize_checkouts(groups[number]) for number in sorted(groups)]
+    comparable = bool(comparisons) and not malformed and all(item["comparable"] is True for item in comparisons)
+    identities = [_repeated_identity(result) for result in results]
+    comparable = comparable and bool(identities) and identities[0] is not None and all(
+        identity == identities[0] for identity in identities
+    )
+    policies: dict[str, list[str]] = {"baseline": [], "candidate": []}
+    for result in results:
+        policy = _repeated_policy(result)
+        role = "candidate" if ":candidate:" in result.name else "baseline"
+        if policy is None:
+            comparable = False
+        else:
+            policies[role].append(policy)
+    comparable = comparable and all(values and len(set(values)) == 1 for values in policies.values())
+    ratios: dict[str, list[float]] = {name: [] for name in ("initial_seconds", "sample_reuse_seconds", "repeat_seconds")}
+    for comparison in comparisons:
+        values = comparison["candidate_ratio_vs_best_baseline"]
+        if not isinstance(values, Mapping):
+            comparable = False
+            continue
+        for scenario, collected in ratios.items():
+            value = _seconds(values.get(scenario))
+            if value is None:
+                comparable = False
+            else:
+                collected.append(value)
+    enough = tuple(sorted(groups)) == (1, 2, 3, 4, 5)
+    medians = {scenario: median(values) if comparable else None for scenario, values in ratios.items()}
+    wins = sum(value < 1 for value in ratios["initial_seconds"]) if comparable else 0
+    initial = medians["initial_seconds"]
+    others = (medians["sample_reuse_seconds"], medians["repeat_seconds"])
+    accepted = bool(
+        comparable and enough and wins >= 4 and initial is not None and initial <= 0.90
+        and all(value is not None and value <= 1.05 for value in others)
+    )
+    return {
+        "mode": "repeated_product_checkouts", "rounds": comparisons,
+        "comparable": comparable, "required_rounds": 5, "observed_rounds": len(groups),
+        "initial_wins": wins, "candidate_median_ratio_vs_best_baseline": medians,
+        "timing_acceptance": accepted, "performance_acceptance": False,
+        "acceptance_scope": "four_profiles_three_training_workloads; uncontended_window_and_resource_peaks_require_review",
+        "production_authority": False, "concurrency_enablement_gate": False,
+    }
+
+
+def _repeated_identity(result: DiagnosticResult) -> tuple[object, ...] | None:
+    summary = result.payload.get("summary") if result.payload is not None else None
+    if not isinstance(summary, Mapping):
+        return None
+    initial = summary.get("initial")
+    if not isinstance(initial, Mapping):
+        return None
+    profiles = initial.get("profiles")
+    expected = ("v1", "v2", "v3", "v5")
+    identities = _reuse_identity(profiles, expected)
+    fingerprints = _fingerprint_values(initial.get("numeric_fingerprints"), expected)
+    if identities is None or fingerprints is None:
+        return None
+    if TrainingReuseFailures(initial, summary.get("repeat"), expected):
+        return None
+    writes = summary.get("source_data_writes")
+    if type(writes) is not int or writes != 0 or summary.get("source_files_unchanged") is not True:
+        return None
+    # Model/report hashes legitimately include source and CPU-request identities.
+    inputs = tuple(sorted({(item[0], item[1]) for item in identities}))
+    return summary.get("training_configuration_sha256"), inputs, fingerprints
+
+
+def _repeated_policy(result: DiagnosticResult) -> str | None:
+    summary = result.payload.get("summary") if result.payload is not None else None
+    if not isinstance(summary, Mapping):
+        return None
+    implementation = summary.get("training_implementation_sha256")
+    if not isinstance(implementation, str) or len(implementation) != 64 or any(
+        character not in "0123456789abcdef" for character in implementation
+    ):
+        return None
+    policy: dict[str, object] = {"implementation": implementation}
+    for key in ("execution_candidate", "computation_candidate", "scheduling_candidate"):
+        candidate = summary.get(key)
+        if not isinstance(candidate, Mapping):
+            return None
+        projected: dict[str, object] = {field: candidate.get(field) for field in (
+            "name", "execution", "cpu", "components", "fanout", "candidate_source_hash", "options",
+        )}
+        if key == "execution_candidate":
+            budgets = _run_budgets(candidate.get("runs"))
+            if budgets is None:
+                return None
+            projected["runs"] = budgets
+        policy[key] = projected
+    try:
+        return json.dumps(policy, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def _run_budgets(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, (tuple, list)) or not value:
+        return None
+    settings = []
+    for run in value:
+        if not isinstance(run, Mapping):
+            return None
+        profiles = run.get("profiles")
+        if not isinstance(profiles, (tuple, list)) or tuple(profiles) not in (
+            ("v1", "v2", "v3", "v5"), ("v2", "v3", "v5"),
+        ):
+            return None
+        numbers = {field: run.get(field) for field in (
+            "cpu_capacity", "native_threads", "batch_rows", "queue_batches",
+        )}
+        if any(type(number) is not int or number < 1 for number in numbers.values()):
+            return None
+        threads = run.get("profile_threads")
+        if (not isinstance(threads, Mapping) or set(threads) != {"v1", "v2", "v3"}
+                or any(type(number) is not int or number < 1 for number in threads.values())):
+            return None
+        memory = run.get("memory_capacity_bytes")
+        if "memory_capacity_bytes" not in run or memory is not None and (type(memory) is not int or memory < 1):
+            return None
+        settings.append({
+            "profiles": list(profiles), **numbers,
+            "profile_threads": {profile: threads[profile] for profile in ("v1", "v2", "v3")},
+            "memory_capacity_bytes": memory,
+        })
+    return settings
 
 
 def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, object]:

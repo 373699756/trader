@@ -26,8 +26,12 @@ from scripts.core.reporting import ReadJsonReports
 from scripts.core.reporting import emit_report
 from scripts.training.resources.training_process_measurement import TrainingProcessMeasurement
 from scripts.training.output_paths import RequireIndependentOutput
+from scripts.training.resources.execution_selection import (
+    CpuCandidate, ExecutionCandidate, ExecutionComponent, FanoutCandidate, ParseExecutionComponents,
+)
 
 if TYPE_CHECKING:
+    from scripts.training.resources.execution_candidates import TrainingExecutionExperiment
     from scripts.training.samples.computation_candidates import ComputationCandidate
     from scripts.training.samples.computation_candidates import ComputationCandidateCounts
     from scripts.training.resources.scheduling_candidates import SchedulingCandidate
@@ -48,6 +52,10 @@ class _MeasurementOptions(TypedDict, total=False):
     scheduling_candidate: SchedulingCandidate
     scheduling_evidence: Path
     computation_candidate: ComputationCandidate
+    execution_candidate: ExecutionCandidate
+    cpu_candidate: CpuCandidate
+    execution_components: tuple[ExecutionComponent, ...]
+    fanout_candidate: FanoutCandidate
 
 
 def PrepareTrainingHistoryCopy(
@@ -224,6 +232,10 @@ def _probe(
     scheduling_candidate: SchedulingCandidate = "baseline",
     scheduling_evidence: Path | None = None,
     computation_candidate: ComputationCandidate = "baseline",
+    execution_candidate: ExecutionCandidate = "baseline",
+    cpu_candidate: CpuCandidate = "baseline",
+    execution_components: tuple[ExecutionComponent, ...] = (),
+    fanout_candidate: FanoutCandidate = "baseline",
 ) -> dict[str, object]:
     # Load diagnostic types only after main selects the measured product checkout.
     from scripts.training.jobs.training_performance import TrainingReuseFailures
@@ -297,7 +309,18 @@ def _probe(
         from scripts.training.samples.computation_candidates import UseComputationCandidate
 
         computation_scope = UseComputationCandidate(computation_candidate)
+    execution_scope: AbstractContextManager[TrainingExecutionExperiment | None] = nullcontext(None)
+    execution_report: dict[str, object] = {"execution": "baseline", "cpu": "baseline", "production_enabled": False, "performance_evidence": False}
+    if execution_candidate != "baseline" or cpu_candidate != "baseline" or fanout_candidate != "baseline" or execution_components:
+        if not (runtime.project_root / "src/trader/training/infra/execution_options.py").is_file():
+            raise ValueError("training_execution_candidate_unsupported_checkout")
+        from scripts.training.resources.execution_candidates import ProjectTrainingExecutionExperiment, UseTrainingExecutionCandidate
+
+        execution_scope = UseTrainingExecutionCandidate(
+            execution_candidate, cpu_candidate, components=execution_components, fanout=fanout_candidate,
+        )
     with (
+        execution_scope as execution,
         schedule_scope as schedule,
         computation_scope as computation,
         ReadOnlyTrainingSource(history) if published_history_read_only else nullcontext(),
@@ -312,6 +335,12 @@ def _probe(
         scheduling_report = ProjectSchedulingExperiment(schedule)
     if computation is not None:
         computation_report = ProjectComputationCandidate(computation)
+    if execution is not None:
+        execution_report = ProjectTrainingExecutionExperiment(execution)
+    elif initial["complete"] and repeat is not None and sample_reuse is not None:
+        baseline_runs = _baseline_execution_runs(initial, repeat, sample_reuse)
+        if baseline_runs is not None:
+            execution_report["runs"] = baseline_runs
     unchanged = SQLiteHistoryTrainingInputSnapshot.open(history, **sqlite_arguments).snapshot.snapshot_hash == identity
     files_unchanged = not published_history_read_only or source_files == _published_input_signature(history)
     released = scheduling_report.get("pending_requests", 0) == scheduling_report.get("reserved_threads", 0) == 0
@@ -331,6 +360,7 @@ def _probe(
             "sample_reuse": sample_reuse,
             "scheduling_candidate": scheduling_report,
             "computation_candidate": computation_report,
+            "execution_candidate": execution_report,
             "repeat_model_values_equal": equal,
             "repeat_reuse_verified": not reuse_failures,
             "repeat_reuse_required": require_reuse,
@@ -471,6 +501,28 @@ def _sample_reuse(
     return result
 
 
+def _baseline_execution_runs(
+    initial: dict[str, object], repeat: dict[str, object], sample_reuse: dict[str, object],
+) -> list[dict[str, object]] | None:
+    """Project actual completed runs; older checkouts lack this resource evidence."""
+    runs: list[dict[str, object]] = []
+    for run in (initial, repeat, sample_reuse.get("preparation"), sample_reuse.get("run")):
+        if not isinstance(run, dict) or not isinstance(result := run.get("execution"), dict):
+            return None
+        fanout = result.get("fanout")
+        if not isinstance(fanout, dict) or any(
+            key not in result for key in ("profiles", "fitting_cpu_capacity", "native_threads", "profile_threads", "memory_capacity_bytes")
+        ) or any(key not in fanout for key in ("batch_rows", "queue_batches")):
+            return None
+        runs.append({
+            "profiles": result["profiles"], "cpu_capacity": result["fitting_cpu_capacity"],
+            "native_threads": result["native_threads"], "profile_threads": result["profile_threads"],
+            "memory_capacity_bytes": result["memory_capacity_bytes"],
+            "batch_rows": fanout["batch_rows"], "queue_batches": fanout["queue_batches"],
+        })
+    return runs
+
+
 def _release_prepared_samples(work: Path, profiles: tuple[ScoringProfileId, ...]) -> None:
     root = work / "samples"
     if root.is_symlink() or {path.name for path in root.iterdir()} != set(profiles):
@@ -599,6 +651,52 @@ def _train_once(
     }
 
 
+def _fingerprint_model_object(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError("training_alignment_model_document_invalid")
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError("training_alignment_model_document_invalid")
+        result[key] = item
+    return result
+
+
+def _lightgbm_fingerprint_model(value: object) -> dict[str, object]:
+    # Load only after checkout selection, just as the product predictor loads persisted models.
+    from lightgbm import Booster
+    from lightgbm.basic import LightGBMError
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("training_alignment_lightgbm_model_invalid")
+    try:
+        booster = Booster(model_str=value)
+        # The SDK JSON contains every tree, objective, feature and categorical field, whereas
+        # model_to_string also records fitting parameters such as num_threads. A nonpositive
+        # iteration count explicitly includes all trees, independently of best_iteration.
+        decoded: object = json.loads(json.dumps(booster.dump_model(num_iteration=-1), allow_nan=False))
+    except (LightGBMError, TypeError, ValueError) as exc:
+        raise ValueError("training_alignment_lightgbm_model_invalid") from exc
+    return _fingerprint_model_object(decoded)
+
+
+def _fingerprint_model_values(profile: ScoringProfileId, model: dict[str, object]) -> object:
+    if profile == "v1":
+        components = _fingerprint_model_object(model["components"])
+        return {**components, "rank_model": _lightgbm_fingerprint_model(components.get("rank_model"))}
+    if profile == "v2":
+        industries = _fingerprint_model_object(model["industries"])
+        projected: dict[str, object] = {}
+        for industry, value in industries.items():
+            component = _fingerprint_model_object(value)
+            projected[industry] = {
+                **component,
+                "lightgbm_model": _lightgbm_fingerprint_model(component.get("lightgbm_model")),
+            }
+        return projected
+    return model["industries"]
+
+
 def _numeric_fingerprints(model_root: Path, profiles: tuple[ScoringProfileId, ...]) -> tuple[dict[str, object], ...]:
     fingerprints: list[dict[str, object]] = []
     metric_fields = (
@@ -619,15 +717,13 @@ def _numeric_fingerprints(model_root: Path, profiles: tuple[ScoringProfileId, ..
                 path = directory / name
                 if path.stat().st_size > 32 * 1024**2:
                     raise ValueError("training_alignment_model_document_too_large")
-                value = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(value, dict):
-                    raise ValueError("training_alignment_model_document_invalid")
-                documents.append(value)
+                value: object = json.loads(path.read_text(encoding="utf-8"))
+                documents.append(_fingerprint_model_object(value))
             model, metadata = documents
             report = metadata["validation_report"]
             if not isinstance(report, dict):
                 raise ValueError("training_alignment_validation_report_invalid")
-            components = model["components"] if profile == "v1" else model["industries"]
+            components = _fingerprint_model_values(profile, model)
             metrics = report["validation"] if profile == "v1" else {field: report[field] for field in metric_fields}
             numeric = json.dumps((components, metrics), ensure_ascii=True, sort_keys=True, allow_nan=False).encode()
             fingerprints.append(
@@ -676,6 +772,10 @@ def Main() -> int:
     parser.add_argument("--sample-cache-transfer", choices=("copy", "hardlink"), default="copy")
     parser.add_argument("--scheduling-candidate", choices=("baseline", "fixed", "long_task_first", "borrowing"), default="baseline")
     parser.add_argument("--scheduling-evidence", type=Path)
+    parser.add_argument("--execution-candidate", choices=("baseline", "resources", "ram_matrices", "shared_validation", "normalized_tcn", "combined", "selected"), default="baseline")
+    parser.add_argument("--execution-components")
+    parser.add_argument("--fanout-candidate", choices=("baseline", "batch_double", "queue_double"), default="baseline")
+    parser.add_argument("--cpu-candidate", choices=("baseline", "two_plus_one", "three_single"), default="baseline")
     parser.add_argument(
         "--computation-candidate", choices=("baseline", "indexed_anchors", "schema_cache", "combined"), default="baseline"
     )
@@ -685,10 +785,15 @@ def Main() -> int:
     )
     args = parser.parse_args()
     try:
+        components = ParseExecutionComponents(args.execution_components) if args.execution_components is not None else ()
+        if (args.execution_candidate == "selected") != bool(components):
+            raise ValueError("training_execution_components_require_selected")
         if args.inputs_only and (args.scheduling_candidate != "baseline" or args.scheduling_evidence is not None):
             raise ValueError("training_scheduling_requires_training_mode")
         if args.inputs_only and args.computation_candidate != "baseline":
             raise ValueError("training_computation_requires_training_mode")
+        if args.inputs_only and (args.execution_candidate != "baseline" or args.cpu_candidate != "baseline" or args.fanout_candidate != "baseline"):
+            raise ValueError("training_execution_requires_training_mode")
         product = _select_product(args.product_checkout)
         if args.work_root is not None:
             RequireIndependentOutput(args.work_root, product)
@@ -718,6 +823,14 @@ def Main() -> int:
                 measurement_options["scheduling_evidence"] = args.scheduling_evidence
             if args.computation_candidate != "baseline":
                 measurement_options["computation_candidate"] = args.computation_candidate
+            if args.execution_candidate != "baseline":
+                measurement_options["execution_candidate"] = args.execution_candidate
+            if components:
+                measurement_options["execution_components"] = components
+            if args.fanout_candidate != "baseline":
+                measurement_options["fanout_candidate"] = args.fanout_candidate
+            if args.cpu_candidate != "baseline":
+                measurement_options["cpu_candidate"] = args.cpu_candidate
             report = _probe(
                 args.history_root, args.work_root, profiles, runtime_config=runtime_config, sqlite_policy=sqlite_policy,
                 require_reuse=args.benchmark_mode not in {"baseline_before", "baseline_after"},

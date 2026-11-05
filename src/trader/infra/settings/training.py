@@ -15,6 +15,7 @@ from trader.training.application.resources import (
     TrainingCpuSettings,
     TrainingFanoutSettings,
     TrainingMemorySettings,
+    TrainingProfileThreads,
     TrainingResourceSettings,
     TrainingSampleSettings,
 )
@@ -41,7 +42,11 @@ def LoadTrainingResourceSettings(project_root: Path, medium: DiskKind) -> Traini
 def _resource_settings(values: Mapping[str, object]) -> TrainingResourceSettings:
     RequireExactKeys(values, {"cpu", "memory", "fanout", "samples"}, "training.resources")
     cpu = RequireMapping(values, "cpu")
-    RequireExactKeys(cpu, {"coordinator_cpus", "maximum_threads", "native_threads"}, "training.resources.cpu")
+    RequireExactKeys(
+        cpu, {"coordinator_cpus", "maximum_threads", "native_threads", "profile_threads"}, "training.resources.cpu"
+    )
+    profile_threads = RequireMapping(cpu, "profile_threads")
+    RequireExactKeys(profile_threads, {"v1", "v2", "v3"}, "training.resources.cpu.profile_threads")
     memory = RequireMapping(values, "memory")
     RequireExactKeys(
         memory, {"maximum_bytes", "reserve_bytes", "minimum_available_bytes"}, "training.resources.memory"
@@ -63,7 +68,14 @@ def _resource_settings(values: Mapping[str, object]) -> TrainingResourceSettings
     )
     return TrainingResourceSettings(
         TrainingCpuSettings(
-            Integer(cpu, "coordinator_cpus", minimum=0), maximum_threads, Integer(cpu, "native_threads", minimum=1)
+            Integer(cpu, "coordinator_cpus", minimum=0),
+            maximum_threads,
+            Integer(cpu, "native_threads", minimum=1),
+            TrainingProfileThreads(
+                Integer(profile_threads, "v1", minimum=1),
+                Integer(profile_threads, "v2", minimum=1),
+                Integer(profile_threads, "v3", minimum=1),
+            ),
         ),
         memory_settings,
         TrainingFanoutSettings(Integer(fanout, "batch_rows", minimum=1), Integer(fanout, "queue_batches", minimum=1)),

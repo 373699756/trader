@@ -11,7 +11,7 @@ from threading import Condition
 
 from threadpoolctl import ThreadpoolController
 
-from trader.training.application.resources import TrainingCpuSettings
+from trader.training.application.resources import TrainingCpuSettings, TrainingProfileThreads
 from trader.training.infra.cgroup import ReadTrainingCgroupScopes
 
 
@@ -24,9 +24,14 @@ class TrainingCpuBudget:
         if settings.maximum_threads is not None:
             self.capacity = min(self.capacity, settings.maximum_threads)
         self.native_threads = min(settings.native_threads, self.capacity)
+        self._profile_threads = settings.profile_threads
         self._available = self.capacity
         self._peak = 0
         self._condition = Condition()
+
+    @property
+    def profile_threads(self) -> TrainingProfileThreads:
+        return self._profile_threads
 
     @property
     def peak_reserved_threads(self) -> int:

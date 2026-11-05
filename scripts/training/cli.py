@@ -11,6 +11,7 @@ from pathlib import Path
 from scripts.core.paths import PROJECT_ROOT, ExternalPath
 from scripts.training.options import TrainingOptions
 from scripts.training.output_paths import RequireIndependentOutput
+from scripts.training.resources.execution_selection import ParseExecutionComponents
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 
@@ -43,6 +44,11 @@ def BuildParser(
         scheduling_candidate="baseline",
         scheduling_evidence=None,
         computation_candidate="baseline",
+        execution_candidate="baseline",
+        cpu_candidate="baseline",
+        execution_components=(),
+        fanout_candidate="baseline",
+        training_benchmark_rounds=1,
         reference_config=None,
         quality_only=False,
         largest_only=False,
@@ -86,16 +92,23 @@ def BuildParser(
         parser.add_argument('--training-profiles', type=ParseProfileSelection, default=SCORING_PROFILE_IDS, help='comma-separated profiles for training-alignment and training-performance')
     if action_identity in ("training-alignment",):
         parser.add_argument("--product-checkout", type=Path, help="explicit frozen product checkout")
-    if action_identity in ("training-alignment",):
+    if action_identity in ("training-alignment", "training-performance"):
         parser.add_argument("--published-history-read-only", action="store_true", help="fit with guarded read-only published history")
-    if action_identity in ("training-alignment",):
+    if action_identity in ("training-alignment", "training-performance"):
         parser.add_argument("--sample-cache-transfer", choices=("copy", "hardlink"), default="copy")
     if action_identity in ("training-alignment",):
         parser.add_argument("--scheduling-candidate", choices=("baseline", "fixed", "long_task_first", "borrowing"), default="baseline")
     if action_identity in ("training-alignment",):
         parser.add_argument("--scheduling-evidence", type=Path)
-    if action_identity in ("training-alignment",):
+    if action_identity in ("training-alignment", "training-performance"):
         parser.add_argument("--computation-candidate", choices=("baseline", "indexed_anchors", "schema_cache", "combined"), default="baseline")
+    if action_identity in ("training-alignment", "training-performance"):
+        parser.add_argument("--execution-candidate", choices=("baseline", "resources", "ram_matrices", "shared_validation", "normalized_tcn", "combined", "selected"), default="baseline")
+        parser.add_argument("--cpu-candidate", choices=("baseline", "two_plus_one", "three_single"), default="baseline")
+        parser.add_argument("--execution-components", type=ParseExecutionComponents, default=(), help="comma-separated components; required only for selected execution")
+        parser.add_argument("--fanout-candidate", choices=("baseline", "batch_double", "queue_double"), default="baseline")
+    if action_identity == "training-performance":
+        parser.add_argument("--training-benchmark-rounds", type=int, default=1)
     if action_identity in ("training-coverage",):
         parser.add_argument('--training-signal-date', type=date.fromisoformat, help='read-only V5 label horizon probe')
     if action_identity == "training-samples":
@@ -125,6 +138,11 @@ def ParseOptions(args: argparse.Namespace) -> TrainingOptions:
         scheduling_candidate=args.scheduling_candidate,
         scheduling_evidence=args.scheduling_evidence.expanduser().resolve() if args.scheduling_evidence is not None else None,
         computation_candidate=args.computation_candidate,
+        execution_candidate=args.execution_candidate,
+        cpu_candidate=args.cpu_candidate,
+        execution_components=args.execution_components,
+        fanout_candidate=args.fanout_candidate,
+        training_benchmark_rounds=args.training_benchmark_rounds,
         reference_config=args.reference_config.expanduser().resolve() if args.reference_config is not None else None,
         quality_only=args.quality_only,
         largest_only=args.largest_only,
@@ -171,6 +189,17 @@ def ParseOptions(args: argparse.Namespace) -> TrainingOptions:
             raise ValueError("training scheduling candidates require --scheduling-evidence")
         if options.scheduling_candidate == "baseline" and options.scheduling_evidence is not None:
             raise ValueError("--scheduling-evidence requires an explicit scheduling candidate")
+    if options.action_identity == "training-performance":
+        if not 1 <= options.training_benchmark_rounds <= 5:
+            raise ValueError("--training-benchmark-rounds must be within 1..5")
+        if options.baseline_checkout is None and (
+            options.execution_candidate != "baseline"
+            or options.cpu_candidate != "baseline"
+            or options.fanout_candidate != "baseline"
+            or options.computation_candidate != "baseline"
+            or options.training_benchmark_rounds > 1
+        ):
+            raise ValueError("training performance candidates or repeated rounds require --baseline-checkout")
     if not 4 <= options.training_sample_size <= 128 or not 64 <= options.training_sample_sessions <= 750:
         raise ValueError("sample comparison requires size within 4..128 and sessions within 64..750")
     return options

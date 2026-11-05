@@ -545,6 +545,7 @@ def ExecuteSelectedTraining(
         fanout_settings=resources.fanout,
         sample_settings=resources.samples,
         paths=paths, sqlite_policy=BuildSqlitePolicy(runtime),
+        memory_capacity_bytes=memory_budget.capacity_bytes,
     )
 
 

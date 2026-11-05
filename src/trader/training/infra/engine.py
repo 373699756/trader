@@ -51,6 +51,8 @@ from trader.training.infra.history.history_training_input import (
     SQLiteHistoryTrainingInputSnapshot,
 )
 from trader.training.infra.implementation_identity import TrainingImplementationIdentity
+from trader.training.infra.execution_options import TrainingExecutionOptions
+from trader.training.infra.fitting_resources import ReserveTrainingFittingResources
 from trader.training.infra.model_bundles.bundle_snapshot import (
     MakeBundleStagingDirectory,
 )
@@ -178,10 +180,19 @@ class ProfileTrainingRequest:
     expected_history_snapshot_hash: str | None = None
     memory_admission: TrainingMemoryAdmission | None = None
     cpu_admission: TrainingCpuAdmission | None = None
+    compute_threads: int = field(default=TOMORROW_TRAINING_COMPUTE_THREADS, kw_only=True)
+    execution_options: TrainingExecutionOptions = field(default_factory=TrainingExecutionOptions, kw_only=True)
+    memory_capacity_bytes: int | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         strategies = tuple(contract.strategy for contract in self.contracts)
         self.settings.require_profile(self.profile)
+        if type(self.compute_threads) is not int or self.compute_threads < 1:
+            raise ValueError("training_cpu_request_invalid")
+        if self.memory_capacity_bytes is not None and (
+            type(self.memory_capacity_bytes) is not int or self.memory_capacity_bytes < 1
+        ):
+            raise ValueError("training_memory_capacity_invalid")
         if (
             self.contracts != self.profile.heads
             or len(set(strategies)) != len(strategies)
@@ -383,17 +394,12 @@ def _run_locked(
                 prepared_split_hash=split.content_hash,
                 sequence_layout=cache.sequence_layout, sqlite_policy=sqlite_policy,
                 sample_settings=request.sample_settings,
+                execution_options=request.execution_options,
             ) as samples,
             ExitStack() as fitting_resources,
         ):
-            requested_threads = request.settings.fitting.compute_threads if isinstance(request.settings.fitting, TcnFittingParameters) else TOMORROW_TRAINING_COMPUTE_THREADS
-            compute_threads = requested_threads
-            if request.cpu_admission is not None:
-                compute_threads = fitting_resources.enter_context(request.cpu_admission.reserve(
-                    requested_threads,
-                    lambda: _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1)),
-                ))
-            if request.memory_admission is not None:
+            requested_threads = request.settings.fitting.compute_threads if isinstance(request.settings.fitting, TcnFittingParameters) else request.compute_threads
+            def memory_requirement() -> int:
                 counts = tuple(item for contract in request.contracts for item in samples.industry_counts(contract))
                 matrix_bytes = max(
                     (
@@ -403,12 +409,24 @@ def _run_locked(
                     default=0,
                 )
                 estimate = 512 * 1024**2 if request.profile.algorithm == "tcn" else 256 * 1024**2 + matrix_bytes * 4
-                fitting_resources.enter_context(
-                    request.memory_admission.reserve(
-                        estimate,
-                        lambda: _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1)),
-                    )
-                )
+                if request.execution_options.shared_validation:
+                    estimate += (512 if request.profile.algorithm == "tcn" else 256) * 1024**2
+                if request.execution_options.shared_matrix_memory:
+                    capacity = request.memory_capacity_bytes or 0
+                    extra = min(samples.shared_matrix_memory_bytes(), max(0, capacity - estimate))
+                    samples.configure_shared_matrix_budget(extra)
+                    estimate += extra
+                return estimate
+
+            reservation = fitting_resources.enter_context(ReserveTrainingFittingResources(
+                request.cpu_admission,
+                request.memory_admission,
+                requested_threads,
+                memory_requirement,
+                lambda: _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1)),
+                memory_first=request.execution_options.memory_first,
+            ))
+            compute_threads = reservation.compute_threads
             prepared: list[tuple[Strategy, Path]] = []
             fitted_heads = FitIndustryModels(samples, split, tuple(plan.contract for plan in plans), request.settings.fitting, progress=request.progress, compute_threads=compute_threads)
             for plan, fitted in zip(plans, fitted_heads, strict=True):
@@ -436,6 +454,8 @@ def _run_locked(
             ):
                 try:
                     _publish(request.progress, TomorrowTrainingProgress("artifact_publish", "started", 0, 1))
+                    if request.execution_options.release_cpu_before_publish:
+                        reservation.release_cpu()
                     PublishProfileBundles(request.train_root, request.profile, tuple(prepared))
                     _publish(request.progress, TomorrowTrainingProgress("artifact_publish", "completed", 1, 1))
                 except InterruptedError:
@@ -601,7 +621,9 @@ def _build_head_plans(
     completed: list[HeadTrainingResult] = []
     for contract in request.contracts:
         label_cutoff = _mature_label_cutoff(snapshot, contract)
-        contract_hash = _training_contract_hash(request.profile, contract, request.settings)
+        contract_hash = _training_contract_hash(
+            request.profile, contract, request.settings, compute_threads=request.compute_threads,
+        )
         if label_cutoff is None:
             completed.append(_blocked_from_snapshot(contract, snapshot, "history_training_data_incomplete"))
         else:
@@ -881,7 +903,9 @@ def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrain
         if (
             bundle.training_input_hash != snapshot.snapshot_hash
             or bundle.label_cutoff != _mature_label_cutoff(snapshot, contract)
-            or bundle.training_contract_hash != _training_contract_hash(request.profile, contract, request.settings)
+            or bundle.training_contract_hash != _training_contract_hash(
+                request.profile, contract, request.settings, compute_threads=request.compute_threads,
+            )
         ):
             return None
         model = bundle.model
@@ -907,7 +931,8 @@ def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrain
 
 
 def _training_contract_hash(
-    profile: TrainedProfileContract, contract: TrainedHeadContract, settings: ProfileTrainingSettings
+    profile: TrainedProfileContract, contract: TrainedHeadContract, settings: ProfileTrainingSettings,
+    *, compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
 ) -> str:
     fitting = settings.fitting
     return ContentHash(
@@ -927,7 +952,7 @@ def _training_contract_hash(
             "strategy_head": contract.strategy.value,
             "compute_threads": fitting.compute_threads
             if isinstance(fitting, TcnFittingParameters)
-            else TOMORROW_TRAINING_COMPUTE_THREADS,
+            else compute_threads,
             "peak_rss_mib": TOMORROW_TRAINING_PEAK_RSS_MIB,
             "training_input_scope": "complete_manifest",
             "feature_manifest_hash": contract.feature_manifest.content_hash,

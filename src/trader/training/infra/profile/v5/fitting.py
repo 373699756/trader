@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -15,10 +16,10 @@ from trader.training.infra.model_bundles.bundle_codec import TrainedTcnModelSnap
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.model_evaluation import CalibrationAccumulator
 from trader.training.infra.model_fitting_results import FittedIndustryModel
-from trader.training.infra.profile.v5.batch_cache import CacheTcnBatches, TcnBatchCache
+from trader.training.infra.profile.v5.batch_cache import CacheTcnBatches, PrepareTcnBatches, TcnBatchCache, TcnPreparedBatches
 from trader.training.infra.profile.v5.network import TcnNetwork
 from trader.training.infra.profile.v5.settings import TcnFittingParameters
-from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingIndustryCounts
+from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingIndustryCounts, TrainingSampleMatrix
 
 
 def FitTcnIndustry(
@@ -34,12 +35,27 @@ def FitTcnIndustry(
         TrainingFitDetail(counts.industry, counts.training, "batch_cache", total_epochs=parameters.epochs), report
     )
     progress.publish("batch_cache")
-    with CacheTcnBatches(samples, counts, contract, parameters.batch_size, heartbeat) as cache:
+    with ExitStack() as resources:
+        raw_resources = resources.enter_context(ExitStack())
+        raw = raw_resources.enter_context(CacheTcnBatches(samples, counts, contract, parameters.batch_size, heartbeat))
         auxiliary = len(contract.feature_positions) - 360
         torch.manual_seed(parameters.seed)
         network = TcnNetwork(auxiliary, parameters.dropout, parameters.architecture)
         progress.publish("normalization")
-        means, scales = _transforms(cache, auxiliary, heartbeat)
+        means, scales = _transforms(raw, auxiliary, heartbeat)
+        cache: TcnBatchCache | TcnPreparedBatches = raw
+        if samples.execution_options.normalized_tcn_batches:
+            cache = resources.enter_context(PrepareTcnBatches(
+                raw,
+                means,
+                scales,
+                workspace=samples.workspace,
+                memory_bytes=samples.sample_settings.tcn_batch_memory_bytes,
+                compute_dtype=parameters.compute_dtype,
+                heartbeat=heartbeat,
+            ))
+            raw_resources.close()
+            del raw
         epoch = _TcnFitState(network, parameters, cache, heartbeat, means, scales, progress).train()
         calibration = CalibrationAccumulator()
         batches = math.ceil(counts.calibration / parameters.batch_size)
@@ -107,20 +123,38 @@ def _transforms(cache: TcnBatchCache, auxiliary: int, heartbeat: Callable[[], No
 class _TcnFitState:
     network: TcnNetwork
     parameters: TcnFittingParameters
-    cache: TcnBatchCache
+    cache: TcnBatchCache | TcnPreparedBatches
     heartbeat: Callable[[], None]
     means: np.ndarray
     scales: np.ndarray
     progress: _TcnProgress
 
+    def _training_batches(self) -> Iterator[TrainingSampleMatrix | tuple[torch.Tensor, torch.Tensor]]:
+        if isinstance(self.cache, TcnPreparedBatches):
+            yield from self.cache.training_batches()
+        else:
+            yield from self.cache.batches("training")
+
+    def _early_stopping_predictions(self) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        if isinstance(self.cache, TcnPreparedBatches):
+            for features, labels in self.cache.early_stopping_batches():
+                self.heartbeat()
+                self.network.eval()
+                with torch.inference_mode():
+                    predicted = self.network(features)
+                    values = np.asarray(predicted.numpy(), dtype=np.float64)
+                yield values, labels
+        else:
+            for batch in self.cache.batches("early_stopping"):
+                self.heartbeat()
+                yield self.network.predict((batch.features - self.means) / self.scales), batch.labels
+
     def _evaluate(self, epoch: int) -> float:
         error, count = 0.0, 0
         batches = math.ceil(len(self.cache.early_stopping) / self.cache.batch_size)
         self.progress.publish("early_stopping", epoch, 0, batches)
-        for number, batch in enumerate(self.cache.batches("early_stopping"), start=1):
-            self.heartbeat()
-            predicted = self.network.predict((batch.features - self.means) / self.scales)
-            error += float(np.square(predicted - batch.labels).sum())
+        for number, (predicted, labels) in enumerate(self._early_stopping_predictions(), start=1):
+            error += float(np.square(predicted - labels).sum())
             count += len(predicted)
             self.progress.publish("early_stopping", epoch, number, batches)
         metric = error / count
@@ -139,13 +173,18 @@ class _TcnFitState:
         for epoch in range(1, parameters.epochs + 1):
             network.train()
             self.progress.publish("training", epoch, 0, batches)
-            for number, batch in enumerate(self.cache.batches("training"), start=1):
+            for number, batch in enumerate(self._training_batches(), start=1):
                 self.heartbeat()
                 optimizer.zero_grad(set_to_none=True)
-                predicted = network(
-                    torch.from_numpy((batch.features - self.means) / self.scales).to(network.compute_dtype)
-                )
-                loss = torch.square(predicted - torch.from_numpy(batch.labels.copy()).to(network.compute_dtype)).mean()
+                if isinstance(batch, TrainingSampleMatrix):
+                    predicted = network(
+                        torch.from_numpy((batch.features - self.means) / self.scales).to(network.compute_dtype)
+                    )
+                    labels = torch.from_numpy(batch.labels.copy()).to(network.compute_dtype)
+                else:
+                    predicted = network(batch[0])
+                    labels = batch[1]
+                loss = torch.square(predicted - labels).mean()
                 if not torch.isfinite(loss):
                     raise ValueError("V5 nonfinite training loss")
                 loss.backward()

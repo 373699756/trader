@@ -12,7 +12,6 @@ from typing import Literal
 
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import (
-    TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
     TomorrowTrainingProgress,
     TomorrowTrainingStage,
@@ -184,7 +183,6 @@ class StderrTomorrowTrainingProgress:
         if progress.stage == "resource_preflight":
             parts.extend(
                 (
-                    f"计算线程 {TOMORROW_TRAINING_COMPUTE_THREADS}",
                     f"峰值 RSS 上限 {TOMORROW_TRAINING_PEAK_RSS_MIB} MiB",
                 )
             )

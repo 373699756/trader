@@ -4,7 +4,12 @@
       "cpu": {
         "coordinator_cpus": 1,
         "maximum_threads": null,
-        "native_threads": 2
+        "native_threads": 2,
+        "profile_threads": {
+          "v1": 2,
+          "v2": 2,
+          "v3": 2
+        }
       },
       "memory": {
         "maximum_bytes": 3221225472,
@@ -30,7 +35,12 @@
       "cpu": {
         "coordinator_cpus": 1,
         "maximum_threads": null,
-        "native_threads": 2
+        "native_threads": 2,
+        "profile_threads": {
+          "v1": 2,
+          "v2": 2,
+          "v3": 2
+        }
       },
       "memory": {
         "maximum_bytes": 3221225472,

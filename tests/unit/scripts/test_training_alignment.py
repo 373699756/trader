@@ -161,6 +161,54 @@ def test_computation_candidate_is_explicit_and_requires_training_mode(tmp_path, 
     assert calls == ([] if inputs_only else ["selected", "probed"])
 
 
+@pytest.mark.parametrize("inputs_only", (False, True))
+def test_selected_execution_and_fanout_are_forwarded_only_in_training_mode(tmp_path, monkeypatch, inputs_only):
+    from scripts.training.jobs import training_alignment as module
+
+    project = Path(__file__).resolve().parents[3]
+    calls = []
+    argv = [
+        "probe", "--history-root", str(tmp_path / "history"), "--execution-candidate", "selected",
+        "--execution-components", "normalized_tcn,resources", "--fanout-candidate", "batch_double",
+    ]
+    argv += ["--inputs-only"] if inputs_only else ["--work-root", str(tmp_path / "output")]
+
+    def select(_checkout):
+        calls.append("selected")
+        return project
+
+    def probe(*_args, execution_candidate, execution_components, fanout_candidate, **_kwargs):
+        assert calls == ["selected"]
+        assert execution_candidate == "selected" and execution_components == ("resources", "normalized_tcn")
+        assert fanout_candidate == "batch_double"
+        calls.append("probed")
+        return {"status": "passed"}
+
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(module, "_select_product", select)
+    monkeypatch.setattr(module, "_probe", probe)
+    monkeypatch.setattr(module, "emit_report", lambda _report: None)
+    assert module.Main() == (1 if inputs_only else 0)
+    assert calls == ([] if inputs_only else ["selected", "probed"])
+
+
+def test_baseline_resource_projection_uses_completed_runs_and_rejects_missing_old_evidence():
+    from scripts.training.jobs.training_alignment import _baseline_execution_runs
+
+    execution = {
+        "profiles": ["v1", "v2", "v3", "v5"], "fitting_cpu_capacity": 3, "native_threads": 2,
+        "profile_threads": {"v1": 2, "v2": 2, "v3": 2}, "memory_capacity_bytes": 1024,
+        "fanout": {"batch_rows": 256, "queue_batches": 2},
+    }
+    run = {"execution": execution}
+    scenario = {"preparation": run, "run": run}
+    projected = _baseline_execution_runs(run, run, scenario)
+    assert projected is not None and len(projected) == 4
+    assert all(item["cpu_capacity"] == 3 and item["batch_rows"] == 256 for item in projected)
+    del execution["memory_capacity_bytes"]
+    assert _baseline_execution_runs(run, run, scenario) is None
+
+
 @pytest.mark.parametrize("source_changed", (False, True))
 def test_history_copy_includes_committed_wal_and_references_without_source_writes(
     tmp_path, monkeypatch, source_changed

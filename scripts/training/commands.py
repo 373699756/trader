@@ -105,6 +105,10 @@ def BuildCommands(
             )
             + (("--product-checkout", str(options.product_checkout)) if options.product_checkout is not None else ())
             + (("--published-history-read-only",) if options.published_history_read_only else ())
+            + (("--execution-candidate", options.execution_candidate) if options.execution_candidate != "baseline" else ())
+            + (("--cpu-candidate", options.cpu_candidate) if options.cpu_candidate != "baseline" else ())
+            + (("--execution-components", ",".join(options.execution_components)) if options.execution_components else ())
+            + (("--fanout-candidate", options.fanout_candidate) if options.fanout_candidate != "baseline" else ())
             + (("--scheduling-evidence", str(options.scheduling_evidence)) if options.scheduling_evidence is not None else ()),
             common_timeout,
         ),)

@@ -52,6 +52,7 @@ def RunSelectedTraining(
     fanout_settings: TrainingFanoutSettings,
     sample_settings: TrainingSampleSettings,
     paths: TrainingLocations, sqlite_policy: SqliteIoPolicy,
+    memory_capacity_bytes: int | None = None,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         return _run_selected_training(
@@ -65,6 +66,7 @@ def RunSelectedTraining(
             fanout_settings=fanout_settings,
             sample_settings=sample_settings,
             sqlite_policy=sqlite_policy,
+            memory_capacity_bytes=memory_capacity_bytes,
         )
 
 
@@ -76,6 +78,7 @@ def _run_selected_training(
     paths: TrainingLocations,
     cancelled: Event, *, cpu_budget: TrainingCpuBudget, fanout_settings: TrainingFanoutSettings,
     sample_settings: TrainingSampleSettings, sqlite_policy: SqliteIoPolicy,
+    memory_capacity_bytes: int | None = None,
 ) -> int:
     started = time.monotonic()
     measurements: TrainingExecutionMeasurements | None = None
@@ -115,6 +118,7 @@ def _run_selected_training(
                     fanout_settings=fanout_settings,
                     sample_settings=sample_settings,
                     measurements=measurements,
+                    memory_capacity_bytes=memory_capacity_bytes,
                 ),
                 WorkerFutureExecutor(executor), sqlite_policy=sqlite_policy,
             )
@@ -166,6 +170,16 @@ def _run_selected_training(
                     "available_cpus": cpu_budget.available_cpus,
                     "fitting_cpu_capacity": cpu_budget.capacity,
                     "native_threads": cpu_budget.native_threads,
+                    "profile_threads": {
+                        "v1": cpu_budget.profile_threads.v1,
+                        "v2": cpu_budget.profile_threads.v2,
+                        "v3": cpu_budget.profile_threads.v3,
+                    },
+                    "memory_capacity_bytes": memory_capacity_bytes,
+                    "fanout": {
+                        "batch_rows": fanout_settings.batch_rows,
+                        "queue_batches": fanout_settings.queue_batches,
+                    },
                     "sample_resources": {
                         "sqlite_cache_bytes": sample_settings.sqlite_cache_bytes,
                         "sqlite_mmap_bytes": sample_settings.sqlite_mmap_bytes,

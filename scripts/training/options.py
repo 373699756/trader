@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Literal
 
 from scripts.core.paths import PROJECT_ROOT
+from scripts.training.resources.execution_selection import (
+    CpuCandidate,
+    ExecutionCandidate,
+    ExecutionComponent,
+    FanoutCandidate,
+    ParseExecutionComponents,
+)
 
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId, SCORING_PROFILE_IDS
 
@@ -33,6 +40,9 @@ class TrainingOptions:
     scheduling_candidate: Literal["baseline", "fixed", "long_task_first", "borrowing"] = "baseline"
     scheduling_evidence: Path | None = None
     computation_candidate: Literal["baseline", "indexed_anchors", "schema_cache", "combined"] = "baseline"
+    execution_candidate: ExecutionCandidate = "baseline"
+    cpu_candidate: CpuCandidate = "baseline"
+    training_benchmark_rounds: int = 1
     reference_config: Path | None = None
     quality_only: bool = False
     largest_only: bool = False
@@ -41,3 +51,18 @@ class TrainingOptions:
     prepare_only: bool = False
     training_sample_size: int = 64
     training_sample_sessions: int = 750
+    execution_components: tuple[ExecutionComponent, ...] = ()
+    fanout_candidate: FanoutCandidate = "baseline"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.execution_components, tuple) or any(
+            not isinstance(component, str) for component in self.execution_components
+        ):
+            raise ValueError("training_execution_components_invalid")
+        if self.execution_candidate == "selected":
+            if not self.execution_components:
+                raise ValueError("training_execution_components_required_for_selected")
+            if self.execution_components != ParseExecutionComponents(",".join(self.execution_components)):
+                raise ValueError("training_execution_components_not_canonical")
+        elif self.execution_components:
+            raise ValueError("training_execution_components_require_selected")
