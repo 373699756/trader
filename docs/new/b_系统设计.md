@@ -191,6 +191,264 @@ flowchart TD
 
 合法改值要真正传到消费者；不能读完配置又用硬编码替代，也不能用“必须等于当前默认值”锁死调参。配置重启生效，只有改变特征、样本、模型语义的字段才影响对应身份。
 
+### 7.3 完整配置清点与身份边界
+
+本节与c第16章合起来覆盖`config/`顶层20个JSON文件。数组按元素结构或具名选择器列举，避免把每个Long名单成员、每个风险规则的相同结构复制成另一套配置。`config/performance_fixture/manifest.json`是性能夹具的子目录清单，不是第21个运行配置入口，归D保留验收。
+
+解析是输入边界，最终消费者决定参数是否实际起作用。`runtime_loader._configuration_identity`包含合并runtime配置，但排除`sqlite_policy`和`pipeline.history_preload`；`factor_validation._strategy_contract_identity`包含完整strategy合并配置（包括描述性因子字段和关闭的公司奖励参数）。组合根再合并runtime、strategy和cost身份。改因子文义会形成新的运行配置身份，不重写旧冻结记录，也不改模型工件特征manifest身份。
+
+公共路径/介质的五个叶子及SQLite两介质各四个叶子已逐项列于7.2。`strategy.json.scoring_profile`是枚举`v1/v2/v3/v5`（当前`v2`），由`LoadStrategySettings`解析；显式入口可覆盖档位，结果身份保留有效档位。其余评分文件在[c第16章](c_评分设计.md#16-字段配置与消费者核对)，下载由[d第8–9章](d_下载设计.md#8-数据库和字段字典如何补齐)维护，训练由[e第3及6章](e_训练设计.md#61-trainingjson现有逐叶配置)维护。B的完整下载字典仍在其任务内，不以本章覆盖；C未提交内容也不作本阶段交付证据。
+
+#### scheduler.json
+
+来源：`config/scheduler.json`。`runtime_loader.LoadRuntimeSettings` → `PipelineSettings` → `bootstrap`、`runtime/schedule.py`、`supervisor.py`及各有界队列。队列/worker为正整数；轮期限0.1–120秒，停止期限≥0.1秒；预载提示0.001–3600秒；cadence为正秒。所有字段启动生效；除`history_preload`外进入runtime身份。
+
+| 字段路径 | 中文作用 | 当前值 | 类型/单位 |
+| --- | --- | --- | --- |
+| `pipeline.event_queue_size` | 事件队列容量 | `512` | 整数 |
+| `pipeline.priority_queue_size` | 高优先级队列容量 | `64` | 整数 |
+| `pipeline.market_workers` | 行情工作线程数 | `5` | 整数 |
+| `pipeline.normalization_workers` | 标准化工作线程数 | `2` | 整数 |
+| `pipeline.strategy_workers` | 策略工作线程数 | `3` | 整数 |
+| `pipeline.deepseek_workers` | 复核工作线程数 | `4` | 整数 |
+| `pipeline.round_timeout_seconds` | 整轮统一期限 | `120` | 数值/秒 |
+| `pipeline.shutdown_timeout_seconds` | 停止等待期限 | `30` | 数值/秒 |
+| `pipeline.history_preload.warn_after_seconds` | 历史预载慢提示期限 | `300` | 数值/秒 |
+| `pipeline.cadence_seconds.full_market.before_close` | 任务 full_market 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
+| `pipeline.cadence_seconds.candidate_quotes.before_close` | 任务 candidate_quotes 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
+| `pipeline.cadence_seconds.topk_quotes.before_close` | 任务 topk_quotes 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
+| `pipeline.cadence_seconds.topk_quotes.after_close` | 任务 topk_quotes 在 after_close 阶段的派发间隔 | `10` | 数值/秒 |
+| `pipeline.cadence_seconds.long_quotes.before_close` | 任务 long_quotes 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
+| `pipeline.cadence_seconds.long_quotes.after_close` | 任务 long_quotes 在 after_close 阶段的派发间隔 | `10` | 数值/秒 |
+| `pipeline.cadence_seconds.score.before_close` | 任务 score 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
+| `pipeline.cadence_seconds.intraday_tail.afternoon` | 任务 intraday_tail 在 afternoon 阶段的派发间隔 | `10` | 数值/秒 |
+| `pipeline.cadence_seconds.intraday_tail.final_review` | 任务 intraday_tail 在 final_review 阶段的派发间隔 | `10` | 数值/秒 |
+| `pipeline.cadence_seconds.industry_heat.warmup` | 任务 industry_heat 在 warmup 阶段的派发间隔 | `120` | 数值/秒 |
+| `pipeline.cadence_seconds.industry_heat.morning` | 任务 industry_heat 在 morning 阶段的派发间隔 | `60` | 数值/秒 |
+| `pipeline.cadence_seconds.industry_heat.afternoon` | 任务 industry_heat 在 afternoon 阶段的派发间隔 | `60` | 数值/秒 |
+| `pipeline.cadence_seconds.industry_heat.final_review` | 任务 industry_heat 在 final_review 阶段的派发间隔 | `60` | 数值/秒 |
+| `pipeline.publish_heartbeat_seconds` | 发布心跳间隔 | `15` | 数值/秒 |
+
+#### market_data.json
+
+来源：`config/market_data.json`。`runtime_loader` → `MarketDataSettings` → 组合根显式注入`infra/market_data`来源路由/来源lane及公共HTTP。超时为有限正秒，次数和行数为正整数，布尔严格解析；`tushare.token_file`仅记位置，不记内容。来源合同标识不证明来源被调用。进入runtime身份；开关关闭仍保留配置身份。
+
+| 字段路径 | 中文作用 | 当前值 | 类型/单位 |
+| --- | --- | --- | --- |
+| `market_data.eastmoney_timeout_seconds` | 东方财富请求期限 | `8` | 数值/秒 |
+| `market_data.sina_timeout_seconds` | 新浪备用请求期限 | `8` | 数值/秒 |
+| `market_data.full_market_primary_timeout_seconds` | 全市场主路期限 | `12` | 数值/秒 |
+| `market_data.full_market_quote_attempts` | 全市场主路尝试上限 | `2` | 整数 |
+| `market_data.candidate_timeout_seconds` | 定向行情期限 | `3` | 数值/秒 |
+| `market_data.minimum_market_rows` | 全市场完整性最小行数 | `1000` | 整数 |
+| `market_data.single_flight` | 同键合并在途请求 | `true` | 布尔 |
+| `market_data.circuit_breaker_failures` | 连续失败熔断阈值 | `3` | 整数 |
+| `market_data.circuit_breaker_seconds` | 熔断冷却 | `30` | 数值/秒 |
+| `market_data.source_contracts.eastmoney` | eastmoney来源合同标识；进入来源/批次身份，不代表本轮实际调用 | `"eastmoney_quote_security_master"` | 文本 |
+| `market_data.source_contracts.sina` | sina来源合同标识；进入来源/批次身份，不代表本轮实际调用 | `"sina_quote_backup"` | 文本 |
+| `market_data.source_contracts.tencent` | tencent来源合同标识；进入来源/批次身份，不代表本轮实际调用 | `"tencent_quote"` | 文本 |
+| `market_data.source_contracts.tushare` | tushare来源合同标识；进入来源/批次身份，不代表本轮实际调用 | `"tushare_sdk_120_point_daily_audit"` | 文本 |
+| `market_data.tushare.enabled` | 功能启用 | `true` | 布尔 |
+| `market_data.tushare.points` | Tushare积分声明 | `120` | 整数 |
+| `market_data.tushare.timeout_seconds` | 物理请求期限 | `8` | 数值/秒 |
+| `market_data.tushare.token_file` | 凭据文件位置 | `".token_key"` | 文本 |
+
+#### delivery.json
+
+来源：`config/delivery.json`。`runtime_loader` → `ServerSettings/ApiSettings` → HTTP/SSE及Web投影。端口1–65535，容量为正整数，保留时间为有限正秒；`TRADER_HOST/TRADER_PORT`可覆盖监听配置。查询条数不改变固定六席，HTTP仅读application投影。启动生效并进入runtime身份，环境覆盖另由有效ServerSettings携带。
+
+| 字段路径 | 中文作用 | 当前值 | 类型/单位 |
+| --- | --- | --- | --- |
+| `server.host` | 监听地址 | `"127.0.0.1"` | 文本 |
+| `server.port` | 监听端口 | `5000` | 整数 |
+| `server.debug` | 调试开关 | `false` | 布尔 |
+| `server.use_reloader` | 重载开关 | `false` | 布尔 |
+| `server.allow_insecure_non_loopback` | 允许非回环明文监听 | `false` | 布尔 |
+| `api.default_top_n` | 只读查询默认条数 | `12` | 整数 |
+| `api.maximum_top_n` | 只读查询条数上限 | `12` | 整数 |
+| `api.sse_history_size` | SSE保留事件数 | `256` | 整数 |
+| `api.sse_client_queue_size` | 单客户端事件队列容量 | `16` | 整数 |
+| `api.sse_max_clients` | SSE客户端上限 | `32` | 整数 |
+| `api.web_snapshot_retention_seconds` | 浏览器快照保留时间 | `35` | 数值/秒 |
+
+#### deepseek.json
+
+来源：`config/deepseek.json`。`runtime_loader` → `DeepSeekSettings` → `DeepSeekBudgetLedger`、reviewer及显式HTTP客户端。当前`enabled=false`；读取配置不代表已发请求。预算为非负整数，批量/token/窗口为正整数，比例在0–1，期限为正秒；总物理请求≤168，重试/失败也计数。进入runtime身份；本阶段只核对现状，不改复核流程。
+
+| 字段路径 | 中文作用 | 当前值 | 类型/单位 |
+| --- | --- | --- | --- |
+| `deepseek.enabled` | 功能启用 | `false` | 布尔 |
+| `deepseek.base_url` | 复核API地址 | `"https://api.deepseek.com"` | 文本 |
+| `deepseek.model` | 复核模型名 | `"deepseek-v4-flash"` | 文本 |
+| `deepseek.timeout_seconds` | 物理请求期限 | `20` | 数值/秒 |
+| `deepseek.batch_size` | 单次复核股票上限 | `4` | 整数 |
+| `deepseek.max_tokens` | 单次输出token上限 | `1800` | 整数 |
+| `deepseek.daily_hard_limit` | 每日物理请求总上限 | `168` | 整数 |
+| `deepseek.strategy_limits.tomorrow` | tomorrow独立预算桶上限（物理请求次数） | `38` | 整数 |
+| `deepseek.strategy_limits.d25` | d25独立预算桶上限（物理请求次数） | `16` | 整数 |
+| `deepseek.strategy_limits.shared_preheat` | shared_preheat独立预算桶上限（物理请求次数） | `4` | 整数 |
+| `deepseek.strategy_limits.emergency` | emergency独立预算桶上限（物理请求次数） | `5` | 整数 |
+| `deepseek.stage_targets.shared_preheat` | shared_preheat阶段软目标（物理请求次数） | `2` | 整数 |
+| `deepseek.stage_targets.tomorrow_morning` | tomorrow_morning阶段软目标（物理请求次数） | `6` | 整数 |
+| `deepseek.stage_targets.tomorrow_afternoon` | tomorrow_afternoon阶段软目标（物理请求次数） | `10` | 整数 |
+| `deepseek.stage_targets.tomorrow_final` | tomorrow_final阶段软目标（物理请求次数） | `5` | 整数 |
+| `deepseek.stage_targets.d25_morning` | d25_morning阶段软目标（物理请求次数） | `2` | 整数 |
+| `deepseek.stage_targets.d25_afternoon` | d25_afternoon阶段软目标（物理请求次数） | `4` | 整数 |
+| `deepseek.stage_targets.d25_final` | d25_final阶段软目标（物理请求次数） | `2` | 整数 |
+| `deepseek.stage_targets.emergency` | emergency阶段软目标（物理请求次数） | `0` | 整数 |
+| `deepseek.stage_limits.shared_preheat` | shared_preheat阶段硬上限（物理请求次数） | `4` | 整数 |
+| `deepseek.stage_limits.tomorrow_morning` | tomorrow_morning阶段硬上限（物理请求次数） | `10` | 整数 |
+| `deepseek.stage_limits.tomorrow_afternoon` | tomorrow_afternoon阶段硬上限（物理请求次数） | `18` | 整数 |
+| `deepseek.stage_limits.tomorrow_final` | tomorrow_final阶段硬上限（物理请求次数） | `10` | 整数 |
+| `deepseek.stage_limits.d25_morning` | d25_morning阶段硬上限（物理请求次数） | `4` | 整数 |
+| `deepseek.stage_limits.d25_afternoon` | d25_afternoon阶段硬上限（物理请求次数） | `8` | 整数 |
+| `deepseek.stage_limits.d25_final` | d25_final阶段硬上限（物理请求次数） | `4` | 整数 |
+| `deepseek.stage_limits.emergency` | emergency阶段硬上限（物理请求次数） | `5` | 整数 |
+| `deepseek.adaptive.consecutive_failure_limit` | 连续失败降级阈值 | `2` | 整数 |
+| `deepseek.adaptive.rolling_window` | 健康滑动窗口 | `5` | 整数 |
+| `deepseek.adaptive.minimum_application_ratio` | 低应用率阈值 | `0.4` | 有限数值 |
+| `deepseek.adaptive.healthy_application_ratio` | 健康应用率阈值 | `0.6` | 有限数值 |
+| `deepseek.adaptive.healthy_batch_count` | 恢复所需健康批数 | `3` | 整数 |
+| `deepseek.adaptive.cooldown_seconds` | 复核降级冷却 | `900` | 数值/秒 |
+
+#### performance.json
+
+来源：`config/performance.json`。`runtime_loader`/`market_policy.ParsePerformanceBudgets` → 性能诊断与门禁比较。行数/轮数/字节/延迟为非负或正数，百分比为有限数值；它们是验收预算，不是自动调度或收益参数。进入runtime身份；`database.hdd.evidence_status=validated`是旧配置标签，不签本轮D或当前PC已通过。
+
+| 字段路径 | 中文作用 | 当前值 | 类型/单位 |
+| --- | --- | --- | --- |
+| `performance_budgets.workload.market_rows` | 全市场测量负载行数 | `5500` | 整数 |
+| `performance_budgets.workload.candidate_rows` | 候选测量负载行数 | `5500` | 整数 |
+| `performance_budgets.rounds.warmup` | 预热轮数 | `1` | 整数 |
+| `performance_budgets.rounds.measurement` | 计量轮数 | `5` | 整数 |
+| `performance_budgets.database.hdd.sqlite_improvement_percent` | SQLite候选改善门槛 | `10` | 数值/百分比 |
+| `performance_budgets.database.hdd.parquet_improvement_percent` | 列式候选改善门槛 | `15` | 数值/百分比 |
+| `performance_budgets.database.hdd.minimum_wins` | 重复测量最少胜出轮数 | `4` | 整数 |
+| `performance_budgets.database.hdd.evidence_status` | 原历史证据状态 | `"validated"` | 文本 |
+| `performance_budgets.database.ssd.sqlite_improvement_percent` | SQLite候选改善门槛 | `10` | 数值/百分比 |
+| `performance_budgets.database.ssd.parquet_improvement_percent` | 列式候选改善门槛 | `15` | 数值/百分比 |
+| `performance_budgets.database.ssd.minimum_wins` | 重复测量最少胜出轮数 | `4` | 整数 |
+| `performance_budgets.database.ssd.evidence_status` | 原历史证据状态 | `"unverified"` | 文本 |
+| `performance_budgets.latency_p95_ms.market_normalization` | market_normalization阶段P95延迟门槛 | `250` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.market_merge` | market_merge阶段P95延迟门槛 | `600` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.canonical_snapshot` | canonical_snapshot阶段P95延迟门槛 | `900` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.targeted_overlay_commit` | targeted_overlay_commit阶段P95延迟门槛 | `100` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.board_preselection` | board_preselection阶段P95延迟门槛 | `5000` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.candidate_union_projection` | candidate_union_projection阶段P95延迟门槛 | `100` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.board_local_scoring` | board_local_scoring阶段P95延迟门槛 | `250` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.two_strategy_board_scoring` | two_strategy_board_scoring阶段P95延迟门槛 | `750` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.three_board_wall_clock` | three_board_wall_clock阶段P95延迟门槛 | `1000` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.global_selection` | global_selection阶段P95延迟门槛 | `100` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.board_ready_to_draft` | board_ready_to_draft阶段P95延迟门槛 | `500` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.quote_to_draft` | quote_to_draft阶段P95延迟门槛 | `5000` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.deepseek_to_hybrid` | deepseek_to_hybrid阶段P95延迟门槛 | `1000` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.sse_publish` | sse_publish阶段P95延迟门槛 | `100` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.browser_patch_to_paint` | browser_patch_to_paint阶段P95延迟门槛 | `100` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.snapshot_api` | snapshot_api阶段P95延迟门槛 | `200` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.etag_api` | etag_api阶段P95延迟门槛 | `50` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.dates_api` | dates_api阶段P95延迟门槛 | `100` | 数值/毫秒 |
+| `performance_budgets.latency_p95_ms.status_api` | status_api阶段P95延迟门槛 | `100` | 数值/毫秒 |
+| `performance_budgets.data_age_p95_seconds.topk_critical` | topk_critical输入年龄P95门槛 | `2` | 数值/秒 |
+| `performance_budgets.data_age_p95_seconds.topk_other` | topk_other输入年龄P95门槛 | `5` | 数值/秒 |
+| `performance_budgets.data_age_p95_seconds.candidate_main` | candidate_main输入年龄P95门槛 | `5` | 数值/秒 |
+| `performance_budgets.data_age_p95_seconds.candidate_other` | candidate_other输入年龄P95门槛 | `10` | 数值/秒 |
+| `performance_budgets.data_age_p95_seconds.full_market_main` | full_market_main输入年龄P95门槛 | `10` | 数值/秒 |
+| `performance_budgets.data_age_p95_seconds.full_market_other` | full_market_other输入年龄P95门槛 | `15` | 数值/秒 |
+| `performance_budgets.memory.cache_logical_bytes` | 缓存逻辑字节门槛 | `536870912` | 整数 |
+| `performance_budgets.memory.process_peak_rss_bytes` | 进程RSS字节门槛 | `2147483648` | 整数 |
+| `performance_budgets.memory.growth_percent` | 内存增长百分比门槛 | `20` | 数值/百分比 |
+| `performance_budgets.relative_regression_percent` | 相对回退百分比门槛 | `5` | 数值/百分比 |
+
+#### research.json
+
+来源：`config/research.json`。`training/infra/training_settings.LoadResearchExperimentSettings` → 离线研究/终端留出及消融合同；与`training.json`正式拟合设置分开。跨度/隔离为正交易日，profile为已支持档位，arms为显式有序方案名；研究身份消费，不注入在线数值评分。
+
+| 字段路径 | 中文作用 | 当前值 | 类型/单位 |
+| --- | --- | --- | --- |
+| `terminal_holdout_sessions` | 一次终端留出交易日数 | `200` | 整数 |
+| `embargo_sessions.tomorrow` | tomorrow研究分区隔离交易日数 | `5` | 整数 |
+| `embargo_sessions.d25` | d25研究分区隔离交易日数 | `5` | 整数 |
+| `fit_date_candidates` | 按profile、dates[]声明候选拟合日期跨度；不是生产训练设置 | `[{"profile":"v2","dates":[750,1000,1250]},{"profile":"v3","dates":[500,750,1000]}]` | 有序数组 |
+| `ablation_arms` | 离线消融方案集合 | `["rule_only","rule_model_gate","industry_model_utility","pooled_model_utility"]` | 有序数组 |
+| `deepseek_comparison_arms` | 复核对照方案集合 | `["local_only","structured_facts_veto"]` | 有序数组 |
+
+### 7.4 cache.json：数据集、容量和预算
+
+来源：`config/cache.json.cache_policy`；`market_policy.ParseCachePolicy`解析为不可变`CachePolicy`，`bootstrap`创建同一有界缓存，`infra/cache.py`控制容量/年龄/组字节和总池预算，具体语义失效见c第13及16.8节。启动生效，进入runtime身份；`persisted=false`表示不落盘，不代表对应业务没有正式数据库。
+
+每个`datasets.<名称>`都必须有以下八个叶子，下面逐数据集给出全部当前值。TTL和动作年龄为可空非负秒，capacity为正条数，group须存在于groups，persisted为严格布尔；cadence_task为调度任务名或null，multiplier为正倍数或null。引用cadence的两组用对应任务有效间隔作为刷新TTL，再乘3作为动作最大年龄（当前10/30秒）。缓存复用保留原source_time，TTL不授予新来源时间。
+
+| 叶子 | 中文作用/最终消费者 |
+| --- | --- |
+| `refresh_ttl_seconds` | 缓存fresh/stale判定；null时由cadence解析 |
+| `action_max_age_seconds` | 是否允许新动作的最大来源年龄；null时由cadence×multiplier解析 |
+| `cadence_task` | 获取统一调度间隔的任务名 |
+| `action_max_age_multiplier` | 由调度间隔推导动作年龄的倍数 |
+| `negative_ttl_seconds` | 失败/负缓存保留秒数；不伪装成功观测 |
+| `capacity` | 此数据集LRU最多条数；完整总体容量不足明确失败 |
+| `group` | 共享字节预算所属组 |
+| `persisted` | 缓存是否允许持久化（当前全部false） |
+
+| datasets名称 | 刷新TTL秒 | 动作年龄秒 | cadence_task | 年龄倍数 | 负缓存秒 | 容量条 | 组 | persisted |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `full_market_quotes` | `null` | `null` | `"full_market"` | `3` | `10` | `12000` | `"observation"` | `false` |
+| `candidate_quotes` | `null` | `null` | `"candidate_quotes"` | `3` | `3` | `12000` | `"observation"` | `false` |
+| `intraday_minutes` | `45` | `90` | `null` | `null` | `45` | `12000` | `"observation"` | `false` |
+| `security_master_calendar` | `86400` | `86400` | `null` | `null` | `300` | `12000` | `"observation"` | `false` |
+| `quote_factor_inputs` | `86400` | `86400` | `null` | `null` | `60` | `12000` | `"feature_batches"` | `false` |
+| `market_cross_section` | `86400` | `86400` | `null` | `null` | `60` | `4` | `"feature_batches"` | `false` |
+| `board_cross_section` | `86400` | `86400` | `null` | `null` | `60` | `24` | `"feature_batches"` | `false` |
+| `candidate_preselection` | `86400` | `86400` | `null` | `null` | `60` | `4` | `"feature_batches"` | `false` |
+| `competition_group_mapping` | `86400` | `86400` | `null` | `null` | `60` | `2` | `"feature_batches"` | `false` |
+| `raw_deepseek_review` | `600` | `600` | `null` | `null` | `60` | `2000` | `"review"` | `false` |
+| `strategy_deepseek_review` | `600` | `600` | `null` | `null` | `60` | `2000` | `"review"` | `false` |
+| `canonical_market_snapshot` | `60` | `180` | `null` | `null` | `10` | `3` | `"canonical_snapshots"` | `false` |
+| `canonical_candidate_snapshot` | `30` | `90` | `null` | `null` | `10` | `6` | `"canonical_snapshots"` | `false` |
+| `current_quote_index` | `30` | `90` | `null` | `null` | `10` | `3` | `"canonical_snapshots"` | `false` |
+| `candidate_feature_batch` | `86400` | `86400` | `null` | `null` | `60` | `24` | `"feature_batches"` | `false` |
+| `hard_filter_batch` | `86400` | `86400` | `null` | `null` | `60` | `24` | `"feature_batches"` | `false` |
+| `board_score_batch` | `86400` | `86400` | `null` | `null` | `60` | `24` | `"local_scoring"` | `false` |
+| `global_local_draft` | `86400` | `86400` | `null` | `null` | `60` | `4` | `"local_scoring"` | `false` |
+| `deepseek_seen_codes` | `600` | `600` | `null` | `null` | `60` | `6000` | `"review"` | `false` |
+| `published_recommendation_view` | `86400` | `86400` | `null` | `null` | `60` | `72` | `"projection"` | `false` |
+| `published_date_index` | `86400` | `86400` | `null` | `null` | `60` | `3` | `"projection"` | `false` |
+
+| cache_policy下其它叶子 | 当前值 | 中文作用/类型及范围 |
+| --- | --- | --- |
+| `groups.observation` | `276824064` | 对应组逻辑字节上限，正整数 |
+| `groups.canonical_snapshots` | `121634816` | 对应组逻辑字节上限，正整数 |
+| `groups.feature_batches` | `51380224` | 对应组逻辑字节上限，正整数 |
+| `groups.local_scoring` | `34603008` | 对应组逻辑字节上限，正整数 |
+| `groups.review` | `26214400` | 对应组逻辑字节上限，正整数 |
+| `groups.projection` | `26214400` | 对应组逻辑字节上限，正整数 |
+| `total_bytes` | `536870912` | 业务缓存逻辑总上限，正整数字节 |
+| `runtime_reserve_bytes` | `8388608` | 运行控制预留，非负整数字节 |
+| `pool_total_bytes` | `545259520` | 总资源池字节，须覆盖业务缓存与运行预留 |
+| `estimator` | `"canonical_json_utf8"` | 逻辑大小估算器标识，canonical_json_utf8 |
+
+### 7.5 long_watchlist.json：名单元素结构
+
+来源：`config/long_watchlist.json`，由`LoadLongWatchlist`解析，`LongRuntime`以watchlist_version消费。当前166个items、56个groups；实际成员值保留在该文件，不复制一份名单。启动生效，不参与短线模型/TopK/冻结。
+
+| 路径模式 | 中文、类型/单位、当前值约定与约束 |
+| --- | --- |
+| `items[].code` | 六位数字字符串；全局唯一；关联报价 |
+| `items[].name` | 非空展示名称；不作为股票身份 |
+| `items[].industry` | 文本展示行业；不当作模型点时行业 |
+| `items[].target_price` | 可空正数，元/股；当前均null，展示用 |
+| `items[].selected_on` | ISO日期；自加入锚点日期 |
+| `items[].selection_price` | 正数元/股；自加入涨跌幅分母，不是现价 |
+| `groups[].name` | 非空分组名；同category下唯一 |
+| `groups[].category` | chokepoint/future_growth/low_price_potential枚举 |
+| `groups[].source_section` | document_scan/current_leaders枚举 |
+| `groups[].source` | 原选择依据文本；不执行其中的指令、不自动确认财务或收益 |
+| `groups[].codes[]` | items中的代码；每个成员恰好属于一组；普通组≤5，低价组≤8且合计≤26、至少两组 |
+| `groups[].sections[].source_section` | 同上来源区段枚举 |
+| `groups[].sections[].codes[]` | 区段代码有序拼接须恰好等于所属group.codes |
+
+缺价保留名单和锚点，明确缺价；不借短线排序补名单。凭据内容不属于任何字典公开字段。
+
+
 ## 8. Web 与 API 详细设计
 
 ### 8.1 页面展示

@@ -216,11 +216,10 @@
         "d25"
       ],
       "raw_inputs": [
-        "volume_ratio",
-        "intraday_amount",
-        "forward_adjusted_daily_amount"
+        "unadjusted_intraday_volume_shares",
+        "completed_daily_volume_shares"
       ],
-      "formula": "validated realtime volume_ratio when supplied, else intraday_amount/mean(last 5 completed-session daily_amount)",
+      "formula": "intraday_volume_shares/mean(last 5 completed-session daily_volume_shares); missing_or_nonpositive_baseline=missing",
       "unit": "ratio",
       "direction": "setup_dependent",
       "observation_time": "point_in_time",
@@ -820,7 +819,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 permanently after official ruling confirms financial fraud, false records or material omissions",
+      "formula": "1 while a published financial_fraud_history fact is effective at observation; expiry and same-case resolution remain authoritative",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -849,7 +848,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 during formal regulator, exchange or judicial investigation and for three calendar years after official close/withdrawal",
+      "formula": "1 while a published official_investigation_history fact is effective at observation; expiry and same-case resolution remain authoritative",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -878,7 +877,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 permanently after official ruling confirms major illegality",
+      "formula": "1 while a published major_illegal_history fact is effective at observation; expiry and same-case resolution remain authoritative",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -907,7 +906,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 permanently after official ruling confirms funds occupation",
+      "formula": "1 while a published fund_occupation_history fact is effective at observation; expiry and same-case resolution remain authoritative",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -936,7 +935,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 permanently after official ruling confirms illegal guarantee",
+      "formula": "1 while a published illegal_guarantee_history fact is effective at observation; expiry and same-case resolution remain authoritative",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -965,7 +964,7 @@
       "raw_inputs": [
         "official_corporate_risk_rules"
       ],
-      "formula": "1 during forced-delisting proceedings and for three calendar years after official withdrawal/termination",
+      "formula": "1 while a published forced_delisting_risk fact is effective at observation; expiry and same-case resolution remain authoritative",
       "unit": "risk_indicator",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -1565,14 +1564,14 @@
         "long"
       ],
       "raw_inputs": [
-        "validated_announcements"
+        "published_company_risk_events"
       ],
-      "formula": "max configured keyword severity over valid 180d announcements; empty_success=0",
+      "formula": "min(3,max(effective published company risk event levels,default=0)); unavailable=missing",
       "unit": "severity_level",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
       "adjustment": "none",
-      "lookback_window": 180,
+      "lookback_window": 0,
       "minimum_samples": 0,
       "winsorization": {
         "enabled": false,
@@ -1738,10 +1737,10 @@
         "long"
       ],
       "raw_inputs": [
-        "validated_reduction_announcements",
-        "upcoming_90d_TOTAL_RATIO"
+        "shareholder_reduction_level",
+        "unlock_risk"
       ],
-      "formula": "max(configured reduction announcement severity,severity(sum(upcoming_90d_TOTAL_RATIO*100),[1,5,10]))",
+      "formula": "max(known positive shareholder_reduction_level and unlock_risk); both_known_clear=0; otherwise=missing",
       "unit": "severity_level",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
@@ -1768,14 +1767,14 @@
         "long"
       ],
       "raw_inputs": [
-        "validated_reduction_announcements"
+        "published_company_risk_events"
       ],
-      "formula": "controller_or_actual_controller=3; five_percent_holder_or_director=2; other_disclosed_holder=1; terminated_unimplemented=0; source_failure=missing",
+      "formula": "3 if any effective published major_shareholder_reduction event else 0; unavailable=missing",
       "unit": "severity_level",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
       "adjustment": "none",
-      "lookback_window": 180,
+      "lookback_window": 0,
       "minimum_samples": 0,
       "winsorization": {
         "enabled": false,
@@ -2247,14 +2246,14 @@
         "long"
       ],
       "raw_inputs": [
-        "upcoming_90d_TOTAL_RATIO"
+        "published_unlock_schedule_ratio_pct"
       ],
-      "formula": "severity(sum(upcoming_90d_TOTAL_RATIO*100),[1,5,10]); source_failure=missing",
+      "formula": "severity(sum(published_unlock_schedule_ratio_pct in company_scoring.unlock_days),long_research.unlock.thresholds); incomplete_window=missing",
       "unit": "severity_level",
       "direction": "higher_worse",
       "observation_time": "latest_published_before_observation",
       "adjustment": "none",
-      "lookback_window": 90,
+      "lookback_window": 180,
       "minimum_samples": 0,
       "winsorization": {
         "enabled": false,

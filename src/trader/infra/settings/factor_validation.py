@@ -35,6 +35,16 @@ from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID
 
 
 def _validate_feature_schema_contract(settings: StrategySettings) -> None:
+    _validate_factor_definition(
+        settings.factor_index["volume_to_5d_average"],
+        {
+            "raw_inputs": ("unadjusted_intraday_volume_shares", "completed_daily_volume_shares"),
+            "formula": "intraday_volume_shares/mean(last 5 completed-session daily_volume_shares); missing_or_nonpositive_baseline=missing",
+            "unit": "ratio",
+            "lookback_window": 5,
+            "minimum_samples": 5,
+        },
+    )
     schema_id = settings.factor_contract.get("feature_schema")
     if not isinstance(schema_id, str):
         raise ConfigurationError("factor_contract.feature_schema is required")
@@ -193,11 +203,11 @@ def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
         },
         "negative_announcement_level": {
             **risk_common,
-            "raw_inputs": ("validated_announcements",),
-            "formula": "max configured keyword severity over valid 180d announcements; empty_success=0",
+            "raw_inputs": ("published_company_risk_events",),
+            "formula": "min(3,max(effective published company risk event levels,default=0)); unavailable=missing",
             "unit": "severity_level",
             "observation_time": "latest_published_before_observation",
-            "lookback_window": 180,
+            "lookback_window": 0,
             "minimum_samples": 0,
             "normalization": "configured_severity_0_3",
             "missing_policy": "missing_and_record",
@@ -217,8 +227,8 @@ def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
         },
         "reduction_or_unlock": {
             **risk_common,
-            "raw_inputs": ("validated_reduction_announcements", "upcoming_90d_TOTAL_RATIO"),
-            "formula": "max(configured reduction announcement severity,severity(sum(upcoming_90d_TOTAL_RATIO*100),[1,5,10]))",
+            "raw_inputs": ("shareholder_reduction_level", "unlock_risk"),
+            "formula": "max(known positive shareholder_reduction_level and unlock_risk); both_known_clear=0; otherwise=missing",
             "unit": "severity_level",
             "observation_time": "latest_published_before_observation",
             "lookback_window": 180,
@@ -229,11 +239,11 @@ def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
         },
         "shareholder_reduction_level": {
             **risk_common,
-            "raw_inputs": ("validated_reduction_announcements",),
-            "formula": "controller_or_actual_controller=3; five_percent_holder_or_director=2; other_disclosed_holder=1; terminated_unimplemented=0; source_failure=missing",
+            "raw_inputs": ("published_company_risk_events",),
+            "formula": "3 if any effective published major_shareholder_reduction event else 0; unavailable=missing",
             "unit": "severity_level",
             "observation_time": "latest_published_before_observation",
-            "lookback_window": 180,
+            "lookback_window": 0,
             "minimum_samples": 0,
             "normalization": "configured_severity_0_3",
             "missing_policy": "missing_and_record",
@@ -241,11 +251,11 @@ def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
         },
         "unlock_risk": {
             **risk_common,
-            "raw_inputs": ("upcoming_90d_TOTAL_RATIO",),
-            "formula": "severity(sum(upcoming_90d_TOTAL_RATIO*100),[1,5,10]); source_failure=missing",
+            "raw_inputs": ("published_unlock_schedule_ratio_pct",),
+            "formula": "severity(sum(published_unlock_schedule_ratio_pct in company_scoring.unlock_days),long_research.unlock.thresholds); incomplete_window=missing",
             "unit": "severity_level",
             "observation_time": "latest_published_before_observation",
-            "lookback_window": 90,
+            "lookback_window": settings.company_scoring.events.unlock_days,
             "minimum_samples": 0,
             "normalization": "configured_severity_0_3",
             "missing_policy": "missing_and_record",
