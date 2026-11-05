@@ -3,6 +3,7 @@ from scripts.checks.catalog import SelectionArguments
 from tests.helpers.configuration import SqlitePolicyFixture
 import hashlib
 import json
+import os
 import time
 
 import pytest
@@ -142,3 +143,82 @@ def test_compute_only_or_interrupted_probe_cannot_claim_quality_passed(tmp_path,
     else:
         assert summary["reason"] == "quality_not_requested"
     assert not tuple(work.glob("*.sqlite3"))
+
+
+def test_quality_only_uses_explicit_reference_and_never_runs_kernel_performance_probe(tmp_path, monkeypatch, capsys):
+    from scripts.checks.training import v5_lite
+
+    reference = tmp_path / "reference.json"
+    candidate = tmp_path / "candidate.json"
+    parameters = TcnFittingParametersFixture()
+    selected = []
+    monkeypatch.setattr(v5_lite, "_parameters", lambda path, **_kwargs: (selected.append(path) or (61, parameters)))
+    monkeypatch.setattr(v5_lite, "ProbeLiteKernels", lambda: pytest.fail("quality mode ran a performance probe"))
+    monkeypatch.setattr(
+        "scripts.checks.training.v5_quality_samples.PrepareV5QualitySamples",
+        lambda *_args, **_kwargs: pytest.fail("quality mode rebuilt existing sample inputs"),
+    )
+    monkeypatch.setattr(v5_lite, "_quality", lambda *_args, **_kwargs: {"passed": True, "fixture": True})
+    monkeypatch.setattr("sys.argv", [
+        "v5_lite", "--work-root", str(tmp_path / "work"), "--sample-root", str(tmp_path / "samples"),
+        "--candidate-config", str(candidate), "--reference-config", str(reference), "--quality-only",
+    ])
+    assert v5_lite.Main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert selected == [reference, candidate]
+    assert report["summary"]["compute_probe_skipped"] is True
+    assert "compute" not in report["summary"]
+
+
+@pytest.mark.parametrize("name", ("complete.json", "samples.sqlite3"))
+def test_quality_snapshot_rejects_source_links_before_copying(tmp_path, name):
+    source, work = tmp_path / "source", tmp_path / "work"
+    source.mkdir()
+    work.mkdir()
+    protected = tmp_path / "protected"
+    protected.write_bytes(b"keep")
+    (source / name).symlink_to(protected)
+    with pytest.raises(ValueError, match="symbolic links"):
+        _prepare(source, work, time.monotonic() + 10, 61, sqlite_policy=SqlitePolicyFixture())
+    assert protected.read_bytes() == b"keep" and not tuple(work.iterdir())
+
+
+def test_quality_entry_preserves_root_link_until_snapshot_validation(tmp_path, monkeypatch, capsys):
+    from scripts.checks.training import v5_lite
+
+    source = tmp_path / "source"
+    source.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(source, target_is_directory=True)
+    parameters = TcnFittingParametersFixture()
+    monkeypatch.setattr(v5_lite, "_parameters", lambda *_args, **_kwargs: (61, parameters))
+    monkeypatch.setattr("sys.argv", [
+        "v5_lite", "--work-root", str(tmp_path / "work"), "--sample-root", str(linked),
+        "--candidate-config", str(tmp_path / "candidate.json"), "--quality-only",
+    ])
+    assert v5_lite.Main() == 1
+    report = json.loads(capsys.readouterr().out)
+    assert "symbolic links" in report["summary"]["failure"]
+    assert linked.is_symlink() and not tuple((tmp_path / "work").glob("*.sqlite3"))
+
+
+@pytest.mark.parametrize("name", ("complete.json", "samples.sqlite3"))
+@pytest.mark.parametrize("kind", ("directory", "fifo"))
+def test_quality_snapshot_rejects_nonregular_inputs_before_reading(tmp_path, name, kind):
+    if kind == "fifo" and not hasattr(os, "mkfifo"):
+        pytest.skip("named pipes are not supported")
+    source, work = tmp_path / "source", tmp_path / "work"
+    source.mkdir()
+    work.mkdir()
+    for filename in ("complete.json", "samples.sqlite3"):
+        path = source / filename
+        if filename != name:
+            path.write_bytes(b"keep")
+        elif kind == "directory":
+            path.mkdir()
+        else:
+            os.mkfifo(path)
+    with pytest.raises(ValueError, match="requires regular files"):
+        _prepare(source, work, time.monotonic() + 10, 61, sqlite_policy=SqlitePolicyFixture())
+    assert all((source / filename).exists() for filename in ("complete.json", "samples.sqlite3"))
+    assert not tuple(work.iterdir())

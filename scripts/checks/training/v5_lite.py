@@ -10,6 +10,7 @@ import json
 import math
 import os
 import sqlite3
+import shutil
 import statistics
 import sys
 import time
@@ -106,11 +107,23 @@ def _peak_rss_mib() -> float | None:
 
 
 def _prepare(source: Path, work: Path, deadline: float, fit_dates: int, *, sqlite_policy: SqliteIoPolicy) -> tuple[Path, Path]:
+    if source.is_symlink() or any((source / name).is_symlink() for name in ("complete.json", "samples.sqlite3")):
+        raise ValueError("V5 comparison source must not contain symbolic links")
+    source_files = (source / "complete.json", source / "samples.sqlite3")
+    if not all(path.is_file() for path in source_files):
+        raise ValueError("V5 comparison source requires regular files")
+
+    def signature() -> tuple[tuple[int, int, int, int, int], ...]:
+        stamps = tuple(path.stat() for path in source_files)
+        return tuple((stamp.st_dev, stamp.st_ino, stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns) for stamp in stamps)
+
+    before = signature()
     manifest = AtomicReadJson(source / "complete.json")
     if not isinstance(manifest, dict) or manifest.get("sample_format") != SampleFormatId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)):
         raise ValueError("V5 comparison requires a sealed compact sample cache")
     database = source / "samples.sqlite3"
-    identity = database.stat()
+    if shutil.disk_usage(work).free < database.stat().st_size * 2 + 512 * 1024**2:
+        raise ValueError("V5 comparison snapshot space insufficient")
     baseline, candidate = work / "reference.sqlite3", work / "candidate.sqlite3"
     # Exact external snapshots; source and its manifest are never modified.
     for target in (baseline, candidate):
@@ -118,8 +131,7 @@ def _prepare(source: Path, work: Path, deadline: float, fit_dates: int, *, sqlit
             while chunk := reader.read(1024**2):
                 _check(deadline)
                 writer.write(chunk)
-    after = database.stat()
-    if (identity.st_ino, identity.st_size, identity.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+    if before != signature():
         raise ValueError("V5 sample source changed during snapshot")
     if _digest(baseline, deadline) != manifest.get("sha256") or _digest(candidate, deadline) != manifest.get("sha256"):
         raise ValueError("V5 sample snapshot digest mismatch")
@@ -139,6 +151,32 @@ def _prepare(source: Path, work: Path, deadline: float, fit_dates: int, *, sqlit
                     diagnostic_hash = hashlib.sha256(previous + f"diagnostic_tail_{fit_dates}".encode()).digest()
                     connection.run("UPDATE sample_contract SET split_hash=? WHERE singleton=1", (diagnostic_hash,))
     return baseline, candidate
+
+
+def _sample_evidence(source: Path) -> dict[str, object]:
+    manifest = AtomicReadJson(source / "complete.json")
+    if not isinstance(manifest, dict):
+        raise ValueError("V5 sample manifest is not an object")
+    projection = {
+        name: manifest[name]
+        for name in ("identity", "sha256", "sample_format", "split_hash", "size_bytes", "modified_ns")
+        if name in manifest and type(manifest[name]) in (str, int)
+    }
+    input_path = source / "quality-input.json"
+    provenance: dict[str, object] | None = None
+    if input_path.is_file():
+        value = AtomicReadJson(input_path)
+        if not isinstance(value, dict):
+            raise ValueError("V5 quality input is not an object")
+        provenance = {
+            name: value[name]
+            for name in (
+                "snapshot_hash", "source_identity_hash", "input_descriptor_hash", "source_cutoff", "split_hash",
+                "sample_identity", "rows", "source_codes", "fit_dates", "reused", "source_data_writes", "models_published",
+            )
+            if name in value and type(value[name]) in (str, int, bool)
+        }
+    return {"sample_manifest": projection, "quality_input": provenance}
 
 
 def _parameters(path: Path, *, archived: bool = False) -> tuple[int, TcnFittingParameters]:
@@ -191,7 +229,7 @@ def _quality(
     if baseline[0] != candidate[0] or baseline[1].minimum_industry_training_rows != candidate[1].minimum_industry_training_rows:
         raise ValueError("V5 compute comparison requires identical fit dates and industry thresholds")
     from trader.training.infra.profile.v5.fitting import FitTcnIndustry
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
+    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, PreserveTcnRuntime, TcnNetwork
 
     prepared = time.monotonic()
     paths = _prepare(source, work, deadline, baseline[0], sqlite_policy=sqlite_policy)
@@ -205,6 +243,7 @@ def _quality(
             split_hashes.append(connection.run("SELECT split_hash FROM sample_contract WHERE singleton=1").require_one()[0].hex())
     feature_names = V5_TRAINING_PROFILE.heads[0].feature_manifest.names
     with (
+        PreserveTcnRuntime(),
         SQLiteTrainingSampleIndex(
             paths[0], feature_names, prepared_split_hash=split_hashes[0], sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=sqlite_policy
         ) as old,
@@ -231,6 +270,7 @@ def _quality(
             "candidate_industries": len(by_head[0]),
             "selected": selected,
             "excluded": sorted(set(by_head[0]) - set(eligible)),
+            **_sample_evidence(source),
         }
         AtomicWriteJson(work / "coverage.json", coverage, indent=2)
         for industry in selected:
@@ -300,12 +340,24 @@ def Main() -> int:
     parser.add_argument("--work-root", type=Path, required=True)
     parser.add_argument("--sample-root", type=Path)
     parser.add_argument("--candidate-config", type=Path)
+    parser.add_argument("--reference-config", type=Path)
+    parser.add_argument("--runtime-config", type=Path)
+    parser.add_argument("--quality-only", action="store_true")
+    parser.add_argument("--prepare-samples", action="store_true")
+    parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
-    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[3] / "config/runtime.json"))
     work = args.work_root.resolve()
     project = Path(__file__).resolve().parents[3]
+    if args.prepare_only and not args.prepare_samples:
+        raise ValueError("V5 prepare-only requires explicit prepare-samples")
+    if args.prepare_samples and args.sample_root is None:
+        raise ValueError("V5 sample preparation requires an explicit sample root")
+    if args.quality_only and (args.sample_root is None or args.candidate_config is None):
+        raise ValueError("V5 quality-only requires samples and a candidate configuration")
+    runtime = LoadRuntimeSettings(args.runtime_config or project / "config/runtime.json")
+    sqlite_policy = BuildSqlitePolicy(runtime)
     if work.exists() or work.is_relative_to(project):
         raise ValueError("V5 lite diagnostic requires a new external work directory")
     if args.sample_root is not None and (
@@ -321,20 +373,57 @@ def Main() -> int:
     summary = report["summary"]
     assert isinstance(summary, dict)
     try:
-        baseline = _parameters(project / "config" / "training.json")
+        deadline = time.monotonic() + 3 * 3600
+        baseline = _parameters(
+            args.reference_config or project / "config" / "training.json", archived=args.reference_config is not None
+        )
         summary["reference_configuration"] = TcnConfigurationDocument(*baseline)
         candidate = _parameters(args.candidate_config, archived=True) if args.candidate_config is not None else None
         if candidate is not None:
             summary["candidate_configuration"] = TcnConfigurationDocument(*candidate)
         AtomicWriteJson(work / "result.json", report, indent=2)
-        summary["compute"] = ProbeLiteKernels()
+        if args.prepare_samples:
+            from scripts.checks.training.v5_quality_samples import PrepareV5QualitySamples
+
+            prepared = PrepareV5QualitySamples(
+                runtime,
+                project,
+                args.sample_root,
+                work,
+                deadline,
+                sqlite_policy=sqlite_policy,
+            )
+            summary["sample_preparation"] = {
+                "sample_root": str(prepared.root),
+                "snapshot_hash": prepared.snapshot_hash,
+                "source_identity_hash": prepared.source_identity_hash,
+                "input_descriptor_hash": prepared.input_descriptor_hash,
+                "source_cutoff": prepared.source_cutoff,
+                "split_hash": prepared.split_hash,
+                "sample_identity": prepared.sample_identity,
+                "rows": prepared.rows,
+                "source_codes": prepared.source_codes,
+                "fit_dates": prepared.fit_dates,
+                "reused": prepared.reused,
+                "source_data_writes": 0,
+                "models_published": 0,
+            }
+            AtomicWriteJson(prepared.root / "quality-input.json", summary["sample_preparation"], indent=2)
+        if args.prepare_only:
+            summary["reason"] = "sample_preparation_only"
+            summary["quality_evidence"] = False
+            report["status"] = "passed"
+        elif args.quality_only:
+            summary["compute_probe_skipped"] = True
+        else:
+            summary["compute"] = ProbeLiteKernels()
         AtomicWriteJson(work / "result.json", report, indent=2)
-        if args.sample_root is not None and candidate is not None:
+        if not args.prepare_only and args.sample_root is not None and candidate is not None:
             summary["quality"] = quality = _quality(
-                args.sample_root.resolve(), work, time.monotonic() + 3 * 3600, baseline, candidate, sqlite_policy=sqlite_policy
+                args.sample_root.absolute(), work, deadline, baseline, candidate, sqlite_policy=sqlite_policy
             )
             report["status"] = "passed" if quality["passed"] else "degraded"
-        else:
+        elif not args.prepare_only:
             summary["reason"] = "quality_not_requested"
     except (OSError, ValueError, RuntimeError, sqlite3.Error, ImportError) as exc:
         summary["failure"] = f"{type(exc).__name__}: {exc}"

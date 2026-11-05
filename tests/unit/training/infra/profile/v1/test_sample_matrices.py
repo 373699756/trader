@@ -113,3 +113,46 @@ def test_matrix_rejects_a_partition_without_a_target(tmp_path: Path, strategy: S
             index._connection.run(_INSERT, _record(_FIRST_DAY, 1, _features(1), None, None))
         with ExitStack() as resources, pytest.raises(ValueError, match="learned_rank_sample_partition_empty"):
             index.read_matrices((LearnedRankMatrixRequest((_FIRST_DAY,), strategy),), tmp_path / "matrix", resources)
+
+
+@pytest.mark.parametrize("failure", ("cancelled", "invalid_values"))
+def test_interrupted_dual_head_read_closes_every_mapping_and_allows_a_new_read(tmp_path, monkeypatch, failure):
+    from trader.training.infra.profile.v1 import samples
+
+    buffers = []
+    allocate = samples._empty_output
+
+    def track(*args):
+        output = allocate(*args)
+        buffers.extend((output.features.base, output.targets.base))
+        return output
+
+    monkeypatch.setattr(samples, "_empty_output", track)
+    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
+        with SqliteTransaction(index._connection):
+            index._connection.run_many(_INSERT, _records())
+            if failure == "invalid_values":
+                index._connection.run(
+                    "UPDATE samples SET zero_signs=2 WHERE trade_date=? AND code=?",
+                    (EncodeDate(_FIRST_DAY + timedelta(days=1)), "600004"),
+                )
+        requests = tuple(
+            LearnedRankMatrixRequest((_FIRST_DAY, _FIRST_DAY + timedelta(days=1)), strategy)
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
+        )
+        reads = 0
+
+        def cancelled():
+            nonlocal reads
+            reads += 1
+            return failure == "cancelled" and reads == 2
+
+        with pytest.raises(InterruptedError if failure == "cancelled" else ValueError), ExitStack() as resources:
+            index.read_matrices(requests, tmp_path / "failed", resources, cancel_requested=cancelled)
+        assert reads == 2 and len(buffers) == 4 and all(buffer.closed for buffer in buffers)
+        with SqliteTransaction(index._connection):
+            index._connection.run("UPDATE samples SET zero_signs=1")
+        with ExitStack() as resources:
+            matrices = index.read_matrices(requests, tmp_path / "retry", resources)
+            assert all(matrix.groups == (4097, 3) for matrix in matrices)
+        assert all(buffer.closed for buffer in buffers)
