@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
     from trader.infra.sqlite_policy import SqliteIoPolicy
+    from scripts.checks.training.computation_candidates import ComputationCandidate
 
 
 class _SqliteArguments(TypedDict, total=False):
@@ -23,6 +24,31 @@ class _SqliteArguments(TypedDict, total=False):
 
 
 def _measure_feature_construction(
+    checkout: Path,
+    root: Path,
+    size: int,
+    sessions: int,
+    *,
+    sqlite_policy: SqliteIoPolicy,
+    computation_candidate: ComputationCandidate = "baseline",
+) -> dict[str, object]:
+    from scripts.checks.training.computation_candidates import UseComputationCandidate
+
+    with UseComputationCandidate(computation_candidate) as counts:
+        report = _construct_samples(checkout, root, size, sessions, sqlite_policy=sqlite_policy)
+        report["computation_candidate"] = {
+            "name": counts.candidate,
+            "indexed_anchor_calls": counts.indexed_anchor_calls,
+            "schema_requests": counts.schema_requests,
+            "schema_computations": counts.schema_computations,
+            "schema_cache_capacity": 64,
+            "production_enabled": False,
+            "performance_evidence": False,
+        }
+    return report
+
+
+def _construct_samples(
     checkout: Path,
     root: Path,
     size: int,
@@ -347,8 +373,13 @@ def Main() -> int:
     parser.add_argument("--size", type=int, required=True)
     parser.add_argument("--sessions", type=int, required=True)
     parser.add_argument("--construct-features", action="store_true")
+    parser.add_argument(
+        "--computation-candidate", choices=("baseline", "indexed_anchors", "schema_cache", "combined"), default="baseline"
+    )
     parser.add_argument("--runtime-config", type=Path)
     args = parser.parse_args()
+    if not args.construct_features and args.computation_candidate != "baseline":
+        raise ValueError("computation_candidate_requires_feature_construction")
     sqlite_policy = None
     if (args.checkout / "src/trader/infra/sqlite_policy.py").is_file():
         from trader.bootstrap import BuildSqlitePolicy
@@ -364,6 +395,7 @@ def Main() -> int:
             args.size,
             args.sessions,
             sqlite_policy=sqlite_policy,
+            computation_candidate=cast("ComputationCandidate", args.computation_candidate),
         )
     else:
         report = MeasureSamples(args.checkout, args.root, args.size, args.sessions, sqlite_policy=sqlite_policy)

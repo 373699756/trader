@@ -515,6 +515,16 @@ V5大行业的 `tcn-batches-*`目录仅包含只读拟合缓存 `training/early_
 
 首次安装若只留下空目录或合法暂存工作目录，恢复该工作目录后仍无可复用模型，训练按原规则重新构建。新目录已经完成移入时保留该新组及其身份，不回滚到旧组；本轮不自动清理硬退出留下的其它候选或旧目录。恢复旧组后，配置、源资料、训练实现和日期分区仍须通过原复用合同；不匹配时正常重新拟合，不改写旧模型身份或收益资格。进程硬退出回归与SSD/HDD性能实测分别记录在g，不能互相替代。
 
+### 7.4 公共计算与校验的隔离候选
+
+P52/P55的候选只由既有`sample_comparison_worker --construct-features`显式选择，生产训练不导入`computation_candidates.py`。`--computation-candidate`为`baseline/indexed_anchors/schema_cache/combined`，缺省baseline；离开特征构建模式不能启用候选。D从同一冻结checkout、配置和输入在两台PC分别运行，数值摘要一致后再比较整作业成本，不能把单轮报告或fixture当性能通过。
+
+- indexed_anchors在同一次纯计算中构造一次只读lag索引，再调用现有`CalculateProfileQfqAlpha`，不重写公式，也不跨股票、日期、总体或档位复用原始特征。V1独立完成日输入不切换，V2不同窗口及V3/V5不同总体不会被合并。
+- schema_cache最多保留64个完全相同的不可变列序/序列布局校验摘要；实际摘要仍由`SampleFeatureHash`首次校验/计算。列序、布局值与标量类型均区分，异常不缓存。库内schema、feature/split身份、样本形状/值、标签成熟和防泄漏检查全部保留，不把“曾校验”当作跳过逐行或外部内容审计的资格。
+- 候选只允许在隔离worker主线程安装，样本构建过程中可按原语义失败或取消；finally恢复三个原调用绑定并清空本轮缓存。输出显式列出索引调用、schema请求/实际计算和缓存容量，production_enabled及performance_evidence均为false，D的完整对照另行签署。
+
+使用既有统一入口的内部worker参数，在外部输出目录运行：`python3 -m scripts.diagnose_runtime --internal-worker scripts.checks.training.sample_comparison_worker -- --checkout <冻结版本> --root <全新仓库外目录> --size 64 --sessions 2000 --construct-features --computation-candidate combined --runtime-config <对应PC配置>`。baseline及两种单候选分别运行，不能只测组合后将收益归给某一项；该fixture最大128代码，不替代真实完整负载。
+
 ## 8. 质量和收益的边界
 
 工程可读、预测诊断合格、收益验证通过、人工允许生产是四种结论。训练报告不能把Rank IC或拟合成功写成赚钱证明。样本外研究、成本、风险及一次终端留出统一按c第15章及待迁入的现行收益合同。
