@@ -20,7 +20,7 @@ from trader.recommendation.infra.performance.pipeline_workload import MeasureCon
 from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
 
 
-def _replay(profiles, ticks=2, trace=None, factor_reuse=False):
+def _replay(profiles, ticks=2, trace=None, factor_reuse=False, scoring_candidate="baseline"):
     settings = LoadRuntimeSettings(Path("config/runtime.json"))
     workloads = tuple(
         PipelineReplayWorkload(
@@ -28,11 +28,32 @@ def _replay(profiles, ticks=2, trace=None, factor_reuse=False):
         )
         for profile in profiles
     )
-    with ThreadPoolExecutor(max_workers=len(workloads)) as executor:
+    with ThreadPoolExecutor(max_workers=len(workloads)) as executor, ThreadPoolExecutor(max_workers=2) as predictions:
         return MeasureContinuousPipeline(
             workloads, settings.market_data.cache_policy, executor, ReadPerformanceMemory,
             ticks=ticks, trace=trace, factor_reuse=factor_reuse,
+            scoring_candidate=scoring_candidate,
+            prediction_executor=predictions if scoring_candidate in {"v5_industry_parallel", "combined"} else None,
         )
+
+
+@pytest.mark.parametrize("candidate", ("prepared_reuse", "v5_industry_parallel", "combined"))
+def test_scoring_candidates_preserve_complete_four_profile_replay(candidate):
+    baseline = _replay(("v1", "v2", "v3", "v5"), ticks=1)
+    actual = _replay(("v1", "v2", "v3", "v5"), ticks=1, scoring_candidate=candidate)
+    first = [baseline["cold"], *(case["rounds"][0] for case in baseline["scenarios"].values())]
+    second = [actual["cold"], *(case["rounds"][0] for case in actual["scenarios"].values())]
+    for original, changed in zip(first, second, strict=True):
+        for left, right in zip(original["profiles"], changed["profiles"], strict=True):
+            assert left["feature_hash"] == right["feature_hash"]
+            assert left["input_version"] == right["input_version"]
+            assert [head["result_hash"] for head in left["heads"]] == [head["result_hash"] for head in right["heads"]]
+            assert [head["predictor_batches"] for head in left["heads"]] == [head["predictor_batches"] for head in right["heads"]]
+    if candidate != "v5_industry_parallel":
+        assert all(item["hits"] > 0 and item["calculations"] > 0 for item in actual["scoring_reuse"])
+    if candidate != "prepared_reuse":
+        assert actual["industry_prediction"]["in_flight"] == 0
+        assert actual["industry_prediction"]["completed"] > 0
 
 
 @pytest.mark.parametrize("profiles", (("v3",), ("v1", "v2", "v3", "v5")))

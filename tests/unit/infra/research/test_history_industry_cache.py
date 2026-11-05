@@ -1,7 +1,9 @@
 
 from tests.helpers.configuration import SqlitePolicyFixture
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+import json
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -9,6 +11,11 @@ from tests.unit.infra.research.test_baostock_gateway import _Result, _Sdk
 from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
 from trader.download.infra.baostock_gateway import BaoStockRowGateway
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
+from trader.download.domain.industry_evidence import IndustryCategoryMapping, OfficialIndustryEvidence
+from trader.download.infra.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
+from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
+from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
+from trader.download.infra.industry_evidence_codec import IndustryEvidencePayload, LoadReviewedIndustryEvidence
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 DATES = (date(2020, 2, 3), date(2020, 7, 1), date(2021, 1, 4), date(2026, 10, 9))
@@ -167,3 +174,192 @@ def test_missing_listed_security_reuses_full_market_query_without_inventing_indu
         assert {item.code for item in result} == {UNIVERSE[0].code}
         assert events[-1].industry_missing_codes == 1
         assert events[-1].cache_hit is True
+
+
+def _official_evidence():
+    zone = ZoneInfo("Asia/Shanghai")
+    return OfficialIndustryEvidence(
+        "600003",
+        "https://disc.static.szse.cn/fixture.pdf",
+        "a" * 64,
+        datetime(2026, 11, 2, 12, tzinfo=zone),
+        date(2026, 11, 3),
+        date(2026, 11, 6),
+        datetime(2026, 11, 2, 18, tzinfo=zone),
+        1,
+        "CAPCO2023 C29 Plastics",
+        IndustryCategoryMapping(
+            "CAPCO2023", "C29", "Plastics", "C29Plastics", "https://www.csrc.gov.cn/fixture.pdf",
+            "b" * 64, 1, "CSRC2012 C29Plastics", "Reviewed category scope in both standards.",
+        ),
+    )
+
+
+@pytest.mark.parametrize("day,expected", ((1, False), (2, False), (3, True), (5, True), (6, False)))
+def test_official_industry_fills_only_dated_missing_category_and_preserves_provenance(tmp_path, day, expected):
+    evidence = _official_evidence()
+    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
+    assert index.import_evidence((evidence,)) == 1
+    assert index.import_evidence((evidence,)) == 0
+    at = datetime(2026, 11, day, 19, tzinfo=ZoneInfo("Asia/Shanghai"))
+    client = BaoStockIndustryClient(
+        fetch_rows=lambda date, timeout: (BaoStockIndustryRow("sh.600001", "I65软件", "证监会行业分类", date),),
+        minimum_rows=1,
+    )
+    rows = CurrentIndustryPublication(index.path, client, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).fetch(at)
+    assert {row.subject_key for row in rows} == ({"600001", "600003"} if expected else {"600001"})
+    assert rows == CurrentIndustryCache(index.path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(at)
+    if expected:
+        official = next(row for row in rows if row.subject_key == "600003")
+        assert official.source == official.fields["model_industry_source"] == "official_disclosure"
+        assert official.fields["model_industry"] == "C29Plastics"
+        assert official.fields["industry_native_classification"] == "CAPCO2023"
+        assert official.fields["industry_evidence_id"] == evidence.identity
+        assert official.source_time == evidence.disclosed_at
+        assert official.payload_hash == evidence.document_sha256
+
+
+def test_current_industry_cache_rejects_expired_or_future_received_official_evidence(tmp_path):
+    evidence = replace(_official_evidence(), received_at=datetime(2026, 11, 4, 18, tzinfo=ZoneInfo("Asia/Shanghai")))
+    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
+    index.import_evidence((evidence,))
+    client = BaoStockIndustryClient(
+        fetch_rows=lambda day, timeout: (BaoStockIndustryRow("sh.600001", "I65软件", "证监会行业分类", day),),
+        minimum_rows=1,
+    )
+    at = evidence.received_at + timedelta(hours=1)
+    source = CurrentIndustryPublication(index.path, client, minimum_rows=1, sqlite_policy=SqlitePolicyFixture())
+    assert len(source.fetch(at)) == 2
+    cache = CurrentIndustryCache(index.path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture())
+    assert cache.load(evidence.received_at - timedelta(hours=1)) == ()
+    assert cache.load(at + timedelta(days=2)) == ()
+
+
+def test_official_industry_never_replaces_existing_supplier_or_changes_old_publication_on_import(tmp_path):
+    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
+    at = datetime(2026, 11, 4, 19, tzinfo=ZoneInfo("Asia/Shanghai"))
+    client = BaoStockIndustryClient(
+        fetch_rows=lambda day, timeout: (BaoStockIndustryRow("sh.600003", "I65软件", "证监会行业分类", day),),
+        minimum_rows=1,
+    )
+    source = CurrentIndustryPublication(index.path, client, minimum_rows=1, sqlite_policy=SqlitePolicyFixture())
+    before = source.fetch(at)
+    index.import_evidence((_official_evidence(),))
+    assert CurrentIndustryCache(index.path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(at) == before
+    assert source.fetch(at) == before
+    assert client.health().planned_count == 1
+
+
+def test_industry_evidence_failure_keeps_previous_publication_after_supplier_refresh(tmp_path, monkeypatch):
+    path = tmp_path / "industry.sqlite3"
+    at = datetime(2026, 11, 4, 19, tzinfo=ZoneInfo("Asia/Shanghai"))
+    client = BaoStockIndustryClient(
+        fetch_rows=lambda day, timeout: (BaoStockIndustryRow("sh.600001", "I65软件", "证监会行业分类", day),),
+        minimum_rows=1,
+    )
+    source = CurrentIndustryPublication(path, client, minimum_rows=1, sqlite_policy=SqlitePolicyFixture())
+    original = source.fetch(at - timedelta(days=7))
+
+    def fail(*args):
+        raise ValueError("industry_evidence_hash_conflict")
+
+    monkeypatch.setattr(SQLiteIndustryQueryIndex, "read_evidence", fail)
+    with pytest.raises(ValueError, match="hash_conflict"):
+        source.fetch(at)
+    assert client.health().planned_count == 2
+    assert CurrentIndustryCache(path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(at) == original
+
+
+def test_industry_evidence_conflicts_are_atomic_and_corruption_is_rejected(tmp_path):
+    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
+    original = _official_evidence()
+    index.import_evidence((original,))
+    conflict = replace(original, mapping=replace(original.mapping, target_industry="C29Other"))
+    with pytest.raises(ValueError, match="interval_conflict"):
+        index.import_evidence((replace(original, code="600004"), conflict))
+    at = original.received_at + timedelta(days=2)
+    assert index.read_evidence(at) == (original,)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE official_industry_evidence SET code='600005'")
+    with pytest.raises(ValueError, match="hash_conflict"):
+        index.read_evidence(at)
+
+
+def test_explicit_writer_upgrades_industry_schema_without_rewriting_supplier_rows(tmp_path):
+    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
+    index.save("supplier", DATES[0], DATES[0], "[]")
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        before = tuple(connection.run("SELECT * FROM industry_query").require_one())
+        connection.run("DROP TABLE official_industry_evidence")
+        connection.run("PRAGMA user_version=1")
+    with pytest.raises(RuntimeError, match="unavailable"):
+        index.read(DATES[0], DATES[0])
+    index.import_evidence((_official_evidence(),))
+    with SqliteSession(index.path) as connection:
+        assert tuple(connection.run("SELECT * FROM industry_query").require_one()) == before
+        assert connection.run("PRAGMA user_version").require_one()[0] == 2
+
+
+@pytest.mark.parametrize("cancelled", (True, False))
+def test_reviewed_industry_import_rejects_future_receipt_and_cancellation_before_database_write(tmp_path, monkeypatch, cancelled):
+    import trader.download.infra.industry_query_index as module
+
+    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
+    evidence = _official_evidence()
+    monkeypatch.setattr(module, "LoadReviewedIndustryEvidence", lambda _: (evidence,))
+    if cancelled:
+        assert not index.import_reviewed_file(tmp_path / "input.json", observed_at=evidence.disclosed_at, cancelled=lambda: True)
+    else:
+        with pytest.raises(ValueError, match="received_in_future"):
+            index.import_reviewed_file(tmp_path / "input.json", observed_at=evidence.disclosed_at, cancelled=lambda: False)
+    assert not index.path.exists()
+
+
+@pytest.mark.parametrize("invalid", ("issuer", "excerpt", "mapping", "path", "url", "valid"))
+def test_reviewed_import_rejects_wrong_subject_or_missing_document_evidence(tmp_path, monkeypatch, invalid):
+    import trader.download.infra.industry_evidence_codec as codec
+
+    class _Page:
+        def __init__(self, text):
+            self.text = text
+
+        def extract_text(self):
+            return self.text
+
+    class _Pdf:
+        def __init__(self, text):
+            self.pages = (_Page(text),)
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.closed = True
+
+    source = _Pdf("股票代码：600003 CAPCO2023 C29 Plastics")
+    mapping = _Pdf("CSRC2012 C29Plastics")
+    evidence = _official_evidence()
+    raw = IndustryEvidencePayload(evidence)
+    if invalid == "issuer":
+        source.pages[0].text = "股票代码：600009 CAPCO2023 C29 Plastics"
+    elif invalid == "excerpt":
+        source.pages[0].text = "股票代码：600003 missing"
+    elif invalid == "mapping":
+        mapping.pages[0].text = "C29Other"
+    elif invalid == "url":
+        raw["source_url"] = "https://example.com/unofficial.pdf"
+    monkeypatch.setattr(codec, "_pdf", lambda root, name, digest: source if name == "issuer.pdf" else mapping)
+    manifest = [{"evidence": raw, "document": "issuer.pdf", "mapping_document": "mapping.pdf"}]
+    path = tmp_path / "evidence.json"
+    if invalid == "path":
+        monkeypatch.undo()
+        manifest[0]["document"] = "../outside.pdf"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    if invalid == "valid":
+        assert LoadReviewedIndustryEvidence(path) == (evidence,)
+    else:
+        with pytest.raises(ValueError):
+            LoadReviewedIndustryEvidence(path)
+    if invalid not in {"path", "url"}:
+        assert source.closed and mapping.closed

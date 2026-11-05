@@ -54,6 +54,8 @@ from trader.recommendation.domain.scoring.profile_selection import ParseProfileS
 from trader.training.infra.training_settings import LoadRuntimeTrainingSettings
 from trader.recommendation.infra.runtime.initialization import FixedCacheTtl
 from trader.recommendation.infra.normalization.features import FeatureBuilder
+from trader.recommendation.infra.performance.history_context_reuse import ReusableHistoryContexts
+from trader.recommendation.infra.performance.candidate_selection import PRELOAD_CONTEXT_CANDIDATES
 from trader.recommendation.domain.market.models import MarketQuote
 
 from scripts.checks.reporting import emit_report
@@ -110,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preload-cpu-profile", action="store_true")
     parser.add_argument("--preload-feature-audit", action="store_true")
     parser.add_argument("--preload-profiles", type=ParseProfileSelection, default=("v1", "v2", "v3"))
+    parser.add_argument("--preload-context-candidate", choices=PRELOAD_CONTEXT_CANDIDATES, default="baseline")
     parser.add_argument("--runtime-config", type=Path, default=PROJECT_ROOT / "config/runtime.json")
     parser.add_argument("--resume-samples", type=int, default=0)
     parser.add_argument("--page-sample-count", type=int, default=1)
@@ -124,7 +127,9 @@ def Main() -> int:
     from trader.infra.settings import LoadRuntimeSettings
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
     if args.preload_audit:
-        return _measure_preload(args.history_root.resolve(), args.runtime_config, args.preload_profiles, cpu_profile=args.preload_cpu_profile, feature_audit=args.preload_feature_audit, sqlite_policy=sqlite_policy)
+        return _measure_preload(args.history_root.resolve(), args.runtime_config, args.preload_profiles, cpu_profile=args.preload_cpu_profile, feature_audit=args.preload_feature_audit, context_candidate=args.preload_context_candidate, sqlite_policy=sqlite_policy)
+    if args.preload_context_candidate != "baseline":
+        raise ValueError("preload context candidate requires explicit preload audit")
     if args.resume_samples:
         try:
             return _measure_resume_reads(args.history_root.resolve(), args.resume_samples, sqlite_policy=sqlite_policy)
@@ -202,8 +207,12 @@ def _measure_preload(
     *,
     cpu_profile: bool = False,
     feature_audit: bool = False, sqlite_policy: SqliteIoPolicy,
+    context_candidate: str = "baseline",
 ) -> int:
     total_started = time.monotonic()
+    if context_candidate not in PRELOAD_CONTEXT_CANDIDATES:
+        raise ValueError("unknown preload context candidate")
+    context_builder = ReusableHistoryContexts() if context_candidate == "metrics_reuse" else None
     settings = LoadRuntimeSettings(runtime_config)
     observed = datetime.now(ZoneInfo("Asia/Shanghai"))
     cache: BoundedLruCache[object] = BoundedLruCache(settings.market_data.cache_policy)
@@ -230,6 +239,7 @@ def _measure_preload(
     owner = SharedHistoryProjection(
         history, monotonic=time.monotonic, settings=settings.pipeline.history_preload,
         reserve_bytes=partial(reserve, "qfq_shared_bars"),
+        context_builder=context_builder.build if context_builder is not None else None,
     )
     profiles = tuple(
         PublishedHistoryCache(
@@ -258,8 +268,13 @@ def _measure_preload(
 
     # A read-only preload does not need a background WAL sampler; keeping this
     # probe single-threaded also makes function profiling attributable.
-    with DatabaseMeasurement(root, sample_wal=False) as measurement:
-        owner.initialize(cancelled)
+    try:
+        with DatabaseMeasurement(root, sample_wal=False) as measurement:
+            owner.initialize(cancelled)
+    finally:
+        context_counts = context_builder.counts if context_builder is not None else None
+        if context_builder is not None:
+            context_builder.clear()
     profiler.disable()
     history_seconds = time.monotonic() - started
     company_seconds = binding_seconds = 0.0
@@ -311,6 +326,12 @@ def _measure_preload(
             "status": "passed" if passed else "degraded",
             "summary": {
                 "read_only": True,
+                "context_candidate": context_candidate,
+                "context_reuse": {
+                    "requests": context_counts.requests, "calculations": context_counts.calculations,
+                    "hits": context_counts.hits, "entries_before_clear": context_counts.entries,
+                    "entries_after_clear": context_builder.counts.entries,
+                } if context_counts is not None and context_builder is not None else None,
                 "elapsed_seconds": round(time.monotonic() - total_started, 3),
                 "history_seconds": history_seconds,
                 "reference_seconds": reference_seconds,

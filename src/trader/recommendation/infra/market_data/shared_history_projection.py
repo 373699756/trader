@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.infra.cache_contracts import CanonicalJsonBytes
-from trader.infra.market_data.history.history import BuildHistoryContext
+from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.aligned_history_bars import AlignedHistoryBars, BuildAlignedHistoryBars
 
@@ -71,11 +71,13 @@ class SharedHistoryProjection:
         monotonic: Callable[[], float],
         settings: HistoryPreloadSettings,
         reserve_bytes: Callable[[int], bool] | None = None,
+        context_builder: Callable[[tuple[DailyBar, ...], int], HistoryContext] | None = None,
     ) -> None:
         self._history = history
         self._monotonic = monotonic
         self._settings = settings
         self._reserve_bytes = reserve_bytes
+        self._context_builder = context_builder or (lambda bars, lookback: BuildHistoryContext(bars, lookback_sessions=lookback))
         self._lock = threading.Lock()
         self._profiles: list[PublishedHistoryCache] = []
         self._initialized = False
@@ -225,7 +227,7 @@ class SharedHistoryProjection:
             if aligned.bars:
                 shared_bars = aligned.bars[-20:]
                 contexts = {
-                    lookback: BuildHistoryContext(aligned.bars[-lookback:], lookback_sessions=lookback)
+                    lookback: self._context_builder(aligned.bars[-lookback:], lookback)
                     for lookback in lookbacks
                 }
                 for profile, values, calendar in zip(self._profiles, results, calendars, strict=True):

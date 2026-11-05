@@ -15,6 +15,7 @@ from trader.recommendation.application.ports.market_data import MarketDataPendin
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
+from trader.recommendation.infra.performance.history_context_reuse import ReusableHistoryContexts
 
 
 def _cache(source, sessions, owner=None, rank=False, sequence=False, calendar=None):
@@ -32,14 +33,17 @@ def _cache(source, sessions, owner=None, rank=False, sequence=False, calendar=No
     )
 
 
-def test_shared_scan_matches_independent_profile_projections_and_reuses_retained_bars():
+@pytest.mark.parametrize("reuse", (False, True))
+def test_shared_scan_matches_independent_profile_projections_and_reuses_retained_bars(reuse):
     source = HistoryInput(252, 0, ("600001", "600002"))
     reservations = []
+    candidate = ReusableHistoryContexts() if reuse else None
     owner = SharedHistoryProjection(
         ReadPublishedHistoryUseCase(source),
         monotonic=lambda: 0.0,
         reserve_bytes=lambda size: reservations.append(size) or True,
         settings=HistoryPreloadSettings(warn_after_seconds=300.0),
+        context_builder=candidate.build if candidate is not None else None,
     )
     contracts = ((251, True, False), (251, False, False), (61, False, False), (61, False, True))
     shared = tuple(_cache(source, sessions, owner, rank, sequence) for sessions, rank, sequence in contracts)
@@ -61,6 +65,10 @@ def test_shared_scan_matches_independent_profile_projections_and_reuses_retained
         assert contexts[0] is contexts[1]
         assert contexts[0] is not contexts[2] and contexts[2] is contexts[3]
         assert tuple(context.sample_count for context in contexts) == (251, 251, 61, 61)
+    if candidate is not None:
+        assert candidate.counts.hits > 0 and candidate.counts.entries <= 2
+        candidate.clear()
+        assert candidate.counts.entries == 0
 
 
 def test_batch_model_quality_reads_calendar_once_and_keeps_date_failures():

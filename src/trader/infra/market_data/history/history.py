@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import KW_ONLY, dataclass
 from enum import Enum
 
@@ -105,6 +105,7 @@ def BuildHistoryContext(
     bars: tuple[DailyBar, ...],
     *,
     lookback_sessions: int = 61,
+    summarize: Callable[[tuple[DailyBar, ...]], HistoryProfile] | None = None,
 ) -> HistoryContext:
     """Build a bounded summary with anchors required by the selected profile."""
 
@@ -121,9 +122,10 @@ def BuildHistoryContext(
         for offset in sorted(offsets)
         if len(ordered) > offset and ordered[-offset - 1].close > 0
     )
+    summarize_metrics = SummarizeHistoryMetrics if summarize is None else summarize
     return HistoryContext(
-        profile=SummarizeHistoryMetrics(ordered),
-        previous_profile=SummarizeHistoryMetrics(ordered[:-1]) if len(ordered) > 1 else None,
+        profile=summarize_metrics(ordered),
+        previous_profile=summarize_metrics(ordered[:-1]) if len(ordered) > 1 else None,
         latest_trade_date=ordered[-1].trade_date if ordered else "",
         sample_count=len(ordered),
         return_anchors=anchors,

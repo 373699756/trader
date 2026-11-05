@@ -36,7 +36,7 @@ from trader.recommendation.application.pipeline.final_selection.freeze_projectio
     ScoredProjectionInputs,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
-from trader.recommendation.application.ports.loaded_profile import ModelComputationStatus
+from trader.recommendation.application.ports.loaded_profile import IndustryPredictionPort, ModelComputationStatus, ModelScoringContext
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
@@ -48,6 +48,9 @@ from trader.recommendation.infra.performance.fixtures import BuildPerformanceHis
 from trader.recommendation.infra.performance.model_workload import PerformanceProfileWorkload
 from trader.recommendation.infra.performance.process_memory import PerformanceMemorySample
 from trader.recommendation.infra.performance.raw_factor_reuse import RAW_FACTOR_REUSE_CANDIDATE, RawFactorReuseBuilder
+from trader.recommendation.infra.performance.scoring_inputs_reuse import ScoringInputsReuse
+from trader.recommendation.infra.performance.candidate_selection import SCORING_CANDIDATES
+from trader.recommendation.infra.performance.industry_prediction import ParallelIndustryPrediction
 
 _T = TypeVar("_T")
 _SCENARIOS = ("unchanged", "observation_time", "delivery_time", "quote_time", "one_price", "all_prices", "stale")
@@ -239,10 +242,14 @@ class _ProfileReplay:
         cache: BoundedLruCache[object],
         clock: _ReplayClock,
         factor_reuse: bool,
+        scoring_candidate: str,
+        industry_prediction: IndustryPredictionPort | None,
     ) -> None:
         self.workload = workload.model
         self.clock = clock
         self.scoring = workload.model.scoring()
+        self.ranking = ScoringInputsReuse(cache) if scoring_candidate in {"prepared_reuse", "combined"} else None
+        self.industry_prediction = industry_prediction if workload.model.profile.profile_id == "v5" else None
         horizons = (20, 40, 60, 120, 250) if workload.model.profile.profile_id == "v2" else (20, 40, 60)
         builder = RawFactorReuseBuilder if factor_reuse else FeatureBuilder
         self.builder = builder.from_settings(workload.strategy, horizons, cache)
@@ -362,7 +369,12 @@ class _ProfileReplay:
                     native,
                     self.workload.policy,
                     sequence=self.sequence,
-                    runtime=ScoredProjectionInputs(model_scoring=self.scoring),
+                    runtime=ScoredProjectionInputs(
+                        model_scoring=self.scoring,
+                        ranking_selection=self.ranking,
+                        scoring_context=ModelScoringContext(industry_prediction=self.industry_prediction)
+                        if self.industry_prediction is not None else None,
+                    ),
                 )
 
             projection = timings.run(
@@ -491,15 +503,23 @@ def MeasureContinuousPipeline(
     ticks: int,
     trace: PerformanceCpuTrace | None = None,
     factor_reuse: bool = False,
+    scoring_candidate: str = "baseline",
+    prediction_executor: Executor | None = None,
 ) -> dict[str, object]:
     """Keep one clock, cache, model service and publication index throughout all cases."""
     if not workloads or not 1 <= ticks <= 1000:
         raise ValueError("continuous replay requires profiles and 1..1000 ticks per scenario")
+    if scoring_candidate not in SCORING_CANDIDATES:
+        raise ValueError("unknown scoring candidate")
+    parallel = scoring_candidate in {"v5_industry_parallel", "combined"}
+    if parallel and (prediction_executor is None or not any(item.model.profile.profile_id == "v5" for item in workloads)):
+        raise ValueError("parallel scoring candidate requires V5 and an independent executor")
+    industry_prediction = ParallelIndustryPrediction(prediction_executor) if prediction_executor is not None and parallel else None
     clock = _ReplayClock(workloads[0].model.features[0].observed_at)
     cache = _ObservedFactorCache(cache_policy, clock)
     preparation = time.perf_counter()
     try:
-        states = tuple(_ProfileReplay(workload, cache, clock, factor_reuse) for workload in workloads)
+        states = tuple(_ProfileReplay(workload, cache, clock, factor_reuse, scoring_candidate, industry_prediction) for workload in workloads)
         preparation_ms = (time.perf_counter() - preparation) * 1000
         rows: list[_TickResult] = []
         for scenario in ("cold", *_SCENARIOS):
@@ -550,6 +570,18 @@ def MeasureContinuousPipeline(
         probes = tuple(_profile(state) for state in states)
         report = _project(rows, preparation_ms, probes, cache_policy, ticks)
         report["factor_candidate"] = RAW_FACTOR_REUSE_CANDIDATE if factor_reuse else "baseline"
+        report["scoring_candidate"] = scoring_candidate
+        report["scoring_reuse"] = [
+            {"profile": state.workload.profile.profile_id,
+             "requests": state.ranking.counts.requests, "calculations": state.ranking.counts.calculations,
+             "hits": state.ranking.counts.hits, "bypasses": state.ranking.counts.bypasses}
+            for state in states if state.ranking is not None
+        ]
+        counts = industry_prediction.counts if industry_prediction is not None else None
+        report["industry_prediction"] = {
+            "completed": counts.completed, "failed": counts.failed, "cancelled": counts.cancelled,
+            "in_flight": counts.in_flight, "peak_in_flight": counts.peak_in_flight,
+        } if counts is not None else None
         report["raw_factor_counting"] = (
             "memoizable raw calculations completed before insertion, including rejected writes; null for baseline; "
             "nonfinite inputs use original calculation without memoization"

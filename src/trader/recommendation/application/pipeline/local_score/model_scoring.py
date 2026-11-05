@@ -534,18 +534,37 @@ class ProductionModelScoringService:
             for item in inputs:
                 by_industry.setdefault(item.industry, []).append(item)
             predicted: dict[str, ModelPrediction] = {}
-            for industry_inputs in by_industry.values():
+            prediction_count_lock = threading.Lock()
+
+            def predict_industry(industry_inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+                result: list[ModelPrediction] = []
                 for start in range(0, len(industry_inputs), _PREDICTION_BATCH_SIZE):
                     deadline.require_time("before_batch_prediction")
                     batch_inputs = tuple(industry_inputs[start : start + _PREDICTION_BATCH_SIZE])
                     batch_predictions = self._predictor.predict(batch_inputs)
-                    self._predictor_batch_count += 1
+                    with prediction_count_lock:
+                        self._predictor_batch_count += 1
                     deadline.require_time("completed_after_batch_prediction_deadline")
                     if tuple(item.code for item in batch_predictions) != tuple(item.code for item in batch_inputs):
                         raise ValueError(
                             f"{self._strategy.value} production model returned a mismatched prediction batch"
                         )
-                    predicted.update((item.code, item) for item in batch_predictions)
+                    result.extend(batch_predictions)
+                return tuple(result)
+
+            groups = tuple(tuple(values) for values in by_industry.values())
+            results = (
+                context.industry_prediction.predict(predict_industry, groups)
+                if self._predictor.profile_id == "v5" and context.industry_prediction is not None
+                else tuple(predict_industry(group) for group in groups)
+            )
+            if len(results) != len(groups) or any(
+                tuple(item.code for item in result) != tuple(item.code for item in group)
+                for result, group in zip(results, groups, strict=True)
+            ):
+                raise ValueError("industry_prediction_groups_mismatch")
+            for result in results:
+                predicted.update((item.code, item) for item in result)
             predictions = tuple(predicted[item.code] for item in inputs)
             self._record_stage("batch_prediction", started_at)
             deadline.require_time("completed_after_batch_prediction_deadline")

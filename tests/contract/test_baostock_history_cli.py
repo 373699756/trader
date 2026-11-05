@@ -81,6 +81,25 @@ def test_fill_selects_existing_price_repair_path_without_changing_normal_sync(tm
     assert not (tmp_path / "data").exists()
 
 
+def test_reviewed_industry_file_is_forwarded_only_by_explicit_sync(tmp_path, monkeypatch):
+    from trader.bootstrap import ExecuteSync
+    import trader.download.infra.industry_query_index as module
+
+    path = tmp_path / "reviewed.json"
+    parsed = BuildParser().parse_args(["sync", "market", "--industry-evidence", str(path)])
+    assert parsed.industry_evidence == path
+    assert BuildParser().parse_args(["sync", "market"]).industry_evidence is None
+    settings = replace(LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json"), data_paths=DataPaths(tmp_path / "data"))
+    calls = []
+    monkeypatch.setattr("trader.bootstrap.LoadRuntimeSettings", lambda _: settings)
+    monkeypatch.setattr(module.SQLiteIndustryQueryIndex, "import_reviewed_file", lambda self, incoming, **kwargs: calls.append((self.path, incoming)) or False)
+    monkeypatch.setattr("trader.bootstrap._prepare_reference", lambda *args, **kwargs: pytest.fail("cancelled import must not start suppliers"))
+    result = ExecuteSync(PROJECT_ROOT / "config/runtime.json", "market", industry_evidence_file=path)
+    assert result.cancelled and result.exit_code == 130
+    assert calls == [(settings.data_paths.reference / "industry.sqlite3", path)]
+    assert not settings.data_paths.root.exists()
+
+
 def test_train_missing_local_history_fails_without_download(tmp_path, monkeypatch, capsys):
     from tests.contract.test_cold_start import _empty_config
 

@@ -13,6 +13,7 @@ from scripts.checks.catalog import SelectCheck
 from scripts.checks.download.market.market_factor_budget import MARKET_SOURCE_LOOP_LIMIT_SECONDS, MARKET_TASK_LIMIT_SECONDS
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
+from trader.recommendation.infra.performance.candidate_selection import PRELOAD_CONTEXT_CANDIDATES, SCORING_CANDIDATES
 
 _DEFAULT_CONFIG = PROJECT_ROOT / "config/runtime.json"
 _MARKET_SOURCES = ("tencent", "eastmoney", "sina", "baostock")
@@ -32,6 +33,7 @@ def BuildParser() -> argparse.ArgumentParser:
     parser.add_argument("--history-preload-cpu-profile", action="store_true", help="include CPU profiling overhead in preload timing")
     parser.add_argument("--history-preload-feature-audit", action="store_true", help="profile concurrent feature builds with published inputs and synthetic quotes")
     parser.add_argument("--history-preload-profiles", type=ParseProfileSelection, default=("v1", "v2", "v3"))
+    parser.add_argument("--history-preload-context-candidate", choices=PRELOAD_CONTEXT_CANDIDATES, default="baseline")
     parser.add_argument(
         "--company-pipeline-audit", action="store_true", help="isolated same-PDF serial/parallel comparison"
     )
@@ -94,6 +96,12 @@ def BuildParser() -> argparse.ArgumentParser:
         choices=("baseline", "raw_factor_reuse"),
         default="baseline",
         help="explicit offline raw-factor reuse candidate; requires continuous replay",
+    )
+    parser.add_argument(
+        "--performance-scoring-candidate",
+        choices=SCORING_CANDIDATES,
+        default="baseline",
+        help="offline qualification/reference reuse or independent V5 industry executor; requires continuous replay",
     )
     parser.add_argument(
         "--performance-replay-ticks",
@@ -290,6 +298,12 @@ def ValidateOptions(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         args.check_id != "performance" or not args.performance_replay_ticks or args.performance_steady_only
     ):
         raise ValueError("--performance-factor-candidate requires performance continuous replay")
+    if args.performance_scoring_candidate != "baseline" and (
+        args.check_id != "performance" or not args.performance_replay_ticks or args.performance_steady_only
+    ):
+        raise ValueError("--performance-scoring-candidate requires performance continuous replay")
+    if args.history_preload_context_candidate != "baseline" and (args.check_id != "history-sqlite" or not args.history_preload_audit):
+        raise ValueError("--history-preload-context-candidate requires the history preload audit")
     codes = tuple(dict.fromkeys(args.codes))
     if not codes or any(len(code) != 6 or not code.isdigit() for code in codes):
         raise ValueError("--codes must contain six-digit A-share codes")
@@ -466,6 +480,7 @@ def ValidateOptions(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             history_preload_cpu_profile=args.history_preload_cpu_profile,
             history_preload_feature_audit=args.history_preload_feature_audit,
             history_preload_profiles=args.history_preload_profiles,
+            history_preload_context_candidate=args.history_preload_context_candidate,
             company_pagination_audit=args.company_pagination_audit,
             company_pipeline_audit=args.company_pipeline_audit,
             company_ocr_audit=args.company_ocr_audit,
@@ -486,6 +501,7 @@ def ValidateOptions(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             performance_steady_only=args.performance_steady_only,
             performance_replay_rows=args.performance_replay_rows,
             performance_factor_candidate=args.performance_factor_candidate,
+            performance_scoring_candidate=args.performance_scoring_candidate,
             market_sources=tuple(args.market_sources),
             market_profiles=tuple(args.market_profiles),
             market_sizes=tuple(args.market_sizes),

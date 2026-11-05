@@ -97,6 +97,33 @@
 
 公司普通同步和`--fill`的隔离回归另验证：旧ST与unknown正文留在账本且未被下载或提取，新合格者可正常处理；unknown核实为clear后，其旧任务仍可选出，曾ST者继续排除。该结论只覆盖此测试集合，不替history/market的数据保留或真实全量验收背书。
 
+### 2.5 已核验官方行业证据的显式补缺
+
+当前行业可以通过`./run.sh sync market --industry-evidence /external/reviewed/evidence.json`显式导入已人工审核的证据，再按原同步流程准备参考。普通sync不扫描公告或读取这个外部文件。JSON为非空数组，每项固定为`evidence`、`document`、`mapping_document`；两个文件路径均相对JSON目录，不接受绝对路径或越界路径。输入上限2MiB/1000条，两份PDF各不超过32MiB/1000页；只核对引用页及发行人封面，PDF句柄在失败、取消及成功后关闭。metadata须保留下表字段，codec拒绝未知或缺失项。
+
+| evidence字段 | 含义和校验 |
+| --- | --- |
+| `code/source_url/document_sha256` | 六位主体代码、官方HTTPS来源及完整PDF摘要；封面股票/证券代码必须唯一对应主体 |
+| `disclosed_at/received_at` | 明确的上海时区时间；披露不晚于收到，导入时收到时间不能晚于观察时点；来源年龄不因导入或读取刷新 |
+| `effective_from/effective_to` | 必填日期区间，左闭右开且不早于披露日；上市前及区间外不补，不能省略终点变成永久回填 |
+| `page/excerpt` | 一起存物理页码和原文摘录；去空白及书名号后逐字核对，不做自由文本行业推断 |
+| `mapping` | 固定包含`native_classification/native_code/native_name/target_industry/reference_url/reference_sha256/reference_page/reference_excerpt/rationale`；保留原生标准及代码、目标模型行业、映射依据PDF/页/摘录和人工理由；缺一拒绝，不按代码相似自动推广其它类别 |
+
+唯一持久化owner仍是`SQLiteIndustryQueryIndex`，物理文件仍为`data/market/reference/industry.sqlite3`。格式从user_version=1升到2，新增`official_industry_evidence`；只读打开不迁移，显式writer以事务追加表/索引并保留原两张查询表的行及摘要。升级及导入本批只在隔离库演练；活动库未切换。旧格式须在另行授权的正常sync中先升级，再由新版本只读消费者采用，不能交给旧冻结代码加载。
+
+| 新表列/索引 | SQLite类型、用途与读写边界 |
+| --- | --- |
+| `evidence_id` | TEXT主键；完整不可变证据的内容摘要，同身份重试不重复写，读取重新计算校验 |
+| `code` | TEXT；主体代码，和payload逐项核对 |
+| `disclosed_at/received_at` | TEXT；带偏移的ISO时间，不以当前查询时间替代 |
+| `effective_from/effective_to` | TEXT；ISO日期，查本次有效区间及同股重叠；重叠区间映射到不同行业时拒绝整个事实批次 |
+| `payload` | TEXT；上述白名单字段的JSON codec，保留PDF/原生标准/映射证据；不是业务对象双表示 |
+| `official_industry_interval` | `(code,effective_from,effective_to)`索引；只读入相关重叠证据，单条最多1000项、有效读取最多20000项，超限明确拒绝而不截断 |
+
+当前行业发布只给供应商缺少的代码补分类，不覆盖已有分类。发布内容同时封存原供应商查询和本次实际采用的完整证据，统一内容版本；SourceObservation保留`official_disclosure`、披露时点、PDF摘要和证据身份，模型分类仍是经显式映射后的“证监会行业分类”。组合核验成功才保存当前发布，证据失败后保留旧查询；后续仅导入不会立即改变已发布行业，须正常sync再次编译并发布参考。历史`industry_query`、已发布历史参考和冻结记录均不回写。
+
+001381的[官方上市公告书](https://disc.static.szse.cn/disc/disk03/finalpage/2026-11-02/f85204b7-2475-41ad-b05e-f4bf35a0aac9.PDF)使用2023协会标准；本轮仅为该证据显式登记C29到既有模型分类的项目映射，依据[旧指引代码目录](https://www.csisc.cn/zbscbzw/c100138/202206/f697c0f5befd4c4ba91d4171cd68d7ea/files/8500f38c4545b2c366b6abf5af22.pdf)。这不是监管发布的全面跨标准对照表，不把该个案写进产品代码或扩展到其它分类；真实资料接入及收益资格仍各自验收。
+
 ## 3. history：完整历史
 
 ### 3.1 请求、配对和来源

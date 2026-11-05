@@ -79,6 +79,7 @@ class DiagnosticOptions:
     history_preload_cpu_profile: bool = False
     history_preload_feature_audit: bool = False
     history_preload_profiles: tuple[ScoringProfileId, ...] = ("v1", "v2", "v3")
+    history_preload_context_candidate: str = "baseline"
     baseline_checkout: Path | None = None
     training_signal_date: date | None = None
     training_profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
@@ -91,6 +92,7 @@ class DiagnosticOptions:
     performance_steady_only: bool = False
     performance_replay_rows: int | None = None
     performance_factor_candidate: str = "baseline"
+    performance_scoring_candidate: str = "baseline"
     database_probe_directory: Path | None = None
     database_rounds: int = 5
     database_training: bool = False

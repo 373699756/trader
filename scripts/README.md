@@ -152,3 +152,29 @@ isolated 比较可读取明确指定的旧 checkout；只在隔离演练内处�
 代码之外的调用者：Makefile 的 lint、long-watchlist-check、test-release、performance-check、browser-performance-check 均进入统一入口；diagnose-list/local 替代旧隐式网络组合目标。普通产品 CLI 的配置、状态与性能用例是已安装产品合同，统一诊断复用它们，不把 scripts 反向导入产品包。pytest只调整脚本消费者，不添加全局路径注入或新的收集钩子。
 
 C 在共享工作区新增的 training_source_guard 随目录移入 checks/training；其未提交业务逻辑及相关用例仍由 C 交付，不混入 A 的路径整理提交。B/C 其它未提交逻辑也在新路径保留。进度与验证只在 docs/new/g_施工进度.md 原阶段338记录。
+
+## 荐股准备、预载与V5行业的离线候选
+
+连续回放新增`--performance-scoring-candidate`，取值`baseline/prepared_reuse/v5_industry_parallel/combined`，只允许`recommendation/pipeline/latency`且明确设置replay ticks；`combined`组合本段两项，不自动启用原始因子候选。原始因子仍由独立的`--performance-factor-candidate raw_factor_reuse`显式选择，两项可以在同一冻结版本组合对照。默认生产、默认诊断均baseline。
+
+- `prepared_reuse`：完整输入和配置身份相同才复用资格及板内参考。仍由原owner排名和计算本地分，风险/执行门变化必失效；`preparation_identity_and_cache`记录哈希、等待、缓存查询和写入的成本。输出`scoring_reuse`的requests/calculations/hits/bypasses；未获预算时不缓存但保留本次结果，共用既有feature_batches字节预算。
+- `v5_industry_parallel`：诊断明确创建并关闭独立两worker预测池，不能复用已经占满的档位执行池。只并行不同的行业，保留每行业256行批次和模型独立性；按原输入顺序收集，错误/KeyboardInterrupt先取消排队任务并等自己的在途任务结束。`industry_prediction`报告完成、失败、取消、在途及峰值，在途不为0不能算完整通过。不改原生库线程数，不把fixture预测器当作原生TCN验收。
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --business recommendation --module pipeline --check latency \
+  --runtime-config /external/frozen/config/runtime.json --scoring-profile v1,v2,v3,v5 \
+  --performance-replay-ticks 5 --performance-scoring-candidate combined \
+  --command-timeout-seconds 1800 --output /external/scoring-candidate.json
+```
+
+预载候选复用已有`download/history/sqlite`的显式preload路径，新增`--history-preload-context-candidate baseline/metrics_reuse`。metrics_reuse只缓存原统计owner的相同末60根日线，保留61/251日独立日期/计数/锚点，最多两份临时统计，收尾清空；摘要中的`context_reuse`报告请求、计算、命中、清理前条数及清理后条数。它不缓存历史行、不新增持久化派生库，也不自动执行数据库写入基线或额外feature审计。
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --business download --module history --check sqlite \
+  --history-root /external/frozen-data/market/history --runtime-config /external/frozen/config/runtime.json \
+  --history-preload-audit --history-preload-profiles v1,v2,v3,v5 \
+  --history-preload-context-candidate metrics_reuse \
+  --command-timeout-seconds 1800 --output /external/preload-candidate.json
+```
+
+C后台分别去掉候选参数取得baseline；固定源快照、配置、全部模型、源码及同一实际PC，先比对完整结果、原因、六席和输入身份，再测总时间、CPU/RSS/I/O、驻留与取消回收。三种计算候选及预载候选都尚未取得生产启用证据。新行业读取格式要求在隔离输入副本完成显式schema升级后再运行；不修改活动行业/价格库，不以失败的预载或旧进程补签。

@@ -222,6 +222,7 @@ def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
     fill_missing: bool = False,
+    industry_evidence_file: Path | None = None,
 ) -> SyncResult:
     if fill_missing and target == "all":
         raise ValueError("fill_requires_explicit_target")
@@ -229,6 +230,14 @@ def ExecuteSync(
     sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
+    if industry_evidence_file is not None:
+        from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
+
+        industry_index = SQLiteIndustryQueryIndex(
+            paths.reference / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=sqlite_policy
+        )
+        if not industry_index.import_reviewed_file(industry_evidence_file, observed_at=clock.now(), cancelled=cancel_requested):
+            return SyncResult((), cancelled=True)
     progress = company_evidence_progress.CompanyEvidenceProgress(
         command="sync" if target == "all" else f"sync {target}"
     )

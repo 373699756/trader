@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import date
 from types import MappingProxyType
 from typing import Literal, Protocol
@@ -162,12 +162,21 @@ class ModelScoreBatch:
         object.__setattr__(self, "diagnostics", MappingProxyType(diagnostics))
 
 
+class IndustryPredictionPort(Protocol):
+    def predict(
+        self,
+        calculate: Callable[[tuple[ModelInput, ...]], tuple[ModelPrediction, ...]],
+        groups: tuple[tuple[ModelInput, ...], ...],
+    ) -> tuple[tuple[ModelPrediction, ...], ...]: ...
+
+
 @dataclass(frozen=True)
 class ModelScoringContext:
     time_budget_seconds: float | None = None
     input_age_seconds: float = 0.0
     population_features: tuple[FeatureSnapshot, ...] | None = None
     population_identity: str = ""
+    industry_prediction: IndustryPredictionPort | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if (
@@ -366,6 +375,7 @@ class ModelScoringPort(Protocol):
 
 
 __all__ = [
+    "IndustryPredictionPort",
     "HeadPrediction",
     "HeadPredictorPort",
     "HeadRuntime",

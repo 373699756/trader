@@ -165,6 +165,30 @@ def test_raw_factor_candidate_reaches_only_explicit_continuous_performance():
             ValidateOptions(BuildParser().parse_args(arguments))
 
 
+@pytest.mark.parametrize("candidate", ("prepared_reuse", "v5_industry_parallel", "combined"))
+def test_scoring_candidates_are_explicit_and_reach_only_continuous_performance(candidate):
+    selected = [*SelectionArguments('performance'), "--performance-replay-ticks", "1"]
+    flag = ["--performance-scoring-candidate", candidate]
+    options, _ = ValidateOptions(BuildParser().parse_args([*selected, *flag]))
+    command = BuildCommands(options, python_executable="/python3")[0]
+    assert command.argv[command.argv.index("--scoring-candidate") + 1] == candidate
+    for arguments in ([*SelectionArguments('performance'), *flag], [*SelectionArguments('web'), *flag]):
+        with pytest.raises(ValueError, match="performance-scoring-candidate"):
+            ValidateOptions(BuildParser().parse_args(arguments))
+
+
+def test_preload_context_candidate_requires_and_reaches_only_explicit_preload():
+    flag = ["--history-preload-context-candidate", "metrics_reuse"]
+    selected = [*SelectionArguments('history-sqlite'), "--history-preload-audit", *flag]
+    options, _ = ValidateOptions(BuildParser().parse_args(selected))
+    command = BuildCommands(options, python_executable="/python3")[0]
+    assert command.argv[command.argv.index("--preload-context-candidate") + 1] == "metrics_reuse"
+    assert "--preload-feature-audit" not in command.argv
+    for arguments in ([*SelectionArguments('history-sqlite'), *flag], [*SelectionArguments('web'), *flag]):
+        with pytest.raises(ValueError, match="history-preload-context-candidate"):
+            ValidateOptions(BuildParser().parse_args(arguments))
+
+
 @pytest.mark.parametrize(
     "arguments",
     (
