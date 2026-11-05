@@ -7,12 +7,12 @@ import sys
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from threading import Condition
 
 from threadpoolctl import ThreadpoolController
 
 from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
+from trader.training.infra.cgroup import ReadTrainingCgroupScopes
 
 
 class TrainingCpuBudget:
@@ -92,50 +92,28 @@ def _windows_affinity_capacity() -> int:
 
 def _linux_quota_capacities() -> tuple[int, ...]:
     try:
-        memberships = Path("/proc/self/cgroup").read_text(encoding="ascii").splitlines()
-        mounts = Path("/proc/self/mountinfo").read_text(encoding="ascii").splitlines()
         capacities = []
-        for line in memberships:
-            _identity, controllers, member = line.split(":", 2)
-            unified = not controllers
-            if not unified and "cpu" not in controllers.split(","):
-                continue
-            for mount in mounts:
-                before, after = mount.split(" - ", 1)
-                fields, filesystem = before.split(), after.split()
-                if filesystem[0] != ("cgroup2" if unified else "cgroup"):
-                    continue
-                if not unified and "cpu" not in filesystem[2].split(","):
-                    continue
-                root, mountpoint = Path(fields[3]), Path(fields[4])
-                membership = Path(member)
-                if not membership.is_relative_to(root):
-                    logging.getLogger(__name__).warning("训练cgroup路径不可映射，按1个CPU运行")
-                    capacities.append(1)
-                    continue
-                scope = mountpoint / membership.relative_to(root)
-                for directory in (scope, *scope.parents):
-                    if not directory.is_relative_to(mountpoint):
-                        break
-                    if unified:
-                        path = directory / "cpu.max"
-                        if not path.is_file():
-                            continue
-                        quota, period = path.read_text(encoding="ascii").split()
-                        if quota != "max":
-                            capacities.append(_quota_capacity(int(quota), int(period)))
-                    else:
-                        path = directory / "cpu.cfs_quota_us"
-                        if not path.is_file():
-                            continue
-                        quota_value = int(path.read_text(encoding="ascii"))
-                        if quota_value > 0:
-                            period_value = int((directory / "cpu.cfs_period_us").read_text(encoding="ascii"))
-                            capacities.append(_quota_capacity(quota_value, period_value))
+        for scope in ReadTrainingCgroupScopes("cpu"):
+            for directory in scope.directories:
+                if scope.unified:
+                    path = directory / "cpu.max"
+                    if not path.is_file():
+                        continue
+                    quota, period = path.read_text(encoding="ascii").split()
+                    if quota != "max":
+                        capacities.append(_quota_capacity(int(quota), int(period)))
+                else:
+                    path = directory / "cpu.cfs_quota_us"
+                    if not path.is_file():
+                        continue
+                    quota_value = int(path.read_text(encoding="ascii"))
+                    if quota_value > 0:
+                        period_value = int((directory / "cpu.cfs_period_us").read_text(encoding="ascii"))
+                        capacities.append(_quota_capacity(quota_value, period_value))
         return tuple(capacities)
     except (OSError, ValueError, IndexError):
         # An unreadable limit must not expand a constrained job to the host CPU count.
-        logging.getLogger(__name__).warning("训练CPU额度不可确认，按1个CPU运行")
+        logging.getLogger(__name__).warning("训练CPU额度不可确认或路径不可映射，按1个CPU运行")
         return (1,)
 
 

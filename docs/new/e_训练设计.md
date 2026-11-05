@@ -340,7 +340,7 @@ flowchart TD
 | --- | --- | --- |
 | `cpu_admission.py`留1 CPU，原生基线最多2；普通拟合请求2 | `TrainingCpuBudget`、V1拟合、`engine.py`、`TrainSelectedProfiles`原生库上下文 | 一份作业级不可变资源设置，启动显式注入；先保持现值，约束请求≤授权和总预约≤预算 |
 | `application/selected_training.py`每档队列2、公共批次256行 | `_TrainingFanout`发送/接收与取消清空 | 正整数，容量与最大驻留有界；不是V5张量batch_size |
-| `memory_admission.py`拟合容量最多3GiB、预留1.5GiB、宿主可用内存低时通常至少256MiB；cgroup可进一步收紧 | `FittingMemoryCapacity → TrainingMemoryBudget` | 保留实际宿主约束，软件预约不冒充RSS硬隔离 |
+| `memory_admission.py`拟合容量最多3GiB、预留1.5GiB、宿主可用内存低时通常至少256MiB；cgroup v1/v2可进一步收紧 | `FittingMemoryCapacity → TrainingMemoryBudget` | 按实际挂载及可见父级读取限制；Linux cgroup约束无法核验时明确拒绝，软件预约不冒充RSS硬隔离 |
 | `engine.py`TCN预约512MiB，普通模型256MiB＋最大行业矩阵估计×4 | 拟合前内存预约 | 先实测估计与RSS误差；不能因常量小就直接降低预约 |
 | `sample_index.py`SQLite页缓存32MiB、SQLite mmap为0、矩阵阈值256MiB | 样本index、行业共享矩阵/临时映射 | 区分SQLite mmap与NumPy矩阵映射，单位统一字节；取消关闭句柄 |
 | V1 `samples.py`SQLite缓存16MiB、矩阵4096行批读 | V1临时样本及最多8矩阵 | 独立消费者，不拿V2缓存设置冒充已覆盖V1 |
@@ -361,6 +361,10 @@ flowchart TD
 | 每档有界队列 | `_TrainingFanout` | 消费者退出后停止派发；异常等future退出，finally清空遗留批次 |
 | V2/V3/V5样本/矩阵 | `TrainingSampleCache`及 `SQLiteTrainingSampleIndex` | 已封存样本可复用，临时矩阵上下文关闭；异常不能把未封存样本当成功 |
 | V1临时库/矩阵 | `TemporaryTrainingSamples`与V1 ExitStack | 映射关闭后清理临时目录，不承诺跨作业样本恢复 |
+
+Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU和内存共用membership、mountinfo、挂载根及可见父级，支持v1/v2和挂载路径转义；不受无关bind mount影响，不越过可见挂载根猜测宿主限制。CPU无法核验仍按1核保守运行；内存约束无法映射、读取或解析时抛出`training_memory_limit_unavailable`并保留原因，不退回宿主3GiB预算。内存容量和预约都要求正整数，拒绝bool、小数及非有限值。
+
+内存v1读取`memory.limit_in_bytes`，v2读取`memory.max`及`memory.high`，沿可见父级按每个有限限制减去原1.5GiB预留，再收紧现有拟合预算；没有启用控制器或明确无限值不增加限制。`memory.high`用于保守预算，不是硬隔离，语义见[Linux cgroup v2文档](https://docs.kernel.org/admin-guide/cgroup-v2.html)；v1字段见[Linux内存控制器文档](https://docs.kernel.org/admin-guide/cgroup-v1/memory.html)。预约顺序、常量和调度策略未改变，线程/RSS峰值与性能仍由D实测。
 
 测量必须分别输出请求、授权和实际原生线程数，预约等待、持CPU等内存时长、实际并行区间、取消至归还时间和最终在途数。`model_fit` 心跳把多种等待放在同一阶段，不能据该阶段总时长反推CPU或内存等待各占多少；现有作业计量按第6.4节分开报告预约与队列区间。
 

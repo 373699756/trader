@@ -177,3 +177,21 @@ def test_unmappable_cgroup_namespace_does_not_use_the_host_cpu_count(monkeypatch
     monkeypatch.setattr(Path, "read_text", lambda path, **kwargs: files[str(path)])
     assert module._linux_quota_capacities() == (1,)
     assert "不可映射" in caplog.text
+
+
+def test_mapped_controller_ignores_an_unrelated_bind_mount_and_decodes_mount_paths(monkeypatch):
+    import trader.training.infra.cpu_admission as module
+
+    files = {
+        "/proc/self/cgroup": "0::/tenant/user/job\n",
+        "/proc/self/mountinfo": (
+            "1 0 0:1 /another /unrelated rw - cgroup2 cgroup rw\n"
+            "2 0 0:1 /tenant /fixture\\040group rw - cgroup2 cgroup rw\n"
+        ),
+        "/fixture group/user/job/cpu.max": "250000 100000",
+        "/fixture group/user/cpu.max": "max 100000",
+        "/fixture group/cpu.max": "max 100000",
+    }
+    monkeypatch.setattr(Path, "read_text", lambda path, **kwargs: files[str(path)])
+    monkeypatch.setattr(Path, "is_file", lambda path: str(path) in files)
+    assert module._linux_quota_capacities() == (2,)

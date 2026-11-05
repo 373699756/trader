@@ -3,12 +3,15 @@
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+import sys
 from threading import Condition
+
+from trader.training.infra.cgroup import ReadTrainingCgroupScopes
 
 
 class TrainingMemoryBudget:
     def __init__(self, capacity_bytes: int) -> None:
-        if capacity_bytes <= 0:
+        if type(capacity_bytes) is not int or capacity_bytes <= 0:
             raise ValueError("training_memory_budget_invalid")
         self.capacity_bytes = capacity_bytes
         self._available = capacity_bytes
@@ -16,7 +19,7 @@ class TrainingMemoryBudget:
 
     @contextmanager
     def reserve(self, required_bytes: int, heartbeat: Callable[[], None]) -> Iterator[None]:
-        if not 0 < required_bytes <= self.capacity_bytes:
+        if type(required_bytes) is not int or not 0 < required_bytes <= self.capacity_bytes:
             raise ValueError(f"training_memory_request_exceeds_budget:{required_bytes}:{self.capacity_bytes}")
         with self._condition:
             while self._available < required_bytes:
@@ -47,25 +50,23 @@ def FittingMemoryCapacity() -> int:
 
 
 def _cgroup_limits() -> tuple[int, ...]:
-    root = Path("/sys/fs/cgroup")
-    try:
-        membership = next(
-            line[3:]
-            for line in Path("/proc/self/cgroup").read_text(encoding="ascii").splitlines()
-            if line.startswith("0::")
-        )
-        scope = (root / membership.lstrip("/")).resolve()
-        if not scope.is_relative_to(root):
-            return ()
-        directories = (scope, *(parent for parent in scope.parents if parent == root or root in parent.parents))
-        values = []
-        for directory in directories:
-            for name in ("memory.max", "memory.high"):
-                path = directory / name
-                if path.is_file():
-                    text = path.read_text(encoding="ascii").strip()
-                    if text.isdecimal():
-                        values.append(int(text))
-        return tuple(values)
-    except (OSError, StopIteration):
+    if sys.platform != "linux":
         return ()
+    try:
+        values = []
+        for scope in ReadTrainingCgroupScopes("memory"):
+            names = ("memory.max", "memory.high") if scope.unified else ("memory.limit_in_bytes",)
+            for directory in scope.directories:
+                for name in names:
+                    path = directory / name
+                    if not path.is_file():
+                        continue
+                    text = path.read_text(encoding="ascii").strip()
+                    if (text == "max" and scope.unified) or (text == "-1" and not scope.unified):
+                        continue
+                    if not text.isdecimal():
+                        raise ValueError("training_memory_limit_invalid")
+                    values.append(int(text))
+        return tuple(values)
+    except (OSError, ValueError, IndexError) as exc:
+        raise ValueError("training_memory_limit_unavailable") from exc
