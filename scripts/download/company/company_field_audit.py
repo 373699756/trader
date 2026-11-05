@@ -18,6 +18,9 @@ from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
+from trader.download.infra.company_field_recovery import ReadRequiredCompanyMaterialDependencies
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.domain.company_field_plan import BuildCompanyFieldResults
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 
 
@@ -199,6 +202,35 @@ def AuditCompanyFields(
         formal, raw, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),
         observed_at, raw_path.parent,
     )
+    field_results = tuple(
+        result
+        for fact in (() if invalid_types or nonfinite_values else ReadCompanyFactRows(
+            formal, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),
+        ))
+        for result in BuildCompanyFieldResults(fact, recovery)
+    )
+    has_dependencies = raw.run(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='company_material_dependencies'"
+    ).fetchone() is not None
+    publication = ReadCompanyPublicationIdentity(formal)
+    dependencies = ReadRequiredCompanyMaterialDependencies(raw, publication.extraction_hash) if (
+        has_dependencies and publication is not None
+    ) else ()
+    dependency_items = []
+    for dependency in dependencies[:100]:
+        text_path = raw_path.parent / "text" / dependency.body_hash.hex()[:2] / (dependency.body_hash.hex() + ".txt.gz")
+        dependency_items.append({
+            "code": dependency.code, "source": dependency.source, "source_key": dependency.evidence_id,
+            "scope": dependency.scope, "reason": dependency.reason_code,
+            "record_hash": dependency.record_hash,
+            "body_hash": dependency.body_hash.hex(),
+            "extraction_hash": dependency.extraction_hash.hex(),
+            "current_record_hash": dependency.current_record_hash,
+            "current_body_hash": dependency.current_body_hash.hex() if dependency.current_body_hash is not None else None,
+            "current_extraction_hash": dependency.current_extraction_hash.hex(),
+            "is_current_version": dependency.is_current_version,
+            "text_file_present": text_path.is_file(),
+        })
     return {
         "read_only": True, "tables": tables, "table_count": len(tables), "field_count": field_count,
         "invalid_value_types": invalid_types,
@@ -223,6 +255,28 @@ def AuditCompanyFields(
                 "reason": item.reason, "next_step": item.action,
                 "network_required": item.action == "download",
             } for item in recovery[:100]],
+        },
+        "field_results": {
+            "derived_from_current_facts": True, "field_correctness_verified": False,
+            "field_evidence_locator_verified": False,
+            "applicable": sum(item.applicable for item in field_results),
+            "states": dict(Counter(item.state for item in field_results)),
+            "truncated": len(field_results) > 100,
+            "items": [{
+                "code": item.code, "event_id": item.event_id, "source_key": item.evidence_id,
+                "field": item.field, "state": item.state, "applicable": item.applicable,
+                "reason": item.reason, "next_step": item.recovery_action,
+            } for item in field_results[:100]],
+        },
+        "material_dependencies": {
+            "ledger_available": has_dependencies,
+            "reason": "dependency_ledger_uninitialized" if not has_dependencies else "publication_identity_missing" if publication is None else None,
+            "required_reviews": len({
+                (item.code, item.source, item.evidence_id, item.scope, item.reason_code) for item in dependencies
+            }) if has_dependencies and publication is not None else None,
+            "required_versions": len(dependencies) if has_dependencies and publication is not None else None,
+            "file_presence_is_not_hash_verification": True,
+            "truncated": len(dependencies) > 100, "items": dependency_items,
         },
         "interpretation": "population_and_source_agreement_do_not_prove_all_event_measurements_or_historical_coverage",
         "findings": findings,
@@ -258,5 +312,24 @@ def ProjectCompanyFieldAudit(source: Mapping[str, object]) -> dict[str, object]:
             "items": [{key: row.get(key) for key in (
                 "code", "event_id", "source_key", "field", "reason", "next_step", "network_required",
             )} for row in _rows(recovery.get("items"), 100)],
+        }
+    for name, summary_keys in (
+        ("field_results", ("derived_from_current_facts", "field_correctness_verified", "field_evidence_locator_verified", "applicable", "states", "truncated")),
+        ("material_dependencies", ("ledger_available", "reason", "required_reviews", "required_versions", "file_presence_is_not_hash_verification", "truncated")),
+    ):
+        value = source.get(name)
+        if not isinstance(value, Mapping):
+            continue
+        item_keys = (
+            ("code", "event_id", "source_key", "field", "state", "applicable", "reason", "next_step")
+            if name == "field_results" else (
+                "code", "source", "source_key", "scope", "reason", "record_hash", "body_hash",
+                "extraction_hash", "current_record_hash", "current_body_hash", "current_extraction_hash",
+                "is_current_version", "text_file_present",
+            )
+        )
+        result[name] = {
+            **{key: value.get(key) for key in summary_keys},
+            "items": [{key: row.get(key) for key in item_keys} for row in _rows(value.get("items"), 100)],
         }
     return result

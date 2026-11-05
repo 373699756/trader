@@ -7,6 +7,7 @@ import math
 import re
 import time
 from collections.abc import Callable, Mapping
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -14,6 +15,8 @@ from zoneinfo import ZoneInfo
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
+from trader.download.domain.company_structured_fields import CompanyStructuredDataset, ResolveCompanyStructuredFields
+from trader.download.infra.company_structured_fields import DecodeCompanyStructuredFields
 from trader.infra.http_contracts import HttpTransport
 
 _URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
@@ -194,6 +197,16 @@ def AuditCompanyStructuredSources(
                     sample["returned_fields"] = sorted(keys)
             sample["response_bytes"] = len(response.content)
             sample["response_sha256"] = hashlib.sha256(response.content).hexdigest()
+            if source.name != "annual_income":
+                sample["typed_fields"] = _typed_fields(
+                    source.name,
+                    payload,
+                    observed_at,
+                    begin,
+                    end,
+                    sample_rows,
+                    hashlib.sha256(response.content).hexdigest(),
+                )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             # Provider error messages may contain payloads; expose categories only.
             sample.update({"status": "failed", "failure": type(exc).__name__})
@@ -207,6 +220,42 @@ def AuditCompanyStructuredSources(
         "request_count_basis": "adapter invocations; transport retries may add physical attempts",
         "schema_discovery_only": discover_schema,
         "sources": samples, "elapsed_seconds": max(0.0, monotonic() - started),
+    }
+
+
+def _typed_fields(
+    dataset: str,
+    payload: object,
+    observed_at: datetime,
+    begin: date,
+    end: date,
+    sample_rows: int,
+    response_hash: str,
+) -> dict[str, object]:
+    """Keep schema sampling separate from adoption and field correctness.
+
+    No event proof is invented from a matching security, date or supplier key.
+    Existing HTTP owns the request; decoding never starts another market scan.
+    """
+    try:
+        page = DecodeCompanyStructuredFields(
+            CompanyStructuredDataset(dataset),
+            payload,
+            observed_at=observed_at,
+            window_start=begin,
+            window_end=end,
+            page_size=sample_rows,
+            response_hash=response_hash,
+        )
+        resolutions = ResolveCompanyStructuredFields(page.observations, observed_at)
+    except (TypeError, ValueError) as exc:
+        return {"status": "rejected", "failure": type(exc).__name__, "production_adopted": False}
+    return {
+        "status": "decoded",
+        "observations": len(page.observations),
+        "reasons": dict(Counter(result.reason.value for result in resolutions)),
+        "production_adopted": False,
+        "field_correctness_verified": False,
     }
 
 

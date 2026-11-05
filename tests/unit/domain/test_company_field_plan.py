@@ -12,6 +12,7 @@ from trader.download.domain.company_events import (
     CompanyPositiveEvent,
     CompanyPositiveStatus,
     CompanyPositiveType,
+    CompanyReviewReason,
     CompanyRiskEvent,
     CompanyRiskType,
     CompanySeverityBasis,
@@ -25,9 +26,11 @@ from trader.download.domain.company_events import (
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_plan import (
     BuildCompanyFieldGaps,
+    BuildCompanyFieldResults,
     CompanyFieldGap,
     CompanyFieldMaterial,
     CompanyFieldIsAvailable,
+    CompanyFieldRecovery,
     PlanCompanyFieldRecovery,
 )
 
@@ -276,3 +279,107 @@ def test_repurchase_actual_ratio_and_purpose_are_independent_fields():
     facts = _facts(positives=(event,))
     assert CompanyFieldIsAvailable(facts, event.event_id, "actual_pct")
     assert not CompanyFieldIsAvailable(facts, event.event_id, "repurchase_purpose")
+
+
+def test_field_results_keep_old_nonnull_values_unverified_including_zero_and_original_dates():
+    risk = replace(_risk(), reduction_plan=ReductionPlan(AT.date(), AT.date(), 0))
+    event = replace(_positive(), measurements=IncreaseMeasurements(0))
+    results = BuildCompanyFieldResults(_facts(risks=(risk,), positives=(event,)))
+    present = tuple(result for result in results if result.state == "present_unverified")
+    assert {(result.field, result.value) for result in present} == {
+        ("start_date", AT.date()), ("end_date", AT.date()), ("planned_pct", 0), ("actual_pct", 0),
+    }
+    assert all(result.applicable and result.reason == "field_level_source_proof_missing" for result in present)
+    completion = next(result for result in results if result.field == "completion_disclosed_at")
+    assert completion.state == "not_applicable" and not completion.applicable
+
+
+def test_field_results_use_actual_event_applicability_for_the_denominator():
+    planned = replace(_positive("planned"), status=CompanyPositiveStatus.PLANNED)
+    cancelled = replace(_positive("cancelled"), status=CompanyPositiveStatus.CANCELLED, cancelled_at=AT)
+    current = _positive("current")
+    expired = replace(_risk("expired"), expires_at=AT)
+    results = BuildCompanyFieldResults(_facts(risks=(expired,), positives=(planned, cancelled, current)))
+    assert {(result.event_id, result.field) for result in results if result.applicable} == {("current", "actual_pct")}
+    assert all(result.state == "not_applicable" for result in results if not result.applicable)
+
+
+@pytest.mark.parametrize("action,state", (
+    ("download", "pending_download"),
+    ("extract", "pending_extraction"),
+    ("ocr", "pending_extraction"),
+    ("publish", "pending_publication"),
+    ("verify", "verification_required"),
+    ("unsupported", "unsupported"),
+    ("out_of_range", "out_of_range"),
+))
+def test_field_result_missing_value_uses_exact_matching_recovery(action, state):
+    gap = CompanyFieldGap("600001", "increase", "increase", "actual_pct", "measurement_missing")
+    results = BuildCompanyFieldResults(
+        _facts(positives=(_positive(),)), (CompanyFieldRecovery(gap, action, "diagnosed_reason"),)
+    )
+    assert len(results) == 1
+    assert results[0].state == state and results[0].reason == "diagnosed_reason"
+    assert results[0].recovery_action == action and results[0].value is None and results[0].applicable
+
+
+@pytest.mark.parametrize("change", (
+    {"code": "600002"}, {"event_id": "other-event"}, {"evidence_id": "other-source"}, {"field": "planned_pct"},
+))
+def test_field_result_does_not_reuse_another_field_or_source_recovery(change):
+    gap = replace(CompanyFieldGap("600001", "increase", "increase", "actual_pct", "measurement_missing"), **change)
+    recovery = CompanyFieldRecovery(gap, "download", "local_source_missing")
+    result = BuildCompanyFieldResults(_facts(positives=(_positive(),)), (recovery,))[0]
+    assert result.state == "verification_required" and result.recovery_action is None
+
+
+@pytest.mark.parametrize("reason,action", (("not_disclosed", "finished"), ("available", "reuse")))
+def test_field_result_does_not_upgrade_an_unproven_recovery_conclusion(reason, action):
+    gap = CompanyFieldGap("600001", "increase", "increase", "actual_pct", reason)
+    recovery = CompanyFieldRecovery(gap, action, "unproven")
+    result = BuildCompanyFieldResults(_facts(positives=(_positive(),)), (recovery,))[0]
+    assert result.state == "verification_required" and result.applicable
+    assert result.reason == "field_conclusion_without_source_proof"
+
+
+def test_progress_recovery_can_identify_an_actual_ratio_obligation_left_in_planned_state():
+    event = replace(_positive(), status=CompanyPositiveStatus.PLANNED)
+    gap = CompanyFieldGap("600001", "increase", "increase", "actual_pct", "measurement_missing")
+    result = BuildCompanyFieldResults(
+        _facts(positives=(event,)), (CompanyFieldRecovery(gap, "extract", "local_text_available"),)
+    )[0]
+    assert result.applicable and result.state == "pending_extraction"
+    cancelled = replace(event, status=CompanyPositiveStatus.CANCELLED, cancelled_at=AT)
+    result = BuildCompanyFieldResults(
+        _facts(positives=(cancelled,)), (CompanyFieldRecovery(gap, "extract", "local_text_available"),)
+    )[0]
+    assert not result.applicable and result.state == "not_applicable"
+
+
+def test_contract_results_keep_unknown_sentinels_as_missing_and_cancelled_fields_outside_denominator():
+    event = replace(
+        _positive(), event_type=CompanyPositiveType.OPERATING_CONTRACT,
+        measurements=ContractMeasurements(100_000_000, None, None, None, None, True, "unknown"),
+    )
+    results = BuildCompanyFieldResults(_facts(positives=(event,)))
+    assert len(results) == 6 and all(result.applicable for result in results)
+    assert next(result for result in results if result.field == "contract_amount").state == "present_unverified"
+    assert next(result for result in results if result.field == "amount_basis").value is None
+    cancelled = replace(event, status=CompanyPositiveStatus.CANCELLED, cancelled_at=AT)
+    assert all(not result.applicable for result in BuildCompanyFieldResults(_facts(positives=(cancelled,))))
+
+
+def test_reviews_and_orphan_recoveries_do_not_create_fake_event_fields():
+    facts = replace(_facts(), review_reasons=(CompanyReviewReason("positive", "progress_unlinked", "notice", AT, "待关联"),))
+    recovery = CompanyFieldRecovery(_gap(), "download", "local_source_missing")
+    assert BuildCompanyFieldResults(facts, (recovery,)) == ()
+
+
+def test_field_result_rejects_conflicting_recovery_rows_instead_of_selecting_an_action():
+    gap = CompanyFieldGap("600001", "increase", "increase", "actual_pct", "measurement_missing")
+    recoveries = (
+        CompanyFieldRecovery(gap, "extract", "local_text_available"),
+        CompanyFieldRecovery(gap, "download", "local_source_missing"),
+    )
+    with pytest.raises(ValueError, match="company_field_recovery_ambiguous"):
+        BuildCompanyFieldResults(_facts(positives=(_positive(),)), recoveries)

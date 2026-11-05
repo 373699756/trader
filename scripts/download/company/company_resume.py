@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from scripts.download.company.company_pagination_audit import AuditCompanyPagination
 from scripts.download.company.company_pipeline_audit import AuditCompanyPipeline
+from scripts.download.company.company_pipeline_audit import AuditCompanyIoCandidates
 from scripts.download.company.company_ocr_audit import AuditCompanyOcr
 from scripts.download.company.company_document_download_audit import AuditCompanyDocumentDownloads
 from scripts.download.company.company_field_audit import InspectCompanyFieldMaterial
@@ -283,6 +284,7 @@ def Main() -> int:
     audit.add_argument("--pagination-only", action="store_true")
     audit.add_argument("--pipeline-only", action="store_true")
     audit.add_argument("--pacing-only", action="store_true", help="Compare shared/per-host pacing with identical real PDFs and one complete directory sample in isolation.")
+    audit.add_argument("--io-candidates-only", action="store_true", help="Five paired isolated samples per 15/30/60-second publication candidate; never enables production changes.")
     audit.add_argument("--material-keys", nargs="+", help="Inspect bounded local source excerpts and contract facts for 1..6 source keys; requires --facts-database.")
     audit.add_argument("--ocr-only", action="store_true")
     audit.add_argument("--document-only", action="store_true")
@@ -367,6 +369,14 @@ def Main() -> int:
                                      compare_pacing=args.pacing_only), ensure_ascii=False, indent=2
             )
         )
+        return 0
+    if args.io_candidates_only:
+        print(json.dumps(AuditCompanyIoCandidates(
+            source_path,
+            directory,
+            budget_seconds=args.budget_seconds,
+            sqlite_policy=sqlite_policy,
+        ), ensure_ascii=False, indent=2))
         return 0
     destination = directory / "evidence.sqlite3"
     if destination.resolve() == source_path or (destination.exists() and destination.samefile(source_path)):

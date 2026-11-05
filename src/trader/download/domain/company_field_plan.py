@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from trader.download.domain.company_events import (
@@ -30,6 +30,17 @@ CompanyFieldReason = Literal[
 ]
 CompanyFieldAction = Literal[
     "reuse", "finished", "publish", "extract", "ocr", "download", "verify", "unsupported", "out_of_range"
+]
+CompanyFieldValue = float | str | date | datetime | None
+CompanyFieldState = Literal[
+    "present_unverified",
+    "not_applicable",
+    "pending_download",
+    "pending_extraction",
+    "pending_publication",
+    "verification_required",
+    "unsupported",
+    "out_of_range",
 ]
 
 
@@ -79,6 +90,149 @@ class CompanyFieldRecovery:
     gap: CompanyFieldGap
     action: CompanyFieldAction
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyFieldResult:
+    """Diagnostic projection, never a substitute for field-level source proof.
+
+    ``evidence_id`` identifies the event/recovery context, not proven provenance
+    for the projected value. Annual income can have a separate input source.
+    """
+
+    code: str
+    event_id: str
+    evidence_id: str
+    field: str
+    value: CompanyFieldValue
+    state: CompanyFieldState
+    applicable: bool
+    reason: str
+    recovery_action: CompanyFieldAction | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectedField:
+    event_id: str
+    evidence_id: str
+    field: str
+    value: CompanyFieldValue
+    applicable: bool
+    inapplicable_reason: str
+
+
+def BuildCompanyFieldResults(
+    facts: CompanyFacts, recoveries: tuple[CompanyFieldRecovery, ...] = ()
+) -> tuple[CompanyFieldResult, ...]:
+    """Show current values and applicable obligations without certifying them.
+
+    Existing facts have no page/paragraph and version proof for each field.
+    Non-null values therefore remain ``present_unverified``. Recovery plans
+    can explain missing values, but cannot prove non-disclosure or add events.
+    """
+    relevant = tuple(sorted(
+        (item for item in recoveries if item.gap.code == facts.code),
+        key=lambda item: (item.gap.event_id, item.gap.field, item.gap.evidence_id),
+    ))
+    keys = tuple((item.gap.event_id, item.gap.field, item.gap.evidence_id) for item in relevant)
+    if len(set(keys)) != len(keys):
+        raise ValueError("company_field_recovery_ambiguous")
+    gaps = BuildCompanyFieldGaps(facts)
+    results: list[CompanyFieldResult] = []
+    for projected in _projected_fields(facts):
+        key = (projected.event_id, projected.field, projected.evidence_id)
+        position = bisect_left(keys, key)
+        recovery = relevant[position] if position < len(keys) and keys[position] == key else None
+        applicable = projected.applicable
+        if (not applicable and projected.inapplicable_reason == "action_not_implemented" and recovery is not None
+            and recovery.gap.reason == "measurement_missing"):
+            # The adapter may have a verified progress/result title while the
+            # old missing measurement still leaves the fact in planned state.
+            applicable = True
+        state: CompanyFieldState
+        if not applicable:
+            state, reason = "not_applicable", projected.inapplicable_reason
+        elif projected.value is not None:
+            state, reason = "present_unverified", "field_level_source_proof_missing"
+        elif recovery is not None:
+            state, reason = _field_result_recovery(recovery)
+        else:
+            state = "verification_required"
+            reason = next((gap.reason for gap in gaps if (
+                gap.event_id == projected.event_id and gap.field == projected.field
+                and gap.evidence_id == projected.evidence_id
+            )), "field_evidence_required")
+        results.append(CompanyFieldResult(
+            facts.code, projected.event_id, projected.evidence_id, projected.field, projected.value,
+            state, applicable, reason, recovery.action if recovery is not None else None,
+        ))
+    return tuple(results)
+
+
+def _projected_fields(facts: CompanyFacts) -> tuple[_ProjectedField, ...]:
+    fields: list[_ProjectedField] = []
+    value: CompanyFieldValue
+    for risk in facts.risk_events:
+        if risk.risk_type is not CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION:
+            continue
+        applicable = risk.expires_at is None or risk.expires_at > facts.checked_at
+        plan = risk.reduction_plan
+        for field, value in (
+            ("start_date", plan.planned_start_date if plan is not None else None),
+            ("end_date", plan.planned_end_date if plan is not None else None),
+            ("planned_pct", plan.planned_ratio_pct if plan is not None else None),
+        ):
+            fields.append(_ProjectedField(risk.event_id, risk.evidence_ids[0], field, value, applicable, "risk_expired"))
+        completion_applies = applicable and risk.status is CompanyEventStatus.RESOLVED
+        fields.append(_ProjectedField(
+            risk.event_id, risk.evidence_ids[-1], "completion_disclosed_at",
+            plan.completion_disclosed_at if plan is not None else None, completion_applies,
+            "risk_expired" if not applicable else "reduction_not_resolved",
+        ))
+    for event in facts.positive_events:
+        applicable = event.status is not CompanyPositiveStatus.CANCELLED
+        measurements = event.measurements
+        if isinstance(measurements, (RepurchaseMeasurements, IncreaseMeasurements)):
+            actual_applies = applicable and event.status is not CompanyPositiveStatus.PLANNED
+            fields.append(_ProjectedField(
+                event.event_id, event.evidence_ids[-1], "actual_pct", measurements.actual_ratio_pct, actual_applies,
+                "event_cancelled" if not applicable else "action_not_implemented",
+            ))
+            if isinstance(measurements, RepurchaseMeasurements):
+                purpose = measurements.purpose.value if measurements.purpose is not RepurchasePurpose.UNKNOWN else None
+                fields.append(_ProjectedField(
+                    event.event_id, event.evidence_ids[-1], "repurchase_purpose", purpose, applicable, "event_cancelled"
+                ))
+        elif isinstance(measurements, ContractMeasurements):
+            values: tuple[tuple[str, CompanyFieldValue], ...] = (
+                ("contract_amount", measurements.contract_amount_cny),
+                ("annual_revenue", measurements.reference_annual_revenue_cny),
+                ("revenue_report_date", measurements.reference_report_date),
+                ("revenue_disclosed_at", measurements.reference_disclosed_at),
+                ("contract_revenue_pct", measurements.amount_to_revenue_pct),
+                ("amount_basis", measurements.amount_basis if measurements.amount_basis != "unknown" else None),
+            )
+            for field, value in values:
+                fields.append(_ProjectedField(
+                    event.event_id, event.evidence_ids[-1], field, value, applicable, "event_cancelled"
+                ))
+    return tuple(fields)
+
+
+def _field_result_recovery(recovery: CompanyFieldRecovery) -> tuple[CompanyFieldState, str]:
+    if recovery.action == "download":
+        return "pending_download", recovery.reason
+    if recovery.action in {"extract", "ocr"}:
+        return "pending_extraction", recovery.reason
+    if recovery.action == "publish":
+        return "pending_publication", recovery.reason
+    if recovery.action == "unsupported":
+        return "unsupported", recovery.reason
+    if recovery.action == "out_of_range":
+        return "out_of_range", recovery.reason
+    if recovery.action in {"reuse", "finished"}:
+        return "verification_required", "field_conclusion_without_source_proof"
+    return "verification_required", recovery.reason
 
 
 def BuildCompanyFieldGaps(facts: CompanyFacts) -> tuple[CompanyFieldGap, ...]:
@@ -243,6 +397,10 @@ __all__ = [
     "CompanyFieldGap",
     "CompanyFieldMaterial",
     "CompanyFieldRecovery",
+    "CompanyFieldValue",
+    "CompanyFieldState",
+    "CompanyFieldResult",
+    "BuildCompanyFieldResults",
     "BuildCompanyFieldGaps",
     "CompanyFieldIsAvailable",
     "PlanCompanyFieldRecovery",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
+from enum import Enum
 
 from trader.download.domain.company_events import (
     CompanyEventPolicy,
@@ -64,6 +65,20 @@ _SUBJECT_MARKERS = (
     ("5%以上股东", CompanySubject.MAJOR_SHAREHOLDER),
     ("大股东", CompanySubject.MAJOR_SHAREHOLDER),
 )
+_SUBSIDIARY_MARKERS = ("子公司", "参股公司")
+_CONTRACT_ACTOR = re.compile(
+    r"(?P<outside>子公司|参股公司)|"
+    r"(?P<issuer>(?:本公司|上市公司|(?:^|[，,：:])公司)"
+    r"(?=已|于|拟|与|将|根据|就|决定|经|近日|最近|签署|签订|订立|采购|购买|订购|中标|承包|承接|终止|解除|撤销|取消|履行|"
+    r"收到[^。；;]{0,80}中标|被确定为[^。；;]{0,80}中标|为[^。；;]{0,120}中标))|"
+    r"(?P<action>合同(?:已生效|自签署之日起生效)|签署|签订|订立|采购|购买|订购|中标|承包|承接|终止|解除|撤销|取消|履行合同)"
+)
+
+
+class _ContractActor(Enum):
+    ISSUER = "issuer"
+    OUTSIDE = "outside"
+    UNVERIFIED = "unverified"
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,9 +207,13 @@ def ExtractCompanyEvents(
         raise ValueError("company_event_observation_requires_timezone")
     risks = list(previous_risks)
     positives = list(previous_positives)
-    observed_evidence = {item.disclosure.identity for item in documents}
+    processed_evidence = {
+        item.disclosure.identity for item in documents
+        if item.checked and item.text.strip() and item.disclosure.published_at <= observed_at
+        and CompanyDocumentNeedsReview(item.disclosure.title) and item.disclosure.source in _OFFICIAL_SOURCES
+    }
     reviews = [
-        item for item in previous_reviews if item.evidence_id is not None and item.evidence_id not in observed_evidence
+        item for item in previous_reviews if item.evidence_id is not None and item.evidence_id not in processed_evidence
     ]
     checked = 0
     for document in sorted(documents, key=lambda item: (item.disclosure.published_at, item.disclosure.identity)):
@@ -202,6 +221,10 @@ def ExtractCompanyEvents(
         if item.published_at > observed_at or not CompanyDocumentNeedsReview(item.title):
             continue
         verified, review = _verify_document(document, observed_at)
+        if verified is None and review is None and any(item.identity in event.evidence_ids for event in positives):
+            # A changed source can disprove a former actor without proving that
+            # its earlier event was cancelled. Keep that event under review.
+            review = _review(document, observed_at, "positive", "subject_unverified", "原事件主体与当前正文不一致")
         if review is not None:
             reviews.append(review)
             _suspend_positive(positives, item.identity, item.published_at)
@@ -264,8 +287,14 @@ def _verify_document(
         return None, _review(document, observed_at, scope, "extraction_unsupported" if document.terminal_failure else "document_pending", "公告正文无法提取" if document.terminal_failure else "公告正文尚未完整提取")
     if document.disclosure.source not in _OFFICIAL_SOURCES:
         return None, _review(document, observed_at, scope, "official_source_unverified", "公告来源未核实")
-    if _unrelated_subject(title):
+    if CompanyDocumentOutsideSubjectScope(title):
         return None, None
+    if _positive_type(title) is CompanyPositiveType.OPERATING_CONTRACT:
+        actor = _contract_actor(title, body)
+        if actor is _ContractActor.OUTSIDE and not CompanyDocumentRiskRelevant(title):
+            return None, None
+        if actor is not _ContractActor.ISSUER:
+            return None, _review(document, observed_at, scope, "subject_unverified", "合同实际签署主体无法确认")
     subject = _subject(title, body)
     if subject is None:
         return None, _review(document, observed_at, scope, "subject_unverified", "正文主体无法确认")
@@ -717,7 +746,7 @@ def _contract(body: str, published: datetime) -> ContractMeasurements:
     ) and not any(x in body for x in ("框架协议", "意向协议", "中标候选", "尚未生效"))
     binding = binding and re.search(r"(?:尚需|须经|需经)[^。；]{0,40}生效", body) is None
     amount = _single_measurement(
-        r"合同(?:总)?金额(?:[（(](?:不含税|含税)[）)])?(?:为|约为)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
+        r"(?:合同|协议)(?:总)?金额(?:[（(](?:不含税|含税)[）)])?(?:为|约为)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
     )
     revenue = _single_measurement(
         r"(20[0-9]{2})年度(?:经审计的)?营业收入(?:为|合计)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
@@ -784,13 +813,60 @@ def _amount_unit(unit: str | None) -> int:
     return 100_000_000 if unit == "亿" else 10_000 if unit == "万" else 1
 
 
+def _contract_actor(title: str, body: str) -> _ContractActor:
+    if any(marker in title for marker in ("公司及", "公司与", "公司和")):
+        return _ContractActor.UNVERIFIED
+    issuer, outside = False, False
+    for sentence in re.split(r"[。；;！？!?]", body):
+        actor: _ContractActor | None = None
+        issuer_action = False
+        has_subsidiary = False
+        for token in _CONTRACT_ACTOR.finditer(sentence):
+            if token.lastgroup == "action" and token.group() in {"签署", "签订"} and re.match(
+                r"方|主体|概况|情况|事宜|流程|程序", sentence[token.end():]
+            ):
+                continue
+            if token.lastgroup == "outside":
+                prefix = sentence[max(0, token.start() - 24):token.start()]
+                if actor is _ContractActor.ISSUER:
+                    return _ContractActor.UNVERIFIED
+                if re.search(r"(?:公司|本公司|上市公司)(?:及|与|和)(?:其)?(?:全资|控股)?$", prefix):
+                    return _ContractActor.UNVERIFIED
+                if re.search(r"(?:不是|并非|不属于|不涉及|不含|不包括|未涉及)[^，,]{0,8}$", prefix):
+                    return _ContractActor.UNVERIFIED
+                actor = _ContractActor.OUTSIDE
+                has_subsidiary = True
+            elif token.lastgroup == "issuer":
+                actor = _ContractActor.ISSUER
+            elif actor is _ContractActor.OUTSIDE:
+                outside = True
+            elif actor is _ContractActor.ISSUER:
+                issuer, issuer_action = True, True
+            elif re.search(
+                r"公司(?:于[^。；;]{0,30}|已|拟|与[^。；;]{0,30})?$",
+                sentence[max(0, token.start() - 64):token.start()],
+            ):
+                # A legal name or undeclared alias is not proof that every
+                # contract belongs to the previously mentioned subsidiary.
+                return _ContractActor.UNVERIFIED
+        if issuer_action and has_subsidiary:
+            # Roles in a shared sentence may be counterparties or co-signers.
+            # Its numeric fields cannot safely share one issuer scope.
+            return _ContractActor.UNVERIFIED
+    if issuer and not outside:
+        return _ContractActor.ISSUER
+    return _ContractActor.OUTSIDE if outside and not issuer else _ContractActor.UNVERIFIED
+
+
 def _subject(title: str, body: str) -> CompanySubject | None:
     subjects = {subject for marker, subject in _SUBJECT_MARKERS if marker in title and marker in body}
     if subjects:
         return next(iter(subjects)) if len(subjects) == 1 else None
     if any(marker in body for marker, _ in _SUBJECT_MARKERS):
         return None
-    return CompanySubject.ISSUER if any(x in body for x in ("本公司", "公司收到", "公司已", "公司于")) else None
+    return CompanySubject.ISSUER if any(x in body for x in (
+        "本公司", "公司收到", "公司已", "公司于", "公司被确定为", "公司签署", "公司签订"
+    )) else None
 
 
 def _subject_body(verified: _VerifiedDocument) -> str:
@@ -800,8 +876,14 @@ def _subject_body(verified: _VerifiedDocument) -> str:
     for offset in range(0, len(parts), 2):
         clause = parts[offset]
         text = re.sub(r"(?:本公司|上市公司|公司)的?(?=控股股东|实际控制人|持股5%以上|5%以上股东|大股东)", "", clause)
+        if (_positive_type(verified.title) is CompanyPositiveType.OPERATING_CONTRACT
+            and any(marker in text for marker in _SUBSIDIARY_MARKERS)):
+            current = None
+            continue
         subjects = {subject for marker, subject in _SUBJECT_MARKERS if marker in text}
-        if any(marker in text for marker in ("本公司", "上市公司", "公司收到", "公司已", "公司于", "公司未", "公司不")):
+        if any(marker in text for marker in (
+            "本公司", "上市公司", "公司收到", "公司已", "公司于", "公司未", "公司不", "公司被确定为", "公司签署", "公司签订"
+        )):
             subjects.add(CompanySubject.ISSUER)
         if subjects:
             current = next(iter(subjects)) if len(subjects) == 1 else None

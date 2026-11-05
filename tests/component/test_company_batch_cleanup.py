@@ -60,7 +60,7 @@ def test_unresolved_review_survives_cleanup_restart_and_later_publication(tmp_pa
     assert resumed.pending_documents(("600001",), NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     resumed.publish(("600001",), NOW + timedelta(minutes=1))
     assert tuple(item for item in reader.read(("600001",))[0].review_reasons if item.evidence_id) == before
-    assert not tuple((tmp_path / "text").rglob("*.gz"))
+    assert tuple((tmp_path / "text").rglob("*.gz")), "Unverified conclusions still require their accepted material"
 
 
 def test_shared_document_waits_for_every_requested_issuer_before_cleanup(tmp_path):
@@ -135,12 +135,14 @@ def test_rejected_late_result_cannot_replace_link_candidate_used_by_later_sync(t
     index.publish(closure.codes, NOW)
     with SqliteSession(index.path) as connection:
         accepted = connection.run("SELECT payload FROM document_link_candidates").require_one()[0]
+    retained = tuple((tmp_path / "text").rglob("*.gz"))
+    assert len(retained) == 1, "An unlinked resolution must keep its accepted material"
     assert not index.commit_document(
         closure, fixtures._extraction("本公司收到证监会〔2026〕调查2号通知，调查终结。"), NOW + timedelta(seconds=1)
     )
     with SqliteSession(index.path) as connection:
         assert connection.run("SELECT payload FROM document_link_candidates").require_one()[0] == accepted
-    assert not tuple((tmp_path / "text").rglob("*.gz"))
+    assert tuple((tmp_path / "text").rglob("*.gz")) == retained
     opened = fixtures._disclosure("opened", "关于收到立案告知书的公告", when=NOW - timedelta(days=3))
     index.commit_page(
         DisclosurePartition("sse", opened.published_at.date(), opened.published_at.date()),
@@ -176,6 +178,7 @@ def test_rejected_late_result_cannot_replace_link_candidate_used_by_later_sync(t
     facts = SQLiteCompanyEvidenceReader(index.facts_path).read(opened.codes)[0]
     assert not facts.risk_events
     assert not any(item.reason_code == "resolution_unlinked" for item in facts.review_reasons)
+    assert not tuple((tmp_path / "text").rglob("*.gz")), "Resolved evidence can be released after publication"
 
 
 def test_capacity_limits_batch_and_refuses_dispatch_when_no_document_fits(tmp_path):

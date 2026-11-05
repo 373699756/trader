@@ -71,7 +71,6 @@ def test_input_recovery_reopens_legacy_failure_and_keeps_successful_body(tmp_pat
 
 def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_path):
     import json
-    from types import SimpleNamespace
 
     from trader.download.application.company_evidence import _DocumentRun, _SourceCircuit, _SyncState
     from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyOcrDiagnostic
@@ -80,7 +79,7 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
     item = _seed(index, 1)[0]
     policies = fixtures._TEST_DOCUMENT_POLICIES
     run = _DocumentRun.__new__(_DocumentRun)
-    run.dependencies = SimpleNamespace(index=index, monotonic=lambda: 0.0, failures=None)
+    run.dependencies = CompanyEvidenceDependencies(index, fixtures.Sources(), fixtures.Sources(), lambda: 0.0)
     run.failed_identities = set()
     run.state = _SyncState()
     run.policies = policies

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from itertools import groupby
 from pathlib import Path
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import hashlib
 
 from trader.download.domain.company_events import (
@@ -24,7 +24,13 @@ from trader.download.domain.company_field_plan import (
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import CompanyInputReceipt
-from trader.download.infra.company_facts_protocol import RequireCompanyTime
+from trader.download.infra.company_facts_protocol import (
+    DecodeCompanyLabel,
+    EVIDENCE_SOURCES,
+    REVIEW_REASONS,
+    REVIEW_SCOPES,
+    RequireCompanyTime,
+)
 from trader.infra.sqlite_connection import SqliteConnection
 
 # These rules change measurements only; old document receipts keep their identity.
@@ -32,10 +38,40 @@ from trader.infra.sqlite_connection import SqliteConnection
 COMPANY_FIELD_RULES = (
     ("planned_pct", "reduction_total_capital_ratio:1"),
     ("actual_pct", "implemented_total_capital_ratio:1"),
-    ("contract_amount", "explicit_cny_contract_amount:1"),
+    ("contract_amount", "explicit_cny_contract_amount:2"),
     ("revenue_report_date", "explicit_contract_revenue_year:1"),
 )
 _REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence:1"
+_MATERIAL_REVIEW_REASONS = frozenset({
+    "subject_unverified", "conclusion_unverified", "case_conclusion_ambiguous",
+    "progress_unlinked", "resolution_unlinked", "cancellation_unlinked",
+    "implementation_or_measurement_unverified", "revision_pending",
+})
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyMaterialDependency:
+    """A still-unresolved review's exact input, never a field value or retry job."""
+
+    code: str
+    source: str
+    evidence_id: str
+    record_hash: str
+    body_hash: bytes
+    extraction_hash: bytes
+    scope: str
+    reason_code: str
+    current_record_hash: str
+    current_body_hash: bytes | None
+    current_extraction_hash: bytes
+
+    @property
+    def is_current_version(self) -> bool:
+        return (
+            self.record_hash == self.current_record_hash
+            and self.body_hash == self.current_body_hash
+            and self.extraction_hash == self.current_extraction_hash
+        )
 
 
 def EnsureCompanyFieldRepairs(connection: SqliteConnection) -> None:
@@ -46,6 +82,152 @@ def EnsureCompanyFieldRepairs(connection: SqliteConnection) -> None:
         "state TEXT NOT NULL CHECK(state IN ('pending','attempted','complete')),"
         "PRIMARY KEY(disclosure_id,code,record_hash,event_id,field,rule_id)) WITHOUT ROWID"
     )
+    connection.run(
+        "CREATE TABLE IF NOT EXISTS company_material_dependencies("
+        "disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,"
+        "code TEXT NOT NULL,record_hash TEXT NOT NULL,body_hash BLOB NOT NULL CHECK(length(body_hash)=32),"
+        "extraction_hash BLOB NOT NULL CHECK(length(extraction_hash)=32),scope TEXT NOT NULL,reason_code TEXT NOT NULL,"
+        "PRIMARY KEY(disclosure_id,code,record_hash,body_hash,extraction_hash,scope,reason_code)) WITHOUT ROWID"
+    )
+    connection.run(
+        "CREATE INDEX IF NOT EXISTS company_material_dependency_codes ON company_material_dependencies(code,disclosure_id)"
+    )
+
+
+def RegisterCompanyMaterialDependencies(
+    collected: SqliteConnection,
+    formal: SqliteConnection,
+    facts: Sequence[CompanyFacts],
+    extraction_hash: bytes,
+) -> None:
+    """Pin necessary reviewed material only after its matching formal receipt exists.
+
+    A pending/unread input is not a resolution. Keep its existing dependency
+    until the same current body has actually been processed and published.
+    This projection can be rebuilt after a formal commit/collection rollback.
+    """
+    for fact in facts:
+        required = frozenset(
+            (review.evidence_id, review.scope, review.reason_code)
+            for review in fact.review_reasons
+            if review.evidence_id is not None and review.reason_code in _MATERIAL_REVIEW_REASONS
+        )
+        for evidence_id, scope, reason in required:
+            rows = collected.run(
+                "SELECT d.id,d.source,d.record_hash,d.body_hash FROM disclosures d "
+                "JOIN disclosure_codes c ON c.disclosure_id=d.id "
+                "WHERE d.source_key=? AND c.code=? AND d.kind='announcement'",
+                (evidence_id, fact.code),
+            ).fetchall()
+            if len(rows) != 1:
+                continue
+            row = rows[0]
+            body_hash = row[3]
+            if body_hash is None:
+                receipt = formal.run(
+                    "SELECT body_hash FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
+                    "AND record_hash=? AND extraction_hash=? AND outcome='valid' AND body_hash IS NOT NULL",
+                    (row[1], evidence_id, fact.code, row[2], extraction_hash),
+                ).fetchone()
+                if receipt is None:
+                    continue
+                # Recover the original provenance, never the current material's
+                # availability: initialization may have rejected a missing text.
+                body_hash = receipt[0]
+            if not _has_valid_material_receipt(
+                formal, row[1], evidence_id, fact.code, row[2], body_hash, extraction_hash,
+            ):
+                continue
+            collected.run(
+                "INSERT OR REPLACE INTO company_material_dependencies VALUES(?,?,?,?,?,?,?)",
+                (row[0], fact.code, row[2], body_hash, extraction_hash, scope, reason),
+            )
+        for row in collected.run(
+            "SELECT m.disclosure_id,m.record_hash,m.body_hash,m.extraction_hash,m.scope,m.reason_code,"
+            "d.source,d.source_key,d.record_hash,d.body_hash,d.body_checked "
+            "FROM company_material_dependencies m JOIN disclosures d ON d.id=m.disclosure_id WHERE m.code=?",
+            (fact.code,),
+        ).fetchall():
+            if (row[7], row[4], row[5]) in required:
+                continue
+            unread = any(
+                review.evidence_id == row[7] and review.reason_code in {"document_pending", "extraction_unsupported"}
+                for review in fact.review_reasons
+            )
+            if unread or not row[10]:
+                continue
+            if row[9] is None or not _has_valid_material_receipt(
+                formal, row[6], row[7], fact.code, row[8], row[9], extraction_hash,
+            ):
+                continue
+            collected.run(
+                "DELETE FROM company_material_dependencies WHERE disclosure_id=? AND code=? "
+                "AND record_hash=? AND body_hash=? AND extraction_hash=? AND scope=? AND reason_code=?",
+                (row[0], fact.code, row[1], row[2], row[3], row[4], row[5]),
+            )
+
+
+def RestoreCompanyMaterialDependencies(collected: SqliteConnection, formal: SqliteConnection) -> None:
+    """Pin proven review inputs before startup can discard an older source version.
+
+    Reviews do not name their original record/body version. Preserve the exact
+    existing valid receipts for that source/key/code rather than guessing one;
+    none establishes availability or success for the current directory version.
+    """
+    reasons = tuple(REVIEW_REASONS[reason] for reason in sorted(_MATERIAL_REVIEW_REASONS))
+    placeholders = ",".join("?" for _reason in reasons)
+    reviews = formal.run(
+        "SELECT v.code,v.scope,v.reason,r.source,r.source_key FROM company_review v "
+        "JOIN company_evidence_ref r ON r.id=v.evidence_id "
+        f"WHERE v.reason IN ({placeholders}) ORDER BY v.code,r.source,r.source_key,v.scope,v.reason",
+        reasons,
+    )
+    while batch := reviews.fetchmany(128):
+        for review in batch:
+            source = DecodeCompanyLabel(EVIDENCE_SOURCES, review[3])
+            scope = DecodeCompanyLabel(REVIEW_SCOPES, review[1])
+            reason = DecodeCompanyLabel(REVIEW_REASONS, review[2])
+            receipts = formal.run(
+                "SELECT record_hash,body_hash,extraction_hash FROM company_input_receipt "
+                "WHERE source=? AND source_key=? AND code=? AND outcome='valid' AND body_hash IS NOT NULL",
+                (source, review[4], review[0]),
+            )
+            while inputs := receipts.fetchmany(128):
+                collected.run_many(
+                    "INSERT OR IGNORE INTO company_material_dependencies "
+                    "SELECT id,?,?,?,?,?,? FROM disclosures WHERE source=? AND source_key=?",
+                    ((review[0], receipt[0], receipt[1], receipt[2], scope, reason, source, review[4]) for receipt in inputs),
+                )
+
+
+def ReadRequiredCompanyMaterialDependencies(
+    collected: SqliteConnection,
+    extraction_hash: bytes,
+) -> tuple[CompanyMaterialDependency, ...]:
+    """Read still-required original inputs alongside their current source/rule versions."""
+    return tuple(CompanyMaterialDependency(*row) for row in collected.run(
+        "SELECT m.code,d.source,d.source_key,m.record_hash,m.body_hash,m.extraction_hash,m.scope,m.reason_code,"
+        "d.record_hash,d.body_hash,? "
+        "FROM company_material_dependencies m JOIN disclosures d ON d.id=m.disclosure_id "
+        "ORDER BY m.code,d.source,d.source_key,m.scope,m.reason_code,m.record_hash,m.body_hash,m.extraction_hash",
+        (extraction_hash,),
+    ))
+
+
+def _has_valid_material_receipt(
+    formal: SqliteConnection,
+    source: str,
+    evidence_id: str,
+    code: str,
+    record_hash: str,
+    body_hash: bytes,
+    extraction_hash: bytes,
+) -> bool:
+    return formal.run(
+        "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
+        "AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='valid'",
+        (source, evidence_id, code, record_hash, body_hash, extraction_hash),
+    ).fetchone() is not None
 
 
 def ReadCompanyFieldRecovery(
@@ -404,4 +586,8 @@ __all__ = [
     "CompleteCompanyFieldRepairs",
     "CompanyFieldRepairReceipts",
     "RestoreCompanyFieldRepairs",
+    "CompanyMaterialDependency",
+    "RegisterCompanyMaterialDependencies",
+    "RestoreCompanyMaterialDependencies",
+    "ReadRequiredCompanyMaterialDependencies",
 ]

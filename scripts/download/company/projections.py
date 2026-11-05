@@ -62,6 +62,12 @@ def ProjectCompanyResume(
             "failure", "diagnostic", "seconds", "reason", "samples", "recovered_documents",
         )}
     pipeline = ProjectMapping(summary.get("pipeline_audit"))
+    io_candidates = ProjectMapping(summary.get("io_candidates"))
+    if io_candidates:
+        selected["io_candidates"] = {key: io_candidates.get(key) for key in (
+            "isolated_sample", "rounds_required", "pairs_completed", "selected_interval_seconds",
+            "production_enabled", "performance_accepted", "full_sync_verified", "directory_prefetch_measured",
+        )}
     if pipeline:
         pipeline_runs = pipeline.get("runs")
         selected["pipeline_audit"] = {
@@ -69,17 +75,23 @@ def ProjectCompanyResume(
             "equivalent_facts": pipeline.get("equivalent_facts"),
             "equivalent_documents": pipeline.get("equivalent_documents"),
             "equivalent_payloads": pipeline.get("equivalent_payloads"),
+            "compare_io": pipeline.get("compare_io"),
+            "input_sample_digest": pipeline.get("input_sample_digest"),
             "runs": [
                 {
                     key: row.get(key)
                     for key in (
                         "workers",
+                        "io_candidate",
+                        "publication_interval_seconds",
+                        "directory_prefetch_measured",
                         "sample_documents",
                         "attempts",
                         "pending_documents",
                         "published_codes",
                         "seconds",
                         "first_publication_seconds",
+                        "publication_calls",
                         "resume_changed_rows",
                         "resume_pending_documents",
                         "resume_attempts",

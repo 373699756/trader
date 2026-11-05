@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -36,7 +37,15 @@ class _Reservation:
 class CompanyRawFiles:
     """File owner; SQLite owns dispatch. Files are recoverable immutable outputs."""
 
-    def __init__(self, root: Path, *, capacity: int, analysis_reserve: int, free_reserve: int) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        capacity: int,
+        analysis_reserve: int,
+        free_reserve: int,
+        scan_reservations_once: bool = False,
+    ) -> None:
         if not 0 < analysis_reserve < capacity or free_reserve <= 0:
             raise ValueError("company_raw_capacity_invalid")
         self.root = root
@@ -45,6 +54,7 @@ class CompanyRawFiles:
         self.free_reserve = free_reserve
         self._lock = RLock()
         self._reservations: list[_Reservation] = []
+        self._scan_reservations_once = scan_reservations_once
 
     def directory(self, item: Disclosure) -> Path:
         key = hashlib.sha256(json.dumps((item.source, item.identity, item.digest)).encode()).hexdigest()
@@ -83,30 +93,61 @@ class CompanyRawFiles:
 
     @staticmethod
     def _size(directory: Path) -> int:
+        return sum(size for _path, size in CompanyRawFiles._file_sizes(directory))
+
+    @staticmethod
+    def _file_sizes(directory: Path, *, single_stat: bool = False) -> Iterator[tuple[Path, int]]:
         def scan_error(error: OSError) -> None:
             if not isinstance(error, FileNotFoundError):
                 raise error
 
-        total = 0
         for root, _directories, files in os.walk(directory, onerror=scan_error):
             for name in files:
                 path = Path(root) / name
                 try:
-                    if path.is_file():
-                        total += path.stat().st_size
+                    if single_stat:
+                        metadata = path.stat()
+                        if stat.S_ISREG(metadata.st_mode):
+                            yield path, metadata.st_size
+                    elif path.is_file():
+                        yield path, path.stat().st_size
                 except FileNotFoundError:
                     continue  # Workers remove completed scratch files and directories.
-        return total
+
+    def _reservation_usage(self, directory: Path) -> tuple[int, int, int]:
+        """Diagnostic candidate: one observation of owned trees and reservations, never a cache."""
+        roots = tuple(self.root / name for name in ("documents", "text", "failed"))
+        targets = tuple(dict.fromkeys((*[Path(item.key) for item in self._reservations], directory)))
+        sizes = {target: 0 for target in targets}
+        used = 0
+        for root in roots:
+            for path, size in self._file_sizes(root, single_stat=True):
+                used += size
+                for target in targets:
+                    if path.is_relative_to(target):
+                        sizes[target] += size
+        for target in targets:
+            if not any(target.is_relative_to(root) for root in roots):
+                sizes[target] = sum(size for _path, size in self._file_sizes(target, single_stat=True))
+        held = sum(max(0, item.maximum - max(0, sizes[Path(item.key)] - item.initial)) for item in self._reservations)
+        return used, held, sizes[directory]
 
     @contextmanager
     def reserve(self, directory: Path, maximum: int, *, analysis: bool = False) -> Iterator[None]:
         with self._lock:
             self.root.mkdir(parents=True, exist_ok=True)
-            held = sum(max(0, r.maximum - max(0, self._size(Path(r.key)) - r.initial)) for r in self._reservations)
+            if self._scan_reservations_once:
+                used, held, initial = self._reservation_usage(directory)
+            else:
+                held = sum(max(0, r.maximum - max(0, self._size(Path(r.key)) - r.initial)) for r in self._reservations)
+                used = self.usage()
+                initial = 0
             ceiling = self.capacity if analysis else self.capacity - self.analysis_reserve
-            if self.usage() + held + maximum > ceiling or shutil.disk_usage(self.root).free - held - maximum < self.free_reserve:
+            if used + held + maximum > ceiling or shutil.disk_usage(self.root).free - held - maximum < self.free_reserve:
                 raise RuntimeError("company_raw_capacity_exhausted")
-            reservation = _Reservation(str(directory), maximum, self._size(directory), analysis)
+            if not self._scan_reservations_once:
+                initial = self._size(directory)
+            reservation = _Reservation(str(directory), maximum, initial, analysis)
             self._reservations.append(reservation)
             directory.mkdir(parents=True, exist_ok=True)
         try:

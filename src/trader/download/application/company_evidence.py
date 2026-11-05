@@ -48,6 +48,7 @@ from trader.download.domain.company_annual_income import CompanyAnnualIncome, Co
 
 
 class CompanyEvidenceIndex(Protocol):
+    def document_publication_urgent(self, item: Disclosure) -> bool: ...
     def annual_income_requests(
         self, codes: Sequence[str], observed_at: datetime
     ) -> tuple[CompanyAnnualIncomeRequest, ...]: ...
@@ -170,6 +171,8 @@ class CompanyEvidenceDependencies:
     ocr_identity: str = "unavailable"
     text_identity: str = "poppler-path"
     failures: DownloadFailurePort | None = None
+    directory_executor: WorkerExecutor | None = None
+    coalesce_publications: bool = False
 
 
 @dataclass
@@ -186,6 +189,9 @@ class _SyncState:
     annual_income_attempts: set[CompanyAnnualIncomeRequest] = field(default_factory=set)
     annual_income_circuit: _SourceCircuit = field(default_factory=lambda: _SourceCircuit())
     annual_income_source_stopped: bool = False
+    unpublished_documents: int = 0
+    publication_pending_since: float | None = None
+    publication_required: bool = True
 
 
 @dataclass
@@ -260,6 +266,11 @@ def SyncCompanyEvidence(
     news_updates = () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, state)
     if news_updates and not _cancelled(dependencies):
         _publish_batch(dependencies, population, observed_at, started, state)
+    if dependencies.coalesce_publications and not _cancelled(dependencies):
+        # Final verification remains mandatory even if the last bounded
+        # batch was already published. Scheduling is not a file seal.
+        _publish_batch(dependencies, population, observed_at, started, state)
+    published = max(published, state.published)
     document_workload: CompanyDocumentWorkload | None = None
     if not _cancelled(dependencies):
         try:
@@ -321,18 +332,28 @@ def _run_batches(
     pending = published = 0
     announcements = _AnnouncementRun(dependencies, state, context)
     announcements.prepare(population)
-    while not _cancelled(dependencies):
-        state.batch += 1
-        pending = announcements.run_batch(context.configuration.directory_batch_pages)
-        if not _cancelled(dependencies):
-            documents.run_batch(discovering=announcements.can_continue, discover=lambda: announcements.run_batch(1) if announcements.can_continue else None)
-            pending = announcements.run_batch(0)
-        if not _cancelled(dependencies):
-            count = _publish_batch(dependencies, population, context.observed_at, context.started, state)
-            if count is not None:
-                published = count
-        if not announcements.can_continue and not documents.has_due():
-            break
+    try:
+        while not _cancelled(dependencies):
+            state.batch += 1
+            pending = announcements.run_batch(context.configuration.directory_batch_pages)
+            if not _cancelled(dependencies):
+                documents.run_batch(
+                    discovering=announcements.can_continue,
+                    discover=lambda: announcements.run_batch(
+                        1, wait_for_page=dependencies.directory_executor is None
+                    ) if announcements.can_continue else None,
+                )
+                pending = announcements.run_batch(0)
+            if not _cancelled(dependencies) and (
+                not dependencies.coalesce_publications or state.publication_required
+            ):
+                count = _publish_batch(dependencies, population, context.observed_at, context.started, state)
+                if count is not None:
+                    published = count
+            if not announcements.can_continue and not documents.has_due():
+                break
+    finally:
+        announcements.close()
     if not _cancelled(dependencies):
         published = dependencies.index.published_count(population)
         state.published = published
@@ -362,6 +383,9 @@ def _publish_batch(
                 return state.published
             state.published = dependencies.index.published_count(population)
         _report(dependencies, "publish", state, 0, completed=updated, status="complete")
+        state.unpublished_documents = 0
+        state.publication_pending_since = None
+        state.publication_required = False
         return state.published
     return None
 
@@ -374,6 +398,12 @@ def _publish_company_facts(index: CompanyEvidenceIndex, population: tuple[str, .
             if attempt == 2 or str(exc) not in {"company_publication_source_changed", "company_publication_parent_changed"}:
                 raise
     raise RuntimeError("company_publication_retry_exhausted")
+
+
+def _mark_publication_pending(dependencies: CompanyEvidenceDependencies, state: _SyncState) -> None:
+    state.publication_required = True
+    if dependencies.coalesce_publications and state.publication_pending_since is None:
+        state.publication_pending_since = dependencies.monotonic()
 
 
 def _annual_income(
@@ -448,8 +478,10 @@ class _AnnouncementRun:
         self._deferred: set[tuple[Market, date, date, str]] = set()
         self._circuit = _SourceCircuit()
         self._stopped = False
+        self._prefetch: tuple[DisclosurePartition, bool, Future[DisclosurePage]] | None = None
 
     def prepare(self, population: tuple[str, ...]) -> None:
+        self._population = population
         dependencies, state = self._dependencies, self._state
         _report(dependencies, "announcements", state, None)
         if _cancelled(dependencies):
@@ -461,30 +493,103 @@ class _AnnouncementRun:
 
     @property
     def can_continue(self) -> bool:
-        return bool(self._queue) and not self._stopped
+        return bool(self._queue or self._prefetch is not None) and not self._stopped
 
-    def run_batch(self, max_pages: int) -> int:
+    def run_batch(self, max_pages: int, *, wait_for_page: bool = True) -> int:
         dependencies, state = self._dependencies, self._state
         initial_pages = state.pages
         while self.can_continue and not _cancelled(dependencies) and state.pages - initial_pages < max_pages:
+            # Publication failures belong to publication. In particular they
+            # must not discard an outstanding HTTP request or defer its cursor.
+            self._publish_due()
             # Splits and resumed cursors can put an older range at the head.
             # Keep the newest date ahead of every market's older backlog;
             # equal-date query leaves retain their durable dispatch order.
-            partition = max(self._queue, key=lambda item: item.end)
-            self._queue.remove(partition)
-            self._report(partition, include_current=True)
-            if _cancelled(dependencies):
-                self._queue.appendleft(partition)
-                break
+            partition = self._prefetch[0] if self._prefetch is not None else max(
+                self._queue, key=lambda item: item.end
+            )
             try:
-                self._consume(partition)
+                if self._prefetch is None:
+                    self._queue.remove(partition)
+                    self._report(partition, include_current=True)
+                    if _cancelled(dependencies):
+                        self._queue.appendleft(partition)
+                        break
+                    request = self._request(partition)
+                    if request is None:
+                        continue
+                    partition, verifying = request
+                    if dependencies.directory_executor is None:
+                        page = dependencies.disclosures.fetch(partition)
+                        if _cancelled(dependencies):
+                            self._queue.appendleft(partition)
+                            break
+                        self._accept(partition, page, verifying=verifying)
+                        continue
+                    self._prefetch = (
+                        partition,
+                        verifying,
+                        SubmitOrReject(dependencies.directory_executor, dependencies.disclosures.fetch, partition),
+                    )
+                partition, verifying, future = self._prefetch
+                if not future.done():
+                    if not wait_for_page:
+                        break
+                    wait((future,), timeout=0.1, return_when=FIRST_COMPLETED)
+                    continue
+                self._prefetch = None
+                if future.cancelled():
+                    if not _cancelled(dependencies):
+                        raise WorkerResourceRejectedError("company_directory_request_cancelled")
+                    self._queue.appendleft(partition)
+                    break
+                page = future.result()
+                if _cancelled(dependencies):
+                    self._queue.appendleft(partition)
+                    break
+                self._accept(partition, page, verifying=verifying)
+            except WorkerResourceRejectedError:
+                self._queue.appendleft(partition)
+                raise
             except (OSError, RuntimeError, ValueError) as exc:
+                self._prefetch = None
                 if self._failed(partition, exc):
                     self._stopped = True
                     break
-        pending = _pending_count(self._queue, self._deferred)
+        current = self._prefetch[0] if self._prefetch is not None else None
+        pending = _pending_count(self._queue, self._deferred, current)
         self._report(status=("deferred" if not self.can_continue else "running") if pending else "complete")
         return pending
+
+    def close(self) -> None:
+        """Drain only the owned request before its caller closes the HTTP client.
+
+        The cursor is never advanced on cancellation; a late response is not
+        accepted. Source timeout and cancellation remain the request's bound.
+        """
+        if self._prefetch is not None:
+            _partition, _verifying, future = self._prefetch
+            future.cancel()
+            while not future.done():
+                wait((future,), timeout=0.1, return_when=FIRST_COMPLETED)
+            self._prefetch = None
+
+    def _publish_due(self) -> None:
+        state, dependencies = self._state, self._dependencies
+        pending_since = state.publication_pending_since
+        if (
+            dependencies.coalesce_publications
+            and pending_since is not None
+            and not _cancelled(dependencies)
+            and dependencies.monotonic() - pending_since >= self._context.configuration.publication_interval_seconds
+        ):
+            _publish_batch(
+                dependencies,
+                self._population,
+                self._context.observed_at,
+                self._context.started,
+                state,
+            )
 
     def _now(self) -> datetime:
         return self._context.observed_at + timedelta(
@@ -499,7 +604,7 @@ class _AnnouncementRun:
         status: EvidenceProgressState = "running",
         activity: Literal["download", "repair"] = "download",
     ) -> None:
-        current = partition if include_current else None
+        current = partition if include_current else self._prefetch[0] if self._prefetch is not None else None
         queued = (*self._queue, *((current,) if current else ()))
         _report(
             self._dependencies,
@@ -518,21 +623,24 @@ class _AnnouncementRun:
             unknown_queries=sum(item.expected_rows is None for item in queued),
         )
 
-    def _consume(self, partition: DisclosurePartition) -> None:
+    def _request(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, bool] | None:
         retry = self._index.partition_retry(partition)
         if retry is not None and retry.retry_at > self._now():
             self._deferred.add(_query_key(partition))
             self._state.failures += (f"announcements:{retry.failure or 'pending'}",)
-            return
+            return None
         children = self._index.disclosure_queries(partition) if partition.query is None else None
         if children:
             self._queue.extendleft(reversed([child for child in children if _query_key(child) not in self._deferred]))
-            return
+            return None
         verifying = children == ()
         if verifying:
             partition = replace(partition, page=1, expected_rows=None, received_rows=0)
-        page = self._dependencies.disclosures.fetch(partition)
+        return partition, verifying
+
+    def _accept(self, partition: DisclosurePartition, page: DisclosurePage, *, verifying: bool) -> None:
         self._state.pages += 1
+        _mark_publication_pending(self._dependencies, self._state)
         if verifying:
             try:
                 self._index.commit_query_coverage(partition, page, self._context.observed_at)
@@ -635,6 +743,7 @@ class _AnnouncementRun:
         if self._dependencies.failures is not None:
             self._dependencies.failures(DownloadFailureContext("company_directory", supplier="cninfo", window_start=partition.start, window_end=partition.end), exc)
         self._index.partition_failure(partition, failure)
+        _mark_publication_pending(self._dependencies, self._state)
         self._state.failures += (f"announcements:{failure}",)
         self._deferred.add(_query_key(partition))
         configuration = self._context.configuration
@@ -817,6 +926,7 @@ class _DocumentRun:
         unpublished = 0
         capacity_blocked = False
         while queue or text_queue or ocr_queue or pending_documents:
+            urgent_publish = False
             for stage, ready, executor, capacity in (
                 ("ocr", ocr_queue, dependencies.ocr_executor, self.configuration.ocr_workers),
                 ("text", text_queue, dependencies.text_executor, self.configuration.text_workers),
@@ -884,9 +994,18 @@ class _DocumentRun:
                         self.completed += 1
                         unpublished += 1
                         self.state.changes += 1
+                        _mark_publication_pending(dependencies, self.state)
+                        self.state.unpublished_documents += 1
+                        if dependencies.coalesce_publications and not _cancelled(dependencies):
+                            urgent_publish = urgent_publish or index.document_publication_urgent(task.disclosure)
                 self.report(workload, completed_before, discovering=discovering)
-            if unpublished and not _cancelled(dependencies) and (
-                unpublished >= self.configuration.publication_batch_size or dependencies.monotonic() - last_publish >= self.configuration.publication_interval_seconds
+            pending_count = self.state.unpublished_documents if dependencies.coalesce_publications else unpublished
+            pending_since = self.state.publication_pending_since if dependencies.coalesce_publications else last_publish
+            publication_waiting = self.state.publication_required if dependencies.coalesce_publications else bool(unpublished)
+            if publication_waiting and not _cancelled(dependencies) and (
+                urgent_publish
+                or pending_count >= self.configuration.publication_batch_size
+                or pending_since is not None and dependencies.monotonic() - pending_since >= self.configuration.publication_interval_seconds
             ):
                 _publish_batch(dependencies, self.population, self.observed_at, self.started, self.state)
                 unpublished = 0
@@ -960,6 +1079,7 @@ class _DocumentRun:
             exc.diagnostic if isinstance(exc, CompanyDocumentFailure) else None,
             self.policies.ocr,
         )
+        _mark_publication_pending(self.dependencies, self.state)
         if stage == "download" and self.circuit.failed(exc):
             self.stopped = True
             self.state.failures += ("risk_documents:source_stopped",)
@@ -1043,6 +1163,7 @@ def _news(
         try:
             rows = dependencies.structured.news(code, observed_at=observed_at)
             state.changes += index.commit_news(code, rows, observed_at)
+            _mark_publication_pending(dependencies, state)
             completed += 1
         except (OSError, RuntimeError, ValueError) as exc:
             if _cancelled(dependencies):
@@ -1099,6 +1220,7 @@ def _structured(
             page = dependencies.structured.fetch(query, observed_at=now)
             state.pages += 1
             state.changes += index.commit_structured(query, page, now)
+            _mark_publication_pending(dependencies, state)
             completed, pending = page.page, page.pages - page.page
             _report(dependencies, component, state, pending, completed=completed, scope=query)
             if page.page == page.pages:

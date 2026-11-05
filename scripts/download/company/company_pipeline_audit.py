@@ -8,6 +8,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import hashlib
 import json
+import math
 import sqlite3
 import sys
 import time
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from functools import partial
 from pathlib import Path
+from statistics import median
 from threading import Lock
 from typing import ParamSpec, TypeVar
 from unittest.mock import patch
@@ -416,13 +418,28 @@ def _probe_directory(source: CninfoMarketDisclosureSource, target: DisclosurePar
 
 
 def AuditCompanyPipeline(
-    path: Path, directory: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy, compare_pacing: bool = False
+    path: Path,
+    directory: Path,
+    *,
+    budget_seconds: float,
+    sqlite_policy: SqliteIoPolicy,
+    compare_pacing: bool = False,
+    candidate_publication_interval: float | None = None,
+    sample: tuple[Disclosure, ...] | None = None,
+    observed_at: datetime | None = None,
 ) -> dict[str, object]:
-    items = _sample(path, sqlite_policy=sqlite_policy)
+    compare_io = candidate_publication_interval is not None
+    if compare_io and (
+        compare_pacing or candidate_publication_interval not in (5.0, 15.0, 30.0, 60.0)
+    ):
+        raise ValueError("company_pipeline_candidate_invalid")
+    items = _sample(path, sqlite_policy=sqlite_policy) if sample is None else sample
     if not items:
         return {"schema_version": "company-resume", "status": "degraded", "findings": ["no_document_sample"]}
     codes = tuple(sorted({code for item in items for code in item.codes}))
-    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    now = datetime.now(ZoneInfo("Asia/Shanghai")) if observed_at is None else observed_at
+    if now.utcoffset() is None:
+        raise ValueError("company_pipeline_time_invalid")
     target = _directory_sample(path, now, sqlite_policy=sqlite_policy) if compare_pacing else None
     if compare_pacing and target is None:
         return {"schema_version": "company-resume", "status": "degraded", "findings": ["no_directory_sample"]}
@@ -438,15 +455,23 @@ def AuditCompanyPipeline(
     signatures: list[str] = []
     document_signatures: list[str] = []
     payload_signatures: list[str] = []
-    variants = ((2, False), (2, True)) if compare_pacing else ((1, False), (2, False))
+    variants = ((2, True), (2, True)) if compare_io else ((2, False), (2, True)) if compare_pacing else ((1, False), (2, False))
     for number, (count, independent_hosts) in enumerate(variants, 1):
+        candidate = compare_io and number == 2
+        candidate_interval = configuration.publication_interval_seconds if candidate_publication_interval is None else candidate_publication_interval
+        run_configuration = replace(
+            configuration,
+            document_workers=count,
+            publication_interval_seconds=candidate_interval if candidate else configuration.publication_interval_seconds,
+        )
         run_directory = directory / f"pipeline-{number}"
         database = run_directory / "collection.sqlite3"
         if database.exists():
             raise ValueError("company_probe_requires_fresh_directory")
         raw_files = CompanyRawFiles(run_directory, capacity=configuration.raw_capacity_bytes,
                                    analysis_reserve=configuration.raw_analysis_reserve_bytes,
-                                   free_reserve=configuration.temporary_disk_reserve_bytes)
+                                   free_reserve=configuration.temporary_disk_reserve_bytes,
+                                   scan_reservations_once=candidate)
         index = _SampleIndex(
             database,
             raw_files=raw_files,
@@ -457,7 +482,7 @@ def AuditCompanyPipeline(
                 max_bytes=configuration.temporary_text_capacity_bytes,
                 reserve_bytes=configuration.temporary_disk_reserve_bytes,
             ),
-            event_policy=event_policy, sqlite_policy=sqlite_policy,
+            event_policy=event_policy, sqlite_policy=sqlite_policy, batch_publication_reads=candidate,
         )
         index.initialize()
         for market, day in sorted({(EvidenceMarket(item.codes[0]), item.published_at.date()) for item in items}):
@@ -469,10 +494,13 @@ def AuditCompanyPipeline(
         started = time.monotonic()
         first_publication: float | None = None
         attempts = 0
+        publications = 0
 
         def progress(event: EvidenceSyncProgress, started: float = started) -> None:
-            nonlocal first_publication, attempts
+            nonlocal first_publication, attempts, publications
             attempts = max(attempts, event.attempted_documents)
+            if event.component == "publish" and event.status == "complete":
+                publications += 1
             if event.component == "publish" and event.status == "complete" and first_publication is None:
                 first_publication = time.monotonic() - started
 
@@ -548,23 +576,25 @@ def AuditCompanyPipeline(
                 ocr_executor=ocr_workers,
                 ocr_identity=ocr_capability.identity,
                 text_identity=text_capability.identity,
+                coalesce_publications=candidate,
             )
             result = SyncCompanyEvidence(
                 dependencies,
                 CompanyEvidenceRequest(
                     codes,
                     now,
-                    replace(configuration, document_workers=count),
+                    run_configuration,
                     event_policy,
                 ),
             )
             directory_result = directory_future.result() if directory_future is not None else None
             elapsed = time.monotonic() - started
             first_attempts = attempts
+            first_publications = publications
             attempts = 0
             resumed = SyncCompanyEvidence(
                 dependencies,
-                CompanyEvidenceRequest(codes, now, replace(configuration, document_workers=count), event_policy),
+                CompanyEvidenceRequest(codes, now, run_configuration, event_policy),
             )
         facts = SQLiteCompanyEvidenceReader(index.facts_path, event_policy=event_policy, sqlite_policy=sqlite_policy).read(codes)
         # Compare business facts; observation timestamps naturally differ by worker count.
@@ -606,6 +636,9 @@ def AuditCompanyPipeline(
         runs.append(
             {
                 "workers": count,
+                "io_candidate": candidate,
+                "publication_interval_seconds": run_configuration.publication_interval_seconds,
+                "directory_prefetch_measured": False,
                 "pacing": "independent_hosts" if independent_hosts else "shared",
                 "directory": directory_result,
                 "sample_documents": len(items),
@@ -614,6 +647,7 @@ def AuditCompanyPipeline(
                 "published_codes": result.published_codes,
                 "seconds": round(elapsed, 3),
                 "first_publication_seconds": first_publication,
+                "publication_calls": first_publications,
                 "resume_changed_rows": resumed.changed_rows,
                 "resume_pending_documents": resumed.pending_documents,
                 "resume_attempts": attempts,
@@ -654,7 +688,113 @@ def AuditCompanyPipeline(
         "status": "passed" if passed else "degraded",
         "summary": {"pipeline_audit": {"isolated_sample": True, "equivalent_facts": equivalent,
                                        "compare_pacing": compare_pacing, "equivalent_directory": equivalent_directory if compare_pacing else None,
+                                       "compare_io": compare_io,
+                                       "input_sample_digest": hashlib.sha256(repr(items).encode()).hexdigest(),
                                        "equivalent_documents": equivalent_documents,
                                        "equivalent_payloads": equivalent_payloads, "runs": runs}},
         "findings": [] if passed else ["company_pipeline_probe_incomplete"],
+    }
+
+
+@dataclass(frozen=True)
+class CompanyPublicationTrial:
+    interval_seconds: float
+    wall_seconds: float
+    input_digest: str
+    facts_digest: str
+    payloads_digest: str
+    passed: bool
+
+
+def SelectCompanyPublicationInterval(trials: tuple[CompanyPublicationTrial, ...]) -> float | None:
+    """Require five valid, identical-input observations for every interval.
+
+    This selects a measured candidate, never enables it. Prefer the shortest
+    interval within five percent of the fastest median total duration.
+    """
+    intervals = (5.0, 15.0, 30.0, 60.0)
+    if any(
+        trial.interval_seconds not in intervals
+        or not math.isfinite(trial.wall_seconds) or trial.wall_seconds <= 0
+        for trial in trials
+    ):
+        raise ValueError("company_publication_trial_invalid")
+    if not trials or any(not trial.passed for trial in trials):
+        return None
+    identities = {(trial.input_digest, trial.facts_digest, trial.payloads_digest) for trial in trials}
+    if len(identities) != 1 or any(not digest for identity in identities for digest in identity):
+        return None
+    medians = []
+    for interval in intervals:
+        values = tuple(trial.wall_seconds for trial in trials if trial.interval_seconds == interval)
+        if len(values) < 5:
+            return None
+        medians.append((interval, median(values)))
+    fastest = min(seconds for _interval, seconds in medians)
+    return min(interval for interval, seconds in medians if seconds <= fastest * 1.05)
+
+
+def AuditCompanyIoCandidates(
+    path: Path,
+    directory: Path,
+    *,
+    budget_seconds: float,
+    sqlite_policy: SqliteIoPolicy,
+) -> dict[str, object]:
+    """Prepare paired diagnostics for C's idle HDD measurement window.
+
+    This mode downloads the same bounded PDF sample into isolated directories.
+    It never changes production configuration or certifies full-sync coverage.
+    Directory prefetch requires a separate directory workload measurement.
+    """
+    if not math.isfinite(budget_seconds) or not 30 <= budget_seconds <= 10800:
+        raise ValueError("company_io_candidate_budget_invalid")
+    if not directory.is_absolute() or directory == _ROOT or _ROOT in directory.parents:
+        raise ValueError("company_io_candidate_directory_invalid")
+    configuration = LoadCompanySyncConfiguration(TOOL_ROOT)
+    if configuration.publication_interval_seconds != 5.0:
+        raise ValueError("company_io_candidate_baseline_requires_five_seconds")
+    sample = _sample(path, sqlite_policy=sqlite_policy)
+    observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
+    deadline = time.monotonic() + budget_seconds
+    pairs: list[dict[str, object]] = []
+    trials: list[CompanyPublicationTrial] = []
+    for round_number in range(1, 6):
+        for interval in (15.0, 30.0, 60.0):
+            remaining = deadline - time.monotonic()
+            if remaining < 30:
+                break
+            pair = AuditCompanyPipeline(
+                path,
+                directory / f"round-{round_number}-interval-{int(interval)}",
+                budget_seconds=remaining,
+                sqlite_policy=sqlite_policy,
+                candidate_publication_interval=interval,
+                sample=sample,
+                observed_at=observed_at,
+            )
+            pairs.append(pair)
+            summary = pair.get("summary")
+            pipeline = summary.get("pipeline_audit") if isinstance(summary, dict) else None
+            if not isinstance(pipeline, dict) or not isinstance(pipeline.get("runs"), list):
+                continue
+            for run in pipeline["runs"]:
+                if not isinstance(run, dict):
+                    raise ValueError("company_io_candidate_report_invalid")
+                trials.append(CompanyPublicationTrial(
+                    float(run["publication_interval_seconds"]), float(run["seconds"]),
+                    str(pipeline["input_sample_digest"]), str(run["facts_digest"]), str(run["payloads_digest"]),
+                    pair["status"] == "passed",
+                ))
+    selected = SelectCompanyPublicationInterval(tuple(trials)) if len(pairs) == 15 else None
+    return {
+        "schema_version": "company-resume",
+        "status": "passed" if selected is not None else "degraded",
+        "summary": {"io_candidates": {
+            "isolated_sample": True, "rounds_required": 5, "pairs_completed": len(pairs),
+            "selected_interval_seconds": selected, "production_enabled": False,
+            "performance_accepted": False, "full_sync_verified": False,
+            "directory_prefetch_measured": False, "pairs": pairs,
+        }},
+        "findings": [] if selected is not None else ["company_io_candidate_comparison_incomplete"],
     }
