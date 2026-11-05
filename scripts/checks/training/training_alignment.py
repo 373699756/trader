@@ -12,7 +12,7 @@ import shutil
 import sys
 import time
 from collections import Counter
-from contextlib import nullcontext, redirect_stdout
+from contextlib import AbstractContextManager, nullcontext, redirect_stdout
 from datetime import datetime
 from datetime import time as daytime
 from pathlib import Path
@@ -24,6 +24,7 @@ from scripts.checks.reporting import ReadJsonReports, emit_report
 from scripts.checks.training.training_process_measurement import TrainingProcessMeasurement
 
 if TYPE_CHECKING:
+    from scripts.checks.training.scheduling_candidates import SchedulingCandidate, SchedulingExperiment
     from trader.infra.settings import RuntimeSettings
     from trader.infra.sqlite_policy import SqliteIoPolicy
     from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -37,6 +38,8 @@ class _SqliteArguments(TypedDict, total=False):
 class _MeasurementOptions(TypedDict, total=False):
     published_history_read_only: bool
     sample_cache_transfer: Literal["copy", "hardlink"]
+    scheduling_candidate: SchedulingCandidate
+    scheduling_evidence: Path
 
 
 def PrepareTrainingHistoryCopy(
@@ -210,6 +213,8 @@ def _probe(
     require_reuse: bool = True,
     published_history_read_only: bool = False,
     sample_cache_transfer: Literal["copy", "hardlink"] = "copy",
+    scheduling_candidate: SchedulingCandidate = "baseline",
+    scheduling_evidence: Path | None = None,
 ) -> dict[str, object]:
     # Load diagnostic types only after main selects the measured product checkout.
     from scripts.checks.training.training_performance import TrainingReuseFailures
@@ -254,16 +259,43 @@ def _probe(
             for name in ("training.json", "features.json")
         )
     ).hexdigest()
-    with ReadOnlyTrainingSource(history) if published_history_read_only else nullcontext():
+    schedule_scope: AbstractContextManager[SchedulingExperiment | None] = nullcontext(None)
+    scheduling_report: dict[str, object] = {"name": "baseline", "production_enabled": False, "performance_evidence": False}
+    if scheduling_candidate != "baseline":
+        if scheduling_evidence is None:
+            raise ValueError("training_scheduling_requires_measured_evidence")
+        from scripts.checks.training.scheduling_candidates import (
+            LoadSchedulingEvidence,
+            ProjectSchedulingExperiment,
+            UseSchedulingCandidate,
+        )
+        from trader.infra.disk_probe import DiskProbe
+
+        medium = runtime.disk_medium or DiskProbe().inspect(runtime.data_paths.root).kind
+        evidence = LoadSchedulingEvidence(
+            scheduling_evidence,
+            source_hash=identity,
+            configuration_hash=configuration_hash,
+            implementation_hash=TrainingImplementationIdentity(),
+            profiles=profiles,
+            medium=medium,
+        )
+        schedule_scope = UseSchedulingCandidate(scheduling_candidate, evidence)
+    elif scheduling_evidence is not None:
+        raise ValueError("training_scheduling_evidence_requires_candidate")
+    with schedule_scope as schedule, ReadOnlyTrainingSource(history) if published_history_read_only else nullcontext():
         initial = _train_once(runtime, history, work, profiles)
         repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None
         sample_reuse = (
             _sample_reuse(runtime, history, work, profiles, initial, transfer=sample_cache_transfer)
             if initial["complete"] else None
         )
+    if schedule is not None:
+        scheduling_report = ProjectSchedulingExperiment(schedule)
     unchanged = SQLiteHistoryTrainingInputSnapshot.open(history, **sqlite_arguments).snapshot.snapshot_hash == identity
     files_unchanged = not published_history_read_only or source_files == _published_input_signature(history)
-    complete = bool(initial["complete"] and repeat is not None and repeat["complete"] and unchanged and files_unchanged)
+    released = scheduling_report.get("pending_requests", 0) == scheduling_report.get("reserved_threads", 0) == 0
+    complete = bool(initial["complete"] and repeat is not None and repeat["complete"] and unchanged and files_unchanged and released)
     equal = repeat is not None and initial["numeric_fingerprints"] == repeat["numeric_fingerprints"]
     reuse_failures = TrainingReuseFailures(initial, repeat, profiles)
     return {
@@ -277,6 +309,7 @@ def _probe(
             "initial": initial,
             "repeat": repeat,
             "sample_reuse": sample_reuse,
+            "scheduling_candidate": scheduling_report,
             "repeat_model_values_equal": equal,
             "repeat_reuse_verified": not reuse_failures,
             "repeat_reuse_required": require_reuse,
@@ -619,12 +652,16 @@ def Main() -> int:
     parser.add_argument("--product-checkout", type=Path)
     parser.add_argument("--published-history-read-only", action="store_true")
     parser.add_argument("--sample-cache-transfer", choices=("copy", "hardlink"), default="copy")
+    parser.add_argument("--scheduling-candidate", choices=("baseline", "fixed", "long_task_first", "borrowing"), default="baseline")
+    parser.add_argument("--scheduling-evidence", type=Path)
     parser.add_argument(
         "--benchmark-mode",
         choices=("serial_before", "parallel", "serial_after", "baseline_before", "candidate", "baseline_after"),
     )
     args = parser.parse_args()
     try:
+        if args.inputs_only and (args.scheduling_candidate != "baseline" or args.scheduling_evidence is not None):
+            raise ValueError("training_scheduling_requires_training_mode")
         product = _select_product(args.product_checkout)
         from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
         from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
@@ -646,6 +683,10 @@ def Main() -> int:
                 measurement_options["published_history_read_only"] = True
             if args.sample_cache_transfer != "copy":
                 measurement_options["sample_cache_transfer"] = args.sample_cache_transfer
+            if args.scheduling_candidate != "baseline":
+                measurement_options["scheduling_candidate"] = args.scheduling_candidate
+            if args.scheduling_evidence is not None:
+                measurement_options["scheduling_evidence"] = args.scheduling_evidence
             report = _probe(
                 args.history_root, args.work_root, profiles, runtime_config=runtime_config, sqlite_policy=sqlite_policy,
                 require_reuse=args.benchmark_mode not in {"baseline_before", "baseline_after"},

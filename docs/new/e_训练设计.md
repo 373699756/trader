@@ -412,6 +412,18 @@ Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU�
 
 当前 `TrainingImplementationIdentity`覆盖training全部源码；加入计量也会改变该实现摘要。这是现有身份范围的实际限制，不代表特征、标签或参数改变，不会自动重训或改写旧工件。复用验收要在同一源码身份内做，是否将纯观测从语义身份中分离另行核对全部消费者后裁决。
 
+### 6.5 调度策略的隔离对照
+
+P53候选仅由既有`training_alignment`worker的`--scheduling-candidate`显式选择，默认baseline；生产组合根及训练准入不导入该诊断模块。fixed使用每档份额上限，long_task_first在当前已就绪的等待者中按D提供的拟合耗时降序授权，borrowing允许就绪者一次借用当前空闲容量；都不抢占运行中的拟合，不把尚未就绪的长任务当作必须等待的任务。
+
+份额为max(原生基线, 总CPU预算/本次档数的整数部分)，是每档上限而非各自独立的一份总预算。实际授权始终≤算法请求且≤原CPU容量，原生基线必需预约仍扣除；借用可以在只剩部分空闲容量时少于原请求，不能超请求加线程，模型拟合中不动态升降线程。原`TrainingCpuBudget`仍最终预约及管理原生限制，原CPU后内存顺序和内存预算不变。默认普通请求2/V5请求1及原生基线2可能让策略没有可用收益，不能因此删除约束或宣称已提速。
+
+三个非baseline候选都必须另给`--scheduling-evidence <对应PC证据.json>`。输入根字段严格为schema_version、source_hash、configuration_hash、implementation_hash、medium、available_cpus、cpu_capacity、native_threads及profiles；schema_version固定training-scheduling-evidence，三个摘要分别匹配本次快照、既有training/features组合摘要与训练实现身份。medium必须是本次已确认hdd/ssd，未知介质拒绝。profiles按本次请求顺序列出唯一profile及有限正数fit_seconds（拟合耗时秒），由D在该PC相同输入上实测提供，不用猜测排序或另一台机器的数据填充。CPU三项在实际端口创建时再次比较，不能跨机器预算或在同一计量对象中偷换预算。
+
+候选输出原计量与请求/实际授权/原生扣额/超固定份额借用数，以及规范化证据摘要、候选源码摘要、排队/预约残留。全部复用仍零扫描/零拟合预约；结束时排队和预约不归零不计完整通过。finally恢复计量端口的原绑定；非法模式、错误证据、取消、拟合失败不得使候选留在后续正常作业中。baseline及历史版本比较不导入新候选模块，保留原比较能力。
+
+D可在原内部worker命令追加`--scheduling-candidate fixed|long_task_first|borrowing --scheduling-evidence <证据>`，其它历史、四档、样本复用与工件复用参数沿用e9.1。需要在HDD/SSD两台PC各自比较全作业关键路径、数值/质量、资源峰值与取消收尾，单个fixture或单档回归不签四档性能。当前只交付隔离候选与功能证据，production_enabled/performance_evidence保持false；D达标后再由C在原P53记录完成唯一生产owner及全部消费者的原子切换。
+
 ## 7. 缓存、复用、检查与工件发布
 
 正常复用检查版本、字段、维度、封存元数据和身份，不重算下载全库内容或每次做整文件摘要。完整内容审计单独显式运行。训练、早停、校准、评价的隔离、标签成熟、特征顺序和目标对齐必须保留。
