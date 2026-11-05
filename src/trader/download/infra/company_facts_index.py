@@ -5,12 +5,10 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import PublishSqliteFile, VerifiedSqlitePublication, VerifySqliteFile
 
-import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_exclusions import CompanyExclusion, CompanyExclusionReason, CompanyExclusionSource
@@ -24,11 +22,13 @@ from trader.download.infra.company_facts_protocol import (
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA, COMPANY_FACTS_VERSION
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
+    HasSqliteSchema,
     SqliteConnection,
     SqliteConnectionOptions,
     SqliteSession,
     SqliteTransaction,
 )
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 @dataclass(frozen=True, slots=True)
 class CompanyPublicationIdentity:
@@ -68,17 +68,25 @@ def ReadCompanyPublicationIdentity(connection: SqliteConnection) -> CompanyPubli
     return CompanyPublicationIdentity(row[2], row[1], RequireCompanyTime(row[3]))
 
 
-def _write_identity(connection: SqliteConnection, extraction_hash: bytes, at: datetime) -> None:
+def _write_identity(
+    connection: SqliteConnection, extraction_hash: bytes, at: datetime, content_hash: bytes
+) -> None:
     """Record a publication generation; file integrity is owned by the file checksum."""
     connection.run(
         "INSERT OR REPLACE INTO company_publication VALUES(1,?,?,?,?)",
         (
             COMPANY_FACTS_VERSION,
             extraction_hash,
-            hashlib.sha256(extraction_hash + uuid4().bytes).digest(),
+            content_hash,
             EncodeCompanyTime(at),
         ),
     )
+
+
+def _parent_identity(parent: CompanyPublicationIdentity | None) -> tuple[str, str, datetime] | None:
+    if parent is None:
+        return None
+    return parent.content_hash.hex(), parent.extraction_hash.hex(), parent.published_at
 
 class SQLiteCompanyFactsIndex:
     def __init__(
@@ -95,6 +103,12 @@ class SQLiteCompanyFactsIndex:
         self._file_verification: VerifiedSqlitePublication | None = None
 
     def initialize(self) -> None:
+        if self.path.exists():
+            with SqliteSession(
+                self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
+            ) as connection:
+                if HasSqliteSchema(connection, COMPANY_FACTS_SCHEMA):
+                    return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with SqliteSession(
             self.path,
@@ -126,6 +140,7 @@ class SQLiteCompanyFactsIndex:
         ):
             if ReadCompanyPublicationIdentity(connection) != parent:
                 raise RuntimeError("company_publication_parent_changed")
+            before_changes = connection.total_changes
             for item in facts:
                 if self._cancel_requested is not None and self._cancel_requested():
                     raise InterruptedError("company_sync_cancelled")
@@ -141,7 +156,25 @@ class SQLiteCompanyFactsIndex:
                 "UNION SELECT evidence_id FROM company_positive_evidence UNION SELECT evidence_id FROM company_positive_milestone "
                 "UNION SELECT evidence_id FROM company_review WHERE evidence_id IS NOT NULL)"
             )
-            _write_identity(connection, self.extraction_hash, at)
+            if (
+                parent is None
+                or parent.extraction_hash != self.extraction_hash
+                or connection.total_changes != before_changes
+            ):
+                receipt_identities = tuple(
+                    (
+                        r.source, r.source_key, r.code, r.record_hash, r.extraction_hash.hex(),
+                        r.body_hash.hex() if r.body_hash is not None else None,
+                        r.published_at, r.outcome, r.policy_id,
+                    )
+                    for r in sorted(receipts, key=lambda r: (r.source, r.source_key, r.code, r.record_hash))
+                )
+                identity = bytes.fromhex(CanonicalDigest((
+                    "company-publication-generation:1", _parent_identity(parent), self.extraction_hash.hex(),
+                    tuple(sorted(facts, key=lambda fact: fact.code)), tuple(sorted(sources.items())),
+                    receipt_identities, at,
+                )))
+                _write_identity(connection, self.extraction_hash, at, identity)
         self.publish_file()
 
     def read_exclusions(self) -> tuple[CompanyExclusion, ...]:
@@ -217,6 +250,13 @@ class SQLiteCompanyFactsIndex:
                     connection,
                     parent.extraction_hash if parent else self.extraction_hash,
                     max(at, parent.published_at) if parent else at,
+                    bytes.fromhex(CanonicalDigest((
+                        "company-exclusions-generation:1", _parent_identity(parent),
+                        tuple(sorted((
+                            fact.code, int(fact.reason), int(fact.source), fact.source_key,
+                            fact.effective_at.isoformat(), fact.evidence_hash.hex(),
+                        ) for fact in facts)),
+                    ))),
                 )
         if inserted:
             self.publish_file()

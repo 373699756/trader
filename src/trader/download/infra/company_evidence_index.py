@@ -7,7 +7,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 import sqlite3
 import json
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -1189,12 +1189,13 @@ class SQLiteCompanyEvidenceIndex:
                 SqliteConnectionOptions(read_only=True),
                 cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
             ) as source,
-            SqliteSession(
+            ExitStack() as formal_scope,
+        ):
+            formal = formal_scope.enter_context(SqliteSession(
                 self.facts_path,
                 SqliteConnectionOptions(read_only=True),
                 cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
-            ) as formal,
-        ):
+            ))
             source_version = source.run("PRAGMA data_version").require_one()[0]
             with SqliteTransaction(source), SqliteTransaction(formal):
                 parent = ReadCompanyPublicationIdentity(formal)
@@ -1289,6 +1290,9 @@ class SQLiteCompanyEvidenceIndex:
                                     review_count=len(facts.review_reasons),
                                 )
                             )
+            # A retained read handle prevents the writer's last close from
+            # checkpointing WAL before its file fingerprint is published.
+            formal_scope.close()
             self._check_cancelled()
             # Pin the sole collection writer across verification, formal commit and receipt creation.
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):

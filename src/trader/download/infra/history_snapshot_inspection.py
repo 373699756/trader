@@ -12,6 +12,7 @@ from typing import Literal
 from trader.download.domain.history_control import (
     HistoryCalendarIdentity,
     HistorySnapshot,
+    HistorySnapshotPartition,
     HistorySourceIdentity,
     HistoryUniverseIdentity,
 )
@@ -83,8 +84,13 @@ def VerifyPublishedHistorySnapshot(history: PublishedHistorySnapshot, *, sqlite_
     except (OSError, ValueError) as exc:
         raise HistorySnapshotInspectionError("history_reference_unavailable") from exc
     try:
+        files: dict[str, list[HistorySnapshotPartition]] = {}
         for reference in history.snapshot.partitions:
-            HistoryPricePartition.verify(history.root / reference.relative_path, reference, sqlite_policy=sqlite_policy)
+            files.setdefault(reference.relative_path, []).append(reference)
+        for relative_path, references in files.items():
+            HistoryPricePartition.verify_months(
+                history.root / relative_path, tuple(references), sqlite_policy=sqlite_policy,
+            )
     except (HistoryPricePartitionError, OSError, ValueError) as exc:
         raise HistorySnapshotInspectionError("history_snapshot_partition_invalid") from exc
 

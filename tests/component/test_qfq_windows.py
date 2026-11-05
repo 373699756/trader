@@ -591,6 +591,45 @@ def test_unchanged_eligibility_does_not_scan_price_rows(tmp_path, monkeypatch):
     assert len(cache.read_code("600001").cells) == 251
 
 
+def test_window_inspection_only_reads_dates_and_reuses_file_verification(tmp_path, monkeypatch):
+    cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    publish_windows(cache, (_window(),), "fixture")
+    cache.verify_integrity()
+    from trader.infra import sqlite_publication
+
+    def unexpected_hash(*_args):
+        pytest.fail("unchanged window inspection repeated a file hash")
+
+    monkeypatch.setattr(sqlite_publication, "_digest", unexpected_hash)
+    connect = cache._connection
+    statements = []
+
+    def traced(**kwargs):
+        connection = connect(**kwargs)
+        connection.observe_statements(statements.append)
+        return connection
+
+    monkeypatch.setattr(cache, "_connection", traced)
+    first = cache.inspect_windows(frozenset({"600001"}))
+    assert first == cache.inspect_windows(frozenset({"600001"}))
+    assert first.states[0].dates == DAYS[-QFQ_CONFIGURATION.v2_sessions:]
+    reads = [sql for sql in statements if "FROM daily_price" in sql]
+    assert reads and all(sql.startswith("SELECT trade_date FROM daily_price ") for sql in reads)
+
+
+def test_existing_window_without_receipt_is_rejected_before_republishing(tmp_path):
+    updater = _updater(tmp_path, Supplier())
+    updater.seed((_window(),), "fixture", calendar=DAYS)
+    receipt = Path(f"{updater.v2.path}.sha256")
+    receipt.unlink()
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+
+    with pytest.raises(RuntimeError, match="file_missing"):
+        updater.execute(observed)
+
+    assert not receipt.exists()
+
+
 def test_qfq_refills_worker_before_slowest_request_finishes(tmp_path) -> None:
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -1177,6 +1216,7 @@ def test_source_migration_ignores_legacy_checkpoint_and_refetches_full_window(tm
     # Even a valid same-day code checkpoint cannot relabel old-source rows.
     with SqliteSession(updater.v2.path) as connection, SqliteTransaction(connection):
         connection.run("INSERT INTO window_completion VALUES(?,?,?)", ("600001", EncodeDate(DAYS[-1]), source))
+    updater.v2.publish_file()
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert result.completed_codes == 1 and result.skipped_codes == 0
     assert supplier.calls == [("600001", DAYS[-251:])]
@@ -1674,7 +1714,7 @@ def test_market_publication_still_rejects_invalid_identity(tmp_path, monkeypatch
 
     checked = runner.execute()
 
-    assert checked == replace(result, failure_reason=reason)
+    assert checked == QfqUpdateResult(None, failure_reason=reason)
     assert checked.needs_retry
 
 
@@ -1686,7 +1726,7 @@ def test_market_publication_check_rejects_corrupted_pair(tmp_path, monkeypatch):
     with SqliteSession(tmp_path / "daily_window.sqlite3") as connection, SqliteTransaction(connection, immediate=True):
         connection.run("DELETE FROM window_binding WHERE profile='v3'")
     monkeypatch.setattr(UpdateQfqWindows, "execute", lambda *_args: result)
-    from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics, ReadDownloadFailures
+    from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
     failures = DownloadFailureDiagnostics(partial(updater.v2.RecordDownloadFailure, configuration=DownloadFailureConfigurationFixture()), lambda: observed)
     runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed, failures=failures)
     checked = runner.execute()

@@ -115,7 +115,7 @@ def test_numeric_types_and_negative_zero_keep_window_identity_after_restart(tmp_
     assert fresh.manifest() == manifest
     with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_price SET number_flags=0")
-    with pytest.raises(RuntimeError, match="identity_mismatch"):
+    with pytest.raises(RuntimeError, match="checksum_mismatch"):
         fresh.read_code(window.code)
 
 
@@ -211,7 +211,7 @@ def test_obsolete_schema_is_rejected_without_rewriting_it(tmp_path):
         connection.run("DROP TABLE window_publication")
         connection.run("PRAGMA user_version=1")
     before = primary.path.read_bytes()
-    with pytest.raises(RuntimeError, match="qfq_manifest_unavailable"):
+    with pytest.raises(RuntimeError, match="sqlite_publication_schema_invalid"):
         primary.manifest()
     with pytest.raises(QfqPairPublicationError):
         primary.replace_paired_windows(
@@ -223,3 +223,20 @@ def test_obsolete_schema_is_rejected_without_rewriting_it(tmp_path):
             completed_day=_DAYS[-1],
         )
     assert primary.path.read_bytes() == before
+
+
+def test_unchanged_pair_uses_committed_identity_without_reading_prices(tmp_path, monkeypatch):
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
+    windows = (_window("600001"),)
+    primary.replace_paired_windows(peer, windows, "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1])
+    original = SqliteConnection.run
+
+    def observed(connection, sql, parameters=()):
+        assert "FROM daily_price" not in sql
+        return original(connection, sql, parameters)
+
+    monkeypatch.setattr(SqliteConnection, "run", observed)
+    assert primary.replace_paired_windows(
+        peer, windows, "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
+    ) == ((), 0)

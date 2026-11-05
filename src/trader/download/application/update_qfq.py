@@ -212,7 +212,8 @@ class UpdateQfqWindows:
 
     def execute(self, observed_at: datetime) -> QfqUpdateResult:
         with self._publication_check():
-            return self._execute(observed_at)
+            progress, failure_reason = self._execute(observed_at)
+        return progress.finish(self.cancel_requested(), failure_reason=failure_reason)
 
     @contextmanager
     def _publication_check(self) -> Iterator[None]:
@@ -227,7 +228,9 @@ class UpdateQfqWindows:
             f"完成 | 阶段耗时 {self.monotonic() - began:.2f} 秒",
         ))
 
-    def _execute(self, observed_at: datetime) -> QfqUpdateResult:
+    def _execute(
+        self, observed_at: datetime
+    ) -> tuple[QfqDownloadProgress, Literal["qfq_worker_unavailable"] | None]:
         started = self.monotonic()
         self.report(QfqMessage(0, "准备", "正在加载沪深股票名单和 Tencent 交易日历"))
         try:
@@ -262,7 +265,7 @@ class UpdateQfqWindows:
             progress.changed.update(files)
             progress.rows += deleted_rows
         inspection_started = self.monotonic()
-        progress.publish("本地窗口检查", "开始 | 逐板块校验两档内容")
+        progress.publish("本地窗口检查", "开始 | 核对两档窗口日期与来源")
         v2_snapshot = self.v2.inspect_windows(allowed_codes)
         v3_snapshot = self.v3.inspect_windows(allowed_codes)
         progress.publish(
@@ -289,7 +292,7 @@ class UpdateQfqWindows:
             )
         if self.repair_supplier is not None and failure_reason is None and not self.cancel_requested():
             self._repair(context, progress)
-        return progress.finish(self.cancel_requested(), failure_reason=failure_reason)
+        return progress, failure_reason
 
     def _repair(self, context: HistorySupplierContext, progress: QfqDownloadProgress) -> None:
         assert self.repair_supplier is not None

@@ -416,6 +416,8 @@ def test_publication_isolated_from_unpublished_changes_and_failure(tmp_path):
         connection.run(
             "CREATE TRIGGER refuse_publication BEFORE INSERT ON company_facts BEGIN SELECT RAISE(ABORT,'fixture'); END"
         )
+    # Publish the fixture schema change before testing rollback of a later write.
+    SQLiteCompanyFactsIndex(index.facts_path).publish_file()
     with pytest.raises(RuntimeError, match="persistence_unavailable"):
         index.publish(("600001",), NOW)
     assert reader.read(("600001",)) == before
@@ -583,6 +585,7 @@ def test_old_database_is_rejected_without_mutation(tmp_path):
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("CREATE TABLE risk_evidence_recent(payload TEXT)")
     before = path.read_bytes()
+    SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3").initialize()
     with pytest.raises(ValueError, match="contract_mismatch"):
         SQLiteCompanyEvidenceIndex(
             path,
@@ -601,6 +604,7 @@ def test_unversioned_collection_rejects_writer_and_evidence_lookup_without_mutat
         connection.run("INSERT INTO disclosures VALUES('first','a')")
     before = path.read_bytes()
     facts_path = tmp_path / "company_facts.sqlite3"
+    SQLiteCompanyFactsIndex(facts_path).initialize()
     with pytest.raises(ValueError, match="contract_mismatch"):
         SQLiteCompanyEvidenceIndex(
             path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text")
@@ -630,6 +634,7 @@ def test_previous_formal_version_is_rejected_without_reinterpreting_facts(tmp_pa
 def test_corrupt_database_initialization_reports_the_business_error(tmp_path):
     path = tmp_path / "company_evidence.sqlite3"
     path.write_bytes(b"not a SQLite database")
+    SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3").initialize()
     with pytest.raises(RuntimeError, match="company_evidence_persistence_unavailable") as error:
         SQLiteCompanyEvidenceIndex(
             path,
@@ -761,7 +766,7 @@ def test_corrupt_read_model_is_rejected_and_previous_memory_is_retained(tmp_path
     with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         connection.run("PRAGMA ignore_check_constraints=ON")
         connection.run("UPDATE company_facts SET announcement_state=999")
-    with pytest.raises(ValueError, match="enum_unknown"):
+    with pytest.raises(RuntimeError, match="sqlite_publication_checksum_mismatch"):
         reader.read(("600001",))
     assert research.load(("600001",), NOW, include_structured=True) == before
     restarted = PublishedCompanyResearch(
@@ -772,7 +777,7 @@ def test_corrupt_read_model_is_rejected_and_previous_memory_is_retained(tmp_path
     )
     restarted.initialize(("600001",), cancelled=lambda: False)
     assert not restarted.load(("600001",), NOW, include_structured=True)
-    assert "ValueError" in restarted.status().last_error
+    assert "SqlitePublicationError" in restarted.status().last_error
 
 
 def test_missing_pledge_record_becomes_zero_only_after_full_snapshot(tmp_path):

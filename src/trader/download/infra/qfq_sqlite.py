@@ -127,11 +127,16 @@ class SQLiteQfqWindowCache:
         with closing(self._connection()) as connection:
             # A rolled-back first publication has no schema or visible windows.
             # Any populated or versioned incompatible database still fails closed.
-            yield connection if HasSqliteSchema(connection, _SCHEMA) else None
+            if not HasSqliteSchema(connection, _SCHEMA):
+                yield None
+                return
+            if self._publication_depth == 0:
+                self.verify_integrity()
+            yield connection
 
     @contextmanager
     def _write_connection(self) -> Iterator[SqliteConnection]:
-        if self._publication_depth == 0 and Path(f"{self.path}.sha256").is_file():
+        if self._publication_depth == 0 and self.path.is_file():
             self.verify_integrity()
         with closing(self._connection(write=True)) as connection, SqliteTransaction(connection, immediate=True):
             EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
@@ -145,7 +150,7 @@ class SQLiteQfqWindowCache:
         """Batch committed writes into one physical file fingerprint."""
         if not isinstance(peer, SQLiteQfqWindowCache) or peer.path != self.path or peer is self:
             raise ValueError("qfq_pair_publication_invalid")
-        if self._publication_depth == 0 and Path(f"{self.path}.sha256").is_file():
+        if self._publication_depth == 0 and self.path.is_file():
             self.verify_integrity()
         self._publication_depth += 1
         peer._publication_depth += 1
@@ -154,9 +159,7 @@ class SQLiteQfqWindowCache:
         finally:
             self._publication_depth -= 1
             peer._publication_depth -= 1
-            if self._publication_depth == 0 and self.path.is_file() and (
-                self._file_dirty or peer._file_dirty or not Path(f"{self.path}.sha256").is_file()
-            ):
+            if self._publication_depth == 0 and self.path.is_file() and (self._file_dirty or peer._file_dirty):
                 self.publish_file()
                 peer._file_dirty = False
                 peer._file_verification = None
@@ -233,6 +236,10 @@ class SQLiteQfqWindowCache:
 
     def verify_integrity(self) -> None:
         if self.path.is_file():
+            if not Path(f"{self.path}.sha256").is_file():
+                with closing(self._connection()) as connection:
+                    if not HasSqliteSchema(connection, _SCHEMA):
+                        return
             self._file_verification = VerifySqliteFile(
                 self.path,
                 3,
@@ -265,24 +272,6 @@ class SQLiteQfqWindowCache:
                 ).fetchone()
                 is not None
             )
-
-    def _rows(self, connection: SqliteConnection, code: str) -> _Rows:
-        identity = connection.run(
-            "SELECT content_hash,start_date,end_date FROM window_binding WHERE profile=? AND code=?",
-            (self.profile, code),
-        ).fetchone()
-        if identity is None:
-            return ()
-        rows = tuple(
-            (row[0], tuple(row[1:]))
-            for row in connection.run(
-                f"SELECT trade_date,{_SELECT} FROM daily_price WHERE code=? AND trade_date BETWEEN ? AND ? ORDER BY trade_date",
-                (code, identity[1], identity[2]),
-            )
-        )
-        if len(rows) > self._session_limit(connection):
-            raise RuntimeError("qfq_code_identity_mismatch")
-        return rows
 
     def _session_limit(self, connection: SqliteConnection) -> int:
         value = connection.run(
@@ -332,8 +321,6 @@ class SQLiteQfqWindowCache:
             with self._read_connection() as connection:
                 if connection is None:
                     return tuple(PublishedHistoryWindow(code, ()) for code in requested)
-                if self._publication_depth == 0 and self._publication_id(connection) is not None:
-                    self.verify_integrity()
                 for start in range(0, len(requested), 32):
                     batch = requested[start : start + 32]
                     with SqliteTransaction(connection):
@@ -349,8 +336,6 @@ class SQLiteQfqWindowCache:
         return tuple(result)
 
     def inspect_windows(self, allowed_codes: frozenset[str]) -> QfqWindowSnapshot:
-        if self._publication_depth == 0 and Path(f"{self.path}.sha256").is_file():
-            self.verify_integrity()
         states: list[QfqWindowState] = []
         with self._read_connection() as connection:
             if connection is None:
@@ -366,10 +351,17 @@ class SQLiteQfqWindowCache:
                     start_date, end_date = DecodeDate(start), DecodeDate(end)
                     if start_date > end_date:
                         raise RuntimeError("qfq_code_identity_mismatch")
-                    with SqliteTransaction(connection):
-                        rows = self._rows(connection, code)
+                    dates = tuple(
+                        DecodeDate(row[0])
+                        for row in connection.run(
+                            "SELECT trade_date FROM daily_price WHERE code=? AND trade_date BETWEEN ? AND ? "
+                            "ORDER BY trade_date", (code, start, end),
+                        )
+                    )
+                    if len(dates) > self._session_limit(connection):
+                        raise RuntimeError("qfq_code_identity_mismatch")
                     states.append(QfqWindowState(
-                        code, source, tuple(DecodeDate(day) for day, _ in rows), True, start_date, end_date
+                        code, source, dates, True, start_date, end_date
                     ))
                 except (RuntimeError, ValueError):
                     states.append(QfqWindowState(code, source, (), False, None, None))
@@ -414,15 +406,8 @@ class SQLiteQfqWindowCache:
             if connection is None:
                 return False
             with SqliteTransaction(connection):
-                for code, target in targets:
-                    actual = tuple(
-                        (row[0], tuple(row[1:]))
-                        for row in connection.run(
-                            f"SELECT trade_date,{_SELECT} FROM daily_price WHERE code=? ORDER BY trade_date", (code,)
-                        )
-                    )
-                    if actual != target:
-                        return False
+                # File verification owns persisted content integrity. Compare the
+                # incoming windows to their committed identities without rereading prices.
                 for cache in (self, peer):
                     days = calendar[-configuration.sessions_for(cache.profile) :]
                     if tuple(

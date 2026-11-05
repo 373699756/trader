@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
@@ -87,11 +88,14 @@ def _fingerprint(
 ) -> tuple[SqliteFileStamp, SqliteFileStamp | None, SqlitePublicationFingerprint]:
     if check is not None:
         check()
-    with closing(OpenSqliteConnection(
-        path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy,
-    )) as connection:
-        if connection.run("PRAGMA user_version").require_one()[0] != schema_version:
-            raise SqlitePublicationError("sqlite_publication_schema_invalid")
+    try:
+        with closing(OpenSqliteConnection(
+            path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy,
+        )) as connection:
+            if connection.run("PRAGMA user_version").require_one()[0] != schema_version:
+                raise SqlitePublicationError("sqlite_publication_schema_invalid")
+    except sqlite3.DatabaseError as exc:
+        raise SqlitePublicationError("sqlite_publication_database_unreadable") from exc
     before = _stamp(path)
     if before is None:
         raise AssertionError("required SQLite file stamp missing")

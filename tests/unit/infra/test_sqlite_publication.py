@@ -1,6 +1,7 @@
 """Publication checks operate on files, including WAL, without scanning table rows."""
 
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -91,3 +92,18 @@ def test_incomplete_or_cancelled_publication_never_creates_a_receipt(tmp_path):
     with pytest.raises(InterruptedError):
         module.PublishSqliteFile(path, 2, sqlite_policy=SqlitePolicyFixture(), check=cancelled)
     assert not Path(f"{path}.sha256").exists()
+
+
+def test_non_sqlite_replacement_reports_publication_error_with_cause(tmp_path):
+    path = tmp_path / "prices.sqlite3"
+    _create(path)
+    module.PublishSqliteFile(path, 2, sqlite_policy=SqlitePolicyFixture())
+    previous = module.VerifySqliteFile(path, 2, sqlite_policy=SqlitePolicyFixture())
+    replacement = path.with_suffix(".replacement")
+    replacement.write_bytes(b"x" * path.stat().st_size)
+    replacement.replace(path)
+
+    with pytest.raises(module.SqlitePublicationError, match="database_unreadable") as raised:
+        module.VerifySqliteFile(path, 2, sqlite_policy=SqlitePolicyFixture(), previous=previous)
+
+    assert isinstance(raised.value.__cause__, sqlite3.DatabaseError)

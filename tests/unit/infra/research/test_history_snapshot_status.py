@@ -6,6 +6,8 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from tests.helpers.history import RunHistoryFixture
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
@@ -99,20 +101,32 @@ def test_missing_history_is_read_only_and_reports_the_current_snapshot_boundary(
     assert not root.exists()
 
 
-def test_published_monthly_snapshot_projects_typed_counts_and_optional_full_verification(tmp_path: Path) -> None:
+@pytest.mark.parametrize("first_day", (date(2026, 9, 8), date(2026, 8, 31)))
+def test_published_monthly_snapshot_projects_typed_counts_and_optional_full_verification(tmp_path, monkeypatch, first_day):
     root = tmp_path / "history"
-    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    dates = (first_day, date(2026, 9, 9), date(2026, 9, 10))
     configuration = HistorySyncConfiguration(
         root, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(root).parent / "reference"
     )
     assert RunHistoryFixture(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
+    from trader.infra import sqlite_publication
+
+    hashed = []
+    digest = sqlite_publication._digest
+
+    def observed(path, *args):
+        hashed.append(path.name)
+        return digest(path, *args)
+
+    monkeypatch.setattr(sqlite_publication, "_digest", observed)
 
     status = InspectHistorySnapshot(root, verify_partitions=True, sqlite_policy=SqlitePolicyFixture())
 
     assert status.state == "published"
     assert status.calendar_sessions == 3
     assert status.universe_count == 1
-    assert status.partition_count == 1
+    assert status.partition_count == len({day.month for day in dates})
+    assert hashed.count("prices_2026.sqlite3") == 1
     assert status.data_cutoff == dates[-1]
     assert status.label_cutoff == dates[-2]
     assert status.reason is None

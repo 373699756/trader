@@ -465,3 +465,83 @@ def test_incomplete_retry_schema_is_rejected_without_migration(tmp_path):
         assert connection.run(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='document_extractions'"
         ).fetchone()
+
+
+def test_company_noop_publish_keeps_identity_and_closes_wal_before_sealing(tmp_path):
+    from tests.helpers.configuration import SqlitePolicyFixture
+    from trader.infra.sqlite_publication import VerifySqliteFile
+
+    index = fixtures._index(tmp_path)
+    part = index.partitions(("sse",), NOW)[0]
+    index.commit_page(part, DisclosurePage((fixtures._disclosure(),), 2, True), NOW)
+    index.publish(("600001",), NOW)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
+    identity = reader.publication_version()
+    first = VerifySqliteFile(index.facts_path, 3, sqlite_policy=SqlitePolicyFixture())
+    assert first.fingerprint.wal_size == 0
+
+    index.publish(("600001",), NOW)
+    index.initialize()
+
+    assert reader.publication_version() == identity
+    assert VerifySqliteFile(index.facts_path, 3, sqlite_policy=SqlitePolicyFixture()).fingerprint == first.fingerprint
+
+
+def test_company_generation_tracks_sources_and_receipts_with_identical_facts(tmp_path):
+    from tests.helpers.configuration import CompanyEventPolicyFixture, SqlitePolicyFixture
+    from trader.download.infra.company_facts_index import (
+        CompanyInputReceipt, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex,
+    )
+
+    index = fixtures._index(tmp_path / "input")
+    part = index.partitions(("sse",), NOW)[0]
+    item = fixtures._disclosure("notice", "关于收到立案告知书的公告")
+    index.commit_page(part, DisclosurePage((item,), 1, False), NOW)
+    index.commit_document(item, fixtures._extraction("本公司收到证监会立案告知书。"), NOW)
+    index.publish(("600001",), NOW)
+    fact = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
+    assert fact.risk_events[0].evidence_ids == ("notice",)
+    generations = []
+    for name, source in (("first", "cninfo"), ("same", "cninfo"), ("changed-source", "sse")):
+        writer = SQLiteCompanyFactsIndex(
+            tmp_path / name / "facts.sqlite3", event_policy=CompanyEventPolicyFixture(),
+            sqlite_policy=SqlitePolicyFixture(),
+        )
+        writer.initialize()
+        writer.publish((fact,), {"notice": source}, None, NOW)
+        with SqliteSession(writer.path) as connection:
+            parent = ReadCompanyPublicationIdentity(connection)
+        assert parent is not None
+        generations.append(parent.content_hash)
+        receipt = CompanyInputReceipt("cninfo", "notice", "600001", "revision", writer.extraction_hash, None, NOW)
+        writer.publish((), {"notice": source}, parent, NOW, receipts=(receipt,))
+        with SqliteSession(writer.path) as connection:
+            after_receipt = ReadCompanyPublicationIdentity(connection)
+        assert after_receipt is not None and after_receipt.content_hash != parent.content_hash
+        writer.publish((), {"notice": source}, after_receipt, NOW, receipts=(receipt,))
+        with SqliteSession(writer.path) as connection:
+            assert ReadCompanyPublicationIdentity(connection) == after_receipt
+    assert generations[0] == generations[1]
+    assert generations[0] != generations[2]
+
+
+@pytest.mark.parametrize("leftover", ("empty_file", "rolled_back_schema"))
+def test_company_first_initialization_recovers_only_empty_leftover(tmp_path, leftover):
+    from tests.helpers.configuration import CompanyEventPolicyFixture, SqlitePolicyFixture
+    from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
+
+    path = tmp_path / "facts.sqlite3"
+    if leftover == "empty_file":
+        path.touch()
+    else:
+        with SqliteSession(path) as connection:
+            with pytest.raises(RuntimeError), SqliteTransaction(connection):
+                connection.run("CREATE TABLE interrupted_fixture(value INTEGER)")
+                raise RuntimeError("first schema creation interrupted")
+    writer = SQLiteCompanyFactsIndex(path, event_policy=CompanyEventPolicyFixture(), sqlite_policy=SqlitePolicyFixture())
+
+    writer.initialize()
+
+    with SqliteSession(path) as connection:
+        assert connection.run("PRAGMA user_version").require_one()[0] == 3
+        assert connection.run("SELECT COUNT(*) FROM company_facts").require_one()[0] == 0
