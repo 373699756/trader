@@ -99,7 +99,9 @@ class HistoryDownloadFlow:
         self._resources = resources
         self._reused_codes: set[str] = set()
         self._stopped = Event()
-        self._baostock_codes = HistoryPriceRepair(resources.configuration.history_root, sqlite_policy=self._sqlite_policy).baostock_codes()
+        self._baostock_codes = HistoryPriceRepair(
+            resources.configuration.history_root, sqlite_policy=self._sqlite_policy,
+        ).baostock_codes() & frozenset(item.code for item in resources.context.universe)
         self._recheck_codes = HistoryPriceRepair(resources.configuration.history_root, sqlite_policy=self._sqlite_policy).recheck_due(self._baostock_codes, resources.context.calendar.open_dates)
 
     def _check(self) -> None:
@@ -200,7 +202,7 @@ class HistoryDownloadFlow:
 
     def tencent(self) -> None:
         resources = self._resources
-        tasks = resources.index.tasks()
+        tasks = resources.index.tasks(codes=frozenset(item.code for item in resources.context.universe))
         gap_codes = resources.index.gap_codes()
         retryable_codes = frozenset(resources.index.gaps_by_code(resources.context.calendar.open_dates))
         # Resume only retryable gaps; confirmed nonpositive qfq dates retain
@@ -216,7 +218,7 @@ class HistoryDownloadFlow:
 
     def _report_tencent_summary(self, total: int) -> None:
         resources = self._resources
-        finished = resources.index.tasks()
+        finished = resources.index.tasks(codes=frozenset(item.code for item in resources.context.universe))
         gap_codes = resources.index.gap_codes()
         failed = sum(task.failure is not None for task in finished)
         partial = sum(task.failure is None and task.code in gap_codes for task in finished)

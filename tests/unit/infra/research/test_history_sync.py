@@ -22,7 +22,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.download.domain.history_price_qualification import QualifyPriceOverlap
+from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT, QualifyPriceOverlap
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
@@ -1008,7 +1008,8 @@ def test_pending_batch_still_rejects_changed_dates_or_securities(tmp_path, monke
 
 
 @pytest.mark.parametrize("codes", [("600001",), ("600001", "600003")])
-def test_pending_population_changes_preserve_progress_and_publish_current_reference(tmp_path, monkeypatch, codes):
+@pytest.mark.parametrize("repair_only", (False, True))
+def test_pending_population_changes_preserve_progress_and_publish_current_reference(tmp_path, monkeypatch, codes, repair_only):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     publish = history_sync_module.PublishHistorySnapshot
 
@@ -1024,10 +1025,112 @@ def test_pending_population_changes_preserve_progress_and_publish_current_refere
             securities = tuple(BaoStockSecurity(code, code, "main", date(2000, 1, 1), None, "test") for code in codes)
             return super().load_context(as_of, sessions, universe=securities)
 
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    pending, tasks = index.pending(0), index.tasks()
     supplier = Changed(days)
-    result = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    progress = ProgressRecorder()
+    result = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW, repair_only=repair_only, progress=progress)
+    if repair_only and "600003" in codes:
+        assert result.state == "blocked" and result.reason == "history_download_incomplete"
+        assert index.pending(0) == pending and index.tasks() == tasks
+        assert supplier.calls == []
+        return
     assert result.state == "completed", result.reason
     assert supplier.calls == ([("600003", days)] if "600003" in codes else [])
-    assert {task.code for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks()} == set(codes)
+    assert {task.code for task in index.tasks()} == {"600001", "600002", *codes}
+    assert {task.code for task in index.tasks(codes=frozenset(codes))} == set(codes)
+    if not repair_only:
+        summaries = [item.tencent_summary for item in progress.values if item.tencent_summary is not None]
+        assert summaries[-1].processed_codes == len(codes)
     snapshot = _snapshot(tmp_path)
     assert {cell.code for cell in HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], snapshot)} == set(codes)
+
+
+@dataclass
+class _EligibilitySupplier(FakeSupplier):
+    eligible_codes: tuple[str, ...] = ("600001", "600002")
+    excluded_status: str = "unknown"
+
+    def load_context(self, as_of, sessions):
+        securities = tuple(
+            BaoStockSecurity(code, code, "main", date(2000, 1, 1), None, "test") for code in self.eligible_codes
+        )
+        context = super().load_context(as_of, sessions, universe=securities)
+        return replace(
+            context,
+            source_versions=replace(context.source_versions, dependency_versions=(HISTORY_UNIVERSE_CONTRACT,)),
+            st_evidence=tuple(
+                HistoryStEvidence(code, as_of, "clear" if code in self.eligible_codes else self.excluded_status)
+                for code in ("600001", "600002")
+            ),
+        )
+
+
+@pytest.mark.parametrize("status", ("unknown", "ever_st"))
+@pytest.mark.parametrize("eligible", ("600001", "600002"))
+def test_fill_checks_current_eligibility_and_preserves_excluded_tasks(tmp_path, monkeypatch, status, eligible):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    config = replace(_configuration(tmp_path), history_workers=1)
+    finish = HistoryDownloadIndex.finish
+
+    def stop_after_commit(index, completions):
+        finish(index, completions)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(HistoryDownloadIndex, "finish", stop_after_commit)
+    supplier = _EligibilitySupplier(days)
+    stopped = RunHistoryFixture(
+        config, supplier, clock=lambda: NOW, write_tuning=HistoryWriteTuning(1, 3, max_codes=1, max_cells=3),
+    )
+    assert stopped.state == "cancelled"
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    retained = index.tasks(codes=frozenset({"600002" if eligible == "600001" else "600001"}))
+    assert [task.tencent_done for task in index.tasks()] == [True, False]
+    pending = index.pending(0)
+    monkeypatch.setattr(HistoryDownloadIndex, "finish", finish)
+    supplier.eligible_codes, supplier.excluded_status = (eligible,), status
+    supplier.calls.clear()
+    result = RunHistoryFixture(config, supplier, clock=lambda: NOW, repair_only=True)
+    assert supplier.calls == []
+    assert index.tasks(codes=frozenset({retained[0].code})) == retained
+    if eligible == "600002":
+        assert result.state == "blocked" and result.reason == "history_download_incomplete"
+        assert index.pending(0) == pending
+        assert HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot is None
+    else:
+        assert result.state == "completed" and result.unresolved_price_cells == 0
+        snapshot = _snapshot(tmp_path)
+        rows = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], snapshot)
+        assert {row.code for row in rows} == {eligible}
+
+
+@pytest.mark.parametrize("advance_on_return", (False, True))
+def test_retained_success_rejoins_pending_window_after_inactive_days(tmp_path, monkeypatch, advance_on_return):
+    days = tuple(date(2026, 9, 6) + timedelta(days=i) for i in range(5))
+    config = replace(_configuration(tmp_path), history_workers=1)
+    publish = history_sync_module.PublishHistorySnapshot
+
+    def interrupted(*args):
+        raise OSError("interrupted_publication")
+
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", interrupted)
+    supplier = _EligibilitySupplier(days[:3])
+    assert RunHistoryFixture(config, supplier, clock=lambda: NOW.replace(day=8)).state == "failed"
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    retained = index.tasks(codes=frozenset({"600002"}))
+    assert retained[0].tencent_done
+    supplier.eligible_codes, supplier.dates = ("600001",), days[:4]
+    assert RunHistoryFixture(config, supplier, clock=lambda: NOW.replace(day=9)).state == "failed"
+    assert index.tasks(codes=frozenset({"600002"})) == retained
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", publish)
+    supplier.eligible_codes = ("600001", "600002")
+    if advance_on_return:
+        supplier.dates = days
+    supplier.calls.clear()
+    result = RunHistoryFixture(config, supplier, clock=lambda: NOW)
+    assert result.state == "completed", result.reason
+    expected_dates = supplier.dates[-3:]
+    assert ("600002", expected_dates) in supplier.calls
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    assert [row.cell.trade_date for day in expected_dates for row in reader.read_day(day, _snapshot(tmp_path))
+            if row.code == "600002"] == list(expected_dates)

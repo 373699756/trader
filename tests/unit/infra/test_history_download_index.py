@@ -5,6 +5,7 @@ from tests.helpers.configuration import SqlitePolicyFixture
 from dataclasses import replace
 from datetime import date, timedelta
 import sqlite3
+import sys
 
 import pytest
 
@@ -62,9 +63,13 @@ def test_rebinding_preserves_tasks_attempts_gaps_and_recheck_dates(tmp_path, cha
     current = replace(previous, source_hash="d" * 64, calendar_hash="e" * 64, universe_hash="f" * 64)
     population = (tasks[0], HistoryDownloadTask("600003", days)) if change_population else None
     index.rebind_context(previous, current, tasks=population)
-    expected = (before[0], population[1]) if population else before
+    expected = (*before, population[1]) if population else before
     assert index.pending(0) == current
     assert index.tasks() == expected
+
+    if population:
+        assert index.tasks(codes=frozenset(task.code for task in population)) == (before[0], population[1])
+    assert index.tasks(codes=frozenset()) == ()
     assert index.gaps_by_code().get("600001", ()) == days
     assert index.gaps_by_code(days).get("600001", ()) == days[1:]
     with pytest.raises(RuntimeError, match="history_download_identity_conflict"):
@@ -102,3 +107,62 @@ def test_advancing_pending_batch_atomically_replaces_dates_and_keeps_gap_receipt
     assert index.gaps_by_code(days) == {}
     with pytest.raises(RuntimeError, match="history_download_identity_conflict"):
         index.rebind_context(previous, current, tasks=(expanded,))
+
+
+def test_advancing_and_starting_batches_keep_ineligible_recovery_evidence(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
+    index = HistoryDownloadIndex(path, sqlite_policy=SqlitePolicyFixture())
+    days = tuple(date(2026, 10, 12) + timedelta(days=i) for i in range(3))
+    previous = HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, days[1])
+    tasks = tuple(HistoryDownloadTask(code, days[:2]) for code in ("600001", "600002"))
+    index.begin(previous, tasks)
+    index.begin_attempt("600002")
+    index.finish((HistoryDownloadCompletion(tasks[1], days[:1], "tencent_qfq_invalid_price", days[:1]),))
+    retained = index.tasks(codes=frozenset({"600002"}))
+
+    current = replace(previous, cutoff=days[-1], source_hash="d" * 64, calendar_hash="e" * 64)
+    index.rebind_context(previous, current, tasks=(replace(tasks[0], dates=days),))
+    assert index.tasks(codes=frozenset({"600002"})) == retained
+    index.begin(replace(current, sequence=2), (HistoryDownloadTask("600003", days),))
+    assert index.tasks(codes=frozenset({"600002"})) == retained
+    assert index.gaps_by_code() == {"600002": days[:1]}
+    assert index.gap_summary(("600003",)).cells == 0
+
+
+def test_reopening_a_retained_task_replans_dates_without_losing_failure_evidence(tmp_path):
+    path = tmp_path / "catalog.sqlite3"
+    HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
+    index = HistoryDownloadIndex(path, sqlite_policy=SqlitePolicyFixture())
+    days = tuple(date(2026, 10, 12) + timedelta(days=i) for i in range(3))
+    previous = HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, days[-1])
+    task = HistoryDownloadTask("600002", days[:1])
+    index.begin(previous, (task,))
+    index.begin_attempt(task.code)
+    index.finish((HistoryDownloadCompletion(task, task.dates, "supplier_query_failed"),))
+    retained = index.tasks()[0]
+    current = replace(previous, universe_hash="d" * 64)
+    index.rebind_context(
+        previous, current, tasks=(replace(task, dates=days),), reopened_codes=frozenset({task.code}),
+    )
+    assert index.tasks() == (replace(retained, dates=days, tencent_done=False),)
+    assert index.gaps_by_code() == {task.code: task.dates}
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="SQLite runtime limit API requires Python 3.11")
+def test_selected_population_loads_with_999_sqlite_variable_limit(tmp_path, monkeypatch):
+    path = tmp_path / "catalog.sqlite3"
+    HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
+    index = HistoryDownloadIndex(path, sqlite_policy=SqlitePolicyFixture())
+    day = date(2026, 10, 12)
+    tasks = tuple(HistoryDownloadTask(f"{600000 + number:06d}", (day,)) for number in range(1200))
+    index.begin(HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, day), tasks)
+    connect = sqlite3.connect
+
+    def bounded(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", bounded)
+    assert index.tasks(codes=frozenset(task.code for task in tasks)) == tasks

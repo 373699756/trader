@@ -359,7 +359,18 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
     assert RunHistoryFixture(_configuration(serial), ManySecurities(DAYS), clock=lambda: NOW).state == "completed"
     parallel_snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     serial_snapshot = HistoryControlIndex(serial / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
-    assert parallel_snapshot.content_hash == serial_snapshot.content_hash
+    # Completion order may change SQLite bytes and their file fingerprints.
+    # The publication metadata, coverage and every visible price must agree.
+    assert replace(parallel_snapshot, partitions=serial_snapshot.partitions) == serial_snapshot
+    assert [
+        (part.relative_path, part.calendar_month, part.row_count, part.sequence) for part in parallel_snapshot.partitions
+    ] == [
+        (part.relative_path, part.calendar_month, part.row_count, part.sequence) for part in serial_snapshot.partitions
+    ]
+    parallel_reader = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture())
+    serial_reader = HistorySnapshotReader(serial, sqlite_policy=SqlitePolicyFixture())
+    for day in DAYS:
+        assert parallel_reader.read_day(day, parallel_snapshot) == serial_reader.read_day(day, serial_snapshot)
 
 
 def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(tmp_path, monkeypatch):

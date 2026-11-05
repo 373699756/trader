@@ -86,20 +86,23 @@ class HistoryPriceRepair:
                 ((security.code, EncodeDate(c.trade_date), sequence, security.board, source, EncodePublishedHistoryCell(c))
                  for c in candidate.cells),
             )
-        self.replay(sequence)
+        self.replay(sequence, codes=frozenset({security.code}))
 
     @staticmethod
     def _require_unpublished(published: int | None, sequence: int) -> None:
         if published is not None and published >= sequence:
             raise RuntimeError("history_replacement_already_published")
 
-    def replay(self, sequence: int) -> None:
+    def replay(self, sequence: int, *, codes: frozenset[str]) -> None:
         # The complete validated candidate is durable before touching annual files.
         # A crash may leave some annual writes; replay needs no second supplier call.
         with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             self._require_unpublished(connection.run("SELECT MAX(sync_sequence) FROM published_snapshot").require_one()[0], sequence)
-            codes = tuple(row[0] for row in connection.run("SELECT DISTINCT code FROM price_replacement ORDER BY code"))
-        for code in codes:
+            selected = tuple(
+                row[0] for row in connection.run("SELECT DISTINCT code FROM price_replacement ORDER BY code")
+                if row[0] in codes
+            )
+        for code in selected:
             with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                 rows = connection.run(
                     "SELECT trade_date,sync_sequence,board,source,payload FROM price_replacement WHERE code=? ORDER BY trade_date", (code,)

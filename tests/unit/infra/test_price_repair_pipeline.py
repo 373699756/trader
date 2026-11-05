@@ -11,6 +11,7 @@ from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _updater,
 from tests.helpers.history import RunHistoryFixture
 from tests.unit.infra.research.test_history_sync import FakeSupplier, _download
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
 from tests.helpers.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_control_index import HistoryControlIndex
@@ -88,7 +89,7 @@ def test_explicit_repair_reuses_unchanged_month_proofs(tmp_path):
     current = control.load_state().published_snapshot
     assert current.partitions[1:] == previous.partitions[1:]
     sealed = [item for item in progress.values if item.stage == "sealing_partitions" and item.state == "completed"]
-    assert [(item.current_item, item.total_units) for item in sealed] == [("2026-01", 1)]
+    assert [(item.current_item, item.total_units) for item in sealed] == [("prices_2026.sqlite3", 1)]
 
 
 def test_old_gap_is_not_retried_until_explicit_and_old_snapshot_is_immutable(tmp_path):
@@ -133,6 +134,69 @@ def test_history_replays_interrupted_whole_stock_without_another_request(tmp_pat
     result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]), repair_only=True)
     assert result.state == "completed" and result.unresolved_price_cells == 0
     assert supplier.events == []
+
+
+def test_excluded_replacement_is_retained_without_decode_and_never_rebased_after_publication(tmp_path, monkeypatch):
+    from trader.download.infra import history_price_repair
+    from trader.download.infra.history_prices import HistoryPricePartition
+
+    class Selected(RepairHistory):
+        eligible_codes = ("600001", "600002")
+
+        def load_context(self, as_of, sessions):
+            context = super().load_context(as_of, sessions)
+            return replace(
+                context,
+                universe=tuple(item for item in context.universe if item.code in self.eligible_codes),
+                st_evidence=tuple(
+                    replace(item, status="clear" if item.code in self.eligible_codes else "unknown")
+                    for item in context.st_evidence
+                ),
+                source_versions=replace(context.source_versions, dependency_versions=(HISTORY_UNIVERSE_CONTRACT,)),
+            )
+
+    days = (date(2025, 12, 31), date(2026, 1, 2))
+    config = _config(tmp_path, days)
+    supplier = Selected(days)
+    original = HistoryPricePartition.replace_unpublished_code
+
+    def interrupted(partition, revisions, sequence):
+        if revisions[0].trade_date.year == 2026:
+            raise RuntimeError("fixture_write_interrupted")
+        return original(partition, revisions, sequence)
+
+    monkeypatch.setattr(HistoryPricePartition, "replace_unpublished_code", interrupted)
+    assert RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1])).state == "failed"
+    path = config.history_root / "catalog.sqlite3"
+    with SqliteSession(path) as connection:
+        retained = tuple(tuple(row) for row in connection.run("SELECT * FROM price_replacement ORDER BY code,trade_date"))
+    assert len(retained) == 2
+    monkeypatch.setattr(HistoryPricePartition, "replace_unpublished_code", original)
+    supplier.eligible_codes = ("600002",)
+    supplier.events.clear()
+    decode = history_price_repair.DecodePublishedHistoryCellPayload
+
+    def selected_decode(code, *args):
+        assert code in supplier.eligible_codes
+        return decode(code, *args)
+
+    monkeypatch.setattr(history_price_repair, "DecodePublishedHistoryCellPayload", selected_decode)
+    result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]), repair_only=True)
+    assert result.state == "completed" and result.unresolved_price_cells == 0
+    assert supplier.events == []
+    with SqliteSession(path) as connection:
+        assert tuple(tuple(row) for row in connection.run("SELECT * FROM price_replacement ORDER BY code,trade_date")) == retained
+    snapshot = HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    reader = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture())
+    assert {row.code for row in reader.read_day(days[-1], snapshot)} == {"600002"}
+
+    supplier.eligible_codes = ("600001", "600002")
+    rejected = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
+    assert rejected.state == "failed" and rejected.reason == "history_replacement_sequence_conflict"
+    assert supplier.events == []
+    assert HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot == snapshot
+    with SqliteSession(path) as connection:
+        assert tuple(tuple(row) for row in connection.run("SELECT * FROM price_replacement ORDER BY code,trade_date")) == retained
 
 
 def test_market_second_phase_and_explicit_only_retry(tmp_path):

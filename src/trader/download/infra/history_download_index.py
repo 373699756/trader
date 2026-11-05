@@ -143,7 +143,8 @@ class HistoryDownloadIndex:
             SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
-            connection.run("DELETE FROM download_tasks")
+            # Tasks outside this batch retain their recovery evidence.
+            connection.run_many("DELETE FROM download_tasks WHERE code=?", ((task.code,) for task in tasks))
             connection.run(
                 "INSERT OR REPLACE INTO download_batch VALUES(1,?,?,?,?,?)",
                 (
@@ -163,21 +164,32 @@ class HistoryDownloadIndex:
                 ((task.code, EncodeDate(day)) for task in tasks for day in task.dates),
             )
 
-    def tasks(self) -> tuple[HistoryDownloadTask, ...]:
+    def tasks(self, *, codes: frozenset[str] | None = None) -> tuple[HistoryDownloadTask, ...]:
+        if codes is not None and not codes:
+            return ()
+        selected = tuple(sorted(codes)) if codes is not None else ()
+        # Stay below the 999-variable limit used by older supported SQLite builds.
+        batches = tuple(selected[start:start + 512] for start in range(0, len(selected), 512)) if codes is not None else ((),)
+        result: list[HistoryDownloadTask] = []
         with (
             SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
         ):
-            rows = connection.run(
-                "SELECT code,tencent_done,attempts,failure FROM download_tasks ORDER BY code"
-            ).fetchall()
-            dates: dict[str, list[date]] = {}
-            for code, day in connection.run("SELECT code,trade_date FROM download_task_dates ORDER BY code,trade_date"):
-                dates.setdefault(code, []).append(DecodeDate(day))
-        return tuple(
-            HistoryDownloadTask(code, tuple(dates.get(code, ())), bool(done), attempts, failure)
-            for code, done, attempts, failure in rows
-        )
+            for batch in batches:
+                clause = f" WHERE code IN ({','.join('?' for _ in batch)})" if codes is not None else ""
+                rows = connection.run(
+                    f"SELECT code,tencent_done,attempts,failure FROM download_tasks{clause} ORDER BY code", batch,
+                ).fetchall()
+                dates: dict[str, list[date]] = {}
+                for code, day in connection.run(
+                    f"SELECT code,trade_date FROM download_task_dates{clause} ORDER BY code,trade_date", batch,
+                ):
+                    dates.setdefault(code, []).append(DecodeDate(day))
+                result.extend(
+                    HistoryDownloadTask(code, tuple(dates.get(code, ())), bool(done), attempts, failure)
+                    for code, done, attempts, failure in rows
+                )
+        return tuple(result)
 
     def rebind_context(
         self,
@@ -185,6 +197,7 @@ class HistoryDownloadIndex:
         current: HistoryDownloadBatch,
         *,
         tasks: tuple[HistoryDownloadTask, ...] | None = None,
+        reopened_codes: frozenset[str] = frozenset(),
     ) -> None:
         """Rebind or advance an unpublished batch, retaining committed prices and gap receipts."""
         advancing = current.cutoff > previous.cutoff
@@ -192,6 +205,7 @@ class HistoryDownloadIndex:
             previous.sequence != current.sequence
             or current.cutoff < previous.cutoff
             or (advancing and tasks is None)
+            or not reopened_codes.issubset(task.code for task in tasks or ())
         ):
             raise ValueError("history_download_identity_conflict")
         with (
@@ -219,24 +233,24 @@ class HistoryDownloadIndex:
             if updated.rowcount != 1:
                 raise RuntimeError("history_download_identity_conflict")
             if tasks is not None:
-                codes = {task.code for task in tasks}
                 existing = tuple(row[0] for row in connection.run("SELECT code FROM download_tasks"))
-                connection.run_many(
-                    "DELETE FROM download_tasks WHERE code=?", ((code,) for code in existing if code not in codes)
-                )
                 connection.run_many(
                     "INSERT OR IGNORE INTO download_tasks(code) VALUES(?)",
                     ((task.code,) for task in tasks),
                 )
-                if advancing:
-                    connection.run("DELETE FROM download_task_dates")
+                replanned = tasks if advancing else tuple(task for task in tasks if task.code in reopened_codes)
+                if replanned:
+                    connection.run_many(
+                        "DELETE FROM download_task_dates WHERE code=?", ((task.code,) for task in replanned),
+                    )
                     connection.run_many(
                         "UPDATE download_tasks SET tencent_done=? WHERE code=?",
-                        ((int(task.tencent_done), task.code) for task in tasks),
+                        ((int(task.tencent_done), task.code) for task in replanned),
                     )
                 connection.run_many(
                     "INSERT INTO download_task_dates VALUES(?,?)",
-                    ((task.code, EncodeDate(day)) for task in tasks if advancing or task.code not in existing for day in task.dates),
+                    ((task.code, EncodeDate(day)) for task in tasks
+                     if advancing or task.code not in existing or task.code in reopened_codes for day in task.dates),
                 )
 
     def gap_codes(self) -> frozenset[str]:

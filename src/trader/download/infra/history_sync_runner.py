@@ -117,12 +117,12 @@ class _HistorySync:
         if not _has_sufficient_disk(self.configuration.history_root, self.configuration.minimum_free_bytes):
             return _status("blocked", "disk_space_insufficient", self.configuration, current_snapshot)
         pending = self.index.pending(current_snapshot.sequence if current_snapshot else 0)
-        if self.repair_only and pending is not None and any(not task.tencent_done and task.dates for task in self.index.tasks()):
-            return _status("blocked", "history_download_incomplete", self.configuration, current_snapshot)
         target = CompletedDailyCutoff(self.observed_at)
         if self.repair_only:
             target = pending.cutoff if pending else current_snapshot.data_cutoff if current_snapshot else target
         inputs = self._prepare(current_snapshot, pending, target, previous)
+        if isinstance(inputs, HistoryMaintenanceStatus):
+            return inputs
         if inputs is None:
             unresolved = self.index.gap_summary(tuple(previous)) if current_snapshot is not None else None
             return _status(
@@ -150,7 +150,7 @@ class _HistorySync:
         pending: HistoryDownloadBatch | None,
         target: date,
         previous: frozenset[str],
-    ) -> _BatchInput | None:
+    ) -> _BatchInput | HistoryMaintenanceStatus | None:
         _publish_progress(self.progress, "loading_context", "started")
         context = self.supplier.load_context(target, self.configuration.sessions)
         publication_id = _validate_context(context, self.configuration.sessions)
@@ -196,7 +196,7 @@ class _HistorySync:
         current_snapshot: HistorySnapshot | None,
         pending: HistoryDownloadBatch,
         publication_id: str,
-    ) -> _BatchInput:
+    ) -> _BatchInput | HistoryMaintenanceStatus:
         state = self.control.load_state()
         source = next((item for item in state.sources if item.content_hash == pending.source_hash), None)
         calendar = next((item for item in state.calendars if item.content_hash == pending.calendar_hash), None)
@@ -231,13 +231,21 @@ class _HistorySync:
                 raise RuntimeError("history_resume_security_changed")
         if (source.source, source.dataset) != (current_source.source, current_source.dataset):
             raise RuntimeError("history_resume_source_changed")
+        allowed_codes = frozenset(item.code for item in context.universe)
+        if self.repair_only and (
+            not allowed_codes.issubset(previous_by_code)
+            or any(
+                not task.tencent_done and task.dates for task in self.index.tasks(codes=allowed_codes)
+            )
+        ):
+            return _status("blocked", "history_download_incomplete", self.configuration, current_snapshot)
         reference = ReadBoundHistoryReference(self.configuration.history_root, source.supplier_contract, sqlite_policy=self.sqlite_policy)
         if (
             advancing
             or source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
             or universe.securities != current_universe.securities
         ):
-            # Bind the current reference while retaining progress only for common codes.
+            # Bind the current reference while retaining all durable task evidence.
             # Persist immutable parents before atomically switching the unpublished batch.
             reference = HistoryReferenceSnapshot(
                 tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
@@ -251,7 +259,9 @@ class _HistorySync:
                 current_calendar.open_dates[-1],
             )
             if advancing:
-                self.index.rebind_context(pending, current, tasks=self._advance_tasks(context, pending))
+                self.index.rebind_context(
+                    pending, current, tasks=self._advance_tasks(context, pending, frozenset(previous_by_code)),
+                )
             elif previous_by_code.keys() != {item.code for item in current_universe.securities}:
                 self.index.rebind_context(
                     pending,
@@ -260,6 +270,7 @@ class _HistorySync:
                         HistoryDownloadTask(item.code, context.calendar.expected_dates(item))
                         for item in context.universe
                     ),
+                    reopened_codes=frozenset(item.code for item in context.universe) - previous_by_code.keys(),
                 )
             else:
                 self.index.rebind_context(pending, current)
@@ -267,15 +278,17 @@ class _HistorySync:
         return _BatchInput(context, source, calendar, universe, reference, pending, False)
 
     def _advance_tasks(
-        self, context: HistorySupplierContext, pending: HistoryDownloadBatch
+        self, context: HistorySupplierContext, pending: HistoryDownloadBatch, previous_codes: frozenset[str]
     ) -> tuple[HistoryDownloadTask, ...]:
-        previous = {task.code: task for task in self.index.tasks()}
+        previous = {
+            task.code: task for task in self.index.tasks(codes=frozenset(item.code for item in context.universe))
+        }
         retryable = self.index.gaps_by_code(context.calendar.open_dates)
         tasks = []
         for security in context.universe:
             expected = context.calendar.expected_dates(security)
             task = previous.get(security.code)
-            if task is None:
+            if task is None or security.code not in previous_codes:
                 tasks.append(HistoryDownloadTask(security.code, expected))
                 continue
             new = {day for day in expected if day > pending.cutoff}
@@ -306,7 +319,8 @@ class _HistorySync:
         )
         prices = HistoryDirectPrices(root, inputs.batch.sequence, current_snapshot, activity, fresh=inputs.fresh, sqlite_policy=self.sqlite_policy)
         repair = HistoryPriceRepair(root, sqlite_policy=self.sqlite_policy)
-        repair.replay(inputs.batch.sequence)
+        allowed_codes = frozenset(item.code for item in inputs.context.universe)
+        repair.replay(inputs.batch.sequence, codes=allowed_codes)
         flow = HistoryDownloadFlow(
             HistoryDownloadResources(
                 self.configuration,
@@ -361,7 +375,7 @@ class _HistorySync:
             else:
                 repaired += 1
                 _publish_progress(self.progress, "baostock_repair", "completed", (completed, len(selected)), security.code)
-        repair.replay(inputs.batch.sequence)
+        repair.replay(inputs.batch.sequence, codes=allowed_codes)
         if self.progress is not None:
             self.progress.publish(HistorySyncProgress("baostock_repair", "completed", len(selected), len(selected), repair_summary=HistoryRepairSummary(attempted, repaired, len(selected) - attempted)))
         remaining_gaps = self.index.gaps_by_code()
