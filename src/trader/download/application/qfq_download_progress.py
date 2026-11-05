@@ -24,7 +24,7 @@ from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
 from trader.download.domain.published_history import PublishedHistoryWindow
-from trader.download.domain.qfq_window import QfqPendingReason, QfqUpdateResult, QfqWindowIncompleteError
+from trader.download.domain.qfq_window import QfqPendingReason, QfqPriceReviewSummary, QfqUpdateResult, QfqWindowIncompleteError
 
 
 def QfqMessage(
@@ -97,6 +97,7 @@ class QfqDownloadProgress:
     latest_missing: int = 0
     latest_suspended: int = 0
     latest_inferred_suspended: int = 0
+    price_review: QfqPriceReviewSummary = field(default_factory=QfqPriceReviewSummary)
     rows: int = 0
     errors: int = 0
     write_seconds: float = 0.0
@@ -254,6 +255,7 @@ class QfqDownloadProgress:
             self.latest_missing,
             self.latest_suspended,
             self.latest_inferred_suspended,
+            price_review=self.price_review,
         )
         stage = (
             "已取消"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Literal, Protocol, get_args
@@ -18,6 +18,7 @@ from trader.download.domain.baostock_daily import (
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.published_history import PublishedHistoryWindow
+from trader.download.domain.price_review import PriceReviewConfiguration, PriceReviewRequestBudget
 
 HistorySyncProgressStage = Literal[
     "initializing",
@@ -104,6 +105,7 @@ class HistorySyncConfiguration:
     cancellation_grace_seconds: float
     progress_heartbeat_seconds: float
     write_batches: HistoryWriteBatchPolicy
+    price_review: PriceReviewConfiguration = field(default_factory=PriceReviewConfiguration)
 
     def __post_init__(self) -> None:
         if (
@@ -360,7 +362,13 @@ class HistorySyncProgressPort(Protocol):
 class HistoryTwoStageSupplier(Protocol):
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext: ...
 
-    def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
+    def fetch_tencent_window(
+        self,
+        security: BaoStockSecurity,
+        dates: tuple[date, ...],
+        *,
+        request_budget: PriceReviewRequestBudget | None = None,
+    ) -> PublishedHistoryWindow: ...
 
     def fetch_baostock_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
 

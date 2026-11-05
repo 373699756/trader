@@ -53,9 +53,10 @@ def OpenHistoryPriceReader(
     statement_trace: Callable[[str], None] | None,
     mmap_bytes: int,
     activity: HistorySqliteActivity | None, sqlite_policy: SqliteIoPolicy,
+    retry_locks: bool = True,
 ) -> SqliteConnection:
     """Retry only SQLite lock contention; always close a failed connection."""
-    for attempt in range(3):
+    for attempt in range(3 if retry_locks else 1):
         try:
             return OpenSqliteConnection(
                 path,
@@ -65,7 +66,7 @@ def OpenHistoryPriceReader(
                 statement_trace=statement_trace, sqlite_policy=sqlite_policy,
             )
         except sqlite3.Error as exc:
-            if not _retryable_lock(exc) or attempt == 2:
+            if not _retryable_lock(exc) or not retry_locks or attempt == 2:
                 raise
             if activity is not None:
                 activity.tick()

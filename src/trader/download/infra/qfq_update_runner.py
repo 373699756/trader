@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.application.progress_message import ProgressLevel
 from trader.download.application.qfq_download_progress import QfqFailureCode, QfqMessage
+from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockCalendar
@@ -22,12 +24,43 @@ from trader.download.infra.qfq_progress import QfqLocalProgress
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.domain.download_failure import DownloadFailureContext
+from trader.infra.shutdown import ShutdownDeadline
+from trader.infra.workers import ManagedWorkerExecutor
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class _SeedCancelledError(RuntimeError):
     """Stop a local history read without discarding earlier seed receipts."""
+
+
+@dataclass(frozen=True)
+class QfqShutdown:
+    writer: ManagedWorkerExecutor
+    downloads: ManagedWorkerExecutor
+    report: Callable[[ProgressMessage], None]
+    failures: DownloadFailurePort
+
+
+def StopQfqWorkers(
+    resources: QfqShutdown,
+    timeout_seconds: float,
+    started_at: float,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> None:
+    """Drain explicitly owned paired workers under one deadline and report failure."""
+    deadline = ShutdownDeadline.start(timeout_seconds, monotonic=monotonic)
+    writer_stopped = resources.writer.stop(wait=True, cancel_futures=True, deadline=deadline)
+    stopped = resources.downloads.stop(wait=True, cancel_futures=True, deadline=deadline)
+    if not stopped.completed or not writer_stopped.completed:
+        resources.failures(
+            DownloadFailureContext("shutdown", elapsed_seconds=monotonic() - started_at),
+            RuntimeError("qfq_worker_deadline_exceeded"),
+        )
+        resources.report(QfqMessage(
+            monotonic() - started_at, "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR,
+        ))
 
 
 @dataclass(frozen=True)
@@ -101,6 +134,7 @@ class QfqUpdateRunner:
                             self._seed_windows(manifest, needed),
                             f"history:{manifest.snapshot_hash}",
                             calendar=manifest.calendar_dates,
+                            nontrading_observed_on=observed_at.date(),
                         )
                     changed.update(seeded.changed_files)
                     rows += seeded.changed_rows

@@ -35,6 +35,13 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
                 "latest_missing_codes": market.latest_missing_codes,
                 "latest_suspended_codes": market.latest_suspended_codes,
                 "latest_inferred_suspended_codes": market.latest_inferred_suspended_codes,
+                "price_review": {
+                    "examined_codes": market.price_review.examined_codes,
+                    "physical_requests": market.price_review.physical_requests,
+                    "remaining_inferred_codes": market.price_review.remaining_inferred_codes,
+                    "exhaustion_reason": market.price_review.exhaustion_reason,
+                    "discovery_completed": market.price_review.discovery_completed,
+                },
                 "changed_files": market.changed_files,
                 "changed_rows": market.changed_rows,
                 "skipped_codes": market.skipped_codes,

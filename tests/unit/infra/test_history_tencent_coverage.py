@@ -76,7 +76,7 @@ def test_history_sends_failed_stock_to_baostock_after_single_tencent_summary(tmp
     repair_position = next(index for index, line in enumerate(lines) if "BaoStock补缺 | 开始 |" in line)
     assert summary_positions[0] < repair_position
     assert "Tencent下载 | 重试 |" not in logs
-    assert sum("发布内容校验" in line for line in logs.splitlines()) == 1
+    assert sum("数据库文件校验 | 完成 |" in line for line in logs.splitlines()) == 1
     assert result.unresolved_price_cells == (0 if recovers else 3)
     assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).gaps_by_code() == ({} if recovers else {"600001": days})
 

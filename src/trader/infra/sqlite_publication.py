@@ -46,6 +46,44 @@ class VerifiedSqlitePublication:
     wal: SqliteFileStamp | None
     receipt: SqliteFileStamp
     fingerprint: SqlitePublicationFingerprint
+    database_header: bytes
+    wal_header: bytes | None
+
+
+@dataclass(frozen=True)
+class PreparedSqlitePublication:
+    path: Path
+    database: SqliteFileStamp
+    wal: SqliteFileStamp | None
+    fingerprint: SqlitePublicationFingerprint
+    database_header: bytes
+    wal_header: bytes | None
+
+
+def _header(path: Path, size: int) -> bytes:
+    with path.open("rb", buffering=0) as source:
+        return source.read(size)
+
+
+def _same_generation(prepared: PreparedSqlitePublication) -> bool:
+    """Guard normal SQLite transaction changes even with coarse filesystem stamps.
+
+    Writers remain closed across preparation and publication. These SQLite
+    headers complement the complete digest; they do not authenticate arbitrary
+    raw edits that deliberately preserve both headers and filesystem stamps.
+    """
+    return (
+        prepared.database == _stamp(prepared.path)
+        and prepared.wal == _stamp(Path(f"{prepared.path}-wal"), optional=True)
+        and _same_headers(prepared.path, prepared.database_header, prepared.wal_header)
+    )
+
+
+def _same_headers(path: Path, database_header: bytes, wal_header: bytes | None) -> bool:
+    return (
+        database_header == _header(path, 100)
+        and (wal_header is None or wal_header == _header(Path(f"{path}-wal"), 32))
+    )
 
 
 def _stamp(path: Path, *, optional: bool = False) -> SqliteFileStamp | None:
@@ -85,7 +123,7 @@ def _fingerprint(
     schema_version: int,
     check: Callable[[], None] | None,
     sqlite_policy: SqliteIoPolicy,
-) -> tuple[SqliteFileStamp, SqliteFileStamp | None, SqlitePublicationFingerprint]:
+) -> PreparedSqlitePublication:
     if check is not None:
         check()
     try:
@@ -101,11 +139,12 @@ def _fingerprint(
         raise AssertionError("required SQLite file stamp missing")
     wal_path = Path(f"{path}-wal")
     wal = _stamp(wal_path, optional=True)
-    with path.open("rb") as source:
-        header = source.read(100)
+    header = _header(path, 100)
+    wal_header = _header(wal_path, 32) if wal is not None else None
     if (
         len(header) != 100
         or header[:16] != _SQLITE_HEADER
+        or (wal_header is not None and len(wal_header) != 32)
     ):
         raise SqlitePublicationError("sqlite_publication_header_invalid")
     value = SqlitePublicationFingerprint(
@@ -115,9 +154,10 @@ def _fingerprint(
         wal.size if wal is not None else 0,
         _digest(wal_path, wal.size, check) if wal is not None else None,
     )
-    if before != _stamp(path) or wal != _stamp(wal_path, optional=True):
+    prepared = PreparedSqlitePublication(path, before, wal, value, header, wal_header)
+    if not _same_generation(prepared):
         raise SqlitePublicationError("sqlite_publication_changed_during_read")
-    return before, wal, value
+    return prepared
 
 
 def _read_receipt(path: Path, schema_version: int) -> SqlitePublicationFingerprint:
@@ -157,7 +197,32 @@ def PublishSqliteFile(
     check: Callable[[], None] | None = None,
 ) -> SqlitePublicationFingerprint:
     """Seal closed writer output once; this never reads a business table or changes the database."""
-    before, wal, value = _fingerprint(path, schema_version, check, sqlite_policy)
+    prepared = PrepareSqliteFilePublication(path, schema_version, sqlite_policy=sqlite_policy, check=check)
+    return PublishPreparedSqliteFile(prepared, check=check)
+
+
+def PrepareSqliteFilePublication(
+    path: Path,
+    schema_version: int,
+    *,
+    sqlite_policy: SqliteIoPolicy,
+    check: Callable[[], None] | None = None,
+) -> PreparedSqlitePublication:
+    """Read the required full fingerprint without publishing a receipt."""
+    return _fingerprint(path, schema_version, check, sqlite_policy)
+
+
+def PublishPreparedSqliteFile(
+    prepared: PreparedSqlitePublication,
+    *,
+    check: Callable[[], None] | None = None,
+) -> SqlitePublicationFingerprint:
+    """Publish after read-only statistics and SQLite generation/stamp checks."""
+    if check is not None:
+        check()
+    path, value = prepared.path, prepared.fingerprint
+    if not _same_generation(prepared):
+        raise SqlitePublicationError("sqlite_publication_changed_before_publish")
     receipt = Path(f"{path}.sha256")
     if receipt.is_symlink():
         raise SqlitePublicationError("sqlite_publication_path_unsafe")
@@ -168,7 +233,7 @@ def PublishSqliteFile(
         "wal_size": value.wal_size,
         "wal_sha256": value.wal_sha256,
     })
-    if before != _stamp(path) or wal != _stamp(Path(f"{path}-wal"), optional=True):
+    if not _same_generation(prepared):
         raise SqlitePublicationError("sqlite_publication_changed_during_publish")
     return value
 
@@ -193,16 +258,22 @@ def VerifySqliteFile(
     if previous is not None and (
         previous.database == database and previous.wal == wal and previous.receipt == receipt
         and previous.fingerprint.schema_version == schema_version
+        and _same_headers(path, previous.database_header, previous.wal_header)
     ):
         return previous
     expected = _read_receipt(receipt_path, schema_version)
-    actual_database, actual_wal, actual = _fingerprint(path, schema_version, check, sqlite_policy)
-    if expected != actual or receipt != _stamp(receipt_path):
+    actual = _fingerprint(path, schema_version, check, sqlite_policy)
+    if expected != actual.fingerprint or receipt != _stamp(receipt_path):
         raise SqlitePublicationError("sqlite_publication_checksum_mismatch")
-    return VerifiedSqlitePublication(actual_database, actual_wal, receipt, actual)
+    return VerifiedSqlitePublication(
+        actual.database, actual.wal, receipt, actual.fingerprint, actual.database_header, actual.wal_header
+    )
 
 
 __all__ = [
+    "PreparedSqlitePublication",
+    "PrepareSqliteFilePublication",
+    "PublishPreparedSqliteFile",
     "PublishSqliteFile",
     "SqliteFileStamp",
     "SqlitePublicationError",

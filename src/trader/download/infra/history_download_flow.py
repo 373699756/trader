@@ -33,6 +33,7 @@ from trader.download.domain.history_sync import (
     HistoryTwoStageSupplier,
 )
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
+from trader.download.domain.price_review import PriceReviewBudget, PriceReviewBudgetExhausted
 from trader.download.infra.history_direct_prices import HistoryDirectPrices, HistoryPriceContext, HistoryPriceResult
 from trader.download.infra.history_download_index import (
     HistoryDownloadCompletion,
@@ -41,6 +42,11 @@ from trader.download.infra.history_download_index import (
 )
 from trader.download.infra.history_prices import HistoryPricePartitionError
 from trader.download.infra.history_price_repair import HistoryPriceRepair
+from trader.download.infra.history_inferred_review import (
+    HistoryInferredReviewIndex,
+    HistoryInferredReviewTask,
+    IsHistoryReviewBusy,
+)
 from trader.download.infra.history_sync_failure import HistoryFailureDetail, HistorySyncFailureError
 from trader.download.infra.history_write_tuning import HistoryWriteTuning
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
@@ -85,6 +91,7 @@ class _PreparedResult:
     seconds: float
     read_seconds: float
     validation_seconds: float
+    review_confirmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,10 +100,21 @@ class _WriteResult:
     seconds: float
 
 
+@dataclass(frozen=True)
+class HistoryInferredReviewResult:
+    task: HistoryInferredReviewTask
+    cells: tuple[BaoStockDailyCell, ...]
+    price: HistoryPriceResult | None
+    failure: str | None = None
+
+
 class HistoryDownloadFlow:
-    def __init__(self, resources: HistoryDownloadResources, *, sqlite_policy: SqliteIoPolicy) -> None:
+    def __init__(
+        self, resources: HistoryDownloadResources, *, sqlite_policy: SqliteIoPolicy, batched_price_reads: bool = False,
+    ) -> None:
         self._sqlite_policy = sqlite_policy
         self._resources = resources
+        self._batched_price_reads = batched_price_reads
         self._reused_codes: set[str] = set()
         self._stopped = Event()
         self._baostock_codes = HistoryPriceRepair(
@@ -151,12 +169,14 @@ class HistoryDownloadFlow:
             self._resources.index.finish(
                 tuple(
                     HistoryDownloadCompletion(
-                        result.task,
-                        result.missing if result.failure is not None else (),
-                        result.failure,
-                        result.unusable_qfq_dates,
+                        item.price.task,
+                        item.price.missing if item.price.failure is not None else (),
+                        item.price.failure,
+                        item.price.unusable_qfq_dates,
+                        item.price.inferred_suspended_dates,
+                        item.dates if item.review_confirmed else (),
                     )
-                    for result in results
+                    for item in batch
                 )
             )
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
@@ -216,6 +236,109 @@ class HistoryDownloadFlow:
         _TencentPipeline(self, jobs, completed, len(tasks)).run()
         self._report_tencent_summary(len(tasks))
 
+    def prepare_inferred_reviews(
+        self,
+        tasks: tuple[HistoryInferredReviewTask, ...],
+        budget: PriceReviewBudget,
+        sequence: int,
+    ) -> tuple[HistoryInferredReviewResult, ...]:
+        """Prepare auxiliary facts without changing ordinary task/gap checkpoints."""
+        resources = self._resources
+        results: list[HistoryInferredReviewResult] = []
+        repair = HistoryPriceRepair(
+            resources.configuration.history_root,
+            sqlite_policy=replace(
+                self._sqlite_policy,
+                connection_timeout_seconds=min(self._sqlite_policy.connection_timeout_seconds, 0.001),
+            ),
+        )
+        for task in tasks:
+            self._check()
+            if not budget.reserve_code(task.code):
+                continue
+            previous: tuple[BaoStockDailyCell, ...] = ()
+            try:
+                previous = resources.prices.read_for_review(task.code, task.dates, budget)
+                inferred = frozenset(cell.trade_date for cell in previous if cell.status == "tencent_inferred_suspended")
+                if not inferred:
+                    results.append(HistoryInferredReviewResult(task, previous, None))
+                    continue
+                budget.check_deadline()
+                if repair.source(task.code, sequence) == "baostock":
+                    continue
+                budget.check_deadline()
+                if not any(cell.status == "complete" for cell in previous):
+                    history = resources.prices.read_for_review(
+                        task.code, resources.context.calendar.expected_dates(self._security(task.code)), budget,
+                    )
+                    anchors = tuple(cell.trade_date for cell in history if cell.status == "complete")[-5:]
+                    task = replace(task, dates=tuple(sorted(set(task.dates) | set(anchors))))
+                    previous = tuple(cell for cell in history if cell.trade_date in task.dates)
+                window = resources.supplier.fetch_tencent_window(
+                    self._security(task.code), task.dates, request_budget=budget,
+                )
+                budget.check_deadline()
+                if window.code != task.code or tuple(cell.trade_date for cell in window.cells) != task.dates:
+                    raise RuntimeError("history_supplier_identity_conflict")
+                price = resources.prices.prepare(
+                    self._security(task.code),
+                    HistoryDownloadTask(task.code, task.dates),
+                    window,
+                    context=HistoryPriceContext(
+                        set(resources.context.calendar.expected_dates(self._security(task.code))).issubset(task.dates),
+                        previous,
+                    ),
+                )
+                if price.failure is not None:
+                    results.append(HistoryInferredReviewResult(task, previous, None, price.failure))
+                    continue
+                revisions = tuple(
+                    revision for revision in price.revisions
+                    if revision.trade_date in inferred and revision.cell.status in {"complete", "supplier_marked_suspended"}
+                )
+                changed = {revision.trade_date: revision.cell for revision in revisions}
+                cells = tuple(changed.get(cell.trade_date, cell) for cell in previous)
+                results.append(HistoryInferredReviewResult(task, cells, replace(price, revisions=revisions, missing=())))
+            except PriceReviewBudgetExhausted:
+                break
+            except sqlite3.OperationalError as exc:
+                if not IsHistoryReviewBusy(exc):
+                    raise
+                _LOGGER.warning("history_inferred_review_deferred code=%s reason=sqlite_busy", task.code)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                # A failed review establishes no new suspension or missing-price
+                # fact and never changes the normal download failure population.
+                if previous:
+                    results.append(HistoryInferredReviewResult(task, previous, None, DownloadFailure(exc)))
+        return tuple(results)
+
+    def commit_inferred_reviews(
+        self,
+        results: tuple[HistoryInferredReviewResult, ...],
+        sequence: int,
+        budget: PriceReviewBudget,
+    ) -> None:
+        """Commit new facts only behind the unpublished sequence fence."""
+        resources = self._resources
+        prices = tuple(result.price for result in results if result.price is not None and result.price.revisions)
+        if prices:
+            if any(revision.first_seen_sequence != sequence for price in prices for revision in price.revisions):
+                raise RuntimeError("history_download_identity_conflict")
+            budget.check_deadline()
+            resources.index.require_unpublished(sequence)
+            budget.check_deadline()
+            resources.prices.commit_for_review(prices, budget)
+        review = HistoryInferredReviewIndex(
+            resources.configuration.history_root / "catalog.sqlite3", sqlite_policy=self._sqlite_policy,
+        )
+        for result in results:
+            self._check()
+            if result.failure is not None:
+                _LOGGER.warning("history_inferred_review_failed code=%s reason=%s", result.task.code, result.failure)
+                continue
+            budget.check_deadline()
+            review.checked(result.task.code, result.cells, sequence, resources.context.calendar.open_dates[-1], budget)
+
     def _report_tencent_summary(self, total: int) -> None:
         resources = self._resources
         finished = resources.index.tasks(codes=frozenset(item.code for item in resources.context.universe))
@@ -254,27 +377,52 @@ class HistoryDownloadFlow:
         cells: int,
     ) -> bool:
         resources = self._resources
-        while jobs and len(futures) < resources.configuration.history_workers and codes < resources.tuning.max_codes:
+        selected: list[HistoryDownloadTask] = []
+        while jobs and len(futures) + len(selected) < resources.configuration.history_workers and codes < resources.tuning.max_codes:
             self._check()
             if cells + len(jobs[0].dates) > resources.tuning.max_cells:
                 break
             task = jobs.popleft()
-            future = SubmitWithBackpressure(resources.executor, self._fetch_task, task)
-            futures[future] = task
+            if task.dates and task.code in self._baostock_codes and task.code in self._recheck_codes:
+                task = replace(task, dates=resources.context.calendar.expected_dates(self._security(task.code)))
+                if cells + len(task.dates) > resources.tuning.max_cells:
+                    jobs.appendleft(task)
+                    break
+            selected.append(task)
             cells += len(task.dates)
             codes += 1
+        read_started = time.monotonic()
+        previous = resources.prices.read_for_download_batch(tuple(selected)) if self._batched_price_reads else ()
+        read_seconds = (time.monotonic() - read_started) / len(selected) if selected else 0.0
+        for position, task in enumerate(selected):
+            self._check()
+            future = SubmitWithBackpressure(
+                resources.executor,
+                self._fetch_task,
+                task,
+                previous[position].cells if self._batched_price_reads else None,
+                read_seconds if self._batched_price_reads else 0.0,
+            )
+            futures[future] = task
             if future.done() and not future.cancelled() and isinstance(future.exception(), WorkerResourceRejectedError):
+                jobs.extendleft(reversed(selected[position + 1:]))
                 break
         return not jobs
 
-    def _fetch_task(self, task: HistoryDownloadTask) -> _PreparedResult:
+    def _fetch_task(
+        self,
+        task: HistoryDownloadTask,
+        previous: tuple[BaoStockDailyCell, ...] | None = None,
+        read_seconds: float = 0.0,
+    ) -> _PreparedResult:
         self._check()
         uses_baostock = bool(task.dates) and task.code in self._baostock_codes
         if uses_baostock and task.code in self._recheck_codes:
             task = replace(task, dates=self._resources.context.calendar.expected_dates(self._security(task.code)))
-        read_started = time.monotonic()
-        previous = self._resources.prices.read_for_download(task.code, task.dates)
-        read_seconds = time.monotonic() - read_started
+        if previous is None:
+            read_started = time.monotonic()
+            previous = self._resources.prices.read_for_download(task.code, task.dates)
+            read_seconds = time.monotonic() - read_started
         obtained = {cell.trade_date for cell in previous if cell.obtained}
         missing = set(task.dates) - obtained
         dates = tuple(sorted(missing | set(sorted(obtained)[-5:]))) if missing else ()
@@ -307,7 +455,14 @@ class HistoryDownloadFlow:
         download_seconds = time.monotonic() - started
         validation_started = time.monotonic()
         price = self._tencent_result(_TencentResult(task, dates, previous, window, failure, unusable_qfq_dates))
-        return _PreparedResult(price, dates, download_seconds, read_seconds, time.monotonic() - validation_started)
+        return _PreparedResult(
+            price,
+            dates,
+            download_seconds,
+            read_seconds,
+            time.monotonic() - validation_started,
+            review_confirmed=failure is None and price.failure is None,
+        )
 
     def _tencent_result(self, result: _TencentResult) -> HistoryPriceResult:
         task = result.task
@@ -343,6 +498,7 @@ class HistoryDownloadFlow:
                     suspended,
                     inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in previous),
                 ),
+                inferred_suspended_dates=tuple(cell.trade_date for cell in previous if cell.status == "tencent_inferred_suspended"),
             )
 
 
@@ -524,4 +680,9 @@ class _TencentPipeline:
         self._writer_closed = True
 
 
-__all__ = ["HistoryDownloadFlow", "HistoryDownloadResources", "DownloadFailure"]
+__all__ = [
+    "HistoryDownloadFlow",
+    "HistoryDownloadResources",
+    "HistoryInferredReviewResult",
+    "DownloadFailure",
+]

@@ -750,9 +750,20 @@ def test_cross_day_resume_merges_unfinished_and_new_dates_with_durable_reuse(
         publications.append(publication.snapshot)
         original_publish(control, publication)
 
-    def seal(prices, dates, progress):
+    def seal(
+        prices,
+        dates,
+        progress,
+        *,
+        exact_month_ranges=False,
+        fingerprint_before_statistics=False,
+    ):
         sealed.append(dates)
-        return original_seal(prices, dates, progress)
+        return original_seal(
+            prices, dates, progress,
+            exact_month_ranges=exact_month_ranges,
+            fingerprint_before_statistics=fingerprint_before_statistics,
+        )
 
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", publish)
     monkeypatch.setattr(history_sync_module.HistoryDirectPrices, "publishable_partitions", seal)

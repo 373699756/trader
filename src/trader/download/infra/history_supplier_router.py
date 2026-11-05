@@ -13,6 +13,7 @@ from trader.download.domain.history_price_qualification import (
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
+from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
@@ -66,8 +67,14 @@ class HistorySupplierRouter:
             ),
         )
 
-    def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
-        return FetchTencentHistoryWindow(self._prices, security, dates, self._calendar)
+    def fetch_tencent_window(
+        self,
+        security: BaoStockSecurity,
+        dates: tuple[date, ...],
+        *,
+        request_budget: PriceReviewRequestBudget | None = None,
+    ) -> PublishedHistoryWindow:
+        return FetchTencentHistoryWindow(self._prices, security, dates, self._calendar, request_budget=request_budget)
 
     def fetch_baostock_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         result = self._baseline.fetch_code(security, dates)
@@ -75,7 +82,12 @@ class HistorySupplierRouter:
 
 
 def FetchTencentHistoryWindow(
-    prices: TencentQfqSupplier, security: BaoStockSecurity, dates: tuple[date, ...], calendar: tuple[date, ...]
+    prices: TencentQfqSupplier,
+    security: BaoStockSecurity,
+    dates: tuple[date, ...],
+    calendar: tuple[date, ...],
+    *,
+    request_budget: PriceReviewRequestBudget | None = None,
 ) -> PublishedHistoryWindow:
     if not dates or dates != tuple(sorted(set(dates))):
         raise ValueError("Tencent history dates must be non-empty, ordered, and unique")
@@ -84,4 +96,12 @@ def FetchTencentHistoryWindow(
     count = 2000 if dates[0] < calendar[0] else sum(dates[0] <= day <= dates[-1] for day in calendar)
     # Tencent qfq may spend two requested rows on sessions before the start date.
     request_count = min(2000, max(7, count + 2))
-    return prices.fetch_window(security, dates, request_count=request_count, allow_interior_padding=True)
+    if request_budget is None:
+        return prices.fetch_window(security, dates, request_count=request_count, allow_interior_padding=True)
+    return prices.fetch_window(
+        security,
+        dates,
+        request_count=request_count,
+        allow_interior_padding=True,
+        request_budget=request_budget,
+    )

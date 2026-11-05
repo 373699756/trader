@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 from math import isfinite
 from bisect import bisect_left
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
+from trader.download.domain.price_review import PriceReviewConfiguration, PriceReviewExhaustionReason
 
 DAILY_READY_AT = time(15, 15)
 MAX_QFQ_WINDOW_SESSIONS = 2000
@@ -26,6 +27,7 @@ class QfqWindowConfiguration:
     workers: int
     source_timeout_seconds: float
     source_retries: int
+    price_review: PriceReviewConfiguration = field(default_factory=PriceReviewConfiguration)
 
     def __post_init__(self) -> None:
         if (
@@ -97,6 +99,25 @@ class QfqPendingReason:
 
 
 @dataclass(frozen=True, slots=True)
+class QfqPriceReviewSummary:
+    examined_codes: int = 0
+    physical_requests: int = 0
+    remaining_inferred_codes: int = 0
+    exhaustion_reason: PriceReviewExhaustionReason | None = None
+    discovery_completed: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            any(type(value) is not int or value < 0 for value in (
+                self.examined_codes, self.physical_requests, self.remaining_inferred_codes,
+            ))
+            or self.exhaustion_reason not in (None, "code_limit", "request_limit", "deadline")
+            or type(self.discovery_completed) is not bool
+        ):
+            raise ValueError("qfq_price_review_summary_invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class QfqUpdateResult:
     target_date: date | None
     completed_codes: int = 0
@@ -110,6 +131,7 @@ class QfqUpdateResult:
     latest_missing_codes: int = 0
     latest_suspended_codes: int = 0
     latest_inferred_suspended_codes: int = 0
+    price_review: QfqPriceReviewSummary = field(default_factory=QfqPriceReviewSummary)
 
     @property
     def needs_retry(self) -> bool:

@@ -3,6 +3,12 @@
     "retention_limit": 20000,
     "query_limit": 50
   },
+  "price_review": {
+    "interval_sessions": 5,
+    "maximum_codes": 8,
+    "maximum_requests": 16,
+    "maximum_seconds": 15.0
+  },
   "history": {
     "requested_sessions": 2000,
     "reread_sessions": 5,

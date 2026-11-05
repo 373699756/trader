@@ -10,7 +10,8 @@ from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
-from trader.infra.http_contracts import HttpTransport
+from trader.download.domain.price_review import PriceReviewRequestBudget
+from trader.infra.http_contracts import HttpCancelled, HttpTransport
 
 _ENDPOINTS = {
     "proxy": "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
@@ -67,22 +68,34 @@ def FetchTencentDailyRows(
     timeout_seconds: float,
     cancel_requested: Callable[[], bool] | None = None,
     observe_suspension: Callable[[date], None] | None = None,
+    request_budget: PriceReviewRequestBudget | None = None,
 ) -> tuple[TencentDailyRow, ...]:
     url, params = TencentDailyRequest(query, host)
-    response = transport.get(
-        url,
-        params=params,
-        timeout=timeout_seconds,
-        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-        cancel_requested=cancel_requested,
-    )
-    response.raise_for_status()
-    payload = DecodeTencentDailyPayload(response.text)
-    rows = tuple(_row(row) for row in _rows(payload, query))
-    if observe_suspension is not None and not any(row.day == query.end for row in rows):
-        day = _suspended_day(payload, query)
-        if day is not None:
-            observe_suspension(day)
+    if request_budget is not None:
+        timeout_seconds = request_budget.reserve_request(timeout_seconds)
+    try:
+        response = transport.get(
+            url,
+            params=params,
+            timeout=timeout_seconds,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+            cancel_requested=cancel_requested,
+        )
+        response.raise_for_status()
+        payload = DecodeTencentDailyPayload(response.text)
+        rows = tuple(_row(row) for row in _rows(payload, query))
+        if observe_suspension is not None and not any(row.day == query.end for row in rows):
+            day = _suspended_day(payload, query)
+            if day is not None:
+                observe_suspension(day)
+    except HttpCancelled:
+        raise
+    except (OSError, ValueError):
+        if request_budget is not None:
+            request_budget.check_deadline()
+        raise
+    if request_budget is not None:
+        request_budget.check_deadline()
     return rows
 
 

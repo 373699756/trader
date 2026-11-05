@@ -5,8 +5,9 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 from collections import defaultdict
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import date
 from functools import partial
 from pathlib import Path
@@ -19,8 +20,9 @@ from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_price_qualification import QualifyHistoryPairs, QualifyPriceOverlap
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import PublishedHistoryWindow
+from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewRequestBudget
 from trader.download.infra.history_download_index import HistoryDownloadTask
-from trader.download.infra.history_prices import HistoryPricePartition, HistoryPriceWriteSession
+from trader.download.infra.history_prices import HistoryPricePartition, HistoryPricePartitionError, HistoryPriceWriteSession
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.infra.sqlite_publication import PublishSqliteFile
 
@@ -32,6 +34,12 @@ class HistoryPriceContext:
 
 
 @dataclass(frozen=True)
+class HistoryDownloadPreviousPrices:
+    code: str
+    cells: tuple[BaoStockDailyCell, ...]
+
+
+@dataclass(frozen=True)
 class HistoryPriceResult:
     task: HistoryDownloadTask
     revisions: tuple[HistoryRevision, ...]
@@ -40,6 +48,7 @@ class HistoryPriceResult:
     coverage: HistoryPriceCoverage | None = None
     unusable_qfq_dates: tuple[date, ...] = ()
     replacement: PublishedHistoryWindow | None = None
+    inferred_suspended_dates: tuple[date, ...] = ()
 
 
 class HistoryDirectPrices:
@@ -105,6 +114,106 @@ class HistoryDirectPrices:
         readable = tuple(day for day in dates if (day.year, day.month) in self._download_months)
         return () if self._fresh else self.read(code, readable)
 
+    def read_for_download_batch(
+        self, tasks: tuple[HistoryDownloadTask, ...],
+    ) -> tuple[HistoryDownloadPreviousPrices, ...]:
+        """Read a bounded dispatch wave at this batch's frozen revision sequence.
+
+        Connections remain on the dispatch thread and close before immutable
+        cells are handed to workers. Fresh and retry visibility match single reads.
+        """
+        if len(tasks) > 64 or sum(len(task.dates) for task in tasks) > 32768:
+            raise ValueError("history_download_read_capacity_exceeded")
+        if len({task.code for task in tasks}) != len(tasks):
+            raise ValueError("history_download_read_duplicate_code")
+        groups: dict[int, list[tuple[str, date]]] = defaultdict(list)
+        cells: dict[str, list[BaoStockDailyCell]] = {task.code: [] for task in tasks}
+        for task in tasks:
+            written = task.code in self._written_codes
+            if self._fresh and not written:
+                continue
+            for day in task.dates:
+                if written or (day.year, day.month) in self._download_months:
+                    groups[day.year].append((task.code, day))
+        for year, keys in sorted(groups.items()):
+            self._activity.tick()
+            if (self._root / f"prices_{year:04d}.sqlite3").exists():
+                for revision in self._month(year, keys[0][1].month).read_price_keys(tuple(keys), self._sequence):
+                    cells[revision.code].append(revision.cell)
+        return tuple(
+            HistoryDownloadPreviousPrices(task.code, tuple(sorted(cells[task.code], key=lambda cell: cell.trade_date)))
+            for task in tasks
+        )
+
+    @contextmanager
+    def _review_activity(self, request_budget: PriceReviewRequestBudget) -> Iterator[HistorySqliteActivity]:
+        expired: PriceReviewBudgetExhausted | None = None
+
+        def cancelled() -> bool:
+            nonlocal expired
+            self._activity.tick()
+            try:
+                request_budget.check_deadline()
+            except PriceReviewBudgetExhausted as exc:
+                expired = exc
+                return True
+            return False
+
+        activity = HistorySqliteActivity(self._activity.tick, cancelled)
+        try:
+            yield activity
+        except KeyboardInterrupt:
+            if expired is not None:
+                raise expired from None
+            raise
+        request_budget.check_deadline()
+
+    def read_for_review(
+        self,
+        code: str,
+        dates: tuple[date, ...],
+        request_budget: PriceReviewRequestBudget,
+    ) -> tuple[BaoStockDailyCell, ...]:
+        """Bound exact-key discovery by the same deadline as its extra requests."""
+        review_policy = replace(
+            self._sqlite_policy,
+            connection_timeout_seconds=min(self._sqlite_policy.connection_timeout_seconds, 0.001),
+        )
+        groups: dict[int, list[tuple[str, date]]] = defaultdict(list)
+        for day in dates:
+            groups[day.year].append((code, day))
+        cells: list[BaoStockDailyCell] = []
+        with self._review_activity(request_budget) as activity:
+            for year, keys in sorted(groups.items()):
+                activity.tick()
+                path = self._root / f"prices_{year:04d}.sqlite3"
+                if path.exists():
+                    target = HistoryPricePartition(path, year, keys[0][1].month, activity=activity, sqlite_policy=review_policy)
+                    cells.extend(item.cell for item in target.read_price_keys(tuple(keys), self._sequence, retry_locks=False))
+        return tuple(sorted(cells, key=lambda cell: cell.trade_date))
+
+    def commit_for_review(
+        self, results: tuple[HistoryPriceResult, ...], request_budget: PriceReviewRequestBudget,
+    ) -> None:
+        """Bound extra writes while letting an entered atomic commit finish safely."""
+        policy = replace(
+            self._sqlite_policy,
+            connection_timeout_seconds=min(self._sqlite_policy.connection_timeout_seconds, 0.001),
+        )
+        with self._review_activity(request_budget) as activity:
+            for year, revisions in self._revision_groups(results):
+                activity.tick()
+                path = self._root / f"prices_{year:04d}.sqlite3"
+                if not path.is_file():
+                    raise HistoryPricePartitionError("history_review_partition_missing")
+                target = HistoryPricePartition(path, year, 1, activity=activity, sqlite_policy=policy)
+                session = target.open_write_session(pending_sequence=self._sequence)
+                try:
+                    session.save_revision_batches(revisions)
+                finally:
+                    session.close()
+            self._written_codes.update(result.task.code for result in results if result.revisions)
+
     def prepare_retry_pass(self) -> None:
         """Allow an unpublished first-pass observation to gain verified facts."""
         if self._write_sessions or self._write_thread is not None:
@@ -167,6 +276,7 @@ class HistoryDirectPrices:
                 len(suspended),
                 inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in cells),
             ),
+            inferred_suspended_dates=tuple(cell.trade_date for cell in cells if cell.status == "tencent_inferred_suspended"),
         )
 
     def commit(self, results: tuple[HistoryPriceResult, ...]) -> None:
@@ -263,6 +373,9 @@ class HistoryDirectPrices:
         self,
         dates: tuple[date, ...],
         progress: Callable[[Literal["started", "waiting", "completed"], int, int, str], None],
+        *,
+        exact_month_ranges: bool = False,
+        fingerprint_before_statistics: bool = False,
     ) -> tuple[HistorySnapshotPartition, ...]:
         months = tuple(sorted(set(self._previous) | {(day.year, day.month) for day in dates}))
         references: dict[tuple[int, int], HistorySnapshotPartition] = {}
@@ -288,7 +401,12 @@ class HistoryDirectPrices:
                 partial(progress, "waiting", completed, len(years), label)
             ):
                 if selected:
-                    sealed = self._month(year, selected[0]).seal_months(selected, self._sequence)
+                    sealed = self._month(year, selected[0]).seal_months(
+                        selected,
+                        self._sequence,
+                        exact_month_ranges=exact_month_ranges,
+                        fingerprint_before_statistics=fingerprint_before_statistics,
+                    )
                     references.update(((year, month), value) for month, value in zip(selected, sealed, strict=True))
                 else:
                     PublishSqliteFile(
@@ -300,4 +418,9 @@ class HistoryDirectPrices:
             progress("completed", completed + 1, len(years), label)
         return tuple(references[month] for month in months)
 
-__all__ = ["HistoryDirectPrices", "HistoryPriceContext", "HistoryPriceResult"]
+__all__ = [
+    "HistoryDirectPrices",
+    "HistoryDownloadPreviousPrices",
+    "HistoryPriceContext",
+    "HistoryPriceResult",
+]

@@ -7,6 +7,8 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
+from trader.download.domain.price_review import PriceReviewExhaustionReason
+
 HistoryMaintenanceState = Literal[
     "blocked",
     "already_current",
@@ -33,6 +35,15 @@ class HistoryPriceGapSummary:
 
 
 @dataclass(frozen=True)
+class HistoryPriceReviewSummary:
+    examined_codes: int
+    physical_requests: int
+    exhaustion_reason: PriceReviewExhaustionReason | None = None
+    remaining_inferred_codes: int = 0
+    discovery_pending: bool = True
+
+
+@dataclass(frozen=True)
 class HistoryMaintenanceStatus:
     state: HistoryMaintenanceState
     reason: str | None
@@ -44,6 +55,7 @@ class HistoryMaintenanceStatus:
     label_cutoff: date | None
     unresolved_price_cells: int = 0
     price_gap_summary: HistoryPriceGapSummary | None = None
+    price_review: HistoryPriceReviewSummary | None = None
 
     def __post_init__(self) -> None:
         if self.unresolved_price_cells < 0:
@@ -63,4 +75,5 @@ __all__ = [
     "HistoryMaintenanceStatus",
     "HistoryPriceGapReason",
     "HistoryPriceGapSummary",
+    "HistoryPriceReviewSummary",
 ]

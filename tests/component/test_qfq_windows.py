@@ -44,6 +44,7 @@ from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
+from trader.download.domain.qfq_planning import QfqNonTradingFact
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
 from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 from trader.entrypoints import cli
@@ -468,7 +469,7 @@ def test_confirmed_suspensions_complete_without_missing_price_or_retry(tmp_path,
     assert all(cell.status == "complete" for cell in prices)
 
 
-def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_up(tmp_path) -> None:
+def test_completed_checkpoint_preserves_inferred_latest_until_review_is_due(tmp_path) -> None:
     class LateDailySupplier(Supplier):
         latest_missing = True
 
@@ -511,27 +512,17 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
     assert not projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
 
     supplier.latest_missing = False
+    calls = len(supplier.calls)
     second = updater.execute(observed)
-    assert second.completed_codes == 1 and second.skipped_codes == 0
+    assert second.completed_codes == 1 and second.skipped_codes == 1
     assert second.latest_missing_codes == 0
-    assert second.latest_inferred_suspended_codes == 0
-    assert not second.needs_retry
-    assert second.changed_rows > 0
-    assert updater.v2.read_code("600001").cells[-1].trade_date == DAYS[-1]
-    assert updater.v3.read_code("600001").cells[-1].trade_date == DAYS[-1]
+    assert second.latest_inferred_suspended_codes == 1
+    assert not second.price_review.discovery_completed
+    assert second.changed_rows == 0 and len(supplier.calls) == calls
+    assert updater.v2.read_code("600001").cells[-1].trade_date == DAYS[-2]
+    assert updater.v3.read_code("600001").cells[-1].trade_date == DAYS[-2]
     projection.initialize(cancelled=lambda: False)
-    assert not projection.status().restart_required
     assert not projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
-    projection = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(updater.v2),
-        lookback_sessions=251,
-        open_dates=lambda: (*DAYS, next_morning.date()),
-        monotonic=time.monotonic,
-        projection_owner=SharedHistoryProjection(ReadPublishedHistoryUseCase(updater.v2), monotonic=time.monotonic, settings=HistoryPreloadSettings(warn_after_seconds=300.0)),
-    )
-    projection.initialize(cancelled=lambda: False)
-    assert "600001" in projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
-    assert updater.execute(observed).skipped_codes == 1
 
 
 def test_suspension_conflict_preserves_the_previously_published_trading_prices(tmp_path):
@@ -1912,7 +1903,7 @@ def test_local_seed_accepts_listing_boundary_and_explicit_suspension(tmp_path, m
         def read_windows(self, manifest, codes, *, sessions, check=None):
             windows = super().read_windows(manifest, codes, sessions=sessions, check=check)
             return tuple(replace(window, cells=tuple(
-                replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+                QfqNonTradingFact(cell.code, cell.trade_date, "confirmed", NOW.date(), "fixture").cell()
                 if missing_kind == "suspended" and cell.trade_date == manifest.data_cutoff else cell
                 for cell in window.cells if missing_kind != "prelisting" or cell.trade_date == manifest.data_cutoff
             )) for window in windows)

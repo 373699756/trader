@@ -356,9 +356,16 @@ def Main() -> int:
     parser.add_argument("--flush-cells", type=int)
     parser.add_argument("--disk-kind", choices=("ssd", "hdd", "unknown"), default=None)
     parser.add_argument("--publication-profile", action="store_true", help="include intrusive per-phase profiling overhead")
+    parser.add_argument(
+        "--publication-candidate", choices=("baseline", "exact-month-ranges", "fingerprint-first", "combined"),
+        default="baseline", help="isolated published-history sealing candidate; disabled by default",
+    )
+    parser.add_argument("--publication-profiler", choices=("on", "off"), default="on", help="toggle cProfile only")
     parser.add_argument("--history-root", type=Path, help="published input for isolated re-sealing; requires publication-profile")
     parser.add_argument("--runtime-config", type=Path, default=TOOL_ROOT / "config/runtime.json")
     args = parser.parse_args()
+    if args.history_root is None and (args.publication_candidate != "baseline" or args.publication_profiler != "on"):
+        parser.error("publication-candidate and publication-profiler require explicit history-root")
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
@@ -368,7 +375,10 @@ def Main() -> int:
         parser.error("publication-profile cannot be used as a layout comparison")
     if args.history_root is not None:
         try:
-            report = ProfilePublishedHistory(args.history_root, sqlite_policy=sqlite_policy)
+            report = ProfilePublishedHistory(
+                args.history_root, sqlite_policy=sqlite_policy,
+                candidate=args.publication_candidate, profiler=args.publication_profiler == "on",
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             reason = str(exc)
             safe_reasons = {

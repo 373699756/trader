@@ -8,6 +8,7 @@ from trader.download.domain.company_evidence import CompanyDocumentLimits, Compa
 from trader.download.domain.download_failure import DownloadFailureConfiguration
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistoryWriteBatchPolicy
 from trader.download.domain.qfq_window import QfqWindowConfiguration
+from trader.download.domain.price_review import PriceReviewConfiguration
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.settings.parser import (
     ConfigurationError,
@@ -73,6 +74,7 @@ def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> Histor
             ssd_incremental_codes=Integer(ssd, "incremental_codes", minimum=1),
             ssd_incremental_cells=Integer(ssd, "incremental_cells", minimum=1),
         ),
+        price_review=_price_review_configuration(document),
     )
 
 
@@ -98,6 +100,7 @@ def LoadQfqWindowConfiguration(project_root: Path) -> QfqWindowConfiguration:
             workers=Integer(qfq, "workers", minimum=1, maximum=12),
             source_timeout_seconds=Number(qfq, "source_timeout_seconds", minimum=0.1, maximum=120.0),
             source_retries=Integer(qfq, "source_retries", minimum=0, maximum=2),
+            price_review=_price_review_configuration(document),
         )
     except ValueError as exc:
         raise ConfigurationError(str(exc)) from exc
@@ -196,8 +199,21 @@ def LoadDownloadFailureConfiguration(project_root: Path) -> DownloadFailureConfi
 
 def _download_document(project_root: Path) -> dict[str, object]:
     document = ReadJsonObject(project_root / "config" / "download.json")
-    RequireExactKeys(document, {"history", "online_qfq", "company", "failure_diagnostics"}, "download")
+    RequireExactKeys(document, {"history", "online_qfq", "company", "failure_diagnostics", "price_review"}, "download")
     return document
+
+
+def _price_review_configuration(document: dict[str, object]) -> PriceReviewConfiguration:
+    section = RequireMapping(document, "price_review")
+    RequireExactKeys(
+        section, {"interval_sessions", "maximum_codes", "maximum_requests", "maximum_seconds"}, "download.price_review",
+    )
+    return PriceReviewConfiguration(
+        interval_sessions=Integer(section, "interval_sessions", minimum=1),
+        maximum_codes=Integer(section, "maximum_codes", minimum=1, maximum=8),
+        maximum_requests=Integer(section, "maximum_requests", minimum=1, maximum=16),
+        maximum_seconds=Number(section, "maximum_seconds", minimum=0.001, maximum=15.0),
+    )
 
 
 __all__ = ["LoadCompanySyncConfiguration", "LoadDownloadFailureConfiguration", "LoadHistorySyncConfiguration", "LoadQfqWindowConfiguration"]

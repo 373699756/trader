@@ -14,7 +14,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock, local
 from types import TracebackType
-from typing import ParamSpec, TypeVar
+from typing import Literal, ParamSpec, Protocol, TypeVar
 from unittest.mock import patch
 
 from trader.download.domain.history_control import HistorySnapshotPartition
@@ -24,6 +24,9 @@ from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import (
+    PreparedSqlitePublication,
+    PrepareSqliteFilePublication,
+    PublishPreparedSqliteFile,
     PublishSqliteFile,
     SqlitePublicationFingerprint,
     VerifiedSqlitePublication,
@@ -34,6 +37,19 @@ from scripts.infra.database.database_measurement import DatabaseMeasurement
 
 _Parameters = ParamSpec("_Parameters")
 _Value = TypeVar("_Value")
+HistoryPublicationCandidate = Literal["baseline", "exact-month-ranges", "fingerprint-first", "combined"]
+
+
+class _SealMonths(Protocol):
+    def __call__(
+        self,
+        partition: HistoryPricePartition,
+        calendar_months: tuple[int, ...],
+        sequence: int | None = None,
+        *,
+        exact_month_ranges: bool = False,
+        fingerprint_before_statistics: bool = False,
+    ) -> tuple[HistorySnapshotPartition, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -63,11 +79,12 @@ def _process_io() -> _ProcessIo | None:
 class HistoryPublicationMeasurement:
     """Observe public history operations; nested inclusive phases must not be added together."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, profiler: bool = True) -> None:
         self._stack = ExitStack()
         self._thread = _ThreadPhases()
         self._lock = Lock()
         self._records: list[dict[str, object]] = []
+        self._profiler = profiler
 
     @contextmanager
     def phase(self, name: str, label: str, *, profile: bool = True) -> Iterator[dict[str, object]]:
@@ -81,7 +98,7 @@ class HistoryPublicationMeasurement:
             self._records.append(record)
         before = _process_io()
         wall, cpu = time.perf_counter(), time.process_time()
-        profiler = cProfile.Profile() if profile and sys.getprofile() is None else None
+        profiler = cProfile.Profile() if self._profiler and profile and sys.getprofile() is None else None
         record["profile_owned_here"] = profiler is not None
         if profiler is not None:
             profiler.enable()
@@ -110,23 +127,33 @@ class HistoryPublicationMeasurement:
                         entry.callcount for entry in profiler.getstats()
                         if not isinstance(entry.code, str) and entry.code.co_name == name
                     )
-                    for name in ("_digest", "PublishSqliteFile", "VerifySqliteFile", "_read_connection", "_require_schema")
+                    for name in (
+                        "_digest", "PublishSqliteFile", "PrepareSqliteFilePublication", "PublishPreparedSqliteFile",
+                        "VerifySqliteFile", "_read_connection", "_require_schema",
+                    )
                 }
 
     def __enter__(self) -> HistoryPublicationMeasurement:
-        seal: Callable[
-            [HistoryPricePartition, tuple[int, ...], int | None], tuple[HistorySnapshotPartition, ...]
-        ] = HistoryPricePartition.seal_months
+        seal: _SealMonths = HistoryPricePartition.seal_months
 
         def measured_seal(
             partition: HistoryPricePartition,
             calendar_months: tuple[int, ...],
             sequence: int | None = None,
+            *,
+            exact_month_ranges: bool = False,
+            fingerprint_before_statistics: bool = False,
         ) -> tuple[HistorySnapshotPartition, ...]:
             with self.phase("annual_seal", "annual") as record:
                 record["months"] = calendar_months
                 record["sequence"] = sequence
-                values = seal(partition, calendar_months, sequence)
+                record["exact_month_ranges"] = exact_month_ranges
+                record["fingerprint_before_statistics"] = fingerprint_before_statistics
+                values = seal(
+                    partition, calendar_months, sequence,
+                    exact_month_ranges=exact_month_ranges,
+                    fingerprint_before_statistics=fingerprint_before_statistics,
+                )
                 record["file"] = values[0].relative_path
                 record["row_counts"] = tuple(item.row_count for item in values)
                 return values
@@ -146,7 +173,35 @@ class HistoryPublicationMeasurement:
                 })
                 return fingerprint
 
+        def measured_prepare(
+            path: Path,
+            schema_version: int,
+            *,
+            sqlite_policy: SqliteIoPolicy,
+            check: Callable[[], None] | None = None,
+        ) -> PreparedSqlitePublication:
+            with self.phase("file_fingerprint", path.name) as record:
+                prepared = PrepareSqliteFilePublication(path, schema_version, sqlite_policy=sqlite_policy, check=check)
+                record["database_bytes"] = prepared.fingerprint.database_size
+                record["wal_bytes"] = prepared.fingerprint.wal_size
+                return prepared
+
+        def measured_finalize(
+            prepared: PreparedSqlitePublication,
+            *,
+            check: Callable[[], None] | None = None,
+        ) -> SqlitePublicationFingerprint:
+            with self.phase("file_receipt", prepared.path.name) as record:
+                fingerprint = PublishPreparedSqliteFile(prepared, check=check)
+                record.update({
+                    "database_bytes": fingerprint.database_size, "database_sha256": fingerprint.database_sha256,
+                    "wal_bytes": fingerprint.wal_size, "wal_sha256": fingerprint.wal_sha256,
+                })
+                return fingerprint
+
         try:
+            self._stack.enter_context(patch.object(history_prices, "PrepareSqliteFilePublication", measured_prepare))
+            self._stack.enter_context(patch.object(history_prices, "PublishPreparedSqliteFile", measured_finalize))
             for module in (history_control_index, history_direct_prices, history_prices, history_sync_runner):
                 self._stack.enter_context(patch.object(module, "PublishSqliteFile", measured_publish))
             for owner, name, replacement in (
@@ -182,9 +237,10 @@ class HistoryPublicationMeasurement:
 
     def report(self) -> dict[str, object]:
         return {
-            "profiling_enabled": True,
+            "profiling_enabled": self._profiler,
             "performance_acceptance": False,
-            "timing": "inclusive; parent phases include children; profiler overhead is included",
+            "timing": "inclusive; parent phases include children; profiler overhead is included"
+            if self._profiler else "inclusive; parent phases include children; cProfile is disabled",
             "cache_state": "uncontrolled; use physical_read_bytes instead of assuming cold HDD",
             "io_scope": "process-wide; concurrent worker work and measurement reads may be included",
             "phases": self._records,
@@ -214,12 +270,20 @@ def _primitive_seconds(profiler: cProfile.Profile) -> dict[str, float]:
     return totals
 
 
-def ProfilePublishedHistory(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+def ProfilePublishedHistory(
+    root: Path,
+    *,
+    sqlite_policy: SqliteIoPolicy,
+    candidate: HistoryPublicationCandidate = "baseline",
+    profiler: bool = True,
+) -> dict[str, object]:
     """Re-seal byte copies of a fixed published input, one annual file at a time; no supplier calls."""
+    if candidate not in {"baseline", "exact-month-ranges", "fingerprint-first", "combined"}:
+        raise ValueError("history_publication_candidate_invalid")
     root = root.resolve()
     catalog = root / "catalog.sqlite3"
     started = time.perf_counter()
-    with HistoryPublicationMeasurement() as publication, DatabaseMeasurement(root, sample_wal=False) as database:
+    with HistoryPublicationMeasurement(profiler=profiler) as publication, DatabaseMeasurement(root, sample_wal=False) as database:
         with publication.phase("source_verification", catalog.name):
             catalog_verified = VerifySqliteFile(catalog, 2, sqlite_policy=sqlite_policy)
         if catalog_verified.wal is not None:
@@ -251,7 +315,11 @@ def ProfilePublishedHistory(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dic
                 ordered = tuple(sorted(references, key=lambda item: item.calendar_month))
                 sealed = HistoryPricePartition(
                     target, ordered[0].calendar_year, ordered[0].calendar_month, sqlite_policy=sqlite_policy,
-                ).seal_months(tuple(item.calendar_month for item in ordered), snapshot.sequence)
+                ).seal_months(
+                    tuple(item.calendar_month for item in ordered), snapshot.sequence,
+                    exact_month_ranges=candidate in {"exact-month-ranges", "combined"},
+                    fingerprint_before_statistics=candidate in {"fingerprint-first", "combined"},
+                )
                 with publication.phase("copy_verification", name):
                     copy_verified = VerifySqliteFile(target, 2, sqlite_policy=sqlite_policy)
                 equal = (
@@ -279,6 +347,7 @@ def ProfilePublishedHistory(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dic
         "status": "passed" if all(item["counts_and_bytes_equal"] for item in files) else "failed",
         "summary": {
             "fixture": False, "workload": "republication_of_sealed_snapshot_on_isolated_copies",
+            "candidate": candidate,
             "snapshot_hash": snapshot.content_hash, "sequence": snapshot.sequence,
             "seconds": time.perf_counter() - started, "database": database.result,
             "source_and_preparation_included": True, "copy_cache": "recent copy may warm source and target pages",
@@ -288,6 +357,7 @@ def ProfilePublishedHistory(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dic
 
 
 __all__ = [
+    "HistoryPublicationCandidate",
     "HistoryPublicationMeasurement",
     "ProfilePublishedHistory",
 ]

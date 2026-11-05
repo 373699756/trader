@@ -12,6 +12,7 @@ from datetime import datetime
 from trader.download.application.history_ports import HistorySupplierPort
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
+from trader.download.domain.price_review import PriceReviewBudget
 from trader.infra.disk_types import DiskKind
 from trader.infra.workers import WorkerExecutor
 
@@ -30,6 +31,11 @@ class HistorySyncGateway:
     writer_pool: WorkerExecutor | None = None
     disk_kind: DiskKind = "unknown"
     repair_only: bool = False
+    price_review_budget: PriceReviewBudget | None = None
+    batched_price_reads: bool = False
+    exact_month_ranges: bool = False
+    fingerprint_before_statistics: bool = False
+    reuse_catalog_fingerprint: bool = False
 
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
 
@@ -54,6 +60,11 @@ class HistorySyncGateway:
             writer_pool=self.writer_pool,
             disk_kind=self.disk_kind,
             repair_only=self.repair_only, sqlite_policy=self.sqlite_policy,
+            price_review_budget=self.price_review_budget,
+            batched_price_reads=self.batched_price_reads,
+            exact_month_ranges=self.exact_month_ranges,
+            fingerprint_before_statistics=self.fingerprint_before_statistics,
+            reuse_catalog_fingerprint=self.reuse_catalog_fingerprint,
         )
 
 

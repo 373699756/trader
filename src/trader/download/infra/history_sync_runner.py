@@ -29,8 +29,10 @@ from trader.download.domain.history_maintenance import (
     HistoryMaintenanceState,
     HistoryMaintenanceStatus,
     HistoryPriceGapSummary,
+    HistoryPriceReviewSummary,
 )
 from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
+from trader.download.domain.price_review import PriceReviewBudgetExhausted
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
@@ -42,6 +44,7 @@ from trader.download.domain.history_sync import (
     HistoryTwoStageSupplier,
 )
 from trader.download.domain.qfq_window import CompletedDailyCutoff, MergeDailyTail
+from trader.download.domain.price_review import PriceReviewBudget
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.download.infra.history_control_index import (
@@ -56,6 +59,12 @@ from trader.download.infra.history_price_repair import HistoryPriceRepair
 from trader.download.infra.history_download_flow import DownloadFailure
 from trader.download.infra.history_download_flow import HistoryDownloadFlow, HistoryDownloadResources
 from trader.download.infra.history_download_index import HistoryDownloadBatch, HistoryDownloadIndex, HistoryDownloadTask
+from trader.download.infra.history_inferred_review import (
+    HistoryInferredReviewDeferred,
+    HistoryInferredReviewIndex,
+    IsHistoryReviewBusy,
+)
+from trader.download.infra.history_prices import HistoryPricePartitionError
 from trader.download.infra.history_reference_index import (
     ReadBoundHistoryReference,
 )
@@ -83,6 +92,21 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class _ReviewPriceFile:
+    path: Path
+    database: tuple[int, int, int] | None
+    wal: tuple[int, int, int] | None
+
+
+def _review_file_stamp(path: Path) -> tuple[int, int, int] | None:
+    try:
+        value = path.stat()
+    except FileNotFoundError:
+        return None
+    return value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+
+@dataclass(frozen=True)
 class _BatchInput:
     context: HistorySupplierContext
     source: HistorySourceIdentity
@@ -91,6 +115,7 @@ class _BatchInput:
     reference: HistoryReferenceSnapshot
     batch: HistoryDownloadBatch
     fresh: bool
+    reviewed: bool = False
 
 
 @dataclass(frozen=True)
@@ -107,6 +132,10 @@ class _HistorySync:
     disk_kind: DiskKind
     write_tuning: HistoryWriteTuning | None
     repair_only: bool = False
+    price_review_budget: PriceReviewBudget | None = None
+    batched_price_reads: bool = False
+    exact_month_ranges: bool = False
+    fingerprint_before_statistics: bool = False
 
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
 
@@ -120,7 +149,16 @@ class _HistorySync:
         target = CompletedDailyCutoff(self.observed_at)
         if self.repair_only:
             target = pending.cutoff if pending else current_snapshot.data_cutoff if current_snapshot else target
-        inputs = self._prepare(current_snapshot, pending, target, previous)
+        try:
+            inputs = self._prepare(current_snapshot, pending, target, previous)
+        except HistoryInferredReviewDeferred:
+            return _status(
+                "blocked",
+                "history_review_deferred",
+                self.configuration,
+                current_snapshot,
+                price_review=self._review_summary(),
+            )
         if isinstance(inputs, HistoryMaintenanceStatus):
             return inputs
         if inputs is None:
@@ -134,6 +172,7 @@ class _HistorySync:
                 current_snapshot,
                 unresolved_price_cells=unresolved.cells if unresolved else 0,
                 price_gap_summary=unresolved,
+                price_review=self._review_summary(),
             )
         snapshot = self._download(inputs, current_snapshot)
         unresolved = self.index.gap_summary(
@@ -146,6 +185,7 @@ class _HistorySync:
             snapshot,
             unresolved_price_cells=unresolved.cells if unresolved else 0,
             price_gap_summary=unresolved,
+            price_review=self._review_summary(),
         )
 
     def _prepare(
@@ -166,6 +206,7 @@ class _HistorySync:
             and HISTORY_UNIVERSE_CONTRACT not in context.source_versions.dependency_versions
         ):
             raise RuntimeError("supplier_universe_regressed")
+        self._initialize_review_metadata(current_snapshot)
         if pending is not None:
             return self._resume(context, current_snapshot, pending, publication_id)
         source, calendar, universe = _control_identities(context)
@@ -176,14 +217,11 @@ class _HistorySync:
         if self.repair_only:
             gaps = self.index.gaps_by_code(context.calendar.open_dates, retryable_only=False)
             tasks = tuple(HistoryDownloadTask(item.code, gaps.get(item.code, ()), tencent_done=True) for item in context.universe)
-        if (
+        already_current = (
             current_snapshot
             and not any(task.dates for task in tasks)
             and current_snapshot.source_identity_hash == source.content_hash
-        ):
-            self._repair_reference(source, reference, publication_id)
-            return None
-        self.control.save_inputs((source, calendar, universe), reference, publication_id)
+        )
         batch = HistoryDownloadBatch(
             current_snapshot.sequence + 1 if current_snapshot else 1,
             source.content_hash,
@@ -191,8 +229,141 @@ class _HistorySync:
             universe.content_hash,
             calendar.open_dates[-1],
         )
+        inputs = _BatchInput(context, source, calendar, universe, reference, batch, current_snapshot is None)
+        if already_current:
+            self._repair_reference(source, reference, publication_id)
+            if current_snapshot is not None and self._review_current(inputs, current_snapshot, tasks, publication_id):
+                return replace(inputs, reviewed=True)
+            return None
+        self.control.save_inputs((source, calendar, universe), reference, publication_id)
         self.index.begin(batch, tasks)
-        return _BatchInput(context, source, calendar, universe, reference, batch, current_snapshot is None)
+        return inputs
+
+    def _initialize_review_metadata(self, snapshot: HistorySnapshot | None) -> None:
+        try:
+            changed = HistoryInferredReviewIndex(
+                self.configuration.history_root / "catalog.sqlite3", sqlite_policy=self.sqlite_policy,
+            ).initialize()
+            if changed and snapshot is not None:
+                self.control.publish_file()
+        except BaseException:
+            # An interrupt may arrive after DDL committed but before its receipt
+            # was signed. Finish this additive upgrade's safety boundary only.
+            if snapshot is not None:
+                self.control.publish_file()
+            raise
+
+    def _review_summary(self) -> HistoryPriceReviewSummary | None:
+        budget = self.price_review_budget
+        if budget is None:
+            return None
+        remaining = HistoryInferredReviewIndex(
+            self.configuration.history_root / "catalog.sqlite3", sqlite_policy=self.sqlite_policy,
+        ).known_inferred_codes(budget)
+        return HistoryPriceReviewSummary(
+            len(budget.reviewed_codes),
+            budget.request_count,
+            budget.exhausted_reason,
+            remaining,
+        )
+
+    def _review_current(
+        self,
+        inputs: _BatchInput,
+        snapshot: HistorySnapshot,
+        tasks: tuple[HistoryDownloadTask, ...],
+        publication_id: str,
+    ) -> bool:
+        """Keep the published identity when an auxiliary review gains no fact."""
+        budget = self.price_review_budget
+        if budget is None or self.repair_only:
+            return False
+        prices = HistoryDirectPrices(
+            self.configuration.history_root,
+            inputs.batch.sequence,
+            snapshot,
+            HistorySqliteActivity(lambda: None, self.cancel),
+            sqlite_policy=self.sqlite_policy,
+        )
+        flow = self._flow(inputs, prices, snapshot)
+        begun = False
+        price_files: tuple[_ReviewPriceFile, ...] = ()
+        try:
+            review = HistoryInferredReviewIndex(
+                self.configuration.history_root / "catalog.sqlite3", sqlite_policy=self.sqlite_policy,
+            )
+            planned = review.plan(inputs.context, prices, snapshot.sequence, self.configuration.price_review, budget, self.cancel)
+            results = flow.prepare_inferred_reviews(planned, budget, inputs.batch.sequence)
+            changed = any(result.price is not None and result.price.revisions for result in results)
+            if changed:
+                years = sorted({
+                    revision.trade_date.year for result in results if result.price is not None
+                    for revision in result.price.revisions
+                })
+                price_files = tuple(
+                    _ReviewPriceFile(path, _review_file_stamp(path), _review_file_stamp(Path(f"{path}-wal")))
+                    for path in (self.configuration.history_root / f"prices_{year:04d}.sqlite3" for year in years)
+                )
+                budget.check_deadline()
+                self.control.save_inputs((inputs.source, inputs.calendar, inputs.universe), inputs.reference, publication_id)
+                budget.check_deadline()
+                self.index.begin(inputs.batch, tasks)
+                begun = True
+            flow.commit_inferred_reviews(results, inputs.batch.sequence if changed else snapshot.sequence, budget)
+            return changed
+        except PriceReviewBudgetExhausted as exc:
+            if begun:
+                self._seal_deferred_review(price_files)
+                raise HistoryInferredReviewDeferred("history_review_deferred") from exc
+            return False
+        except KeyboardInterrupt:
+            self._seal_deferred_review(price_files)
+            raise
+        except sqlite3.OperationalError as exc:
+            if not IsHistoryReviewBusy(exc):
+                self._seal_deferred_review(price_files)
+                raise
+            if begun:
+                self._seal_deferred_review(price_files)
+                raise HistoryInferredReviewDeferred("history_review_deferred") from exc
+            _LOGGER.warning("history_inferred_review_deferred reason=sqlite_busy")
+            return False
+        except HistoryPricePartitionError as exc:
+            if begun and isinstance(exc.__cause__, sqlite3.OperationalError) and IsHistoryReviewBusy(exc.__cause__):
+                self._seal_deferred_review(price_files)
+                raise HistoryInferredReviewDeferred("history_review_deferred") from exc
+            self._seal_deferred_review(price_files)
+            raise
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            self._seal_deferred_review(price_files)
+            raise
+        finally:
+            budget.pause()
+
+    def _seal_deferred_review(
+        self, files: tuple[_ReviewPriceFile, ...], *, include_created: bool = False,
+    ) -> None:
+        """Keep old public readers trusted without publishing an auxiliary sequence.
+
+        Writer resources have already closed. Mandatory fingerprint/fsync cleanup
+        is measured wall time and may safely finish beyond the review deadline.
+        """
+        changed = tuple(
+            item.path for item in files
+            if item.database != _review_file_stamp(item.path)
+            or item.wal != _review_file_stamp(Path(f"{item.path}-wal"))
+        )
+        if include_created:
+            known = frozenset(item.path for item in files)
+            changed += tuple(
+                path for path in sorted(self.configuration.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"))
+                if path not in known
+            )
+        for completed, path in enumerate(changed, 1):
+            _publish_progress(self.progress, "sealing_partitions", "started", (completed - 1, len(changed)), path.name)
+            PublishSqliteFile(path, 2, sqlite_policy=self.sqlite_policy)
+            _publish_progress(self.progress, "sealing_partitions", "completed", (completed, len(changed)), path.name)
+        self.control.publish_file()
 
     def _resume(
         self,
@@ -315,17 +486,10 @@ class _HistorySync:
         except (OSError, ValueError):
             self.control.save_reference(reference, publication_id)
 
-    def _download(self, inputs: _BatchInput, current_snapshot: HistorySnapshot | None) -> HistorySnapshot:
-        root = self.configuration.history_root
-        activity = HistorySqliteActivity(
-            lambda: _publish_progress(self.progress, "persisting_partitions", "waiting"),
-            self.cancel,
-        )
-        prices = HistoryDirectPrices(root, inputs.batch.sequence, current_snapshot, activity, fresh=inputs.fresh, sqlite_policy=self.sqlite_policy)
-        repair = HistoryPriceRepair(root, sqlite_policy=self.sqlite_policy)
-        allowed_codes = frozenset(item.code for item in inputs.context.universe)
-        repair.replay(inputs.batch.sequence, codes=allowed_codes)
-        flow = HistoryDownloadFlow(
+    def _flow(
+        self, inputs: _BatchInput, prices: HistoryDirectPrices, current_snapshot: HistorySnapshot | None,
+    ) -> HistoryDownloadFlow:
+        return HistoryDownloadFlow(
             HistoryDownloadResources(
                 self.configuration,
                 inputs.context,
@@ -342,8 +506,64 @@ class _HistorySync:
                 ),
                 self.cancel,
                 self.progress,
-            ), sqlite_policy=self.sqlite_policy
+            ),
+            sqlite_policy=self.sqlite_policy,
+            batched_price_reads=self.batched_price_reads,
         )
+
+    def _review_batch(
+        self,
+        inputs: _BatchInput,
+        prices: HistoryDirectPrices,
+        flow: HistoryDownloadFlow,
+        files: tuple[_ReviewPriceFile, ...],
+    ) -> None:
+        budget = self.price_review_budget
+        if budget is None or self.repair_only or inputs.reviewed:
+            return
+        try:
+            review = HistoryInferredReviewIndex(
+                self.configuration.history_root / "catalog.sqlite3", sqlite_policy=self.sqlite_policy,
+            )
+            planned = review.plan(inputs.context, prices, inputs.batch.sequence, self.configuration.price_review, budget, self.cancel)
+            results = flow.prepare_inferred_reviews(planned, budget, inputs.batch.sequence)
+            flow.commit_inferred_reviews(results, inputs.batch.sequence, budget)
+        except PriceReviewBudgetExhausted:
+            pass
+        except KeyboardInterrupt:
+            self._seal_deferred_review(files, include_created=True)
+            raise
+        except sqlite3.OperationalError as exc:
+            if not IsHistoryReviewBusy(exc):
+                self._seal_deferred_review(files, include_created=True)
+                raise
+            _LOGGER.warning("history_inferred_review_deferred reason=sqlite_busy")
+        except HistoryPricePartitionError as exc:
+            if not isinstance(exc.__cause__, sqlite3.OperationalError) or not IsHistoryReviewBusy(exc.__cause__):
+                self._seal_deferred_review(files, include_created=True)
+                raise
+            _LOGGER.warning("history_inferred_review_deferred reason=sqlite_busy")
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            self._seal_deferred_review(files, include_created=True)
+            raise
+        finally:
+            budget.pause()
+
+    def _download(self, inputs: _BatchInput, current_snapshot: HistorySnapshot | None) -> HistorySnapshot:
+        root = self.configuration.history_root
+        review_files = tuple(
+            _ReviewPriceFile(path, _review_file_stamp(path), _review_file_stamp(Path(f"{path}-wal")))
+            for path in sorted(root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"))
+        ) if self.price_review_budget is not None else ()
+        activity = HistorySqliteActivity(
+            lambda: _publish_progress(self.progress, "persisting_partitions", "waiting"),
+            self.cancel,
+        )
+        prices = HistoryDirectPrices(root, inputs.batch.sequence, current_snapshot, activity, fresh=inputs.fresh, sqlite_policy=self.sqlite_policy)
+        repair = HistoryPriceRepair(root, sqlite_policy=self.sqlite_policy)
+        allowed_codes = frozenset(item.code for item in inputs.context.universe)
+        repair.replay(inputs.batch.sequence, codes=allowed_codes)
+        flow = self._flow(inputs, prices, current_snapshot)
         if not self.repair_only:
             flow.tencent()
         prices.prepare_retry_pass()
@@ -387,6 +607,7 @@ class _HistorySync:
         for security in inputs.context.universe:
             if missing_dates := remaining_gaps.get(security.code):
                 prices.record_missing(security, missing_dates)
+        self._review_batch(inputs, prices, flow, review_files)
         if self.cancel():
             raise KeyboardInterrupt
         partitions = prices.publishable_partitions(
@@ -394,6 +615,8 @@ class _HistorySync:
             lambda state, done, total, month: _publish_progress(
                 self.progress, "sealing_partitions", state, (done, total), month
             ),
+            exact_month_ranges=self.exact_month_ranges,
+            fingerprint_before_statistics=self.fingerprint_before_statistics,
         )
         calendar, batch = inputs.calendar, inputs.batch
         snapshot = HistorySnapshot(
@@ -440,6 +663,11 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
     write_tuning: HistoryWriteTuning | None = None,
     disk_kind: DiskKind = "unknown",
     repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
+    price_review_budget: PriceReviewBudget | None = None,
+    batched_price_reads: bool = False,
+    exact_month_ranges: bool = False,
+    fingerprint_before_statistics: bool = False,
+    reuse_catalog_fingerprint: bool = False,
 ) -> HistoryMaintenanceStatus:
     observed_at = (clock or (lambda: datetime.now(_SHANGHAI)))()
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -478,12 +706,20 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
                 disk_kind,
                 write_tuning,
                 repair_only, sqlite_policy=sqlite_policy,
+                price_review_budget=price_review_budget,
+                batched_price_reads=batched_price_reads,
+                exact_month_ranges=exact_month_ranges,
+                fingerprint_before_statistics=fingerprint_before_statistics,
             ).execute()
             if result.published:
                 for path in sorted(configuration.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3")):
                     if not Path(f"{path}.sha256").is_file():
                         PublishSqliteFile(path, 2, sqlite_policy=sqlite_policy)
-                control.publish_file()
+                # A completed download has just sealed the catalog after its
+                # final writer transaction; already-current/reference repair
+                # paths still need their own final seal.
+                if not reuse_catalog_fingerprint or result.state != "completed":
+                    control.publish_file()
             return result
     except KeyboardInterrupt:
         return _status("cancelled", "cancelled", configuration, _safe_snapshot(control))
@@ -606,6 +842,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
     *,
     unresolved_price_cells: int = 0,
     price_gap_summary: HistoryPriceGapSummary | None = None,
+    price_review: HistoryPriceReviewSummary | None = None,
 ) -> HistoryMaintenanceStatus:
     root = configuration.history_root
     return HistoryMaintenanceStatus(
@@ -619,6 +856,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
         label_cutoff=snapshot.label_cutoff if snapshot is not None else None,
         unresolved_price_cells=unresolved_price_cells,
         price_gap_summary=price_gap_summary,
+        price_review=price_review,
     )
 
 

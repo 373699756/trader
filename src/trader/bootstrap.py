@@ -22,8 +22,7 @@ from trader.download.application.company_evidence import CompanyEvidenceDependen
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
-from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
-from trader.download.application.qfq_download_progress import QfqMessage
+from trader.download.application.progress_message import ProgressField, ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
 from trader.download.application.update_qfq import UpdateQfqWindows
@@ -62,9 +61,11 @@ from trader.download.infra.history_industry_cache import HistoryIndustryQueryCac
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_gateway import HistorySyncGateway
+from trader.download.domain.price_review import PriceReviewBudget
+from trader.download.infra.tencent_request_budget import TencentRequestBudget
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.download.infra.qfq_update_runner import QfqUpdateRunner
+from trader.download.infra.qfq_update_runner import QfqShutdown, QfqUpdateRunner, StopQfqWorkers
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
@@ -243,6 +244,7 @@ def ExecuteSync(
     )
     history_progress = StderrHistorySyncProgress()
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
+    price_review_budget = TencentRequestBudget(configuration.price_review)
     qfq_configuration = LoadQfqWindowConfiguration(settings.project_root) if target != "company" else None
     company_configuration = LoadCompanySyncConfiguration(settings.project_root)
     failure_configuration = LoadDownloadFailureConfiguration(settings.project_root)
@@ -268,6 +270,7 @@ def ExecuteSync(
             reference=reference,
             cancel_requested=cancel_requested,
             repair_only=fill_missing, sqlite_policy=sqlite_policy, failures=market_failures,
+            price_review_budget=price_review_budget,
         )
 
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
@@ -282,6 +285,7 @@ def ExecuteSync(
             cancel_requested=cancel_requested,
             disk_medium=settings.disk_medium,
             repair_only=fill_missing, sqlite_policy=sqlite_policy,
+            price_review_budget=price_review_budget,
         )
 
     return SyncData(
@@ -572,6 +576,7 @@ def ExecuteHistoryDownload(
     cancel_requested: Callable[[], bool] = lambda: False,
     disk_medium: DiskMedium | None = None,
     repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
+    price_review_budget: PriceReviewBudget | None = None,
 ) -> HistoryMaintenanceStatus:
     disk_kind = DiskProbe(disk_medium).inspect(configuration.history_root).kind
     if reference is None:
@@ -609,7 +614,10 @@ def ExecuteHistoryDownload(
                     retries=qfq_configuration.source_retries,
                 ),
             )
-            return DownloadHistoryUseCase(HistorySyncGateway(history_pool, history_writer, disk_kind, repair_only, sqlite_policy=sqlite_policy)).execute(
+            return DownloadHistoryUseCase(HistorySyncGateway(
+                history_pool, history_writer, disk_kind, repair_only, sqlite_policy=sqlite_policy,
+                price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(configuration.price_review),
+            )).execute(
                 configuration,
                 HistorySupplierRouter(
                     baseline,
@@ -643,6 +651,7 @@ def ExecuteQfqDownload(
     now: Callable[[], datetime] = _utc_now,
     repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
     failures: DownloadFailurePort | None = None,
+    price_review_budget: PriceReviewBudget | None = None,
 ) -> QfqUpdateResult:
     """Compose explicit short-window maintenance without building the server."""
     if report is None:
@@ -722,6 +731,7 @@ def ExecuteQfqDownload(
                 repair_supplier=repair_supplier,
                 repair_only=repair_only,
                 failures=failures,
+                price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(qfq_configuration.price_review),
             )
             return QfqUpdateRunner(
                 history, updater, v2, v3, paths.daily_window.with_suffix(".lock"), ShanghaiClock(now).now,
@@ -732,16 +742,7 @@ def ExecuteQfqDownload(
                 failures(DownloadFailureContext("resource_or_command", elapsed_seconds=time.monotonic() - started), exc)
             raise
         finally:
-            deadline = ShutdownDeadline.start(shutdown_timeout_seconds)
-            writer_stopped = qfq_writer.stop(wait=True, cancel_futures=True, deadline=deadline)
-            stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-            if not stopped.completed or not writer_stopped.completed:
-                failures(DownloadFailureContext("shutdown", elapsed_seconds=time.monotonic() - started), RuntimeError("qfq_worker_deadline_exceeded"))
-                report(
-                    QfqMessage(
-                        time.monotonic() - started, "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR
-                    )
-                )
+            StopQfqWorkers(QfqShutdown(qfq_writer, qfq_pool, report, failures), shutdown_timeout_seconds, started)
 
 
 def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, sqlite_policy: SqliteIoPolicy) -> ResearchEvidenceResult:

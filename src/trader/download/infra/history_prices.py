@@ -30,7 +30,13 @@ from trader.download.infra.history_sqlite_read_connection import OpenHistoryPric
 from trader.download.infra.price_columns import PRICE_COLUMNS, PRICE_SQL, PriceValues
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
 from trader.infra.serialization.canonical_codec import CanonicalDigest
-from trader.infra.sqlite_publication import PublishSqliteFile, SqlitePublicationError, VerifySqliteFile
+from trader.infra.sqlite_publication import (
+    PrepareSqliteFilePublication,
+    PublishPreparedSqliteFile,
+    PublishSqliteFile,
+    SqlitePublicationError,
+    VerifySqliteFile,
+)
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     OpenSqliteConnection,
@@ -415,11 +421,13 @@ class HistoryPricePartition:
             )
             self._save_batch(connection, self._prepare_revisions(revisions))
 
-    def read_price_keys(self, keys: tuple[tuple[str, date], ...], sequence: int) -> tuple[HistoryRevision, ...]:
+    def read_price_keys(
+        self, keys: tuple[tuple[str, date], ...], sequence: int, *, retry_locks: bool = True,
+    ) -> tuple[HistoryRevision, ...]:
         """Read a bounded stock batch through exact observation/record keys on one connection."""
         result: list[HistoryRevision] = []
         with (
-            closing(self._read_connection()) as connection,
+            closing(self._read_connection() if retry_locks else self._read_connection(retry_locks=False)) as connection,
             self._activity.watch(connection) if self._activity else nullcontext(),
         ):
             self._require_metadata(connection)
@@ -758,6 +766,9 @@ class HistoryPricePartition:
         self,
         calendar_months: tuple[int, ...],
         sequence: int | None = None,
+        *,
+        exact_month_ranges: bool = False,
+        fingerprint_before_statistics: bool = False,
     ) -> tuple[HistorySnapshotPartition, ...]:
         """Publish one annual file fingerprint and aggregate monthly row counts."""
         if not calendar_months or tuple(sorted(set(calendar_months))) != calendar_months or any(
@@ -766,6 +777,10 @@ class HistoryPricePartition:
             raise ValueError("history proof months are invalid")
         try:
             counts = dict.fromkeys(calendar_months, 0)
+            check = self._activity.tick if self._activity else None
+            prepared = PrepareSqliteFilePublication(
+                self._path, 2, sqlite_policy=self._sqlite_policy, check=check,
+            ) if fingerprint_before_statistics else None
             with (
                 closing(self._read_connection()) as connection,
                 SqliteTransaction(connection),
@@ -777,19 +792,26 @@ class HistoryPricePartition:
                     sequence = connection.run(
                         "SELECT COALESCE(MAX(sync_sequence),1) FROM daily_price_observation"
                     ).require_one()[0]
-                for day, count in connection.run(
-                    "SELECT trade_date,COUNT(DISTINCT code) FROM daily_price_observation "
-                    "WHERE trade_date>=? AND trade_date<? AND sync_sequence<=? GROUP BY trade_date",
-                    (*_month_bounds(self._calendar_year, calendar_months[0])[:1],
-                     _month_bounds(self._calendar_year, calendar_months[-1])[1], sequence),
-                ):
-                    month = DecodeDate(day).month
-                    if month in counts:
-                        counts[month] += count
-            fingerprint = PublishSqliteFile(
-                self._path, 2,
-                sqlite_policy=self._sqlite_policy,
-                check=self._activity.tick if self._activity else None,
+                ranges: list[tuple[int, int]] = [(calendar_months[0], calendar_months[-1])]
+                if exact_month_ranges:
+                    ranges = []
+                    for month in calendar_months:
+                        if ranges and month == ranges[-1][1] + 1:
+                            ranges[-1] = (ranges[-1][0], month)
+                        else:
+                            ranges.append((month, month))
+                for first_month, last_month in ranges:
+                    for day, count in connection.run(
+                        "SELECT trade_date,COUNT(DISTINCT code) FROM daily_price_observation "
+                        "WHERE trade_date>=? AND trade_date<? AND sync_sequence<=? GROUP BY trade_date",
+                        (_month_bounds(self._calendar_year, first_month)[0],
+                         _month_bounds(self._calendar_year, last_month)[1], sequence),
+                    ):
+                        month = DecodeDate(day).month
+                        if month in counts:
+                            counts[month] += count
+            fingerprint = PublishPreparedSqliteFile(prepared, check=check) if prepared is not None else PublishSqliteFile(
+                self._path, 2, sqlite_policy=self._sqlite_policy, check=check,
             )
             return tuple(
                 HistorySnapshotPartition(
@@ -1070,9 +1092,14 @@ class HistoryPricePartition:
             statement_trace=self._statement_trace, sqlite_policy=self._sqlite_policy,
         )
 
-    def _read_connection(self) -> SqliteConnection:
+    def _read_connection(self, *, retry_locks: bool = True) -> SqliteConnection:
         return OpenHistoryPriceReader(
-            self._path, statement_trace=self._statement_trace, mmap_bytes=0, activity=self._activity, sqlite_policy=self._sqlite_policy
+            self._path,
+            statement_trace=self._statement_trace,
+            mmap_bytes=0,
+            activity=self._activity,
+            sqlite_policy=self._sqlite_policy,
+            retry_locks=retry_locks,
         )
 
 

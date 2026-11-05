@@ -425,7 +425,7 @@ class StderrHistorySyncProgress:
                 parts.append("故障位置未知")
         if status.state in {"failed", "blocked"}:
             if status.reason is not None:
-                parts.append(f"错误 {status.reason}")
+                parts.append("停牌复核待续" if status.reason == "history_review_deferred" else f"错误 {status.reason}")
         if status.unresolved_price_cells:
             if status.state in {"completed", "already_current"}:
                 parts.append("价格缺口待补")

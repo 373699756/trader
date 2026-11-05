@@ -23,8 +23,9 @@ from trader.download.domain.history_supplier_failure import HistorySupplierPendi
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import MAX_QFQ_WINDOW_SESSIONS
+from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewRequestBudget
 from trader.download.infra.tencent_daily import FetchTencentDailyRows, TencentDailyQuery, TencentDailyRow
-from trader.infra.http_contracts import HttpError, HttpTransport
+from trader.infra.http_contracts import HttpCancelled, HttpError, HttpTransport
 from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.domain.download_failure import DownloadFailureContext
 
@@ -37,6 +38,8 @@ class TencentQfqOptions:
     timeout_seconds: float
     retries: int
     history_host: Literal["proxy", "direct"] = "proxy"
+    reuse_page_prefix: bool = False
+    minimize_request_rows: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -44,6 +47,8 @@ class TencentQfqOptions:
             or not math.isfinite(self.timeout_seconds)
             or self.timeout_seconds <= 0
             or not 0 <= self.retries <= 2
+            or not isinstance(self.reuse_page_prefix, bool)
+            or not isinstance(self.minimize_request_rows, bool)
         ):
             raise ValueError("Tencent qfq supplier configuration is invalid")
 
@@ -72,6 +77,7 @@ class _SideFetch:
     query: _WindowQuery
     mode: Literal["bfq", "qfq"]
     host: Literal["proxy", "direct"]
+    request_budget: PriceReviewRequestBudget | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +87,7 @@ class _SideAttempt:
     retry_alternate: bool = False
     reason: HistorySupplierPendingReason = "tencent_history_pending"
     invalid_dates: frozenset[date] = frozenset()
+    completed_pages: int = 0
 
 
 @dataclass(frozen=True)
@@ -99,11 +106,13 @@ class _QfqPagePendingError(Exception):
         invalid_dates: frozenset[date],
         *,
         retry_alternate: bool = False,
+        completed_pages: int = 1,
     ) -> None:
         self.sides = sides
         self.reason = reason
         self.invalid_dates = invalid_dates
         self.retry_alternate = retry_alternate
+        self.completed_pages = completed_pages
 
 
 class TencentSessionPool:
@@ -189,6 +198,7 @@ class TencentQfqSupplier:
         *,
         request_count: int | None = None,
         allow_interior_padding: bool = False,
+        request_budget: PriceReviewRequestBudget | None = None,
     ) -> PublishedHistoryWindow:
         count = len(dates) if request_count is None else request_count
         if (
@@ -197,10 +207,34 @@ class TencentQfqSupplier:
             or dates != tuple(sorted(set(dates)))
         ):
             raise ValueError("Tencent request requires ordered unique dates and a bounded row count")
+        # A calendar-day upper bound cannot omit any possible daily row. Keep the
+        # same start/end and adjustment anchor; disjoint mini-windows cannot prove
+        # a common qfq basis. Incomplete candidates retry the original full window.
+        minimum_count = min(count, (dates[-1] - dates[0]).days + 1)
+        if self._options.minimize_request_rows and minimum_count < count:
+            try:
+                reduced = self._fetch_window(
+                    security, dates, minimum_count, allow_interior_padding, request_budget
+                )
+            except (HistorySupplierPendingError, ValueError):
+                pass
+            else:
+                if all(cell.status in {"complete", "supplier_marked_suspended"} for cell in reduced.cells):
+                    return reduced
+        return self._fetch_window(security, dates, count, allow_interior_padding, request_budget)
+
+    def _fetch_window(
+        self,
+        security: BaoStockSecurity,
+        dates: tuple[date, ...],
+        count: int,
+        allow_interior_padding: bool,
+        request_budget: PriceReviewRequestBudget | None,
+    ) -> PublishedHistoryWindow:
         symbol = security.source_code.replace(".", "")
         query = _WindowQuery(symbol, dates, count, allow_interior_padding)
         with self._dependencies.session_factory() as session:
-            raw_download = self._download_side(session, query, "bfq")
+            raw_download = self._download_side(session, query, "bfq", request_budget)
             if raw_download.pending_dates == dates and not raw_download.sides:
                 raise HistorySupplierPendingError(
                     PublishedHistoryWindow(
@@ -213,7 +247,7 @@ class TencentQfqSupplier:
             )
             trading_dates = tuple(day for day in dates if day not in suspended)
             qfq_download = self._download_side(
-                session, _WindowQuery(symbol, trading_dates, count, allow_interior_padding), "qfq"
+                session, _WindowQuery(symbol, trading_dates, count, allow_interior_padding), "qfq", request_budget
             ) if trading_dates else _SideDownload((), ())
         self._check_cancel()
         raw = {side.trade_date: side for side in raw_download.sides}
@@ -236,6 +270,8 @@ class TencentQfqSupplier:
                 for day in dates
             ),
         )
+        if request_budget is not None:
+            request_budget.check_deadline()
         if request_pending or invalid_dates:
             reason = (
                 qfq_download.reason
@@ -247,12 +283,28 @@ class TencentQfqSupplier:
             raise HistorySupplierPendingError(window, reason, tuple(sorted(invalid_dates)))
         return window
 
-    def _download_side(self, session: HttpTransport, query: _WindowQuery, mode: Literal["bfq", "qfq"]) -> _SideDownload:
+    def _download_side(
+        self,
+        session: HttpTransport,
+        query: _WindowQuery,
+        mode: Literal["bfq", "qfq"],
+        request_budget: PriceReviewRequestBudget | None,
+    ) -> _SideDownload:
         primary = self._options.history_host
         alternate: Literal["proxy", "direct"] = "direct" if primary == "proxy" else "proxy"
-        initial = self._attempt_side(session, query, mode, primary)
+        initial = self._attempt_side(session, query, mode, primary, request_budget)
         if initial.pending and initial.retry_alternate:
-            fallback = self._attempt_side(session, query, mode, alternate)
+            prefix = initial if self._options.reuse_page_prefix and mode == "qfq" and initial.sides else None
+            try:
+                fallback = self._attempt_side(session, query, mode, alternate, request_budget, prefix)
+            except ValueError:
+                if prefix is None:
+                    raise
+                fallback = self._attempt_side(session, query, mode, alternate, request_budget)
+            else:
+                covered = frozenset(side.trade_date for side in fallback.sides)
+                if prefix is not None and (fallback.pending or fallback.invalid_dates or not covered.issuperset(query.dates)):
+                    fallback = self._attempt_side(session, query, mode, alternate, request_budget)
             if fallback.pending:
                 best = max((initial, fallback), key=lambda attempt: len(attempt.sides))
                 return _SideDownload(best.sides, query.dates, best.reason, best.invalid_dates)
@@ -270,9 +322,11 @@ class TencentQfqSupplier:
         query: _WindowQuery,
         mode: Literal["bfq", "qfq"],
         host: Literal["proxy", "direct"],
+        request_budget: PriceReviewRequestBudget | None,
+        prefix: _SideAttempt | None = None,
     ) -> _SideAttempt:
         try:
-            sides, invalid_dates = self._fetch_side(session, query, mode, host)
+            sides, invalid_dates = self._fetch_side(session, query, mode, host, request_budget, prefix)
             return _SideAttempt(tuple(sides.values()), invalid_dates=invalid_dates)
         except _QfqPagePendingError as exc:
             return _SideAttempt(
@@ -281,6 +335,7 @@ class TencentQfqSupplier:
                 retry_alternate=exc.retry_alternate,
                 reason=exc.reason,
                 invalid_dates=exc.invalid_dates,
+                completed_pages=exc.completed_pages,
             )
         except RuntimeError as exc:
             if str(exc) != "tencent_qfq_request_failed":
@@ -303,19 +358,35 @@ class TencentQfqSupplier:
         query: _WindowQuery,
         mode: Literal["bfq", "qfq"],
         host: Literal["proxy", "direct"],
+        request_budget: PriceReviewRequestBudget | None,
+        prefix: _SideAttempt | None,
     ) -> tuple[dict[date, PublishedHistorySide], frozenset[date]]:
         dates = query.dates
-        result, count, invalid_dates, crossed_start = self._read_side_page(session, query, mode, host, dates[-1])
+        completed_pages = 1
+        if prefix is None:
+            result, count, invalid_dates, crossed_start = self._read_side_page(
+                session, query, mode, host, dates[-1], request_budget
+            )
+        else:
+            result = {side.trade_date: side for side in prefix.sides}
+            count, invalid_dates, crossed_start = _QFQ_PAGE_ROWS, prefix.invalid_dates, False
+            completed_pages = prefix.completed_pages
         if mode != "qfq":
             return result, invalid_dates
-        fetch = _SideFetch(session, query, mode, host)
-        for _ in range(_MAX_QFQ_PAGES - 1):
+        fetch = _SideFetch(session, query, mode, host, request_budget)
+        for page_index in range(completed_pages, _MAX_QFQ_PAGES):
             if count < _QFQ_PAGE_ROWS or crossed_start or not result or min(result) <= dates[0]:
                 return result, invalid_dates
             boundary = min(result)
-            older, count, older_invalid_dates, crossed_start = self._read_older_qfq_page(
-                fetch, boundary, result, invalid_dates
-            )
+            try:
+                older, count, older_invalid_dates, crossed_start = self._read_older_qfq_page(
+                    fetch, boundary, result, invalid_dates
+                )
+            except _QfqPagePendingError as exc:
+                raise _QfqPagePendingError(
+                    exc.sides, exc.reason, exc.invalid_dates,
+                    retry_alternate=exc.retry_alternate, completed_pages=page_index,
+                ) from exc
             if (
                 boundary not in older
                 or any(result[day] != side for day, side in older.items() if day in result)
@@ -342,7 +413,11 @@ class TencentQfqSupplier:
         invalid_dates: frozenset[date],
     ) -> tuple[dict[date, PublishedHistorySide], int, frozenset[date], bool]:
         try:
-            return self._read_side_page(fetch.session, fetch.query, fetch.mode, fetch.host, boundary)
+            return self._read_side_page(
+                fetch.session, fetch.query, fetch.mode, fetch.host, boundary, fetch.request_budget
+            )
+        except PriceReviewBudgetExhausted:
+            raise
         except RuntimeError as exc:
             if str(exc) == "tencent_qfq_cancelled":
                 raise
@@ -371,12 +446,14 @@ class TencentQfqSupplier:
         mode: Literal["bfq", "qfq"],
         host: Literal["proxy", "direct"],
         end: date,
+        request_budget: PriceReviewRequestBudget | None,
     ) -> tuple[dict[date, PublishedHistorySide], int, frozenset[date], bool]:
         symbol, dates = query.symbol, query.dates
         suspended: set[date] = set()
         rows = self._request_rows(
             TencentDailyQuery(symbol, dates[0], end, mode, query.request_count), session=session, host=host,
             observe_suspension=suspended.add if mode == "bfq" else None,
+            request_budget=request_budget,
         )
         result: dict[date, PublishedHistorySide] = {}
         invalid_dates: set[date] = set()
@@ -416,15 +493,22 @@ class TencentQfqSupplier:
         session: HttpTransport | None = None,
         host: Literal["proxy", "direct"] | None = None,
         observe_suspension: Callable[[date], None] | None = None,
+        request_budget: PriceReviewRequestBudget | None = None,
     ) -> tuple[TencentDailyRow, ...]:
         for attempt in range(self._options.retries + 1):
             self._check_cancel()
             started = self._dependencies.monotonic()
             try:
                 if session is not None:
-                    return self._request_once(session, query, host or self._options.history_host, observe_suspension)
+                    return self._request_once(
+                        session, query, host or self._options.history_host, observe_suspension, request_budget
+                    )
                 with self._dependencies.session_factory() as owned_session:
-                    return self._request_once(owned_session, query, host or self._options.history_host, observe_suspension)
+                    return self._request_once(
+                        owned_session, query, host or self._options.history_host, observe_suspension, request_budget
+                    )
+            except HttpCancelled:
+                raise
             except (HttpError, OSError, ValueError) as exc:
                 if self._dependencies.failures is not None:
                     self._dependencies.failures(DownloadFailureContext(
@@ -446,6 +530,7 @@ class TencentQfqSupplier:
         query: TencentDailyQuery,
         host: Literal["proxy", "direct"],
         observe_suspension: Callable[[date], None] | None,
+        request_budget: PriceReviewRequestBudget | None,
     ) -> tuple[TencentDailyRow, ...]:
         rows = FetchTencentDailyRows(
             session,
@@ -454,6 +539,7 @@ class TencentQfqSupplier:
             timeout_seconds=self._options.timeout_seconds,
             cancel_requested=self._dependencies.cancel_requested,
             observe_suspension=observe_suspension,
+            request_budget=request_budget,
         )
         self._check_cancel()
         return rows

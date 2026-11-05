@@ -37,9 +37,9 @@ def test_initial_resume_keeps_bulk_hdd_write_tuning_until_publication(tmp_path, 
     tunings = []
     initialize = module.HistoryDownloadFlow.__init__
 
-    def tracked_initialize(flow, resources, *, sqlite_policy):
+    def tracked_initialize(flow, resources, *, sqlite_policy, batched_price_reads=False):
         tunings.append(resources.tuning)
-        initialize(flow, resources, sqlite_policy=sqlite_policy)
+        initialize(flow, resources, sqlite_policy=sqlite_policy, batched_price_reads=batched_price_reads)
 
     class Interrupted:
         def publish(self, progress):

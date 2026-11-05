@@ -5,12 +5,13 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryPriceGapReason, HistoryPriceGapSummary
 from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PriceRepairAttempts
+from trader.download.infra.history_inferred_review import HISTORY_INFERRED_REVIEW_SQL, RecordHistoryInferredSuspensions
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
@@ -49,6 +50,8 @@ class HistoryDownloadCompletion:
     missing: tuple[date, ...]
     failure: str | None
     unusable_qfq_dates: tuple[date, ...] = ()
+    inferred_suspended_dates: tuple[date, ...] = ()
+    reviewed_dates: tuple[date, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -57,6 +60,11 @@ class HistoryDownloadCompletion:
             or (self.failure is not None and re.fullmatch(r"[a-z0-9_]{1,64}", self.failure) is None)
             or self.unusable_qfq_dates != tuple(sorted(set(self.unusable_qfq_dates)))
             or not set(self.unusable_qfq_dates).issubset(self.missing)
+            or self.inferred_suspended_dates != tuple(sorted(set(self.inferred_suspended_dates)))
+            or not set(self.inferred_suspended_dates).issubset(self.task.dates)
+            or self.reviewed_dates != tuple(sorted(set(self.reviewed_dates)))
+            or not set(self.reviewed_dates).issubset(self.task.dates)
+            or (self.failure is not None and bool(self.reviewed_dates))
         ):
             raise ValueError("history_download_completion_invalid")
 
@@ -86,6 +94,7 @@ HISTORY_DOWNLOAD_SCHEMA = SqliteSchema(
     None,
     (
         PRICE_REPAIR_ATTEMPT_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1),
+        *HISTORY_INFERRED_REVIEW_SQL,
         """
         CREATE TABLE IF NOT EXISTS download_batch (
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), sync_sequence INTEGER NOT NULL,
@@ -297,7 +306,7 @@ class HistoryDownloadIndex:
             SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
-            cutoff_row = connection.run("SELECT cutoff_date FROM download_batch WHERE singleton=1").fetchone()
+            cutoff_row = connection.run("SELECT cutoff_date,sync_sequence FROM download_batch WHERE singleton=1").fetchone()
             if cutoff_row is None:
                 raise ValueError("history_download_batch_missing")
             checked_cutoff = cutoff_row[0]
@@ -312,6 +321,19 @@ class HistoryDownloadIndex:
             }
             for completion in completions:
                 task = completion.task
+                RecordHistoryInferredSuspensions(
+                    connection,
+                    task.code,
+                    task.dates,
+                    completion.inferred_suspended_dates,
+                    cutoff_row[1],
+                    DecodeDate(checked_cutoff),
+                )
+                connection.run_many(
+                    "UPDATE download_inferred_suspension SET checked_cutoff=? WHERE code=? AND trade_date=?",
+                    ((checked_cutoff, task.code, EncodeDate(day)) for day in completion.reviewed_dates
+                     if day in completion.inferred_suspended_dates),
+                )
                 PriceRepairAttempts(connection).resolve(task.code, tuple(day for day in task.dates if day not in completion.missing), "tencent")
                 connection.run_many(
                     "DELETE FROM download_qfq_unusable WHERE code=? AND trade_date=?",
@@ -334,6 +356,20 @@ class HistoryDownloadIndex:
                     "UPDATE download_tasks SET tencent_done=1,failure=? WHERE code=?",
                     (completion.failure, task.code),
                 )
+
+    def require_unpublished(self, sequence: int) -> None:
+        """Fence auxiliary price revisions with the same durable batch identity."""
+        policy = replace(
+            self._sqlite_policy,
+            connection_timeout_seconds=min(self._sqlite_policy.connection_timeout_seconds, 0.001),
+        )
+        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=policy) as connection:
+            row = connection.run(
+                "SELECT sync_sequence FROM download_batch WHERE singleton=1 AND sync_sequence=? "
+                "AND NOT EXISTS(SELECT 1 FROM published_snapshot WHERE sync_sequence>=?)", (sequence, sequence),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("history_download_identity_conflict")
 
     def begin_attempt(self, code: str) -> int:
         with (
