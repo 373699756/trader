@@ -93,6 +93,7 @@ class PipelineSettings:
     executors: ExecutionSettings
     round_timeout_seconds: float
     shutdown_timeout_seconds: float
+    long_quote_max_age_seconds: float
     history_preload: HistoryPreloadSettings
     cadence_seconds: Mapping[str, Mapping[str, float]]
     publish_heartbeat_seconds: int

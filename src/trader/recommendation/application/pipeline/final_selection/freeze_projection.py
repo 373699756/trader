@@ -180,7 +180,7 @@ def BuildScoredLocal(
     freeze_policy = BuildScoredFreezePolicy(policy, strategy, phase=native_input.phase)
     risk_control = runtime.risk_control if runtime.risk_control is not None else RiskControlService()
     ranking_selection = (
-        runtime.ranking_selection if runtime.ranking_selection is not None else RankingSelectionService()
+        runtime.ranking_selection if runtime.ranking_selection is not None else RankingSelectionService(monotonic=runtime.monotonic)
     )
     population = tuple(PreselectionReplayFeature(feature) for feature in native_input.market_features)
     uses_model = (
@@ -272,7 +272,7 @@ def BuildScoredLocal(
         runtime.monotonic,
     )
     started = runtime.monotonic()
-    selection = ranking_selection.select(
+    ranking_result = ranking_selection.select(
         population,
         policy,
         ScoredSelectionOptions(
@@ -304,8 +304,10 @@ def BuildScoredLocal(
             **missing_model_reasons,
         },
     )
+    selection = ranking_result.selection
     scored_stage = _local_score_stage(
-        model_stage, selection, runtime.monotonic, started, f"{native_input.input_version}:{sequence}"
+        model_stage, selection, runtime.monotonic, started, f"{native_input.input_version}:{sequence}",
+        operation_durations=ranking_result.operation_durations,
     )
     started = runtime.monotonic()
     selection = ApplySelectionRisks(
@@ -437,6 +439,8 @@ def _local_score_stage(
     monotonic: Callable[[], float],
     started: float,
     scoring_identity: str,
+    *,
+    operation_durations: tuple[tuple[str, int | None], ...],
 ) -> PipelineStageOutput[ScoredStockEvaluation]:
     scored = selection.scored_candidates
     accepted = frozenset(item.code for item in scored)
@@ -468,6 +472,7 @@ def _local_score_stage(
         ),
         started,
         monotonic,
+        operation_durations=operation_durations,
     )
 
 

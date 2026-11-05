@@ -324,6 +324,11 @@ def SelectScored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
 
 def ScoreLocalEvidence(request: ScoredSelectionRequest) -> ScoredSelectionResult:
     plan = PlanScoredCandidates(request)
+    return ScorePlannedLocalEvidence(request, plan)
+
+
+def ScorePlannedLocalEvidence(request: ScoredSelectionRequest, plan: ScoredCandidatePlan) -> ScoredSelectionResult:
+    """Score a plan prepared from this request through the same qualification owner."""
     evaluations = {item.code: item for item in plan.evaluations}
     scored_codes: list[str] = []
     for board in _SUPPORTED_BOARDS:
@@ -743,5 +748,6 @@ __all__ = [
     "PlanScoredCandidates",
     "SelectScored",
     "ScoreLocalEvidence",
+    "ScorePlannedLocalEvidence",
     "ApplySelectionRisks",
 ]

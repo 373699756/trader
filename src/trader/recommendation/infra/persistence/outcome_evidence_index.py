@@ -25,6 +25,7 @@ from trader.infra.sqlite_connection import (
 )
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import OutcomeTierSummary
 from trader.recommendation.application.ports.freeze_records import FreezeRecordPort
+from trader.recommendation.application.ports.outcomes import OutcomeEvidenceConflictError
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.outcomes.models import (
     BenchmarkReturn,
@@ -32,10 +33,6 @@ from trader.recommendation.domain.outcomes.models import (
     OutcomeTarget,
     RecommendationOutcome,
 )
-
-
-class OutcomeEvidenceConflictError(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -173,6 +170,21 @@ class SQLiteOutcomeEvidenceIndex:
                         payload,
                     ),
                 )
+
+    def benchmark_return(self, trade_date: str) -> BenchmarkReturn | None:
+        if not self._database.is_file():
+            return None
+        with self._lock, SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            EnsureSqliteSchema(connection, _SCHEMA)
+            row = connection.run(
+                "SELECT trade_date, return_pct, record_hash, record_bytes FROM benchmark_returns WHERE trade_date=?",
+                (EncodeDate(date.fromisoformat(trade_date)),),
+            ).fetchone()
+        if row is None:
+            return None
+        benchmark = BenchmarkReturn(DecodeDate(row["trade_date"]).isoformat(), float(row["return_pct"]))
+        _raise_on_conflict(row, _benchmark_bytes(benchmark), "benchmark return")
+        return benchmark
 
     def benchmark_returns_after(self, recommend_date: str, *, limit: int) -> Sequence[BenchmarkReturn]:
         if limit < 1:
@@ -408,7 +420,6 @@ _SCHEMA = SqliteSchema(
 
 
 __all__ = [
-    "OutcomeEvidenceConflictError",
     "OutcomeEvidenceStatus",
     "SQLiteOutcomeEvidenceIndex",
 ]

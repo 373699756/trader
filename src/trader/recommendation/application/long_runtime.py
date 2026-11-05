@@ -26,6 +26,7 @@ from trader.recommendation.domain.publication.preview import PreviewContext
 @dataclass(frozen=True)
 class LongRuntimeDependencies:
     next_sequence: Callable[[], int] = field(kw_only=True)
+    quote_max_age_seconds: float = field(kw_only=True)
     quotes: QuoteReaderPort
     index: UnifiedFreezeIndex
     now: Callable[[], datetime]
@@ -62,6 +63,8 @@ class LongRuntime:
     ) -> None:
         if not config_version or not watchlist_version:
             raise ValueError("long runtime versions must not be empty")
+        if not math.isfinite(dependencies.quote_max_age_seconds) or dependencies.quote_max_age_seconds <= 0.0:
+            raise ValueError("long quote maximum age must be finite and positive")
         self._items = _validate_items(items)
         self._groups = _group_ownership(self._items, groups)
         self._codes = tuple(item.code for item in self._items)
@@ -72,6 +75,7 @@ class LongRuntime:
         self._config_version = config_version
         self._watchlist_version = watchlist_version
         self._enabled = dependencies.enabled
+        self._quote_max_age_seconds = dependencies.quote_max_age_seconds
         self._lock = threading.RLock()
         self._next_sequence = dependencies.next_sequence
         self._retained_trade_date: date | None = None
@@ -188,7 +192,13 @@ class LongRuntime:
             items, next_retained, live_count, retained_count, missing_count = self._projection_items(
                 fresh,
                 completed_at,
+                request.preview_context,
             )
+            if any(
+                request.preview_context is None and quote.age_seconds(completed_at) > self._quote_max_age_seconds
+                for quote in fresh.values()
+            ):
+                degraded_reasons.append("long_quotes_stale")
             if live_count != len(self._codes):
                 degraded_reasons.append("long_quotes_partial")
             projection = LongProjection(
@@ -228,6 +238,7 @@ class LongRuntime:
         self,
         fresh: dict[str, MarketQuote],
         observed_at: datetime,
+        preview_context: PreviewContext | None,
     ) -> tuple[tuple[LongProjectionItem, ...], dict[str, MarketQuote], int, int, int]:
         trade_date = observed_at.date()
         with self._lock:
@@ -250,7 +261,12 @@ class LongRuntime:
         missing_count = 0
         for item in self._items:
             quote = accepted_fresh.get(item.code)
-            quote_status: Literal["live", "retained", "missing"] = "live"
+            quote_status: Literal["live", "retained", "missing"] = (
+                "retained"
+                if quote is not None and preview_context is None
+                and quote.age_seconds(observed_at) > self._quote_max_age_seconds
+                else "live"
+            )
             if quote is None:
                 quote = retained.get(item.code)
                 quote_status = "retained" if quote is not None else "missing"

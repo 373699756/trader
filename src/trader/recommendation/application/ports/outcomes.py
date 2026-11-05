@@ -15,6 +15,10 @@ from trader.recommendation.domain.outcomes.models import (
 )
 
 
+class OutcomeEvidenceConflictError(RuntimeError):
+    """Persisted immutable outcome evidence conflicts with its declared content."""
+
+
 class OutcomeSettlementMarketData(Protocol):
     def fetch_market_features(
         self,
@@ -29,6 +33,8 @@ class OutcomeSettlementMarketData(Protocol):
 
 
 class OutcomeTargetReaderPort(Protocol):
+    def benchmark_return(self, trade_date: str) -> BenchmarkReturn | None: ...
+
     def pending_outcome_targets(self, *, limit: int) -> Sequence[OutcomeTarget]: ...
 
     def benchmark_returns_after(self, recommend_date: str, *, limit: int) -> Sequence[BenchmarkReturn]: ...
@@ -40,4 +46,4 @@ class OutcomeWriterPort(Protocol):
     def save_recommendation_outcomes(self, outcomes: Sequence[RecommendationOutcome]) -> None: ...
 
 
-__all__ = ["OutcomeSettlementMarketData", "OutcomeTargetReaderPort", "OutcomeWriterPort"]
+__all__ = ["OutcomeEvidenceConflictError", "OutcomeSettlementMarketData", "OutcomeTargetReaderPort", "OutcomeWriterPort"]

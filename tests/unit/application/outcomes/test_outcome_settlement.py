@@ -53,6 +53,9 @@ class _Repository:
         self.saved = ()
         self.benchmark = ()
 
+    def benchmark_return(self, trade_date):
+        return self.benchmark[0] if self.benchmark and self.benchmark[0].trade_date == trade_date else None
+
     def pending_outcome_targets(self, *, limit):
         assert limit == 500
         return (

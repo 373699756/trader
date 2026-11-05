@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
-    ScoreFeatureEvidence,
+    FilterFeatureCandidates,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import ScoredSelectionResult
+from trader.recommendation.domain.selection.scored_selection import RankFilteredCandidates, ScorePlannedLocalEvidence
+
+
+@dataclass(frozen=True)
+class RankingSelectionResult:
+    selection: ScoredSelectionResult
+    operation_durations: tuple[tuple[str, int | None], ...]
 
 
 class RankingSelectionPort(Protocol):
@@ -27,12 +36,14 @@ class RankingSelectionPort(Protocol):
         identity: ScoredSelectionIdentity,
         *,
         execution_gate_reasons: Mapping[str, str] | None = None,
-    ) -> ScoredSelectionResult: ...
+    ) -> RankingSelectionResult: ...
 
 
 @dataclass(frozen=True)
 class RankingSelectionService(RankingSelectionPort):
     """Apply deterministic TopK, concentration, and action rules."""
+
+    monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
 
     def select(
         self,
@@ -42,14 +53,25 @@ class RankingSelectionService(RankingSelectionPort):
         identity: ScoredSelectionIdentity,
         *,
         execution_gate_reasons: Mapping[str, str] | None = None,
-    ) -> ScoredSelectionResult:
-        return ScoreFeatureEvidence(
+    ) -> RankingSelectionResult:
+        started = self.monotonic()
+        filtered = FilterFeatureCandidates(
             features,
             policy,
             options,
             identity,
             execution_gate_reasons=execution_gate_reasons,
         )
+        qualified = self.monotonic()
+        plan = RankFilteredCandidates(filtered)
+        ranked = self.monotonic()
+        selection = ScorePlannedLocalEvidence(filtered.request, plan)
+        completed = self.monotonic()
+        return RankingSelectionResult(selection, (
+            ("candidate_preparation_and_qualification", max(0, int((qualified - started) * 1000))),
+            ("board_reference_and_ranking", max(0, int((ranked - qualified) * 1000))),
+            ("local_component_scoring", max(0, int((completed - ranked) * 1000))),
+        ))
 
 
-__all__ = ["RankingSelectionPort", "RankingSelectionService"]
+__all__ = ["RankingSelectionPort", "RankingSelectionResult", "RankingSelectionService"]

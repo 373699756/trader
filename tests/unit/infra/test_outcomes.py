@@ -18,9 +18,9 @@ from trader.recommendation.domain.publication.freeze_identity import (
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.infra.persistence.outcome_evidence_index import (
-    OutcomeEvidenceConflictError,
     SQLiteOutcomeEvidenceIndex,
 )
+from trader.recommendation.application.ports.outcomes import OutcomeEvidenceConflictError
 from trader.recommendation.domain.outcomes.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
 
 

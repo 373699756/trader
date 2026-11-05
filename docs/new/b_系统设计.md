@@ -235,6 +235,7 @@ flowchart TD
 | `pipeline.executors.http_workers` | HTTP隔离进程并发上限 | `12` | 正整数/进程 |
 | `pipeline.round_timeout_seconds` | 整轮统一期限 | `120` | 数值/秒 |
 | `pipeline.shutdown_timeout_seconds` | 停止等待期限 | `30` | 数值/秒 |
+| `pipeline.long_quote_max_age_seconds` | Long 实时报价最大来源年龄；按source_time计算，超过后保留报价并标记过期降级 | `30` | 正数/秒；必填，自定义scheduler须补齐 |
 | `pipeline.history_preload.warn_after_seconds` | 历史预载慢提示期限 | `300` | 数值/秒 |
 | `pipeline.cadence_seconds.full_market.before_close` | 任务 full_market 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
 | `pipeline.cadence_seconds.candidate_quotes.before_close` | 任务 candidate_quotes 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
@@ -480,6 +481,8 @@ flowchart TD
 ### 8.1 页面展示
 
 默认打开 Tomorrow，刷新保留用户已选档位、策略和日期。分数旁解释“排序分”和“本地动作分”；六席可能含关注和回避，不能标成六只推荐。Long 显示固定名单及自加入锚点涨跌幅，独立刷新。
+
+Long 实时报价按来源时间判断年龄，超过scheduler配置的上限时以retained展示，保留价格及source_time，并报告long_quotes_stale/long_quotes_partial；收到响应不会刷新来源年龄。已有非交易日预览仍按PreviewContext核验最后收盘报价，不把合法的历史预览当成实时超龄。
 
 页面分开显示当前已发布结果与正在执行轮次。执行中不能清空上一轮。每层显示状态、输入数、通过数、业务淘汰数、待资料数、耗时、首个阻断和中文原因；未开始显示“未开始”，不能用0毫秒冒充完成。过滤计数来自后端，不由前端相减猜测。
 

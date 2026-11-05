@@ -217,8 +217,14 @@ class CloseControlCoordinator:
         success = False
         try:
             self._dependencies.settlement.settle(at)
-        except SettlementUnavailableError:
-            self._hooks.failure("settlement", "settlement_unavailable", None)
+        except SettlementUnavailableError as exc:
+            reason = str(exc)
+            if reason not in {
+                "settlement_inputs_pending", "settlement_market_data_unavailable",
+                "settlement_evidence_conflict", "settlement_outcomes_incomplete",
+            }:
+                reason = "settlement_unavailable"
+            self._hooks.failure("settlement", reason, None)
         except Exception as exc:
             self._hooks.failure("settlement", f"settlement_unexpected:{type(exc).__name__}", None)
         else:

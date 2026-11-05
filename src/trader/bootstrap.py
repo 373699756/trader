@@ -1471,6 +1471,7 @@ def _build_publication(
                 freeze_events.publish_projection,
                 context.owns_shared_runtime,
                 next_sequence=dependencies.next_sequence,
+                quote_max_age_seconds=settings.pipeline.long_quote_max_age_seconds,
             ),
             config_version=context.effective_config_version,
             watchlist_version=context.watchlist.watchlist_version,

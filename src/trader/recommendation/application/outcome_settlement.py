@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.recommendation.application.ports.outcomes import (
+    OutcomeEvidenceConflictError,
     OutcomeSettlementMarketData,
     OutcomeTargetReaderPort,
     OutcomeWriterPort,
 )
+from trader.recommendation.application.ports.market_data import MarketDataPendingError, MarketDataUnavailableError
 from trader.recommendation.application.ports.runtime import SettlementUnavailableError
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.market.models import FeatureSnapshot
@@ -45,9 +47,13 @@ class OutcomeSettlementService:
         self._target_limit = target_limit
         self._evaluator = CanonicalOutcomeEvaluator()
 
+    def requires_benchmark_input(self, at: datetime) -> bool:
+        return self._targets.benchmark_return(ShanghaiNow(at).date().isoformat()) is None
+
     def settle(self, now: datetime, market_features: Sequence[FeatureSnapshot]) -> SettlementResult:
         local = ShanghaiNow(now)
-        benchmark = self._equal_weight_benchmark(local.date().isoformat(), market_features)
+        known = self._targets.benchmark_return(local.date().isoformat())
+        benchmark = self._equal_weight_benchmark(local.date().isoformat(), market_features) if known is None else None
         if benchmark is not None:
             self._writer.record_benchmark_return(benchmark, observed_at=now)
         targets = tuple(self._targets.pending_outcome_targets(limit=self._target_limit))
@@ -143,8 +149,15 @@ class OutcomeSettlementAdapter:
         self._service = service
 
     def settle(self, at: datetime) -> None:
-        features = self._market_data.fetch_market_features(at, force=True)
-        result = self._service.settle(at, features)
+        try:
+            features = self._market_data.fetch_market_features(at, force=True) if self._service.requires_benchmark_input(at) else ()
+            result = self._service.settle(at, features)
+        except MarketDataPendingError as exc:
+            raise SettlementUnavailableError("settlement_inputs_pending") from exc
+        except MarketDataUnavailableError as exc:
+            raise SettlementUnavailableError("settlement_market_data_unavailable") from exc
+        except OutcomeEvidenceConflictError as exc:
+            raise SettlementUnavailableError("settlement_evidence_conflict") from exc
         if result.retryable_count:
             raise SettlementUnavailableError("settlement_outcomes_incomplete")
 

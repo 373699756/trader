@@ -135,6 +135,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         "executors",
         "round_timeout_seconds",
         "shutdown_timeout_seconds",
+        "long_quote_max_age_seconds",
         "history_preload",
         "cadence_seconds",
         "publish_heartbeat_seconds",
@@ -243,6 +244,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             history_preload=HistoryPreloadSettings(
                 warn_after_seconds=_number(preload_raw, "warn_after_seconds", minimum=0.001, maximum=3600),
             ),
+            long_quote_max_age_seconds=_number(pipeline_raw, "long_quote_max_age_seconds", minimum=0.001),
             cadence_seconds=cadence_seconds,
             publish_heartbeat_seconds=_integer(pipeline_raw, "publish_heartbeat_seconds", minimum=1),
         ),

@@ -47,6 +47,7 @@ def _runtime(
     runtime = LongRuntime(
         LongRuntimeDependencies(
             next_sequence=count(1).__next__,
+            quote_max_age_seconds=30.0,
             quotes=quotes,
             index=index,
             now=lambda: completed_at,
@@ -210,7 +211,7 @@ def test_empty_long_watchlist_keeps_current_unready_without_fetching() -> None:
     quotes = _Quotes([])
     index = UnifiedFreezeIndex()
     runtime = LongRuntime(
-        LongRuntimeDependencies(next_sequence=count(1).__next__, quotes=quotes, index=index, now=lambda: NOW),
+        LongRuntimeDependencies(next_sequence=count(1).__next__, quote_max_age_seconds=30.0, quotes=quotes, index=index, now=lambda: NOW),
         config_version="config-fixture",
         watchlist_version="empty-watchlist",
         items=(),
@@ -238,7 +239,7 @@ def test_long_rejects_duplicate_or_unassigned_group_membership() -> None:
         try:
             LongRuntime(
                 LongRuntimeDependencies(
-                    next_sequence=count(1).__next__, quotes=quotes, index=UnifiedFreezeIndex(), now=lambda: NOW
+                    next_sequence=count(1).__next__, quote_max_age_seconds=30.0, quotes=quotes, index=UnifiedFreezeIndex(), now=lambda: NOW
                 ),
                 config_version="config-fixture",
                 watchlist_version="watchlist-fixture",

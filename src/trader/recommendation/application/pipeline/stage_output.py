@@ -116,11 +116,16 @@ def MeasuredOutput(
     output: PipelineStageOutput[_RecordT],
     started: float,
     monotonic: Callable[[], float],
+    *,
+    operation_durations: tuple[tuple[str, int | None], ...] | None = None,
 ) -> PipelineStageOutput[_RecordT]:
     """Attach the elapsed time of the actual operation without mutating its output."""
     elapsed = max(0, int((monotonic() - started) * 1000))
     return replace(
-        output, snapshot=replace(output.snapshot, latency_ms=elapsed, operation_durations=(("processing", elapsed),))
+        output, snapshot=replace(
+            output.snapshot, latency_ms=elapsed,
+            operation_durations=operation_durations if operation_durations is not None else (("processing", elapsed),),
+        )
     )
 
 

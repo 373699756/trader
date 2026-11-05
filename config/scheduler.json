@@ -29,6 +29,7 @@
     },
     "round_timeout_seconds": 120,
     "shutdown_timeout_seconds": 30,
+    "long_quote_max_age_seconds": 30,
     "history_preload": {
       "warn_after_seconds": 300
     },

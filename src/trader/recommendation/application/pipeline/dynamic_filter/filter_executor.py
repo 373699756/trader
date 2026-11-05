@@ -189,8 +189,12 @@ def FilterFeatureCandidates(
     policy: RecommendationPolicy,
     options: ScoredSelectionOptions,
     identity: ScoredSelectionIdentity,
+    *,
+    execution_gate_reasons: Mapping[str, str] | None = None,
 ) -> FilteredCandidateInputs:
-    return FilterCandidateInputs(_selection_request(features, policy, options, identity))
+    return FilterCandidateInputs(
+        _selection_request(features, policy, options, identity, execution_gate_reasons=execution_gate_reasons)
+    )
 
 
 def _selection_request(
