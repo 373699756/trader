@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import CancelledError
 from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
 
 from tests.helpers.qfq import QFQ_TENCENT_OPTIONS
-from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockSecurity
+from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
-from trader.download.domain.price_suspension import PriceSuspension, PriceSuspensionSnapshot
 from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
@@ -105,98 +103,99 @@ def test_pairs_preserve_units_and_leave_unavailable_facts_missing():
     assert cell.qfq.turnover is None
 
 
-def _suspension_supplier(http, fetch, *, target=DAY, sessions=1):
-    supplier = TencentQfqSupplier(
-        TencentQfqDependencies(
-            lambda: http,
-            lambda _as_of: (SECURITY,),
-            lambda: http.cancelled,
-            calendar=lambda _day, count: BaoStockCalendar(
-                tuple(date.fromisoformat(row[0]) for row in http.calendar[-count:])
-            ),
-            suspensions=fetch,
-        ),
-        QFQ_TENCENT_OPTIONS,
-    )
-    supplier.load_qfq_context(target, sessions)
-    http.calls.clear()
-    return supplier
+class _SuspensionHttp(_Http):
+    def __init__(self):
+        super().__init__()
+        self.raw = self.adjusted = []
+        self.quote = [""] * 88
+        self.quote[2] = SECURITY.code
+        self.quote[3] = "10.00"  # A suspended quote can still carry the last traded price.
+        self.quote[30] = DAY.strftime("%Y%m%d") + "161500"
+        self.quote[40] = "S"
+        for index in (5, 6, 33, 34, 37):
+            self.quote[index] = "0"
+        self.fail_qfq = False
+
+    def get(self, url, **kwargs):
+        if self.fail_qfq and kwargs["params"]["param"].endswith(",qfq"):
+            raise HttpTimeout("fixture")
+        response = super().get(url, **kwargs)
+        payload = json.loads(response.text[2:])
+        symbol = kwargs["params"]["param"].split(",")[0]
+        payload["data"][symbol]["qt"] = {symbol: self.quote}
+        return _Response(payload)
 
 
-def test_confirmed_full_window_skips_price_requests_and_contains_no_fabricated_prices():
-    http = _Http()
-    supplier = _suspension_supplier(
-        http, lambda day: PriceSuspensionSnapshot(day, (PriceSuspension(SECURITY.code, DAY, DAY),))
-    )
-    window = supplier.fetch_window(SECURITY, (DAY,))
-    assert http.calls == []
+def test_tencent_explicit_suspension_reuses_raw_response_and_skips_qfq():
+    http = _SuspensionHttp()
+    window = http.supplier().fetch_window(SECURITY, (DAY,))
+    assert len(http.calls) == 1 and http.calls[0].endswith(",bfq")
     assert window.cells[0].status == "supplier_marked_suspended"
     assert window.cells[0].unadjusted.close_price is None
     assert window.cells[0].qfq.volume is None
 
 
 def test_history_still_downloads_trading_days_before_the_suspended_tail():
-    http = _Http()
-    suspended_day = DAY + timedelta(days=1)
-    snapshot = PriceSuspensionSnapshot(suspended_day, (PriceSuspension(SECURITY.code, suspended_day, suspended_day),))
-    http.calendar.append([suspended_day.isoformat()])
-    supplier = _suspension_supplier(http, lambda _day: snapshot, target=suspended_day, sessions=2)
-    window = supplier.fetch_window(SECURITY, (DAY, suspended_day))
+    http = _SuspensionHttp()
+    previous = DAY - timedelta(days=1)
+    http.raw = http.adjusted = [[previous.isoformat(), *ROW[1:]]]
+    window = http.supplier().fetch_window(SECURITY, (previous, DAY))
     assert tuple(cell.status for cell in window.cells) == ("complete", "supplier_marked_suspended")
     assert len(http.calls) == 2
-    assert all(suspended_day.isoformat() not in call for call in http.calls)
+    assert DAY.isoformat() not in http.calls[1]
 
 
-def test_suspension_failure_preserves_existing_price_download_and_logs_degradation(caplog):
-    def fail(_day):
-        raise TimeoutError("fixture")
-
-    http = _Http()
-    supplier = _suspension_supplier(http, fail)
-    assert supplier.fetch_window(SECURITY, (DAY,)).cells[0].status == "complete"
+@pytest.mark.parametrize(
+    "position,value",
+    [
+        (2, "600002"), (40, ""), (40, "D"), (40, "U"),
+        (30, "20261008161500"), (30, "20261010161500"), (30, "20261009103000"), (30, "invalid"),
+        (5, "10"), (6, "100"), (33, "10"), (34, "10"), (37, "100"), (6, "bad"),
+    ],
+)
+def test_unproven_full_day_suspension_remains_inference(position, value):
+    http = _SuspensionHttp()
+    http.quote[position] = value
+    window = http.supplier().fetch_window(SECURITY, (DAY,))
+    assert window.cells[0].status == "tencent_inferred_suspended"
     assert len(http.calls) == 2
-    assert "停牌清单不可用" in caplog.text
 
 
 def test_partial_price_failure_keeps_confirmed_suspension_and_other_dates_pending():
-    http = _Http()
+    http = _SuspensionHttp()
     start = DAY - timedelta(days=1)
-    supplier = _suspension_supplier(
-        http, lambda day: PriceSuspensionSnapshot(day, (PriceSuspension(SECURITY.code, DAY, DAY),))
-    )
-    http.error = HttpTimeout("fixture")
+    http.raw = [[start.isoformat(), *ROW[1:]]]
+    http.fail_qfq = True
     with pytest.raises(HistorySupplierPendingError) as raised:
-        supplier.fetch_window(SECURITY, (start, DAY))
-    assert tuple(cell.status for cell in raised.value.window.cells) == ("unknown_missing", "supplier_marked_suspended")
+        http.supplier().fetch_window(SECURITY, (start, DAY))
+    assert tuple(cell.status for cell in raised.value.window.cells) == ("qfq_missing", "supplier_marked_suspended")
 
 
-def test_failed_refresh_discards_the_previous_suspension_snapshot():
-    checks = []
-
-    def fetch(day):
-        checks.append(day)
-        if len(checks) > 1:
-            raise TimeoutError("fixture")
-        return PriceSuspensionSnapshot(day, (PriceSuspension(SECURITY.code, DAY, DAY),))
-
-    http = _Http()
-    supplier = _suspension_supplier(http, fetch)
+def test_suspension_quote_does_not_leak_between_requests_or_replace_actual_trading():
+    http = _SuspensionHttp()
+    supplier = http.supplier()
     assert supplier.fetch_window(SECURITY, (DAY,)).cells[0].status == "supplier_marked_suspended"
-    supplier.load_qfq_context(DAY, 1)
+    http.quote = []  # A subsequent request has no usable quote status.
+    http.raw = http.adjusted = [ROW.copy()]
+    assert supplier.fetch_window(SECURITY, (DAY,)).cells[0].status == "complete"
+    http.quote = [""] * 88
+    http.quote[2], http.quote[30], http.quote[40] = SECURITY.code, DAY.strftime("%Y%m%d") + "161500", "S"
+    for index in (5, 6, 33, 34, 37):
+        http.quote[index] = "0"
     assert supplier.fetch_window(SECURITY, (DAY,)).cells[0].status == "complete"
 
 
-def test_cancellation_during_suspension_check_stops_before_any_price_request(caplog):
-    http = _Http()
+def test_cancellation_after_raw_response_stops_before_qfq():
+    class CancelledHttp(_SuspensionHttp):
+        def get(self, url, **kwargs):
+            response = super().get(url, **kwargs)
+            self.cancelled = True
+            return response
 
-    def cancel(_day):
-        http.cancelled = True
-        raise CancelledError("fixture")
-
+    http = CancelledHttp()
     with pytest.raises(RuntimeError, match="tencent_qfq_cancelled"):
-        _suspension_supplier(http, cancel)
-    assert http.calls == []
-    assert "停牌清单不可用" not in caplog.text
+        http.supplier().fetch_window(SECURITY, (DAY,))
+    assert len(http.calls) == 1
 
 
 def test_raw_and_qfq_requests_reuse_one_http_session():

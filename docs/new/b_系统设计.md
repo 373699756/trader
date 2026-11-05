@@ -124,6 +124,27 @@ flowchart TD
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 示例：`published_at` | 本地事实快照发布时间 | INTEGER，时间编码由持久化codec解释 | 本地正式发布事务 | NOT NULL | 事实与成功凭证提交时记录，不能替代原披露时间比较新旧 | 追踪采用的资料版本；不表示财报当时已可见 | `company_facts_schema.py`、`company_facts_index.py`；完整消费者归d第8章 |
 
+### 5.1 跨业务供数与消费者核对
+
+核对基线为已推送`17c09942`。下表把下载的物理来源、不可变端口、荐股及训练消费者连起来；各业务字典仍由原owner维护，避免重复定义列、默认值或公式。d第8–9章目前明确是范围和计划，尚未提供全部SQL列与download.json叶子说明；不能将此表当作B字典已经收齐。
+
+| 数据或资源 | 唯一来源、类型与消费者 | 边界及证据归属 |
+| --- | --- | --- |
+| 证券/ST/日历 | reference的company_st.sqlite3 → PreparedReference/HistoryStEvidence → 发布参考；A的PublishedReferences/StaticMarketCache与B的PrepareReference使用明确资格，训练按发布总体/日历读取 | ST/unknown先筛，原检查日与本次观察时点分开；d2.3、c2/16.2；A340、B333的功能证据不等于实际整链采用 |
+| 历史发布/年度价格 | catalog与prices_<year>.sqlite3 → ReadPublishedHistoryUseCase、HistoryTrainingRow/Point；A共享预载、C共享历史fanout | 固定snapshot/revision/sequence，取消与只读名单在解码前生效；不另建子集manifest；d3/8、e3.1及3.4 |
+| 独立短窗 | daily_window.sqlite3 → 同一历史只读端口的短窗adapter → A启动历史投影 | 原始/前复权配对、成员和发布凭据独立；不借完整历史断点，不在运行期补历史；d4/6.1 |
+| 行业 | industry.sqlite3 → CurrentIndustryCache/PublishedReferences → A展示行业与模型行业、C历史行业路由 | 官方证据保留来源/摘要/披露及生效区间、分类与映射；当前展示不能倒填历史行业；d2.5、c7及e3.1 |
+| 公司正式事实 | company_facts.sqlite3 → CompanyEvidenceReadPort/CompanyFacts → PublishedCompanyResearch内存投影 → A过滤/评分/风险 | 采集库、文件/PDF/OCR不是正式评分输入；未知不填无风险，披露日与本地published_at不同；d5.4/5.9/5.10、c6/16.4 |
+| 模型/样本 | C的封存samples.sqlite3/complete.json及双头model.json → 严格profile加载 → A模型排序/净效用/动作门 | V1/V5独立排序，V2/V3仍local_score；数值重放、质量、收益与实际采用分别取证；e3.4–3.6/7.1、c7–12 |
+| 实时报价/分钟 | A行情adapter → 不可变批次 → 特征/横截面/四档决策 → 只读快照/HTTP/SSE | 固定同轮输入，正常轮不访问业务数据库；Long独立、旧结果保留，不能拿启动查询替代运行轮观测；c1/4/13、b8 |
+| SQLite页缓存/mmap | 公共sqlite.json → SqliteIoPolicy → download/荐股已有连接边界；训练样本连接采用training.json.resources.samples的独立设置 | 技术primitive不成为第二业务owner；保留样本独立作用域，不把纯I/O参数写成模型语义；b7.2、e6.2 |
+| 执行器/公司预载 | scheduler.json → ExecutionSettings/CompanyPreloadSettings → bootstrap显式创建/注入 → A执行器/共享预载 | 创建、启动、停止、等待见b3；默认容量和30秒/3次保留，生命周期回归见342；改值未签性能 |
+| 训练预约/批读/缓存 | training.json.resources → TrainingResourceSettings/TrainingSampleSettings → C训练组合根/fanout/全部样本读写者 | 每档有界队列、CPU/内存预约、取消清理见e6.2–6.4及7.2–7.3；已提交345资源接线，实测由C后台承接 |
+
+量额追链结果：`tencent_daily._row`将日线第5位成交手数乘100成为股数、第8位万元金额乘10000成为元；`tencent_qfq_supplier._parse_side`按raw/qfq分支原样传量额，`price_columns._side_values`写各分支列，不使用价格复权比去乘成交额。训练SQL明确取`daily_price_revision.qfq_amount`与`raw_volume`，`history_prices._decode_training_row`生成`HistoryTrainingPoint`；`AlignTrainingRows`按市场日历区分停牌估值与真正缺行，`sample_builder`再用于20日金额、V1因子及V5量额通道。因此qfq_amount是qfq分支随价格一起取得的实际金额输入，不是数据库内重新计算的复权名义成交额；不能仅凭字段名把它等同raw_amount或改模型公式。这里确认当前代码来源和换算，供应商真实历史同口径/修订一致性仍由B审计，不替代全部来源事实核验。
+
+字典交接还须有B下载全部表列/索引/codec、download.json逐叶消费者及字段真实读回证据；C的样本/工件/16项每机器资源字段已有说明，仍须以真实封存身份验证数值和释放。A已将可核对部分与消费者连通，缺项只保留原341/332及C阶段，不把B/C现场未提交改动或旧报告当作交付。
+
 ## 6. HDD 与 SSD 怎样分别设计
 
 | 事项 | HDD 候选方向 | SSD 候选方向 | 必须一起检查 |

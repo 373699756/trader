@@ -6,7 +6,7 @@ import json
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
@@ -66,6 +66,7 @@ def FetchTencentDailyRows(
     host: str,
     timeout_seconds: float,
     cancel_requested: Callable[[], bool] | None = None,
+    observe_suspension: Callable[[date], None] | None = None,
 ) -> tuple[TencentDailyRow, ...]:
     url, params = TencentDailyRequest(query, host)
     response = transport.get(
@@ -76,7 +77,40 @@ def FetchTencentDailyRows(
         cancel_requested=cancel_requested,
     )
     response.raise_for_status()
-    return DecodeTencentDailyRows(response.text, query)
+    payload = DecodeTencentDailyPayload(response.text)
+    rows = tuple(_row(row) for row in _rows(payload, query))
+    if observe_suspension is not None and not any(row.day == query.end for row in rows):
+        day = _suspended_day(payload, query)
+        if day is not None:
+            observe_suspension(day)
+    return rows
+
+
+def _suspended_day(payload: object, query: TencentDailyQuery) -> date | None:
+    if not isinstance(payload, Mapping):
+        return None
+    data = payload.get("data")
+    stock = data.get(query.symbol) if isinstance(data, Mapping) else None
+    quotes = stock.get("qt") if isinstance(stock, Mapping) else None
+    fields = quotes.get(query.symbol) if isinstance(quotes, Mapping) else None
+    if (
+        not isinstance(fields, list)
+        or len(fields) <= 40
+        or fields[2] != query.symbol[2:]
+        or fields[40] != "S"
+        or not isinstance(fields[30], str)
+        or len(fields[30]) != 14
+        or not fields[30].isdigit()
+    ):
+        return None
+    try:
+        observed = datetime.strptime(fields[30], "%Y%m%d%H%M%S")
+        no_trades = all(Decimal(str(fields[index])).is_zero() for index in (5, 6, 33, 34, 37))
+    except (ValueError, InvalidOperation):
+        return None
+    # Tencent's own quote page maps full-quote field 40, S, to 停牌. A current
+    # halt alone does not establish a full historical session or an intraday bar.
+    return query.end if observed.date() == query.end and observed.time() >= time(15) and no_trades else None
 
 
 def DecodeTencentDailyRows(text: str, query: TencentDailyQuery) -> tuple[TencentDailyRow, ...]:

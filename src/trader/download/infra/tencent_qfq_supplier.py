@@ -6,9 +6,7 @@ import json
 import math
 import time
 import platform
-import logging
 from collections.abc import Callable, Iterator
-from concurrent.futures import CancelledError
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -25,7 +23,6 @@ from trader.download.domain.history_supplier_failure import HistorySupplierPendi
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import MAX_QFQ_WINDOW_SESSIONS
-from trader.download.domain.price_suspension import PriceSuspensionSnapshot
 from trader.download.infra.tencent_daily import FetchTencentDailyRows, TencentDailyQuery, TencentDailyRow
 from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.download.application.download_failure import DownloadFailurePort
@@ -33,7 +30,6 @@ from trader.download.domain.download_failure import DownloadFailureContext
 
 _QFQ_PAGE_ROWS = 640
 _MAX_QFQ_PAGES = 5
-_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -60,7 +56,6 @@ class TencentQfqDependencies:
     calendar: Callable[[date, int], BaoStockCalendar] | None = None
     failures: DownloadFailurePort | None = None
     monotonic: Callable[[], float] = time.monotonic
-    suspensions: Callable[[date], PriceSuspensionSnapshot] | None = None
 
 
 @dataclass(frozen=True)
@@ -136,7 +131,6 @@ class TencentQfqSupplier:
     def __init__(self, dependencies: TencentQfqDependencies, options: TencentQfqOptions) -> None:
         self._dependencies = dependencies
         self._options = options
-        self._suspensions: PriceSuspensionSnapshot | None = None
 
     def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         if not 1 <= sessions <= MAX_QFQ_WINDOW_SESSIONS:
@@ -163,25 +157,6 @@ class TencentQfqSupplier:
             if self._dependencies.calendar is not None
             else self.load_calendar(as_of, sessions)
         )
-        self._suspensions = None
-        if self._dependencies.suspensions is not None:
-            try:
-                snapshot = self._dependencies.suspensions(calendar.open_dates[-1])
-                if snapshot.target_date != calendar.open_dates[-1]:
-                    raise ValueError("price_suspension_target_mismatch")
-                self._suspensions = snapshot
-                eligible = frozenset(item.code for item in universe)
-                _LOGGER.info(
-                    "停牌清单 %s：合格股票中 %d 只具有全天停牌区间",
-                    snapshot.target_date,
-                    sum(item.code in eligible for item in snapshot.suspensions),
-                )
-            except (CancelledError, OSError, RuntimeError, ValueError) as exc:
-                self._check_cancel()
-                _LOGGER.warning("停牌清单不可用，继续原价格同步：%s", type(exc).__name__)
-                if self._dependencies.failures is not None:
-                    self._dependencies.failures(DownloadFailureContext("price_suspensions"), exc)
-        self._check_cancel()
         return HistorySupplierContext(
             calendar,
             tuple(sorted(universe, key=lambda security: security.code)),
@@ -222,29 +197,6 @@ class TencentQfqSupplier:
             or dates != tuple(sorted(set(dates)))
         ):
             raise ValueError("Tencent request requires ordered unique dates and a bounded row count")
-        suspended = self._suspensions.dates_for(security.code, dates) if self._suspensions is not None else frozenset()
-        if suspended:
-            requested = tuple(day for day in dates if day not in suspended)
-            try:
-                downloaded = self._fetch_trading_dates(
-                    security, requested, count, allow_interior_padding
-                ) if requested else PublishedHistoryWindow(security.code, ())
-            except HistorySupplierPendingError as exc:
-                raise HistorySupplierPendingError(
-                    _merge_suspensions(security.code, dates, suspended, exc.window),
-                    exc.reason,
-                    exc.unusable_qfq_dates,
-                ) from exc
-            return _merge_suspensions(security.code, dates, suspended, downloaded)
-        return self._fetch_trading_dates(security, dates, count, allow_interior_padding)
-
-    def _fetch_trading_dates(
-        self,
-        security: BaoStockSecurity,
-        dates: tuple[date, ...],
-        count: int,
-        allow_interior_padding: bool,
-    ) -> PublishedHistoryWindow:
         symbol = security.source_code.replace(".", "")
         query = _WindowQuery(symbol, dates, count, allow_interior_padding)
         with self._dependencies.session_factory() as session:
@@ -256,10 +208,17 @@ class TencentQfqSupplier:
                         tuple(PublishedHistoryCell(security.code, day, "unknown_missing", None, None) for day in dates),
                     )
                 )
-            qfq_download = self._download_side(session, query, "qfq")
+            suspended = frozenset(
+                side.trade_date for side in raw_download.sides if side.trading_status == "suspended"
+            )
+            trading_dates = tuple(day for day in dates if day not in suspended)
+            qfq_download = self._download_side(
+                session, _WindowQuery(symbol, trading_dates, count, allow_interior_padding), "qfq"
+            ) if trading_dates else _SideDownload((), ())
         self._check_cancel()
         raw = {side.trade_date: side for side in raw_download.sides}
         qfq = {side.trade_date: side for side in qfq_download.sides}
+        qfq.update((day, _suspended_side(security.code, day, "qfq")) for day in suspended)
         request_pending = bool(raw_download.pending_dates or qfq_download.pending_dates)
         invalid_dates = raw_download.invalid_dates | qfq_download.invalid_dates
         window = PublishedHistoryWindow(
@@ -414,8 +373,10 @@ class TencentQfqSupplier:
         end: date,
     ) -> tuple[dict[date, PublishedHistorySide], int, frozenset[date], bool]:
         symbol, dates = query.symbol, query.dates
+        suspended: set[date] = set()
         rows = self._request_rows(
-            TencentDailyQuery(symbol, dates[0], end, mode, query.request_count), session=session, host=host
+            TencentDailyQuery(symbol, dates[0], end, mode, query.request_count), session=session, host=host,
+            observe_suspension=suspended.add if mode == "bfq" else None,
         )
         result: dict[date, PublishedHistorySide] = {}
         invalid_dates: set[date] = set()
@@ -443,6 +404,9 @@ class TencentQfqSupplier:
                 continue
             side = _parse_side(symbol[2:], row, mode)
             result[side.trade_date] = side
+        for day in suspended.intersection(expected):
+            if day not in result:
+                result[day] = _suspended_side(symbol[2:], day, "unadjusted")
         return result, len(rows), frozenset(invalid_dates), crossed_start
 
     def _request_rows(
@@ -451,15 +415,16 @@ class TencentQfqSupplier:
         *,
         session: HttpTransport | None = None,
         host: Literal["proxy", "direct"] | None = None,
+        observe_suspension: Callable[[date], None] | None = None,
     ) -> tuple[TencentDailyRow, ...]:
         for attempt in range(self._options.retries + 1):
             self._check_cancel()
             started = self._dependencies.monotonic()
             try:
                 if session is not None:
-                    return self._request_once(session, query, host or self._options.history_host)
+                    return self._request_once(session, query, host or self._options.history_host, observe_suspension)
                 with self._dependencies.session_factory() as owned_session:
-                    return self._request_once(owned_session, query, host or self._options.history_host)
+                    return self._request_once(owned_session, query, host or self._options.history_host, observe_suspension)
             except (HttpError, OSError, ValueError) as exc:
                 if self._dependencies.failures is not None:
                     self._dependencies.failures(DownloadFailureContext(
@@ -476,7 +441,11 @@ class TencentQfqSupplier:
         raise RuntimeError("tencent_qfq_request_failed")
 
     def _request_once(
-        self, session: HttpTransport, query: TencentDailyQuery, host: Literal["proxy", "direct"]
+        self,
+        session: HttpTransport,
+        query: TencentDailyQuery,
+        host: Literal["proxy", "direct"],
+        observe_suspension: Callable[[date], None] | None,
     ) -> tuple[TencentDailyRow, ...]:
         rows = FetchTencentDailyRows(
             session,
@@ -484,6 +453,7 @@ class TencentQfqSupplier:
             host=host,
             timeout_seconds=self._options.timeout_seconds,
             cancel_requested=self._dependencies.cancel_requested,
+            observe_suspension=observe_suspension,
         )
         self._check_cancel()
         return rows
@@ -493,34 +463,24 @@ class TencentQfqSupplier:
             raise RuntimeError("tencent_qfq_cancelled")
 
 
-def _merge_suspensions(
-    code: str,
-    dates: tuple[date, ...],
-    suspended: frozenset[date],
-    window: PublishedHistoryWindow,
-) -> PublishedHistoryWindow:
-    cells = {cell.trade_date: cell for cell in window.cells}
-    for day in suspended:
-        sides = tuple(
-            PublishedHistorySide(
-                code=code,
-                trade_date=day,
-                adjustment=adjustment,
-                open_price=None,
-                high_price=None,
-                low_price=None,
-                close_price=None,
-                volume=None,
-                amount=None,
-                preclose=None,
-                pct_change=None,
-                turnover=None,
-                trading_status="suspended",
-            )
-            for adjustment in ("unadjusted", "qfq")
-        )
-        cells[day] = PublishedHistoryCell(code, day, "supplier_marked_suspended", sides[0], sides[1])
-    return PublishedHistoryWindow(code, tuple(cells[day] for day in dates))
+def _suspended_side(
+    code: str, day: date, adjustment: Literal["unadjusted", "qfq"]
+) -> PublishedHistorySide:
+    return PublishedHistorySide(
+        code=code,
+        trade_date=day,
+        adjustment=adjustment,
+        open_price=None,
+        high_price=None,
+        low_price=None,
+        close_price=None,
+        volume=None,
+        amount=None,
+        preclose=None,
+        pct_change=None,
+        turnover=None,
+        trading_status="suspended",
+    )
 
 
 def _unusable_qfq_price(row: TencentDailyRow) -> bool:
