@@ -667,6 +667,33 @@ def test_market_eligibility_exit_keeps_window_and_success_receipt(tmp_path, stat
         assert supplier.calls == []
 
 
+@pytest.mark.parametrize("repair_only", (False, True))
+def test_explicit_market_sync_restores_legacy_population_from_current_eligibility(tmp_path, repair_only):
+    class Qualified(Supplier):
+        def load_qfq_context(self, as_of, sessions):
+            return replace(super().load_qfq_context(as_of, sessions), universe=_reference(("600001",)).eligible_universe)
+
+    supplier = Qualified(codes=("600001",))
+    updater = _updater(tmp_path, supplier)
+    now = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    source = supplier.load_qfq_context(DAYS[-1], 251).source_versions
+    identity = f"{source.sdk_version}:{source.content_hash}"
+    updater.seed((_window("600001"), _window("600002")), identity, calendar=DAYS[-251:])
+    preserved = updater.v2.read_code("600002")
+    with SqliteSession(updater.v2.path) as connection, SqliteTransaction(connection):
+        connection.run("DROP TABLE window_population")
+    updater.v2.publish_file()
+    before = updater.v2.path.read_bytes()
+    with pytest.raises(RuntimeError, match="qfq_manifest_unavailable"):
+        updater.v2.manifest()
+    assert updater.v2.path.read_bytes() == before
+    result = replace(updater, repair_only=repair_only).execute(now)
+    assert result.failure_reason is None and result.pending_codes == 0
+    assert updater.v2.codes() == updater.v3.codes() == frozenset({"600001"})
+    assert updater.v2.read_code("600002") == preserved
+    assert supplier.calls == ([] if repair_only else [("600001", DAYS[-3:])])
+
+
 def test_qfq_refills_worker_before_slowest_request_finishes(tmp_path) -> None:
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -1780,12 +1807,15 @@ def test_local_seed_rejects_history_older_than_retained_market_before_changing_m
     assert older.reads == [] and supplier.calls == []
 
 
-def test_local_seed_counts_an_incomplete_window_as_pending(tmp_path):
+@pytest.mark.parametrize("missing_kind", ("explicit", "absent", "retained_absent"))
+def test_local_seed_counts_an_incomplete_window_as_pending(tmp_path, missing_kind):
     from tests.component.test_candidate_history_tail import NOW, HistoryInput
 
     class IncompleteHistory(HistoryInput):
         def read_windows(self, manifest, codes, *, sessions, check=None):
             windows = super().read_windows(manifest, codes, sessions=sessions, check=check)
+            if missing_kind != "explicit":
+                return tuple(replace(window, cells=window.cells[:-1]) for window in windows)
             return tuple(replace(window, cells=tuple(
                 replace(cell, status="unknown_missing", unadjusted=None, qfq=None)
                 if cell.trade_date == manifest.data_cutoff else cell for cell in window.cells
@@ -1794,10 +1824,84 @@ def test_local_seed_counts_an_incomplete_window_as_pending(tmp_path):
     history = IncompleteHistory(251, 0, ("600001",))
     supplier = Supplier()
     updater = _updater(tmp_path, supplier)
+    if missing_kind == "retained_absent":
+        window = history.window("600001", history.current.calendar_dates[-251:])
+        updater.seed((replace(window, cells=window.cells[:-1]),), "existing", calendar=history.current.calendar_dates)
     runner = QfqUpdateRunner(ReadPublishedHistoryUseCase(history), updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: NOW)
     result = runner.execute(seed_only=True, reference=PreparedFixture(NOW))
     assert result.completed_codes == 0 and result.pending_codes == 1 and result.needs_retry
-    assert supplier.calls == [] and updater.v2.price_issues()[0].code == "600001"
+    assert supplier.calls == [] and history.reads == [("600001",)]
+    if missing_kind == "explicit":
+        assert updater.v2.price_issues()[0].code == "600001"
+
+
+@pytest.mark.parametrize("missing_kind", ("prelisting", "suspended"))
+def test_local_seed_accepts_listing_boundary_and_explicit_suspension(tmp_path, missing_kind):
+    from tests.component.test_candidate_history_tail import NOW, HistoryInput
+
+    class SparseHistory(HistoryInput):
+        def read_windows(self, manifest, codes, *, sessions, check=None):
+            windows = super().read_windows(manifest, codes, sessions=sessions, check=check)
+            return tuple(replace(window, cells=tuple(
+                replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+                if missing_kind == "suspended" and cell.trade_date == manifest.data_cutoff else cell
+                for cell in window.cells if missing_kind != "prelisting" or cell.trade_date == manifest.data_cutoff
+            )) for window in windows)
+
+    history = SparseHistory(251, 0, ("600001",))
+    security = BaoStockSecurity(
+        "600001", "fixture", "main",
+        history.current.data_cutoff if missing_kind == "prelisting" else history.current.calendar_dates[0],
+        None, "fixture",
+    )
+    reference = PreparedFixture(NOW, (security,))
+    supplier = Supplier()
+    updater = _updater(tmp_path, supplier)
+    runner = QfqUpdateRunner(ReadPublishedHistoryUseCase(history), updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: NOW)
+    result = runner.execute(seed_only=True, reference=reference)
+    assert result.failure_reason is None and result.completed_codes == 1 and result.pending_codes == 0
+    assert runner.execute(seed_only=True, reference=reference).changed_files == ()
+    assert history.reads == [("600001",)] and supplier.calls == []
+
+
+def test_local_seed_cancel_during_history_read_keeps_committed_batch_and_resumes(tmp_path):
+    from tests.component.test_candidate_history_tail import NOW, HistoryInput
+
+    cancelled = False
+    batches = []
+
+    class CancellingHistory(HistoryInput):
+        def read_windows(self, manifest, codes, *, sessions, check=None):
+            nonlocal cancelled
+            batches.append(tuple(codes))
+            if len(batches) == 2:
+                cancelled = True
+                assert check is not None
+                check()
+                raise AssertionError("cancelled read must stop")
+            return super().read_windows(manifest, codes, sessions=sessions, check=check)
+
+    codes = tuple(f"600{index:03d}" for index in range(33))
+    history = CancellingHistory(4, 0, codes)
+    history.current = replace(history.current, calendar_dates=history.current.calendar_dates[-4:])
+    supplier = Supplier()
+    updater = replace(
+        _updater(tmp_path, supplier), cancel_requested=lambda: cancelled,
+        configuration=replace(QFQ_CONFIGURATION, v2_sessions=4, v3_sessions=2),
+    )
+    reference = PreparedFixture(
+        NOW, tuple(BaoStockSecurity(code, "fixture", "main", history.current.calendar_dates[0], None, "fixture") for code in codes),
+    )
+    runner = QfqUpdateRunner(ReadPublishedHistoryUseCase(history), updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: NOW)
+    result = runner.execute(seed_only=True, reference=reference)
+    assert result.failure_reason == "cancelled" and result.completed_codes == 32 and result.pending_codes == 1
+    assert result.changed_files == (updater.v2.path.name,) and result.changed_rows == 128
+    assert updater.v2.codes() == updater.v3.codes() == frozenset(codes[:32])
+    cancelled = False
+    result = runner.execute(seed_only=True, reference=reference)
+    assert result.failure_reason is None and result.completed_codes == 33 and result.pending_codes == 0
+    assert result.changed_rows == 4 and history.reads == [codes[:32], codes[32:]]
+    assert supplier.calls == []
 
 
 def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):

@@ -13,6 +13,7 @@ from trader.download.application.progress_message import ProgressLevel
 from trader.download.application.qfq_download_progress import QfqFailureCode, QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
+from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
@@ -23,6 +24,10 @@ from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.domain.download_failure import DownloadFailureContext
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+class _SeedCancelledError(RuntimeError):
+    """Stop a local history read without discarding earlier seed receipts."""
 
 
 @dataclass(frozen=True)
@@ -81,7 +86,7 @@ class QfqUpdateRunner:
                 files, changed_rows = self.v2.select_published_codes(self.v3, selected)
                 changed.update(files)
                 rows += changed_rows
-                needed = selected - self._reusable_seed_codes(manifest, selected)
+                needed = selected - self._reusable_seed_codes(manifest, selected, reference)
                 if needed:
                     stage = "local_seed"
                     self.updater.report(
@@ -99,7 +104,7 @@ class QfqUpdateRunner:
                         )
                     changed.update(seeded.changed_files)
                     rows += seeded.changed_rows
-                completed_codes = self._reusable_seed_codes(manifest, selected)
+                completed_codes = self._reusable_seed_codes(manifest, selected, reference)
                 return QfqUpdateResult(
                     manifest.data_cutoff,
                     len(completed_codes & allowed_codes),
@@ -122,9 +127,11 @@ class QfqUpdateRunner:
             return QfqUpdateResult(None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason)
 
     def _reusable_seed_codes(
-        self, manifest: PublishedHistoryManifest, selected: frozenset[str]
+        self, manifest: PublishedHistoryManifest, selected: frozenset[str], reference: PreparedReference
     ) -> frozenset[str]:
-        target_dates = frozenset(manifest.calendar_dates[-self.updater.configuration.maximum_sessions:])
+        calendar = BaoStockCalendar(manifest.calendar_dates[-self.updater.configuration.maximum_sessions:])
+        target_dates = frozenset(calendar.open_dates)
+        securities = {security.code: security for security in reference.eligible_universe}
         snapshots = []
         for cache in (self.v2, self.v3):
             expected = manifest.calendar_dates[-self.updater.configuration.sessions_for(cache.profile):]
@@ -147,8 +154,17 @@ class QfqUpdateRunner:
                 and state.end_date == manifest.data_cutoff
                 for cache, state in ((self.v2, first), (self.v3, second))
             ):
-                reusable.add(code)
+                expected = calendar.expected_dates(securities[code])
+                # Bounds do not prove daily coverage: an absent row is not
+                # suspension evidence. The shared price view also includes
+                # explicitly recorded nontrading dates, within listing bounds.
+                if expected and frozenset(expected).issubset(self.v2.covered_dates(code)):
+                    reusable.add(code)
         return frozenset(reusable)
+
+    def _check_seed_cancelled(self) -> None:
+        if self.updater.cancel_requested():
+            raise _SeedCancelledError("cancelled")
 
     def _seed_windows(
         self, manifest: PublishedHistoryManifest, needed: frozenset[str]
@@ -157,6 +173,11 @@ class QfqUpdateRunner:
         for start in range(0, len(ordered), 32):
             if self.updater.cancel_requested():
                 return
-            yield from self.history.read_windows(
-                manifest, ordered[start:start + 32], sessions=min(2000, len(manifest.calendar_dates)),
-            )
+            try:
+                windows = self.history.read_windows(
+                    manifest, ordered[start:start + 32], sessions=min(2000, len(manifest.calendar_dates)),
+                    check=self._check_seed_cancelled,
+                )
+            except _SeedCancelledError:
+                return
+            yield from windows
