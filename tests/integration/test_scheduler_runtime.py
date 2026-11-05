@@ -493,6 +493,27 @@ def _round_cleanup_runtime() -> SchedulerRuntime:
     )
 
 
+@pytest.mark.parametrize("outcome,reported", (
+    ("cancelled", False), ("waiting_inputs", False), ("publication_window_closed", False), ("timeout", True),
+))
+def test_round_collection_reports_only_an_actual_deadline_timeout(monkeypatch, outcome, reported):
+    runtime = _round_cleanup_runtime()
+    rounds = runtime._dependencies.rounds
+    profile = runtime._dependencies.round_profile
+    scheduled = ScheduledPipelineTask(PipelineTask.SCORE, NOW, MarketPhase.BEFORE_CLOSE)
+    admission = rounds.enter(profile, (scheduled,))
+    assert admission is not None
+    status = replace(rounds.status(), outcome=outcome)
+    monkeypatch.setattr(rounds, "prepared", lambda *_args: False)
+    monkeypatch.setattr(rounds, "status", lambda: status)
+    try:
+        runtime._execute_recommendation_round(replace(scheduled, round_sequence=admission.sequence))
+        assert runtime.status().refresh_failure_count == int(reported)
+    finally:
+        rounds.finish(profile, admission.sequence)
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+
 def test_round_rechecks_close_after_preparing_initial_quotes(monkeypatch):
     runtime = _round_cleanup_runtime()
     dependencies = runtime._dependencies

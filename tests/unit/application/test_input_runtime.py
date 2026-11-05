@@ -190,26 +190,29 @@ def test_loading_local_history_is_pending_without_a_refresh_failure(application_
     assert not any("refresh failed" in record.getMessage() for record in caplog.records)
 
 
-def test_terminal_history_failure_logs_once_until_recovery(application_feature_factory, caplog) -> None:
+@pytest.mark.parametrize("reason", (
+    "history_preload_deadline", "history_control_invalid", "sqlite_publication_checksum_mismatch",
+))
+def test_terminal_history_failure_logs_once_until_recovery(application_feature_factory, caplog, reason) -> None:
     class FailedMarket(_Market):
         failed = True
 
         def fetch_market_features(self, observed_at, *, force=False, deadline=None):
             if self.failed:
-                raise MarketDataUnavailableError("history_preload_deadline")
+                raise MarketDataUnavailableError(reason)
             return super().fetch_market_features(observed_at, force=force, deadline=deadline)
 
     market = FailedMarket((application_feature_factory("600001", TEST_NOW),))
     adapter = build_cycle_fixture(market, config_version="test-config", freeze_build=_freeze_build())
     request = PipelineTaskRequest(PipelineTask.FULL_MARKET, TEST_NOW)
     for _ in range(3):
-        with pytest.raises(DataRefreshUnavailableError, match="history_preload_deadline"):
+        with pytest.raises(DataRefreshUnavailableError, match=reason):
             adapter.data.refresh_task(request)
     assert sum("refresh failed" in item.getMessage() for item in caplog.records) == 1
     market.failed = False
     adapter.data.refresh_task(request)
     market.failed = True
-    with pytest.raises(DataRefreshUnavailableError, match="history_preload_deadline"):
+    with pytest.raises(DataRefreshUnavailableError, match=reason):
         adapter.data.refresh_task(request)
     assert sum("refresh failed" in item.getMessage() for item in caplog.records) == 2
 
@@ -2139,6 +2142,42 @@ def test_close_fallback_can_use_sealed_market_quotes_before_candidate_refresh(ap
     assert batch.requested_codes == ("600001",)
     assert batch.candidate_quote_eligible == len(batch.candidate_features)
     assert market.candidate_quote_refresh_count == 0
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize("previous_empty", (False, True))
+def test_close_fallback_replaces_an_accepted_intraday_candidate_cut(
+    application_feature_factory, strategy, previous_empty
+) -> None:
+    before_close = TEST_NOW.replace(hour=14, minute=59)
+    closed_at = before_close.replace(hour=15, minute=0, second=10)
+    previous = application_feature_factory("600002", before_close)
+    if previous_empty:
+        previous = replace(previous, quote=replace(previous.quote, source_time=before_close - timedelta(minutes=2)))
+    market = _Market((previous,))
+    clock = [before_close]
+    adapter = build_cycle_fixture(
+        market, config_version="test-config", freeze_build=_freeze_build(now=lambda: clock[0]),
+    )
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, before_close))
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, before_close))
+    previous_refreshes = market.candidate_quote_refresh_count
+    if not previous_empty:
+        assert market.requested_codes == ("600002",)
+    current = application_feature_factory("600001", closed_at)
+    market._features = (current,)
+    clock[0] = closed_at
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CLOSE_QUOTES, closed_at))
+    request = _request(closed_at, strategy=strategy, phase="close_fallback")
+
+    adapter.data.refresh(request)
+    batch = adapter.data.batch(request)
+
+    assert batch is not None
+    assert batch.requested_codes == ("600001",)
+    assert tuple(item.quote.code for item in batch.candidate_features) == ("600001",)
+    assert all(item.features is not None for item in batch.candidate_stage.records)
+    assert market.candidate_quote_refresh_count == previous_refreshes
 
 
 def test_candidate_refresh_rejects_results_from_a_superseded_observed_population(application_feature_factory) -> None:

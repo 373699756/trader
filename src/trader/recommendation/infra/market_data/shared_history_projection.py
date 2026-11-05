@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 
 
 _LOGGER = logging.getLogger(__name__)
+_HISTORY_FAILURE_CODES = frozenset({
+    "history_snapshot_unavailable", "history_snapshot_changed", "history_preload_capacity",
+    "history_preload_cancelled", "history_control_invalid", "history_reference_unavailable",
+    "history_snapshot_partition_invalid", "sqlite_publication_changed_during_publish",
+    "sqlite_publication_changed_during_read", "sqlite_publication_checksum_mismatch",
+    "sqlite_publication_database_unreadable", "sqlite_publication_file_missing",
+    "sqlite_publication_header_invalid", "sqlite_publication_path_unsafe",
+    "sqlite_publication_receipt_invalid", "sqlite_publication_schema_invalid",
+})
 
 
 @dataclass
@@ -128,13 +137,15 @@ class SharedHistoryProjection:
                 profile.record_projection_observation()
 
     def _record_failure(self, exc: Exception) -> None:
-        declared = {
-            "history_snapshot_unavailable",
-            "history_snapshot_changed",
-            "history_preload_capacity",
-            "history_preload_cancelled",
-        }
-        reason = str(exc) if str(exc) in declared else type(exc).__name__
+        reason = type(exc).__name__
+        current: BaseException | None = exc
+        for _ in range(8):
+            if current is None:
+                break
+            if str(current) in _HISTORY_FAILURE_CODES:
+                reason = str(current)
+            current = current.__cause__ or current.__context__
+        _LOGGER.error("历史预读失败: code=%s category=%s", reason, type(exc).__name__)
         for profile in self._profiles:
             profile.fail_history_projection(reason)
 

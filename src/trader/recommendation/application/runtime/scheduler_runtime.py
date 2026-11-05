@@ -594,7 +594,7 @@ class SchedulerRuntime:
             # Finish slow auxiliary inputs across profiles before refreshing the
             # final candidate quote cut, so their wait does not age that cut.
             if not rounds.prepared(profile, sequence):
-                self._record_failure("refresh", "round_collection_timeout")
+                self._record_collection_failure(sequence)
                 return
             candidate = tasks.get(PipelineTask.CANDIDATE_QUOTES)
             if candidate is not None:
@@ -609,7 +609,7 @@ class SchedulerRuntime:
                     return
                 changed = changed or candidate_changed
             if not rounds.collected(profile, sequence):
-                self._record_failure("refresh", "round_collection_timeout")
+                self._record_collection_failure(sequence)
                 return
             if changed:
                 self._execute_score_pair(
@@ -625,6 +625,11 @@ class SchedulerRuntime:
             return
         finally:
             rounds.finish(profile, sequence)
+
+    def _record_collection_failure(self, sequence: int) -> None:
+        status = self._dependencies.rounds.status()
+        if status is not None and status.sequence == sequence and status.outcome == "timeout":
+            self._record_failure("refresh", "round_collection_timeout")
 
     def submit_cycle(self, request: CycleRequest) -> LatestWinsOffer:
         with self._lock:

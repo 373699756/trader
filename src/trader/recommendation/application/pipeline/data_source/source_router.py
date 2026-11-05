@@ -287,8 +287,9 @@ class MarketInputCoordinator(DataRefreshPort):
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             reason = _failure_code(exc)
             with self._lock:
-                repeated = reason.startswith("history_preload_") and reason == self._last_preload_failure
-                self._last_preload_failure = reason if reason.startswith("history_preload_") else None
+                history_failure = reason.startswith(("history_", "sqlite_publication_"))
+                repeated = history_failure and reason == self._last_preload_failure
+                self._last_preload_failure = reason if history_failure else None
             frames = traceback.extract_tb(exc.__traceback__, limit=-1)
             if frames and not repeated:
                 _LOGGER.warning(
@@ -787,13 +788,19 @@ class MarketInputCoordinator(DataRefreshPort):
         candidate_plans = self._candidate_plans
         if not market_features or candidate_plans is None or issuer_eligibility is None:
             raise DataRefreshUnavailableError("market_snapshot_unavailable")
+        if request.phase == "close_fallback":
+            requested = candidate_plans.strategy_codes(request.strategy)
+            candidate_features = ()
+            transient_invalid = HasTransientCandidateGap(candidate_plans.plans[request.strategy])
+        else:
+            transient_invalid = self._strategy_preselection_transient_invalid[request.strategy]
         return _SharedInputBatch(
             market_features,
             requested,
             candidate_features,
             candidate_plans.plans[request.strategy].stage_counts,
             len(candidate_features),
-            self._strategy_preselection_transient_invalid[request.strategy],
+            transient_invalid,
             issuer_eligibility,
             input_stages,
             candidate_stage,

@@ -181,6 +181,35 @@ def test_preload_errors_are_reported_without_retrying_for_any_profile(failure):
     assert first.status().maintenance_reason == second.status().maintenance_reason == failure.__name__
 
 
+@pytest.mark.parametrize("cause,expected", (
+    ("sqlite_publication_checksum_mismatch", "sqlite_publication_checksum_mismatch"),
+    ("sqlite_publication_file_missing", "sqlite_publication_file_missing"),
+    ("history_snapshot_partition_invalid", "history_snapshot_partition_invalid"),
+    ("private_supplier_payload", "RuntimeError"),
+))
+def test_preload_retains_only_declared_failure_codes_from_the_cause_chain(cause, expected, caplog):
+    class FailedHistory(HistoryInput):
+        def iter_windows(self, manifest, *, sessions, check=None):
+            try:
+                raise ValueError(cause)
+            except ValueError as exc:
+                raise RuntimeError("history_control_invalid" if expected != "RuntimeError" else "private_wrapper") from exc
+
+    source = FailedHistory(252, 0, ("600001",))
+    owner = SharedHistoryProjection(
+        ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0,
+        settings=HistoryPreloadSettings(warn_after_seconds=10),
+    )
+    first, second = _cache(source, 251, owner), _cache(source, 61, owner)
+    first.initialize(cancelled=lambda: False)
+    second.initialize(cancelled=lambda: False)
+
+    assert first.status().maintenance_reason == second.status().maintenance_reason == expected
+    assert expected in caplog.text
+    assert "private_supplier_payload" not in caplog.text and "private_wrapper" not in caplog.text
+    assert sum("历史预读失败" in item.getMessage() for item in caplog.records) == 1
+
+
 def test_cancellation_after_warning_still_stops_without_partial_projection(caplog):
     ticks = [0.0]
     cancelled = [False]
