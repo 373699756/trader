@@ -126,11 +126,11 @@ flowchart TD
 
 ### 5.1 跨业务供数与消费者核对
 
-核对基线为已推送`17c09942`。下表把下载的物理来源、不可变端口、荐股及训练消费者连起来；各业务字典仍由原owner维护，避免重复定义列、默认值或公式。d第8–9章目前明确是范围和计划，尚未提供全部SQL列与download.json叶子说明；不能将此表当作B字典已经收齐。
+核对基线为已推送`17c09942`，本次文档复核证据截止`9df6b2ac`。下表把下载的物理来源、不可变端口、荐股及训练消费者连起来；各业务字典仍由原owner维护。旧`docs/d_下载设计.md`已有DB01–DB32及样本/研究扩展的逐列字典：阶段288的`758cb500`在2026-10-29交付当时schema2的35表211字段，阶段318的`138a0de8`于2026-11-01将公司正式/采集协议更新为schema3；不能把211字段计数套给schema3。新d第8–9章列的是迁入与补齐范围，不能据其篇幅判断B从未交付。当前应继承旧字典，核对后续schema、配置叶子及消费者的增量差集，再迁入新稿；字典存在不代表全部真实字段已验收。
 
 | 数据或资源 | 唯一来源、类型与消费者 | 边界及证据归属 |
 | --- | --- | --- |
-| 证券/ST/日历 | reference的company_st.sqlite3 → PreparedReference/HistoryStEvidence → 发布参考；A的PublishedReferences/StaticMarketCache与B的PrepareReference使用明确资格，训练按发布总体/日历读取 | ST/unknown先筛，原检查日与本次观察时点分开；d2.3、c2/16.2；A340、B333的功能证据不等于实际整链采用 |
+| 证券/ST/日历 | reference的company_st.sqlite3 → PreparedReference/HistoryStEvidence → 发布参考；A的PublishedReferences/StaticMarketCache与B的PrepareReference使用明确资格，训练按发布总体/日历读取 | ST/unknown先筛，原检查日与本次观察时点分开；d2.3、c2/16.2；A340、B323（bdd65998）的功能证据不等于实际整链采用 |
 | 历史发布/年度价格 | catalog与prices_<year>.sqlite3 → ReadPublishedHistoryUseCase、HistoryTrainingRow/Point；A共享预载、C共享历史fanout | 固定snapshot/revision/sequence，取消与只读名单在解码前生效；不另建子集manifest；d3/8、e3.1及3.4 |
 | 独立短窗 | daily_window.sqlite3 → 同一历史只读端口的短窗adapter → A启动历史投影 | 原始/前复权配对、成员和发布凭据独立；不借完整历史断点，不在运行期补历史；d4/6.1 |
 | 行业 | industry.sqlite3 → CurrentIndustryCache/PublishedReferences → A展示行业与模型行业、C历史行业路由 | 官方证据保留来源/摘要/披露及生效区间、分类与映射；当前展示不能倒填历史行业；d2.5、c7及e3.1 |
@@ -143,7 +143,7 @@ flowchart TD
 
 量额追链结果：`tencent_daily._row`将日线第5位成交手数乘100成为股数、第8位万元金额乘10000成为元；`tencent_qfq_supplier._parse_side`按raw/qfq分支原样传量额，`price_columns._side_values`写各分支列，不使用价格复权比去乘成交额。训练SQL明确取`daily_price_revision.qfq_amount`与`raw_volume`，`history_prices._decode_training_row`生成`HistoryTrainingPoint`；`AlignTrainingRows`按市场日历区分停牌估值与真正缺行，`sample_builder`再用于20日金额、V1因子及V5量额通道。因此qfq_amount是qfq分支随价格一起取得的实际金额输入，不是数据库内重新计算的复权名义成交额；不能仅凭字段名把它等同raw_amount或改模型公式。这里确认当前代码来源和换算，供应商真实历史同口径/修订一致性仍由B审计，不替代全部来源事实核验。
 
-字典交接还须有B下载全部表列/索引/codec、download.json逐叶消费者及字段真实读回证据；C的样本/工件/16项每机器资源字段已有说明，仍须以真实封存身份验证数值和释放。A已将可核对部分与消费者连通，缺项只保留原341/332及C阶段，不把B/C现场未提交改动或旧报告当作交付。
+字典交接继续沿原341：将B旧稿中已交付的表列/索引/codec及company配置说明与当前已提交定义做差集，补齐318之后的变化及新稿遗漏；download.json是否覆盖全部叶子须逐键核对，不笼统记为从未说明。真实字段读回与业务覆盖仍归332验收。C的样本/工件/16项每机器资源字段已有说明，数值和释放按相应封存身份核验。现场未提交内容不据此升级为已交付或已验收。
 
 ## 6. HDD 与 SSD 怎样分别设计
 
@@ -261,7 +261,7 @@ flowchart TD
 | `pipeline.long_quote_max_age_seconds` | Long 实时报价最大来源年龄；按source_time计算，超过后保留报价并标记过期降级 | `30` | 正数/秒；必填，自定义scheduler须补齐 |
 | `pipeline.history_preload.warn_after_seconds` | 历史预载慢提示期限 | `300` | 数值/秒 |
 | `pipeline.company_preload.timeout_seconds` | 公司快照完整预载总期限 | `30` | 有限数值/秒，0.001–3600；不逐尝试重置 |
-| `pipeline.company_preload.publication_attempts` | 发布身份漂移时最多完整重读次数 | `3` | 严格整数，1–10；不是所有异常都重试 |
+| `pipeline.company_preload.publication_attempts` | 完整预载尝试总次数，包含首次 | `3` | 严格整数，1–10；默认首次加最多2次发布身份漂移重读，一般异常不重试；全部尝试共用总deadline |
 | `pipeline.cadence_seconds.full_market.before_close` | 任务 full_market 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
 | `pipeline.cadence_seconds.candidate_quotes.before_close` | 任务 candidate_quotes 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
 | `pipeline.cadence_seconds.topk_quotes.before_close` | 任务 topk_quotes 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
@@ -529,7 +529,7 @@ Long 实时报价按来源时间判断年龄，超过scheduler配置的上限时
 
 `profile` 只允许一个已启动的 v1/v2/v3/v5，`strategy` 只允许 tomorrow/d25/long。内部模型与完整供应商载荷不得直接序列化，adapter 用公开白名单。
 
-每个策略、每个档位分别保留排名最高的6只股票，API、SSE、页面及冻结读取保持同一组代码和排名；风险、净效用、动作与复核信息随股票展示，不能沿用旧“只显示正式推荐”的投影删除前6。此处按用户最新明确要求，具体见[h的R08](h_需求文档.md#2-荐股需求)，不从legacy重新增加规则。
+Tomorrow/D25×V1/V2/V3/V5八个评分组合分别保留排名最高的6只股票，API、SSE、页面及冻结读取保持已固定席位的同一组代码和排名；推荐、关注、回避及复核结论随股票展示，不能用旧“只显示正式推荐”的投影隐藏已固定席位。选席前的输入、模型、成本及板限合同按[h的时间线与R08](h_需求文档.md#1-依据和冲突处理)核对，不从“保留6只”推导其全部撤销。Long完整名单独立更新，不进入这八组排名、发布屏障或冻结。
 
 ### 8.3 一次替换与恢复
 
