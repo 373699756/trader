@@ -130,7 +130,7 @@ def test_old_publication_is_rejected_after_each_identity_change(tmp_path, change
     manifest = primary.manifest()
     assert manifest is not None
     if change == "remove":
-        primary.retain_codes(frozenset({"600002"}))
+        primary.select_published_codes(peer, frozenset({"600002"}))
     else:
         calendar = _DAYS if change == "source" else (*_DAYS, _DAYS[-1] + timedelta(days=1))
         primary.replace_paired_windows(
@@ -179,21 +179,22 @@ def test_cold_manifest_rejects_unpublished_or_corrupt_metadata(tmp_path, mutatio
         tuple(fresh.iter_windows(manifest, sessions=len(manifest.calendar_dates)))
 
 
-def test_removing_last_code_clears_only_its_profile_publication(tmp_path):
+def test_empty_population_preserves_paired_facts_and_completion(tmp_path):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
     peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     window = _window("600001")
     primary.replace_paired_windows(
         peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
     )
-    peer_manifest = peer.manifest()
-    primary.retain_codes(frozenset())
+    primary.select_published_codes(peer, frozenset())
     assert primary.manifest() is None
-    assert peer.manifest() == peer_manifest
-    assert peer.read_code(window.code) == window
-    peer.retain_codes(frozenset())
     assert peer.manifest() is None
-    assert not primary.read_code(window.code).cells
+    assert peer.read_code(window.code) == window
+    assert primary.read_code(window.code) == window
+    assert primary.completed(_DAYS[-1], window.code, "fixture")
+    assert primary.codes() == peer.codes() == frozenset()
+    assert primary.select_published_codes(peer, frozenset({window.code})) == ((primary.path.name,), 0)
+    assert primary.codes() == peer.codes() == frozenset({window.code})
 
 
 def test_obsolete_schema_is_rejected_without_rewriting_it(tmp_path):
@@ -240,3 +241,59 @@ def test_unchanged_pair_uses_committed_identity_without_reading_prices(tmp_path,
     assert primary.replace_paired_windows(
         peer, windows, "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1]
     ) == ((), 0)
+
+
+def test_population_change_is_atomic_and_keeps_prices_bindings_and_receipts(tmp_path, monkeypatch):
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
+    windows = (_window("600001"), _window("600002"))
+    primary.replace_paired_windows(peer, windows, "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1])
+    manifests = primary.manifest(), peer.manifest()
+    with SqliteSession(primary.path) as connection:
+        before = tuple(
+            tuple(tuple(row) for row in connection.run(f"SELECT * FROM {table} ORDER BY 1,2"))
+            for table in ("daily_price", "window_binding", "window_completion")
+        )
+    run = SqliteConnection.run
+
+    def interrupted(connection, sql, parameters=()):
+        if sql == "DELETE FROM window_population WHERE profile=?" and parameters == ("v3",):
+            raise sqlite3.OperationalError("fixture_population_interrupted")
+        return run(connection, sql, parameters)
+
+    monkeypatch.setattr(SqliteConnection, "run", interrupted)
+    with pytest.raises(sqlite3.OperationalError, match="fixture_population_interrupted"):
+        primary.select_published_codes(peer, frozenset({"600001"}))
+    monkeypatch.setattr(SqliteConnection, "run", run)
+    assert (primary.manifest(), peer.manifest()) == manifests
+    assert primary.select_published_codes(peer, frozenset({"600001"})) == ((primary.path.name,), 0)
+    assert primary.codes() == peer.codes() == frozenset({"600001"})
+    with pytest.raises(RuntimeError, match="qfq_publication_changed"):
+        primary.read_windows(manifests[0], ("600002",), sessions=len(_DAYS))
+    current = primary.manifest()
+    assert primary.read_windows(current, ("600001", "600002"), sessions=len(_DAYS)) == windows[:1]
+    with SqliteSession(primary.path) as connection:
+        assert tuple(
+            tuple(tuple(row) for row in connection.run(f"SELECT * FROM {table} ORDER BY 1,2"))
+            for table in ("daily_price", "window_binding", "window_completion")
+        ) == before
+
+
+def test_only_current_eligibility_writer_can_add_a_missing_population_declaration(tmp_path):
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
+    windows = (_window("600001"), _window("600002"))
+    primary.replace_paired_windows(peer, windows, "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1])
+    with SqliteSession(primary.path) as connection, SqliteTransaction(connection):
+        connection.run("DROP TABLE window_population")
+    primary.publish_file()
+    before = primary.path.read_bytes()
+    with pytest.raises(RuntimeError, match="qfq_manifest_unavailable"):
+        primary.manifest()
+    assert primary.path.read_bytes() == before
+    primary.select_published_codes(peer, frozenset({"600001"}))
+    assert primary.manifest().universe_codes == peer.manifest().universe_codes == ("600001",)
+    assert primary.completed(_DAYS[-1], "600002", "fixture")
+    assert primary.read_code("600002") == windows[1]
+    with SqliteSession(primary.path) as connection:
+        assert connection.run("PRAGMA user_version").require_one()[0] == 3

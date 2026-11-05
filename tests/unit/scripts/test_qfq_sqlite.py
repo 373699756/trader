@@ -56,6 +56,27 @@ def test_audit_reports_unconfirmed_publication(tmp_path):
     assert report["summary"]["database_not_checkpointed"] == 1
 
 
+def test_audit_separates_published_members_from_retained_window_evidence(tmp_path):
+    from trader.download.domain.price_repair import PriceIssue
+
+    path = tmp_path / "daily_window.sqlite3"
+    _seed(path)
+    primary = SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(path, "v3", sqlite_policy=SqlitePolicyFixture())
+    extra = qfq_window("600002")
+    extra = replace(extra, cells=extra.cells[-251:])
+    days = tuple(cell.trade_date for cell in extra.cells)
+    primary.replace_paired_windows(peer, (extra,), "fixture", QFQ_CONFIGURATION, calendar=days, completed_day=days[-1])
+    primary.record_price_issue(PriceIssue("600002", days[-1:], "fixture_pending"))
+    primary.select_published_codes(peer, frozenset({"600001"}))
+    before = path.read_bytes()
+    report = AuditQfqDatabase(path, sqlite_policy=SqlitePolicyFixture())
+    summary = report["summary"]
+    assert [profile["codes"] for profile in summary["profiles"]] == [1, 1]
+    assert summary["retained_binding_codes"] == 1
+    assert summary["pending_stocks"] == summary["unpublished_pending_stocks"] == 1
+    assert summary["published_pending_stocks"] == 0
+    assert primary.read_code("600002") == extra and path.read_bytes() == before
 
 
 def test_audit_reports_checkpoint_source_conflict(tmp_path):

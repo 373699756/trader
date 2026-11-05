@@ -61,6 +61,10 @@ _SCHEMA = SqliteSchema(
         "CREATE TABLE window_publication(profile TEXT PRIMARY KEY, publication_id TEXT NOT NULL) WITHOUT ROWID",
     ),
 )
+_POPULATION_SQL = (
+    "CREATE TABLE IF NOT EXISTS window_population(profile TEXT NOT NULL, code TEXT NOT NULL, "
+    "PRIMARY KEY(profile,code)) WITHOUT ROWID"
+)
 _REPAIR_SQL = (
     FAILURE_DIAGNOSTICS_SQL,
     PRICE_SOURCE_CHECK_SQL,
@@ -140,6 +144,7 @@ class SQLiteQfqWindowCache:
             self.verify_integrity()
         with closing(self._connection(write=True)) as connection, SqliteTransaction(connection, immediate=True):
             EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
+            connection.run(_POPULATION_SQL)
             for statement in _REPAIR_SQL:
                 connection.run(statement)
             yield connection
@@ -258,7 +263,10 @@ class SQLiteQfqWindowCache:
             if connection is None:
                 return frozenset()
             return frozenset(
-                row[0] for row in connection.run("SELECT code FROM window_binding WHERE profile=?", (self.profile,))
+                row[0] for row in connection.run(
+                    "SELECT code FROM window_binding WHERE profile=? AND code IN "
+                    "(SELECT code FROM window_population WHERE profile=?)", (self.profile, self.profile),
+                )
             )
 
     def completed(self, day: date, code: str, source: str) -> bool:
@@ -376,22 +384,51 @@ class SQLiteQfqWindowCache:
             ).fetchone()
         return str(row[0]) if row else None
 
-    def retain_codes(self, allowed_codes: frozenset[str]) -> tuple[tuple[str, ...], int]:
+    def select_published_codes(
+        self, peer: QfqWindowPort, allowed_codes: frozenset[str]
+    ) -> tuple[tuple[str, ...], int]:
+        """Declare current publication members without deleting retained window facts."""
+        if (
+            not isinstance(peer, SQLiteQfqWindowCache)
+            or self.path != peer.path
+            or {self.profile, peer.profile} != {"v2", "v3"}
+        ):
+            raise ValueError("qfq_pair_layout_invalid")
         for code in allowed_codes:
             _validate_code(code)
-        excluded = self.codes() - allowed_codes
-        if not excluded:
+        changes: list[tuple[SQLiteQfqWindowCache, tuple[str, ...]]] = []
+        with self._read_connection() as connection:
+            if connection is None:
+                return (), 0
+            with SqliteTransaction(connection):
+                declared = connection.run(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='window_population'"
+                ).fetchone() is not None
+                for cache in (self, peer):
+                    desired = tuple(
+                        row[0] for row in connection.run(
+                            "SELECT code FROM window_binding WHERE profile=? ORDER BY code", (cache.profile,),
+                        ) if row[0] in allowed_codes
+                    )
+                    # A missing declaration is initialized only by this writer,
+                    # using the caller's current eligibility, never by a reader.
+                    previous = tuple(
+                        row[0] for row in connection.run(
+                            "SELECT code FROM window_population WHERE profile=? ORDER BY code", (cache.profile,),
+                        )
+                    ) if declared else None
+                    if previous != desired or bool(cache._publication_id(connection)) != bool(desired):
+                        changes.append((cache, desired))
+        if not changes:
             return (), 0
         with self._write_connection() as connection:
-            connection.run_many(
-                "DELETE FROM window_binding WHERE profile=? AND code=?", ((self.profile, code) for code in excluded)
-            )
-            connection.run_many("DELETE FROM window_completion WHERE code=?", ((code,) for code in excluded))
-            deleted = connection.run(
-                "DELETE FROM daily_price WHERE code NOT IN (SELECT code FROM window_binding)"
-            ).rowcount
-            self._publish_identity(connection)
-        return (self.path.name,), deleted
+            for cache, desired in changes:
+                connection.run("DELETE FROM window_population WHERE profile=?", (cache.profile,))
+                connection.run_many(
+                    "INSERT INTO window_population VALUES(?,?)", ((cache.profile, code) for code in desired),
+                )
+                cache._publish_identity(connection)
+        return (self.path.name,), 0
 
     def _matches_windows(
         self,
@@ -430,6 +467,10 @@ class SQLiteQfqWindowCache:
                             EncodeDate(days[0]),
                             EncodeDate(days[-1]),
                         ):
+                            return False
+                        if connection.run(
+                            "SELECT 1 FROM window_population WHERE profile=? AND code=?", (cache.profile, code),
+                        ).fetchone() is None:
                             return False
                 if completed_day is not None:
                     for code, _rows in targets:
@@ -547,6 +588,10 @@ class SQLiteQfqWindowCache:
                                 "INSERT OR REPLACE INTO window_binding VALUES (?,?,?,?,?,?)",
                                 (cache.profile, code, *identity),
                             )
+                        member = connection.run(
+                            "INSERT OR IGNORE INTO window_population VALUES(?,?)", (cache.profile, code),
+                        )
+                        changed = changed or member.rowcount > 0
                     if unresolved:
                         connection.run("DELETE FROM window_completion WHERE code=?", (code,))
                     elif completed_day is not None:
@@ -603,8 +648,9 @@ class SQLiteQfqWindowCache:
         identities = tuple(
             (row[0], DecodeHash(row[1]), row[2], DecodeDate(row[3]).isoformat(), DecodeDate(row[4]).isoformat())
             for row in connection.run(
-                "SELECT code,content_hash,source,start_date,end_date FROM window_binding WHERE profile=? ORDER BY code",
-                (self.profile,),
+                "SELECT code,content_hash,source,start_date,end_date FROM window_binding WHERE profile=? "
+                "AND code IN (SELECT code FROM window_population WHERE profile=?) ORDER BY code",
+                (self.profile, self.profile),
             )
         )
         calendar = tuple(
@@ -630,7 +676,10 @@ class SQLiteQfqWindowCache:
         )
 
     def _publish_identity(self, connection: SqliteConnection) -> None:
-        if connection.run("SELECT 1 FROM window_binding WHERE profile=? LIMIT 1", (self.profile,)).fetchone() is None:
+        if connection.run(
+            "SELECT 1 FROM window_binding WHERE profile=? AND code IN "
+            "(SELECT code FROM window_population WHERE profile=?) LIMIT 1", (self.profile, self.profile),
+        ).fetchone() is None:
             connection.run("DELETE FROM window_publication WHERE profile=?", (self.profile,))
         else:
             connection.run(

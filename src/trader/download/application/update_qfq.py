@@ -95,7 +95,9 @@ class QfqWindowPort(Protocol):
 
     def inspect_windows(self, allowed_codes: frozenset[str]) -> QfqWindowSnapshot: ...
 
-    def retain_codes(self, allowed_codes: frozenset[str]) -> tuple[tuple[str, ...], int]: ...
+    def select_published_codes(
+        self, peer: QfqWindowPort, allowed_codes: frozenset[str]
+    ) -> tuple[tuple[str, ...], int]: ...
 
 
 class QfqSupplierPort(Protocol):
@@ -260,10 +262,9 @@ class UpdateQfqWindows:
             lambda: self.monotonic() - started,
         )
         allowed_codes = frozenset(security.code for security in context.universe)
-        for cache in (self.v2, self.v3):
-            files, deleted_rows = cache.retain_codes(allowed_codes)
-            progress.changed.update(files)
-            progress.rows += deleted_rows
+        files, changed_rows = self.v2.select_published_codes(self.v3, allowed_codes)
+        progress.changed.update(files)
+        progress.rows += changed_rows
         inspection_started = self.monotonic()
         progress.publish("本地窗口检查", "开始 | 核对两档窗口日期与来源")
         v2_snapshot = self.v2.inspect_windows(allowed_codes)

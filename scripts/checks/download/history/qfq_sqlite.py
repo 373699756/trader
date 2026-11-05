@@ -50,6 +50,10 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
     ):
         CheckSqliteIntegrity(connection)
         mode = str(connection.run("PRAGMA journal_mode").require_one()[0]).lower()
+        retained_codes = int(connection.run(
+            "SELECT COUNT(DISTINCT b.code) FROM window_binding b WHERE NOT EXISTS "
+            "(SELECT 1 FROM window_population p WHERE p.profile=b.profile AND p.code=b.code)"
+        ).require_one()[0])
         missing = int(
             connection.run(
                 "SELECT COUNT(*) FROM window_binding a LEFT JOIN window_binding b ON a.code=b.code AND a.profile<>b.profile "
@@ -98,6 +102,8 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
     if tuple(cache.manifest() for cache in caches) != before:
         failures.append("publication_changed_during_audit")
     issues = caches[0].price_issues()
+    published_codes = frozenset(code for manifest in before if manifest is not None for code in manifest.universe_codes)
+    published_pending = sum(issue.code in published_codes for issue in issues)
     if issues != issues_before:
         failures.append("price_issues_changed_during_audit")
     status = "failed" if failures else "degraded" if issues or missing or unpaired or unconfirmed or mode != "wal" else "passed"
@@ -115,6 +121,9 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
             "database_not_checkpointed": unconfirmed,
             "pending_stocks": len(issues),
             "pending_days": sum(len(issue.dates) for issue in issues),
+            "published_pending_stocks": published_pending,
+            "unpublished_pending_stocks": len(issues) - published_pending,
+            "retained_binding_codes": retained_codes,
             "latest_without_prices": latest_without_prices,
             "failures": tuple(sorted(set(failures))),
         },
