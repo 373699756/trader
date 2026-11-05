@@ -359,6 +359,7 @@ def _service(
         MarketDataHealthDependencies(quotes, history, research, intraday, references, eligibility),
         wall_clock=wall_clock,
     )
+    static_cache = kwargs.pop("static_cache", StaticMarketCache())
     assert kwargs == {}
     service = MarketFeatureService(
         MarketFeatureDependencies(
@@ -373,7 +374,7 @@ def _service(
             monotonic,
             StaticMarketPipeline(
                 eligibility,
-                cache=StaticMarketCache(),
+                cache=static_cache,
                 monotonic=monotonic,
                 historical_st_eligibility=historical_st_source,
             ),

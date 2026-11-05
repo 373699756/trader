@@ -63,6 +63,53 @@ def test_batched_reads_scan_publication_contents_once(tmp_path, monkeypatch):
     assert SQLiteQfqWindowCache(primary.path, "v2", sqlite_policy=SqlitePolicyFixture()).manifest() == manifest
 
 
+@pytest.mark.parametrize("selected", (frozenset(), frozenset({"600002", "600999"})))
+def test_selected_window_stream_reads_only_requested_prices_and_preserves_publication(tmp_path, monkeypatch, selected):
+    import trader.download.infra.qfq_sqlite as module
+
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
+    windows = tuple(_window(f"600{number:03d}") for number in range(3))
+    primary.replace_paired_windows(peer, windows, "fixture", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1])
+    manifest = primary.manifest()
+    read_batches, decoded = [], []
+    read = primary._batch_rows
+    decode = module.PriceCellFromColumns
+
+    def read_selected(connection, codes):
+        read_batches.append(tuple(codes))
+        assert set(codes) <= selected
+        return read(connection, codes)
+
+    def decode_selected(code, *args, **kwargs):
+        decoded.append(code)
+        assert code in selected
+        return decode(code, *args, **kwargs)
+
+    monkeypatch.setattr(primary, "_batch_rows", read_selected)
+    monkeypatch.setattr(module, "PriceCellFromColumns", decode_selected)
+    assert tuple(primary.iter_windows(manifest, sessions=len(_DAYS), codes=selected)) == tuple(w for w in windows if w.code in selected)
+    assert read_batches == ([("600002",)] if selected else [])
+    assert len(decoded) == (len(_DAYS) if selected else 0)
+    assert primary.manifest() == manifest
+
+
+def test_empty_window_selection_still_checks_cancellation_and_original_publication(tmp_path):
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
+    peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
+    primary.replace_paired_windows(peer, (_window("600001"),), "old", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1])
+    manifest = primary.manifest()
+
+    def cancelled():
+        raise RuntimeError("history_preload_cancelled")
+
+    with pytest.raises(RuntimeError, match="history_preload_cancelled"):
+        tuple(primary.iter_windows(manifest, sessions=len(_DAYS), codes=frozenset(), check=cancelled))
+    primary.replace_paired_windows(peer, (_window("600001", price=11.0),), "new", QFQ_CONFIGURATION, calendar=_DAYS, completed_day=_DAYS[-1])
+    with pytest.raises(RuntimeError, match="qfq_publication_changed"):
+        tuple(primary.iter_windows(manifest, sessions=len(_DAYS), codes=frozenset()))
+
+
 def test_publication_failure_rolls_back_prices_both_profiles_and_checkpoint(tmp_path, monkeypatch):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
     peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())

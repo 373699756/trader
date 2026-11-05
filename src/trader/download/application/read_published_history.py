@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
@@ -28,6 +28,7 @@ class PublishedHistoryReadPort(Protocol):
         manifest: PublishedHistoryManifest,
         *,
         sessions: int,
+        codes: frozenset[str] | None = None,
         check: Callable[[], None] | None = None,
     ) -> Iterator[PublishedHistoryWindow]: ...
 
@@ -64,9 +65,10 @@ class ReadPublishedHistoryUseCase:
         manifest: PublishedHistoryManifest,
         *,
         sessions: int,
+        codes: frozenset[str] | None = None,
         check: Callable[[], None] | None = None,
-    ) -> Iterator[PublishedHistoryWindow]:
-        return self.publication.iter_windows(manifest, sessions=sessions, check=check)
+    ) -> Generator[PublishedHistoryWindow, None, None]:
+        yield from self.publication.iter_windows(manifest, sessions=sessions, codes=codes, check=check)
 
     def read_windows(
         self,

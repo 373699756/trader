@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import os
+import sqlite3
 from collections import defaultdict
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -357,6 +358,65 @@ def test_published_daily_projection_preserves_facts_without_revision_decode(tmp_
     assert tuple(cell for cell in streamed if cell.code == "600001") == expected
     assert len(streamed) == len(dates) * 2
     assert prefetched == []
+
+
+@pytest.mark.parametrize("selected_count", (0, 1, 501))
+def test_selected_published_stream_filters_before_decode_and_opens_each_year_once(tmp_path, monkeypatch, selected_count):
+    root = tmp_path / "history"
+    days = (date(2026, 12, 31), date(2027, 1, 1))
+    codes = tuple(f"600{number:03d}" for number in range(503))
+    snapshot = _build_snapshot(root, tuple(_revision(code, day) for day in days for code in codes))
+    reader = HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture())
+    selected = frozenset(codes[:selected_count])
+    connections, decoded = [], []
+    open_connection = HistoryPricePartition._read_connection
+    decode = partition_module.PublishedCellFromPriceColumns
+
+    def opened(partition):
+        connections.append(partition._calendar_year)
+        return open_connection(partition)
+
+    def decode_selected(row):
+        assert row[1] in selected
+        decoded.append((row[1], row[0]))
+        return decode(row)
+
+    monkeypatch.setattr(HistoryPricePartition, "_read_connection", opened)
+    monkeypatch.setattr(partition_module, "PublishedCellFromPriceColumns", decode_selected)
+    result = tuple(reader.iter_published_range_by_code(days[0], days[-1], snapshot, codes=selected))
+    assert tuple((row.code, row.trade_date) for row in result) == tuple((code, day) for code in sorted(selected) for day in days)
+    assert len(decoded) == selected_count * len(days)
+    assert connections == ([2026, 2027] if selected else [])
+
+
+def test_selected_published_stream_cancellation_closes_open_connections(tmp_path, monkeypatch):
+    root = tmp_path / "history"
+    days = (date(2026, 12, 31), date(2027, 1, 1))
+    snapshot = _build_snapshot(root, tuple(_revision("600001", day) for day in days))
+    reader = HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture())
+    connections = []
+    cancelled = False
+    original = HistoryPricePartition._read_connection
+
+    def opened(partition):
+        connection = original(partition)
+        connections.append(connection)
+        return connection
+
+    def check():
+        if cancelled:
+            raise RuntimeError("history_preload_cancelled")
+
+    monkeypatch.setattr(HistoryPricePartition, "_read_connection", opened)
+    stream = reader.iter_published_range_by_code(days[0], days[-1], snapshot, codes=frozenset({"600001"}), check=check)
+    assert next(stream).trade_date == days[0]
+    cancelled = True
+    with pytest.raises(RuntimeError, match="history_preload_cancelled"):
+        tuple(stream)
+    assert len(connections) == 2
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.run("SELECT 1")
 
 
 def test_published_read_skips_payload_revalidation_but_explicit_audit_rejects_corruption(tmp_path):

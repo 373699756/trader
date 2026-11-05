@@ -256,6 +256,29 @@ def test_old_published_manifest_remains_readable_after_published_history_advance
     assert reader.manifest() == current
 
 
+@pytest.mark.parametrize("codes", (frozenset(), frozenset({"600999"}), frozenset({"600001", "600999"})))
+def test_filtered_snapshot_keeps_original_manifest_and_skips_empty_price_reads(tmp_path, prepared_history, monkeypatch, codes):
+    root = tmp_path / "history"
+    days = tuple(date(2026, 9, 8) + timedelta(days=i) for i in range(3))
+    prepared_history(root, days)
+    source = SQLitePublishedHistorySnapshot(root, sqlite_policy=SqlitePolicyFixture())
+    manifest = source.manifest()
+    original = source._reader.iter_published_range_by_code
+    selected = codes.intersection(manifest.universe_codes)
+    calls = []
+
+    def read_selected(*args, **kwargs):
+        assert kwargs["codes"] == selected
+        calls.append(kwargs["codes"])
+        yield from original(*args, **kwargs)
+
+    monkeypatch.setattr(source._reader, "iter_published_range_by_code", read_selected)
+    rows = tuple(source.iter_windows(manifest, sessions=3, codes=codes))
+    assert tuple(row.code for row in rows) == tuple(sorted(selected))
+    assert calls == ([selected] if selected else [])
+    assert source.manifest() == manifest
+
+
 def test_online_alignment_refuses_a_wholly_missing_source_day(tmp_path, prepared_history, monkeypatch):
     root = tmp_path / "history"
     days = tuple(date(2026, 9, 8) + timedelta(days=i) for i in range(3))
@@ -381,10 +404,10 @@ def test_history_consumers_do_not_wait_for_background_projection(
     original_windows = short.iter_windows
     entered, release = threading.Event(), threading.Event()
 
-    def blocked_windows(manifest, *, sessions, check=None):
+    def blocked_windows(manifest, *, sessions, codes=None, check=None):
         entered.set()
         assert release.wait(5)
-        yield from original_windows(manifest, sessions=sessions, check=check)
+        yield from original_windows(manifest, sessions=sessions, codes=codes, check=check)
 
     monkeypatch.setattr(short, "iter_windows", blocked_windows)
     with ThreadPoolExecutor(max_workers=2) as pool:

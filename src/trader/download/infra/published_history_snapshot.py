@@ -11,7 +11,7 @@ from itertools import groupby
 from pathlib import Path
 
 from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
-from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
+from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow, ValidatePublishedHistoryCodes
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
 from trader.download.infra.history_reference_index import ReferenceFileStamp
 from trader.download.infra.history_snapshot_inspection import (
@@ -99,26 +99,35 @@ class SQLitePublishedHistorySnapshot:
         manifest: PublishedHistoryManifest,
         *,
         sessions: int,
+        codes: frozenset[str] | None = None,
         check: Callable[[], None] | None = None,
     ) -> Iterator[PublishedHistoryWindow]:
+        ValidatePublishedHistoryCodes(codes)
         if check is not None:
             check()
         history = self._matching_snapshot(manifest)
         dates = _session_dates(manifest, sessions)
-        allowed_codes = frozenset(manifest.universe_codes)
+        allowed_codes = frozenset(manifest.universe_codes) if codes is None else codes.intersection(manifest.universe_codes)
+        if not allowed_codes:
+            self._matching_snapshot(manifest)
+            return
         seen_dates: set[date] = set()
+        cells = self._reader.iter_published_range_by_code(
+            dates[0], dates[-1], history.snapshot, codes=allowed_codes if codes is not None else None, check=check
+        )
         try:
-            cells = self._reader.iter_published_range_by_code(dates[0], dates[-1], history.snapshot, check=check)
             for code, group in groupby(cells, key=lambda row: row.code):
                 if code in allowed_codes:
                     window = PublishedHistoryWindow(code, tuple(group))
                     seen_dates.update(cell.trade_date for cell in window.cells)
                     yield window
-            if not seen_dates or any(day >= min(seen_dates) and day not in seen_dates for day in dates):
+            if codes is None and (not seen_dates or any(day >= min(seen_dates) and day not in seen_dates for day in dates)):
                 raise PublishedHistoryReadError("history_alignment_source_day_missing")
             self._matching_snapshot(manifest)
         except (HistorySnapshotReadError, OSError, ValueError) as exc:
             raise PublishedHistoryReadError("history_snapshot_partition_invalid") from exc
+        finally:
+            cells.close()
 
     def read_windows(
         self,

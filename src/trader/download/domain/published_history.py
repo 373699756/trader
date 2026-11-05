@@ -168,10 +168,20 @@ class PublishedHistoryWindow:
         object.__setattr__(self, "cells", cells)
 
 
+def ValidatePublishedHistoryCodes(codes: frozenset[str] | None) -> None:
+    """None requests the full publication; an empty immutable set requests no prices."""
+    if codes is not None and (
+        type(codes) is not frozenset
+        or any(type(code) is not str or len(code) != 6 or not code.isascii() or not code.isdigit() for code in codes)
+    ):
+        raise ValueError("published_history_codes_invalid")
+
+
 __all__ = [
     "PublishedHistoryCell",
     "PublishedHistoryManifest",
     "PublishedHistorySide",
     "PublishedHistoryWindow",
     "ProjectHistoryCell",
+    "ValidatePublishedHistoryCodes",
 ]

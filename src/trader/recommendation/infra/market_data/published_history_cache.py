@@ -160,8 +160,8 @@ class PublishedHistoryCache:
         with self._lock:
             self._preview_context = context
 
-    def initialize(self, *, cancelled: Callable[[], bool]) -> None:
-        self._projection_owner.initialize(cancelled)
+    def initialize(self, *, cancelled: Callable[[], bool], codes: frozenset[str] | None = None) -> None:
+        self._projection_owner.initialize(cancelled, codes=codes)
 
     def initialize_outcome_projection(self) -> None:
         if self._outcome_history is None or self._outcome_history is self._history:

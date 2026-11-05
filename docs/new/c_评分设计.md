@@ -4,7 +4,7 @@
 
 本篇的轮次和评分规则是本次规划要保留的合同。第16章已核对A的当前配置、因子、评分/风险/六席、推荐持久化和缓存消费者；下载完整物理字典仍归B，训练字典归C。源码及功能核对不代表真实资料覆盖、收益或性能验收。
 
-阶段340已切换A可独立完成的ST请求门：行业投影只采用ST明确合格者；静态资格先于公司预载，未知/过期资格不派发定向报价，新增ST/退市报价在历史、研究和分钟请求前排除并计入采集阶段的拒绝原因。四档仍复用同一原始报价切片，一个分钟等待者超时不取消其他档位的共享Future，Long走独立只读报价入口。启动历史流仍按原发布名单扫描；用户已指定由B补只读筛选接口，A随后沿340接入本次资格。因此下文的完整启动历史过滤仍是待完成合同，不能据本批请求门或功能回归签整组完成。
+阶段340已接通ST请求门及启动历史名单：行业投影只采用ST明确合格者；静态资格先于历史和公司预载，MarketFeatureService把StaticMarketCache的同一不可变合格代码集合显式传入共享历史owner，ST/unknown不构造历史价格行，空名单不打开个股价格查询。四档同名单仅一次共享扫描，名单变化明确拒绝复用，保留完整manifest/发布身份及正式收益历史读取；取消后关闭迭代器及其年度连接。未知/过期资格不派发定向报价，新增ST/退市报价在历史、研究和分钟请求前排除并计入采集阶段的拒绝原因。四档仍复用同一原始报价切片，一个分钟等待者超时不取消其他档位的共享Future，Long走独立只读报价入口。上述为代码及功能合同，真实服务采用和完整性能另验。
 
 ## 1. 一轮怎样开始和结束
 
@@ -1052,7 +1052,7 @@ V5少于六个推荐须取该决策真实各层计数与首阻断；源码核对
 
 | 唯一owner/缓存 | 命中必须相同 | 必须失效/隔离；年龄与容量 |
 | --- | --- | --- |
-| `StaticMarketCache` | StaticEligibilityInputs：完整reference、historical_st不可变快照、blacklist frozenset | 参考/历史ST/黑名单改变重建；snapshot带原来源时点。由组合根共享并通过reserve记账，不在轮内重读库；340历史筛选接线仍待B |
+| `StaticMarketCache` | StaticEligibilityInputs：完整reference、historical_st不可变快照、blacklist frozenset | 参考/历史ST/黑名单改变重建；snapshot带原来源时点。由组合根共享并通过reserve记账，不在轮内重读库；初始化后的eligible_codes显式约束共享历史预载，无合格代码时零个股读 |
 | `FeatureBuilder`的quote_factor_inputs | 股票/观察日、辅助权重policy hash、schema；并复核真实_QuoteFactorInputs及FactorHistory等值 | 价/高低/涨幅/量/额/振幅/限幅事实、历史修订或policy变则重算；仅接收时间/模型长窗列变不重算共同基础量。并发coalesce返回后再次核实事实，不能借latest槽消费别人新输入 |
 | `BuildCrossSectionFeatures` | 全总体代码/顺序、行业/涨速/涨幅/来源日期、所有实际历史基础量、data_version | 成员、实际值/缺失集合或版本变化失效；接收时间/模型专用值不影响算术身份。定向请求投影完整reference，不重算小样本分母；受market_cross_section容量/组预算约束 |
 | 板内cross-section | board、merge_epoch、交易日、phase、data/schema版本、reference_hash；population_version绑定回退日/年龄 | 不同板、阶段、总体、窗口/批次隔离；固定参照可对不同请求子集投影。当前有效样本不足100才考虑≤5交易日旧参照，过龄为stale，不能当当前齐备 |

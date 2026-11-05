@@ -123,7 +123,8 @@ class MarketFeatureService:
         self._static_pipeline.initialize(self.references.static_reference(), observed_at)
         if cancelled():
             return
-        self.history.initialize(cancelled=cancelled)
+        _, history_codes, _, _ = self._static_pipeline.observe(observed_at)
+        self.history.initialize(cancelled=cancelled, codes=history_codes)
         if cancelled() or self.history.status().maintenance_state in {"failed", "unavailable"}:
             return
         self.history.record_maintenance("loading", stage="reading_company_inputs")

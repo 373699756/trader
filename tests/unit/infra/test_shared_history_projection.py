@@ -114,12 +114,12 @@ def test_slow_preload_warns_once_and_finishes_without_rescanning(slow_phase, cap
     ticks = [0.0]
 
     class SlowHistory(HistoryInput):
-        def iter_windows(self, manifest, *, sessions, check=None):
+        def iter_windows(self, manifest, *, sessions, codes=None, check=None):
             if slow_phase == "reading":
                 ticks[0] = 301.0
             assert check is not None
             check()
-            yield from super().iter_windows(manifest, sessions=sessions, check=check)
+            yield from super().iter_windows(manifest, sessions=sessions, codes=codes, check=check)
             ticks[0] = 602.0 if slow_phase == "reading" else 0.0
 
     def reserve_shared(_size):
@@ -172,7 +172,7 @@ def test_preload_errors_are_reported_without_retrying_for_any_profile(failure):
     class TransientHistory(HistoryInput):
         attempts = 0
 
-        def iter_windows(self, manifest, *, sessions, check=None):
+        def iter_windows(self, manifest, *, sessions, codes=None, check=None):
             self.attempts += 1
             raise failure("invalid_history")
 
@@ -197,7 +197,7 @@ def test_preload_errors_are_reported_without_retrying_for_any_profile(failure):
 ))
 def test_preload_retains_only_declared_failure_codes_from_the_cause_chain(cause, expected, caplog):
     class FailedHistory(HistoryInput):
-        def iter_windows(self, manifest, *, sessions, check=None):
+        def iter_windows(self, manifest, *, sessions, codes=None, check=None):
             try:
                 raise ValueError(cause)
             except ValueError as exc:
@@ -223,12 +223,12 @@ def test_cancellation_after_warning_still_stops_without_partial_projection(caplo
     cancelled = [False]
 
     class SlowHistory(HistoryInput):
-        def iter_windows(self, manifest, *, sessions, check=None):
+        def iter_windows(self, manifest, *, sessions, codes=None, check=None):
             ticks[0] = 4
             assert check is not None
             check()
             cancelled[0] = True
-            yield from super().iter_windows(manifest, sessions=sessions, check=check)
+            yield from super().iter_windows(manifest, sessions=sessions, codes=codes, check=check)
 
     source = SlowHistory(252, 0, ("600001",))
     owner = SharedHistoryProjection(
@@ -241,6 +241,33 @@ def test_cancellation_after_warning_still_stops_without_partial_projection(caplo
     assert not first.entries() and not second.entries()
     assert first.status().maintenance_reason == second.status().maintenance_reason == "history_preload_cancelled"
     assert "4.000 秒" in caplog.text and "继续读取" in caplog.text
+
+
+def test_filtered_preload_cancellation_closes_iterator_and_does_not_publish_partial_profiles():
+    cancelled = [False]
+
+    class History(HistoryInput):
+        closed = False
+
+        def iter_windows(self, manifest, *, sessions, codes=None, check=None):
+            try:
+                for window in super().iter_windows(manifest, sessions=sessions, codes=codes, check=check):
+                    cancelled[0] = True
+                    yield window
+            finally:
+                self.closed = True
+
+    source = History(252, 0, ("600001", "600002"))
+    owner = SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300))
+    profiles = tuple(_cache(source, sessions, owner) for sessions in (251, 251, 61, 61))
+    codes = frozenset({"600001"})
+    profiles[0].initialize(cancelled=lambda: cancelled[0], codes=codes)
+    assert source.closed and owner.scan_count == 1
+    assert all(not profile.entries() and profile.status().maintenance_reason == "history_preload_cancelled" for profile in profiles)
+    profiles[-1].initialize(cancelled=lambda: False, codes=codes)
+    assert owner.scan_count == 1
+    with pytest.raises(RuntimeError, match="history_projection_eligibility_changed"):
+        profiles[0].initialize(cancelled=lambda: False, codes=frozenset({"600002"}))
 
 
 def test_seed_extension_stops_when_the_original_history_window_is_complete():
@@ -344,6 +371,20 @@ def test_all_failed_profiles_release_shared_bars_reservation(cancel_after_reserv
     cache.initialize(cancelled=lambda: cancelled[0])
     assert cache.entries() == {}
     assert reservations[0] > 0 and reservations[-1] == 0
+
+
+def test_online_eligibility_does_not_filter_immutable_outcome_history():
+    source = HistoryInput(252, 0, ("600001", "600002"))
+    history = ReadPublishedHistoryUseCase(source)
+    cache = PublishedHistoryCache(
+        history, outcome_history=history, lookback_sessions=61, monotonic=lambda: 0.0,
+        projection_owner=SharedHistoryProjection(history, monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300)),
+    )
+    cache.initialize(cancelled=lambda: False, codes=frozenset({"600001"}))
+    assert set(cache.entries()) == {"600001"}
+    assert source.reads == []
+    assert cache.status().outcome_snapshot_hash == source.current.snapshot_hash
+    assert len(cache.read_outcome_bars(("600002",), NOW)["600002"]) == 61
 
 
 def test_same_source_outcomes_remain_readable_when_online_projection_exceeds_capacity():

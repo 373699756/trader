@@ -67,10 +67,10 @@ def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_pending_i
     entered, release = threading.Event(), threading.Event()
     windows = source.iter_windows
 
-    def blocked(manifest, *, sessions, check=None):
+    def blocked(manifest, *, sessions, codes=None, check=None):
         entered.set()
         assert release.wait(5)
-        yield from windows(manifest, sessions=sessions, check=check)
+        yield from windows(manifest, sessions=sessions, codes=codes, check=check)
 
     monkeypatch.setattr(source, "iter_windows", blocked)
     preloader = PublishedInputPreloader(history, initialize=lambda cancelled: history.initialize(cancelled=cancelled))
@@ -93,9 +93,9 @@ def test_preload_rejects_changed_identity_without_retry_and_restart_adopts_new_p
     windows = source.iter_windows
     reads = []
 
-    def changed(manifest, *, sessions, check=None):
+    def changed(manifest, *, sessions, codes=None, check=None):
         reads.append(manifest.snapshot_hash)
-        yield from windows(manifest, sessions=sessions, check=check)
+        yield from windows(manifest, sessions=sessions, codes=codes, check=check)
         source.current = replace(source.current, snapshot_hash="b" * 64)
 
     monkeypatch.setattr(source, "iter_windows", changed)
@@ -117,9 +117,9 @@ def test_slow_preload_completes_unless_cancelled(cancelled):
     ticks = [0.0]
 
     class SlowHistory(HistoryInput):
-        def iter_windows(self, manifest, *, sessions, check=None):
+        def iter_windows(self, manifest, *, sessions, codes=None, check=None):
             ticks[0] = 301.0
-            yield from super().iter_windows(manifest, sessions=sessions, check=check)
+            yield from super().iter_windows(manifest, sessions=sessions, codes=codes, check=check)
 
     source = SlowHistory(61, 1, ("600001", "600002"))
     history = _cache(source, monotonic=lambda: ticks[0])
@@ -138,9 +138,9 @@ def test_preload_exceeding_old_thirty_second_limit_publishes_complete_projection
     ticks = [0.0]
 
     class SlowHistory(HistoryInput):
-        def iter_windows(self, manifest, *, sessions, check=None):
+        def iter_windows(self, manifest, *, sessions, codes=None, check=None):
             ticks[0] = 31.0
-            yield from super().iter_windows(manifest, sessions=sessions, check=check)
+            yield from super().iter_windows(manifest, sessions=sessions, codes=codes, check=check)
 
     source = SlowHistory(61, 1, ("600001", "600002"))
     history = _cache(source, monotonic=lambda: ticks[0])

@@ -23,7 +23,7 @@ from trader.download.domain.history_revision import (
     HistoryRevision,
     HistoryTrainingRow,
 )
-from trader.download.domain.published_history import PublishedHistoryCell
+from trader.download.domain.published_history import PublishedHistoryCell, ValidatePublishedHistoryCodes
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
 from trader.download.infra.history_prices import (
     HistoryPartitionVerificationPhase,
@@ -359,10 +359,16 @@ class HistorySnapshotReader:
         end: date,
         snapshot: HistorySnapshot,
         *,
+        codes: frozenset[str] | None = None,
         check: Callable[[], None] | None = None,
-    ) -> Iterator[PublishedHistoryCell]:
+    ) -> Generator[PublishedHistoryCell, None, None]:
+        ValidatePublishedHistoryCodes(codes)
+        if check is not None:
+            check()
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("published history range is invalid")
+        if codes == frozenset():
+            return
         references = tuple(self._reference(snapshot, year, month) for year, month in RouteHistoryMonths(start, end))
         with ExitStack() as stack:
             streams = []
@@ -391,6 +397,7 @@ class HistorySnapshotReader:
                                 lower,
                                 upper,
                                 snapshot_sequence=reference.sequence,
+                                codes=codes,
                                 check=check,
                                 annual_range=len(annual) > 1,
                             )

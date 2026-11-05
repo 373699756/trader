@@ -213,7 +213,15 @@ def test_company_startup_uses_the_static_cut_before_any_history_initialization(m
     from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
     reference = _mixed_reference()
-    cache = _cache(HistoryInput(252, 0, ("300001", "600001", "600002")), 61)
+    class History(HistoryInput):
+        decoded = []
+
+        def window(self, code, dates):
+            self.decoded.append(code)
+            return super().window(code, dates)
+
+    source = History(252, 0, ("300001", "600001", "600002"))
+    cache = _cache(source, 61)
     _, _, _, service = _fixture(published_references=_reader({"reference": reference}), published_history=cache)
     history_admission, company_requests = [], []
 
@@ -230,16 +238,62 @@ def test_company_startup_uses_the_static_cut_before_any_history_initialization(m
     )
     initialize = cache.initialize
 
-    def observe(*, cancelled):
-        history_admission.append(service.risk_universe_codes(NOW))
-        initialize(cancelled=cancelled)
+    def observe(*, cancelled, codes=None):
+        history_admission.append(codes)
+        initialize(cancelled=cancelled, codes=codes)
 
     monkeypatch.setattr(cache, "initialize", observe)
     service.initialize_published_inputs(lambda: False, model_version="fixture", config_version="fixture")
-    assert history_admission == [("300001",)]
+    assert history_admission == [frozenset({"300001"})]
     assert company_requests == [("300001",)]
-    # Actual price-stream selection remains B's interface handoff; this test
-    # verifies ordering and the company consumer without claiming that gap closed.
+    assert source.decoded == ["300001"]
+    assert set(cache.entries()) == {"300001"}
+
+
+@pytest.mark.parametrize("all_unknown", (False, True))
+def test_four_profile_startup_passes_one_static_selection_and_never_reads_excluded_history(all_unknown):
+    from tests.component.test_candidate_history_tail import HistoryInput
+    from tests.unit.infra.test_shared_history_projection import _cache
+    from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
+    from trader.infra.settings.models import HistoryPreloadSettings
+    from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
+    from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
+
+    reference = _mixed_reference()
+    if all_unknown:
+        reference = replace(reference, st_evidence=tuple(replace(item, status="unknown") for item in reference.st_evidence))
+    selected = frozenset() if all_unknown else frozenset({"300001"})
+
+    class History(HistoryInput):
+        scans = 0
+        closed = 0
+
+        def iter_windows(self, manifest, *, sessions, codes=None, check=None):
+            assert manifest is self.current
+            assert codes == selected
+            self.scans += 1
+            try:
+                yield from super().iter_windows(manifest, sessions=sessions, codes=codes, check=check)
+            finally:
+                self.closed += 1
+
+        def window(self, code, dates):
+            assert code in selected
+            return super().window(code, dates)
+
+    source = History(252, 0, ("300001", "600001", "600002"))
+    owner = SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300))
+    static_cache = StaticMarketCache()
+    histories = tuple(_cache(source, sessions, owner, rank, sequence) for sessions, rank, sequence in (
+        (251, True, False), (251, False, False), (61, False, False), (61, False, True),
+    ))
+    for history in histories:
+        _, _, _, service = _fixture(published_references=_reader({"reference": reference}), published_history=history, static_cache=static_cache)
+        service.initialize_published_inputs(lambda: False, model_version="fixture", config_version="fixture")
+        assert set(history.entries()) == selected
+        assert history.loaded_identity == source.current.snapshot_hash
+    assert source.scans == source.closed == owner.scan_count == (0 if all_unknown else 1)
+    assert source.reads == []
 
 
 def test_cancelled_startup_does_not_load_references(monkeypatch):

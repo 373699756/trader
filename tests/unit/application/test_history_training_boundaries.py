@@ -32,7 +32,7 @@ class _Publication:
     def manifest(self):
         return None
 
-    def iter_windows(self, manifest, *, sessions, check=None):
+    def iter_windows(self, manifest, *, sessions, codes=None, check=None):
         del manifest, sessions, check
         return iter(())
 

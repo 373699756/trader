@@ -176,16 +176,21 @@
 
 ### 阶段340：codexA前置荐股ST资格并核验行情批次与Long隔离
 
-- owner/状态：codexA / in_progress（A可独立切片已实现、验证并按用户要求先保存；历史筛选接口由B补充，整组未完成）。用户明确按三组顺序继续，先完成“荐股加载与采集”。基线`c568041c`，`Afuture`跟踪`origin/Afuture`；本阶段承接P15/P17/P18/P19/P28及P14的相关正确性，不接管327真实资料欠项或D的性能执行。
-- 范围与所有权：本次实际修改A的PublishedReferences、MarketFeatureService、IntradayLoader、StaticMarketPipeline、动态采集阶段及domain资格函数，四个相关测试文件、c及本记录。后续SharedHistoryProjection/组合根接线沿本阶段；参考/ST仍由已发布reference唯一拥有，静态资格复用StaticMarketCache，未新增资格状态源。用户已明确跨download只读接口由B补，本次未改B/C业务源码、脚本、文档及用户runtime/模型。
+- **本次补齐接口授权（2026-11-05）**：用户明确“授权A本次补齐接口并接线”，覆盖此前等B交付的边界；沿原340恢复in_progress，基线4106e41c，Afuture已同步同名上游。A范围为既有download只读端口/两种adapter/年度价格查询、荐股启动资格到共享预载、直接消费者和专项回归；不接管B的成员、修复或真实同步，不改C训练及B/C未提交文件。完整manifest/发布身份保持原值，显式名单在SQL/解码前筛选，空集合不读个股价格，无缺接口退回全量的分支；不写活动数据。
+- owner/状态：codexA / completed（ST请求门、只读名单接口、启动接线及功能验收已闭合）。本阶段承接P15/P17/P18/P19/P28及P14的相关正确性，不接管327真实资料欠项或性能执行；首次基线c568041c，本次基线4106e41c，Afuture跟踪同名上游。
+- 首次交付范围与所有权：修改A的PublishedReferences、MarketFeatureService、IntradayLoader、StaticMarketPipeline、动态采集阶段及domain资格函数，四个相关测试文件、c及本记录；当时接口暂交B，未改B/C业务。本次按追加授权补download接口，参考/ST仍由已发布reference唯一拥有，静态资格复用StaticMarketCache，不新增资格状态源或组合根。
 - 开工差距：PublishedReferences先加载行业再构造ST视图；MarketFeatureService在静态资格初始化前预加载全部已发布历史，SharedHistoryProjection没有收到本次资格。定向候选在刷新报价前未统一筛选，刷新发现新增ST后仍加载其历史/研究；现有分钟入口仅排已知ST，不阻止参考未知项。已有共享批次与Long独立入口保留，不重建轮次机制。
 - 实施/验证边界：先完成同一资格结果的加载/请求消费者切换，再集中补ST/clear/unknown、全排除、报价新增ST、共享批次/取消及Long独立的最小回归，运行受影响Ruff和必要mypy；不运行格式/改名、真实供应商或活动数据写入。性能对照由D在冻结交付版上安排，不以本批功能测试签性能通过。
-- 用户确认/接口交接：用户明确选择“由B补接口，A先完成其余部分”。B需在既有ReadPublishedHistoryUseCase/PublishedHistoryReadPort.iter_windows及对应SQLitePublishedHistorySnapshot/SQLiteQfqWindowCache迭代路径支持显式、不可变的代码名单；沿既有有界流读取，在解码/构造窗口前筛选，空名单不读个股价格，名单之外不构造行/窗口。保留原manifest/发布身份、取消及单次共享扫描，不伪造子集manifest、不逐股重复开连接；不写活动库或改B的成员/恢复合同。B完成接口及其业务消费者回执后，A沿340将本次StaticMarketCache资格传入SharedHistoryProjection，并核验四档共用、ST/unknown/全排除/取消，不能在A中留下“缺接口就全量读”的兼容分支。
+- 原接口交接（归属已由本次授权覆盖）：用户最初选择“由B补接口，A先完成其余部分”，本次改为A补齐既有ReadPublishedHistoryUseCase/PublishedHistoryReadPort.iter_windows及SQLitePublishedHistorySnapshot/SQLiteQfqWindowCache的显式不可变名单。正确性约束继续保留：解码/窗口构造前筛选、空名单零个股价格、原manifest/发布身份、取消及单次共享扫描；不伪造子集manifest、不逐股重开连接、不写活动库或改成员/恢复合同。A沿本阶段把既有StaticMarketCache资格接入共享预载，不留缺接口退回全量的分支。
 - 实际改动：ST明确合格名单先于行业投影，ST/unknown行不进入个股行业解码；无合格者不读行业批次。静态资格初始化前移，公司的预载、定向候选/TopK、候选读取及分钟入口共用资格，未知/过期状态不发请求。报价新增ST/退市标记在历史、研究和分钟工作前排除，采集阶段记录拒绝原因和数量，不混成缺报价；原ST事实身份和持续排除语义不变。评分准备只用已接受报价及当前资格，不重读下一批报价；四档包含空请求者仍会合一个候选批次。动态批次身份通过既有InputVersionClock绑定资格变化，同一时间的缺报价与ST拒绝不共用输出身份。Long报价入口不受短线资格/历史/模型门影响。
 - 失败复现与修正：在冻结`c568041c`副本运行最初13项新回归，12 failed/1 passed（3.04秒），复现未知名单派发、新ST后继续加载及行业投影等缺口，Long原独立性通过。扩大回归发现评分准备不应重新读取候选报价缓存，已改用同一静态/事实门和已锁报价。另在原版独立复现跨档分钟等待者超时取消共享Future，1 failed（4.47秒）；IntradayLoader现只结束自己的等待，已运行请求继续等待清理，排队共享请求由原来源队列和deadline管理，不再取消其他档位的Future。
 - 隔离验证：以`c568041c`本地克隆叠加本批6个生产、4个测试文件，在仓库外`/tmp/trader-a340-verify-c568041c`验证，不混B/C修改。覆盖18项新增ST/unknown/全排除/过期/行业/公司预载次序/取消/共享报价/Long及批次身份，以及既有资格、静态/动态阶段、候选历史、轮次集合、分钟与来源队列、预载和Long生命周期；扩大集213 passed/1个夹具失败，补齐该紧急TopK测试缺失的已发布资格夹具后，相关13项通过。最后加入同时间不同资格身份的回归，完整16文件复核215 passed（20.18秒），零失败。未改生产资格、风险或评分门使旧夹具过关；公司一年到期夹具单独维持其参考有效期，以隔离公司事实到期测试。
 - 验证证据：最终报告`/tmp/trader-a340-isolated-complete-tests.xml`；原版复现分别为`/tmp/trader-a340-baseline-tests.xml`、`/tmp/trader-a340-queue-baseline-tests.xml`。10个受影响Python文件Ruff E9/F/B/UP、6个生产模块mypy、完整diff/消费者及空白检查通过。10文件逐字节匹配隔离候选，合并SHA-256为`94caafa0faca57d5691f18119bd732b7f1d4147404419e7effd726652fb00682`；未运行格式/改名、真实供应商、真实浏览器、活动数据写入、性能对照或全仓发布门禁。
-- 未完成项：A本次可独立切片无已知遗留；B的只读筛选接口交付后，接续同一340完成历史预载的实际名单传递、无合格者零个股读、全部消费者切换及整组验收。当前历史流仍按发布名单扫描，未宣称已排除ST历史读取；字段/评分合同、公共工程后续组和D性能待验保持原队列。按用户本次拆分授权先提交本批，不将本阶段整体标记completed。
+- 首次保存时未完成项（历史）：当时尚待只读名单接口，历史流仍扫描原发布名单，未宣称排除ST历史读取；本次追加授权后由A补齐，下述当前证据取代该接口等待状态。字段/评分合同、公共工程后续组和性能待验保持原队列。
+- **本次实际改动**：原只读端口及两种adapter增加不可变codes参数，None明确读完整发布、空集合零个股价格；年度SQL按最多500代码/512行有界流过滤，跨年合并及每连续年度/sequence组一连接保留，短窗仍32代码一批。MarketFeatureService直接取原静态资格结果，经PublishedHistoryCache传到共享owner，四档同名单只扫描一次，名单变化拒绝复用；全部直接测试替身同步，没有捕获缺参数后全量读取的兼容路径。取消/投影失败显式关闭各层迭代器和自己的连接，不发布部分投影；完整manifest及正式收益读取不裁剪。无需改组合根，既有组合根已共享StaticMarketCache及历史owner，本次只补两者之间的消费参数。
+- **本次最终功能验收**：从4106e41c及A暂存区导出/tmp/trader-a340-delivery，不含B/C未提交内容；启动/静态资格/请求门/共享预载/历史窗口/下载读取与训练边界九文件144项通过（398.93秒，/tmp/trader-a340-frozen-final.xml），既有短窗发布/修复/收益消费者另99项通过（277.47秒，/tmp/trader-a340-qfq-regression.xml），两集合无重叠。覆盖混合ST/clear/unknown、全unknown零个股读、四档一扫描、501代码跨两年每年一连接、名单外零解码、空名单取消/旧发布拒绝、投影取消关闭及不发布部分结果、正式收益保留原总体。均为隔离fixture功能证据，不是介质性能或真实供应商通过。
+- **实现初轮与Review**：首轮参数插入错位及旧mock缺codes参数导致9项失败（/tmp/trader-a340-initial.xml）；修正签名、全部具名迭代替身和转发。新四档夹具另有2项因共享cache参数在kwargs断言之后才消费失败，已前移消费并纳入最终144项；未修改生产资格/价格/发布校验规则迁就测试。18个受影响Python文件Ruff E9/F/B/UP、隔离版9个产品模块mypy及完整diff/空白检查通过，未运行格式脚本或全仓门禁。仅暂存A的9个源码、9个直接测试及c/d/本340记录，bootstrap的C训练注入、B/C源码和其它台账保留。
+- **本次未完成项与采用边界**：本阶段接口、生产消费接线及功能范围无已知遗留，不再等待B。当前服务未重启，未运行同步/训练、改活动数据或切换模型；真实盘中/API/完整链条采用仍沿281，性能归4.5当前原执行者，不以本阶段功能通过关闭这些欠项。281官方证据活动导入及schema切换亦未执行，优化候选默认关闭。
 
 ### 阶段339：将SSD与HDD性能验证迁入独立任务D
 

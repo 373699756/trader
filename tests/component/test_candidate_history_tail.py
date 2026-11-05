@@ -85,8 +85,10 @@ class HistoryInput:
     def manifest(self):
         return self.current
 
-    def iter_windows(self, manifest, *, sessions, check=None):
+    def iter_windows(self, manifest, *, sessions, codes=None, check=None):
         for code in manifest.universe_codes:
+            if codes is not None and code not in codes:
+                continue
             if check is not None:
                 check()
             yield self.window(code, manifest.calendar_dates[-sessions:])

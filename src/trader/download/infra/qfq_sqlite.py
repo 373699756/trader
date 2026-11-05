@@ -18,7 +18,7 @@ from typing import Literal, TypeAlias
 from uuid import uuid4
 
 from trader.download.application.update_qfq import QfqPairPublicationError, QfqWindowPort
-from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
+from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow, ValidatePublishedHistoryCodes
 from trader.download.domain.price_repair import PriceIssue
 from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PRICE_SOURCE_CHECK_SQL, PriceRepairAttempts, RecordTencentCheck, TencentRecheckDue
 from trader.download.infra.published_history_codec import EncodePublishedHistoryCell, DecodePublishedHistoryCellPayload
@@ -708,12 +708,25 @@ class SQLiteQfqWindowCache:
             raise RuntimeError("qfq_publication_changed")
 
     def iter_windows(
-        self, manifest: PublishedHistoryManifest, *, sessions: int, check: Callable[[], None] | None = None
+        self, manifest: PublishedHistoryManifest, *, sessions: int,
+        codes: frozenset[str] | None = None, check: Callable[[], None] | None = None,
     ) -> Iterator[PublishedHistoryWindow]:
+        ValidatePublishedHistoryCodes(codes)
+        if check is not None:
+            check()
+        if not 1 <= sessions <= len(manifest.calendar_dates):
+            raise ValueError("qfq_read_window_invalid")
         allowed = frozenset(manifest.universe_codes)
-        for start in range(0, len(manifest.universe_codes), 32):
+        requested = manifest.universe_codes if codes is None else tuple(sorted(codes & allowed))
+        if not requested:
+            with self._read_connection() as connection:
+                if connection is None:
+                    raise RuntimeError("qfq_publication_changed")
+                self._require_publication(connection, manifest)
+            return
+        for start in range(0, len(requested), 32):
             yield from self._read_windows(
-                manifest, manifest.universe_codes[start : start + 32], sessions=sessions, allowed=allowed, check=check
+                manifest, requested[start : start + 32], sessions=sessions, allowed=allowed, check=check
             )
 
     def read_windows(

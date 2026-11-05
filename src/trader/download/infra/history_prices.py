@@ -19,7 +19,7 @@ from typing import Literal, cast
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockCellStatus
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
-from trader.download.domain.published_history import PublishedHistoryCell
+from trader.download.domain.published_history import PublishedHistoryCell, ValidatePublishedHistoryCodes
 from trader.download.infra.history_revision_codec import (
     PublishedCellFromPriceColumns,
     RevisionColumnValues,
@@ -127,23 +127,33 @@ WHERE records.trade_date BETWEEN ? AND ?
       ORDER BY observed.sync_sequence DESC
       LIMIT 1
   )
+{code_filter}
 ORDER BY records.code, records.trade_date
 """
 _LATEST_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(
     columns=_REVISION_COLUMNS,
     index="history_price_code_date_idx",
     observation_index="history_price_observation_code_date_idx",
+    code_filter="",
 )
 # Published month windows must seek dates in the annual file, then sort only the requested rows.
 _PUBLISHED_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(
     columns=_PUBLISHED_COLUMNS,
     index="sqlite_autoindex_daily_price_revision_1",
     observation_index="sqlite_autoindex_daily_price_observation_1",
+    code_filter="",
 )
 _PUBLISHED_ANNUAL_BY_CODE_SQL = _RANGE_BY_CODE.format(
     columns=_PUBLISHED_COLUMNS,
     index="history_price_code_date_idx",
     observation_index="history_price_observation_code_date_idx",
+    code_filter="",
+)
+_PUBLISHED_SELECTED_BY_CODE_SQL = _RANGE_BY_CODE.format(
+    columns=_PUBLISHED_COLUMNS,
+    index="history_price_code_date_idx",
+    observation_index="history_price_observation_code_date_idx",
+    code_filter="AND records.code IN ({placeholders})",
 )
 _LATEST_SHADOW_SQL = """
 WITH latest AS (
@@ -664,12 +674,20 @@ class HistoryPricePartition:
         *,
         snapshot_sequence: int,
         code: str | None = None,
+        codes: frozenset[str] | None = None,
         check: Callable[[], None] | None = None,
         annual_range: bool = False,
     ) -> Generator[PublishedHistoryCell, None, None]:
         """Project sealed daily facts without materializing full revision objects."""
+        ValidatePublishedHistoryCodes(codes)
+        if code is not None and codes is not None:
+            raise ValueError("published_history_codes_conflict")
         if start > end or snapshot_sequence < 1 or (code is not None and _CODE.fullmatch(code) is None):
             raise ValueError("published daily query range is invalid")
+        if check is not None:
+            check()
+        if codes == frozenset():
+            return
         start, end = (
             (max(start, date(self._calendar_year, 1, 1)), min(end, date(self._calendar_year, 12, 31)))
             if annual_range
@@ -680,7 +698,7 @@ class HistoryPricePartition:
             if code is None
             else _PUBLISHED_CODE_SQL
         )
-        parameters = (
+        parameters: tuple[int | str, ...] = (
             (EncodeDate(start), EncodeDate(end), snapshot_sequence)
             if code is None
             else (snapshot_sequence, EncodeDate(start), EncodeDate(end), code)
@@ -688,12 +706,21 @@ class HistoryPricePartition:
         try:
             with closing(self._read_connection()) as connection, WatchHistoryRead(connection, check):
                 self._require_metadata(connection)
-                cursor = connection.run(query, parameters)
-                while rows := cursor.fetchmany(512):
+                selected = tuple(sorted(codes)) if codes is not None else ()
+                for offset in range(0, len(selected) or 1, _COUNT_CODE_BATCH_SIZE):
                     if check is not None:
                         check()
-                    for row in rows:
-                        yield PublishedCellFromPriceColumns(tuple(row))
+                    batch = selected[offset : offset + _COUNT_CODE_BATCH_SIZE]
+                    selected_query = (
+                        _PUBLISHED_SELECTED_BY_CODE_SQL.format(placeholders=",".join("?" for _ in batch))
+                        if codes is not None else query
+                    )
+                    cursor = connection.run(selected_query, parameters + batch)
+                    while rows := cursor.fetchmany(512):
+                        if check is not None:
+                            check()
+                        for row in rows:
+                            yield PublishedCellFromPriceColumns(tuple(row))
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryPricePartitionError("published daily query failed") from exc
 

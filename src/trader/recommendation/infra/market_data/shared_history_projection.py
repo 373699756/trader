@@ -11,7 +11,7 @@ from datetime import date
 from typing import TYPE_CHECKING
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
+from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow, ValidatePublishedHistoryCodes
 from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.settings.models import HistoryPreloadSettings
@@ -33,6 +33,7 @@ _HISTORY_FAILURE_CODES = frozenset({
     "sqlite_publication_database_unreadable", "sqlite_publication_file_missing",
     "sqlite_publication_header_invalid", "sqlite_publication_path_unsafe",
     "sqlite_publication_receipt_invalid", "sqlite_publication_schema_invalid",
+    "history_projection_eligibility_changed",
 })
 
 
@@ -81,6 +82,7 @@ class SharedHistoryProjection:
         self._lock = threading.Lock()
         self._profiles: list[PublishedHistoryCache] = []
         self._initialized = False
+        self._codes: frozenset[str] | None = None
         self._scan_count = 0
         self._window_count = 0
         self._read_seconds = self._alignment_seconds = self._derivation_seconds = self._publication_seconds = 0.0
@@ -120,11 +122,15 @@ class SharedHistoryProjection:
             if profile not in self._profiles:
                 self._profiles.append(profile)
 
-    def initialize(self, cancelled: Callable[[], bool]) -> None:
+    def initialize(self, cancelled: Callable[[], bool], *, codes: frozenset[str] | None = None) -> None:
+        ValidatePublishedHistoryCodes(codes)
         with self._lock:
             if self._initialized:
+                if codes != self._codes:
+                    raise RuntimeError("history_projection_eligibility_changed")
                 return
             self._initialized = True
+            self._codes = codes
             progress = _PreloadProgress(cancelled, self._monotonic, self._monotonic(), self._settings.warn_after_seconds)
             if not cancelled():
                 for profile in self._profiles:
@@ -156,12 +162,13 @@ class SharedHistoryProjection:
         manifest = self._history.manifest()
         if manifest is None:
             raise RuntimeError("history_snapshot_unavailable")
+        selected = frozenset(manifest.universe_codes) if self._codes is None else self._codes.intersection(manifest.universe_codes)
         for profile in self._profiles:
             profile.bind_outcome_manifest(manifest)
             profile.record_maintenance(
-                "loading", stage="reading_published_snapshot", total_units=len(manifest.universe_codes)
+                "loading", stage="reading_published_snapshot", total_units=len(selected)
             )
-        entries = self._scan(manifest, progress)
+        entries = self._scan(manifest, progress, selected)
         confirmed = self._history.manifest()
         if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
             raise RuntimeError("history_snapshot_changed")
@@ -198,51 +205,57 @@ class SharedHistoryProjection:
                 self._reserve_bytes(0)
 
     def _scan(
-        self, manifest: PublishedHistoryManifest, progress: _PreloadProgress
+        self, manifest: PublishedHistoryManifest, progress: _PreloadProgress, selected: frozenset[str]
     ) -> tuple[dict[str, PublishedHistoryEntry], ...]:
         sessions = min(max(profile.history_sessions for profile in self._profiles) + 1, len(manifest.calendar_dates))
         calendars = tuple(profile.projection_calendar() for profile in self._profiles)
         lookbacks = tuple(sorted({profile.history_sessions for profile in self._profiles}))
         results: tuple[dict[str, PublishedHistoryEntry], ...] = tuple({} for _profile in self._profiles)
+        if not selected:
+            progress.check()
+            return results
         lifetimes = {code: (start, end) for code, start, end in manifest.listing_intervals}
         self._scan_count += 1
-        windows = iter(self._history.iter_windows(manifest, sessions=sessions, check=progress.check))
+        windows = self._history.iter_windows(manifest, sessions=sessions, codes=self._codes, check=progress.check)
         completed = 0
-        while True:
-            started = self._monotonic()
-            try:
-                window = next(windows)
-            except StopIteration:
-                break
-            finally:
-                self._read_seconds += self._monotonic() - started
-            progress.check()
-            started = self._monotonic()
-            try:
-                aligned = self._aligned(window, manifest, lifetimes.get(window.code), sessions, progress)
-            finally:
-                self._alignment_seconds += self._monotonic() - started
-            self._window_count += 1
-            started = self._monotonic()
-            if aligned.bars:
-                shared_bars = aligned.bars[-20:]
-                contexts = {
-                    lookback: self._context_builder(aligned.bars[-lookback:], lookback)
-                    for lookback in lookbacks
-                }
-                for profile, values, calendar in zip(self._profiles, results, calendars, strict=True):
-                    values[window.code] = profile.project_history_window(
-                        manifest, window.code, aligned, calendar, shared_bars, contexts[profile.history_sessions]
+        try:
+            while True:
+                started = self._monotonic()
+                try:
+                    window = next(windows)
+                except StopIteration:
+                    break
+                finally:
+                    self._read_seconds += self._monotonic() - started
+                progress.check()
+                started = self._monotonic()
+                try:
+                    aligned = self._aligned(window, manifest, lifetimes.get(window.code), sessions, progress)
+                finally:
+                    self._alignment_seconds += self._monotonic() - started
+                self._window_count += 1
+                started = self._monotonic()
+                if aligned.bars:
+                    shared_bars = aligned.bars[-20:]
+                    contexts = {
+                        lookback: self._context_builder(aligned.bars[-lookback:], lookback)
+                        for lookback in lookbacks
+                    }
+                    for profile, values, calendar in zip(self._profiles, results, calendars, strict=True):
+                        values[window.code] = profile.project_history_window(
+                            manifest, window.code, aligned, calendar, shared_bars, contexts[profile.history_sessions]
+                        )
+                self._derivation_seconds += self._monotonic() - started
+                completed += 1
+                for profile in self._profiles:
+                    profile.record_maintenance(
+                        "loading",
+                        stage="reading_published_snapshot",
+                        completed_units=completed,
+                        total_units=len(selected),
                     )
-            self._derivation_seconds += self._monotonic() - started
-            completed += 1
-            for profile in self._profiles:
-                profile.record_maintenance(
-                    "loading",
-                    stage="reading_published_snapshot",
-                    completed_units=completed,
-                    total_units=len(manifest.universe_codes),
-                )
+        finally:
+            windows.close()
         return results
 
     def _aligned(
