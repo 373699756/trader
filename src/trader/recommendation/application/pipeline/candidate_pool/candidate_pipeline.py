@@ -32,6 +32,7 @@ from trader.recommendation.domain.market.history_alignment import HISTORY_INPUT_
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import (
+    BuildScoredCandidateReferences,
     RankFilteredCandidates,
     ScoredCandidatePlan,
     SelectedCandidateInput,
@@ -87,7 +88,7 @@ def ExecuteCandidatePipeline(
         )
         filtered[strategy] = MeasuredOutput(qualified.output, started, monotonic)
         started = monotonic()
-        plan = RankFilteredCandidates(qualified.qualifications)
+        plan = RankFilteredCandidates(BuildScoredCandidateReferences(qualified.qualifications))
         plans[strategy] = plan
         candidates[strategy] = MeasuredOutput(
             SelectCandidateOutput(filtered[strategy], plan, context.evaluated_at),

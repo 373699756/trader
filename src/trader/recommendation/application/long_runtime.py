@@ -195,8 +195,9 @@ class LongRuntime:
                 request.preview_context,
             )
             if any(
-                request.preview_context is None and quote.age_seconds(completed_at) > self._quote_max_age_seconds
-                for quote in fresh.values()
+                request.preview_context is None and item.source_time is not None
+                and (completed_at - item.source_time).total_seconds() > self._quote_max_age_seconds
+                for item in items
             ):
                 degraded_reasons.append("long_quotes_stale")
             if live_count != len(self._codes):

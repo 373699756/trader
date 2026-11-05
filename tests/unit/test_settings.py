@@ -487,6 +487,29 @@ def test_runtime_rejects_removed_freeze_execution_mode(tmp_path) -> None:
         LoadRuntimeSettings(changed_path)
 
 
+def test_long_quote_maximum_age_loads_explicit_scheduler_value(tmp_path):
+    assert LoadRuntimeSettings(RUNTIME_CONFIG).pipeline.long_quote_max_age_seconds == 30.0
+    raw = _runtime_document()
+    raw["pipeline"]["long_quote_max_age_seconds"] = 12.5
+    settings = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+    assert settings.pipeline.long_quote_max_age_seconds == 12.5
+
+
+@pytest.mark.parametrize("invalid", (None, True, "30", 0, -1, float("inf"), float("nan")))
+def test_long_quote_maximum_age_rejects_invalid_scheduler_value(tmp_path, invalid):
+    raw = _runtime_document()
+    raw["pipeline"]["long_quote_max_age_seconds"] = invalid
+    with pytest.raises(ConfigurationError, match="long_quote_max_age_seconds|numbers must be finite"):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+
+def test_long_quote_maximum_age_is_required_in_scheduler(tmp_path):
+    raw = _runtime_document()
+    del raw["pipeline"]["long_quote_max_age_seconds"]
+    with pytest.raises(ConfigurationError, match="long_quote_max_age_seconds"):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+
 def test_history_preload_settings_change_without_invalidating_feature_identity(tmp_path) -> None:
     baseline = LoadRuntimeSettings(RUNTIME_CONFIG)
     assert baseline.pipeline.history_preload.warn_after_seconds == 300

@@ -29,6 +29,7 @@ from trader.recommendation.application.ports.runtime import (
     ResearchIntent,
     ResearchRuntimeStatus,
     SharedDeepSeekRuntimeContract,
+    SettlementUnavailableError,
     TradingCalendarUnavailableError,
 )
 from trader.recommendation.application.runtime.cadence import (
@@ -969,6 +970,76 @@ class Settlement:
 
     def settle(self, at: datetime) -> None:
         self.calls.append(at)
+
+
+@pytest.mark.parametrize(
+    "reason, expected",
+    (
+        ("settlement_inputs_pending", "settlement_inputs_pending"),
+        ("settlement_market_data_unavailable", "settlement_market_data_unavailable"),
+        ("settlement_evidence_conflict", "settlement_evidence_conflict"),
+        ("settlement_outcomes_incomplete", "settlement_outcomes_incomplete"),
+        ("private supplier payload", "settlement_unavailable"),
+    ),
+)
+def test_settlement_retry_exposes_finite_reason_and_preserves_formal_records(reason, expected):
+    class _RecoveringSettlement(Settlement):
+        def settle(self, at: datetime) -> None:
+            super().settle(at)
+            if len(self.calls) == 1:
+                raise SettlementUnavailableError(reason)
+
+    at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
+    clock = FixedClock(at)
+    settlement = _RecoveringSettlement()
+    index = UnifiedFreezeIndex()
+    runtime = SchedulerRuntime(
+        RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-settlement-control",
+            ),
+            clock=clock,
+            monotonic=clock.monotonic,
+            calendar=TradingCalendar(),
+            cadence=_cadence(at),
+            data=DataRefresh(),
+            freezes=Freezes(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncFreezeObserver((), capacity=4, thread_name="test-settlement-observer"),
+            sealing=Sealing(index),
+            settlement=settlement,
+            research_factory=noop_research_factory,
+            publish_freeze=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-current",
+        shutdown_timeout_seconds=2.0,
+    )
+    runtime.start()
+    try:
+        runtime.submit_due(at)
+        assert runtime.wait_idle(2.0)
+        formal = {strategy: index.snapshot(strategy).formal for strategy in (Strategy.TOMORROW, Strategy.D25)}
+        assert all(record is not None for record in formal.values())
+        clock.current = at + timedelta(seconds=10)
+        runtime.submit_due(clock.current)
+        assert runtime.wait_idle(2.0)
+        status = runtime.status()
+        assert status.settlement_completed_count == 0
+        assert status.recent_errors[-1].code == f"settlement:{expected}"
+        assert "private supplier payload" not in repr(status)
+        clock.current = at + timedelta(seconds=20)
+        runtime.submit_due(clock.current)
+        assert runtime.wait_idle(2.0)
+        assert runtime.status().settlement_completed_count == 1
+        assert {strategy: index.snapshot(strategy).formal for strategy in formal} == formal
+        assert len(settlement.calls) == 2
+    finally:
+        assert runtime.stop(ShutdownDeadline.start(2.0)).completed
 
 
 def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() -> None:

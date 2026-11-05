@@ -182,9 +182,7 @@ class SQLiteOutcomeEvidenceIndex:
             ).fetchone()
         if row is None:
             return None
-        benchmark = BenchmarkReturn(DecodeDate(row["trade_date"]).isoformat(), float(row["return_pct"]))
-        _raise_on_conflict(row, _benchmark_bytes(benchmark), "benchmark return")
-        return benchmark
+        return _read_benchmark(row)
 
     def benchmark_returns_after(self, recommend_date: str, *, limit: int) -> Sequence[BenchmarkReturn]:
         if limit < 1:
@@ -203,12 +201,7 @@ class SQLiteOutcomeEvidenceIndex:
                 """,
                 (EncodeDate(date.fromisoformat(recommend_date)), limit),
             ).fetchall()
-        benchmarks = tuple(
-            BenchmarkReturn(DecodeDate(row["trade_date"]).isoformat(), float(row["return_pct"])) for row in rows
-        )
-        for row, benchmark in zip(rows, benchmarks, strict=True):
-            _raise_on_conflict(row, _benchmark_bytes(benchmark), "benchmark return")
-        return benchmarks
+        return tuple(_read_benchmark(row) for row in rows)
 
     def save_recommendation_outcomes(self, outcomes: Sequence[RecommendationOutcome]) -> None:
         if any(outcome.is_retryable for outcome in outcomes):
@@ -368,6 +361,17 @@ def _benchmark_bytes(benchmark: BenchmarkReturn) -> bytes:
             "return_pct": benchmark.return_pct,
         }
     )
+
+
+def _read_benchmark(row: sqlite3.Row) -> BenchmarkReturn:
+    if not isinstance(row["record_hash"], bytes) or not isinstance(row["record_bytes"], bytes):
+        raise OutcomeEvidenceConflictError("invalid immutable benchmark return")
+    try:
+        benchmark = BenchmarkReturn(DecodeDate(row["trade_date"]).isoformat(), float(row["return_pct"]))
+        _raise_on_conflict(row, _benchmark_bytes(benchmark), "benchmark return")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise OutcomeEvidenceConflictError("invalid immutable benchmark return") from exc
+    return benchmark
 
 
 def _canonical_bytes(payload: dict[str, object]) -> bytes:

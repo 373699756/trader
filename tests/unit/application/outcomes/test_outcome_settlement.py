@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.recommendation.application.ports.runtime import SettlementUnavailableError
+from trader.recommendation.application.ports.market_data import MarketDataPendingError, MarketDataUnavailableError
+from trader.recommendation.application.ports.outcomes import OutcomeEvidenceConflictError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.recommendation.domain.outcomes.models import (
@@ -191,6 +193,53 @@ def test_adapter_fetches_fresh_close_market_before_settlement(application_featur
 
     assert market_data.fetch_calls == [(NOW, True)]
     assert repository.benchmark == (BenchmarkReturn("2026-07-21", 3.0), NOW)
+
+
+def test_adapter_reuses_recorded_benchmark_without_fetching_changed_market(application_feature_factory):
+    evidence = _Repository()
+    evidence.benchmark = (BenchmarkReturn("2026-07-21", 0.5), NOW)
+    market = _MarketData((application_feature_factory("600002", NOW),))
+    original = evidence.benchmark
+
+    OutcomeSettlementAdapter(market, _service(market, evidence)).settle(NOW)
+
+    assert market.fetch_calls == []
+    assert evidence.benchmark == original
+    assert len(evidence.saved) == 1
+    assert evidence.saved[0].status == "complete"
+
+
+@pytest.mark.parametrize(
+    "failure, expected",
+    (
+        (MarketDataPendingError("private supplier payload"), "settlement_inputs_pending"),
+        (MarketDataUnavailableError("private supplier payload"), "settlement_market_data_unavailable"),
+        (OutcomeEvidenceConflictError("private business evidence"), "settlement_evidence_conflict"),
+    ),
+)
+@pytest.mark.parametrize("boundary", ("fetch", "history", "benchmark"))
+def test_adapter_translates_failures_and_preserves_cause_and_evidence(monkeypatch, failure, expected, boundary):
+    evidence = _Repository()
+    market = _MarketData()
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    if boundary == "fetch":
+        monkeypatch.setattr(market, "fetch_market_features", fail)
+    elif boundary == "history":
+        evidence.benchmark = (BenchmarkReturn("2026-07-21", 0.5), NOW)
+        monkeypatch.setattr(market, "read_outcome_bars", fail)
+    else:
+        monkeypatch.setattr(evidence, "benchmark_return", fail)
+    original = evidence.benchmark
+    with pytest.raises(SettlementUnavailableError) as caught:
+        OutcomeSettlementAdapter(market, _service(market, evidence)).settle(NOW)
+
+    assert str(caught.value) == expected
+    assert caught.value.__cause__ is failure
+    assert evidence.benchmark == original
+    assert evidence.saved == ()
 
 
 def test_adapter_rejects_incomplete_settlement_without_poisoning_immutable_evidence(

@@ -93,6 +93,9 @@ class _FilteredFeatures:
     issuer_eligible_count: int
     input_ready_count: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evaluations", MappingProxyType(dict(self.evaluations)))
+
 
 @dataclass(frozen=True)
 class ScoredSelectionPolicy:
@@ -368,6 +371,14 @@ class FilteredCandidateInputs:
 
 
 @dataclass(frozen=True)
+class ScoredCandidateReferences:
+    """Board references bound to the exact qualified inputs that produced them."""
+
+    source: FilteredCandidateInputs
+    cross_sections: tuple[BoardCrossSection, ...]
+
+
+@dataclass(frozen=True)
 class SelectedCandidateInput:
     code: str
     features: FeatureSnapshot | None = None
@@ -398,28 +409,17 @@ def FilterCandidateInputs(request: ScoredSelectionRequest) -> FilteredCandidateI
 
 
 def PlanScoredCandidates(request: ScoredSelectionRequest) -> ScoredCandidatePlan:
-    return RankFilteredCandidates(FilterCandidateInputs(request))
+    return RankFilteredCandidates(BuildScoredCandidateReferences(FilterCandidateInputs(request)))
 
 
-def RankFilteredCandidates(source: FilteredCandidateInputs) -> ScoredCandidatePlan:
+def BuildScoredCandidateReferences(source: FilteredCandidateInputs) -> ScoredCandidateReferences:
+    """Build same-board percentile references without ranking or observing a clock."""
     request = source.request
-    population_filtered = source.population
-    candidate_filtered = source.candidates
-    population_evaluations = population_filtered.evaluations
-    candidate_evaluations = candidate_filtered.evaluations
-    evaluations = dict(population_evaluations)
-    evaluations.update(candidate_evaluations)
-    population_versions: dict[Board, str] = {}
-    reserves: dict[Board, tuple[str, ...]] = {}
+    cross_sections: list[BoardCrossSection] = []
     for board in _SUPPORTED_BOARDS:
         population = tuple(
             item.features
-            for item in population_evaluations.values()
-            if _business_ready(item) and item.features.quote.board is board
-        )
-        candidates = tuple(
-            item.features
-            for item in candidate_evaluations.values()
+            for item in source.population.evaluations.values()
             if _business_ready(item) and item.features.quote.board is board
         )
         if not population:
@@ -436,6 +436,29 @@ def RankFilteredCandidates(source: FilteredCandidateInputs) -> ScoredCandidatePl
                 fallback=fallback.cross_section if fallback is not None else None,
                 fallback_age_sessions=fallback.age_sessions if fallback is not None else None,
             )
+        )
+        cross_sections.append(cross_section)
+    return ScoredCandidateReferences(source, tuple(cross_sections))
+
+
+def RankFilteredCandidates(references: ScoredCandidateReferences) -> ScoredCandidatePlan:
+    """Project board policy and rank using the bound complete-population references."""
+    source = references.source
+    request = source.request
+    population_filtered = source.population
+    candidate_filtered = source.candidates
+    population_evaluations = population_filtered.evaluations
+    candidate_evaluations = candidate_filtered.evaluations
+    evaluations = dict(population_evaluations)
+    evaluations.update(candidate_evaluations)
+    population_versions: dict[Board, str] = {}
+    reserves: dict[Board, tuple[str, ...]] = {}
+    for cross_section in references.cross_sections:
+        board = cross_section.board
+        candidates = tuple(
+            item.features
+            for item in candidate_evaluations.values()
+            if _business_ready(item) and item.features.quote.board is board
         )
         population_versions[board] = cross_section.population.population_version
         policy = request.policy.board_policies[board]
@@ -742,6 +765,8 @@ __all__ = [
     "ScoredCandidateStageCounts",
     "FilteredCandidateInputs",
     "FilterCandidateInputs",
+    "ScoredCandidateReferences",
+    "BuildScoredCandidateReferences",
     "RankFilteredCandidates",
     "ScoredSelectionPolicy",
     "ScoredSelectionRequest",

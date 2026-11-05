@@ -281,6 +281,47 @@ def test_benchmark_read_rejects_tampered_columns(tmp_path: Path) -> None:
         repository.benchmark_returns_after("2026-07-20", limit=1)
 
 
+def test_daily_benchmark_read_does_not_create_database_and_reuses_durable_evidence(tmp_path):
+    evidence = _repository(tmp_path)
+    database = tmp_path / "outcomes.sqlite3"
+    assert evidence.benchmark_return("2026-07-21") is None
+    assert not database.exists()
+    benchmark = BenchmarkReturn("2026-07-21", 0.6)
+    evidence.record_benchmark_return(benchmark, observed_at=NOW)
+    before = database.read_bytes()
+    restarted = _repository(tmp_path)
+    assert restarted.benchmark_return("2026-07-21") == benchmark
+    assert restarted.benchmark_return("2026-07-22") is None
+    assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "UPDATE benchmark_returns SET return_pct=9.9",
+        "UPDATE benchmark_returns SET record_hash=zeroblob(32)",
+        "UPDATE benchmark_returns SET record_bytes=x'00'",
+        "UPDATE benchmark_returns SET return_pct='invalid'",
+        "UPDATE benchmark_returns SET return_pct=1e999",
+        "UPDATE benchmark_returns SET record_hash='00000000000000000000000000000000'",
+        "UPDATE benchmark_returns SET record_bytes='invalid'",
+        "UPDATE benchmark_returns SET record_bytes=2147483647",
+    ),
+)
+def test_daily_benchmark_read_rejects_corruption_without_rewriting(tmp_path, mutation):
+    evidence = _repository(tmp_path)
+    evidence.record_benchmark_return(BenchmarkReturn("2026-07-21", 0.6), observed_at=NOW)
+    database = tmp_path / "outcomes.sqlite3"
+    with SqliteSession(database) as connection, SqliteTransaction(connection):
+        connection.run(mutation)
+    before = database.read_bytes()
+    with pytest.raises(OutcomeEvidenceConflictError, match="benchmark return"):
+        evidence.benchmark_return("2026-07-21")
+    with pytest.raises(OutcomeEvidenceConflictError, match="benchmark return"):
+        evidence.benchmark_returns_after("2026-07-20", limit=1)
+    assert database.read_bytes() == before
+
+
 def test_legacy_d25_outcomes_resume_with_only_t4_pending(tmp_path: Path) -> None:
     original = freeze(Strategy.D25)
     item = original.items[0]
