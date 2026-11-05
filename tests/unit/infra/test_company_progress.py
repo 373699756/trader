@@ -1,6 +1,7 @@
 """Risk download terminal and JSON distinguish stage work from published stocks."""
 
 import json
+from dataclasses import replace
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
@@ -222,7 +223,41 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
     assert Main(["--config", str(config), "sync", "company"]) == 1
     payload = json.loads(capsys.readouterr().out)["tasks"][0]
     assert payload["pending_documents"] == 3 and payload["pending_partitions"] == 26
+    assert payload["pending_counts_checked"] is True
     assert payload["elapsed_seconds"] == 314.09
+
+
+def test_cancelled_terminal_and_json_report_unknown_counts_without_claiming_zero_pending(monkeypatch, capsys):
+    stream = StringIO()
+    report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
+    report(EvidenceSyncProgress(
+        "complete", 1, None, 8, 3, 0, "task:cancelled", status="deferred",
+        pending_documents=None, deferred_documents=None, ocr_documents=None, unextractable_documents=None,
+    ))
+    output = stream.getvalue()
+    assert "已发布 1 股（含待核实）" in output
+    assert "公告待补数量未核对" in output and "可重试正文数量未核对" in output
+    assert "中断后未重新核对待处理数，不表示无剩余任务" in output
+    assert "可重试正文 0" not in output and "公告待补 0" not in output
+    result = CompanyEvidenceSyncResult(
+        datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
+        2, 1, 8, 3, 0, None, ("task:cancelled",), 42.0,
+        pending_documents=None, ocr_documents=None, unextractable_documents=None,
+    )
+    assert result.needs_retry and replace(result, failures=()).needs_retry
+    monkeypatch.setattr(
+        bootstrap, "ExecuteSync",
+        lambda *args, **kwargs: SyncResult((SyncTaskResult("company", "cancelled", company=result),), cancelled=True),
+    )
+    config = Path(__file__).resolve().parents[3] / "config/runtime.json"
+    assert Main(["--config", str(config), "sync", "company"]) == 130
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "cancelled"
+    company = payload["tasks"][0]
+    assert company["published_codes"] == 1 and company["fetched_pages"] == 8
+    assert company["pending_partitions"] is company["pending_documents"] is None
+    assert company["ocr_documents"] is company["unextractable_documents"] is None
+    assert company["pending_counts_checked"] is False
 
 
 def test_last_stock_starts_atomic_publication_and_news_without_candidates_is_explicit():

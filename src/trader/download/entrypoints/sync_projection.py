@@ -55,6 +55,10 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
                 "pending_documents": company.pending_documents,
                 "ocr_documents": company.ocr_documents,
                 "unextractable_documents": company.unextractable_documents,
+                "pending_counts_checked": all(value is not None for value in (
+                    company.pending_partitions, company.pending_documents, company.ocr_documents,
+                    company.unextractable_documents,
+                )),
                 "next_document_retry_at": company.next_document_retry_at.isoformat()
                 if company.next_document_retry_at
                 else None,

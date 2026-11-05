@@ -20,6 +20,8 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.infra.company_facts_protocol import REVIEW_REASONS, DecodeCompanyLabel, EncodeCompanyReason
 from trader.infra.sqlite_connection import SqliteConnection
+from trader.download.domain.company_annual_income import CompanyAnnualIncome
+from trader.download.infra.company_annual_income_index import ReadCompanyAnnualIncome
 
 
 def DecodeCompanyDisclosure(row: sqlite3.Row) -> Disclosure:
@@ -41,6 +43,7 @@ class CompanySnapshotRows:
     financials: tuple[sqlite3.Row, ...]
     ratios: tuple[sqlite3.Row, ...]
     checks: tuple[sqlite3.Row, ...]
+    annual_incomes: tuple[CompanyAnnualIncome, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -104,9 +107,11 @@ def ReadCompanySnapshotRows(
         f"SELECT component,checked_at,failure,scope FROM component_checks WHERE scope IN ({placeholders})", codes
     ):
         checks[row["scope"]].append(row)
+    annual_incomes = ReadCompanyAnnualIncome(connection, codes, now)
     return {
         code: CompanySnapshotRows(
-            tuple(documents[code]), tuple(financials[code]), tuple(ratios[code]), tuple(checks[code])
+            tuple(documents[code]), tuple(financials[code]), tuple(ratios[code]), tuple(checks[code]),
+            tuple(income for income in annual_incomes if income.code == code),
         )
         for code in codes
     }
@@ -212,6 +217,7 @@ def BuildCompanySnapshot(
         unlock_checked_at=datetime.fromisoformat(shared.unlock_snapshot[0]) if shared.unlock_snapshot else None,
         unlock_coverage_end=date.fromisoformat(shared.unlock_snapshot[1]) if shared.unlock_snapshot else None,
         superseded_evidence_ids=tuple(row["source_key"] for row in rows if row["superseded_for_code"]),
+        annual_incomes=inputs.annual_incomes,
     )
     return snapshot
 

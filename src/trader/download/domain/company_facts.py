@@ -19,6 +19,7 @@ from trader.download.domain.company_events import (
     CompanyRiskEvent,
 )
 from trader.download.domain.company_evidence import CompanyEvidenceInput, CompanyFinancial, CompanyRatio, EvidenceMarket
+from trader.download.domain.company_annual_income import ApplyCompanyAnnualIncome
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,9 @@ def CompileCompanyFacts(
         previous_positives=previous.positive_events if previous else (),
         previous_reviews=tuple(r for r in previous.review_reasons if r.evidence_id not in source.superseded_evidence_ids) if previous else (),
     )
+    extraction = replace(extraction, positives=ApplyCompanyAnnualIncome(
+        source.code, extraction.positives, source.annual_incomes, now, financials=source.financials
+    ))
     financials = tuple(
         item for item in source.financials if item.published_at <= now and item.report_date <= now.date()
     )
@@ -112,7 +116,7 @@ def CompileCompanyFacts(
     pledge = max(pledges, key=lambda item: item.day) if pledges else None
     pledge_complete = (pledge is source.pledge and source.pledge is not None
                        and not any(item.startswith("pledge:") for item in source.failures))
-    unlock_complete = source.unlock_checked and not any(item.startswith("unlock:") for item in source.failures)
+    unlock_schedule, unlock_checked_at, unlock_coverage_end, unlock_state = _unlock_snapshot(source, policy, previous)
     risk_complete = source.announcement_complete and not any(item.scope == "risk" for item in reviews)
     if previous is not None:
         reviews = [
@@ -148,16 +152,10 @@ def CompileCompanyFacts(
         else CompanyDataState.PARTIAL
         if pledge
         else CompanyDataState.UNAVAILABLE,
-        tuple(
-            item for item in source.unlocks if now.date() <= item.day <= now.date() + timedelta(days=policy.unlock_days)
-        ),
-        source.unlock_checked_at if unlock_complete else previous.unlock_checked_at if previous else None,
-        source.unlock_coverage_end if unlock_complete else previous.unlock_coverage_end if previous else None,
-        CompanyDataState.COMPLETE
-        if unlock_complete
-        else CompanyDataState.PARTIAL
-        if source.unlocks
-        else CompanyDataState.UNAVAILABLE,
+        unlock_schedule,
+        unlock_checked_at,
+        unlock_coverage_end,
+        unlock_state,
         tuple(
             replace(item, summary=CompanyRiskDescription(item.risk_type))
             for item in extraction.risks
@@ -180,6 +178,61 @@ def CompileCompanyFacts(
         CompanyDataState.COMPLETE if risk_complete else CompanyDataState.PARTIAL,
         source.source_checked_at or (previous.checked_at if previous else now),
         now,
+    )
+
+
+def _unlock_snapshot(
+    source: CompanyEvidenceInput, policy: CompanyEventPolicy, previous: CompanyFacts | None
+) -> tuple[tuple[CompanyRatio, ...], datetime | None, date | None, CompanyDataState]:
+    now = source.published_at
+    complete = source.unlock_checked and not any(item.startswith("unlock:") for item in source.failures)
+    rows, checked_at, coverage_end = source.unlocks, source.unlock_checked_at, source.unlock_coverage_end
+    target_end = now.date() + timedelta(days=policy.unlock_days)
+    source_valid = _unlock_metadata_valid(checked_at, coverage_end, now)
+    complete = complete and source_valid
+    previous_valid = (
+        previous is not None
+        and previous.published_at <= now
+        and _unlock_metadata_valid(previous.unlock_checked_at, previous.unlock_coverage_end, now)
+    )
+    if previous_valid and previous is not None and (
+        not source_valid
+        or not complete and (checked_at is None or coverage_end is None)
+        or (
+            checked_at is not None and previous.unlock_checked_at is not None
+            and checked_at < previous.unlock_checked_at
+        )
+        or (
+            coverage_end is not None and coverage_end < target_end and previous.unlock_coverage_end is not None
+            and coverage_end < previous.unlock_coverage_end
+        )
+    ):
+        # Preserve one verified snapshot, including its dates. A failed or
+        # shorter check cannot turn the previous coverage into an empty result.
+        rows, checked_at, coverage_end = (
+            previous.unlock_schedule, previous.unlock_checked_at, previous.unlock_coverage_end
+        )
+        complete = False
+    elif not source_valid:
+        rows, checked_at, coverage_end, complete = (), None, None, False
+    schedule = tuple(
+        item for item in rows
+        if now.date() <= item.day <= target_end and (coverage_end is None or item.day <= coverage_end)
+    )
+    if complete and (coverage_end is None or coverage_end >= target_end):
+        state = CompanyDataState.COMPLETE
+    elif schedule or checked_at is not None and coverage_end is not None and coverage_end >= now.date():
+        state = CompanyDataState.PARTIAL
+    else:
+        state = CompanyDataState.UNAVAILABLE
+    return schedule, checked_at, coverage_end, state
+
+
+def _unlock_metadata_valid(checked_at: datetime | None, coverage_end: date | None, now: datetime) -> bool:
+    return checked_at is None or (
+        checked_at.utcoffset() is not None
+        and checked_at <= now
+        and (coverage_end is None or coverage_end >= checked_at.date())
     )
 
 

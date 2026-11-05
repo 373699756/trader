@@ -104,7 +104,7 @@ def test_cancellation_preserves_cursor_without_source_circuit_or_retry_cooldown(
         index, source, source, lambda: 0, cancel_requested=lambda: source.cancelled
     )
     first = fixtures._sync_company_evidence(dependencies, ("600001",), NOW)
-    assert first.failures == ("task:cancelled",) and first.pending_partitions == 1
+    assert first.failures == ("task:cancelled",) and first.pending_partitions is None
     assert not documents
     assert index.partition_retry(target) is None
     source.blocked = False

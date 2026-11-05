@@ -125,7 +125,7 @@ def BuildCompanyFieldGaps(facts: CompanyFacts) -> tuple[CompanyFieldGap, ...]:
             contract_fields: tuple[tuple[str, bool, CompanyFieldReason], ...] = (
                 ("contract_amount", measurements.contract_amount_cny is None, "measurement_missing"),
                 ("annual_revenue", measurements.reference_annual_revenue_cny is None, "dependency_missing"),
-                ("revenue_report_date", measurements.reference_report_date is None, "dependency_missing"),
+                ("revenue_report_date", measurements.reference_report_date is None, "measurement_missing"),
                 ("revenue_disclosed_at", measurements.reference_disclosed_at is None, "dependency_missing"),
                 ("contract_revenue_pct", measurements.amount_to_revenue_pct is None, "dependency_missing"),
                 ("amount_basis", measurements.amount_basis == "unknown", "ambiguous"),
@@ -136,6 +136,45 @@ def BuildCompanyFieldGaps(facts: CompanyFacts) -> tuple[CompanyFieldGap, ...]:
                         facts.code, event.event_id, event.evidence_ids[-1], field, reason
                     ))
     return tuple(gaps)
+
+
+def CompanyFieldIsAvailable(facts: CompanyFacts, event_id: str, field: str) -> bool:
+    """Require an actual value on the same event before retiring an older task.
+
+    An absent gap can also mean an expired, cancelled or unlinked event. None
+    of those conditions proves that a newer input supplied the requested value.
+    """
+    for risk in facts.risk_events:
+        if risk.event_id != event_id or risk.reduction_plan is None:
+            continue
+        plan = risk.reduction_plan
+        return any(name == field and available for name, available in (
+            ("start_date", plan.planned_start_date is not None),
+            ("end_date", plan.planned_end_date is not None),
+            ("planned_pct", plan.planned_ratio_pct is not None),
+            ("completion_disclosed_at", plan.completion_disclosed_at is not None),
+        ))
+    for event in facts.positive_events:
+        if event.event_id != event_id:
+            continue
+        measurements = event.measurements
+        if isinstance(measurements, (RepurchaseMeasurements, IncreaseMeasurements)):
+            if field == "actual_pct":
+                return measurements.actual_ratio_pct is not None
+            return (
+                field == "repurchase_purpose" and isinstance(measurements, RepurchaseMeasurements)
+                and measurements.purpose is not RepurchasePurpose.UNKNOWN
+            )
+        if isinstance(measurements, ContractMeasurements):
+            return any(name == field and available for name, available in (
+                ("contract_amount", measurements.contract_amount_cny is not None),
+                ("annual_revenue", measurements.reference_annual_revenue_cny is not None),
+                ("revenue_report_date", measurements.reference_report_date is not None),
+                ("revenue_disclosed_at", measurements.reference_disclosed_at is not None),
+                ("contract_revenue_pct", measurements.amount_to_revenue_pct is not None),
+                ("amount_basis", measurements.amount_basis == "comparable"),
+            ))
+    return False
 
 
 def PlanCompanyFieldRecovery(
@@ -205,5 +244,6 @@ __all__ = [
     "CompanyFieldMaterial",
     "CompanyFieldRecovery",
     "BuildCompanyFieldGaps",
+    "CompanyFieldIsAvailable",
     "PlanCompanyFieldRecovery",
 ]

@@ -409,7 +409,10 @@ def _sync_company_evidence(
         failures = DownloadFailureDiagnostics(partial(index.record_failure, configuration=failure_configuration), ShanghaiClock(_utc_now).now)
         dependencies = CompanyEvidenceDependencies(
             index,
-            source_factory(resources.enter_context(OpenExternalHttp())),
+            source_factory(
+                resources.enter_context(OpenExternalHttp()),
+                pacer=CompanyRequestPacer(configuration.request_interval_seconds, time.monotonic, time.sleep, cancel_requested),
+            ),
             structured,
             time.monotonic,
             heartbeat,

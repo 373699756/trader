@@ -8,8 +8,98 @@ from collections import Counter
 from datetime import datetime
 
 from trader.infra.sqlite_connection import SqliteConnection
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.download.domain.company_events import ContractMeasurements
+from trader.download.infra.company_document_files import CompanyDocumentFiles
+from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
+from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+
+
+def InspectCompanyFieldMaterial(
+    raw_path: Path, facts_path: Path, source_keys: tuple[str, ...], *, sqlite_policy: SqliteIoPolicy
+) -> dict[str, object]:
+    """Project bounded local excerpts and contract facts for source-value annotation.
+
+    The document owner verifies text hashes. This inspection never fetches,
+    repairs or certifies field recall; unreadable material remains explicit.
+    """
+    if not 1 <= len(source_keys) <= 6 or len(set(source_keys)) != len(source_keys) or any(
+        not key or len(key) > 240 or any(character.isspace() for character in key) for key in source_keys
+    ):
+        raise ValueError("company_material_keys_invalid")
+    configuration = LoadCompanySyncConfiguration(Path(__file__).resolve().parents[4])
+    documents = CompanyDocumentFiles(
+        raw_path.parent / "text", max_text_characters=configuration.extended_document_limits.max_text_characters,
+        max_bytes=configuration.temporary_text_capacity_bytes, reserve_bytes=configuration.temporary_disk_reserve_bytes,
+    )
+    items: list[dict[str, object]] = []
+    found: set[str] = set()
+    options = SqliteConnectionOptions(read_only=True, timeout_seconds=3)
+    with SqliteSession(raw_path, options, sqlite_policy=sqlite_policy) as raw, SqliteSession(
+        facts_path, options, sqlite_policy=sqlite_policy,
+    ) as formal:
+        before = (raw.run("PRAGMA data_version").require_one()[0], formal.run("PRAGMA data_version").require_one()[0])
+        with SqliteTransaction(raw), SqliteTransaction(formal):
+            placeholders = ",".join("?" for _ in source_keys)
+            rows = raw.run(
+                "SELECT d.source_key,d.title,d.published_at,d.record_hash,d.body_hash,d.body_checked,c.code,d.url "
+                "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+                f"WHERE d.source='cninfo' AND d.source_key IN ({placeholders}) ORDER BY d.source_key,c.code LIMIT 33", source_keys,
+            ).fetchall()
+            if len(rows) > 32:
+                raise ValueError("company_material_members_limit")
+            for row in rows:
+                found.add(row[0])
+                item: dict[str, object] = {
+                    "source_key": row[0], "code": row[6], "title": row[1], "published_at": row[2],
+                    "record_hash": row[3], "body_hash": row[4].hex() if isinstance(row[4], bytes) else None,
+                    "body_checked": bool(row[5]), "material_available": False,
+                    "source_url": row[7] if row[7].startswith("https://static.cninfo.com.cn/finalpage/") else None,
+                }
+                if row[4] is not None:
+                    try:
+                        text = documents.read(row[4])
+                    except (OSError, ValueError) as exc:
+                        item["material_failure"] = type(exc).__name__
+                    else:
+                        lines = text.splitlines()
+                        positions: set[int] = set()
+                        for position, line in enumerate(lines):
+                            if any(marker in line for marker in ("签订", "签署", "金额", "营业收入", "营业总收入", "生效")):
+                                positions.update(range(max(0, position - 1), min(len(lines), position + 2)))
+                        selected = sorted(positions)[:16]
+                        item.update({"material_available": True, "excerpts": [
+                            {"line": position + 1, "text": lines[position][:150]} for position in selected
+                        ], "excerpt_truncated": len(selected) < len(lines) or any(len(lines[position]) > 150 for position in selected)})
+                item["current_receipt"] = formal.run(
+                    "SELECT 1 FROM company_input_receipt WHERE source='cninfo' AND source_key=? AND code=? "
+                    "AND record_hash=? AND body_hash IS ? AND outcome='valid' LIMIT 1",
+                    (row[0], row[6], row[3], row[4]),
+                ).fetchone() is not None
+                item["contracts"] = [
+                    {
+                        "event_id": event.event_id, "subject": event.subject_type.value, "status": event.status.value,
+                        "contract_amount": event.measurements.contract_amount_cny,
+                        "annual_revenue": event.measurements.reference_annual_revenue_cny,
+                        "revenue_report_date": event.measurements.reference_report_date.isoformat()
+                        if event.measurements.reference_report_date else None,
+                        "binding_confirmed": event.measurements.binding_confirmed,
+                        "amount_basis": event.measurements.amount_basis,
+                    }
+                    for facts in ReadCompanyFactRows(formal, (row[6],)) for event in facts.positive_events
+                    if row[0] in event.evidence_ids and isinstance(event.measurements, ContractMeasurements)
+                ]
+                items.append(item)
+        after = (raw.run("PRAGMA data_version").require_one()[0], formal.run("PRAGMA data_version").require_one()[0])
+    stable = before == after
+    return {
+        "schema_version": "company-field-material", "read_only": True, "stable_read": stable,
+        "status": "observed" if stable else "degraded", "field_correctness_verified": False,
+        "missing_source_keys": sorted(set(source_keys) - found), "items": items,
+    }
 
 
 def AuditCompanyFields(

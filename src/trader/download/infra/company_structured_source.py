@@ -17,9 +17,12 @@ from trader.download.domain.company_evidence import (
     Disclosure,
     StructuredCompanyPage,
     StructuredCompanyQuery,
+    EvidenceMarket,
 )
+from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.infra.http_contracts import HttpCancelled, HttpTransport
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DATA_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
@@ -39,7 +42,9 @@ class EastmoneyCompanySource:
         self._timeout = timeout_seconds
         self._cancel_requested = cancel_requested
 
-    def _json(self, url: str, params: Mapping[str, str]) -> Mapping[str, object]:
+    def _json(
+        self, url: str, params: Mapping[str, str], *, max_response_bytes: int = 16 * 1024 * 1024
+    ) -> Mapping[str, object]:
         self._check_cancelled()
         response = self._session.get(
             url,
@@ -48,6 +53,7 @@ class EastmoneyCompanySource:
             deadline=self._monotonic() + self._timeout,
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"},
             cancel_requested=self._cancel_requested,
+            max_response_bytes=max_response_bytes,
         )
         self._check_cancelled()
         CheckCompanyResponse(response)
@@ -59,6 +65,69 @@ class EastmoneyCompanySource:
     def _check_cancelled(self) -> None:
         if self._cancel_requested is not None and self._cancel_requested():
             raise HttpCancelled("http_cancelled")
+
+    def annual_income(
+        self, request: CompanyAnnualIncomeRequest, *, observed_at: datetime
+    ) -> tuple[CompanyAnnualIncome, ...]:
+        """Read only explicitly requested annual reports through the F10 report route."""
+        self._check_cancelled()
+        market = {"sse": "SH", "szse": "SZ", "bse": "BJ"}[EvidenceMarket(request.code)]
+        identity = market + request.code
+        response = self._session.get(
+            "https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/Index",
+            params={"type": "web", "code": identity.lower()},
+            timeout=self._timeout,
+            deadline=self._monotonic() + self._timeout,
+            max_response_bytes=2 * 1024 * 1024,
+            cancel_requested=self._cancel_requested,
+        )
+        self._check_cancelled()
+        CheckCompanyResponse(response)
+        company_type = re.search(
+            r"<input\b(?=[^>]*\bid=['\"]hidctype['\"])(?=[^>]*\bvalue=['\"]([1-4])['\"])[^>]*>",
+            response.text,
+            re.IGNORECASE,
+        )
+        if company_type is None:
+            raise ValueError("company_annual_income_company_type_missing")
+        payload = self._json(
+            "https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/lrbAjaxNew",
+            {
+                "companyType": company_type[1], "reportDateType": "1", "reportType": "1",
+                "dates": ",".join(day.isoformat() for day in request.report_dates), "code": identity,
+            },
+            max_response_bytes=2 * 1024 * 1024,
+        )
+        rows = payload.get("data")
+        if not isinstance(rows, list) or len(rows) != len(request.report_dates):
+            raise ValueError("company_annual_income_reports_missing")
+        incomes: list[CompanyAnnualIncome] = []
+        for row in rows:
+            if not isinstance(row, Mapping) or row.get("SECUCODE") != f"{request.code}.{market}" or row.get("REPORT_TYPE") != "年报":
+                raise ValueError("company_annual_income_report_identity_invalid")
+            report_date = _day(row.get("REPORT_DATE"))
+            currency = row.get("CURRENCY")
+            if report_date not in request.report_dates or not isinstance(currency, str) or not currency:
+                raise ValueError("company_annual_income_report_identity_invalid")
+            disclosed = _income_time(row.get("NOTICE_DATE"))
+            updated = _income_time(row.get("UPDATE_DATE"))
+            if updated.date() < observed_at.date() - timedelta(days=365):
+                raise ValueError("company_annual_income_outside_window")
+            revenue = _number(row.get("OPERATE_INCOME"))
+            version = CanonicalDigest((request.code, report_date, disclosed, updated, currency, revenue))
+            incomes.append(CompanyAnnualIncome(
+                request.code,
+                report_date,
+                disclosed,
+                updated,
+                observed_at,
+                currency,
+                revenue,
+                version,
+            ))
+        if {row.report_date for row in incomes} != set(request.report_dates):
+            raise ValueError("company_annual_income_reports_missing")
+        return tuple(incomes)
 
     def pledge_day(self, observed_at: datetime) -> date:
         payload = self._json(
@@ -222,6 +291,13 @@ def _result(payload: Mapping[str, object]) -> tuple[tuple[Mapping[str, object], 
 
 def _day(value: object) -> date:
     return date.fromisoformat(str(value)[:10])
+
+
+def _income_time(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("company_annual_income_time_missing")
+    parsed = datetime.fromisoformat(value)
+    return parsed.replace(tzinfo=_SHANGHAI) if parsed.utcoffset() is None else parsed.astimezone(_SHANGHAI)
 
 
 def _code(row: Mapping[str, object]) -> str:

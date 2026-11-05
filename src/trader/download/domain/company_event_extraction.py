@@ -166,11 +166,11 @@ class _VerifiedDocument:
 
 
 def CompanyDocumentNeedsReview(title: str) -> bool:
-    return any(marker in title for marker in (*_RISK_HINTS, *_POSITIVE_HINTS))
+    return not CompanyDocumentOutsideSubjectScope(title) and any(marker in title for marker in (*_RISK_HINTS, *_POSITIVE_HINTS))
 
 
 def CompanyDocumentRiskRelevant(title: str) -> bool:
-    return any(marker in title for marker in _RISK_HINTS)
+    return not CompanyDocumentOutsideSubjectScope(title) and any(marker in title for marker in _RISK_HINTS)
 
 
 def ExtractCompanyEvents(
@@ -551,11 +551,18 @@ def _append_positive(
 ) -> str | None:
     item = verified.document.disclosure
     body = _subject_body(verified)
+    if any(
+        event.event_type is kind and item.identity in event.evidence_ids and event.subject_type is not verified.subject
+        for event in positives
+    ):
+        return "subject_unverified"
     previous = next(
         (
             x
             for x in positives
-            if x.event_type is kind and (item.identity in x.evidence_ids or _references(body, x.evidence_ids))
+            if x.event_type is kind
+            and x.subject_type is verified.subject
+            and (item.identity in x.evidence_ids or _references(body, x.evidence_ids))
         ),
         None,
     )
@@ -591,12 +598,15 @@ def _positive_event(
     verified: _VerifiedDocument, kind: CompanyPositiveType, policy: CompanyEventPolicy, previous: CompanyPositiveEvent | None
 ) -> tuple[CompanyPositiveEvent, str | None]:
     item, title = verified.document.disclosure, verified.title
-    measurements, ratio, implemented = _positive_measurements(verified, kind)
+    measurements, ratio, eligible = _positive_measurements(verified, kind)
+    # An observed action remains implemented even when its purpose or amount
+    # basis cannot qualify for points. Missing evidence still receives review.
+    implemented = measurements.binding_confirmed if isinstance(measurements, ContractMeasurements) else ratio is not None
     thresholds = (
         policy.contract_thresholds if kind is CompanyPositiveType.OPERATING_CONTRACT else policy.share_thresholds
     )
-    reason = None if implemented else "implementation_or_measurement_unverified"
-    level = sum(ratio >= threshold for threshold in thresholds) if implemented and ratio is not None else 0
+    reason = None if eligible else "implementation_or_measurement_unverified"
+    level = sum(ratio >= threshold for threshold in thresholds) if eligible and ratio is not None else 0
     milestones = list(previous.level_milestones if previous else ())
     if ratio is not None and level:
         for threshold_level in range(1, level + 1):
@@ -632,15 +642,18 @@ def _positive_measurements(
     if kind is CompanyPositiveType.OPERATING_CONTRACT:
         measurements = _contract(body, verified.document.disclosure.published_at)
         ratio = measurements.amount_to_revenue_pct
-        implemented = measurements.binding_confirmed and measurements.amount_basis == "comparable"
+        eligible = measurements.binding_confirmed and measurements.amount_basis == "comparable"
     else:
         verb = "回购" if kind is CompanyPositiveType.SHARE_REPURCHASE else "增持"
         ratio = _actual_ratio(body, verb)
-        implemented = ratio is not None
+        eligible = ratio is not None
         if kind is CompanyPositiveType.SHARE_REPURCHASE:
             purpose = (
                 RepurchasePurpose.CANCELLATION
                 if ("用于注销" in body or "注销并减少注册资本" in body)
+                and not re.search(
+                    r"(?:不再|不会|不得|不能|并非|无需|无须|尚未|未|不|非)(?:用于注销|注销并减少注册资本)", body
+                )
                 and not any(x in body for x in ("员工持股", "股权激励"))
                 else RepurchasePurpose.EMPLOYEE_PLAN
                 if "员工持股" in body
@@ -649,11 +662,11 @@ def _positive_measurements(
                 else RepurchasePurpose.UNKNOWN
             )
             measurements = RepurchaseMeasurements(ratio, purpose)
-            implemented = implemented and purpose is RepurchasePurpose.CANCELLATION
+            eligible = eligible and purpose is RepurchasePurpose.CANCELLATION
         else:
             measurements = IncreaseMeasurements(ratio)
-            implemented = implemented and verified.subject is not CompanySubject.ISSUER
-    return measurements, ratio, implemented
+            eligible = eligible and verified.subject is not CompanySubject.ISSUER
+    return measurements, ratio, eligible
 
 
 def _actual_ratio(body: str, verb: str) -> float | None:
@@ -693,6 +706,11 @@ def _contract(body: str, published: datetime) -> ContractMeasurements:
     )
     contract_amount = float(amount[1].replace(",", "").replace("，", "")) * _amount_unit(amount[2]) if amount else None
     annual_revenue = float(revenue[2].replace(",", "").replace("，", "")) * _amount_unit(revenue[3]) if revenue else None
+    reference_years = set(re.findall(r"(20[0-9]{2})(?:年度|年)(?:经审计的?)?营业收入", body))
+    reference_date = (
+        date(int(revenue[1]), 12, 31) if revenue else
+        date(int(next(iter(reference_years))), 12, 31) if len(reference_years) == 1 else None
+    )
     ratio = (
         100 * contract_amount / annual_revenue
         if comparable and contract_amount is not None and annual_revenue and annual_revenue > 0
@@ -701,7 +719,7 @@ def _contract(body: str, published: datetime) -> ContractMeasurements:
     return ContractMeasurements(
         contract_amount,
         annual_revenue,
-        date(int(revenue[1]), 12, 31) if revenue else None,
+        reference_date,
         disclosed,
         ratio,
         binding,
@@ -770,6 +788,18 @@ def _subject_body(verified: _VerifiedDocument) -> str:
 
 def _unrelated_subject(title: str) -> bool:
     return any(x in title for x in ("董事", "监事", "高级管理", "子公司", "参股")) and "公司及" not in title
+
+
+def CompanyDocumentOutsideSubjectScope(title: str) -> bool:
+    """Apply certain existing subject exclusions before document I/O.
+
+    Issuer organs and directors who are also qualifying shareholders still
+    require normal verification. Their titles alone cannot exclude an event.
+    """
+    compact = "".join(title.split())
+    return _unrelated_subject(compact) and not any(
+        marker in compact for marker in ("董事会", "监事会", *(marker for marker, _subject in _SUBJECT_MARKERS))
+    )
 
 
 def _risk_authority(body: str, category: CompanyRiskType) -> bool:

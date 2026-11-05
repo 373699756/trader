@@ -6,16 +6,18 @@ import argparse
 import json
 import time
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.company_evidence import DisclosurePartition, StructuredCompanyQuery
+from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+from scripts.checks.download.company.company_structured_field_audit import AuditCompanyAnnualIncome, AuditCompanyStructuredSources
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -196,8 +198,40 @@ def Main() -> int:
     parser.add_argument("--timeout-seconds", type=float, default=8)
     parser.add_argument("--source-loop-seconds", type=float, default=120)
     parser.add_argument("--task-seconds", type=float, default=180)
+    parser.add_argument("--field-sources-only", action="store_true", help="Read one bounded page of structured company field alternatives; no database writes.")
+    parser.add_argument("--field-source-rows", type=int, default=5, help="Rows per structured field sample (1..500); requires --field-sources-only.")
+    parser.add_argument("--field-source-schema", action="store_true", help="Discover column names from exactly one row per source; requires --field-sources-only and --field-source-rows 1. Values remain projected.")
+    parser.add_argument("--annual-income-period", type=date.fromisoformat, help="Read one explicit annual period with the production F10 decoder; requires exactly one --codes value.")
     args = parser.parse_args()
     if not (0 < args.timeout_seconds <= 30 and 0 < args.source_loop_seconds <= 120 and 0 < args.task_seconds <= 600):
         parser.error("diagnostic budgets exceed the bounded source/task limits")
-    print(json.dumps(Collect(args), ensure_ascii=False, indent=2))
+    if not 1 <= args.field_source_rows <= 500 or args.field_source_rows != 5 and not args.field_sources_only:
+        parser.error("--field-source-rows requires --field-sources-only and a value within 1..500")
+    if args.field_source_schema and (not args.field_sources_only or args.field_source_rows != 1):
+        parser.error("--field-source-schema requires --field-sources-only and --field-source-rows 1")
+    if args.annual_income_period is not None and (args.field_sources_only or len(args.codes) != 1):
+        parser.error("--annual-income-period requires one code and cannot be combined with --field-sources-only")
+    if args.annual_income_period is not None:
+        try:
+            request = CompanyAnnualIncomeRequest(args.codes[0], (args.annual_income_period,))
+        except ValueError:
+            parser.error("annual income requires an A-share code and a December 31 period")
+        with OpenExternalHttp() as session:
+            report = AuditCompanyAnnualIncome(
+                session, request, observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
+                deadline=time.monotonic() + args.task_seconds,
+            )
+    elif args.field_sources_only:
+        with OpenExternalHttp() as session:
+            report = AuditCompanyStructuredSources(
+                session,
+                observed_at=datetime.now(_SHANGHAI),
+                timeout_seconds=args.timeout_seconds,
+                deadline=time.monotonic() + args.task_seconds,
+                sample_rows=args.field_source_rows,
+                discover_schema=args.field_source_schema,
+            )
+    else:
+        report = Collect(args)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0

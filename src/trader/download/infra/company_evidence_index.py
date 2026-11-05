@@ -77,9 +77,16 @@ from trader.download.infra.company_field_recovery import (
     CompanyFieldRepairReceipts,
     EnsureCompanyFieldRepairs,
     QueueCompanyFieldRepairs,
+    RegisterCompanyFieldAttempts,
     RestoreCompanyFieldRepairs,
 )
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
+from trader.download.domain.company_annual_income import ApplyCompanyAnnualIncome, CompanyAnnualIncome, CompanyAnnualIncomeRequest
+from trader.download.infra.company_annual_income_index import (
+    EnsureCompanyAnnualIncome,
+    PlanCompanyAnnualIncomeRequests,
+    WriteCompanyAnnualIncome,
+)
 from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES, DecodeCompanyLabel, RequireCompanyTime
 from trader.download.infra.company_pipeline_queries import (
     CheckDisclosureQueryContract,
@@ -196,6 +203,7 @@ class SQLiteCompanyEvidenceIndex:
                     ActivateDisclosureQueryPolicy(connection)
                     EnsureCompanyPipelineQueries(connection)
                     EnsureCompanyFieldRepairs(connection)
+                    EnsureCompanyAnnualIncome(connection)
                     connection.run(FAILURE_DIAGNOSTICS_SQL)
             self._repair_pending_files()
         except sqlite3.Error as exc:
@@ -754,7 +762,8 @@ class SQLiteCompanyEvidenceIndex:
     def document_required(self, item: Disclosure) -> bool:
         with self._connect() as connection:
             return connection.run(
-                "SELECT 1 FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+                "SELECT 1 FROM disclosures d JOIN company_document_requirements q ON q.disclosure_id=d.id "
+                "JOIN disclosure_codes c ON c.disclosure_id=d.id "
                 "JOIN company_population u ON u.code=c.code WHERE d.source=? AND d.source_key=? AND d.record_hash=? "
                 "AND d.body_checked=0 AND NOT EXISTS(SELECT 1 FROM document_supersessions s "
                 "JOIN disclosures n ON n.id=s.replacement_id AND n.record_hash=s.replacement_hash "
@@ -919,6 +928,26 @@ class SQLiteCompanyEvidenceIndex:
             if row and row[0]
             else observed_at.date() - timedelta(days=365)
         ))
+
+    def annual_income_requests(
+        self, codes: Sequence[str], observed_at: datetime
+    ) -> tuple[CompanyAnnualIncomeRequest, ...]:
+        with self._connect() as collected, SqliteSession(
+            self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
+        ) as formal:
+            return PlanCompanyAnnualIncomeRequests(collected, formal, codes, observed_at)
+
+    def commit_annual_income(
+        self,
+        request: CompanyAnnualIncomeRequest,
+        incomes: tuple[CompanyAnnualIncome, ...],
+        observed_at: datetime,
+    ) -> int:
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            changes = WriteCompanyAnnualIncome(connection, request, incomes, observed_at)
+            if changes:
+                MarkCompanyDirty(connection, (request.code,))
+            return changes
 
     def structured_cursor(self, query: StructuredCompanyQuery) -> StructuredCompanyQuery:
         with self._connect() as connection:
@@ -1124,13 +1153,13 @@ class SQLiteCompanyEvidenceIndex:
         with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                 RestoreCompanyFieldRepairs(connection, formal)
-                for row in formal.run("SELECT source,source_key,code,record_hash,extraction_hash,published_at FROM company_input_receipt WHERE outcome='valid'"):
+                for row in formal.run("SELECT source,source_key,code,record_hash,extraction_hash,published_at,body_hash FROM company_input_receipt WHERE outcome='valid'"):
                     connection.run(
                         "INSERT OR REPLACE INTO document_publications SELECT id,?,?,?,? FROM disclosures "
-                        "WHERE source=? AND source_key=? AND record_hash=? AND NOT EXISTS("
+                        "WHERE source=? AND source_key=? AND record_hash=? AND body_hash IS ? AND NOT EXISTS("
                         "SELECT 1 FROM company_field_repairs f WHERE f.disclosure_id=disclosures.id "
                         "AND f.code=? AND f.record_hash=disclosures.record_hash AND f.state='pending')",
-                        (row[2], row[3], row[4], RequireCompanyTime(row[5]).isoformat(), row[0], row[1], row[3], row[2]),
+                        (row[2], row[3], row[4], RequireCompanyTime(row[5]).isoformat(), row[0], row[1], row[3], row[6], row[2]),
                     )
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             PrepareCompanyPublication(connection, tuple(codes))
@@ -1241,7 +1270,7 @@ class SQLiteCompanyEvidenceIndex:
                             (code, self._facts.extraction_hash)))
                         linked = ResolveCompanyLinks(candidates, facts.risk_events, facts.positive_events, facts.review_reasons, self._event_policy)
                         facts = replace(facts, risk_events=tuple(event for event in linked.risks if event.expires_at is None or event.expires_at > observed_at),
-                                        positive_events=linked.positives, review_reasons=linked.reviews,
+                                        positive_events=ApplyCompanyAnnualIncome(code, linked.positives, inputs[code].annual_incomes, observed_at, financials=snapshot.financials), review_reasons=linked.reviews,
                                         announcement_state=CompanyDataState.COMPLETE if snapshot.announcement_complete and not any(r.scope == "risk" for r in linked.reviews) else CompanyDataState.PARTIAL)
                         prior = previous.get(code)
                         if prior is not None and replace(facts, published_at=prior.published_at) == prior:
@@ -1260,6 +1289,18 @@ class SQLiteCompanyEvidenceIndex:
                                                 self._facts.extraction_hash, row["body_hash"], observed_at)
                             for row in rows if row["kind"] == "announcement" and row["body_checked"]
                             and row["body_retained"] and not row["published_for_code"]
+                        )
+                        formal_receipts.extend(
+                            CompanyInputReceipt(
+                                "eastmoney_annual_income",
+                                income.source_key,
+                                code,
+                                income.record_hash,
+                                self._facts.extraction_hash,
+                                None,
+                                observed_at,
+                            )
+                            for income in inputs[code].annual_incomes
                         )
                         formal_receipts.extend(
                             CompanyInputReceipt(row["source"], row["source_key"], code, row["record_hash"], self._facts.extraction_hash,
@@ -1298,6 +1339,7 @@ class SQLiteCompanyEvidenceIndex:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                 if source.run("PRAGMA data_version").require_one()[0] != source_version:
                     raise RuntimeError("company_publication_source_changed")
+                RegisterCompanyFieldAttempts(connection, prepared, formal_receipts, self._facts.extraction_hash)
                 self._facts.publish(
                     tuple(item for item in prepared if item is not previous_facts.get(item.code)),
                     sources,
@@ -1306,9 +1348,11 @@ class SQLiteCompanyEvidenceIndex:
                     receipts=(*formal_receipts, *CompanyFieldRepairReceipts(connection, requested, observed_at)),
                 )
                 connection.run_many("INSERT OR REPLACE INTO document_publications VALUES(?,?,?,?,?)", receipts)
-                CompleteCompanyFieldRepairs(connection, prepared)
+                with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
+                    repaired_codes = CompleteCompanyFieldRepairs(connection, formal, prepared, self._facts.extraction_hash)
                 connection.run_many("DELETE FROM company_dirty_codes WHERE code=?", ((code,) for code in requested))
-                superseded_codes = PublishCompanySupersessions(connection, prepared, self._facts.extraction_hash)
+                superseded_codes = tuple(sorted(set(repaired_codes) | set(
+                    PublishCompanySupersessions(connection, prepared, self._facts.extraction_hash))))
                 MarkCompanyDirty(connection, superseded_codes)
                 self._release_published_documents(connection)
         self._release_files()

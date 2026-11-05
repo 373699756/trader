@@ -122,6 +122,7 @@ def test_old_extraction_identity_cannot_be_silently_loaded_under_new_rules(tmp_p
     index.publish(("600001",), _AT)
     with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE company_publication SET extraction_hash=?", (b"0" * 32,))
+    index.publish_file()
     with pytest.raises(ValueError, match="company_publication_identity_mismatch"):
         SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))
 

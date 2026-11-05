@@ -27,6 +27,7 @@ from trader.download.domain.company_field_plan import (
     BuildCompanyFieldGaps,
     CompanyFieldGap,
     CompanyFieldMaterial,
+    CompanyFieldIsAvailable,
     PlanCompanyFieldRecovery,
 )
 
@@ -231,3 +232,47 @@ def test_contract_known_amount_is_preserved_and_missing_dependencies_require_ver
         "annual_revenue", "revenue_report_date", "revenue_disclosed_at", "contract_revenue_pct", "amount_basis"
     }
     assert all(recovery.action == "verify" for recovery in PlanCompanyFieldRecovery(gaps, (), AT))
+
+
+def test_field_availability_requires_value_on_the_same_event_including_zero():
+    measured = replace(_positive(), measurements=IncreaseMeasurements(0))
+    facts = _facts(positives=(measured,))
+    assert CompanyFieldIsAvailable(facts, measured.event_id, "actual_pct")
+    assert not CompanyFieldIsAvailable(facts, "other-event", "actual_pct")
+    assert not CompanyFieldIsAvailable(facts, measured.event_id, "repurchase_purpose")
+    assert not CompanyFieldIsAvailable(facts, measured.event_id, "unsupported-field")
+    cancelled = replace(_positive(), status=CompanyPositiveStatus.CANCELLED, cancelled_at=AT)
+    assert BuildCompanyFieldGaps(_facts(positives=(cancelled,))) == ()
+    assert not CompanyFieldIsAvailable(_facts(positives=(cancelled,)), cancelled.event_id, "actual_pct")
+
+
+def test_available_reduction_fields_do_not_imply_missing_completion_or_another_event():
+    risk = replace(_risk(), reduction_plan=ReductionPlan(AT.date(), AT.date(), 2))
+    facts = _facts(risks=(risk,))
+    assert all(CompanyFieldIsAvailable(facts, risk.event_id, field) for field in (
+        "start_date", "end_date", "planned_pct",
+    ))
+    assert not CompanyFieldIsAvailable(facts, risk.event_id, "completion_disclosed_at")
+    assert not CompanyFieldIsAvailable(facts, "other-event", "planned_pct")
+
+
+def test_contract_amount_does_not_complete_revenue_or_measurement_basis():
+    event = replace(
+        _positive(), event_type=CompanyPositiveType.OPERATING_CONTRACT,
+        measurements=ContractMeasurements(100_000_000, None, None, None, None, True, "unknown"),
+    )
+    facts = _facts(positives=(event,))
+    assert CompanyFieldIsAvailable(facts, event.event_id, "contract_amount")
+    assert all(not CompanyFieldIsAvailable(facts, event.event_id, field) for field in (
+        "annual_revenue", "revenue_report_date", "revenue_disclosed_at", "contract_revenue_pct", "amount_basis",
+    ))
+
+
+def test_repurchase_actual_ratio_and_purpose_are_independent_fields():
+    event = replace(
+        _positive(), event_type=CompanyPositiveType.SHARE_REPURCHASE,
+        measurements=RepurchaseMeasurements(0.3, RepurchasePurpose.UNKNOWN),
+    )
+    facts = _facts(positives=(event,))
+    assert CompanyFieldIsAvailable(facts, event.event_id, "actual_pct")
+    assert not CompanyFieldIsAvailable(facts, event.event_id, "repurchase_purpose")

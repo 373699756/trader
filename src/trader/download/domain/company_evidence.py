@@ -5,7 +5,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from trader.download.domain.company_annual_income import CompanyAnnualIncome
 
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.prepared_reference import PreparedReference
@@ -452,6 +455,7 @@ class CompanyEvidenceInput:
     unlock_checked_at: datetime | None = None
     unlock_coverage_end: date | None = None
     superseded_evidence_ids: tuple[str, ...] = ()
+    annual_incomes: tuple[CompanyAnnualIncome, ...] = ()
 
     def __post_init__(self) -> None:
         EvidenceMarket(self.code)
@@ -533,9 +537,9 @@ class EvidenceSyncProgress:
     failure: str = ""
     status: EvidenceProgressState = "running"
     scope: DisclosurePartition | StructuredCompanyQuery | None = None
-    pending_documents: int = 0
+    pending_documents: int | None = 0
     attempted_documents: int = 0
-    deferred_documents: int = 0
+    deferred_documents: int | None = 0
     activity: Literal["download", "repair"] = "download"
     stock: CompanyStockProgress | None = None
     dates: CompanyDateProgress | None = None
@@ -545,8 +549,8 @@ class EvidenceSyncProgress:
     unknown_queries: int = 0
     document_rate: float | None = None
     document_eta_seconds: float | None = None
-    ocr_documents: int = 0
-    unextractable_documents: int = 0
+    ocr_documents: int | None = 0
+    unextractable_documents: int | None = 0
     next_document_retry_at: datetime | None = None
     discovering_documents: bool = False
     workload: CompanyDocumentWorkload | None = None
@@ -555,26 +559,32 @@ class EvidenceSyncProgress:
 
 @dataclass(frozen=True)
 class CompanyEvidenceSyncResult:
+    """Durable outcomes; null pending counts mean the final inventory was not checked."""
+
     observed_at: datetime
     requested_codes: int
     published_codes: int
     fetched_pages: int
     changed_rows: int
     reused_partitions: int
-    pending_partitions: int
+    pending_partitions: int | None
     failures: tuple[str, ...]
     elapsed_seconds: float
-    pending_documents: int = 0
+    pending_documents: int | None = 0
     news_population_codes: int = 0
     news_coverage: Literal["published_population", "uncovered"] = "uncovered"
-    ocr_documents: int = 0
-    unextractable_documents: int = 0
+    ocr_documents: int | None = 0
+    unextractable_documents: int | None = 0
     next_document_retry_at: datetime | None = None
     window_days: int = 365
 
     @property
     def needs_retry(self) -> bool:
-        return bool(self.failures or self.pending_partitions or self.pending_documents)
+        return bool(
+            self.failures or self.pending_partitions is None or self.pending_documents is None
+            or self.ocr_documents is None or self.unextractable_documents is None
+            or self.pending_partitions or self.pending_documents
+        )
 
 
 _OCR_FAILURES = frozenset(

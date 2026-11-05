@@ -6,7 +6,7 @@ import re
 from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from functools import partial
 from typing import Literal, Protocol
@@ -44,9 +44,19 @@ from trader.download.domain.company_evidence import (
 from trader.infra.workers import SubmitOrReject, WorkerExecutor, WorkerResourceRejectedError
 from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.domain.download_failure import DownloadFailureContext
+from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
 
 
 class CompanyEvidenceIndex(Protocol):
+    def annual_income_requests(
+        self, codes: Sequence[str], observed_at: datetime
+    ) -> tuple[CompanyAnnualIncomeRequest, ...]: ...
+    def commit_annual_income(
+        self,
+        request: CompanyAnnualIncomeRequest,
+        incomes: tuple[CompanyAnnualIncome, ...],
+        observed_at: datetime,
+    ) -> int: ...
     def document_stage(self, item: Disclosure, stage: str) -> None: ...
     def document_required(self, item: Disclosure) -> bool: ...
     def initialize(self) -> None: ...
@@ -136,6 +146,9 @@ class CompanyDisclosureSource(Protocol):
 
 
 class CompanyStructuredSource(Protocol):
+    def annual_income(
+        self, request: CompanyAnnualIncomeRequest, *, observed_at: datetime
+    ) -> tuple[CompanyAnnualIncome, ...]: ...
     def pledge_day(self, observed_at: datetime) -> date: ...
     def fetch(self, query: StructuredCompanyQuery, *, observed_at: datetime) -> StructuredCompanyPage: ...
     def news(self, code: str, *, observed_at: datetime) -> tuple[Disclosure, ...]: ...
@@ -170,6 +183,9 @@ class _SyncState:
     failures: tuple[str, ...] = ()
     failed_documents: int = 0
     batch: int = 0
+    annual_income_attempts: set[CompanyAnnualIncomeRequest] = field(default_factory=set)
+    annual_income_circuit: _SourceCircuit = field(default_factory=lambda: _SourceCircuit())
+    annual_income_source_stopped: bool = False
 
 
 @dataclass
@@ -215,8 +231,10 @@ def SyncCompanyEvidence(
     documents = _DocumentRun(dependencies, population, state, context)
     if not _cancelled(dependencies):
         index.initialize()
-        index.prepare_publication(population, observed_at)
-        _report(dependencies, "resume", state, None, workload=documents.workload())
+        if not _cancelled(dependencies):
+            index.prepare_publication(population, observed_at)
+        if not _cancelled(dependencies):
+            _report(dependencies, "resume", state, None, workload=documents.workload())
     news_population = tuple(sorted(set(news_codes).intersection(population))) if not request.fill_missing else ()
     components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
     for component in components:
@@ -236,18 +254,24 @@ def SyncCompanyEvidence(
         if documents.completed != completed:
             _publish_batch(dependencies, population, observed_at, started, state)
     pending, published = (
-        (0, 0) if _cancelled(dependencies) else _run_batches(dependencies, population, state, context, documents)
+        (None, 0) if _cancelled(dependencies) else _run_batches(dependencies, population, state, context, documents)
     )
     published = max(published, state.published)
     news_updates = () if _cancelled(dependencies) else _news(dependencies, news_population, observed_at, state)
     if news_updates and not _cancelled(dependencies):
         _publish_batch(dependencies, population, observed_at, started, state)
+    document_workload: CompanyDocumentWorkload | None = None
+    if not _cancelled(dependencies):
+        try:
+            document_workload = documents.workload(include_attempted=True)
+        except InterruptedError:
+            if not _cancelled(dependencies):
+                raise
     if _cancelled(dependencies):
         state.failures += ("task:cancelled",)
-    document_workload = (
-        CompanyDocumentWorkload(0, 0) if _cancelled(dependencies) else documents.workload(include_attempted=True)
-    )
-    pending_documents = document_workload.due + document_workload.cooling
+        pending = None
+        document_workload = None
+    pending_documents = document_workload.due + document_workload.cooling if document_workload is not None else None
     if not _cancelled(dependencies):
         index.finish(observed_at)
     if pending_documents:
@@ -261,10 +285,10 @@ def SyncCompanyEvidence(
         completed=published,
         status="deferred" if result_failures or pending else "complete",
         pending_documents=pending_documents,
-        deferred_documents=document_workload.cooling,
-        ocr_documents=document_workload.ocr,
-        unextractable_documents=document_workload.unextractable,
-        next_document_retry_at=document_workload.next_retry_at,
+        deferred_documents=document_workload.cooling if document_workload is not None else None,
+        ocr_documents=document_workload.ocr if document_workload is not None else None,
+        unextractable_documents=document_workload.unextractable if document_workload is not None else None,
+        next_document_retry_at=document_workload.next_retry_at if document_workload is not None else None,
         workload=document_workload,
     )
     return CompanyEvidenceSyncResult(
@@ -280,9 +304,9 @@ def SyncCompanyEvidence(
         pending_documents,
         len(news_population),
         "published_population" if news_population else "uncovered",
-        document_workload.ocr,
-        document_workload.unextractable,
-        document_workload.next_retry_at,
+        document_workload.ocr if document_workload is not None else None,
+        document_workload.unextractable if document_workload is not None else None,
+        document_workload.next_retry_at if document_workload is not None else None,
         (observed_at.date() - context.start_date).days,
     )
 
@@ -324,25 +348,75 @@ def _publish_batch(
 ) -> int | None:
     _report(dependencies, "facts", state, len(population), completed=0)
     if not _cancelled(dependencies):
-        for attempt in range(3):
-            try:
-                updated = dependencies.index.publish(
-                    population,
-                    observed_at,
-                    changed_only=True,
-                )
-                break
-            except RuntimeError as exc:
-                if attempt == 2 or str(exc) not in {
-                    "company_publication_source_changed",
-                    "company_publication_parent_changed",
-                }:
-                    raise
-        published = dependencies.index.published_count(population)
-        state.published = published
+        updated = _publish_company_facts(dependencies.index, population, observed_at)
+        if _cancelled(dependencies):
+            return state.published
+        state.published = dependencies.index.published_count(population)
+        changes = _annual_income(dependencies, population, observed_at, state)
+        if _cancelled(dependencies):
+            return state.published
+        if changes and not _cancelled(dependencies):
+            state.changes += changes
+            updated += _publish_company_facts(dependencies.index, population, observed_at)
+            if _cancelled(dependencies):
+                return state.published
+            state.published = dependencies.index.published_count(population)
         _report(dependencies, "publish", state, 0, completed=updated, status="complete")
-        return published
+        return state.published
     return None
+
+
+def _publish_company_facts(index: CompanyEvidenceIndex, population: tuple[str, ...], observed_at: datetime) -> int:
+    for attempt in range(3):
+        try:
+            return index.publish(population, observed_at, changed_only=True)
+        except RuntimeError as exc:
+            if attempt == 2 or str(exc) not in {"company_publication_source_changed", "company_publication_parent_changed"}:
+                raise
+    raise RuntimeError("company_publication_retry_exhausted")
+
+
+def _annual_income(
+    dependencies: CompanyEvidenceDependencies,
+    population: tuple[str, ...],
+    observed_at: datetime,
+    state: _SyncState,
+) -> int:
+    if _cancelled(dependencies) or state.annual_income_source_stopped:
+        return 0
+    requests = tuple(
+        request for request in dependencies.index.annual_income_requests(population, observed_at)
+        if request not in state.annual_income_attempts
+    )
+    changes = 0
+    for completed, request in enumerate(requests):
+        if _cancelled(dependencies) or state.annual_income_source_stopped:
+            break
+        state.current_stock = None
+        _report(dependencies, "annual_income", state, len(requests) - completed, completed=completed)
+        if _cancelled(dependencies):
+            break
+        state.annual_income_attempts.add(request)
+        try:
+            incomes = dependencies.structured.annual_income(request, observed_at=observed_at)
+            if _cancelled(dependencies):
+                break
+            changes += dependencies.index.commit_annual_income(request, incomes, observed_at)
+            state.pages += 1
+            state.annual_income_circuit.success()
+            remaining = len(requests) - completed - 1
+            _report(dependencies, "annual_income", state, remaining, completed=completed + 1,
+                    status="running" if remaining else "complete")
+        except (OSError, RuntimeError, ValueError) as exc:
+            if _cancelled(dependencies):
+                break
+            failure = _failure(exc)
+            state.failures += (f"annual_income:{failure}",)
+            state.annual_income_source_stopped = state.annual_income_circuit.failed(exc, validation=isinstance(exc, ValueError))
+            if dependencies.failures is not None:
+                dependencies.failures(DownloadFailureContext("company_annual_income", supplier="eastmoney"), exc)
+            _report(dependencies, "annual_income", state, len(requests) - completed, completed=completed, status="deferred")
+    return changes
 
 
 def _validated_population(codes: Sequence[str]) -> tuple[str, ...]:
@@ -709,6 +783,8 @@ class _DocumentRun:
             return
         self.state.current_stock = None
         workload = self.workload()
+        if _cancelled(dependencies):
+            return
         queue = deque(
             index.pending_documents(
                 self.population,
@@ -816,7 +892,14 @@ class _DocumentRun:
             self.state.failures += ("risk_documents:company_raw_capacity_exhausted",)
         self.elapsed += max(0.0, dependencies.monotonic() - self.batch_started)
         self.batch_started = None
-        final_workload = self.workload()
+        if _cancelled(dependencies):
+            return
+        try:
+            final_workload = self.workload()
+        except InterruptedError:
+            if _cancelled(dependencies):
+                return
+            raise
         self.report(
             final_workload,
             self.completed,
@@ -1096,17 +1179,17 @@ def _report(
     completed: int | None = None,
     status: EvidenceProgressState = "running",
     scope: DisclosurePartition | StructuredCompanyQuery | None = None,
-    pending_documents: int = 0,
+    pending_documents: int | None = 0,
     attempted_documents: int = 0,
-    deferred_documents: int = 0,
+    deferred_documents: int | None = 0,
     activity: Literal["download", "repair"] = "download",
     dates: CompanyDateProgress | None = None,
     known_pages: int = 0,
     unknown_queries: int = 0,
     document_rate: float | None = None,
     document_eta_seconds: float | None = None,
-    ocr_documents: int = 0,
-    unextractable_documents: int = 0,
+    ocr_documents: int | None = 0,
+    unextractable_documents: int | None = 0,
     next_document_retry_at: datetime | None = None,
     discovering_documents: bool = False,
     workload: CompanyDocumentWorkload | None = None,

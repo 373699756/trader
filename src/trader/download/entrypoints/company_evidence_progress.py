@@ -102,6 +102,7 @@ class CompanyEvidenceProgress:
             "st_eligibility": "ST资格",
             "calendar": "交易日历",
             "financial": "财务增量下载",
+            "annual_income": "合同年度营收补取",
             "pledge": "质押快照下载",
             "unlock": "解禁计划下载",
             "announcements": "公告目录下载",
@@ -116,6 +117,7 @@ class CompanyEvidenceProgress:
             "st_eligibility": "股",
             "calendar": "份",
             "financial": "页",
+            "annual_income": "组",
             "pledge": "页",
             "unlock": "页",
             "announcements": "范围",
@@ -191,9 +193,14 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
             f"不可提取/资料未知 {work.unextractable} 篇 | raw占用 {work.raw_bytes / 1024**2:.1f} MiB"
         )
     if progress.component == "complete":
+        partitions = f"公告待补 {progress.pending} 个范围" if progress.pending is not None else "公告待补数量未核对"
+        documents = f"可重试正文 {progress.pending_documents} 篇" if progress.pending_documents is not None else "可重试正文数量未核对"
+        unextractable = (
+            f"不可提取/资料未知 {progress.unextractable_documents} 篇"
+            if progress.unextractable_documents is not None else "不可提取/资料未知数量未核对"
+        )
         return (
-            f"已发布 {progress.completed} 股（含待核实） | 公告待补 {progress.pending} 个范围 | "
-            f"可重试正文 {progress.pending_documents} 篇 | 不可提取/资料未知 {progress.unextractable_documents} 篇"
+            f"已发布 {progress.completed} 股（含待核实） | {partitions} | {documents} | {unextractable}"
         )
     if progress.status == "reused":
         return "无需请求，复用有效缓存"
@@ -229,6 +236,8 @@ def _counts(progress: EvidenceSyncProgress, unit: str) -> str:
 def _page_counts(progress: EvidenceSyncProgress, unit: str, pending: int) -> str:
     total = progress.completed + pending
     if progress.component == "risk_documents":
+        if progress.deferred_documents is None or progress.unextractable_documents is None or progress.ocr_documents is None:
+            return f"已尝试 {progress.attempted_documents} 篇 | 已提取正文 {progress.completed} 篇 | 正文待处理数量未核对"
         return (
             f"已尝试 {progress.attempted_documents}/{total} 篇 | 已提取正文 {progress.completed} 篇 | "
             f"本轮失败 {progress.failed_documents} 篇 | 未解决失败 {progress.unresolved_document_failures} 篇 | 当前可处理 "
@@ -338,6 +347,8 @@ def _recovery(progress: EvidenceSyncProgress) -> str:
     if progress.component != "complete" or progress.status != "deferred":
         return ""
     result = " | 下次 sync company 从已提交断点续传，已提取正文复用"
+    if "task:cancelled" in progress.failure.split(","):
+        result += " | 中断后未重新核对待处理数，不表示无剩余任务"
     if "disclosure_document_no_text" in progress.failure or "disclosure_document_short_text" in progress.failure:
         result += " | OCR仍失败的正文标记为不可提取/资料未知，同内容同策略不再重试"
     return result

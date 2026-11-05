@@ -29,6 +29,126 @@ def test_cancellation_before_initialization_does_not_create_database(tmp_path):
     assert not index.path.exists()
 
 
+def test_cancelled_sync_before_initialization_reports_unknown_inventory_without_io(tmp_path):
+    index = SQLiteCompanyEvidenceIndex(
+        tmp_path / "evidence.sqlite3",
+        facts_path=tmp_path / "company_facts.sqlite3",
+        documents=CompanyDocumentFiles(tmp_path / "text"),
+        cancel_requested=lambda: True,
+    )
+    source = fixtures.Sources()
+    events = []
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(
+            index, source, source, lambda: 0, progress=events.append, cancel_requested=lambda: True
+        ),
+        ("600001",),
+        fixtures.NOW,
+    )
+    assert result.failures == ("task:cancelled",) and result.needs_retry
+    assert result.pending_partitions is result.pending_documents is None
+    assert result.ocr_documents is result.unextractable_documents is None
+    assert result.published_codes == 0 and source.calls == [] and not index.path.exists()
+    assert events[-1].pending is events[-1].pending_documents is None
+    assert events[-1].workload is None
+
+
+def test_cancelled_sync_keeps_pending_inventory_unknown_and_does_not_query_after_cancel(tmp_path, monkeypatch):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("pending-case", "关于收到立案告知书的公告")
+    partition = DisclosurePartition("sse", item.published_at.date(), item.published_at.date())
+    index.commit_page(partition, DisclosurePage((item,), 1, False), fixtures.NOW)
+    cancelled = Event()
+    inventory = index.document_workload
+
+    def checked_inventory(*args, **kwargs):
+        assert not cancelled.is_set(), "cancelled summary must not reopen the inventory database"
+        return inventory(*args, **kwargs)
+
+    monkeypatch.setattr(index, "document_workload", checked_inventory)
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            cancelled.set()
+            raise HttpCancelled("http_cancelled")
+
+    source = Source()
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0, cancel_requested=cancelled.is_set),
+        item.codes,
+        fixtures.NOW,
+    )
+    assert result.failures == ("task:cancelled",)
+    assert result.pending_partitions is result.pending_documents is None
+    assert result.ocr_documents is result.unextractable_documents is None
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT body_checked FROM disclosures WHERE source_key=?", (item.identity,)).require_one()[0] == 0
+
+
+def test_cancellation_during_document_batch_preserves_commits_without_final_inventory_query(tmp_path, monkeypatch):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("accepted-case", "关于收到立案告知书的公告")
+    partition = DisclosurePartition("sse", item.published_at.date(), item.published_at.date())
+    index.commit_page(partition, DisclosurePage((item,), 1, False), fixtures.NOW)
+    cancelled = Event()
+    inventory = index.document_workload
+
+    def checked_inventory(*args, **kwargs):
+        assert not cancelled.is_set(), "cancelled document batch must not query its final inventory"
+        return inventory(*args, **kwargs)
+
+    monkeypatch.setattr(index, "document_workload", checked_inventory)
+
+    class Source(fixtures.Sources):
+        def fetch(self, query, **kwargs):
+            if isinstance(query, DisclosurePartition):
+                present = query.market == "sse" and query.start <= item.published_at.date() <= query.end
+                return DisclosurePage((item,) if present else (), int(present), False)
+            return super().fetch(query, **kwargs)
+
+        def extract_document(self, disclosure, *, route="standard"):
+            cancelled.set()
+            return fixtures._extraction("本公司收到证监会立案告知书〔2026〕调查1号，决定立案。")
+
+    source = Source()
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0, cancel_requested=cancelled.is_set),
+        item.codes,
+        fixtures.NOW,
+    )
+    assert result.failures == ("task:cancelled",) and result.published_codes == 1
+    assert result.pending_partitions is result.pending_documents is None
+    assert result.changed_rows >= 1
+    with SqliteSession(index.path) as connection:
+        assert tuple(connection.run(
+            "SELECT body_checked,body_retained FROM disclosures WHERE source_key=?", (item.identity,)
+        ).require_one()) == (1, 1)
+
+
+def test_cancellation_during_final_inventory_read_returns_unknown_counts_and_keeps_published_count(tmp_path, monkeypatch):
+    from trader.download.application import company_evidence as application
+
+    index = fixtures._index(tmp_path)
+    cancelled = Event()
+    inventory = application._DocumentRun.workload
+
+    def interrupted_inventory(documents, *, include_attempted=False):
+        if include_attempted:
+            cancelled.set()
+            raise InterruptedError("company_sync_cancelled")
+        return inventory(documents, include_attempted=include_attempted)
+
+    monkeypatch.setattr(application._DocumentRun, "workload", interrupted_inventory)
+    source = fixtures.Sources()
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0, cancel_requested=cancelled.is_set),
+        ("600001",),
+        fixtures.NOW,
+    )
+    assert result.failures == ("task:cancelled",) and result.published_codes == 1
+    assert result.pending_partitions is result.pending_documents is None
+
+
 def test_long_query_cancellation_rolls_back_only_uncommitted_changes(tmp_path):
     cancelled = Event()
     index = SQLiteCompanyEvidenceIndex(

@@ -1,4 +1,4 @@
-"""Replay failed company slices against real CNInfo only in an external SQLite backup."""
+"""Read-only or isolated company audits; explicit --live-sync writes current company data."""
 
 from __future__ import annotations
 
@@ -17,9 +17,10 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from scripts.checks.download.company.company_pagination_audit import AuditCompanyPagination
-from scripts.checks.download.company.company_pipeline_audit import AuditCompanyPipeline
+from scripts.checks.download.company.company_pipeline_audit import AuditCompanyPipeline, MeasureCompanySync
 from scripts.checks.download.company.company_ocr_audit import AuditCompanyOcr
 from scripts.checks.download.company.company_document_download_audit import AuditCompanyDocumentDownloads
+from scripts.checks.download.company.company_field_audit import InspectCompanyFieldMaterial
 from scripts.checks.download.company.company_query_audit import AuditCompanyQueries, AuditCompanyDatabase
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
@@ -267,19 +268,35 @@ def _compact_database(source: Path, directory: Path, *, budget_seconds: float, s
 
 def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", required=True, type=Path)
+    parser.add_argument("--database", type=Path)
     parser.add_argument("--facts-database", type=Path)
     parser.add_argument("--directory", type=Path)
-    parser.add_argument("--budget-seconds", required=True, type=float)
+    parser.add_argument("--budget-seconds", type=float)
+    parser.add_argument("--runtime-config", type=Path, help="Explicit runtime configuration for --live-sync.")
+    parser.add_argument("--report", type=Path, help="Fresh external absolute JSON report for --live-sync.")
+    parser.add_argument("--fill", action="store_true", help="Pass --fill to the real company sync; requires --live-sync.")
     audit = parser.add_mutually_exclusive_group()
+    audit.add_argument("--live-sync", action="store_true", help="Run the real CLI and WRITE CURRENT COMPANY DATA; no isolated audit budget.")
     audit.add_argument("--audit-only", action="store_true")
     audit.add_argument("--database-only", action="store_true")
     audit.add_argument("--pagination-only", action="store_true")
     audit.add_argument("--pipeline-only", action="store_true")
+    audit.add_argument("--pacing-only", action="store_true", help="Compare shared/per-host pacing with identical real PDFs and one complete directory sample in isolation.")
+    audit.add_argument("--material-keys", nargs="+", help="Inspect bounded local source excerpts and contract facts for 1..6 source keys; requires --facts-database.")
     audit.add_argument("--ocr-only", action="store_true")
     audit.add_argument("--document-only", action="store_true")
     audit.add_argument("--directory-only", action="store_true")
     args = parser.parse_args()
+    if args.live_sync:
+        if args.runtime_config is None or args.report is None:
+            parser.error("--live-sync requires --runtime-config and a fresh external absolute --report")
+        if any(value is not None for value in (args.database, args.facts_database, args.directory, args.budget_seconds)):
+            parser.error("--live-sync does not accept isolated audit database/directory/budget options")
+        return MeasureCompanySync(args.runtime_config, args.report, fill_missing=args.fill)
+    if args.database is None or args.budget_seconds is None:
+        parser.error("--database and --budget-seconds are required outside --live-sync")
+    if args.runtime_config is not None or args.report is not None or args.fill:
+        parser.error("--runtime-config, --report and --fill require --live-sync")
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[4] / "config/runtime.json"))
@@ -299,6 +316,13 @@ def Main() -> int:
     if args.document_only:
         report = AuditCompanyDocumentDownloads(source_path, budget_seconds=min(150.0, args.budget_seconds), sqlite_policy=sqlite_policy)
         print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if args.material_keys is not None:
+        if args.facts_database is None:
+            parser.error("--material-keys requires --facts-database")
+        print(json.dumps(InspectCompanyFieldMaterial(
+            source_path, args.facts_database.resolve(strict=True), tuple(args.material_keys), sqlite_policy=sqlite_policy,
+        ), ensure_ascii=False, indent=2))
         return 0
     if args.database_only:
         report = AuditCompanyDatabase(
@@ -338,10 +362,11 @@ def Main() -> int:
         (directory / "ocr-result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
-    if args.pipeline_only:
+    if args.pipeline_only or args.pacing_only:
         print(
             json.dumps(
-                AuditCompanyPipeline(source_path, directory, budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy), ensure_ascii=False, indent=2
+                AuditCompanyPipeline(source_path, directory, budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy,
+                                     **({"compare_pacing": True} if args.pacing_only else {})), ensure_ascii=False, indent=2
             )
         )
         return 0
@@ -488,8 +513,3 @@ def _selection(payload: object) -> frozenset[tuple[str, str, str]]:
             raise ValueError("company_replay_selection_invalid")
         keys.append((row[0], row[1], row[2]))
     return frozenset(keys)
-
-
-
-
-__all__ = ["Main"]

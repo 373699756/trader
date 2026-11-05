@@ -103,6 +103,35 @@ def test_pagination_probe_rejects_ignored_larger_page_sizes_without_writes(tmp_p
     assert index.path.read_bytes() == before
 
 
+@pytest.mark.parametrize("fault", (None, "duplicate", "revised_duplicate", "truncated", "changing_total", "oversized"))
+def test_pacing_directory_probe_requires_complete_unique_stable_record_sets(fault):
+    from trader.download.domain.company_evidence import DisclosurePartition
+
+    day = fixtures.NOW.date()
+    items = tuple(fixtures._disclosure(f"pacing-{number}") for number in range(31))
+
+    class Source:
+        def fetch(self, partition):
+            if fault == "oversized":
+                return DisclosurePage(items[:30], 601, True)
+            if partition.page == 1:
+                return DisclosurePage(items[:30], 31, True)
+            if fault == "duplicate":
+                return DisclosurePage(items[:1], 31, False)
+            if fault == "revised_duplicate":
+                return DisclosurePage((replace(items[0], digest="revised"),), 31, False)
+            if fault == "truncated":
+                return DisclosurePage((), 31, False)
+            return DisclosurePage(items[30:], 32 if fault == "changing_total" else 31, False)
+
+    result = company_pipeline_audit._probe_directory(Source(), DisclosurePartition("sse", day, day))
+    assert result["complete"] is (fault is None)
+    if fault is None:
+        assert result["rows"] == 31 and result["pages"] == 2 and len(result["digest"]) == 64
+    else:
+        assert result["failure"] == "validation_error" and "digest" not in result
+
+
 @pytest.mark.parametrize("mode", ("pipeline", "ocr"))
 def test_pipeline_audit_requires_external_directory_and_routes_to_its_owner(tmp_path, mode):
     with pytest.raises(ValueError, match="company-replay-directory"):

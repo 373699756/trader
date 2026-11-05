@@ -10,7 +10,7 @@ import pytest
 
 from trader.download.domain.company_descriptions import CompanyPositiveDescription, CompanyRiskDescription
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents
-from trader.download.domain.company_events import CompanyDataState, CompanySubject
+from trader.download.domain.company_events import CompanyDataState, CompanyPositiveStatus, CompanySubject, RepurchasePurpose
 from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, CompanyRatio, Disclosure
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
@@ -137,6 +137,84 @@ def test_title_only_positive_and_employee_buyback_never_receive_awards():
     employee = _document("employee", "关于回购股份的公告", "本公司累计回购股份占公司总股本的比例为1%，用于员工持股。")
     result = ExtractCompanyEvents((planned, employee), AT, CompanyEventPolicy())
     assert all(event.positive_level == 0 for event in result.positives)
+
+
+@pytest.mark.parametrize(
+    ("title", "status"),
+    (
+        ("关于回购股份的公告", CompanyPositiveStatus.IMPLEMENTING),
+        ("关于完成回购股份的公告", CompanyPositiveStatus.COMPLETED),
+    ),
+)
+def test_implemented_employee_buyback_keeps_actual_facts_without_awards(title, status):
+    document = _document("employee", title, "本公司累计已回购股份，占公司总股本的比例为0.3%，用于员工持股。")
+    result = ExtractCompanyEvents((document,), AT, CompanyEventPolicy())
+    event = result.positives[0]
+    assert event.status is status
+    assert event.measurements.actual_ratio_pct == 0.3
+    assert event.measurements.purpose is RepurchasePurpose.EMPLOYEE_PLAN
+    assert event.positive_level == 0 and event.level_milestones == () and result.reviews
+
+
+@pytest.mark.parametrize(
+    ("purpose", "expected_purpose", "level"),
+    (
+        ("用于注销", RepurchasePurpose.CANCELLATION, 2),
+        ("注销并减少注册资本", RepurchasePurpose.CANCELLATION, 2),
+        ("不用于注销", RepurchasePurpose.UNKNOWN, 0),
+        ("不再用于注销", RepurchasePurpose.UNKNOWN, 0),
+        ("并非用于注销", RepurchasePurpose.UNKNOWN, 0),
+        ("不注销并减少注册资本", RepurchasePurpose.UNKNOWN, 0),
+        ("不用于注销，用于员工持股", RepurchasePurpose.EMPLOYEE_PLAN, 0),
+    ),
+)
+def test_repurchase_cancellation_purpose_requires_an_affirmative_statement(purpose, expected_purpose, level):
+    document = _document(
+        "purpose", "关于回购股份的公告", f"本公司累计已回购股份，占公司总股本的比例为0.3%，{purpose}。"
+    )
+    event = ExtractCompanyEvents((document,), AT, CompanyEventPolicy()).positives[0]
+    assert event.status is CompanyPositiveStatus.IMPLEMENTING
+    assert event.measurements.actual_ratio_pct == 0.3
+    assert event.measurements.purpose is expected_purpose
+    assert event.positive_level == level
+    if level == 0:
+        assert event.level_milestones == ()
+
+
+def test_positive_progress_cannot_replace_another_subjects_event():
+    first = _document(
+        "holder", "控股股东增持公告", "控股股东累计已增持股份，占公司总股本的比例为0.3%。"
+    )
+    previous = ExtractCompanyEvents((first,), AT, CompanyEventPolicy())
+    at = AT + timedelta(days=1)
+    progress = _document(
+        "controller-progress", "实际控制人增持进展公告",
+        "实际控制人根据公告holder，累计已增持股份，占公司总股本的比例为0.5%。", at,
+    )
+    result = ExtractCompanyEvents((progress,), at, CompanyEventPolicy(), previous_positives=previous.positives)
+    assert result.positives == previous.positives
+    assert result.reviews[0].reason_code == "progress_unlinked"
+
+
+def test_positive_source_revision_with_another_subject_keeps_one_reviewed_event():
+    first = _document(
+        "holder", "控股股东增持公告", "控股股东累计已增持股份，占公司总股本的比例为0.3%。"
+    )
+    previous = ExtractCompanyEvents((first,), AT, CompanyEventPolicy())
+    revised = replace(
+        first,
+        disclosure=replace(first.disclosure, title="实际控制人增持公告", digest="changed"),
+        text="实际控制人累计已增持股份，占公司总股本的比例为0.5%。",
+    )
+    result = ExtractCompanyEvents(
+        (revised,), AT + timedelta(days=1), CompanyEventPolicy(), previous_positives=previous.positives
+    )
+    assert len(result.positives) == 1
+    event = result.positives[0]
+    assert event.event_id == previous.positives[0].event_id
+    assert event.subject_type is CompanySubject.CONTROLLING_SHAREHOLDER
+    assert event.measurements == previous.positives[0].measurements and event.positive_level == 0
+    assert result.reviews[0].reason_code == "subject_unverified"
 
 
 def _facts(documents=(), at=AT):
@@ -371,6 +449,8 @@ def test_compact_publication_roundtrips_all_positive_measurements_and_rejects_in
         assert not columns.intersection({"payload", "body", "risk_events_json", "positive_events_json"})
         connection.run("PRAGMA ignore_check_constraints=ON")
         connection.run("UPDATE company_risk_event SET level=4 WHERE risk_type<=3")
+    # Exercise the logical decoder after a deliberate, sealed fixture mutation.
+    index.publish_file()
     with pytest.raises(ValueError, match="type_level_mismatch"):
         reader.read((facts.code,))
 
@@ -488,11 +568,27 @@ def test_contract_requires_separate_net_amounts_and_prior_annual_report_disclosu
     result = ExtractCompanyEvents((_document("contract", "关于签订重大合同的公告", body),), AT, CompanyEventPolicy())
     event = result.positives[0]
     assert event.positive_level == level
+    assert event.status is CompanyPositiveStatus.IMPLEMENTING
     if level:
         assert event.measurements.amount_to_revenue_pct == 20
         assert event.measurements.reference_disclosed_at.date().isoformat() == "2026-04-20"
     else:
         assert result.reviews and event.measurements.amount_basis == "unknown"
+
+
+def test_unimplemented_contract_stays_planned_even_with_comparable_amounts():
+    body = (
+        "本公司拟签订正式合同。合同总金额为人民币2000万元（不含税）。"
+        "2025年度经审计的营业收入为人民币10000万元（不含税）。"
+        "2025年年度报告于2026年4月20日披露。"
+    )
+    result = ExtractCompanyEvents(
+        (_document("planned-contract", "关于签订重大合同的公告", body),), AT, CompanyEventPolicy()
+    )
+    event = result.positives[0]
+    assert event.status is CompanyPositiveStatus.PLANNED and not event.measurements.binding_confirmed
+    assert event.measurements.amount_to_revenue_pct == 20
+    assert event.positive_level == 0 and event.level_milestones == () and result.reviews
 
 
 @pytest.mark.parametrize(

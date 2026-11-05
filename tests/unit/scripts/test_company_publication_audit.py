@@ -232,7 +232,8 @@ def test_field_recovery_preview_names_missing_field_without_writing_or_inventing
     plan = result["field_audit"]["recovery_plan"]
     ratio = next(item for item in plan["items"] if item["field"] == "planned_pct")
     assert ratio["source_key"] == "plan"
-    assert ratio["next_step"] == "download" and ratio["network_required"]
+    assert (ratio["next_step"], ratio["reason"]) == ("verify", "same_rule_already_attempted")
+    assert not ratio["network_required"]
     assert plan["read_only"]
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
     from scripts.checks.download.company.company_field_audit import ProjectCompanyFieldAudit
@@ -240,3 +241,30 @@ def test_field_recovery_preview_names_missing_field_without_writing_or_inventing
     ratio["raw_body"] = "must-not-project"
     projected = ProjectCompanyFieldAudit(result["field_audit"])
     assert "must-not-project" not in json.dumps(projected)
+
+
+def test_local_material_inspection_verifies_text_and_compares_formal_contract_without_writes(tmp_path):
+    from scripts.checks.download.company.company_field_audit import InspectCompanyFieldMaterial
+    from tests.component.test_company_annual_income import _contract
+
+    index = fixtures._index(tmp_path)
+    _contract(index)
+    before = (index.path.read_bytes(), index.facts_path.read_bytes())
+    report = InspectCompanyFieldMaterial(index.path, index.facts_path, ("contract-income",), sqlite_policy=SqlitePolicyFixture())
+    assert report["stable_read"] and report["read_only"] and not report["field_correctness_verified"]
+    item = report["items"][0]
+    assert item["material_available"] and item["current_receipt"]
+    assert len(item["body_hash"]) == 64 and len(item["excerpts"]) <= 16
+    assert all(len(excerpt["text"]) <= 150 for excerpt in item["excerpts"])
+    assert item["contracts"][0]["contract_amount"] == 200_000_000
+    assert item["contracts"][0]["annual_revenue"] is None
+    assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("keys", ((), ("x",) * 7, ("duplicate", "duplicate")))
+def test_material_inspection_rejects_unbounded_or_duplicate_keys_before_io(tmp_path, keys):
+    from scripts.checks.download.company.company_field_audit import InspectCompanyFieldMaterial
+
+    with pytest.raises(ValueError, match="company_material_keys_invalid"):
+        InspectCompanyFieldMaterial(tmp_path / "missing.sqlite3", tmp_path / "missing-facts.sqlite3", keys, sqlite_policy=SqlitePolicyFixture())
+    assert not tuple(tmp_path.iterdir())
