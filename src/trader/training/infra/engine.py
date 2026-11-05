@@ -669,7 +669,7 @@ def _fit_and_prepare_head(request: _HeadFitRequest, fitted: IndustryFitResult) -
             validation_rows,
             request.run_id,
         )
-        model = BuildIndustryModelDocument(fitted)
+        model = BuildIndustryModelDocument(fitted.models)
         model_hash = ContentHash(model)
         model["content_hash"] = model_hash
         report = _report_document(context, fitted, model_hash, request.metrics)

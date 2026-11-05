@@ -18,8 +18,8 @@ def BuildTargetMetricDocument(metric: TargetMetric) -> dict[str, object]:
     return {"count": metric.count, "mean": metric.mean, "standard_deviation": metric.standard_deviation}
 
 
-def BuildIndustryModelDocument(result: IndustryFitResult) -> dict[str, object]:
-    return {"industries": {item.industry: _model_document(item) for item in result.models}}
+def BuildIndustryModelDocument(models: tuple[FittedIndustryModel, ...]) -> dict[str, object]:
+    return {"industries": {item.industry: _model_document(item) for item in models}}
 
 
 def _model_document(item: FittedIndustryModel) -> dict[str, object]:

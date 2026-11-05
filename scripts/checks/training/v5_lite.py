@@ -14,7 +14,7 @@ import shutil
 import statistics
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import cast
 
@@ -25,12 +25,15 @@ from trader.infra.settings.parser import Integer, ProfileMapping, ReadJsonObject
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.training.application.tomorrow_training import TrainingFitDetail
 from trader.training.infra.model_bundles.bundle_codec import TrainedTcnModelSnapshot
+from trader.training.infra.model_bundles.contracts import TrainedHeadContract
+from trader.training.infra.model_bundles.documents import BuildIndustryModelDocument
 from trader.training.infra.model_evaluation import PredictionMetricsAccumulator
 from trader.training.infra.model_fitting import IndustryCoverageFailure
+from trader.training.infra.model_fitting_results import FittedIndustryModel
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.profile.v5.configuration import ParseTcnParameters, TcnConfigurationDocument
 from trader.training.infra.profile.v5.settings import TcnArchitecture, TcnFittingParameters
-from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
+from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingIndustryCounts
 from trader.training.infra.sample_sequences import SampleSequenceLayout
 from trader.training.infra.sample_schema import SampleFormatId
 
@@ -106,6 +109,11 @@ def _peak_rss_mib() -> float | None:
     return value / (1024**2 if sys.platform == "darwin" else 1024)
 
 
+def _sample_signature(source: Path) -> tuple[tuple[int, int, int, int, int], ...]:
+    stamps = tuple((source / name).stat() for name in ("complete.json", "samples.sqlite3"))
+    return tuple((stamp.st_dev, stamp.st_ino, stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns) for stamp in stamps)
+
+
 def _prepare(source: Path, work: Path, deadline: float, fit_dates: int, *, sqlite_policy: SqliteIoPolicy) -> tuple[Path, Path]:
     if source.is_symlink() or any((source / name).is_symlink() for name in ("complete.json", "samples.sqlite3")):
         raise ValueError("V5 comparison source must not contain symbolic links")
@@ -113,11 +121,7 @@ def _prepare(source: Path, work: Path, deadline: float, fit_dates: int, *, sqlit
     if not all(path.is_file() for path in source_files):
         raise ValueError("V5 comparison source requires regular files")
 
-    def signature() -> tuple[tuple[int, int, int, int, int], ...]:
-        stamps = tuple(path.stat() for path in source_files)
-        return tuple((stamp.st_dev, stamp.st_ino, stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns) for stamp in stamps)
-
-    before = signature()
+    before = _sample_signature(source)
     manifest = AtomicReadJson(source / "complete.json")
     if not isinstance(manifest, dict) or manifest.get("sample_format") != SampleFormatId(V5_TRAINING_PROFILE.heads[0].feature_manifest.names, SampleSequenceLayout(6, 60, 6)):
         raise ValueError("V5 comparison requires a sealed compact sample cache")
@@ -131,7 +135,7 @@ def _prepare(source: Path, work: Path, deadline: float, fit_dates: int, *, sqlit
             while chunk := reader.read(1024**2):
                 _check(deadline)
                 writer.write(chunk)
-    if before != signature():
+    if before != _sample_signature(source):
         raise ValueError("V5 sample source changed during snapshot")
     if _digest(baseline, deadline) != manifest.get("sha256") or _digest(candidate, deadline) != manifest.get("sha256"):
         raise ValueError("V5 sample snapshot digest mismatch")
@@ -335,6 +339,159 @@ def _quality(
     return {"passed": True, "coverage": coverage, "comparisons": summaries}
 
 
+class _FitCancelled(InterruptedError):
+    """Explicit diagnostic cancellation at a completed training batch."""
+
+
+def _reload_model(fitted: FittedIndustryModel, path: Path) -> TrainedTcnModelSnapshot:
+    from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork
+
+    model = fitted.model
+    if not isinstance(model, TrainedTcnModelSnapshot):
+        raise ValueError("V5 lifecycle model type mismatch")
+    AtomicWriteJson(path, BuildIndustryModelDocument((fitted,)), indent=2)
+    document = ReadJsonObject(path)
+    industries = RequireMapping(document, "industries")
+    values = RequireMapping(industries, fitted.industry)
+    dropout, weights, architecture = DecodeTcnNetwork(values["tcn_network"], len(model.transformer_means) - 360)
+    # The production document owner projects the normalization and calibration too.
+    expected = {
+        "transformer_means": list(model.transformer_means),
+        "transformer_scales": list(model.transformer_scales),
+        "calibration_intercept": model.calibration_intercept,
+        "calibration_slope": model.calibration_slope,
+    }
+    if any(values.get(name) != value for name, value in expected.items()):
+        raise ValueError("V5 lifecycle normalization or calibration changed during reload")
+    reloaded = replace(model, dropout=dropout, weights=weights, architecture=architecture)
+    if reloaded != model:
+        raise ValueError("V5 lifecycle tensors changed during reload")
+    return reloaded
+
+
+def _validate_reload(
+    samples: SQLiteTrainingSampleIndex,
+    counts: TrainingIndustryCounts,
+    head: TrainedHeadContract,
+    fitted: FittedIndustryModel,
+    work: Path,
+    deadline: float,
+) -> dict[str, object]:
+    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
+
+    model = fitted.model
+    if not isinstance(model, TrainedTcnModelSnapshot):
+        raise ValueError("V5 lifecycle model type mismatch")
+    loaded = _reload_model(fitted, work / f"{head.strategy.value}-model.json")
+    original = TcnNetwork(len(model.transformer_means) - 360, model.dropout, model.architecture)
+    original.load_tensors(model.weights)
+    reloaded = TcnNetwork(len(loaded.transformer_means) - 360, loaded.dropout, loaded.architecture)
+    reloaded.load_tensors(loaded.weights)
+    ConfigureTcnRuntime(training=False)
+    metrics = PredictionMetricsAccumulator()
+    for batch in samples.iter_batches(counts.industry, head, "validation"):
+        _check(deadline)
+        values = (batch.features - np.asarray(model.transformer_means)) / np.asarray(model.transformer_scales)
+        expected = model.calibration_intercept + model.calibration_slope * original.predict(values)
+        actual = loaded.calibration_intercept + loaded.calibration_slope * reloaded.predict(values)
+        if not np.all(np.isfinite(actual)) or not np.array_equal(expected, actual):
+            raise ValueError("V5 lifecycle reload predictions changed or are nonfinite")
+        for day, code, target, prediction in zip(batch.trade_dates, batch.codes, batch.labels, actual, strict=True):
+            metrics.add(day, code, counts.industry, float(target), float(prediction))
+    finished = metrics.finish()
+    if finished.predicted_rows != counts.validation or finished.predicted_rows == 0:
+        raise ValueError("V5 lifecycle validation coverage changed")
+    return {**asdict(finished), "reload_predictions_exact": True, "model_snapshot_exact": True}
+
+
+def _largest(
+    source: Path,
+    work: Path,
+    deadline: float,
+    configuration: tuple[int, TcnFittingParameters],
+    *,
+    sqlite_policy: SqliteIoPolicy,
+    cancel_after_batches: int | None = None,
+) -> dict[str, object]:
+    from trader.training.infra.implementation_identity import TrainingImplementationIdentity
+    from trader.training.infra.profile.v5.fitting import FitTcnIndustry
+    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, PreserveTcnRuntime
+
+    paths = _prepare(source, work, deadline, configuration[0], sqlite_policy=sqlite_policy)
+    source_stamps = _sample_signature(source)
+    manifest_hash = _digest(source / "complete.json", deadline)
+    sample_hash = ReadJsonObject(source / "complete.json")["sha256"]
+    with SqliteSession(paths[1], SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
+        split_hash = connection.run("SELECT split_hash FROM sample_contract WHERE singleton=1").require_one()[0].hex()
+    options = configuration[1]
+    heads: list[dict[str, object]] = []
+    try:
+        with PreserveTcnRuntime(), SQLiteTrainingSampleIndex(
+            paths[1], V5_TRAINING_PROFILE.heads[0].feature_manifest.names, prepared_split_hash=split_hash,
+            sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=sqlite_policy,
+        ) as samples:
+            by_head = [{count.industry: count for count in samples.industry_counts(head)} for head in V5_TRAINING_PROFILE.heads]
+            eligible = [
+                name for name in by_head[0]
+                if all(name in counts and not IndustryCoverageFailure(counts[name], options) for counts in by_head)
+            ]
+            if not eligible:
+                raise ValueError("V5 lifecycle requires a dual-head eligible industry")
+            industry = max(eligible, key=lambda name: (by_head[0][name].training, name))
+            coverage = {
+                "selection": "largest_dual_head_eligible_by_tomorrow_training_rows",
+                "industry": industry,
+                "fit_dates": configuration[0],
+                "eligible_industries": len(eligible),
+                "training_implementation_identity": TrainingImplementationIdentity(),
+                **_sample_evidence(source),
+            }
+            AtomicWriteJson(work / "coverage.json", coverage, indent=2)
+            for index, head in enumerate(V5_TRAINING_PROFILE.heads):
+                _check(deadline)
+                counts = by_head[index][industry]
+                timer = _FitTimer(work, deadline)
+
+                def progress(detail: TrainingFitDetail, timer: _FitTimer = timer) -> None:
+                    timer.progress(detail)
+                    if cancel_after_batches is not None and detail.phase == "training" and detail.completed_batches >= cancel_after_batches:
+                        raise _FitCancelled("explicit_batch_cancellation")
+
+                AtomicWriteJson(work / "current.json", {"head": head.strategy.value, "industry": industry}, indent=2)
+                ConfigureTcnRuntime(training=True, compute_threads=options.compute_threads)
+                try:
+                    fitted = FitTcnIndustry(samples, counts, head, options, lambda: _check(deadline), report=progress)
+                except _FitCancelled:
+                    timer.switch("cancelled")
+                    outcome: dict[str, object] = {"fit_completed": False, "cancellation_observed": True}
+                else:
+                    if cancel_after_batches is not None:
+                        raise ValueError("V5 lifecycle cancellation point was not reached")
+                    timer.switch("reload_and_validation")
+                    outcome = {"fit_completed": True, **_validate_reload(samples, counts, head, fitted, work, deadline)}
+                    timer.switch("completed")
+                if tuple(work.glob("tcn-batches-*")):
+                    raise ValueError("V5 lifecycle batch workspace was not released")
+                heads.append({
+                    "head": head.strategy.value, "industry": industry, "counts": asdict(counts),
+                    "actual_epochs": timer.epoch, "phase_seconds": timer.seconds,
+                    "batch_workspaces_released": True, **outcome,
+                })
+                AtomicWriteJson(work / "heads.json", {"heads": heads}, indent=2)
+    finally:
+        if (
+            _sample_signature(source) != source_stamps
+            or _digest(source / "complete.json", deadline) != manifest_hash
+            or _digest(source / "samples.sqlite3", deadline) != sample_hash
+        ):
+            raise ValueError("V5 lifecycle source changed")
+    return {
+        "passed": True, "coverage": coverage, "heads": heads, "parameters": asdict(options),
+        "quality_evidence": False, "performance_evidence": False, "source_unchanged": True,
+        "cancellation_only": cancel_after_batches is not None, "models_published": 0,
+    }
+
+
 def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-root", type=Path, required=True)
@@ -343,6 +500,8 @@ def Main() -> int:
     parser.add_argument("--reference-config", type=Path)
     parser.add_argument("--runtime-config", type=Path)
     parser.add_argument("--quality-only", action="store_true")
+    parser.add_argument("--largest-only", action="store_true", help="single configured fit/reload per head; no relative quality evidence")
+    parser.add_argument("--cancel-after-batches", type=int, help="largest-only cancellation exercise per head")
     parser.add_argument("--prepare-samples", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
@@ -350,12 +509,16 @@ def Main() -> int:
     from trader.infra.settings import LoadRuntimeSettings
     work = args.work_root.resolve()
     project = Path(__file__).resolve().parents[3]
+    if args.largest_only and (args.quality_only or args.reference_config is not None or args.prepare_only):
+        raise ValueError("V5 largest-only cannot run a quality comparison or prepare-only")
+    if args.cancel_after_batches is not None and (not args.largest_only or args.cancel_after_batches < 1):
+        raise ValueError("V5 cancellation requires largest-only and a positive batch count")
     if args.prepare_only and not args.prepare_samples:
         raise ValueError("V5 prepare-only requires explicit prepare-samples")
     if args.prepare_samples and args.sample_root is None:
         raise ValueError("V5 sample preparation requires an explicit sample root")
-    if args.quality_only and (args.sample_root is None or args.candidate_config is None):
-        raise ValueError("V5 quality-only requires samples and a candidate configuration")
+    if (args.quality_only or args.largest_only) and (args.sample_root is None or args.candidate_config is None):
+        raise ValueError("V5 quality-only/largest-only requires samples and a candidate configuration")
     runtime = LoadRuntimeSettings(args.runtime_config or project / "config/runtime.json")
     sqlite_policy = BuildSqlitePolicy(runtime)
     if work.exists() or work.is_relative_to(project):
@@ -377,7 +540,8 @@ def Main() -> int:
         baseline = _parameters(
             args.reference_config or project / "config" / "training.json", archived=args.reference_config is not None
         )
-        summary["reference_configuration"] = TcnConfigurationDocument(*baseline)
+        if not args.largest_only:
+            summary["reference_configuration"] = TcnConfigurationDocument(*baseline)
         candidate = _parameters(args.candidate_config, archived=True) if args.candidate_config is not None else None
         if candidate is not None:
             summary["candidate_configuration"] = TcnConfigurationDocument(*candidate)
@@ -413,12 +577,22 @@ def Main() -> int:
             summary["reason"] = "sample_preparation_only"
             summary["quality_evidence"] = False
             report["status"] = "passed"
-        elif args.quality_only:
+        elif args.quality_only or args.largest_only:
             summary["compute_probe_skipped"] = True
         else:
             summary["compute"] = ProbeLiteKernels()
         AtomicWriteJson(work / "result.json", report, indent=2)
-        if not args.prepare_only and args.sample_root is not None and candidate is not None:
+        if args.largest_only:
+            if candidate is None:
+                raise ValueError("V5 largest-only requires a candidate configuration")
+            summary["quality_evidence"] = False
+            summary["performance_evidence"] = False
+            summary["lifecycle"] = _largest(
+                args.sample_root.absolute(), work, deadline, candidate, sqlite_policy=sqlite_policy,
+                cancel_after_batches=args.cancel_after_batches,
+            )
+            report["status"] = "passed"
+        elif not args.prepare_only and args.sample_root is not None and candidate is not None:
             summary["quality"] = quality = _quality(
                 args.sample_root.absolute(), work, deadline, baseline, candidate, sqlite_policy=sqlite_policy
             )
