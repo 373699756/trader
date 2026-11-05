@@ -2,5 +2,5 @@
 
 - Own scheduling, cadence, source and strategy lanes, latest-wins workers, resource orchestration, shutdown deadlines, and typed runtime status.
 - Depend only on application ports, application freeze/research collaborators, domain values, and explicitly injected callables or resources.
-- Do not import `infra`, Flask, Web adapters, or construct external clients. Keep queue wait, vendor attempts, validation, persistence, publication, cancellation, and shutdown timing observable as separate stages.
+- Do not import business `infra`, Flask, Web adapters, or construct external clients. Shared technical primitives follow the symbol-aware boundary in `tests/helpers/module_boundaries.py`; SQLite observation permits only `SqliteActivity`, `SqliteObservation`, and `IndependentSqliteWork`, which count scoped operations without opening a database. Connection/session and SQL capabilities remain forbidden. Keep queue wait, vendor attempts, validation, persistence, publication, cancellation, and shutdown timing observable as separate stages.
 - Direct verification: `tests/unit/application/test_{cadence,schedule,workers,latest_wins,runtime}.py`, `tests/integration/test_scheduler_runtime.py`, and `tests/contract/test_runtime_contract.py`.

@@ -189,6 +189,8 @@ def _forbidden_target(module: str, imported: SourceImport, target: str) -> bool:
                 return imported.module != "trader.infra.serialization.canonical_codec"
             if business in {"download", "training"}:
                 return imported.member not in _SHARED_APPLICATION_SYMBOLS.get(imported.module, frozenset())
+            if imported.module == "trader.infra.sqlite_observation":
+                return imported.member not in _SHARED_APPLICATION_SYMBOLS[imported.module]
             return imported.module not in _SHARED_APPLICATION_MODULES
     if business in _BUSINESSES and layer == "infra" or business == "infra":
         return target_owner in delivery or target_owner in _BUSINESSES and target_layer == "entrypoints"

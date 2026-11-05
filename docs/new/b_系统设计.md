@@ -32,6 +32,8 @@ flowchart TD
 
 domain 不读配置、时间、网络、文件或数据库。application 依赖明确端口和真实类型，不导入本业务 infra、Flask 或其它业务实现。适配器不暗中创建客户端、连接池或线程池，由组合根注入并负责释放。`CreateApp()` 只组装应用，无线程、联网、建库、写文件副作用。
 
+无I/O的跨业务技术primitive按具名合同复用：SqliteActivity、SqliteObservation、IndependentSqliteWork只提供上下文内计数和独立工作隔离，不创建连接或执行SQL。应用层与全仓架构测试共用同一导入判定，观测模块也只开放这三个符号；sqlite_connection/session、业务adapter和隐藏I/O仍禁止，不通过扩大模块白名单授予数据库能力。
+
 跨业务交接是有明确类型的不可变对象或已发布工件。JSON 只在配置、供应商解析、存储编码和公开投影边界出现，不用 `dict`、`Any`、反射或空对象掩盖内部合同。活动源码单文件最多1500行，按职责拆分。
 
 | 公共能力 | 唯一职责 | 不应放入的内容 |

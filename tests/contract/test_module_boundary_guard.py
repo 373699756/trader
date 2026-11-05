@@ -92,6 +92,24 @@ def test_existing_publication_value_handoff_remains_legal(module) -> None:
     assert LayerImportViolations(module, ParseSourceImports(source, module)) == ()
 
 
+@pytest.mark.parametrize("member", ("SqliteActivity", "SqliteObservation", "IndependentSqliteWork"))
+def test_recommendation_accepts_only_scoped_database_counters(member) -> None:
+    module = "trader.recommendation.application.runtime.example"
+    source = f"from trader.infra.sqlite_observation import {member}"
+    assert LayerImportViolations(module, ParseSourceImports(source, module)) == ()
+
+
+@pytest.mark.parametrize("source", (
+    "from trader.infra.sqlite_observation import SqliteSession",
+    "import trader.infra.sqlite_observation",
+    "from trader.infra.sqlite_observation import *",
+    "from trader.infra.sqlite_connection import SqliteSession",
+))
+def test_database_observation_does_not_grant_database_access(source) -> None:
+    module = "trader.recommendation.application.runtime.example"
+    assert LayerImportViolations(module, ParseSourceImports(source, module))
+
+
 def test_core_cannot_hide_imports_behind_a_wildcard() -> None:
     module = "trader.training.domain.example"
     source = "from trader.infra.serialization.canonical_codec import *"

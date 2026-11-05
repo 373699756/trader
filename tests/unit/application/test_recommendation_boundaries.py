@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import ast
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from tests.helpers.module_boundaries import LayerImportViolations, SourceImports, SourceModuleName
 from tests.unit.application.cycle_fixture import CycleFixtureDependencies, build_cycle_fixture
 from tests.unit.application.review_helpers import review
 from tests.unit.application.test_input_runtime import _freeze_build, _Market, _prime_scoring_cache, _request
@@ -268,38 +268,12 @@ def test_score_fusion_service_preserves_manifest_gate_and_parentage(application_
 
 
 def test_recommendation_application_does_not_import_infrastructure_or_training() -> None:
-    forbidden_prefixes = ("trader.infra", "trader.web", "trader.entrypoints")
-    violations: list[str] = []
-    for path in (SOURCE_ROOT / "recommendation/application").rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                names = [node.module]
-            else:
-                continue
-            violations.extend(
-                f"{path.relative_to(SOURCE_ROOT)} -> {name}"
-                for name in names
-                if (
-                    name.startswith(forbidden_prefixes)
-                    and name not in {"trader.infra.workers", "trader.infra.shutdown", "trader.infra.cache_contracts"}
-                )
-                or (
-                    ".training" in name
-                    and not (
-                        name == "trader.training.domain.model_publication"
-                        and path.relative_to(SOURCE_ROOT).as_posix()
-                        in {
-                            "recommendation/application/ports/loaded_profile.py",
-                            "recommendation/application/pipeline/local_score/model_capability.py",
-                        }
-                    )
-                )
-                or name.endswith(".download")
-            )
-    assert violations == []
+    violations = tuple(
+        f"{path.relative_to(SOURCE_ROOT)}:{imported.line} -> {imported.targets[-1]}"
+        for path in sorted((SOURCE_ROOT / "recommendation/application").rglob("*.py"))
+        for imported in LayerImportViolations(SourceModuleName(path, SOURCE_ROOT), SourceImports(path, SOURCE_ROOT))
+    )
+    assert violations == ()
 
 
 def test_atomic_json_has_one_infrastructure_owner() -> None:
