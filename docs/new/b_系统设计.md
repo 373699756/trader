@@ -119,7 +119,7 @@ flowchart TD
 | WAL/checkpoint | 在提交边界控制集中写入成本 | 比较 checkpoint 频率和写放大 | WAL 大小、关闭成本、故障恢复 |
 | 样本布局 | 顺序读取、连续数组候选 | 批读与映射读取候选 | 首次生成、复用、增量和清理总成本 |
 
-现状：`runtime.json.disk_medium` 是全局选择；`sqlite.json.sqlite_policy.hdd/ssd` 各有连接超时、读窗、驱动批次和 checkpoint，当前两组数值相同。本机当前配置为 `hdd`；实际介质由只读disk检测独立报告，不能用配置值代替检测证据。`download.history.write_batches` 已有介质差异，不表示所有模块都已调优。
+现状：`runtime.json.disk_medium` 是全局选择；`sqlite.json.sqlite_policy.hdd/ssd` 各有连接超时、读窗、驱动批次和 checkpoint，当前两组数值相同。2026-11-05用户确认当前PC为SSD，HDD在另一台PC；两机分别验证记录，不将本机虚拟磁盘的`ROTA`当作宿主机介质证明。配置选择、用户确认和只读disk自动检测分别记录于g，不能相互替代。`download.history.write_batches` 已有介质差异，不表示所有模块都已调优。
 
 组合根`BuildSqlitePolicy`选择唯一不可变策略，显式配置优先，自动检测unknown使用HDD保守策略。下载、训练及荐股持久化adapter把同一个策略传到公共SQLite边界；只读HTTP/Web不自行选介质或打开业务数据库。`connection_timeout_seconds`进入连接超时，`read_window_rows`限制底层取行窗口，`transaction_batch_rows`限制一次驱动批量提交的行数，`checkpoint_mode`由显式checkpoint操作消费。驱动分批仍处于调用者原有事务内，不按每个小批次分别COMMIT。
 
@@ -174,7 +174,7 @@ flowchart TD
 | --- | --- | --- | --- | --- | --- |
 | `runtime_dir` | 运行状态目录 | 路径 | `.runtime/trader` | 组合根建立运行资源 | 启动读取；不得提交运行数据 |
 | `data_dir` | 业务数据根目录 | 路径 | `data` | 各业务构造自己的数据路径 | 启动读取；不是自动删除范围 |
-| `disk_medium` | 选择存储策略 | `hdd/ssd` | `hdd`，是工作区值 | 给实际读写 adapter 注入策略 | 不是物理介质证明 |
+| `disk_medium` | 选择存储策略 | `hdd/ssd` | 本轮SSD PC工作区为`ssd`；HDD PC另记 | 给实际读写 adapter 注入策略 | 启动读取；配置值不是物理介质证明 |
 | `strategy_config` | 业务配置入口 | 文件名 | `strategy.json` | 统一配置解析 | 启动一次读取 |
 | `long_watchlist` | Long 名单文件 | 文件名 | `long_watchlist.json` | Long 只读名单 | 不影响短线模型身份 |
 

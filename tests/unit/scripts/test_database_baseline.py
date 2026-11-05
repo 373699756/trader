@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tests.helpers.configuration import SqlitePolicyFixture
 
+import json
 import os
 import subprocess
 import sys
@@ -52,6 +53,46 @@ def test_training_baseline_is_routed_only_to_a_new_isolated_baseline(tmp_path):
         _validate(_parser().parse_args(base + ["--database-training", "--baseline-checkout", str(tmp_path / "baseline")]))
     with pytest.raises(ValueError, match="requires --profile disk"):
         _validate(_parser().parse_args(["--profile", "local", "--disk-policy-audit"]))
+
+
+@pytest.mark.parametrize("training", (False, True))
+@pytest.mark.parametrize("changed", (False, True))
+def test_baseline_checks_cross_round_facts_in_every_mode(training, changed, monkeypatch, capsys):
+    number = 0
+
+    def worker(*args, **kwargs):
+        nonlocal number
+        number += 1
+        return {"history": {"rows": number if changed else 3, "wall_seconds": float(number)}}
+
+    monkeypatch.setattr(database_baseline, "_run_worker", worker)
+    monkeypatch.setattr(database_baseline, "_input_identity", lambda: "fixed")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["database-baseline", "--rounds", "2", *(("--include-training",) if training else ())],
+    )
+    if changed:
+        with pytest.raises(RuntimeError, match="repeated_input_or_output_mismatch"):
+            database_baseline.main()
+        assert not capsys.readouterr().out
+    else:
+        assert database_baseline.main() == 0
+        assert json.loads(capsys.readouterr().out)["status"] == "passed"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ("src/trader/example.py", "scripts/runtime_diagnostics/example.py", "config/runtime.json"),
+)
+def test_baseline_identity_tracks_each_selected_checkout_input(tmp_path, relative):
+    source = tmp_path / relative
+    source.parent.mkdir(parents=True)
+    source.write_text("original", encoding="utf-8")
+    before = database_baseline._input_identity(tmp_path)
+    assert database_baseline._input_identity(tmp_path) == before
+    source.write_text("changed", encoding="utf-8")
+    assert database_baseline._input_identity(tmp_path) != before
 
 
 def test_measurement_counts_wrapper_operations_and_preserves_rollback(tmp_path: Path) -> None:
@@ -175,7 +216,20 @@ def test_database_comparison_routes_the_external_baseline_to_the_same_harness(tm
 
 
 @pytest.mark.parametrize("focus", ("history", "market-company"))
-@pytest.mark.parametrize("failure", (None, "rss", "identity", "company_no_gain", "company_space", "company_startup"))
+@pytest.mark.parametrize(
+    "failure",
+    (
+        None,
+        "rss",
+        "identity",
+        "company_no_gain",
+        "company_space",
+        "company_startup",
+        "identity_drift",
+        "baseline_source",
+        "candidate_source",
+    ),
+)
 def test_comparison_requires_equal_publications_and_every_round_within_memory_budget(
     tmp_path, monkeypatch, failure, focus
 ):
@@ -183,6 +237,12 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
     (baseline / "src/trader").mkdir(parents=True)
     candidate_round = 0
     calls = []
+
+    def input_identity(checkout):
+        variant = "candidate" if checkout == PROJECT_ROOT else "baseline"
+        return "changed" if failure == f"{variant}_source" and variant in calls else "fixed"
+
+    monkeypatch.setattr(database_baseline, "_input_identity", input_identity)
 
     def worker(checkout, size, sessions, disk_kind):
         nonlocal candidate_round
@@ -192,6 +252,8 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
         seconds = 0.8 if candidate else 1.0
         rss = 2 * 1024**3 + 1 if candidate and candidate_round == 1 and failure == "rss" else 1024
         identity = "changed" if candidate and failure == "identity" else "same"
+        if failure == "identity_drift":
+            identity = f"pair-{(len(calls) - 1) // 2}"
         return {
             "history": {
                 "cases": [
@@ -237,6 +299,12 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
     if failure == "identity":
         with pytest.raises(RuntimeError, match="publication_changed"):
             _compare(baseline, 2, 61, 5, "unknown", focus)
+    elif failure == "identity_drift":
+        with pytest.raises(RuntimeError, match="repeated_input_or_output_mismatch"):
+            _compare(baseline, 2, 61, 5, "unknown", focus)
+    elif failure in {"baseline_source", "candidate_source"}:
+        with pytest.raises(RuntimeError, match="code_or_configuration_changed"):
+            _compare(baseline, 2, 61, 5, "unknown", focus)
     else:
         report = _compare(baseline, 2, 61, 5, "unknown", focus)
         assert report["acceptance"]["accepted"] is (
@@ -245,6 +313,7 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
         )
         assert report["acceptance"]["database_size_within_5_percent"] is (failure != "company_space")
         assert report["acceptance"]["process_rss_within_2_gib"] is (failure != "rss")
+        assert report["input_identities"] == {"baseline": "fixed", "candidate": "fixed"}
         assert calls == [
             "baseline",
             "candidate",

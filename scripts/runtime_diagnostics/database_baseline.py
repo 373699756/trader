@@ -497,14 +497,22 @@ def _compare(
     baseline = baseline.resolve(strict=True)
     if baseline == PROJECT_ROOT or baseline.is_relative_to(PROJECT_ROOT) or not (baseline / "src/trader").is_dir():
         raise ValueError("database comparison requires an external product checkout")
+    checkouts = {"baseline": baseline, "candidate": PROJECT_ROOT}
+    input_identities = {variant: _input_identity(checkout) for variant, checkout in checkouts.items()}
     runs: dict[str, list[dict[str, object]]] = {"baseline": [], "candidate": []}
     for number in range(rounds):
         order = ("baseline", "candidate") if number % 2 == 0 else ("candidate", "baseline")
         for variant in order:
-            checkout = baseline if variant == "baseline" else PROJECT_ROOT
+            checkout = checkouts[variant]
             runs[variant].append(_run_worker(checkout, size, sessions, disk_kind))
+            if _input_identity(checkout) != input_identities[variant]:
+                raise RuntimeError("database_baseline_code_or_configuration_changed")
         if _publication_facts(runs["baseline"][-1]) != _publication_facts(runs["candidate"][-1]):
             raise RuntimeError("database_comparison_publication_changed")
+        if _publication_facts(runs["baseline"][-1]) != _publication_facts(runs["baseline"][0]):
+            raise RuntimeError("database_baseline_repeated_input_or_output_mismatch")
+    if any(_input_identity(checkout) != input_identities[variant] for variant, checkout in checkouts.items()):
+        raise RuntimeError("database_baseline_code_or_configuration_changed")
     old, new = _median_metrics(runs["baseline"]), _median_metrics(runs["candidate"])
     comparisons: list[_MetricComparison] = []
     before_metrics = [_numeric_metrics(run) for run in runs["baseline"]]
@@ -564,6 +572,7 @@ def _compare(
     )
     return {
         "runs": runs,
+        "input_identities": input_identities,
         "comparison": comparisons,
         "publication_equal": True,
         "acceptance": {
@@ -581,15 +590,15 @@ def _compare(
     }
 
 
-def _input_identity() -> str:
+def _input_identity(project: Path = PROJECT_ROOT) -> str:
     digest = hashlib.sha256()
     paths = sorted((
-        *(PROJECT_ROOT / "src/trader").rglob("*.py"),
-        *(PROJECT_ROOT / "scripts/runtime_diagnostics").glob("*.py"),
-        *(PROJECT_ROOT / "config").glob("*.json"),
+        *(project / "src/trader").rglob("*.py"),
+        *(project / "scripts/runtime_diagnostics").glob("*.py"),
+        *(project / "config").glob("*.json"),
     ))
     for path in paths:
-        digest.update(path.relative_to(PROJECT_ROOT).as_posix().encode() + b"\0")
+        digest.update(path.relative_to(project).as_posix().encode() + b"\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
 
@@ -632,10 +641,9 @@ def main() -> int:
         ]
         if _input_identity() != identity:
             raise RuntimeError("database_baseline_code_or_configuration_changed")
-        if args.include_training:
-            fingerprints = [_publication_facts(run) for run in runs]
-            if any(value != fingerprints[0] for value in fingerprints):
-                raise RuntimeError("database_baseline_repeated_input_or_output_mismatch")
+        fingerprints = [_publication_facts(run) for run in runs]
+        if any(value != fingerprints[0] for value in fingerprints):
+            raise RuntimeError("database_baseline_repeated_input_or_output_mismatch")
         result = {"runs": runs, "median_metrics": _median_metrics(runs), "input_identity": identity}
         status = "passed"
     emit_report(
