@@ -101,7 +101,13 @@ def observed_quality_input(
     candidates = AssembleCandidateInputs(
         pipeline.candidates[strategy], tuple(features), as_of=as_of, data_version="fixture:available"
     )
-    quality = AssessCandidateInputStage(candidates, as_of=as_of, minimum_history_sessions=20, latency_ms=17)
+    quality = AssessCandidateInputStage(
+        candidates,
+        as_of=as_of,
+        minimum_history_sessions=20,
+        latency_ms=17,
+        hard_filter=policy.hard_filter,
+    )
     snapshots = (
         *batch.static_stages,
         batch.dynamic_stage.snapshot,

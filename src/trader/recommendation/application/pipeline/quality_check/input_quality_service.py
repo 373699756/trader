@@ -399,7 +399,7 @@ def AssessCandidateInputStage(
     as_of: datetime,
     minimum_history_sessions: int,
     latency_ms: int,
-    hard_filter: HardFilterPolicy | None = None,
+    hard_filter: HardFilterPolicy,
 ) -> PipelineStageOutput[FeatureSnapshot]:
     """Assess the actual directed input for the selected reserve, including missing quotes."""
     if source.snapshot.stage is not PipelineStage.MARKET_FEATURES:

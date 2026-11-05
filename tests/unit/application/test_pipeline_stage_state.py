@@ -88,7 +88,13 @@ def test_quality_checks_actual_missing_directed_quote(application_feature_factor
         batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None), lambda: next(ticks)
     )
     candidate = result.candidates[Strategy.TOMORROW]
-    output = AssessCandidateInputStage(candidate, as_of=AS_OF, minimum_history_sessions=20, latency_ms=13)
+    output = AssessCandidateInputStage(
+        candidate,
+        as_of=AS_OF,
+        minimum_history_sessions=20,
+        latency_ms=13,
+        hard_filter=_policy().hard_filter,
+    )
     assert candidate.snapshot.output_count == 1
     assert (output.snapshot.input_count, output.snapshot.output_count, output.snapshot.pending_count) == (1, 0, 1)
     assert output.snapshot.state is StageState.NOT_READY
@@ -149,7 +155,13 @@ def test_directed_quality_reads_new_immutable_candidate_batch(application_featur
     original = pipeline.candidates[Strategy.TOMORROW]
     stale = replace(feature, quote=replace(feature.quote, source_time=AS_OF - timedelta(minutes=10)))
     directed = AssembleCandidateInputs(original, (stale,), as_of=AS_OF, data_version="fixture:correction")
-    result = AssessCandidateInputStage(directed, as_of=AS_OF, minimum_history_sessions=20, latency_ms=7)
+    result = AssessCandidateInputStage(
+        directed,
+        as_of=AS_OF,
+        minimum_history_sessions=20,
+        latency_ms=7,
+        hard_filter=_policy().hard_filter,
+    )
     assert original.records[0].features is None
     assert directed.snapshot.output_batch_id != original.snapshot.output_batch_id
     assert result.snapshot.input_batch_id == directed.snapshot.input_batch_id
