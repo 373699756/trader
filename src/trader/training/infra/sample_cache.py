@@ -24,6 +24,28 @@ from trader.training.infra.sample_schema import SampleFormatId
 _LOGGER = logging.getLogger(__name__)
 _TEMPORARY_SAMPLE_NAMESPACE = ".temporary-training-v1"
 _TEMPORARY_SAMPLE_NAME = re.compile(r"training-[0-9a-f]{32}")
+_FITTING_MATRIX_NAME = re.compile(r"sample-(?:fit|shared)-[a-z0-9_]{8}")
+_FITTING_WORKSPACE_FILES: tuple[tuple[str, frozenset[str], str], ...] = (
+    (
+        "sample-fit-*",
+        frozenset(
+            f"{partition}-{component}.bin"
+            for partition in ("training", "early_stopping", "calibration")
+            for component in ("features", "labels")
+        ),
+        "training_sample_cache_unknown_matrix_workspace",
+    ),
+    (
+        "sample-shared-*",
+        frozenset(("common-features.bin", "common-labels.bin")),
+        "training_sample_cache_unknown_matrix_workspace",
+    ),
+    (
+        "tcn-batches-*",
+        frozenset(("training", "early_stopping")),
+        "training_sample_cache_unknown_tcn_workspace",
+    ),
+)
 SampleCachePhase = Literal["checking", "sealing"]
 SampleCacheProgress = Callable[[SampleCachePhase, Literal["started", "running", "completed"], int, int], None]
 
@@ -62,8 +84,7 @@ class TrainingSampleCache:
         return len(self.feature_names)
 
     def inspect(self) -> bool:
-        if self.root.is_symlink() or self.path.is_symlink() or self.manifest.is_symlink():
-            raise ValueError("training_sample_cache_symlink")
+        self._require_cache_files()
         signature = self._signature()
         if not self._inspected or signature != self._inspection_signature:
             self.reused = self._matches()
@@ -72,17 +93,8 @@ class TrainingSampleCache:
         return self.reused
 
     def open(self, *, inspected: bool = False) -> SQLiteTrainingSampleIndex:
-        if self.root.is_symlink() or self.path.is_symlink() or self.manifest.is_symlink():
-            raise ValueError("training_sample_cache_symlink")
-        _clear_tcn_batch_workspaces(self.root)
-        # The caller holds the profile lock; these are scratch mappings from a
-        # killed fit, never sealed samples or another running profile's files.
-        for pattern in ("sample-fit-*", "sample-shared-*"):
-            for workspace in self.root.glob(pattern):
-                if workspace.is_symlink():
-                    raise ValueError("training_sample_cache_symlink")
-                if workspace.is_dir():
-                    shutil.rmtree(workspace)
+        self._require_cache_files()
+        _clear_fitting_workspaces(self.root)
         if not inspected:
             self.inspect()
         if not self.reused:
@@ -135,8 +147,7 @@ class TrainingSampleCache:
 
     def audit(self) -> bool:
         """Explicit full-byte verification; normal reuse checks the sealed metadata."""
-        if self.root.is_symlink() or self.path.is_symlink() or self.manifest.is_symlink():
-            raise ValueError("training_sample_cache_symlink")
+        self._require_cache_files()
         return self._matches(verify_content=True)
 
     def _matches(self, *, verify_content: bool = False) -> bool:
@@ -177,15 +188,24 @@ class TrainingSampleCache:
             _LOGGER.warning("training_sample_cache_invalid_rebuilding")
             return False
 
-    def clear(self) -> None:
+    def _require_cache_files(self) -> tuple[Path, Path, Path]:
         if self.root.is_symlink():
             raise ValueError("training_sample_cache_symlink")
+        if self.root.exists() and not self.root.is_dir():
+            raise ValueError("training_sample_cache_directory_invalid")
+        paths = (self.manifest, self.path, Path(f"{self.path}-journal"))
+        if any(path.is_symlink() for path in paths):
+            raise ValueError("training_sample_cache_symlink")
+        if any(path.exists() and not path.is_file() for path in paths):
+            raise ValueError("training_sample_cache_unknown_file")
+        return paths
+
+    def clear(self) -> None:
+        paths = self._require_cache_files()
         self.reused = False
         self._inspected = False
         # Readiness goes first: interruption must never bless partial bytes.
-        for path in (self.manifest, self.path, Path(f"{self.path}-journal")):
-            if path.is_symlink():
-                raise ValueError("training_sample_cache_symlink")
+        for path in paths:
             path.unlink(missing_ok=True)
 
 
@@ -251,14 +271,20 @@ def _validate_temporary_sample_workspace(workspace: Path) -> None:
                     raise ValueError("training sample directory contains existing data")
 
 
-def _clear_tcn_batch_workspaces(root: Path) -> None:
-    workspaces = tuple(root.glob("tcn-batches-*"))
-    for workspace in workspaces:
-        if workspace.is_symlink() or not workspace.is_dir():
-            raise ValueError("training_sample_cache_unknown_tcn_workspace")
-        for path in workspace.iterdir():
-            if path.name not in ("training", "early_stopping") or path.is_symlink() or not path.is_file():
-                raise ValueError("training_sample_cache_unknown_tcn_workspace")
+def _clear_fitting_workspaces(root: Path) -> None:
+    """Validate every fitting namespace before deleting any abandoned mapping."""
+    workspaces: list[Path] = []
+    for pattern, allowed_files, reason in _FITTING_WORKSPACE_FILES:
+        for workspace in root.glob(pattern):
+            if pattern != "tcn-batches-*" and not _FITTING_MATRIX_NAME.fullmatch(workspace.name):
+                raise ValueError(reason)
+            if workspace.is_symlink() or not workspace.is_dir():
+                raise ValueError(reason)
+            for path in workspace.iterdir():
+                if path.name not in allowed_files or path.is_symlink() or not path.is_file():
+                    raise ValueError(reason)
+            workspaces.append(workspace)
+    # Interrupted removal leaves a subset of the same bounded file layouts.
     for workspace in workspaces:
         shutil.rmtree(workspace)
 

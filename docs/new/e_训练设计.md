@@ -480,7 +480,11 @@ V1的两个文件使用独立白名单：model包含 `schema_version/profile_id/
 
 V1临时样本位于 `data/training/samples/v1/.temporary-training-v1/training-<32位十六进制标识>/`，仅识别 `samples.sqlite3`及其journal、`matrices/0`至`matrices/7`下的 `features.bin/targets.bin`。空命名空间和部分创建的上述对象也可恢复；重启后重新建样本，不把临时样本升级为可复用封存缓存。清理前先核对全部受管工作目录，发现未知文件、目录或符号链接就拒绝清理并保留全部现场；旧版或用户自有文件不能仅因位于v1目录被删除。
 
-V5大行业的 `tcn-batches-*`目录仅包含只读拟合缓存 `training/early_stopping`，属于封存样本之外的临时映射。`TrainingSampleCache.open()`在锁内先核对全部此类目录，遇未知条目或符号链接保留并拒绝；合法遗留映射可清理后重开原封存样本，不改写 `samples.sqlite3/complete.json`。小行业的内存缓存沿用同一上下文释放语义；成功、填充中取消或拟合中取消均关闭本轮映射。
+共用样本index的拟合矩阵由`sample_index.py`创建，恢复仍由`TrainingSampleCache`负责。`sample-fit-<8位标识>`只包含`training/early_stopping/calibration`各自的`-features.bin/-labels.bin`，`sample-shared-<8位标识>`只包含`common-features.bin/common-labels.bin`；标识仅小写字母、数字及下划线。空目录或固定文件的部分创建可恢复，名称不符合、未知文件、子目录或符号链接均拒绝清理。目录名只有前缀相似不能证明归属。
+
+V5大行业的 `tcn-batches-*`目录仅包含只读拟合缓存 `training/early_stopping`，属于封存样本之外的临时映射。`TrainingSampleCache.open()`在锁内先核对固定缓存路径，再统一检查fit、shared及TCN三类残留，全部通过后才开始清理；预检发现任何一类异常都保留其它类现场。合法遗留映射可清理后重开原封存样本，不改写 `samples.sqlite3/complete.json`。小行业的内存缓存沿用同一上下文释放语义；成功、填充中取消或拟合中取消均关闭本轮映射。
+
+固定缓存路径`complete.json`、`samples.sqlite3`及其`-journal`在检查、打开、审计和清理入口共用普通文件/符号链接预检。清理先核对全组路径，随后仍按完成标记优先的原顺序删除；预检发现DB或journal为符号链接、目录等异常类型时，完成标记和其它临时映射都保持原样。实际删除遇I/O错误或再次硬退出仍可能留下已核对布局的部分残留，下次按同一合同恢复。不增加数据库行或完整内容扫描；实现与验证证据只记g对应阶段。
 
 上述临时样本恢复不处理模型发布目录；模型发布使用下节独立边界。全市场训练的实际资源峰值、SSD和性能对照仍需各自验证，不能用恢复夹具代替。
 
