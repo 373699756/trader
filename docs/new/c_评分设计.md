@@ -642,7 +642,7 @@ D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术�
 
 #### long.json
 
-来源：`config/long.json`。`LoadStrategySettings._parse_long_research_policy` → `LongResearchPolicy` → 财报质量/估值/成长、质押/解禁分级；该文件虽名long，财报分服务D25，Long当前快照不评分。年龄/窗口/行数正整数，PE/PB零分界大于满分界，三级比例非负且递增。正式解禁窗由company_scoring.unlock_days消费，unlock.forward_days目前只解析/校验；announcements.lookback_days/maximum_rows不控制正式company事件覆盖和条数。
+来源：`config/long.json`。`LoadStrategySettings._parse_long_research_policy` → `LongResearchPolicy` → 财报质量/估值/成长、质押/解禁分级；该文件虽名long，财报分服务D25，Long当前快照不评分。财报年龄正整数，PE/PB零分界大于满分界，三级比例非负且递增。正式解禁窗唯一由company_scoring.unlock_days消费；无消费者的unlock.forward_days及announcements.lookback_days/maximum_rows已从配置、解析和类型移除，旧键明确拒绝，不保留只改身份却不影响行为的伪控制项。公司事件范围由d所述正式事实及其点时资格决定。
 
 | 字段路径 | 中文作用 | 当前值 |
 | --- | --- | --- |
@@ -658,10 +658,7 @@ D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术�
 | `long_research.financial_deterioration.net_profit_growth_lte` | 归母恶化上界（含） | `-20` |
 | `long_research.financial_deterioration.core_profit_growth_lte` | 扣非恶化上界（含） | `-20` |
 | `long_research.pledge_thresholds` | 质押三级比例门（百分点） | `[10,20,35]` |
-| `long_research.unlock.forward_days` | 旧研究前向自然日声明 | `180` |
 | `long_research.unlock.thresholds` | 解禁三级比例门（百分点） | `[1,5,10]` |
-| `long_research.announcements.lookback_days` | 公告自然日窗口声明 | `180` |
-| `long_research.announcements.maximum_rows` | 公告条数声明 | `100` |
 
 ### 16.3 features.json完整结构与80项登记
 

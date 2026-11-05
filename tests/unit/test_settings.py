@@ -271,7 +271,6 @@ def test_configuration_contract_is_valid() -> None:
     assert set(strategy.dimension_weights) == {"tomorrow", "d25"}
     assert strategy.long_research.financial_max_age_days == 550
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
-    assert strategy.long_research.announcement_lookback_days == 180
     assert watchlist.watchlist_version.startswith("watchlist_sha256_")
     assert watchlist.items and watchlist.groups
     assert {item.selected_on.isoformat() for item in watchlist.items} == {"2026-10-31"}
@@ -508,6 +507,44 @@ def test_long_quote_maximum_age_is_required_in_scheduler(tmp_path):
     del raw["pipeline"]["long_quote_max_age_seconds"]
     with pytest.raises(ConfigurationError, match="long_quote_max_age_seconds"):
         LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+
+def test_company_preload_settings_are_explicit_and_reach_runtime(tmp_path):
+    baseline = LoadRuntimeSettings(RUNTIME_CONFIG).pipeline.company_preload
+    assert (baseline.timeout_seconds, baseline.publication_attempts) == (30, 3)
+    raw = _runtime_document()
+    raw["pipeline"]["company_preload"] = {"timeout_seconds": 12.5, "publication_attempts": 5}
+    tuned = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw)).pipeline.company_preload
+    assert (tuned.timeout_seconds, tuned.publication_attempts) == (12.5, 5)
+
+
+@pytest.mark.parametrize("invalid", (
+    None, {}, {"timeout_seconds": 30}, {"timeout_seconds": 0, "publication_attempts": 3},
+    {"timeout_seconds": True, "publication_attempts": 3},
+    {"timeout_seconds": float("inf"), "publication_attempts": 3},
+    {"timeout_seconds": 30, "publication_attempts": False},
+    {"timeout_seconds": 30, "publication_attempts": 11},
+    {"timeout_seconds": 30, "publication_attempts": 3, "legacy": 1},
+))
+def test_company_preload_settings_reject_missing_unknown_and_invalid_values(tmp_path, invalid):
+    raw = _runtime_document()
+    if invalid is None:
+        del raw["pipeline"]["company_preload"]
+    else:
+        raw["pipeline"]["company_preload"] = invalid
+    with pytest.raises(ConfigurationError):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+
+@pytest.mark.parametrize("removed", ("announcements", "forward_days"))
+def test_unused_long_research_parameters_are_rejected(tmp_path, removed):
+    raw = _strategy_document()
+    if removed == "announcements":
+        raw["long_research"]["announcements"] = {"lookback_days": 180, "maximum_rows": 100}
+    else:
+        raw["long_research"]["unlock"]["forward_days"] = 180
+    with pytest.raises(ConfigurationError, match="unknown keys"):
+        LoadStrategySettings(_write_strategy_config(tmp_path, raw))
 
 
 def test_history_preload_settings_change_without_invalidating_feature_identity(tmp_path) -> None:

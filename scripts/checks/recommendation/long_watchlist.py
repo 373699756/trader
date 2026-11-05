@@ -24,12 +24,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader  # noqa: E402
 from trader.download.infra.reference_index import SQLiteReferenceIndex  # noqa: E402
 from trader.infra.settings.loading import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings  # noqa: E402
+from trader.infra.settings.models import CompanyPreloadSettings
 from trader.infra.sqlite_connection import SqliteConnectionOptions  # noqa: E402
 from trader.recommendation.domain.market.eligibility import (  # noqa: E402
     IsPermanentExclusionReason,
     IssuerEligibilityReason,
 )
-from trader.recommendation.domain.market.research import FinancialReport, LongResearchPolicy  # noqa: E402
+from trader.recommendation.domain.market.research import FinancialReport  # noqa: E402
 from trader.recommendation.domain.scoring.company import CompanyScoringPolicy  # noqa: E402
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch  # noqa: E402
 
@@ -113,9 +114,8 @@ def audit_code(
     code: str,
     *,
     observed_at: datetime,
-    policy: LongResearchPolicy,
     company_policy: CompanyScoringPolicy,
-    timeout: float,
+    preload_settings: CompanyPreloadSettings,
     exclusions: dict[str, tuple[str, ...]],
     evidence_database: Path,
     open_dates: tuple[date, ...], sqlite_policy: SqliteIoPolicy,
@@ -128,6 +128,7 @@ def audit_code(
         open_dates=lambda: open_dates,
         monotonic=time.monotonic,
         company_policy=company_policy,
+        preload_settings=preload_settings,
     )
     reader.initialize((code,), cancelled=lambda: False)
     observation = reader.load((code,), observed_at, include_structured=True).get(code)
@@ -163,12 +164,12 @@ def Main() -> int:
     parser.add_argument("--company-evidence-database", type=Path, required=True)
     parser.add_argument("--runtime-config", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--timeout-seconds", type=float, default=5)
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
-    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
-    if not 1 <= args.workers <= 8 or not 0 < args.timeout_seconds <= 15:
-        parser.error("workers must be 1..8 and request timeout must be >0..15 seconds")
+    settings = LoadRuntimeSettings(args.runtime_config)
+    sqlite_policy = BuildSqlitePolicy(settings)
+    if not 1 <= args.workers <= 8:
+        parser.error("workers must be 1..8")
     if args.evidence_output:
         target = args.evidence_output
         if not target.is_absolute() or target.resolve().is_relative_to(PROJECT_ROOT):
@@ -176,9 +177,8 @@ def Main() -> int:
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
     watchlist = LoadLongWatchlist(args.watchlist)
     strategy = LoadStrategySettings(args.strategy)
-    policy = strategy.long_research
     exclusions = historical_exclusions(tuple(args.eligibility_evidence), observed_at, sqlite_policy=sqlite_policy)
-    reference = SQLiteReferenceIndex(LoadRuntimeSettings(args.runtime_config).data_paths.reference_database, sqlite_policy=sqlite_policy).read()
+    reference = SQLiteReferenceIndex(settings.data_paths.reference_database, sqlite_policy=sqlite_policy).read()
     open_dates = reference.open_dates if reference else ()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         results = tuple(
@@ -186,9 +186,8 @@ def Main() -> int:
                 lambda item: audit_code(
                     item.code,
                     observed_at=observed_at,
-                    policy=policy,
                     company_policy=strategy.company_scoring,
-                    timeout=args.timeout_seconds,
+                    preload_settings=settings.pipeline.company_preload,
                     exclusions=exclusions,
                     evidence_database=args.company_evidence_database,
                     open_dates=open_dates, sqlite_policy=sqlite_policy,

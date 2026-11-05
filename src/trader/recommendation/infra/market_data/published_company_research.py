@@ -20,6 +20,7 @@ from trader.download.domain.company_events import (
     CompanyRiskType,
 )
 from trader.download.domain.company_facts import CompanyFacts
+from trader.infra.settings.models import CompanyPreloadSettings
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
 from trader.recommendation.domain.market.epochs import ResearchEpoch
@@ -64,6 +65,7 @@ class PublishedCompanyResearch:
         open_dates: Callable[[], tuple[date, ...]],
         monotonic: Callable[[], float],
         company_policy: CompanyScoringPolicy,
+        preload_settings: CompanyPreloadSettings,
         **options: Unpack[_CompanyInputOptions],
     ) -> None:
         self._reader = reader
@@ -73,6 +75,7 @@ class PublishedCompanyResearch:
         self._reserve_bytes = options.get("reserve_bytes")
         self._source_versions = options.get("source_versions")
         self._company_policy = company_policy
+        self._preload_settings = preload_settings
         self._config_version = options.get("config_version", "company")
         self._initialization_lock = threading.Lock()
         self._lock = threading.RLock()
@@ -107,9 +110,12 @@ class PublishedCompanyResearch:
         if not requested or len(requested) > 12_000:
             self._last_error = "company_population_unavailable"
             return
-        deadline = self._monotonic() + 30.0
+        deadline = self._monotonic() + self._preload_settings.timeout_seconds
         observed_at = ShanghaiNow(self._wall_clock())
-        for _ in range(3):
+        for _ in range(self._preload_settings.publication_attempts):
+            if cancelled() or self._monotonic() >= deadline:
+                self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
+                return
             try:
                 before, rows = self._capture_publication(requested, observed_at, cancelled, deadline)
                 after = self._reader.publication_version()

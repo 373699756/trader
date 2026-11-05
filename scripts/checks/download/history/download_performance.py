@@ -27,6 +27,7 @@ from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, PriceAdjustment
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.settings import LoadStrategySettings
+from trader.infra.settings.models import CompanyPreloadSettings
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
 from scripts.checks.reporting import emit_report
@@ -34,7 +35,7 @@ from scripts.checks.reporting import emit_report
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
-def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, float | int]:
+def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy, preload_settings: CompanyPreloadSettings) -> dict[str, float | int]:
     usage_before = resource.getrusage(resource.RUSAGE_SELF)
     now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
     company_configuration = LoadCompanySyncConfiguration(_PROJECT_ROOT)
@@ -92,6 +93,7 @@ def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, float | 
         open_dates=lambda: tuple((now + timedelta(days=offset)).date() for offset in range(-5, 5)),
         monotonic=time.monotonic,
         company_policy=company_policy,
+        preload_settings=preload_settings,
     )
     started = time.monotonic()
     research.initialize(codes, cancelled=lambda: False)
@@ -217,14 +219,15 @@ def Main() -> int:
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
-    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[4] / "config/runtime.json"))
+    settings = LoadRuntimeSettings(Path(__file__).resolve().parents[4] / "config/runtime.json")
+    sqlite_policy = BuildSqlitePolicy(settings)
     if args.baseline_checkout is not None:
         emit_report(_compare(args.baseline_checkout))
         return 0
     rounds = []
     for _ in range(args.rounds):
         with TemporaryDirectory(prefix="trader-download-perf-") as directory:
-            rounds.append(_measure(Path(directory), sqlite_policy=sqlite_policy))
+            rounds.append(_measure(Path(directory), sqlite_policy=sqlite_policy, preload_settings=settings.pipeline.company_preload))
     summary = {key: round(median(float(result[key]) for result in rounds), 6) for key in rounds[0]}
     emit_report(
         {

@@ -25,6 +25,7 @@ from trader.infra.settings.models import (
     HistoryPreloadSettings,
     MarketDataSettings,
     PipelineSettings,
+    CompanyPreloadSettings,
     RuntimeSettings,
     ServerSettings,
     TushareSettings,
@@ -137,12 +138,15 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         "shutdown_timeout_seconds",
         "long_quote_max_age_seconds",
         "history_preload",
+        "company_preload",
         "cadence_seconds",
         "publish_heartbeat_seconds",
     }
     _require_exact_keys(pipeline_raw, pipeline_keys, "pipeline")
     preload_raw = _mapping(pipeline_raw, "history_preload")
     _require_exact_keys(preload_raw, {"warn_after_seconds"}, "pipeline.history_preload")
+    company_preload_raw = _mapping(pipeline_raw, "company_preload")
+    _require_exact_keys(company_preload_raw, {"timeout_seconds", "publication_attempts"}, "pipeline.company_preload")
     market_keys = {
         "eastmoney_timeout_seconds",
         "candidate_timeout_seconds",
@@ -243,6 +247,10 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             shutdown_timeout_seconds=_number(pipeline_raw, "shutdown_timeout_seconds", minimum=0.1),
             history_preload=HistoryPreloadSettings(
                 warn_after_seconds=_number(preload_raw, "warn_after_seconds", minimum=0.001, maximum=3600),
+            ),
+            company_preload=CompanyPreloadSettings(
+                timeout_seconds=_number(company_preload_raw, "timeout_seconds", minimum=0.001, maximum=3600),
+                publication_attempts=_integer(company_preload_raw, "publication_attempts", minimum=1, maximum=10),
             ),
             long_quote_max_age_seconds=_number(pipeline_raw, "long_quote_max_age_seconds", minimum=0.001),
             cadence_seconds=cadence_seconds,

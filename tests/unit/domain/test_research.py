@@ -484,9 +484,6 @@ def _feature_component_weights() -> FeatureComponentWeightPolicy:
 def _long_policy() -> LongResearchPolicy:
     return LongResearchPolicy(
         financial_max_age_days=550,
-        announcement_lookback_days=180,
-        announcement_limit=100,
-        unlock_forward_days=90,
         pe_full_score_max=10.0,
         pe_zero_score_min=50.0,
         pb_full_score_max=1.0,

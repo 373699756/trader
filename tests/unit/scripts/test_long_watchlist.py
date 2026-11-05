@@ -9,18 +9,32 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scripts.checks.recommendation.long_watchlist import audit_code, financial_admission, historical_exclusions
+from scripts.checks.arguments import BuildParser, ValidateOptions
+from scripts.checks.catalog import SelectionArguments
+from scripts.checks.commands import BuildCommands
 from trader.download.domain.company_evidence import CompanyFinancial, StructuredCompanyPage, StructuredCompanyQuery
 from tests.helpers.configuration import (
     CompanyDocumentFilesFixture as CompanyDocumentFiles,
     SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
 )
-from trader.infra.settings import LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityReason
 from trader.recommendation.domain.market.research import FinancialReport
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_dispatcher_uses_runtime_company_preload_settings() -> None:
+    options, _ = ValidateOptions(BuildParser().parse_args(SelectionArguments("long-watchlist")))
+
+    commands = BuildCommands(options)
+
+    assert len(commands) == 1
+    assert "scripts.checks.recommendation.long_watchlist" in commands[0].argv
+    assert "--runtime-config" in commands[0].argv
+    assert "--timeout-seconds" not in commands[0].argv
 
 
 @pytest.mark.parametrize("profit_field", ("parent_net_profit", "core_net_profit"))
@@ -98,9 +112,8 @@ def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Pa
     result = audit_code(
         "000001",
         observed_at=datetime(2026, 10, 9, 16, tzinfo=SHANGHAI),
-        policy=strategy.long_research,
         company_policy=strategy.company_scoring,
-        timeout=1,
+        preload_settings=LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline.company_preload,
         exclusions={},
         evidence_database=index.facts_path,
         open_dates=(date(2026, 10, 8), date(2026, 10, 9)), sqlite_policy=SqlitePolicyFixture(),

@@ -178,3 +178,5 @@ C 在共享工作区新增的 training_source_guard 随目录移入 checks/train
 ```
 
 C后台分别去掉候选参数取得baseline；固定源快照、配置、全部模型、源码及同一实际PC，先比对完整结果、原因、六席和输入身份，再测总时间、CPU/RSS/I/O、驻留与取消回收。三种计算候选及预载候选都尚未取得生产启用证据。新行业读取格式要求在隔离输入副本完成显式schema升级后再运行；不修改活动行业/价格库，不以失败的预载或旧进程补签。
+
+公司事实预载统一读取`--runtime-config`关联scheduler的`pipeline.company_preload`，总时限默认30秒、发布版本变化最多尝试3次；Long准入诊断沿用同一设置，删除原先没有消费者的`--timeout-seconds`参数。该时限只约束预载工作，统一入口的`--command-timeout-seconds`仍负责整个诊断进程的回收。

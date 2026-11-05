@@ -33,6 +33,10 @@
     "history_preload": {
       "warn_after_seconds": 300
     },
+    "company_preload": {
+      "timeout_seconds": 30,
+      "publication_attempts": 3
+    },
     "cadence_seconds": {
       "full_market": {
         "before_close": 10

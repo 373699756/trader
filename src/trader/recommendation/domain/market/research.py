@@ -32,9 +32,6 @@ class MarketRegimePolicy:
 @dataclass(frozen=True)
 class LongResearchPolicy:
     financial_max_age_days: int
-    announcement_lookback_days: int
-    announcement_limit: int
-    unlock_forward_days: int
     pe_full_score_max: float
     pe_zero_score_min: float
     pb_full_score_max: float
@@ -75,16 +72,8 @@ class FeatureComponentWeightPolicy:
 
 
 def _validate_long_numeric_policy(policy: LongResearchPolicy) -> None:
-    if (
-        min(
-            policy.financial_max_age_days,
-            policy.announcement_lookback_days,
-            policy.announcement_limit,
-            policy.unlock_forward_days,
-        )
-        <= 0
-    ):
-        raise ValueError("long research windows and limits must be positive")
+    if policy.financial_max_age_days <= 0:
+        raise ValueError("financial maximum age must be positive")
     numeric = (
         policy.pe_full_score_max,
         policy.pe_zero_score_min,

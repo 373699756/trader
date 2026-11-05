@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.settings.models import CompanyPreloadSettings
 
 import time
 from collections.abc import Mapping
@@ -39,6 +40,7 @@ def ProbeAuxiliary(
     company_database: Path,
     open_dates: tuple[date, ...],
     company_policy: CompanyScoringPolicy, sqlite_policy: SqliteIoPolicy,
+    preload_settings: CompanyPreloadSettings,
 ) -> AuxiliaryInputs:
     """Read the published risk snapshot; only minute probes contact a supplier."""
     research: dict[str, ResearchObservation] = {}
@@ -50,6 +52,7 @@ def ProbeAuxiliary(
         open_dates=lambda: open_dates,
         monotonic=time.monotonic,
         company_policy=company_policy,
+        preload_settings=preload_settings,
     )
     reader.initialize(codes[:3], cancelled=lambda: False)
     for index, code in enumerate(codes[:3]):

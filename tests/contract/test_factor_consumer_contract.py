@@ -54,5 +54,4 @@ def test_unlock_window_contract_tracks_its_actual_company_policy_owner(tmp_path)
     changed = LoadStrategySettings(config / "strategy.json")
 
     assert changed.company_scoring.events.unlock_days == 90
-    assert changed.long_research.unlock_forward_days == 180
     assert changed.strategy_version != original.strategy_version

@@ -47,6 +47,22 @@ class HistoryPreloadSettings:
 
 
 @dataclass(frozen=True)
+class CompanyPreloadSettings:
+    timeout_seconds: float
+    publication_attempts: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.timeout_seconds) not in {int, float}
+            or not isfinite(self.timeout_seconds)
+            or not 0.001 <= self.timeout_seconds <= 3600
+            or type(self.publication_attempts) is not int
+            or not 1 <= self.publication_attempts <= 10
+        ):
+            raise ValueError("company preload settings are invalid")
+
+
+@dataclass(frozen=True)
 class ExecutorSettings:
     workers: int
     queue_capacity: int
@@ -95,6 +111,7 @@ class PipelineSettings:
     shutdown_timeout_seconds: float
     long_quote_max_age_seconds: float
     history_preload: HistoryPreloadSettings
+    company_preload: CompanyPreloadSettings
     cadence_seconds: Mapping[str, Mapping[str, float]]
     publish_heartbeat_seconds: int
 

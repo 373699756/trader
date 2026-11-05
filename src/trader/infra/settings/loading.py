@@ -564,19 +564,17 @@ def _parse_market_regime_policy(raw: Mapping[str, object]) -> MarketRegimePolicy
 
 
 def _parse_long_research_policy(raw: Mapping[str, object]) -> LongResearchPolicy:
+    _require_exact_keys(raw, {"financial", "valuation", "growth", "quality", "financial_deterioration", "pledge_thresholds", "unlock"}, "long_research")
     financial = _mapping(raw, "financial")
-    announcements = _mapping(raw, "announcements")
     valuation = _mapping(raw, "valuation")
     growth = _mapping(raw, "growth")
     quality = _mapping(raw, "quality")
     deterioration = _mapping(raw, "financial_deterioration")
     unlock = _mapping(raw, "unlock")
+    _require_exact_keys(unlock, {"thresholds"}, "long_research.unlock")
     try:
         return LongResearchPolicy(
             financial_max_age_days=_integer(financial, "maximum_age_days", minimum=1),
-            announcement_lookback_days=_integer(announcements, "lookback_days", minimum=1),
-            announcement_limit=_integer(announcements, "maximum_rows", minimum=1, maximum=100),
-            unlock_forward_days=_integer(unlock, "forward_days", minimum=1),
             pe_full_score_max=_number(valuation, "pe_full_score_max", minimum=0.01),
             pe_zero_score_min=_number(valuation, "pe_zero_score_min", minimum=0.01),
             pb_full_score_max=_number(valuation, "pb_full_score_max", minimum=0.01),

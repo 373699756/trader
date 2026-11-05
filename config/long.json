@@ -27,16 +27,11 @@
       35
     ],
     "unlock": {
-      "forward_days": 180,
       "thresholds": [
         1,
         5,
         10
       ]
-    },
-    "announcements": {
-      "lookback_days": 180,
-      "maximum_rows": 100
     }
   }
 }

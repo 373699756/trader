@@ -121,6 +121,7 @@ class SQLiteCompanyEvidenceReaderFixture(SQLiteCompanyEvidenceReader):
 class PublishedCompanyResearchFixture(PublishedCompanyResearch):
     def __init__(self, *args: object, **options: object) -> None:
         options.setdefault("company_policy", CompanyScoringPolicyFixture())
+        options.setdefault("preload_settings", LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline.company_preload)
         super().__init__(*args, **options)
 
 

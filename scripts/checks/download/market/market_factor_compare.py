@@ -187,7 +187,6 @@ def _score(
             identity,
             inputs.policy,
             inputs.models,
-            120,
         ),
     )
     planning_ms = _elapsed(started)
@@ -223,7 +222,6 @@ def _score(
                 candidates,
                 30.0,
                 30.0,
-                120,
             )
             try:
                 projection = BuildScoredLocal(
@@ -956,6 +954,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
             company_database=settings.data_paths.company,
             open_dates=local_references.open_dates,
             company_policy=strategy_settings.company_scoring, sqlite_policy=sqlite_policy,
+            preload_settings=settings.pipeline.company_preload,
         )
         for size in args.sizes:
             codes = SelectCodes(official, size)

@@ -1346,6 +1346,7 @@ def _build_market_data(
             source_versions=references.versions,
             config_version=settings.config_version,
             company_policy=strategy.company_scoring,
+            preload_settings=settings.pipeline.company_preload,
         )
         intraday_loader = IntradayLoader(
             intraday_client,

@@ -239,6 +239,8 @@ flowchart TD
 | `pipeline.shutdown_timeout_seconds` | 停止等待期限 | `30` | 数值/秒 |
 | `pipeline.long_quote_max_age_seconds` | Long 实时报价最大来源年龄；按source_time计算，超过后保留报价并标记过期降级 | `30` | 正数/秒；必填，自定义scheduler须补齐 |
 | `pipeline.history_preload.warn_after_seconds` | 历史预载慢提示期限 | `300` | 数值/秒 |
+| `pipeline.company_preload.timeout_seconds` | 公司快照完整预载总期限 | `30` | 有限数值/秒，0.001–3600；不逐尝试重置 |
+| `pipeline.company_preload.publication_attempts` | 发布身份漂移时最多完整重读次数 | `3` | 严格整数，1–10；不是所有异常都重试 |
 | `pipeline.cadence_seconds.full_market.before_close` | 任务 full_market 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
 | `pipeline.cadence_seconds.candidate_quotes.before_close` | 任务 candidate_quotes 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
 | `pipeline.cadence_seconds.topk_quotes.before_close` | 任务 topk_quotes 在 before_close 阶段的派发间隔 | `10` | 数值/秒 |
@@ -256,7 +258,7 @@ flowchart TD
 
 上述executors由`settings/execution.ParseExecutionSettings`严格解析为不可变ExecutionSettings；缺项、未知键、布尔冒充整数及非法范围均拒绝。normal_workers与urgent_workers相加是对应池总线程数，urgent排队容量仍由有界执行器随urgent线程数推导。控制池至少各有1条普通/紧急线程；其他池不接受没有消费者的urgent配置。分钟loader已移除隐藏的5线程截断，合法值传到实际请求并发；所有新参数重启生效并进入runtime身份，不改变模型manifest、120秒整轮上限或168次复核预算。
 
-旧`pipeline.market_workers`迁为source_data的normal_workers；保留旧自定义容量时，urgent_workers按原规则在market_workers>1时填1，否则填0。三个未消费的normalization_workers/strategy_workers/deepseek_workers删除，旧键一律拒绝，无兼容别名。现有自定义scheduler配置须按此13叶子结构迁入。公司预载30秒/3次及其它业务资源参数不在本次配置切换中，跨B/C调用者交接后另行处理；不把它们写成已可调。
+旧`pipeline.market_workers`迁为source_data的normal_workers；保留旧自定义容量时，urgent_workers按原规则在market_workers>1时填1，否则填0。三个未消费的normalization_workers/strategy_workers/deepseek_workers删除，旧键一律拒绝，无兼容别名。现有自定义scheduler配置须按此13叶子结构迁入，并补必填company_preload的timeout_seconds/publication_attempts，默认30/3。唯一解析生成CompanyPreloadSettings，由组合根及所有具名诊断传给PublishedCompanyResearch；总deadline跨重读共享，取消不读取证据，失败/取消不采用部分投影，无可空或隐藏默认回退。原12,000代码安全上限不作为性能调参入口。
 
 #### market_data.json
 

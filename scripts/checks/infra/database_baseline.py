@@ -109,7 +109,9 @@ class _SyncFixture:
 
     def __init__(self, root: Path, size: int, sessions: int, disk_kind: DiskKind, *, sqlite_policy: SqliteIoPolicy) -> None:
         self._sqlite_policy = sqlite_policy
-        self.preload_settings = LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline.history_preload
+        pipeline = LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline
+        self.preload_settings = pipeline.history_preload
+        self.company_preload_settings = pipeline.company_preload
         self.company_configuration = LoadCompanySyncConfiguration(PROJECT_ROOT)
         self.company_policy = LoadStrategySettings(PROJECT_ROOT / "config/strategy.json").company_scoring
         self.paths = DataPaths(root)
@@ -270,6 +272,7 @@ class _SyncFixture:
             open_dates=lambda: self.reference.open_dates,
             monotonic=time.monotonic,
             company_policy=self.company_policy,
+            preload_settings=self.company_preload_settings,
         )
         self._measure("startup_company", lambda: research.initialize(codes, cancelled=lambda: False))
 

@@ -295,6 +295,7 @@ def _measure_preload(
             source_versions=references.versions,
             config_version=settings.config_version,
             company_policy=policy.company_scoring,
+            preload_settings=settings.pipeline.company_preload,
         )
         research.initialize(manifest.universe_codes if manifest else (), cancelled=lambda: False)
         company_seconds = time.monotonic() - company_started

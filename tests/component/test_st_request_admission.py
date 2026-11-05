@@ -210,7 +210,7 @@ def test_expired_st_reference_blocks_new_directed_requests(monkeypatch):
 def test_company_startup_uses_the_static_cut_before_any_history_initialization(monkeypatch):
     from tests.component.test_candidate_history_tail import HistoryInput
     from tests.unit.infra.test_shared_history_projection import _cache
-    from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
+    from tests.helpers.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
 
     reference = _mixed_reference()
     class History(HistoryInput):

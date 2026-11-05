@@ -218,8 +218,6 @@ def BuildCommands(
                 "scripts.checks.recommendation.long_watchlist",
                 "--watchlist",
                 str(options.long_watchlist),
-                "--timeout-seconds",
-                str(min(options.source_timeout_seconds, 15)),
                 "--company-evidence-database",
                 str(options.company_evidence_database),
                 "--runtime-config",

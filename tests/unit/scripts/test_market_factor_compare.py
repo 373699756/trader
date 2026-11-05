@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -41,6 +42,31 @@ from trader.recommendation.infra.market_data.providers.eastmoney_spot import Par
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 
 AT = datetime.fromisoformat("2026-10-15T14:30:00+08:00")
+
+
+def test_factor_score_builds_current_native_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    policy = _recommendation_policy(LoadStrategySettings(Path("config/strategy.json")))
+    models = SimpleNamespace(
+        uses_model=lambda strategy: False,
+        history_required_sessions=lambda strategy: 20,
+        is_input_eligible=lambda strategy, feature: False,
+        score=lambda strategy, features: None,
+    )
+    inputs = SimpleNamespace(policy=policy, models=models, config_version="fixture")
+    captured = []
+
+    def project(native, *args, **kwargs):
+        captured.append(native)
+        return SimpleNamespace(local=SimpleNamespace(items=(), pipeline=None))
+
+    monkeypatch.setattr(comparison, "BuildScoredLocal", project)
+    feature = FeatureSnapshot(_quote(), {}, AT)
+
+    report = comparison._score((feature,), inputs, "fixture", AT.astimezone(ZoneInfo("Asia/Shanghai")))
+
+    assert {native.strategy for native in captured} == {Strategy.TOMORROW, Strategy.D25}
+    assert all(native.market_features == (feature,) for native in captured)
+    assert all(row["projection"]["state"] == "constructed" for row in report["strategies"])
 
 
 def _quote(code: str = "600001", **changes: object) -> MarketQuote:
@@ -635,6 +661,7 @@ def test_auxiliary_probe_uses_injected_pool_and_keeps_unavailable_evidence_unkno
             company_database=Path("unused/evidence.sqlite3"),
             open_dates=(AT.date(),),
             company_policy=strategy.company_scoring, sqlite_policy=SqlitePolicyFixture(),
+            preload_settings=LoadRuntimeSettings(Path("config/runtime.json")).pipeline.company_preload,
         )
     finally:
         pool.stop(wait=True, cancel_futures=True)

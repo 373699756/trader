@@ -18,6 +18,7 @@ from trader.download.domain.company_evidence import (
 from trader.download.domain.company_facts import CompileCompanyFacts
 from trader.recommendation.domain.market.research import DeriveCorporateRiskFeatures, ResearchComponentsFromObservation
 from tests.helpers.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
+from trader.infra.settings.models import CompanyPreloadSettings
 
 _AT = datetime(2026, 9, 30, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 _DATES = (date(2026, 9, 29), date(2026, 9, 30), date(2026, 10, 8), date(2026, 10, 9))
@@ -166,3 +167,52 @@ def test_preload_deadline_rejects_partial_company_projection():
     research.initialize(("600001",), cancelled=lambda: False)
     assert research.status().entries == 0
     assert research.status().last_error == "company_preload_deadline"
+
+
+@pytest.mark.parametrize("attempts", (1, 4))
+def test_configured_publication_attempts_bound_retries_without_adopting_mixed_rows(attempts):
+    class Changing(_Reader):
+        def visit(self, codes, consume, **kwargs):
+            super().visit(codes, consume, **kwargs)
+            self.snapshot = replace(self.snapshot, version=f"changed-{self.visits}")
+
+    reader = Changing(_snapshot())
+    research = PublishedCompanyResearch(
+        reader,
+        wall_clock=lambda: _AT,
+        open_dates=lambda: _DATES,
+        monotonic=lambda: 0.0,
+        preload_settings=CompanyPreloadSettings(30, attempts),
+    )
+    research.initialize(("600001",), cancelled=lambda: False)
+    assert reader.visits == attempts
+    assert research.status().entries == 0
+    assert research.status().last_error == "company_publication_changed"
+
+
+@pytest.mark.parametrize("timeout,expected_entries", ((2, 0), (40, 1)))
+def test_configured_company_timeout_controls_one_complete_startup_projection(timeout, expected_entries):
+    clock = [0.0]
+
+    class Slow(_Reader):
+        def visit(self, codes, consume, **kwargs):
+            super().visit(codes, consume, **kwargs)
+            clock[0] = 3.0
+
+    research = PublishedCompanyResearch(
+        Slow(_snapshot()),
+        wall_clock=lambda: _AT,
+        open_dates=lambda: _DATES,
+        monotonic=lambda: clock[0],
+        preload_settings=CompanyPreloadSettings(timeout, 3),
+    )
+    research.initialize(("600001",), cancelled=lambda: False)
+    assert research.status().entries == expected_entries
+
+
+def test_cancelled_company_preload_does_not_visit_evidence():
+    reader = _Reader(_snapshot())
+    research = _research(reader, _AT)
+    research.initialize(("600001",), cancelled=lambda: True)
+    assert reader.visits == 0
+    assert research.status().last_error == "company_preload_cancelled"
