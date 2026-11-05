@@ -104,6 +104,9 @@
 
 ### 阶段346：codexC交付公共计算与重复校验隔离候选
 
+- 本机HDD完整负载诊断接续（dc1d4c02，completed，仅诊断功能）：既有training_alignment注册worker新增显式computation-candidate，选择baseline/indexed_anchors/schema_cache/combined，覆盖首次训练、全工件复用及样本重拟合；inputs-only拒绝候选，baseline保持原逻辑、不开钩子。原CPU/RSS/I/O及源只读保护继续生效；计数对四档线程加锁，所有线程随原执行器收尾后恢复绑定/清缓存，两个worker共用唯一白名单投影，不新增入口或生产分支。范围为3个既有诊断模块、2个直接测试、e7.4/本段；没有改A公共入口、产品算法或10轮配置，SSD状态不变。
+- 本次验证及Review：候选/对齐/三负载功能初轮171 passed（354.86秒，/tmp/trader-c346-hdd-initial.xml）；进一步保留原函数momentum_horizons关键字签名、用推导类型保留回调的参数名后，冻结dc1d4c02叠加最终6文件，在/tmp/trader-c346-hdd-final-tfeel6qq完成20 passed（82.82秒，/tmp/trader-c346-hdd-final.xml）及3模块mypy，受影响5文件Ruff通过。覆盖关键字/位模式、四线程计数/取消恢复、显式路由、加载前不导入产品，以及实际SQLite的V3首次/全工件复用/样本重拟合、源字节不变；均为fixture/功能，不能代签真实四档或性能。两轮不相加；初轮mypy的4项回调参数名/Callable绑定错误已按真实签名修正，未加豁免。
+- 提交隔离及未完成项：交付父新增A的18b90568、9fce65ad及5d2019a1文档计划，未触及本批6文件或训练调用；6文件与冻结副本逐字节一致，合并SHA-256为9cc08d4cbe2b2789b47a222a3fb45135fc98a6d22972aaf0b8d0af461dcd3622。完整本批diff及空白检查通过，只暂存本346片段及6文件，B332、4.5其它执行者记录保留。P52/P55的HDD完整同输入收益、P53本机基线/策略和四档三负载仍未验，须等现有company同步/开发验证及4.5原队列释放窗口后测量，不启用候选或修改SSD进度。
 - owner/状态：codexC / completed（P52/P55隔离候选与数值/生命周期交付）；基线`4fe2f730`，接续用户指定的P52/P55独立任务，D仍唯一负责性能实测及达标裁决。
 - 范围/所有权：扩展既有sample_comparison_worker及具名诊断内部候选、直接数值/异常回归、e5/e7和本记录；仅显式隔离诊断临时替换调用绑定，退出必恢复，不修改生产公式、样本/模型身份或默认训练路径。
 - 实际改动：唯一既有sample_comparison_worker显式--computation-candidate选择baseline/indexed_anchors/schema_cache/combined；锚点只读索引每次计算构造一次，仍调用原公式owner；相同列序/布局及布局标量类型才共享SampleFeatureHash结果，最多64条、失败不缓存。三处临时绑定仅隔离worker主线程安装，退出/取消必恢复并清空本轮缓存；生产路径和V1完成日输入不变，V2/V3/V5不跨不同窗口/总体共享值。输出命中前置计数、明确未启用/未获性能证据，e7.4记录D沿用入口的方法。

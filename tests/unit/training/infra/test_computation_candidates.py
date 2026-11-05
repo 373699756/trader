@@ -4,6 +4,7 @@ from tests.helpers.training_resources import TrainingSampleSettingsFixture
 
 import struct
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 
 import pytest
 
@@ -26,7 +27,8 @@ def test_indexed_anchors_preserve_every_value_missing_mask_and_feature_identity(
     with UseComputationCandidate("indexed_anchors") as counts:
         actual = sample_builder.CalculateProfileQfqAlpha(anchors, horizons)
         assert _bits(actual) == expected
-        assert counts.indexed_anchor_calls == 1
+        assert _bits(sample_builder.CalculateProfileQfqAlpha(anchors=anchors, momentum_horizons=horizons)) == expected
+        assert counts.indexed_anchor_calls == 2
     assert sample_builder.CalculateProfileQfqAlpha is original
 
 
@@ -82,6 +84,28 @@ def test_hooks_are_rejected_outside_serial_worker_and_unknown_candidate():
         executor.submit(enter).result(timeout=2)
     with pytest.raises(ValueError, match="candidate_invalid"), UseComputationCandidate("unknown"):
         pass
+
+
+@pytest.mark.parametrize("failed_worker", (False, True))
+def test_job_scope_counts_concurrent_profiles_and_restores_after_worker_failure(failed_worker):
+    anchors = QfqPriceAnchors(10.0, ((1, 9.0), (3, 8.0), (5, 7.0), (20, 6.0)))
+    expected = (_bits(CalculateProfileQfqAlpha(anchors, (20,))), sample_schema.SampleFeatureHash(("alpha",), None))
+    originals = (sample_builder.CalculateProfileQfqAlpha, sample_schema.SampleFeatureHash, sample_index.SampleFeatureHash)
+
+    def calculate(number):
+        if failed_worker and number == 2:
+            raise InterruptedError("profile cancelled")
+        values = sample_builder.CalculateProfileQfqAlpha(anchors, (20,))
+        first = sample_schema.SampleFeatureHash(("alpha",), None)
+        assert sample_index.SampleFeatureHash(("alpha",), None) == first
+        return _bits(values), first
+
+    with pytest.raises(InterruptedError) if failed_worker else nullcontext():
+        with UseComputationCandidate("combined") as counts, ThreadPoolExecutor(max_workers=4) as workers:
+            assert all(result == expected for result in workers.map(calculate, range(128)))
+            assert counts.indexed_anchor_calls == 128 and counts.schema_requests == 256
+            assert 1 <= counts.schema_computations <= 4
+    assert (sample_builder.CalculateProfileQfqAlpha, sample_schema.SampleFeatureHash, sample_index.SampleFeatureHash) == originals
 
 
 def test_nonmatching_populations_are_never_shared_and_raw_formula_owns_the_calculation():

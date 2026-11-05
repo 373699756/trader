@@ -56,19 +56,11 @@ def _measure_feature_construction(
     sqlite_policy: SqliteIoPolicy,
     computation_candidate: ComputationCandidate = "baseline",
 ) -> dict[str, object]:
-    from scripts.checks.training.computation_candidates import UseComputationCandidate
+    from scripts.checks.training.computation_candidates import ProjectComputationCandidate, UseComputationCandidate
 
     with UseComputationCandidate(computation_candidate) as counts:
         report = _construct_samples(checkout, root, size, sessions, sqlite_policy=sqlite_policy)
-        report["computation_candidate"] = {
-            "name": counts.candidate,
-            "indexed_anchor_calls": counts.indexed_anchor_calls,
-            "schema_requests": counts.schema_requests,
-            "schema_computations": counts.schema_computations,
-            "schema_cache_capacity": 64,
-            "production_enabled": False,
-            "performance_evidence": False,
-        }
+        report["computation_candidate"] = ProjectComputationCandidate(counts)
     return report
 
 

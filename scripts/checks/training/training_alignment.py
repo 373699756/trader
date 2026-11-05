@@ -24,6 +24,7 @@ from scripts.checks.reporting import ReadJsonReports, emit_report
 from scripts.checks.training.training_process_measurement import TrainingProcessMeasurement
 
 if TYPE_CHECKING:
+    from scripts.checks.training.computation_candidates import ComputationCandidate, ComputationCandidateCounts
     from scripts.checks.training.scheduling_candidates import SchedulingCandidate, SchedulingExperiment
     from trader.infra.settings import RuntimeSettings
     from trader.infra.sqlite_policy import SqliteIoPolicy
@@ -40,6 +41,7 @@ class _MeasurementOptions(TypedDict, total=False):
     sample_cache_transfer: Literal["copy", "hardlink"]
     scheduling_candidate: SchedulingCandidate
     scheduling_evidence: Path
+    computation_candidate: ComputationCandidate
 
 
 def PrepareTrainingHistoryCopy(
@@ -215,6 +217,7 @@ def _probe(
     sample_cache_transfer: Literal["copy", "hardlink"] = "copy",
     scheduling_candidate: SchedulingCandidate = "baseline",
     scheduling_evidence: Path | None = None,
+    computation_candidate: ComputationCandidate = "baseline",
 ) -> dict[str, object]:
     # Load diagnostic types only after main selects the measured product checkout.
     from scripts.checks.training.training_performance import TrainingReuseFailures
@@ -283,7 +286,17 @@ def _probe(
         schedule_scope = UseSchedulingCandidate(scheduling_candidate, evidence)
     elif scheduling_evidence is not None:
         raise ValueError("training_scheduling_evidence_requires_candidate")
-    with schedule_scope as schedule, ReadOnlyTrainingSource(history) if published_history_read_only else nullcontext():
+    computation_scope: AbstractContextManager[ComputationCandidateCounts | None] = nullcontext(None)
+    computation_report: dict[str, object] = {"name": "baseline", "production_enabled": False, "performance_evidence": False}
+    if computation_candidate != "baseline":
+        from scripts.checks.training.computation_candidates import ProjectComputationCandidate, UseComputationCandidate
+
+        computation_scope = UseComputationCandidate(computation_candidate)
+    with (
+        schedule_scope as schedule,
+        computation_scope as computation,
+        ReadOnlyTrainingSource(history) if published_history_read_only else nullcontext(),
+    ):
         initial = _train_once(runtime, history, work, profiles)
         repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None
         sample_reuse = (
@@ -292,6 +305,8 @@ def _probe(
         )
     if schedule is not None:
         scheduling_report = ProjectSchedulingExperiment(schedule)
+    if computation is not None:
+        computation_report = ProjectComputationCandidate(computation)
     unchanged = SQLiteHistoryTrainingInputSnapshot.open(history, **sqlite_arguments).snapshot.snapshot_hash == identity
     files_unchanged = not published_history_read_only or source_files == _published_input_signature(history)
     released = scheduling_report.get("pending_requests", 0) == scheduling_report.get("reserved_threads", 0) == 0
@@ -310,6 +325,7 @@ def _probe(
             "repeat": repeat,
             "sample_reuse": sample_reuse,
             "scheduling_candidate": scheduling_report,
+            "computation_candidate": computation_report,
             "repeat_model_values_equal": equal,
             "repeat_reuse_verified": not reuse_failures,
             "repeat_reuse_required": require_reuse,
@@ -655,6 +671,9 @@ def Main() -> int:
     parser.add_argument("--scheduling-candidate", choices=("baseline", "fixed", "long_task_first", "borrowing"), default="baseline")
     parser.add_argument("--scheduling-evidence", type=Path)
     parser.add_argument(
+        "--computation-candidate", choices=("baseline", "indexed_anchors", "schema_cache", "combined"), default="baseline"
+    )
+    parser.add_argument(
         "--benchmark-mode",
         choices=("serial_before", "parallel", "serial_after", "baseline_before", "candidate", "baseline_after"),
     )
@@ -662,6 +681,8 @@ def Main() -> int:
     try:
         if args.inputs_only and (args.scheduling_candidate != "baseline" or args.scheduling_evidence is not None):
             raise ValueError("training_scheduling_requires_training_mode")
+        if args.inputs_only and args.computation_candidate != "baseline":
+            raise ValueError("training_computation_requires_training_mode")
         product = _select_product(args.product_checkout)
         from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
         from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
@@ -687,6 +708,8 @@ def Main() -> int:
                 measurement_options["scheduling_candidate"] = args.scheduling_candidate
             if args.scheduling_evidence is not None:
                 measurement_options["scheduling_evidence"] = args.scheduling_evidence
+            if args.computation_candidate != "baseline":
+                measurement_options["computation_candidate"] = args.computation_candidate
             report = _probe(
                 args.history_root, args.work_root, profiles, runtime_config=runtime_config, sqlite_policy=sqlite_policy,
                 require_reuse=args.benchmark_mode not in {"baseline_before", "baseline_after"},

@@ -543,13 +543,15 @@ V5大行业的 `tcn-batches-*`目录仅包含只读拟合缓存 `training/early_
 
 ### 7.4 公共计算与校验的隔离候选
 
-P52/P55的候选只由既有`sample_comparison_worker --construct-features`显式选择，生产训练不导入`computation_candidates.py`。`--computation-candidate`为`baseline/indexed_anchors/schema_cache/combined`，缺省baseline；离开特征构建模式不能启用候选。D从同一冻结checkout、配置和输入在两台PC分别运行，数值摘要一致后再比较整作业成本，不能把单轮报告或fixture当性能通过。
+P52/P55的候选由既有`sample_comparison_worker --construct-features`或完整作业`training_alignment`注册worker显式选择，生产训练不导入`computation_candidates.py`。`--computation-candidate`为`baseline/indexed_anchors/schema_cache/combined`，缺省baseline；样本worker离开特征构建模式、完整worker处于inputs-only模式均不能启用候选。C后台从同一冻结checkout、配置和输入在当前PC运行，数值摘要一致后再比较整作业成本；两台PC进度分别保留，不能把单轮报告或fixture当性能通过。
 
 - indexed_anchors在同一次纯计算中构造一次只读lag索引，再调用现有`CalculateProfileQfqAlpha`，不重写公式，也不跨股票、日期、总体或档位复用原始特征。V1独立完成日输入不切换，V2不同窗口及V3/V5不同总体不会被合并。
 - schema_cache最多保留64个完全相同的不可变列序/序列布局校验摘要；实际摘要仍由`SampleFeatureHash`首次校验/计算。列序、布局值与标量类型均区分，异常不缓存。库内schema、feature/split身份、样本形状/值、标签成熟和防泄漏检查全部保留，不把“曾校验”当作跳过逐行或外部内容审计的资格。
-- 候选只允许在隔离worker主线程安装，样本构建过程中可按原语义失败或取消；finally恢复三个原调用绑定并清空本轮缓存。输出显式列出索引调用、schema请求/实际计算和缓存容量，production_enabled及performance_evidence均为false，D的完整对照另行签署。
+- 候选只允许在隔离worker主线程安装；完整作业的四档线程沿原执行器运行并在退出候选作用域前收尾，计数加锁，LRU允许并发首次计算同一键。样本构建/拟合过程中可按原语义失败或取消；finally恢复三个原调用绑定并清空本轮缓存。唯一白名单投影列出索引调用、schema请求/实际计算和缓存容量，production_enabled及performance_evidence均为false；计数锁与钩子开销包含在候选耗时内，完整对照另行裁决。
 
 使用既有统一入口的内部worker参数，在外部输出目录运行：`python3 -m scripts.diagnose_runtime --internal-worker scripts.checks.training.sample_comparison_worker -- --checkout <冻结版本> --root <全新仓库外目录> --size 64 --sessions 2000 --construct-features --computation-candidate combined --runtime-config <对应PC配置>`。baseline及两种单候选分别运行，不能只测组合后将收益归给某一项；该fixture最大128代码，不替代真实完整负载。
+
+完整三负载沿用同一个注册worker：`python3 -m scripts.diagnose_runtime --internal-worker scripts.checks.training.training_alignment -- --history-root <本机合法历史> --work-root <全新仓库外目录> --profiles v1,v2,v3,v5 --product-checkout <冻结版本> --runtime-config <冻结且绑定本机资料的配置> --published-history-read-only --sample-cache-transfer hardlink --computation-candidate combined`。同一候选覆盖首次全训练、全工件复用及样本复用重拟合，保留每次资源计量、数值/指标指纹、源只读守卫和身份核对；V1样本复用仍明确不适用。baseline不安装候选钩子，单候选及combined分别与同输入baseline比较；这里只提供诊断选择，不授权生产启用、活动模型切换或调整10轮方案。
 
 ## 8. 质量和收益的边界
 

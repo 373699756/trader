@@ -136,6 +136,32 @@ def test_entry_selects_checkout_before_loading_its_sqlite_policy(
     assert module.Main() == 0
 
 
+@pytest.mark.parametrize("inputs_only", (False, True))
+def test_computation_candidate_is_explicit_and_requires_training_mode(tmp_path, monkeypatch, inputs_only):
+    from scripts.checks.training import training_alignment as module
+
+    project = Path(__file__).resolve().parents[3]
+    calls = []
+    argv = ["probe", "--history-root", str(tmp_path / "history"), "--computation-candidate", "combined"]
+    argv += ["--inputs-only"] if inputs_only else ["--work-root", str(tmp_path / "output")]
+
+    def select(_checkout):
+        calls.append("selected")
+        return project
+
+    def probe(*_args, computation_candidate, **_kwargs):
+        assert calls == ["selected"] and computation_candidate == "combined"
+        calls.append("probed")
+        return {"status": "passed"}
+
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(module, "_select_product", select)
+    monkeypatch.setattr(module, "_probe", probe)
+    monkeypatch.setattr(module, "emit_report", lambda _report: None)
+    assert module.Main() == (1 if inputs_only else 0)
+    assert calls == ([] if inputs_only else ["selected", "probed"])
+
+
 @pytest.mark.parametrize("source_changed", (False, True))
 def test_history_copy_includes_committed_wal_and_references_without_source_writes(
     tmp_path, monkeypatch, source_changed
@@ -452,7 +478,8 @@ def test_training_resource_observer_reports_filesystem_space_without_claiming_ow
     assert "other_processes" in measurement.result["filesystem_measurement_scope"]
 
 
-def test_real_published_history_training_never_persists_due_observations(tmp_path, monkeypatch):
+@pytest.mark.parametrize("computation_candidate", ("baseline", "combined"))
+def test_real_published_history_training_never_persists_due_observations(tmp_path, monkeypatch, computation_candidate):
     from scripts.checks.training import training_alignment
     from scripts.checks.training.training_read_comparison import PrepareTrainingHistory
     from trader.infra.settings import LoadRuntimeSettings
@@ -475,9 +502,14 @@ def test_real_published_history_training_never_persists_due_observations(tmp_pat
         sqlite_policy=SqlitePolicyFixture(),
         published_history_read_only=True,
         sample_cache_transfer="hardlink",
+        computation_candidate=computation_candidate,
     )
     assert report["status"] == "passed", report
     summary = report["summary"]
+    assert summary["computation_candidate"]["name"] == computation_candidate
+    if computation_candidate == "combined":
+        assert summary["computation_candidate"]["indexed_anchor_calls"] > 0
+        assert summary["computation_candidate"]["schema_requests"] > summary["computation_candidate"]["schema_computations"] > 0
     assert summary["source_files_unchanged"] and summary["source_data_writes"] == 0
     assert summary["input_mode"] == "published_history_read_only"
     assert summary["repeat"]["execution"]["history_scan_passes"] == 0
