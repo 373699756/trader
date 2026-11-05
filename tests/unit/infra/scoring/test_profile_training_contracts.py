@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.training_resources import TrainingResourceSettingsFixture
 
 from tests.helpers.configuration import SqlitePolicyFixture
@@ -106,6 +108,7 @@ def test_profile_training_request_rejects_a_head_owned_by_another_profile(tmp_pa
             V3_TRAINING_PROFILE.heads,
             LoadProfileTrainingSettings(PROJECT_ROOT, "v2"),
             sample_root=(tmp_path / "train").parent / "samples",
+            sample_settings=TrainingSampleSettingsFixture(),
         )
 
 
@@ -127,7 +130,7 @@ def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: P
             progress(0)
             return iter(())
 
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V2_TRAINING_PROFILE.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture()) as repository:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V2_TRAINING_PROFILE.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as repository:
         BuildTrainingSamples(
             TrainingSampleBuildRequest(
                 Archive(),  # type: ignore[arg-type]
@@ -186,7 +189,7 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
     source = HistorySourceFixture()
 
     def build(profile, window, prefix, rows=None):
-        with SQLiteTrainingSampleIndex(tmp_path / f"{prefix}-{profile.profile_id}.sqlite3", profile.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture()) as index:
+        with SQLiteTrainingSampleIndex(tmp_path / f"{prefix}-{profile.profile_id}.sqlite3", profile.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index:
             BuildTrainingSamples(
                 TrainingSampleBuildRequest(source, ("600000",), window, index, profile), aligned_rows=rows
             )

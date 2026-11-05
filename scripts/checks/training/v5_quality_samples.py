@@ -17,6 +17,7 @@ from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings import RuntimeSettings
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
+from trader.training.application.resources import TrainingSampleSettings
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
@@ -79,6 +80,7 @@ def PrepareV5QualitySamples(
     deadline: float,
     *,
     sqlite_policy: SqliteIoPolicy,
+    sample_settings: TrainingSampleSettings,
 ) -> V5QualitySamples:
     """Build or audit an explicitly owned cache; keep history and existing caches intact."""
     if not math.isfinite(deadline) or deadline <= time.monotonic():
@@ -119,6 +121,7 @@ def PrepareV5QualitySamples(
             checkpoint=lambda: progress.publish(TomorrowTrainingProgress("sample_cache_seal", "running", 0, 1)),
             sequence_layout=SampleSequenceLayout(6, 60, 6),
             sqlite_policy=sqlite_policy,
+            sample_settings=sample_settings,
         )
         reused = cache.inspect()
         if existed and (not reused or not cache.audit()):

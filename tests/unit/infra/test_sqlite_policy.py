@@ -1,5 +1,7 @@
 """Nondefault policy_config configuration affects real SQLite without weakening publication atomicity."""
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from dataclasses import replace
 from pathlib import Path
 import sqlite3
@@ -50,7 +52,7 @@ def test_sqlite_json_reaches_download_training_and_recommendation_adapters(tmp_p
 
     monkeypatch.setattr(sqlite_connection, "_configure_database", observe)
     SQLiteReferenceIndex(tmp_path / "reference.sqlite3", sqlite_policy=policy).merge_st(())
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", ("fixture_feature",), sqlite_policy=policy):
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", ("fixture_feature",), sqlite_policy=policy, sample_settings=TrainingSampleSettingsFixture()):
         pass
     PublicationSequence(tmp_path / "sequence.sqlite3", sqlite_policy=policy).initialize()
     assert seen == [timeout_ms, timeout_ms, timeout_ms]

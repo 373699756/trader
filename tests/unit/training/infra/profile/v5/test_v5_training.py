@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import math
@@ -54,7 +56,8 @@ def test_missing_future_label_reports_exact_partition_without_discarding_other_h
     history.iter_training_rows = rows
     monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p, *, sqlite_policy: history)
     result = RunV5Training(
-        history.history_root, tmp_path / "models", sample_root=tmp_path / "samples", settings=settings, sqlite_policy=SqlitePolicyFixture()
+        history.history_root, tmp_path / "models", sample_root=tmp_path / "samples", settings=settings, sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "blocked"
     d25 = next(head for head in result.heads if head.strategy is Strategy.D25)
@@ -146,7 +149,8 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
             updates.append(update)
 
     result = RunV5Training(
-        history.history_root, models, sample_root=tmp_path / "samples", settings=settings, progress=Progress(), sqlite_policy=SqlitePolicyFixture()
+        history.history_root, models, sample_root=tmp_path / "samples", settings=settings, progress=Progress(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "engineering_ready", result.heads
     assert {h.strategy for h in result.heads} == {Strategy.TOMORROW, Strategy.D25}
@@ -199,7 +203,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
             loaded.heads[strategy].predictor.predict((ModelInput("600000", (0.1,) * width, "bank"),))
     original = {p: p.read_bytes() for p in models.rglob("*.json")}
     rejected = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=1000000))
-    failed = RunV5Training(history.history_root, models, sample_root=tmp_path / "samples", settings=rejected, sqlite_policy=SqlitePolicyFixture())
+    failed = RunV5Training(history.history_root, models, sample_root=tmp_path / "samples", settings=rejected, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     assert failed.status != "engineering_ready"
     assert all(p.read_bytes() == before for p, before in original.items())
 
@@ -216,6 +220,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
             sample_root=tmp_path / "samples",
             settings=replace(settings, fitting=replace(settings.fitting, seed=1)),
             progress=_CancelledFit(), sqlite_policy=SqlitePolicyFixture(),
+            sample_settings=TrainingSampleSettingsFixture(),
         )
     assert all(p.read_bytes() == before for p, before in original.items())
 

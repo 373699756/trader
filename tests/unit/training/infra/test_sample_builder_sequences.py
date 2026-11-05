@@ -1,5 +1,7 @@
 """Cached V5 points preserve the shared sequence formula and invalid-window rules."""
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
@@ -148,6 +150,7 @@ def test_cached_points_match_formula_and_are_validated_once_per_source_row(tmp_p
         V5_TRAINING_PROFILE.heads[0].feature_manifest.names,
         sequence_layout=SampleSequenceLayout(6, 60, 6),
         sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     ) as samples:
         BuildTrainingSamples(
             TrainingSampleBuildRequest(

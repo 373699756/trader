@@ -26,14 +26,12 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 from trader.training.domain.training_dates import TrainingDateSplit
+from trader.training.application.resources import TrainingSampleSettings
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.sample_sequences import SampleSequenceLayout, SampleSequenceReader, SampleSequenceWriter
 from trader.training.infra.sample_schema import SAMPLE_TARGET_COLUMNS, SampleFeatureHash, TrainingSampleSchema
 
 TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation", "holdout"]
-TRAINING_SAMPLE_CACHE_MIB = 32
-TRAINING_SAMPLE_MMAP_BYTES = 0
-TRAINING_MATRIX_BYTES = 256 * 1024**2
 
 
 @dataclass(frozen=True)
@@ -125,10 +123,12 @@ class SQLiteTrainingSampleIndex:
         path: Path,
         feature_names: tuple[str, ...],
         *,
+        sample_settings: TrainingSampleSettings,
         prepared_split_hash: str | None = None,
         sequence_layout: SampleSequenceLayout | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
         self._sqlite_policy = sqlite_policy
+        self.sample_settings = sample_settings
         self._feature_hash = SampleFeatureHash(feature_names, sequence_layout)
         self._path = path
         self._feature_names = feature_names
@@ -145,13 +145,16 @@ class SQLiteTrainingSampleIndex:
                 read_only=prepared_split_hash is not None,
                 journal_mode="OFF" if prepared_split_hash is None else None,
                 durability="rebuildable" if prepared_split_hash is None else "durable",
-                cache_kib=TRAINING_SAMPLE_CACHE_MIB * 1024,
-                mmap_bytes=TRAINING_SAMPLE_MMAP_BYTES,
+                cache_kib=sample_settings.sqlite_cache_bytes // 1024,
+                mmap_bytes=sample_settings.sqlite_mmap_bytes,
                 temp_mode="FILE",
             ), sqlite_policy=self._sqlite_policy,
         )
         self._transaction = SqliteTransaction(self._connection, immediate=True)
-        self._sequence_writer = SampleSequenceWriter(self._connection, sequence_layout) if sequence_layout else None
+        self._sequence_writer = (
+            SampleSequenceWriter(self._connection, sequence_layout, maximum_codes=sample_settings.sequence_writer_codes)
+            if sequence_layout else None
+        )
         try:
             self._initialize()
         except BaseException:
@@ -339,7 +342,10 @@ class SQLiteTrainingSampleIndex:
             f"WHERE d.split_name=? {selected}AND s.{target} IS NOT NULL ORDER BY s.trade_date,s.code",
             (split_name, industry) if industry is not None else (split_name,),
         )
-        decoder = SampleSequenceReader(self._connection, self._sequence_layout) if self._sequence_layout else None
+        decoder = (
+            SampleSequenceReader(self._connection, self._sequence_layout, cache_bytes=self.sample_settings.sequence_cache_bytes)
+            if self._sequence_layout else None
+        )
         positions = contract.feature_positions
         feature_selection: slice | tuple[int, ...] = positions
         if (
@@ -434,7 +440,10 @@ class SQLiteTrainingSampleIndex:
                 f"SELECT d.split_name,s.trade_date,s.code,{columns},{targets} {predicate} ORDER BY s.trade_date,s.code",
                 (industry,),
             )
-            decoder = SampleSequenceReader(self._connection, self._sequence_layout) if self._sequence_layout else None
+            decoder = (
+                SampleSequenceReader(self._connection, self._sequence_layout, cache_bytes=self.sample_settings.sequence_cache_bytes)
+                if self._sequence_layout else None
+            )
             dates: list[date] = []
             codes: list[str] = []
             splits: list[str] = []
@@ -480,7 +489,7 @@ class SQLiteTrainingSampleIndex:
         with ExitStack() as resources:
             directory = (
                 Path(resources.enter_context(TemporaryDirectory(prefix="sample-fit-", dir=self.workspace)))
-                if size > TRAINING_MATRIX_BYTES else None
+                if size > self.sample_settings.matrix_memory_bytes else None
             )
             matrices = {
                 name: _empty_matrix(count, width, name, directory, resources)
@@ -684,8 +693,6 @@ def _empty_matrix(
 
 __all__ = [
     "SQLiteTrainingSampleIndex",
-    "TRAINING_SAMPLE_CACHE_MIB",
-    "TRAINING_SAMPLE_MMAP_BYTES",
     "TargetMetric",
     "TrainingIndustryCounts",
     "TrainingIndustryData",

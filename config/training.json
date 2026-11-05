@@ -14,6 +14,16 @@
       "fanout": {
         "batch_rows": 256,
         "queue_batches": 2
+      },
+      "samples": {
+        "sqlite_cache_bytes": 33554432,
+        "sqlite_mmap_bytes": 0,
+        "matrix_memory_bytes": 268435456,
+        "sequence_cache_bytes": 33554432,
+        "sequence_writer_codes": 8192,
+        "v1_sqlite_cache_bytes": 16777216,
+        "v1_batch_rows": 4096,
+        "tcn_batch_memory_bytes": 268435456
       }
     },
     "ssd": {
@@ -30,6 +40,16 @@
       "fanout": {
         "batch_rows": 256,
         "queue_batches": 2
+      },
+      "samples": {
+        "sqlite_cache_bytes": 33554432,
+        "sqlite_mmap_bytes": 0,
+        "matrix_memory_bytes": 268435456,
+        "sequence_cache_bytes": 33554432,
+        "sequence_writer_codes": 8192,
+        "v1_sqlite_cache_bytes": 16777216,
+        "v1_batch_rows": 4096,
+        "tcn_batch_memory_bytes": 268435456
       }
     }
   },

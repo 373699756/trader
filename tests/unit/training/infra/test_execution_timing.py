@@ -1,5 +1,7 @@
 """Reservation failures, bounded backpressure and exact timing with an injected clock."""
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.training_resources import TrainingResourceSettingsFixture
 
 from concurrent.futures import ThreadPoolExecutor
@@ -262,6 +264,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
         paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
         sqlite_policy=SqlitePolicyFixture(),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
+        sample_settings=TrainingSampleSettingsFixture(),
     ) == expected_exit
     report = ReadJsonReports(capsys.readouterr().out)[-1]
     assert report["status"] == {0: "completed", 1: "failed", 130: "cancelled"}[expected_exit]

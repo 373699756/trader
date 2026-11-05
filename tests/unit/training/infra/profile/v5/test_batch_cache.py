@@ -1,5 +1,7 @@
 """Float64 batch identity and lifetime for memory and file-backed TCN caches."""
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 from datetime import date, timedelta
@@ -20,7 +22,6 @@ from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, Traini
 
 @pytest.mark.parametrize("limit", (1, 256 * 1024**2))
 def test_cache_reads_two_partitions_once_and_preserves_batches(tmp_path, monkeypatch, limit):
-    monkeypatch.setattr(batch_cache, "TCN_BATCH_CACHE_BYTES", limit)
     contract = V5_TRAINING_PROFILE.heads[0]
     width = max(contract.feature_positions) + 1
     dates = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(2000))
@@ -31,7 +32,7 @@ def test_cache_reads_two_partitions_once_and_preserves_batches(tmp_path, monkeyp
         history_sessions=61,
         history_excludes_signal=True,
     )
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", contract.feature_manifest.names, sqlite_policy=SqlitePolicyFixture()) as samples:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", contract.feature_manifest.names, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture(tcn_batch_memory_bytes=limit)) as samples:
         samples.add_final(
             TrainingSample(f"{i:06d}", day, "main", "bank", 1e8, tuple(float(j + i) for j in range(width)), (0.01,) * 6)
             for day in (split.model_fit_dates[0], split.early_stopping_dates[0])
@@ -84,11 +85,11 @@ def _restart_cache(root: Path) -> TrainingSampleCache:
         contract.feature_manifest.names,
         split.content_hash,
         sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(tcn_batch_memory_bytes=1),
     )
 
 
 def _crash_tcn_cache(root: Path, point: str) -> None:
-    batch_cache.TCN_BATCH_CACHE_BYTES = 1
     contract = V5_TRAINING_PROFILE.heads[0]
 
     def checkpoint() -> None:

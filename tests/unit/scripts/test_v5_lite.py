@@ -1,3 +1,5 @@
+
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
 from scripts.checks.catalog import SelectionArguments
 
 from tests.helpers.configuration import SqlitePolicyFixture
@@ -116,7 +118,7 @@ def test_parameter_comparison_rejects_changed_sample_scope_before_copy(tmp_path)
     parameters = TcnFittingParametersFixture(minimum_industry_training_rows=5000)
     for candidate in ((250, parameters), (61, replace(parameters, minimum_industry_training_rows=10000))):
         with pytest.raises(ValueError, match="identical fit dates"):
-            _quality(tmp_path / "absent", tmp_path, time.monotonic() + 10, (61, parameters), candidate, sqlite_policy=SqlitePolicyFixture())
+            _quality(tmp_path / "absent", tmp_path, time.monotonic() + 10, (61, parameters), candidate, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     assert not tuple(tmp_path.iterdir())
 
 

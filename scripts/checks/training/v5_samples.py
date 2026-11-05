@@ -25,6 +25,7 @@ from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
 from trader.training.infra.sample_sequences import SampleSequenceLayout
+from trader.training.application.resources import TrainingSampleSettings
 
 
 @dataclass
@@ -43,6 +44,7 @@ def ProbeV5Samples(
     days: int = 256,
     codes: int = 32,
     wide_source: Path | None = None, sqlite_policy: SqliteIoPolicy,
+    sample_settings: TrainingSampleSettings,
 ) -> dict[str, object]:
     project = Path(__file__).resolve().parents[3]
     work = work.expanduser().resolve()
@@ -74,7 +76,8 @@ def ProbeV5Samples(
         for name, layout in (("wide", None), ("compact", SampleSequenceLayout(6, 60, 6))):
             cache = TrainingSampleCache(
                 work / name, "synthetic-v5-samples", V5_TRAINING_PROFILE.heads[0].feature_manifest.names,
-                split.content_hash, sequence_layout=layout, sqlite_policy=sqlite_policy
+                split.content_hash, sequence_layout=layout, sqlite_policy=sqlite_policy,
+                sample_settings=sample_settings,
             )
             measurements.append(_Measurement(name, cache, scope.enter_context(cache.open())))
         for index, batch in enumerate(source_batches):
@@ -150,8 +153,11 @@ def Main() -> int:
     parser.add_argument("--wide-sample-source", type=Path)
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
-    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.config))
-    report = ProbeV5Samples(args.work_root, wide_source=args.wide_sample_source, sqlite_policy=sqlite_policy)
+    from trader.infra.settings.training import LoadTrainingResourceSettings
+    runtime = LoadRuntimeSettings(args.config)
+    sqlite_policy = BuildSqlitePolicy(runtime)
+    sample_settings = LoadTrainingResourceSettings(runtime.project_root, runtime.disk_medium or "unknown").samples
+    report = ProbeV5Samples(args.work_root, wide_source=args.wide_sample_source, sqlite_policy=sqlite_policy, sample_settings=sample_settings)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["status"] == "passed" else 1
 

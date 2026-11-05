@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.training.application.resources import TrainingSampleSettings
 
 import errno
 import hashlib
@@ -61,10 +62,12 @@ class TrainingSampleCache:
         split_hash: str,
         checkpoint: Callable[[], None] | None = None,
         *,
+        sample_settings: TrainingSampleSettings,
         sequence_layout: SampleSequenceLayout | None = None,
         progress: SampleCacheProgress | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
         self._sqlite_policy = sqlite_policy
+        self.sample_settings = sample_settings
         self.root = root
         self.path = self.root / "samples.sqlite3"
         self.manifest = self.root / "complete.json"
@@ -105,6 +108,7 @@ class TrainingSampleCache:
             self.feature_names,
             prepared_split_hash=self.split_hash if self.reused else None,
             sequence_layout=self.sequence_layout, sqlite_policy=self._sqlite_policy,
+            sample_settings=self.sample_settings,
         )
 
     def seal(self, samples: SQLiteTrainingSampleIndex) -> None:

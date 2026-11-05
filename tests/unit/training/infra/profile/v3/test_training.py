@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
@@ -65,6 +67,7 @@ def run_v2_training(history_root: Path, train_root: Path, **kwargs):
         train_root,
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v2"),
         sample_root=(train_root).parent / "samples",
+        sample_settings=TrainingSampleSettingsFixture(),
         **kwargs, sqlite_policy=SqlitePolicyFixture(),
     )
 
@@ -75,6 +78,7 @@ def run_v3_training(history_root: Path, train_root: Path, **kwargs):
         train_root,
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=(train_root).parent / "samples",
+        sample_settings=TrainingSampleSettingsFixture(),
         **kwargs, sqlite_policy=SqlitePolicyFixture(),
     )
 
@@ -85,6 +89,7 @@ def run_tomorrow_training(history_root: Path, train_root: Path, **kwargs):
         train_root,
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=(train_root).parent / "samples",
+        sample_settings=TrainingSampleSettingsFixture(),
         **kwargs, sqlite_policy=SqlitePolicyFixture(),
     )
 
@@ -491,7 +496,7 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
                 yield HistoryTrainingRow("600000", point.trade_date, "main", "银行", point)
             progress(66)
 
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture()) as index:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index:
         BuildTrainingSamples(HistoryInput(), ("600000",), TomorrowTrainingWindow(split), index)  # type: ignore[arg-type]
         row = index._connection.run(
             "SELECT trade_date, target_t1, target_t2, target_t3, target_t4, target_t5, target_d25_aggregate "

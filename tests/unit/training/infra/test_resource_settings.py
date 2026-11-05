@@ -51,6 +51,10 @@ def test_each_machine_has_its_own_policy_and_preserves_default_behavior(tmp_path
     ("memory", "minimum_available_bytes", 4 * 1024**3),
     ("fanout", "batch_rows", 0), ("fanout", "queue_batches", True),
     ("fanout", "queue_batches", float("inf")),
+    ("samples", "sqlite_cache_bytes", 1025), ("samples", "v1_sqlite_cache_bytes", 0),
+    ("samples", "sqlite_mmap_bytes", -1), ("samples", "matrix_memory_bytes", True),
+    ("samples", "sequence_cache_bytes", 1.5), ("samples", "sequence_writer_codes", 0),
+    ("samples", "v1_batch_rows", True), ("samples", "tcn_batch_memory_bytes", -1),
 ))
 def test_invalid_values_in_either_machine_are_rejected(tmp_path, section, key, value):
     document = _configuration(tmp_path)
@@ -60,13 +64,21 @@ def test_invalid_values_in_either_machine_are_rejected(tmp_path, section, key, v
         LoadTrainingResourceSettings(tmp_path, "hdd")
 
 
-@pytest.mark.parametrize("mutation", ("missing_resources", "missing_machine", "unknown_field"))
+@pytest.mark.parametrize("mutation", (
+    "missing_resources", "missing_machine", "unknown_field", "missing_samples", "missing_sample_field", "unknown_sample_field",
+))
 def test_configuration_has_one_required_strict_resource_schema(tmp_path, mutation):
     document = _configuration(tmp_path)
     if mutation == "missing_resources":
         del document["resources"]
     elif mutation == "missing_machine":
         del document["resources"]["ssd"]
+    elif mutation == "missing_samples":
+        del document["resources"]["ssd"]["samples"]
+    elif mutation == "missing_sample_field":
+        del document["resources"]["ssd"]["samples"]["sqlite_cache_bytes"]
+    elif mutation == "unknown_sample_field":
+        document["resources"]["ssd"]["samples"]["sqlite_cache_mib"] = 32
     else:
         document["resources"]["hdd"]["cpu"]["threads"] = 4
     _write(tmp_path, document)
@@ -99,6 +111,7 @@ def test_nondefault_machine_settings_reach_training_composition_root(tmp_path, m
         resource["cpu"].update(maximum_threads=maximum, native_threads=native, coordinator_cpus=2)
         resource["memory"].update(maximum_bytes=1000, reserve_bytes=100, minimum_available_bytes=50)
         resource["fanout"].update(batch_rows=batch, queue_batches=queues)
+        resource["samples"].update(sqlite_cache_bytes=8192, v1_batch_rows=batch, matrix_memory_bytes=0)
     _write(tmp_path, document)
     runtime = replace(LoadRuntimeSettings(ROOT / "config/runtime.json"), project_root=tmp_path, disk_medium=medium)
     observed = []
@@ -112,6 +125,8 @@ def test_nondefault_machine_settings_reach_training_composition_root(tmp_path, m
         fanout = dependencies["fanout_settings"]
         assert (cpu.capacity, cpu.native_threads, fanout.batch_rows, fanout.queue_batches) == expected
         assert dependencies["memory_admission"].capacity_bytes == 900
+        samples = dependencies["sample_settings"]
+        assert (samples.sqlite_cache_bytes, samples.v1_batch_rows, samples.matrix_memory_bytes) == (8192, expected[2], 0)
         assert dependencies["executor"].status().running is False
         return 0
 

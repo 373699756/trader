@@ -16,6 +16,7 @@ from trader.training.application.resources import (
     TrainingFanoutSettings,
     TrainingMemorySettings,
     TrainingResourceSettings,
+    TrainingSampleSettings,
 )
 
 
@@ -38,7 +39,7 @@ def LoadTrainingResourceSettings(project_root: Path, medium: DiskKind) -> Traini
 
 
 def _resource_settings(values: Mapping[str, object]) -> TrainingResourceSettings:
-    RequireExactKeys(values, {"cpu", "memory", "fanout"}, "training.resources")
+    RequireExactKeys(values, {"cpu", "memory", "fanout", "samples"}, "training.resources")
     cpu = RequireMapping(values, "cpu")
     RequireExactKeys(cpu, {"coordinator_cpus", "maximum_threads", "native_threads"}, "training.resources.cpu")
     memory = RequireMapping(values, "memory")
@@ -47,6 +48,11 @@ def _resource_settings(values: Mapping[str, object]) -> TrainingResourceSettings
     )
     fanout = RequireMapping(values, "fanout")
     RequireExactKeys(fanout, {"batch_rows", "queue_batches"}, "training.resources.fanout")
+    samples = RequireMapping(values, "samples")
+    RequireExactKeys(samples, {
+        "sqlite_cache_bytes", "sqlite_mmap_bytes", "matrix_memory_bytes", "sequence_cache_bytes",
+        "sequence_writer_codes", "v1_sqlite_cache_bytes", "v1_batch_rows", "tcn_batch_memory_bytes",
+    }, "training.resources.samples")
     maximum_threads = None if cpu["maximum_threads"] is None else Integer(cpu, "maximum_threads", minimum=1)
     maximum_bytes = Integer(memory, "maximum_bytes", minimum=1)
     minimum_available_bytes = Integer(memory, "minimum_available_bytes", minimum=1)
@@ -61,4 +67,14 @@ def _resource_settings(values: Mapping[str, object]) -> TrainingResourceSettings
         ),
         memory_settings,
         TrainingFanoutSettings(Integer(fanout, "batch_rows", minimum=1), Integer(fanout, "queue_batches", minimum=1)),
+        TrainingSampleSettings(
+            Integer(samples, "sqlite_cache_bytes", minimum=1024),
+            Integer(samples, "sqlite_mmap_bytes", minimum=0),
+            Integer(samples, "matrix_memory_bytes", minimum=0),
+            Integer(samples, "sequence_cache_bytes", minimum=0),
+            Integer(samples, "sequence_writer_codes", minimum=1),
+            Integer(samples, "v1_sqlite_cache_bytes", minimum=1024),
+            Integer(samples, "v1_batch_rows", minimum=1),
+            Integer(samples, "tcn_batch_memory_bytes", minimum=0),
+        ),
     )

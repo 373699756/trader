@@ -18,7 +18,7 @@ from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.infra.workers import ManagedWorkerExecutor, WorkerFutureExecutor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.application.resources import TrainingFanoutSettings, TrainingMemoryAdmission
+from trader.training.application.resources import TrainingFanoutSettings, TrainingMemoryAdmission, TrainingSampleSettings
 from trader.training.application.selected_training import SelectedTrainingOutcome, TrainingLocations
 from trader.training.entrypoints.profile_training import (
     CancellableTrainingProgress,
@@ -50,6 +50,7 @@ def RunSelectedTraining(
     memory_admission: TrainingMemoryAdmission,
     cpu_budget: TrainingCpuBudget,
     fanout_settings: TrainingFanoutSettings,
+    sample_settings: TrainingSampleSettings,
     paths: TrainingLocations, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
@@ -62,6 +63,7 @@ def RunSelectedTraining(
             cancelled,
             cpu_budget=cpu_budget,
             fanout_settings=fanout_settings,
+            sample_settings=sample_settings,
             sqlite_policy=sqlite_policy,
         )
 
@@ -72,7 +74,8 @@ def _run_selected_training(
     executor: ManagedWorkerExecutor,
     memory_admission: TrainingMemoryAdmission,
     paths: TrainingLocations,
-    cancelled: Event, *, cpu_budget: TrainingCpuBudget, fanout_settings: TrainingFanoutSettings, sqlite_policy: SqliteIoPolicy,
+    cancelled: Event, *, cpu_budget: TrainingCpuBudget, fanout_settings: TrainingFanoutSettings,
+    sample_settings: TrainingSampleSettings, sqlite_policy: SqliteIoPolicy,
 ) -> int:
     started = time.monotonic()
     measurements: TrainingExecutionMeasurements | None = None
@@ -110,6 +113,7 @@ def _run_selected_training(
                     runtime, profiles, progresses, cancelled.is_set, memory_admission, paths, report_outcome,
                     cpu_budget=cpu_budget,
                     fanout_settings=fanout_settings,
+                    sample_settings=sample_settings,
                     measurements=measurements,
                 ),
                 WorkerFutureExecutor(executor), sqlite_policy=sqlite_policy,
@@ -162,6 +166,16 @@ def _run_selected_training(
                     "available_cpus": cpu_budget.available_cpus,
                     "fitting_cpu_capacity": cpu_budget.capacity,
                     "native_threads": cpu_budget.native_threads,
+                    "sample_resources": {
+                        "sqlite_cache_bytes": sample_settings.sqlite_cache_bytes,
+                        "sqlite_mmap_bytes": sample_settings.sqlite_mmap_bytes,
+                        "matrix_memory_bytes": sample_settings.matrix_memory_bytes,
+                        "sequence_cache_bytes": sample_settings.sequence_cache_bytes,
+                        "sequence_writer_codes": sample_settings.sequence_writer_codes,
+                        "v1_sqlite_cache_bytes": sample_settings.v1_sqlite_cache_bytes,
+                        "v1_batch_rows": sample_settings.v1_batch_rows,
+                        "tcn_batch_memory_bytes": sample_settings.tcn_batch_memory_bytes,
+                    },
                     "peak_reserved_cpu_threads": cpu_budget.peak_reserved_threads,
                     "history_scan_passes": run.history_scan_passes,
                     "history_rows_read": run.history_rows_read,

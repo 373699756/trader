@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.training.application.resources import TrainingSampleSettings
 
 import math
 import mmap
@@ -163,15 +164,16 @@ class _RollingCode:
 class LearnedRankSampleIndex:
     """Own a disposable sample database; no production/history writes occur here."""
 
-    def __init__(self, path: Path, *, read_only: bool = False, sqlite_policy: SqliteIoPolicy) -> None:
+    def __init__(self, path: Path, *, sample_settings: TrainingSampleSettings, read_only: bool = False, sqlite_policy: SqliteIoPolicy) -> None:
         self._sqlite_policy = sqlite_policy
+        self._sample_settings = sample_settings
         self._connection = OpenSqliteConnection(
             path,
             SqliteConnectionOptions(
                 read_only=read_only,
                 journal_mode=None if read_only else "OFF",
                 durability="durable" if read_only else "rebuildable",
-                cache_kib=16384,
+                cache_kib=sample_settings.v1_sqlite_cache_bytes // 1024,
             ), sqlite_policy=self._sqlite_policy,
         )
         try:
@@ -297,7 +299,7 @@ class LearnedRankSampleIndex:
             "zero_signs,target_t1,target_d25 FROM samples WHERE trade_date BETWEEN ? AND ? "
             "ORDER BY trade_date,code", (start, end),
         )) as cursor:
-            while batch := cursor.fetch_values(4096):
+            while batch := cursor.fetch_values(self._sample_settings.v1_batch_rows):
                 CheckV1Cancellation(cancel_requested)
                 columns = tuple(zip(*batch, strict=True))
                 values = np.asarray(columns[3:], dtype=np.float64).T

@@ -3,15 +3,10 @@
 from pathlib import Path
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.training.application.resources import TrainingSampleSettings
 
 from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
 
-from trader.training.infra.sample_index import (
-    TRAINING_SAMPLE_CACHE_MIB as V3_SAMPLE_CACHE_MIB,
-)
-from trader.training.infra.sample_index import (
-    TRAINING_SAMPLE_MMAP_BYTES as V3_SAMPLE_MMAP_BYTES,
-)
 from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
 )
@@ -36,14 +31,12 @@ from trader.training.infra.sample_index import (
 
 
 class SQLiteV3TrainingSampleIndex(SQLiteTrainingSampleIndex):
-    def __init__(self, path: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
-        super().__init__(path, TOMORROW_HEAD_CONTRACT.feature_manifest.names, sqlite_policy=sqlite_policy)
+    def __init__(self, path: Path, *, sample_settings: TrainingSampleSettings, sqlite_policy: SqliteIoPolicy) -> None:
+        super().__init__(path, TOMORROW_HEAD_CONTRACT.feature_manifest.names, sample_settings=sample_settings, sqlite_policy=sqlite_policy)
 
 
 __all__ = [
     "SQLiteV3TrainingSampleIndex",
-    "V3_SAMPLE_CACHE_MIB",
-    "V3_SAMPLE_MMAP_BYTES",
     "V3TargetMetric",
     "V3TrainingIndustryCounts",
     "V3TrainingIndustryData",

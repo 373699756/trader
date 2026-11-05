@@ -12,8 +12,6 @@ from trader.infra.sqlite_connection import SqliteConnection
 
 SEQUENCE_FORMAT = "overlapping_sequence_blocks_float64_le_v1"
 _BLOCK_STEPS = 64
-_WRITER_CODES = 8192
-_READER_BYTES = 32 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -37,9 +35,12 @@ class _SequenceTail:
 class SampleSequenceWriter:
     """Share exact overlapping values; evicting a code only loses a compression opportunity."""
 
-    def __init__(self, connection: SqliteConnection, layout: SampleSequenceLayout) -> None:
+    def __init__(self, connection: SqliteConnection, layout: SampleSequenceLayout, *, maximum_codes: int) -> None:
         self._connection = connection
         self._layout = layout
+        if type(maximum_codes) is not int or maximum_codes < 1:
+            raise ValueError("sample_sequence_writer_capacity_invalid")
+        self._maximum_codes = maximum_codes
         self._tails: OrderedDict[str, _SequenceTail] = OrderedDict()
 
     def append(self, code: str, features: tuple[float, ...]) -> int:
@@ -49,7 +50,7 @@ class SampleSequenceWriter:
         payload = values.tobytes()
         tail = self._tails.pop(code, None)
         if tail is None:
-            if len(self._tails) >= _WRITER_CODES:
+            if len(self._tails) >= self._maximum_codes:
                 previous_code, previous = self._tails.popitem(last=False)
                 self._flush(previous_code, previous)
             row = self._connection.run(
@@ -100,11 +101,14 @@ def _overlap(previous: bytes, current: bytes, stride: int) -> int:
 
 
 class SampleSequenceReader:
-    """Retain 32 MiB plus one in-flight batch; avoid per-sample random SQL reads."""
+    """Retain the configured cache plus one bounded in-flight batch."""
 
-    def __init__(self, connection: SqliteConnection, layout: SampleSequenceLayout) -> None:
+    def __init__(self, connection: SqliteConnection, layout: SampleSequenceLayout, *, cache_bytes: int) -> None:
         self._connection = connection
         self._layout = layout
+        if type(cache_bytes) is not int or cache_bytes < 0:
+            raise ValueError("sample_sequence_reader_capacity_invalid")
+        self._cache_bytes = cache_bytes
         self._blocks: OrderedDict[tuple[str, int], np.ndarray] = OrderedDict()
         self._bytes = 0
 
@@ -159,7 +163,7 @@ class SampleSequenceReader:
                     raise ValueError("sample sequence block is truncated")
                 values[index, position : position + count] = vector[first : first + count]
                 position += count
-        while self._bytes > _READER_BYTES:
+        while self._bytes > self._cache_bytes:
             _, vector = self._blocks.popitem(last=False)
             self._bytes -= vector.nbytes
         if not np.isfinite(values).all():

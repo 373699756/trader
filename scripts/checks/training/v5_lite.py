@@ -24,6 +24,7 @@ from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 from trader.infra.settings.parser import Integer, ProfileMapping, ReadJsonObject, RequireExactKeys, RequireMapping
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.training.application.tomorrow_training import TrainingFitDetail
+from trader.training.application.resources import TrainingSampleSettings
 from trader.training.infra.model_bundles.bundle_codec import TrainedTcnModelSnapshot
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.model_bundles.documents import BuildIndustryModelDocument
@@ -229,6 +230,7 @@ def _quality(
     deadline: float,
     baseline: tuple[int, TcnFittingParameters],
     candidate: tuple[int, TcnFittingParameters], *, sqlite_policy: SqliteIoPolicy,
+    sample_settings: TrainingSampleSettings,
 ) -> dict[str, object]:
     if baseline[0] != candidate[0] or baseline[1].minimum_industry_training_rows != candidate[1].minimum_industry_training_rows:
         raise ValueError("V5 compute comparison requires identical fit dates and industry thresholds")
@@ -249,10 +251,12 @@ def _quality(
     with (
         PreserveTcnRuntime(),
         SQLiteTrainingSampleIndex(
-            paths[0], feature_names, prepared_split_hash=split_hashes[0], sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=sqlite_policy
+            paths[0], feature_names, prepared_split_hash=split_hashes[0], sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=sqlite_policy,
+            sample_settings=sample_settings,
         ) as old,
         SQLiteTrainingSampleIndex(
-            paths[1], feature_names, prepared_split_hash=split_hashes[1], sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=sqlite_policy
+            paths[1], feature_names, prepared_split_hash=split_hashes[1], sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=sqlite_policy,
+            sample_settings=sample_settings,
         ) as new,
     ):
         by_head = [{count.industry: count for count in new.industry_counts(head)} for head in V5_TRAINING_PROFILE.heads]
@@ -411,6 +415,7 @@ def _largest(
     configuration: tuple[int, TcnFittingParameters],
     *,
     sqlite_policy: SqliteIoPolicy,
+    sample_settings: TrainingSampleSettings,
     cancel_after_batches: int | None = None,
 ) -> dict[str, object]:
     from trader.training.infra.implementation_identity import TrainingImplementationIdentity
@@ -429,6 +434,7 @@ def _largest(
         with PreserveTcnRuntime(), SQLiteTrainingSampleIndex(
             paths[1], V5_TRAINING_PROFILE.heads[0].feature_manifest.names, prepared_split_hash=split_hash,
             sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=sqlite_policy,
+            sample_settings=sample_settings,
         ) as samples:
             by_head = [{count.industry: count for count in samples.industry_counts(head)} for head in V5_TRAINING_PROFILE.heads]
             eligible = [
@@ -507,6 +513,7 @@ def Main() -> int:
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
+    from trader.infra.settings.training import LoadTrainingResourceSettings
     work = args.work_root.resolve()
     project = Path(__file__).resolve().parents[3]
     if args.largest_only and (args.quality_only or args.reference_config is not None or args.prepare_only):
@@ -521,6 +528,7 @@ def Main() -> int:
         raise ValueError("V5 quality-only/largest-only requires samples and a candidate configuration")
     runtime = LoadRuntimeSettings(args.runtime_config or project / "config/runtime.json")
     sqlite_policy = BuildSqlitePolicy(runtime)
+    sample_settings = LoadTrainingResourceSettings(runtime.project_root, runtime.disk_medium or "unknown").samples
     if work.exists() or work.is_relative_to(project):
         raise ValueError("V5 lite diagnostic requires a new external work directory")
     if args.sample_root is not None and (
@@ -556,6 +564,7 @@ def Main() -> int:
                 work,
                 deadline,
                 sqlite_policy=sqlite_policy,
+                sample_settings=sample_settings,
             )
             summary["sample_preparation"] = {
                 "sample_root": str(prepared.root),
@@ -590,11 +599,13 @@ def Main() -> int:
             summary["lifecycle"] = _largest(
                 args.sample_root.absolute(), work, deadline, candidate, sqlite_policy=sqlite_policy,
                 cancel_after_batches=args.cancel_after_batches,
+                sample_settings=sample_settings,
             )
             report["status"] = "passed"
         elif not args.prepare_only and args.sample_root is not None and candidate is not None:
             summary["quality"] = quality = _quality(
-                args.sample_root.absolute(), work, deadline, baseline, candidate, sqlite_policy=sqlite_policy
+                args.sample_root.absolute(), work, deadline, baseline, candidate, sqlite_policy=sqlite_policy,
+                sample_settings=sample_settings,
             )
             report["status"] = "passed" if quality["passed"] else "degraded"
         elif not args.prepare_only:

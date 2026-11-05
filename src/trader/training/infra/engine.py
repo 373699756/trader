@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.training.application.resources import TrainingSampleSettings
 
 import json
 import os
@@ -77,8 +78,6 @@ from trader.training.infra.sample_builder import (
 )
 from trader.training.infra.sample_cache import PruneEmptySampleDirectories, SampleCacheBytes, TrainingSampleCache
 from trader.training.infra.sample_index import (
-    TRAINING_SAMPLE_CACHE_MIB,
-    TRAINING_SAMPLE_MMAP_BYTES,
     SampleCoverage,
     SQLiteTrainingSampleIndex,
     TargetMetric,
@@ -174,6 +173,7 @@ class ProfileTrainingRequest:
     contracts: tuple[TrainedHeadContract, ...]
     settings: ProfileTrainingSettings
     sample_root: Path = field(kw_only=True)
+    sample_settings: TrainingSampleSettings = field(kw_only=True)
     progress: TomorrowTrainingProgressPort | None = None
     expected_history_snapshot_hash: str | None = None
     memory_admission: TrainingMemoryAdmission | None = None
@@ -382,6 +382,7 @@ def _run_locked(
                 cache.feature_names,
                 prepared_split_hash=split.content_hash,
                 sequence_layout=cache.sequence_layout, sqlite_policy=sqlite_policy,
+                sample_settings=request.sample_settings,
             ) as samples,
             ExitStack() as fitting_resources,
         ):
@@ -509,6 +510,7 @@ def _sample_cache_for(
         feature_names,
         split.content_hash,
         sequence_layout=sequence_layout,
+        sample_settings=request.sample_settings,
         progress=lambda phase, state, done, total: _publish(
             request.progress,
             TomorrowTrainingProgress(
@@ -956,8 +958,6 @@ def _training_contract_hash(
                 "force_col_wise": True,
                 "histogram_pool_size_mib": fitting.histogram_pool_mib,
             },
-            "sqlite_cache_mib": TRAINING_SAMPLE_CACHE_MIB,
-            "sqlite_mmap_bytes": TRAINING_SAMPLE_MMAP_BYTES,
             "parallel_industries": 1,
             "calibration": "independent_linear",
             "training_anchor": "15:00_close_proxy",

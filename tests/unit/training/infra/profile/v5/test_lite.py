@@ -1,4 +1,6 @@
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.configuration import SqlitePolicyFixture
 from dataclasses import asdict, replace
 from datetime import date, timedelta
@@ -187,8 +189,9 @@ def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_sa
     profile = V5_TRAINING_PROFILE
     snapshot = _history(tmp_path / "history").snapshot
     settings = LoadProfileTrainingSettings(ROOT, "v5")
+    default_sample_settings = TrainingSampleSettingsFixture()
 
-    def identities(options):
+    def identities(options, *, sample_settings=default_sample_settings):
         split = BuildTrainingDateSplit(
             snapshot.calendar.open_dates,
             parent_manifest_hash=snapshot.snapshot_hash,
@@ -204,6 +207,7 @@ def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_sa
             profile.heads,
             options,
             sample_root=tmp_path / "samples",
+            sample_settings=sample_settings,
         )
         return (
             _sample_cache_for(snapshot, split, request, sqlite_policy=SqlitePolicyFixture()).identity,
@@ -211,6 +215,11 @@ def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_sa
         )
 
     original = identities(settings)
+    assert identities(settings, sample_settings=TrainingSampleSettingsFixture(
+        sqlite_cache_bytes=8192, sqlite_mmap_bytes=1048576, matrix_memory_bytes=0,
+        sequence_cache_bytes=0, sequence_writer_codes=2, v1_sqlite_cache_bytes=8192,
+        v1_batch_rows=7, tcn_batch_memory_bytes=0,
+    )) == original
     for field, value in (
         ("hidden_channels", 4),
         ("compute_dtype", "float64" if settings.fitting.compute_dtype == "float32" else "float32"),

@@ -346,10 +346,22 @@ P54本批按用户授权由C接通公共解析及训练组合根。`config/train
 | `memory.minimum_available_bytes` | 268435456，整数1–maximum_bytes，字节 | 宿主低水位延续原行为；不抬高更紧的cgroup限制 |
 | `fanout.batch_rows` | 256，整数≥1，行 | 公共历史流每次取数/派发行数 |
 | `fanout.queue_batches` | 2，整数≥1，批/档 | 每档独立队列容量；另外有一个接收中批次及公共派发批次 |
+| `samples.sqlite_cache_bytes` | 33554432，整数≥1024且为1024倍数，字节 | V2/V3/V5样本连接页缓存；连接边界转换为KiB |
+| `samples.sqlite_mmap_bytes` | 0，整数≥0，字节 | V2/V3/V5样本SQLite mmap；不控制NumPy映射 |
+| `samples.matrix_memory_bytes` | 268435456，整数≥0，字节 | 单行业独立矩阵超过此值用受管文件映射；0允许强制映射 |
+| `samples.sequence_cache_bytes` | 33554432，整数≥0，字节 | 每个V5序列reader的已完成块缓存；另有原256窗在途批次 |
+| `samples.sequence_writer_codes` | 8192，整数≥1，证券 | 序列writer保留尾部的证券数；逐出只减少压缩机会，不改变值 |
+| `samples.v1_sqlite_cache_bytes` | 16777216，整数≥1024且为1024倍数，字节 | V1独立临时样本连接页缓存 |
+| `samples.v1_batch_rows` | 4096，整数≥1，行 | V1具名矩阵有序流每次取行；跨批排序、query和负零不变 |
+| `samples.tcn_batch_memory_bytes` | 268435456，整数≥0，字节 | 单头训练/早停TCN批次超过此值映射；0允许强制映射 |
 
 `infra/settings/training.py`是根schema和资源解析唯一owner；仅训练启动及明确训练诊断读取，不让推荐或只读Web因训练资源错误而失效。不可变资源对象由bootstrap显式传至准入、训练请求及fanout，无消费者自行重读资源JSON。配置改后下次训练作业生效，不热切换运行中的作业。普通模型请求2线程及V5的`tcn.compute_threads/batch_size`仍是原拟合合同，未以运行批次覆盖；纯资源段不加入模型/样本参数身份。本次源码变化仍会改变既有宽范围implementation identity，不自动重训、发布或改写旧工件。线程设置可能影响实际数值路径，候选调值须核对数值/质量与D实测，不承诺任意调值逐位相等。
 
-下表区分已接入消费者和仍待核对项；未迁的映射、页缓存、安全估计及格式常数保持原owner，不能把本批CPU/内存/fanout接线说成全部P54性能方案已通过。
+阶段345接续将八项样本I/O运行参数按原值迁入现有资源段，由唯一解析器生成不可变`TrainingSampleSettings`，训练组合根显式传到四档、缓存及所有读写者；普通生产构造不补默认值。完整`hdd/ssd`段都须符合schema，缺字段、未知字段、bool/小数冒充整数及非法字节单位明确拒绝；本批实际验收仅在当前HDD，不改变SSD那台PC的验收进度或冒称已测最优值。训练诊断从同一配置边界注入，历史对照worker只按明确选定的冻结checkout及其已声明配置schema使用对应API，不向产品安装兼容分支。
+
+纯I/O参数不加入拟合参数或样本语义身份；配置变值不会单独强制重训，训练源码变化仍沿既有implementation identity生效。删除训练合同hash中原固定的两项SQLite缓存常量，实际八项值在`selected_training_result.sample_resources`按白名单报告。任何改值仍需数值、质量与完整资源/性能对照；软件内存预算不是OS隔离，不保证任意增大缓存或批次均满足RSS门。
+
+下表区分已迁运行参数、保留安全估计及格式/算法常数，不能将参数接线视为性能通过。
 
 | 实现与现值 | 实际消费者/作用 | 给A的要求及身份边界 |
 | --- | --- | --- |
@@ -357,10 +369,12 @@ P54本批按用户授权由C接通公共解析及训练组合根。`config/train
 | 每档队列2、公共批次256行 | `_TrainingFanout`发送/接收与取消清空 | 已由fanout资源段注入；不是V5张量batch_size |
 | 拟合容量最多3GiB、预留1.5GiB、宿主低水位256MiB | `FittingMemoryCapacity → TrainingMemoryBudget` | 已由memory资源段注入；实际cgroup各级上限继续收紧，约束不可核验时拒绝 |
 | `engine.py`TCN预约512MiB，普通模型256MiB＋最大行业矩阵估计×4 | 拟合前内存预约 | 先实测估计与RSS误差；不能因常量小就直接降低预约 |
-| `sample_index.py`SQLite页缓存32MiB、SQLite mmap为0、矩阵阈值256MiB | 样本index、行业共享矩阵/临时映射 | 区分SQLite mmap与NumPy矩阵映射，单位统一字节；取消关闭句柄 |
-| V1 `samples.py`SQLite缓存16MiB、矩阵4096行批读 | V1临时样本及最多8矩阵 | 独立消费者，不拿V2缓存设置冒充已覆盖V1 |
-| `sample_sequences.py`reader缓存32MiB、一次最多256窗、writer最多8192证券 | V5重叠序列读写 | reader缓存与在途batch分别计量；同一设置传到全部入口 |
+| `sample_index.py`页缓存/mmap、独立矩阵阈值 | 样本index及行业独立矩阵 | 已由samples前三字段注入；共享行业矩阵仍按原设计始终映射，不被此阈值改成驻内存 |
+| V1 `samples.py`页缓存及具名批读 | V1临时样本及最多8矩阵 | 已由samples.v1两字段独立注入；矩阵仍按原设计映射 |
+| `sample_sequences.py`reader缓存及writer尾部证券数 | V5重叠序列读写 | 已由samples.sequence两字段注入所有入口；256窗在途上限为批次安全边界，保留 |
+| `profile/v5/batch_cache.py`训练/早停矩阵阈值 | 单头TCN批次缓存 | 已由samples.tcn_batch_memory_bytes注入；取消及异常均关闭映射 |
 | 序列块64步、float64小端；序列60×6 | 样本codec/特征合同 | 格式/算法合同，暂不列为自由运行参数；变化需重建身份和全部消费者 |
+| 序列查询每组400对键；每批最多256窗 | SQLite变量可移植性及在途内存 | 安全/结构边界，保留原值，不开放为绕过999变量上限的参数 |
 | `cpu_admission.py/memory_admission.py`预约心跳0.25秒，fanout队列轮询0.1秒 | 等待与取消 | 停止响应约束；是否开放配置须有用途和等待证据 |
 
 ### 6.3 预约顺序与资源生命周期

@@ -1,9 +1,11 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from scripts.checks.training import memory as check_tomorrow_training_memory
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
 
 
 @pytest.mark.parametrize("repeat_matches", (True, False))
@@ -18,11 +20,13 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
         *,
         settings,
         sample_root,
+        sample_settings,
         progress,
         expected_history_snapshot_hash: str,
         sqlite_policy,
     ):
         del progress, settings
+        assert sample_settings == TrainingSampleSettingsFixture()
         assert sample_root == tmp_path / "samples"
         assert expected_history_snapshot_hash == "a" * 64
         observed.append((history, output))
@@ -67,11 +71,13 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
         (history.resolve(), output.resolve()),
         (history.resolve(), output.resolve()),
     ]
-    assert '"peak_rss_bytes":100' in capsys.readouterr().out
-    assert '"repeat_training_status":"engineering_ready"' in evidence.read_text(encoding="utf-8")
-    assert '"sample_database_peak_bytes":1234' in evidence.read_text(encoding="utf-8")
-    assert '"stage_durations_ms":{}' in evidence.read_text(encoding="utf-8")
-    assert '"content_hash":' in evidence.read_text(encoding="utf-8")
+    reported = json.loads(capsys.readouterr().out)
+    assert reported == json.loads(evidence.read_text(encoding="utf-8"))
+    assert reported["peak_rss_bytes"] == 100
+    assert reported["repeat_training_status"] == "engineering_ready"
+    assert reported["sample_database_peak_bytes"] == 1234
+    assert reported["stage_durations_ms"] == {}
+    assert len(reported["content_hash"]) == 64
 
 
 def test_training_memory_gate_applies_the_shared_two_thread_policy(monkeypatch) -> None:

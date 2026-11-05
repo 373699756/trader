@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
@@ -112,6 +114,7 @@ def reusable_pair(tmp_path_factory):
         history_root=directory / "history",
         sample_root=directory / "samples",
         settings=_settings(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "engineering_ready" and not result.reused
     return directory / "models", result
@@ -138,6 +141,7 @@ def test_matching_v1_pair_reuses_without_scanning_fitting_or_republishing(tmp_pa
         history_root=tmp_path / "history",
         sample_root=tmp_path / "samples",
         settings=_settings(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.reused and result.heads == original.heads and result.run_id == original.run_id
     assert not (tmp_path / "samples").exists()
@@ -259,6 +263,7 @@ def test_v1_reserves_shared_matrices_and_releases_memory_before_publishing(tmp_p
         sample_root=tmp_path / "samples",
         settings=_settings(),
         memory_admission=Budget(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "engineering_ready" and len(leases) == 1 and not reserved_leases
 
@@ -288,7 +293,7 @@ def test_training_samples_use_prior_completed_sessions_and_explicit_missing_labe
     splits = tuple(
         BuildLearnedRankDateSplit(history.dates, _settings(), maturity_sessions=maturity) for maturity in (1, 5)
     )
-    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
+    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())) as index:
         counts = BuildLearnedRankSamples(
             history, (splits[0], splits[1]), index, history_sessions=_settings().history_sessions
         )
@@ -319,7 +324,7 @@ def test_v1_missing_t1_keeps_d25_and_fixed_calendar_partitions(tmp_path: Path) -
                     row = replace(row, point=None, cell_status="unknown_missing")
                 yield row
 
-    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
+    with closing(LearnedRankSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())) as index:
         counts = BuildLearnedRankSamples(
             MissingHistory(), (splits[0], splits[1]), index, history_sessions=_settings().history_sessions
         )
@@ -357,6 +362,7 @@ def test_missing_d25_partition_fails_before_either_head_fit_and_reports_coverage
         history_root=tmp_path / "history",
         sample_root=tmp_path / "samples",
         settings=_settings(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "failed"
     assert result.failure_reasons == tuple(
@@ -382,7 +388,8 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
     model_root = tmp_path / "models"
     sample_root = tmp_path / "samples"
     result = RunV1Training(
-        lambda: history, model_root, history_root=tmp_path / "history", sample_root=sample_root, settings=_settings(), sqlite_policy=SqlitePolicyFixture()
+        lambda: history, model_root, history_root=tmp_path / "history", sample_root=sample_root, settings=_settings(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "engineering_ready", result.failure_reasons
     assert tuple(head.strategy for head in result.heads) == (Strategy.TOMORROW, Strategy.D25)
@@ -438,6 +445,7 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
         history_root=tmp_path / "history",
         sample_root=sample_root,
         settings=replace(_settings(), minimum_training_rows=99999), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert failed.status == "failed" and {path.relative_to(profile_root): path.read_bytes() for path in paths} == before
     assert not sample_root.exists()
@@ -449,6 +457,7 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
             sample_root=sample_root,
             settings=_settings(),
             cancel_requested=lambda: True, sqlite_policy=SqlitePolicyFixture(),
+            sample_settings=TrainingSampleSettingsFixture(),
         )
     assert {path.relative_to(profile_root): path.read_bytes() for path in paths} == before
     assert not sample_root.exists()
@@ -505,6 +514,7 @@ def test_v1_directory_publication_failure_preserves_previous_pair(
         history_root=tmp_path / "history",
         sample_root=tmp_path / "samples",
         settings=_settings(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "engineering_ready", result.failure_reasons
     pair = ReadLearnedRankPair(model_root)
@@ -538,6 +548,7 @@ def test_v1_directory_publication_failure_preserves_previous_pair(
         history_root=tmp_path / "history",
         sample_root=sample_root,
         settings=_settings(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert blocked.status == "failed" and old_sample.read_bytes() == b"old"
 
@@ -557,6 +568,7 @@ def test_retraining_replaces_obsolete_contract_and_reports_actual_fit_and_public
             history_root=tmp_path / "history",
             sample_root=tmp_path / "samples",
             settings=_settings(), sqlite_policy=SqlitePolicyFixture(),
+            sample_settings=TrainingSampleSettingsFixture(),
         )
         assert old.status == "engineering_ready", old.failure_reasons
     with pytest.raises(ValueError, match="provenance"):
@@ -575,6 +587,7 @@ def test_retraining_replaces_obsolete_contract_and_reports_actual_fit_and_public
         sample_root=tmp_path / "samples",
         settings=_settings(),
         progress=Progress(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "engineering_ready", result.failure_reasons
     assert ReadLearnedRankPair(model_root).heads == result.heads
@@ -598,6 +611,7 @@ def test_publication_recovers_damaged_owned_files_but_preserves_unknown_entries(
         history_root=tmp_path / "history",
         sample_root=tmp_path / "samples",
         settings=_settings(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "engineering_ready", result.failure_reasons
     pair = ReadLearnedRankPair(model_root)

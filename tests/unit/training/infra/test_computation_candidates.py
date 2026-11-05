@@ -1,5 +1,7 @@
 """Exact values, bounded validation reuse and restoration of diagnostic-only hooks."""
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 import struct
 from concurrent.futures import ThreadPoolExecutor
 
@@ -125,7 +127,8 @@ def test_full_fixture_sample_rows_partitions_and_sequences_match_baseline(tmp_pa
         path = tmp_path / (label + ".sqlite3")
         layout = SampleSequenceLayout(6, 60, 6) if profile.algorithm == "tcn" else None
         with UseComputationCandidate(label), sample_index.SQLiteTrainingSampleIndex(
-            path, profile.heads[0].feature_manifest.names, sequence_layout=layout, sqlite_policy=SqlitePolicyFixture()
+            path, profile.heads[0].feature_manifest.names, sequence_layout=layout, sqlite_policy=SqlitePolicyFixture(),
+            sample_settings=TrainingSampleSettingsFixture(),
         ) as index:
             sample_builder.BuildTrainingSamples(sample_builder.TrainingSampleBuildRequest(
                 history, history.snapshot.training_codes, TomorrowTrainingWindow(split), index, profile

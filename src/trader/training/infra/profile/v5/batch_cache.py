@@ -18,7 +18,6 @@ from trader.training.infra.sample_index import (
     TrainingSplitName,
 )
 
-TCN_BATCH_CACHE_BYTES = 256 * 1024**2
 
 
 @dataclass(frozen=True)
@@ -49,7 +48,7 @@ def CacheTcnBatches(
     with ExitStack() as scope:
         directory = (
             Path(scope.enter_context(TemporaryDirectory(prefix="tcn-batches-", dir=samples.workspace)))
-            if size > TCN_BATCH_CACHE_BYTES
+            if size > samples.sample_settings.tcn_batch_memory_bytes
             else None
         )
         matrices: list[np.ndarray] = []

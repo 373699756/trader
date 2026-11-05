@@ -46,8 +46,10 @@ def Main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from scripts.checks.arguments import ExternalPath
     from trader.infra.settings import LoadRuntimeSettings
+    from trader.infra.settings.training import LoadTrainingResourceSettings
 
     runtime = LoadRuntimeSettings(Path(__file__).resolve().parents[3] / "config/runtime.json")
+    sample_settings = LoadTrainingResourceSettings(runtime.project_root, runtime.disk_medium or "unknown").samples
     try:
         for value, option in (
             (args.history_root, "--history-root"), (args.train_root, "--train-root"),
@@ -79,6 +81,7 @@ def Main(argv: list[str] | None = None) -> int:
             args.train_root.resolve(),
             sample_root=args.sample_root.resolve(),
             settings=settings,
+            sample_settings=sample_settings,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash, sqlite_policy=sqlite_policy,
         )
@@ -88,6 +91,7 @@ def Main(argv: list[str] | None = None) -> int:
             args.train_root.resolve(),
             sample_root=args.sample_root.resolve(),
             settings=settings,
+            sample_settings=sample_settings,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash, sqlite_policy=sqlite_policy,
         )

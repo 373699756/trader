@@ -443,16 +443,19 @@ def _sqlite_adapter_cases(
     from trader.training.infra.sample_index import TrainingIndustryData
 
     sample_path = root / "samples.sqlite3"
+    from scripts.checks.training.sample_comparison_worker import SampleArgumentsForCheckout
+
+    sample_arguments = SampleArgumentsForCheckout(checkout, medium="hdd")
     named = (checkout / "src/trader/training/infra/sample_schema.py").is_file()
     features = TOMORROW_HEAD_CONTRACT.feature_manifest.names if named else 6
 
     def build_samples() -> None:
-        with SQLiteTrainingSampleIndex(sample_path, features, **sqlite_arguments) as index:  # type: ignore[arg-type]  # Historical checkout only.
+        with SQLiteTrainingSampleIndex(sample_path, features, **sqlite_arguments, **sample_arguments) as index:  # type: ignore[arg-type]  # Historical checkout only.
             index.add_final(samples)
             index.prepare_for_model_fitting(split)
 
     def read_samples() -> None:
-        with SQLiteTrainingSampleIndex(sample_path, features, prepared_split_hash=split.content_hash, **sqlite_arguments) as index:  # type: ignore[arg-type]
+        with SQLiteTrainingSampleIndex(sample_path, features, prepared_split_hash=split.content_hash, **sqlite_arguments, **sample_arguments) as index:  # type: ignore[arg-type]
             counts = index.industry_counts(TOMORROW_HEAD_CONTRACT)
             assert len(counts) == 1
             data = index.industry_data(counts[0], TOMORROW_HEAD_CONTRACT)

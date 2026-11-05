@@ -1,4 +1,6 @@
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.configuration import SqlitePolicyFixture
 import os
 import sqlite3
@@ -22,25 +24,25 @@ def test_read_only_sample_contract_rejects_wrong_features_split_and_old_schema(t
         tuple(date(2020, 1, 1) + timedelta(days=i) for i in range(2000)), parent_manifest_hash="a" * 64
     )
     path = tmp_path / "samples.sqlite3"
-    with SQLiteTrainingSampleIndex(path, ("first", "second"), sqlite_policy=SqlitePolicyFixture()) as samples:
+    with SQLiteTrainingSampleIndex(path, ("first", "second"), sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as samples:
         samples.prepare_for_model_fitting(split)
     original = path.read_bytes()
     for names, identity in ((("second", "first"), split.content_hash), (("first", "second"), "b" * 64)):
         with pytest.raises(ValueError, match="contract"):
-            SQLiteTrainingSampleIndex(path, names, prepared_split_hash=identity, sqlite_policy=SqlitePolicyFixture())
+            SQLiteTrainingSampleIndex(path, names, prepared_split_hash=identity, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
         assert path.read_bytes() == original
     with SqliteSession(path) as connection:
         connection.run("PRAGMA user_version=1")
     original = path.read_bytes()
     with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
-        SQLiteTrainingSampleIndex(path, ("first", "second"), prepared_split_hash=split.content_hash, sqlite_policy=SqlitePolicyFixture())
+        SQLiteTrainingSampleIndex(path, ("first", "second"), prepared_split_hash=split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     assert path.read_bytes() == original
 
 
 def test_complete_cache_reopens_read_only_and_input_change_rebuilds(tmp_path):
     dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2000))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
-    cache = TrainingSampleCache(tmp_path, "first-input", ("signal",), split.content_hash, sqlite_policy=SqlitePolicyFixture())
+    cache = TrainingSampleCache(tmp_path, "first-input", ("signal",), split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     with cache.open() as samples:
         samples.add_final(
             (
@@ -73,7 +75,7 @@ def test_complete_cache_reopens_read_only_and_input_change_rebuilds(tmp_path):
         handle.write(b"corrupted-tail")
     with cache.open() as samples:
         assert not cache.reused and samples.count() == 0
-    changed = TrainingSampleCache(tmp_path, "changed-input", ("signal",), split.content_hash, sqlite_policy=SqlitePolicyFixture())
+    changed = TrainingSampleCache(tmp_path, "changed-input", ("signal",), split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     with changed.open() as samples:
         assert not changed.reused and samples.count() == 0
     changed.clear()
@@ -82,7 +84,7 @@ def test_complete_cache_reopens_read_only_and_input_change_rebuilds(tmp_path):
 
 def test_normal_reuse_skips_digest_but_explicit_audit_reads_content(tmp_path, monkeypatch):
     split = BuildTrainingDateSplit(tuple(date(2020, 1, 1) + timedelta(days=i) for i in range(2000)), parent_manifest_hash="a" * 64)
-    cache = TrainingSampleCache(tmp_path, "input", ("signal",), split.content_hash, sqlite_policy=SqlitePolicyFixture())
+    cache = TrainingSampleCache(tmp_path, "input", ("signal",), split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     with cache.open() as samples:
         samples.prepare_for_model_fitting(split)
         with pytest.raises(RuntimeError, match="sealed"):
@@ -90,7 +92,7 @@ def test_normal_reuse_skips_digest_but_explicit_audit_reads_content(tmp_path, mo
         cache.seal(samples)
     calls = []
     monkeypatch.setattr("trader.training.infra.sample_cache._digest", lambda *args: calls.append(args) or "0" * 64)
-    reused = TrainingSampleCache(tmp_path, "input", ("signal",), split.content_hash, sqlite_policy=SqlitePolicyFixture())
+    reused = TrainingSampleCache(tmp_path, "input", ("signal",), split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     assert reused.inspect() and reused.inspect()
     assert calls == []
     assert not reused.audit()
@@ -98,7 +100,7 @@ def test_normal_reuse_skips_digest_but_explicit_audit_reads_content(tmp_path, mo
 
 
 def test_partial_cache_is_never_reused(tmp_path):
-    cache = TrainingSampleCache(tmp_path, "same-input", ("signal",), "split", sqlite_policy=SqlitePolicyFixture())
+    cache = TrainingSampleCache(tmp_path, "same-input", ("signal",), "split", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     with cache.open():
         pass
     with cache.open() as samples:
@@ -118,7 +120,7 @@ def test_failed_sample_initialization_closes_sqlite_connection(tmp_path, monkeyp
 
     monkeypatch.setattr("trader.training.infra.sample_index.OpenSqliteConnection", failing_connect)
     monkeypatch.setattr("trader.training.infra.sample_index.EnsureSqliteSchema", fail_schema)
-    cache = TrainingSampleCache(tmp_path, "input", ("signal",), "split", sqlite_policy=SqlitePolicyFixture())
+    cache = TrainingSampleCache(tmp_path, "input", ("signal",), "split", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     with pytest.raises(sqlite3.OperationalError, match="cannot initialize"):
         cache.open()
     assert not cache.manifest.exists()
@@ -151,7 +153,7 @@ def test_cache_reports_separate_byte_progress_and_cancelled_seal_is_not_reusable
         tuple(date(2020, 1, 1) + timedelta(days=i) for i in range(2000)), parent_manifest_hash="a" * 64
     )
     events = []
-    cache = TrainingSampleCache(tmp_path, "input", ("signal",), split.content_hash, progress=lambda *event: events.append(event), sqlite_policy=SqlitePolicyFixture())
+    cache = TrainingSampleCache(tmp_path, "input", ("signal",), split.content_hash, progress=lambda *event: events.append(event), sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     with cache.open() as samples:
         samples.add_final(
             (
@@ -174,7 +176,7 @@ def test_cache_reports_separate_byte_progress_and_cancelled_seal_is_not_reusable
         if phase == "sealing" and state == "running":
             raise InterruptedError("cancelled")
 
-    interrupted = TrainingSampleCache(tmp_path, "new-input", ("signal",), split.content_hash, progress=cancel, sqlite_policy=SqlitePolicyFixture())
+    interrupted = TrainingSampleCache(tmp_path, "new-input", ("signal",), split.content_hash, progress=cancel, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     with interrupted.open() as samples:
         samples.prepare_for_model_fitting(split)
         with pytest.raises(InterruptedError):
@@ -194,6 +196,7 @@ def _matrix_cache(root: Path) -> tuple[TrainingSampleCache, TrainingDateSplit]:
             TrainingFeatureNames(V3_TRAINING_PROFILE.heads),
             split.content_hash,
             sqlite_policy=SqlitePolicyFixture(),
+            sample_settings=TrainingSampleSettingsFixture(matrix_memory_bytes=0),
         ),
         split,
     )
@@ -222,9 +225,6 @@ def _sealed_matrix_cache(root: Path) -> TrainingSampleCache:
 
 
 def _crash_fitting_mapping(root: Path, kind: str) -> None:
-    from trader.training.infra import sample_index
-
-    sample_index.TRAINING_MATRIX_BYTES = 0
     cache, _split = _matrix_cache(root)
     contract = V3_TRAINING_PROFILE.heads[0]
     with HistoryMaintenanceLock(root.parent.parent / "models/.v3.training.lock"):

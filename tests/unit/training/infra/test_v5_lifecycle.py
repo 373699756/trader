@@ -1,5 +1,7 @@
 """Independent real fit/reload and cancellation without relative quality claims."""
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 import hashlib
 import json
 import time
@@ -32,6 +34,7 @@ def _source(root, fit_dates=61):
     cache = TrainingSampleCache(
         root, "independent-hdd-fixture", contract.feature_manifest.names, split.content_hash,
         sequence_layout=SampleSequenceLayout(6, 60, 6), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     rng = np.random.default_rng(344)
     with cache.open() as samples:
@@ -59,7 +62,6 @@ def test_largest_real_dual_head_fit_or_cancel_closes_mappings_and_preserves_sour
     before = _source(source, fit_dates)
     work = tmp_path / "work"
     work.mkdir()
-    monkeypatch.setattr(batch_cache, "TCN_BATCH_CACHE_BYTES", 1)
     buffers = []
     original = batch_cache.CacheTcnBatches
 
@@ -76,6 +78,7 @@ def test_largest_real_dual_head_fit_or_cancel_closes_mappings_and_preserves_sour
         source, work, time.monotonic() + 60,
         (61, TcnFittingParametersFixture(minimum_industry_training_rows=1, batch_size=4, compute_threads=1)),
         sqlite_policy=SqlitePolicyFixture(), cancel_after_batches=cancel,
+        sample_settings=TrainingSampleSettingsFixture(tcn_batch_memory_bytes=1),
     )
     assert result["passed"] and result["source_unchanged"]
     assert result["quality_evidence"] is False and result["performance_evidence"] is False

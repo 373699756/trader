@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.configuration import SqlitePolicyFixture
 
 import json
@@ -281,6 +283,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=tmp_path / "samples",
         expected_history_snapshot_hash=built.target_snapshot_hash, sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
 
     assert result is expected
@@ -291,6 +294,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=tmp_path / "samples",
         expected_history_snapshot_hash="f" * 64, sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     assert mismatch.status == "blocked"
     assert mismatch.failure_reasons == ("history_archive_repack_activation_pending",)
@@ -316,6 +320,7 @@ def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monke
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=tmp_path / "samples",
         expected_history_snapshot_hash=built.target_snapshot_hash, sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     )
 
     assert result.heads == ()

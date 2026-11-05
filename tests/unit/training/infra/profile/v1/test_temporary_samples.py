@@ -1,5 +1,7 @@
 """Hard exits recover owned V1 scratch files without deleting unknown objects."""
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 import os
 from contextlib import ExitStack, closing
 from datetime import date
@@ -33,7 +35,7 @@ def _crash_v1_samples(samples_root: Path, point: str) -> None:
         with TemporaryTrainingSamples(samples_root, "v1") as directory:
             if point == "empty":
                 os._exit(86)
-            with closing(LearnedRankSampleIndex(directory / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
+            with closing(LearnedRankSampleIndex(directory / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())) as index:
                 _populate(index)
                 if point == "samples":
                     os._exit(86)
@@ -71,7 +73,7 @@ def test_hard_exit_releases_lock_and_rebuilds_v1_samples(tmp_path, point):
         with TemporaryTrainingSamples(samples_root, "v1") as directory:
             assert not residue[0].exists()
             assert not tuple(directory.iterdir())
-            with closing(LearnedRankSampleIndex(directory / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
+            with closing(LearnedRankSampleIndex(directory / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())) as index:
                 _populate(index)
                 with ExitStack() as resources:
                     matrices = index.read_matrices(
@@ -89,7 +91,7 @@ def test_v1_success_and_cancellation_close_mappings_and_remove_temporary_samples
     def execute() -> None:
         with HistoryMaintenanceLock(tmp_path / "models/.v1.training.lock"):
             with TemporaryTrainingSamples(samples_root, "v1") as directory:
-                with closing(LearnedRankSampleIndex(directory / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture())) as index:
+                with closing(LearnedRankSampleIndex(directory / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())) as index:
                     _populate(index)
                     with ExitStack() as resources:
                         matrices = index.read_matrices(

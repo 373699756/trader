@@ -1,5 +1,7 @@
 """Four real profile workers share one synthetic history scan and retain independent pairs."""
 
+from tests.helpers.training_resources import TrainingSampleSettingsFixture
+
 from tests.helpers.training_resources import TrainingResourceSettingsFixture
 
 from tests.helpers.configuration import SqlitePolicyFixture
@@ -84,6 +86,7 @@ def test_shared_reader_closes_nested_streams_even_when_callers_retain_them(tmp_p
         TrainingLocations(history.history_root, tmp_path / "models", tmp_path / "samples"),
         cpu_budget=TrainingCpuBudget(2, settings=TrainingResourceSettingsFixture().cpu),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     with ThreadPoolExecutor(max_workers=2) as executor:
         if terminal in ("source_failure", "cancelled"):
@@ -159,6 +162,7 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(tmp_path
         TrainingLocations(history.history_root, tmp_path / "models", tmp_path / "samples"),
         cpu_budget=TrainingCpuBudget(2, settings=TrainingResourceSettingsFixture().cpu),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
+        sample_settings=TrainingSampleSettingsFixture(),
     )
     with ThreadPoolExecutor(max_workers=4) as executor:
         result = TrainSelectedProfiles(request, executor, sqlite_policy=SqlitePolicyFixture())

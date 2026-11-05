@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.training.application.resources import TrainingSampleSettings
 
 import platform
 import sqlite3
@@ -127,6 +128,7 @@ def RunV1Training(
     model_root: Path,
     *,
     sample_root: Path,
+    sample_settings: TrainingSampleSettings,
     history_root: Path,
     settings: V1TrainingSettings,
     progress: TomorrowTrainingProgressPort | None = None,
@@ -163,7 +165,7 @@ def RunV1Training(
             )
             with TemporaryTrainingSamples(sample_root, "v1") as directory:
                 sample_path = directory / "samples.sqlite3"
-                with closing(LearnedRankSampleIndex(sample_path, sqlite_policy=sqlite_policy)) as index:
+                with closing(LearnedRankSampleIndex(sample_path, sample_settings=sample_settings, sqlite_policy=sqlite_policy)) as index:
                     counts = BuildLearnedRankSamples(
                         source,
                         splits,
@@ -192,7 +194,7 @@ def RunV1Training(
                     sum(item.rows for item in coverage if item.strategy is strategy) for strategy in strategies
                 ) * 512 + 256 * 1024**2
                 with (
-                    closing(LearnedRankSampleIndex(sample_path, read_only=True, sqlite_policy=sqlite_policy)) as index,
+                    closing(LearnedRankSampleIndex(sample_path, sample_settings=sample_settings, read_only=True, sqlite_policy=sqlite_policy)) as index,
                     cpu_admission.reserve(TOMORROW_TRAINING_COMPUTE_THREADS, lambda: CheckV1Cancellation(cancel_requested))
                     if cpu_admission is not None else nullcontext(TOMORROW_TRAINING_COMPUTE_THREADS) as compute_threads,
                     memory_admission.reserve(required_bytes, lambda: CheckV1Cancellation(cancel_requested))

@@ -62,10 +62,36 @@ class TrainingFanoutSettings:
 
 
 @dataclass(frozen=True)
+class TrainingSampleSettings:
+    sqlite_cache_bytes: int
+    sqlite_mmap_bytes: int
+    matrix_memory_bytes: int
+    sequence_cache_bytes: int
+    sequence_writer_codes: int
+    v1_sqlite_cache_bytes: int
+    v1_batch_rows: int
+    tcn_batch_memory_bytes: int
+
+    def __post_init__(self) -> None:
+        nonnegative = (
+            self.sqlite_mmap_bytes, self.matrix_memory_bytes, self.sequence_cache_bytes, self.tcn_batch_memory_bytes,
+        )
+        caches = (self.sqlite_cache_bytes, self.v1_sqlite_cache_bytes)
+        if (
+            any(type(value) is not int or value < 0 for value in nonnegative)
+            or any(type(value) is not int or value < 1024 or value % 1024 for value in caches)
+            or type(self.sequence_writer_codes) is not int or self.sequence_writer_codes < 1
+            or type(self.v1_batch_rows) is not int or self.v1_batch_rows < 1
+        ):
+            raise ValueError("training_sample_settings_invalid")
+
+
+@dataclass(frozen=True)
 class TrainingResourceSettings:
     cpu: TrainingCpuSettings
     memory: TrainingMemorySettings
     fanout: TrainingFanoutSettings
+    samples: TrainingSampleSettings
 
 
 @dataclass(frozen=True)

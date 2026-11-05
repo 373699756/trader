@@ -17,10 +17,34 @@ from typing import TYPE_CHECKING, TypedDict, cast
 if TYPE_CHECKING:
     from trader.infra.sqlite_policy import SqliteIoPolicy
     from scripts.checks.training.computation_candidates import ComputationCandidate
+    from trader.infra.disk_types import DiskKind
+    from trader.training.application.resources import TrainingSampleSettings
 
 
 class _SqliteArguments(TypedDict, total=False):
     sqlite_policy: SqliteIoPolicy
+
+
+class TrainingSampleArguments(TypedDict, total=False):
+    sample_settings: TrainingSampleSettings
+
+
+def SampleArgumentsForCheckout(checkout: Path, *, medium: DiskKind) -> TrainingSampleArguments:
+    """Select an explicitly frozen diagnostic API; never supply product defaults."""
+    document = json.loads((checkout / "config/training.json").read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError("sample_comparison_configuration_invalid")
+    resources = document.get("resources")
+    if resources is None:
+        return {}  # Explicit pre-resource-schema historical checkout.
+    machine = resources.get("ssd" if medium == "ssd" else "hdd") if isinstance(resources, dict) else None
+    if not isinstance(machine, dict):
+        raise ValueError("sample_comparison_resource_schema_invalid")
+    if "samples" not in machine:
+        return {}  # Explicit pre-sample-policy historical checkout; current APIs reject missing injection.
+    from trader.infra.settings.training import LoadTrainingResourceSettings
+
+    return {"sample_settings": LoadTrainingResourceSettings(checkout, medium).samples}
 
 
 def _measure_feature_construction(
@@ -78,6 +102,8 @@ def _construct_samples(
     from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
     from trader.training.infra.sample_sequences import SampleSequenceLayout
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
+
+    sample_arguments = SampleArgumentsForCheckout(checkout, medium="hdd")
 
     if not 1 <= size <= 128 or not 1800 <= sessions <= 2000:
         raise ValueError("sample_construction_requires_1_to_128_codes_and_1800_to_2000_dates")
@@ -168,6 +194,7 @@ def _construct_samples(
             profile.heads[0].feature_manifest.names,
             sequence_layout=SampleSequenceLayout(6, 60, 6) if profile.algorithm == "tcn" else None,
             sqlite_policy=sqlite_policy,
+            **sample_arguments,
         ) as index:
             BuildTrainingSamples(TrainingSampleBuildRequest(
                 source,
@@ -198,7 +225,7 @@ def _construct_samples(
     path = root / "v1.sqlite3"
     started = time.perf_counter()
     cpu_started = time.process_time()
-    with closing(LearnedRankSampleIndex(path, sqlite_policy=sqlite_policy)) as v1_index:
+    with closing(LearnedRankSampleIndex(path, sqlite_policy=sqlite_policy, **sample_arguments)) as v1_index:
         counts = BuildLearnedRankSamples(source, splits, v1_index, history_sessions=v1_settings.history_sessions)
     seconds = time.perf_counter() - started
     cases["v1"] = {
@@ -227,6 +254,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqli
     # The two explicitly selected offline checkouts have different physical APIs.
     # No compatibility selection is installed in the application.
     sqlite_arguments: _SqliteArguments = {"sqlite_policy": sqlite_policy} if sqlite_policy is not None else {}
+    sample_arguments = SampleArgumentsForCheckout(checkout, medium="hdd")
     import numpy as np
     import trader.training.infra.sample_index as sample_module
 
@@ -282,7 +310,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqli
         channels = np.random.default_rng(289).normal(size=(size, len(selected) + 60, 6)) if layout else None
         path = root / f"{profile.profile_id}.sqlite3"
         started = time.perf_counter()
-        with SQLiteTrainingSampleIndex(path, names if named else len(names), sequence_layout=layout, **sqlite_arguments) as samples:  # type: ignore[arg-type]  # Explicit historical checkout API.
+        with SQLiteTrainingSampleIndex(path, names if named else len(names), sequence_layout=layout, **sqlite_arguments, **sample_arguments) as samples:  # type: ignore[arg-type]  # Explicit historical checkout API.
             for index, day in enumerate(selected):
                 rows = []
                 for stock in range(size):
@@ -297,7 +325,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqli
         digest = hashlib.sha256()
         started = time.perf_counter()
         with SQLiteTrainingSampleIndex(
-            path, names if named else len(names), sequence_layout=layout, prepared_split_hash=split.content_hash, **sqlite_arguments  # type: ignore[arg-type]
+            path, names if named else len(names), sequence_layout=layout, prepared_split_hash=split.content_hash, **sqlite_arguments, **sample_arguments  # type: ignore[arg-type]
         ) as samples:
             for head in profile.heads:
                 digest.update(head.model_id.encode())
@@ -319,7 +347,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqli
     path = root / "v1.sqlite3"
     started = time.perf_counter()
     with ExitStack() as resources:
-        rank_index = LearnedRankSampleIndex(path, **sqlite_arguments)
+        rank_index = LearnedRankSampleIndex(path, **sqlite_arguments, **sample_arguments)
         resources.callback(rank_index.close)
         for number, day in enumerate(selected):
             pending = _PendingDay(day, number, {

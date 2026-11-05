@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.training.application.resources import TrainingSampleSettings
 
 import argparse
 import platform
@@ -94,7 +95,7 @@ class _FrozenSubsetSupplier:
         return tuple(row for row in self._revisions[code] if row.trade_date in allowed)
 
 
-def _probe(source: Path, work: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+def _probe(source: Path, work: Path, *, sample_settings: TrainingSampleSettings, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
     import resource
 
     project = Path(__file__).resolve().parents[3]
@@ -169,6 +170,7 @@ def _probe(source: Path, work: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[s
             V5_TRAINING_PROFILE.heads,
             settings,
             sample_root=work / "samples",
+            sample_settings=sample_settings,
         ), sqlite_policy=sqlite_policy
     )
     if result.status == "engineering_ready":
@@ -218,7 +220,10 @@ def Main() -> int:
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
-    sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(Path(__file__).resolve().parents[3] / "config/runtime.json"))
+    from trader.infra.settings.training import LoadTrainingResourceSettings
+    runtime = LoadRuntimeSettings(Path(__file__).resolve().parents[3] / "config/runtime.json")
+    sqlite_policy = BuildSqlitePolicy(runtime)
+    sample_settings = LoadTrainingResourceSettings(runtime.project_root, runtime.disk_medium or "unknown").samples
     try:
         if args.kernel_probe:
             from scripts.checks.training.v5_kernels import ProbeV5Kernels
@@ -227,7 +232,7 @@ def Main() -> int:
         else:
             if args.history_root is None or args.work_root is None:
                 raise ValueError("V5 training probe requires history and output directories")
-            report = _probe(args.history_root, args.work_root, sqlite_policy=sqlite_policy)
+            report = _probe(args.history_root, args.work_root, sample_settings=sample_settings, sqlite_policy=sqlite_policy)
     except (OSError, RuntimeError, ValueError, AssertionError) as exc:
         report = {
             "schema_version": "v5-training-diagnostic",
