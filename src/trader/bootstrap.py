@@ -22,6 +22,7 @@ from trader.download.application.company_evidence import CompanyEvidenceDependen
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
+from trader.download.infra.price_suspensions import PriceSuspensionSource
 from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -602,7 +603,8 @@ def ExecuteHistoryDownload(
             )
             prices = TencentQfqSupplier(
                 TencentQfqDependencies(
-                    http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar
+                    http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar,
+                    suspensions=PriceSuspensionSource(FetchExternalHttp, RunIsolatedCall, cancel_requested).fetch,
                 ),
                 TencentQfqOptions(
                     timeout_seconds=qfq_configuration.source_timeout_seconds,
@@ -694,6 +696,7 @@ def ExecuteQfqDownload(
                 TencentQfqDependencies(
                     http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar,
                     failures=failures,
+                    suspensions=PriceSuspensionSource(FetchExternalHttp, RunIsolatedCall, cancel_requested).fetch,
                 ),
                 TencentQfqOptions(
                     timeout_seconds=qfq_configuration.source_timeout_seconds,

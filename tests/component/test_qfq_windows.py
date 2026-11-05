@@ -435,6 +435,39 @@ def test_inferred_suspension_keeps_only_tencent_real_bars_without_backfill(tmp_p
     assert len(supplier.calls) == 1
 
 
+@pytest.mark.parametrize("whole_window", (False, True))
+def test_confirmed_suspensions_complete_without_missing_price_or_retry(tmp_path, whole_window):
+    class SuspendedSupplier(Supplier):
+        def fetch_window(self, security, dates):
+            window = super().fetch_window(security, dates)
+            return replace(
+                window,
+                cells=tuple(
+                    replace(
+                        cell,
+                        status="supplier_marked_suspended",
+                        unadjusted=replace(cell.unadjusted, trading_status="suspended"),
+                        qfq=replace(cell.qfq, trading_status="suspended"),
+                    ) if whole_window or cell.trade_date == DAYS[-1] else cell
+                    for cell in window.cells
+                ),
+            )
+
+    supplier = SuspendedSupplier(days=DAYS)
+    updater = _updater(tmp_path, supplier)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert result.latest_suspended_codes == 1
+    assert result.latest_inferred_suspended_codes == result.latest_missing_codes == 0
+    assert not result.needs_retry
+    assert DAYS[-1] in updater.v2.covered_dates("600001")
+    assert updater.v2.price_issues() == ()
+    prices = updater.v2.read_code("600001").cells
+    assert len(prices) == (0 if whole_window else 250)
+    assert all(cell.status == "complete" for cell in prices)
+
+
 def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_up(tmp_path) -> None:
     class LateDailySupplier(Supplier):
         latest_missing = True
@@ -458,7 +491,8 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     first = updater.execute(observed)
     assert first.completed_codes == 1 and first.pending_codes == 0
-    assert first.latest_missing_codes == 1
+    assert first.latest_missing_codes == 0
+    assert first.latest_inferred_suspended_codes == 1
     assert not first.needs_retry
     source = updater.v2.inspect_windows(frozenset(("600001",))).states[0].source
     assert updater.v2.completed(DAYS[-1], "600001", source)
@@ -480,6 +514,7 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
     second = updater.execute(observed)
     assert second.completed_codes == 1 and second.skipped_codes == 0
     assert second.latest_missing_codes == 0
+    assert second.latest_inferred_suspended_codes == 0
     assert not second.needs_retry
     assert second.changed_rows > 0
     assert updater.v2.read_code("600001").cells[-1].trade_date == DAYS[-1]
@@ -497,6 +532,39 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
     projection.initialize(cancelled=lambda: False)
     assert "600001" in projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
     assert updater.execute(observed).skipped_codes == 1
+
+
+def test_suspension_conflict_preserves_the_previously_published_trading_prices(tmp_path):
+    class ConflictSupplier(Supplier):
+        conflict = False
+
+        def fetch_window(self, security, dates):
+            window = super().fetch_window(security, dates)
+            if not self.conflict:
+                return window
+            return replace(
+                window,
+                cells=tuple(
+                    replace(
+                        cell,
+                        status="supplier_marked_suspended",
+                        unadjusted=replace(cell.unadjusted, trading_status="suspended"),
+                        qfq=replace(cell.qfq, trading_status="suspended"),
+                    ) for cell in window.cells
+                ),
+            )
+
+    supplier = ConflictSupplier(days=DAYS[:-1])
+    updater = _updater(tmp_path, supplier)
+    observed = datetime.combine(DAYS[-2], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    assert updater.execute(observed).completed_codes == 1
+    previous = updater.v2.read_code("600001")
+    supplier.days = DAYS
+    supplier.conflict = True
+    result = updater.execute(observed + timedelta(days=1))
+    assert result.pending_codes == 1
+    assert QfqPendingReason("price_suspension_trading_conflict", 1) in result.pending_reasons
+    assert updater.v2.read_code("600001") == previous
 
 
 def test_all_inferred_suspension_is_reported_without_empty_window_or_retry(tmp_path):
@@ -1535,7 +1603,8 @@ def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context
     stock_progress = next(message for message in messages if " | sync market 股票进度 | " in message)
     assert "处理 无需下载 | 结果 无需下载 | raw 0/0 | qfq 0/0 | 完整配对 0/0" in stock_progress
     assert messages[-1].startswith("00:01:05 | qfq 完成 | 已处理 1/1（100.00%）")
-    assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 无真实日线 0 | 未处理 0" in messages[-1]
+    assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 无真实日线 0" in messages[-1]
+    assert "最近日停牌 0 | 最近日推定停牌 0 | 最近日未解释缺价 0 | 未处理 0" in messages[-1]
 
 
 def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_processed(tmp_path):

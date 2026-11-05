@@ -6,7 +6,9 @@ import json
 import math
 import time
 import platform
+import logging
 from collections.abc import Callable, Iterator
+from concurrent.futures import CancelledError
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -23,6 +25,7 @@ from trader.download.domain.history_supplier_failure import HistorySupplierPendi
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import MAX_QFQ_WINDOW_SESSIONS
+from trader.download.domain.price_suspension import PriceSuspensionSnapshot
 from trader.download.infra.tencent_daily import FetchTencentDailyRows, TencentDailyQuery, TencentDailyRow
 from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.download.application.download_failure import DownloadFailurePort
@@ -30,6 +33,7 @@ from trader.download.domain.download_failure import DownloadFailureContext
 
 _QFQ_PAGE_ROWS = 640
 _MAX_QFQ_PAGES = 5
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,7 @@ class TencentQfqDependencies:
     calendar: Callable[[date, int], BaoStockCalendar] | None = None
     failures: DownloadFailurePort | None = None
     monotonic: Callable[[], float] = time.monotonic
+    suspensions: Callable[[date], PriceSuspensionSnapshot] | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +136,7 @@ class TencentQfqSupplier:
     def __init__(self, dependencies: TencentQfqDependencies, options: TencentQfqOptions) -> None:
         self._dependencies = dependencies
         self._options = options
+        self._suspensions: PriceSuspensionSnapshot | None = None
 
     def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         if not 1 <= sessions <= MAX_QFQ_WINDOW_SESSIONS:
@@ -157,6 +163,25 @@ class TencentQfqSupplier:
             if self._dependencies.calendar is not None
             else self.load_calendar(as_of, sessions)
         )
+        self._suspensions = None
+        if self._dependencies.suspensions is not None:
+            try:
+                snapshot = self._dependencies.suspensions(calendar.open_dates[-1])
+                if snapshot.target_date != calendar.open_dates[-1]:
+                    raise ValueError("price_suspension_target_mismatch")
+                self._suspensions = snapshot
+                eligible = frozenset(item.code for item in universe)
+                _LOGGER.info(
+                    "停牌清单 %s：合格股票中 %d 只具有全天停牌区间",
+                    snapshot.target_date,
+                    sum(item.code in eligible for item in snapshot.suspensions),
+                )
+            except (CancelledError, OSError, RuntimeError, ValueError) as exc:
+                self._check_cancel()
+                _LOGGER.warning("停牌清单不可用，继续原价格同步：%s", type(exc).__name__)
+                if self._dependencies.failures is not None:
+                    self._dependencies.failures(DownloadFailureContext("price_suspensions"), exc)
+        self._check_cancel()
         return HistorySupplierContext(
             calendar,
             tuple(sorted(universe, key=lambda security: security.code)),
@@ -197,6 +222,29 @@ class TencentQfqSupplier:
             or dates != tuple(sorted(set(dates)))
         ):
             raise ValueError("Tencent request requires ordered unique dates and a bounded row count")
+        suspended = self._suspensions.dates_for(security.code, dates) if self._suspensions is not None else frozenset()
+        if suspended:
+            requested = tuple(day for day in dates if day not in suspended)
+            try:
+                downloaded = self._fetch_trading_dates(
+                    security, requested, count, allow_interior_padding
+                ) if requested else PublishedHistoryWindow(security.code, ())
+            except HistorySupplierPendingError as exc:
+                raise HistorySupplierPendingError(
+                    _merge_suspensions(security.code, dates, suspended, exc.window),
+                    exc.reason,
+                    exc.unusable_qfq_dates,
+                ) from exc
+            return _merge_suspensions(security.code, dates, suspended, downloaded)
+        return self._fetch_trading_dates(security, dates, count, allow_interior_padding)
+
+    def _fetch_trading_dates(
+        self,
+        security: BaoStockSecurity,
+        dates: tuple[date, ...],
+        count: int,
+        allow_interior_padding: bool,
+    ) -> PublishedHistoryWindow:
         symbol = security.source_code.replace(".", "")
         query = _WindowQuery(symbol, dates, count, allow_interior_padding)
         with self._dependencies.session_factory() as session:
@@ -443,6 +491,36 @@ class TencentQfqSupplier:
     def _check_cancel(self) -> None:
         if self._dependencies.cancel_requested():
             raise RuntimeError("tencent_qfq_cancelled")
+
+
+def _merge_suspensions(
+    code: str,
+    dates: tuple[date, ...],
+    suspended: frozenset[date],
+    window: PublishedHistoryWindow,
+) -> PublishedHistoryWindow:
+    cells = {cell.trade_date: cell for cell in window.cells}
+    for day in suspended:
+        sides = tuple(
+            PublishedHistorySide(
+                code=code,
+                trade_date=day,
+                adjustment=adjustment,
+                open_price=None,
+                high_price=None,
+                low_price=None,
+                close_price=None,
+                volume=None,
+                amount=None,
+                preclose=None,
+                pct_change=None,
+                turnover=None,
+                trading_status="suspended",
+            )
+            for adjustment in ("unadjusted", "qfq")
+        )
+        cells[day] = PublishedHistoryCell(code, day, "supplier_marked_suspended", sides[0], sides[1])
+    return PublishedHistoryWindow(code, tuple(cells[day] for day in dates))
 
 
 def _unusable_qfq_price(row: TencentDailyRow) -> bool:

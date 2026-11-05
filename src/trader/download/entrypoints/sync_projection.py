@@ -33,6 +33,8 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
                 "pending_codes": market.pending_codes,
                 "no_trade_data_codes": market.no_trade_data_codes,
                 "latest_missing_codes": market.latest_missing_codes,
+                "latest_suspended_codes": market.latest_suspended_codes,
+                "latest_inferred_suspended_codes": market.latest_inferred_suspended_codes,
                 "changed_files": market.changed_files,
                 "changed_rows": market.changed_rows,
                 "skipped_codes": market.skipped_codes,

@@ -124,6 +124,16 @@
 
 001381的[官方上市公告书](https://disc.static.szse.cn/disc/disk03/finalpage/2026-11-02/f85204b7-2475-41ad-b05e-f4bf35a0aac9.PDF)使用2023协会标准；本轮仅为该证据显式登记C29到既有模型分类的项目映射，依据[旧指引代码目录](https://www.csisc.cn/zbscbzw/c100138/202206/f697c0f5befd4c4ba91d4171cd68d7ea/files/8500f38c4545b2c366b6abf5af22.pdf)。这不是监管发布的全面跨标准对照表，不把该个案写进产品代码或扩展到其它分类；真实资料接入及收益资格仍各自验收。
 
+### 2.6 history/market的全天停牌日期检查
+
+ST资格通过后，history与market在价格任务派发前按本次目标交易日各读取一次[东方财富停复牌清单](https://data.eastmoney.com/tfpxx/)，不逐股查询。只采用完整清单内有明确起点及全天期限的“连续停牌”或“停牌一天”，不因现价、零量或接口无数据认定停牌。盘中停牌及复牌当日仍请求真实日线；区间不延伸到查询目标日之后。预计复牌日只用于保守收窄跳过范围，不当作实际复牌事实。
+
+明确全天停牌的日期不发起价格请求，使用既有`supplier_marked_suspended`语义记录非交易事实，OHLC、量额等不补造；此前及区间外历史继续下载。旧推定停牌可以由明确证据升级；与已有真实成交冲突时保留原资料并报告冲突。未知缺价、网络失败及单侧缺价仍保留待补身份。
+
+清单采用注入的HTTP和隔离执行端口：单次HTTP超时3秒、隔离作业期限5秒，结束按公共有界流程回收；失败或清单不完整时记录降级并继续原价格同步，不据此过滤任何日期。每次上下文重新取证，不跨目标日复用失败前的清单；company不增加该查询。
+
+market的结果与公开摘要新增`latest_suspended_codes`和`latest_inferred_suspended_codes`，原`latest_missing_codes`只计未解释缺价。明确停牌不计入缺价重试阈值；大面积来源推定停牌仍作为待核信号，保留后续重查。摘要分别显示三类数量，发布配对、既有数据保护和ST资格不变。
+
 ## 3. history：完整历史
 
 荐股启动的既有`ReadPublishedHistoryUseCase/PublishedHistoryReadPort.iter_windows`增加仅关键字参数`codes: frozenset[str] | None`。`None`表示明确读取完整发布（原训练/诊断路径），空集合表示零个股价格读取；非空集合与原manifest股票总体求交，拒绝可变集合及非法代码。两种SQLite adapter均支持；荐股生产消费者必须显式传入静态资格结果，不捕获缺参数错误退回全量。原完整manifest、内容摘要、发布令牌及取消检查保持原值，不伪造子集manifest。正式收益读取仍可按原发布读取已被当前资格排除的代码。

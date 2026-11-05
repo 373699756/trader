@@ -77,6 +77,7 @@ def QualifyPriceOverlap(
             before is not None
             and before.status in {"qfq_missing", "unadjusted_missing", "tencent_inferred_suspended"}
             and (cell.status != "complete" or not anchored)
+            and not (before.status == "tencent_inferred_suspended" and cell.status == "supplier_marked_suspended")
         ):
             result.append(before)
         elif (

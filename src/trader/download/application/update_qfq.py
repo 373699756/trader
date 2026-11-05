@@ -12,7 +12,7 @@ from time import monotonic
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from trader.download.application.progress_message import ProgressLevel, ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import (
     QfqDownloadProgress,
     QfqFailureCode,
@@ -654,8 +654,7 @@ class UpdateQfqWindows:
     @staticmethod
     def _record_completed(progress: QfqDownloadProgress, job: _DownloadJob, window: PublishedHistoryWindow) -> None:
         paired = sum(cell.status == "complete" for cell in window.cells)
-        if window.cells[-1].status != "complete":
-            progress.latest_missing += 1
+        progress.record_latest(window)
         progress.record_stock(
             job.security,
             QfqStockFeedback(
@@ -666,6 +665,9 @@ class UpdateQfqWindows:
                 paired,
                 paired,
                 inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in window.cells),
+                reason=ProgressField(
+                    f"明确停牌 {sum(cell.status == 'supplier_marked_suspended' for cell in window.cells)} 日"
+                ) if any(cell.status == "supplier_marked_suspended" for cell in window.cells) else ProgressField("无"),
             ),
         )
 
@@ -686,14 +688,18 @@ class UpdateQfqWindows:
                 window = merged
         if window is None:
             window = self._fetch(job.security, job.dates)
+        prior = {cell.trade_date: cell for cell in job.previous.cells}
+        if any(
+            cell.status == "supplier_marked_suspended"
+            and cell.trade_date in prior
+            and prior[cell.trade_date].status == "complete"
+            for cell in window.cells
+        ):
+            raise RuntimeError("price_suspension_trading_conflict")
         if job.baostock_basis:
             window = QualifyReplacementWindow(job.dates, self.v2.read_code(job.security.code), window)
         if any(cell.status not in ("complete", "supplier_marked_suspended", "tencent_inferred_suspended") for cell in window.cells):
             raise HistorySupplierPendingError(window)
-        if not any(cell.status == "complete" for cell in window.cells) and not all(
-            cell.status == "tencent_inferred_suspended" for cell in window.cells
-        ):
-            raise RuntimeError("qfq_no_trade_bars")
         return window
 
     def _fetch(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:

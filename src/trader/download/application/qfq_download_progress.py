@@ -95,6 +95,8 @@ class QfqDownloadProgress:
     not_applicable: int = 0
     no_trade_data: int = 0
     latest_missing: int = 0
+    latest_suspended: int = 0
+    latest_inferred_suspended: int = 0
     rows: int = 0
     errors: int = 0
     write_seconds: float = 0.0
@@ -145,6 +147,11 @@ class QfqDownloadProgress:
         failure_level: ProgressLevel = ProgressLevel.WARNING,
     ) -> None:
         self.pending += 1
+        if self.day in dates:
+            if isinstance(exc, HistorySupplierPendingError):
+                self.record_latest(exc.window)
+            else:
+                self.latest_missing += 1
         reason = "qfq_window_incomplete" if isinstance(exc, QfqWindowIncompleteError) else QfqFailureCode(exc)
         self._add_pending_reason(reason)
         if action == "本地检查" or failure_level is ProgressLevel.ERROR:
@@ -181,10 +188,20 @@ class QfqDownloadProgress:
 
     def record_no_trade_data(self, security: BaoStockSecurity, window: PublishedHistoryWindow) -> None:
         self.no_trade_data += 1
+        self.record_latest(window)
         self.record_stock(
             security,
             QfqStockFeedback("Tencent下载", "无真实日线", 0, 0, 0, 0, inferred_suspended=len(window.cells)),
         )
+
+    def record_latest(self, window: PublishedHistoryWindow) -> None:
+        latest = next((cell.status for cell in window.cells if cell.trade_date == self.day), None)
+        if latest == "supplier_marked_suspended":
+            self.latest_suspended += 1
+        elif latest == "tencent_inferred_suspended":
+            self.latest_inferred_suspended += 1
+        elif latest != "complete":
+            self.latest_missing += 1
 
     def _add_pending_reason(self, reason: str, count: int = 1) -> None:
         previous = next((item.count for item in self.pending_reasons if item.reason == reason), 0)
@@ -206,6 +223,9 @@ class QfqDownloadProgress:
             f"| 合格 {ProgressNumber(self.completed)} | 待重试 {ProgressNumber(self.pending)} "
             f"| 其中复用 {ProgressNumber(self.skipped)} | 无需下载 {ProgressNumber(self.not_applicable)} "
             f"| 无真实日线 {ProgressNumber(self.no_trade_data)} "
+            f"| 最近日停牌 {ProgressNumber(self.latest_suspended)} "
+            f"| 最近日推定停牌 {ProgressNumber(self.latest_inferred_suspended)} "
+            f"| 最近日未解释缺价 {ProgressNumber(self.latest_missing)} "
             f"| 未处理 {ProgressNumber(self.total - self.processed)} "
             f"| 变更文件 {ProgressNumber(len(self.changed))} | 变更行 {ProgressNumber(self.rows)} "
             f"| 落库耗时 {ProgressDuration(self.write_seconds)}",
@@ -232,6 +252,8 @@ class QfqDownloadProgress:
             self.pending_reasons,
             self.no_trade_data,
             self.latest_missing,
+            self.latest_suspended,
+            self.latest_inferred_suspended,
         )
         stage = (
             "已取消"

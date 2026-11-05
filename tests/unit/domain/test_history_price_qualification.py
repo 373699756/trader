@@ -20,6 +20,18 @@ def test_replacement_uses_whole_new_adjustment_basis():
     assert QualifyReplacementWindow((partial.trade_date,), previous, incoming) is incoming
 
 
+def test_explicit_suspension_replaces_inference_without_fabricating_a_trading_price():
+    _partial, complete = _partial_and_complete(1628280000.0)
+    inferred = BaoStockDailyCell(complete.code, complete.trade_date, "tencent_inferred_suspended", None, None)
+    confirmed = replace(
+        complete,
+        status="supplier_marked_suspended",
+        unadjusted=replace(complete.unadjusted, trading_status="suspended"),
+        qfq=replace(complete.qfq, trading_status="suspended"),
+    )
+    assert QualifyPriceOverlap((confirmed,), (inferred,), full_window=False) == (confirmed,)
+
+
 def test_replacement_rejects_missing_dates_and_unresolved_cells():
     partial, complete = _partial_and_complete(1628280000.0)
     previous = PublishedHistoryWindow(partial.code, (ProjectHistoryCell(partial),))
