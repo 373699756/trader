@@ -30,10 +30,11 @@ def test_nonpositive_qfq_gap_is_deferred_for_20_market_sessions_and_kept_unresol
     assert index.gaps_by_code(calendar[:21]).get(task.code, ()) == (task.dates[1],)
     assert index.gaps_by_code(calendar[:40]).get(task.code, ()) == (task.dates[1],)
     assert index.gaps_by_code(calendar).get(task.code, ()) == task.dates
-    assert index.gap_summary((task.code,)).cells == 2
+    assert index.gap_summary((task.code,), calendar_dates=calendar[:21]).cells == 2
+    assert index.gaps_by_code(calendar[:21], retryable_only=False) == {task.code: task.dates}
     assert index.gaps_by_code(calendar[:21]) == {task.code: (task.dates[1],)}
     assert index.gaps_by_code(calendar) == {task.code: task.dates}
-    summary = index.gap_summary((task.code,))
+    summary = index.gap_summary((task.code,), calendar_dates=calendar)
     assert (summary.stocks, summary.cells, summary.first_date, summary.last_date) == (1, 2, *task.dates)
     assert {item.reason: item.cells for item in summary.reasons} == {
         "tencent_qfq_invalid_price": 1,
@@ -45,7 +46,31 @@ def test_nonpositive_qfq_gap_is_deferred_for_20_market_sessions_and_kept_unresol
 
     assert index.gaps_by_code().get(task.code, ()) == ()
     assert index.gaps_by_code(calendar).get(task.code, ()) == ()
-    assert index.gap_summary((task.code,)).cells == 0
+    assert index.gap_summary((task.code,), calendar_dates=calendar).cells == 0
+
+
+def test_calendar_membership_limits_summary_and_repairs_without_erasing_old_gaps(tmp_path):
+    days = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(5))
+    path = tmp_path / "catalog.sqlite3"
+    HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
+    index = HistoryDownloadIndex(path, sqlite_policy=SqlitePolicyFixture())
+    task = HistoryDownloadTask("600001", days)
+    index.begin(HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, days[-1]), (task,))
+    index.finish((HistoryDownloadCompletion(task, days, "tencent_qfq_invalid_price", days),))
+    calendar = (days[1], days[-1])
+
+    assert index.gaps_by_code(calendar) == {}
+    assert index.gaps_by_code(calendar, retryable_only=False) == {task.code: calendar}
+    summary = index.gap_summary((task.code,), calendar_dates=calendar)
+    assert (summary.cells, summary.first_date, summary.last_date) == (2, *calendar)
+    assert [(reason.reason, reason.cells) for reason in summary.reasons] == [("tencent_qfq_invalid_price", 2)]
+    assert index.gap_summary(("600002",), calendar_dates=calendar).cells == 0
+    assert index.gaps_by_code() == {task.code: days}
+    for invalid in ((), (days[1], days[0]), (days[1], days[1])):
+        with pytest.raises(ValueError, match="history_gap_calendar_invalid"):
+            index.gap_summary((task.code,), calendar_dates=invalid)
+        with pytest.raises(ValueError, match="history_retry_calendar_invalid"):
+            index.gaps_by_code(invalid, retryable_only=False)
 
 
 @pytest.mark.parametrize("change_population", [False, True])
@@ -127,7 +152,7 @@ def test_advancing_and_starting_batches_keep_ineligible_recovery_evidence(tmp_pa
     index.begin(replace(current, sequence=2), (HistoryDownloadTask("600003", days),))
     assert index.tasks(codes=frozenset({"600002"})) == retained
     assert index.gaps_by_code() == {"600002": days[:1]}
-    assert index.gap_summary(("600003",)).cells == 0
+    assert index.gap_summary(("600003",), calendar_dates=days).cells == 0
 
 
 def test_reopening_a_retained_task_replans_dates_without_losing_failure_evidence(tmp_path):

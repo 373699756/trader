@@ -113,6 +113,81 @@ def test_old_gap_is_not_retried_until_explicit_and_old_snapshot_is_immutable(tmp
         assert [tuple(row) for row in connection.run("SELECT state,resolved_source FROM price_repair_attempt")] == [("resolved", "baostock")]
 
 
+def test_rolling_calendar_ignores_old_gap_and_fill_makes_no_supplier_requests(tmp_path):
+    days = (date(2026, 1, 2), date(2026, 1, 5), date(2026, 1, 6))
+    supplier = RepairHistory(days[:2])
+    supplier.fail_repair = True
+    config = _config(tmp_path, days[:2])
+    assert RunHistoryFixture(config, supplier, clock=lambda: _now(days[1])).unresolved_price_cells == 1
+    path = config.history_root / "catalog.sqlite3"
+    control = HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture())
+    previous = control.load_state().published_snapshot
+    reader = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture())
+    old_cells = reader.read_day(days[0], previous)
+
+    current_supplier = FakeSupplier(days)
+    current = RunHistoryFixture(config, current_supplier, clock=lambda: _now(days[-1]))
+    assert current.state == "completed" and current.unresolved_price_cells == 0
+    assert current.reason is None and current.price_gap_summary.cells == 0
+    current_supplier.calls.clear()
+    current_supplier.events.clear()
+    for repair_only in (False, True):
+        repeated = RunHistoryFixture(config, current_supplier, clock=lambda: _now(days[-1]), repair_only=repair_only)
+        assert repeated.state == "already_current" and repeated.unresolved_price_cells == 0
+        assert repeated.reason is None and repeated.price_gap_summary.cells == 0
+    assert current_supplier.events == [] and current_supplier.calls == []
+    assert HistoryDownloadIndex(path, sqlite_policy=SqlitePolicyFixture()).gaps_by_code() == {"600001": days[:1]}
+    assert reader.read_day(days[0], previous) == old_cells
+    with SqliteSession(path) as connection:
+        assert [row[0] for row in connection.run("SELECT state FROM price_repair_attempt")] == ["failed"]
+
+
+@pytest.mark.parametrize("gap_index", (0, 9))
+def test_baostock_repair_uses_tail_only_when_it_contains_every_gap(tmp_path, gap_index):
+    days = tuple(date(2026, 1, 5) + timedelta(days=offset) for offset in range(12))
+    gap_date = days[gap_index]
+    requested = []
+
+    class SameBasis(RepairHistory):
+        def fetch_tencent_window(self, security, dates):
+            cells = tuple(ProjectHistoryCell(cell) for cell in _download(security.code, dates, 0.5).batch.cells)
+            if security.code == "600001":
+                cells = tuple(replace(cell, status="qfq_missing", qfq=None) if cell.trade_date == gap_date else cell for cell in cells)
+                raise HistorySupplierPendingError(PublishedHistoryWindow(security.code, cells), "tencent_qfq_invalid_price", (gap_date,))
+            return PublishedHistoryWindow(security.code, cells)
+
+        def fetch_baostock_window(self, security, dates):
+            if self.fail_repair:
+                raise RuntimeError("supplier_query_failed")
+            requested.append(dates)
+            return PublishedHistoryWindow(security.code, tuple(
+                ProjectHistoryCell(cell) for cell in _download(security.code, dates, 0.5).batch.cells
+            ))
+
+    config = _config(tmp_path, days)
+    supplier = SameBasis(days)
+    supplier.fail_repair = True
+    assert RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1])).unresolved_price_cells == 1
+    path = config.history_root / "catalog.sqlite3"
+    control = HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture())
+    previous = control.load_state().published_snapshot
+    reader = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture())
+    old_cells = reader.read_day(gap_date, previous)
+    # Reproduce a retained gap on an existing same-basis BaoStock window.
+    with SqliteSession(path) as connection:
+        connection.run("INSERT INTO price_source VALUES(?,?,?)", ("600001", previous.sequence, "baostock"))
+    control.publish_file()
+    supplier.fail_repair = False
+
+    result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]), repair_only=True)
+    assert result.state == "completed" and result.unresolved_price_cells == 0
+    # A changed existing partial cell fails the exact-overlap check and refetches.
+    assert requested == ([days] if gap_index == 0 else [days[-5:], days])
+    assert reader.read_day(gap_date, previous) == old_cells
+    current = control.load_state().published_snapshot
+    assert next(row.cell.status for row in reader.read_day(gap_date, current) if row.code == "600001") == "complete"
+
+
 def test_history_replays_interrupted_whole_stock_without_another_request(tmp_path, monkeypatch):
     from trader.download.infra.history_prices import HistoryPricePartition
 

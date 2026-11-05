@@ -124,7 +124,9 @@ class _HistorySync:
         if isinstance(inputs, HistoryMaintenanceStatus):
             return inputs
         if inputs is None:
-            unresolved = self.index.gap_summary(tuple(previous)) if current_snapshot is not None else None
+            unresolved = self.index.gap_summary(
+                tuple(previous), calendar_dates=state.calendar.open_dates,
+            ) if state is not None else None
             return _status(
                 "already_current",
                 "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
@@ -134,7 +136,9 @@ class _HistorySync:
                 price_gap_summary=unresolved,
             )
         snapshot = self._download(inputs, current_snapshot)
-        unresolved = self.index.gap_summary(tuple(item.code for item in inputs.context.universe))
+        unresolved = self.index.gap_summary(
+            tuple(item.code for item in inputs.context.universe), calendar_dates=inputs.calendar.open_dates,
+        )
         return _status(
             "completed",
             "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
@@ -170,7 +174,7 @@ class _HistorySync:
         )
         tasks = _download_tasks(context, current_snapshot, previous, self.index, self.configuration.reread_sessions)
         if self.repair_only:
-            gaps = self.index.gaps_by_code()
+            gaps = self.index.gaps_by_code(context.calendar.open_dates, retryable_only=False)
             tasks = tuple(HistoryDownloadTask(item.code, gaps.get(item.code, ()), tencent_done=True) for item in context.universe)
         if (
             current_snapshot
@@ -343,7 +347,7 @@ class _HistorySync:
         if not self.repair_only:
             flow.tencent()
         prices.prepare_retry_pass()
-        gaps = self.index.gaps_by_code()
+        gaps = self.index.gaps_by_code(inputs.calendar.open_dates, retryable_only=False)
         batch_id = uuid4().hex
         selected = tuple(item for item in inputs.context.universe if item.code in gaps)
         attempted = repaired = 0
@@ -362,8 +366,9 @@ class _HistorySync:
                     previous = PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in prices.read(security.code, dates)))
                     obtained = {cell.trade_date for cell in previous.cells if cell.status in ("complete", "supplier_marked_suspended")}
                     missing = tuple(day for day in dates if day not in obtained)
-                    if len(missing) <= 5:
-                        tail = self.supplier.fetch_baostock_window(security, dates[-max(5, len(missing) + 3):])
+                    tail_dates = dates[-max(5, len(missing) + 3):]
+                    if len(missing) <= 5 and set(missing).issubset(tail_dates):
+                        tail = self.supplier.fetch_baostock_window(security, tail_dates)
                         candidate = MergeDailyTail(previous, tail, dates)
                 if candidate is None:
                     candidate = self.supplier.fetch_baostock_window(security, dates)
@@ -378,7 +383,7 @@ class _HistorySync:
         repair.replay(inputs.batch.sequence, codes=allowed_codes)
         if self.progress is not None:
             self.progress.publish(HistorySyncProgress("baostock_repair", "completed", len(selected), len(selected), repair_summary=HistoryRepairSummary(attempted, repaired, len(selected) - attempted)))
-        remaining_gaps = self.index.gaps_by_code()
+        remaining_gaps = self.index.gaps_by_code(inputs.calendar.open_dates, retryable_only=False)
         for security in inputs.context.universe:
             if missing_dates := remaining_gaps.get(security.code):
                 prices.record_missing(security, missing_dates)

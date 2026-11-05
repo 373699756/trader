@@ -258,8 +258,10 @@ class HistoryDownloadIndex:
         with SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection:
             return frozenset(row[0] for row in connection.run("SELECT DISTINCT code FROM download_gaps"))
 
-    def gaps_by_code(self, calendar_dates: tuple[date, ...] | None = None) -> dict[str, tuple[date, ...]]:
-        """One bounded-cursor scan per phase; calendar selects only retryable gaps."""
+    def gaps_by_code(
+        self, calendar_dates: tuple[date, ...] | None = None, *, retryable_only: bool = True,
+    ) -> dict[str, tuple[date, ...]]:
+        """Select calendar members; only Tencent retries apply the qfq cooldown."""
         if calendar_dates is not None and (not calendar_dates or calendar_dates != tuple(sorted(set(calendar_dates)))):
             raise ValueError("history_retry_calendar_invalid")
         positions = {day: index for index, day in enumerate(calendar_dates or ())}
@@ -271,8 +273,12 @@ class HistoryDownloadIndex:
                 "LEFT JOIN download_qfq_unusable u ON u.code=g.code AND u.trade_date=g.trade_date "
                 "ORDER BY g.code,g.trade_date"
             ):
+                trade_date = DecodeDate(day)
+                if calendar_dates is not None and trade_date not in positions:
+                    continue
                 if (
                     calendar_dates is not None
+                    and retryable_only
                     and checked is not None
                     and (
                         last - positions.get(DecodeDate(checked), -_QFQ_UNUSABLE_RECHECK_SESSIONS)
@@ -280,7 +286,7 @@ class HistoryDownloadIndex:
                     )
                 ):
                     continue
-                grouped.setdefault(code, []).append(DecodeDate(day))
+                grouped.setdefault(code, []).append(trade_date)
         return {code: tuple(days) for code, days in grouped.items()}
 
     def finish(self, completions: tuple[HistoryDownloadCompletion, ...]) -> None:
@@ -337,29 +343,36 @@ class HistoryDownloadIndex:
             connection.run("UPDATE download_tasks SET attempts=attempts+1 WHERE code=? AND attempts<3", (code,))
             return int(connection.run("SELECT attempts FROM download_tasks WHERE code=?", (code,)).require_one()[0])
 
-    def gap_summary(self, codes: tuple[str, ...]) -> HistoryPriceGapSummary:
+    def gap_summary(self, codes: tuple[str, ...], *, calendar_dates: tuple[date, ...]) -> HistoryPriceGapSummary:
+        if not calendar_dates or calendar_dates != tuple(sorted(set(calendar_dates))):
+            raise ValueError("history_gap_calendar_invalid")
         selected = frozenset(codes)
+        calendar = frozenset(calendar_dates)
         stocks: set[str] = set()
         reasons: dict[str, int] = {}
-        dates: list[date] = []
+        first_date: date | None = None
+        last_date: date | None = None
         with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             rows = connection.run(
                 "SELECT g.code,CASE WHEN u.trade_date IS NOT NULL THEN 'tencent_qfq_invalid_price' "
                 "ELSE COALESCE(NULLIF(t.failure,'tencent_qfq_invalid_price'),'history_price_pending') "
-                "END AS reason,COUNT(*),MIN(g.trade_date),MAX(g.trade_date) "
+                "END AS reason,g.trade_date "
                 "FROM download_gaps g LEFT JOIN download_qfq_unusable u ON u.code=g.code AND u.trade_date=g.trade_date "
-                "LEFT JOIN download_tasks t ON t.code=g.code GROUP BY g.code,reason"
+                "LEFT JOIN download_tasks t ON t.code=g.code WHERE g.trade_date BETWEEN ? AND ?",
+                (EncodeDate(calendar_dates[0]), EncodeDate(calendar_dates[-1])),
             )
-            for code, reason, count, first, last in rows:
-                if code in selected:
+            for code, reason, day in rows:
+                trade_date = DecodeDate(day)
+                if code in selected and trade_date in calendar:
                     stocks.add(code)
-                    reasons[reason] = reasons.get(reason, 0) + count
-                    dates.extend((DecodeDate(first), DecodeDate(last)))
+                    reasons[reason] = reasons.get(reason, 0) + 1
+                    first_date = trade_date if first_date is None else min(first_date, trade_date)
+                    last_date = trade_date if last_date is None else max(last_date, trade_date)
         return HistoryPriceGapSummary(
             len(stocks),
             sum(reasons.values()),
-            min(dates) if dates else None,
-            max(dates) if dates else None,
+            first_date,
+            last_date,
             tuple(HistoryPriceGapReason(reason, count) for reason, count in sorted(reasons.items())),
         )
 
