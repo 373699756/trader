@@ -250,6 +250,14 @@ def ResolveIssuerEligibility(
     )
 
 
+def QuoteStReasons(quote: MarketQuote) -> tuple[IssuerEligibilityReason, ...]:
+    """Identify the same ST and delisting markers before any per-stock input read."""
+    return (
+        *((IssuerEligibilityReason.HISTORICAL_ST,) if quote.is_st or "ST" in quote.name.upper() else ()),
+        *((IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,) if "退" in quote.name else ()),
+    )
+
+
 def EligibilityFactsFromQuote(
     quote: MarketQuote,
     *,
@@ -258,22 +266,14 @@ def EligibilityFactsFromQuote(
     facts: list[IssuerEligibilityFact] = []
     quote_identity = f"quote:{quote.code}:{observed_at.isoformat()}"
     evidence_material = (("data_version", quote.data_version), ("source", quote.source))
-    if quote.is_st or "ST" in quote.name.upper():
+    for reason in QuoteStReasons(quote):
+        suffix = "st" if reason is IssuerEligibilityReason.HISTORICAL_ST else "delisting"
         facts.append(
             _fact(
                 quote.code,
-                IssuerEligibilityReason.HISTORICAL_ST,
+                reason,
                 observed_at,
-                _FactEvidence(f"{quote_identity}:st", "market_quote", evidence_material),
-            )
-        )
-    if "退" in quote.name:
-        facts.append(
-            _fact(
-                quote.code,
-                IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
-                observed_at,
-                _FactEvidence(f"{quote_identity}:delisting", "market_quote", evidence_material),
+                _FactEvidence(f"{quote_identity}:{suffix}", "market_quote", evidence_material),
             )
         )
     if quote.is_blacklisted:
@@ -372,15 +372,16 @@ def SelectQuotePopulation(
     historical_st: HistoricalStEligibilitySnapshot,
 ) -> tuple[str, ...]:
     """Apply the existing ST-only admission before requesting current quotes."""
-    if reference is None:
+    if reference is None or historical_st.status != "ready":
         return ()
     st_reasons = {IssuerEligibilityReason.HISTORICAL_ST, IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING}
     excluded = {item.code for item in exclusions if item.reason in st_reasons}
     codes = tuple(issuer.code for issuer in reference.records if not issuer.is_st and issuer.code not in excluded)
-    return tuple(code for code in codes if historical_st.eligible(code)) if historical_st.status == "ready" else codes
+    return tuple(code for code in codes if historical_st.eligible(code))
 
 
 __all__ = [
+    "QuoteStReasons",
     "SelectQuotePopulation",
     "HistoricalStEligibilitySnapshot",
     "IssuerEligibilityBatch",

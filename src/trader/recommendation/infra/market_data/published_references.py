@@ -66,12 +66,7 @@ class PublishedReferences:
                 if reference is None:
                     self._failure = "reference_unavailable"
                     return
-                rows = self._read_industries(reference.checked_at) if reference.industry_version else ()
-                if any(row.data_version != reference.industry_version for row in rows):
-                    continue
-                industries = {row.subject_key: _industry(row) for row in rows}
-                if self._read_identity() != reference.identity:
-                    continue
+                eligible_codes = frozenset(item.code for item in reference.eligible_universe)
                 static = StaticMarketReference(
                     tuple(
                         StaticIssuer(
@@ -88,6 +83,16 @@ class PublishedReferences:
                     reference.identity,
                     reference.checked_at,
                 )
+                rows = (
+                    self._read_industries(reference.checked_at)
+                    if reference.industry_version and eligible_codes else ()
+                )
+                if any(row.data_version != reference.industry_version for row in rows):
+                    continue
+                rows = tuple(row for row in rows if row.subject_key in eligible_codes)
+                industries = {row.subject_key: _industry(row) for row in rows}
+                if self._read_identity() != reference.identity:
+                    continue
             except (OSError, RuntimeError, ValueError, TypeError) as exc:
                 self._failure = f"reference_{type(exc).__name__}"
                 return

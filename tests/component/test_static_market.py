@@ -379,7 +379,6 @@ def test_only_permanent_startup_facts_are_filtered_before_current_quotes() -> No
 
 def test_new_quote_st_risk_is_dynamic_and_remains_excluded_after_name_recovers(tmp_path):
     from trader.download.application.company_exclusions import PublishCompanyExclusions
-    from trader.recommendation.domain.candidate.filters import HardFilter
     from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 
     gateway = StaticGateway((_quote(),))
@@ -397,23 +396,18 @@ def test_new_quote_st_risk_is_dynamic_and_remains_excluded_after_name_recovers(t
     blocked = service.fetch_market_feature_batch(at, force=True)
     assert blocked.static_stages[1].output_count == initial.static_stages[1].output_count == 1
     assert blocked.static_stages[1].rejected_count == 0
-    assert blocked.dynamic_stage.snapshot.output_count == 1
-    assert "st_or_delisting" in {
-        reason.filter_code
-        for reason in HardFilter(
-            blocked.features[0], now=at, max_age_seconds=30, policy=HardFilterPolicyFixture()
-        ).reasons
-    }
+    assert blocked.features == ()
+    assert blocked.dynamic_stage.snapshot.rejected_count == 1
+    assert blocked.dynamic_stage.snapshot.pending_count == 0
+    assert [reason.code for reason in blocked.dynamic_stage.snapshot.reasons] == ["historical_st"]
     assert len(service.eligibility.facts()) == 1
     later = at + timedelta(seconds=10)
     gateway._quotes = (replace(_quote(), source_time=later, received_time=later),)
     recovered_name = service.fetch_market_feature_batch(later, force=True)
-    assert "historical_st" in {
-        reason.filter_code
-        for reason in HardFilter(
-            recovered_name.features[0], now=later, max_age_seconds=30, policy=HardFilterPolicyFixture()
-        ).reasons
-    }
+    assert recovered_name.features == ()
+    assert recovered_name.dynamic_stage.snapshot.rejected_count == 1
+    assert recovered_name.dynamic_stage.snapshot.pending_count == 0
+    assert [reason.code for reason in recovered_name.dynamic_stage.snapshot.reasons] == ["historical_st"]
     assert len(service.eligibility.facts()) == 1
 
 
@@ -452,11 +446,16 @@ def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory
             consume(CompileCompanyFacts(snapshot, CompanyEventPolicy()))
 
     reader = Reader()
+    # Keep ST admission valid while isolating the company-fact expiry clock.
+    reference = PreparedFixture(NOW)
     service = _service(
         StaticGateway((_quote(),)),
         CountingHistoryClient(_history_bars()),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         company_evidence_reader=reader,
+        published_references=PublishedReferences(
+            lambda: reference, lambda: reference.identity, lambda _: (), max_age_seconds=400 * 86400,
+        ),
     )
     before = service.fetch_market_feature_batch(NOW)
     effective_batch = service.fetch_market_feature_batch(effective + timedelta(seconds=10))

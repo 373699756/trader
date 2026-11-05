@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -18,6 +19,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageReasonAggregate,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityFreeze, IssuerEligibilityReason
 from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
 from trader.recommendation.domain.market.static import StaticIssuer
 
@@ -29,15 +31,26 @@ def BuildDynamicMarketSnapshot(
     as_of: datetime,
     data_version: str,
     latency_ms: int,
+    exclusions: tuple[IssuerEligibilityFreeze, ...] = (),
 ) -> PipelineStageOutput[FeatureSnapshot]:
     RequirePreviousStage(source, PipelineStage.DYNAMIC_MARKET)
     requested = {item.code for item in source.records}
     loaded_codes = tuple(item.quote.code for item in loaded)
     if len(loaded_codes) != len(set(loaded_codes)) or not set(loaded_codes) <= requested:
         raise ValueError("dynamic market output must be a unique subset of eligible issuers")
-    pending = len(requested) - len(loaded_codes)
-    reasons = (
+    rejected = {
+        item.code: item.reason for item in exclusions
+        if item.code in requested and item.code not in loaded_codes
+        and item.reason in (IssuerEligibilityReason.HISTORICAL_ST, IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING)
+    }
+    pending = len(requested) - len(loaded_codes) - len(rejected)
+    reasons: tuple[StageReasonAggregate, ...] = (
         (StageReasonAggregate("refresh_pending", "refresh pending", pending, Severity.WARNING),) if pending else ()
+    )
+    reasons += tuple(
+        StageReasonAggregate(reason.value, reason.value.replace("_", " "), count, Severity.WARNING)
+        for reason, count in sorted(Counter(rejected.values()).items())
+        if reason is not None
     )
     return StageOutput(
         PipelineStage.DYNAMIC_MARKET,
@@ -45,6 +58,7 @@ def BuildDynamicMarketSnapshot(
         input_batch_id=source.snapshot.output_batch_id,
         as_of=as_of,
         input_count=len(source.records),
+        rejected_count=len(rejected),
         pending_count=pending,
         reasons=reasons,
         source_health=DynamicSourceHealth(loaded, as_of),

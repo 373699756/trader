@@ -60,7 +60,7 @@ def _fixture(*, quotes=None, missing=False, population=None, **options):
         gateway,
         history,
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        published_references=_reader(state),
+        published_references=options.pop("published_references", _reader(state)),
         **options,
     )
     return state, gateway, history, service

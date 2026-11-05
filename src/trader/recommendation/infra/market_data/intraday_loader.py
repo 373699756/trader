@@ -187,7 +187,7 @@ class IntradayLoader:
         except FutureTimeoutError:
             # Another profile may have joined or refreshed this queued request.
             # Its own batch deadline stops expired I/O when the lane reaches it.
-            if not lane_future.cancel():
+            if lane_future.running():
                 wait((lane_future,))
             return self._retain_after_batch_failure(request)
         except SourceRequestSupersededError:

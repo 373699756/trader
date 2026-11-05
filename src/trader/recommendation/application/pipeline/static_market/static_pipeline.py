@@ -38,6 +38,8 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.market.eligibility import (
     EligibilityFactsFromStaticIssuer,
+    EligibilityFactsFromQuote,
+    QuoteStReasons,
     HistoricalStEligibilitySnapshot,
     IssuerEligibilityBatch,
     IssuerEligibilityFact,
@@ -47,7 +49,7 @@ from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityState,
     ResolveIssuerEligibility,
 )
-from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.static import NormalizeStaticIssuer, StaticIssuer
 
 
@@ -238,13 +240,25 @@ class StaticMarketPipeline:
         *,
         as_of: datetime,
         latency_ms: int,
+        quotes: tuple[MarketQuote, ...],
     ) -> PipelineStageOutput[FeatureSnapshot]:
+        exclusions = list(self.eligibility.exclusions(as_of))
+        for quote in quotes:
+            if QuoteStReasons(quote):
+                exclusions.append(ResolveIssuerEligibility(EligibilityFactsFromQuote(quote, observed_at=as_of), quote.code, as_of))
         return BuildDynamicMarketSnapshot(
             filtered,
             features,
             as_of=as_of,
-            data_version=self._versions.features("dynamic", features),
+            data_version=self._versions.accept(
+                "dynamic_stage",
+                (
+                    self._versions.features("dynamic", features),
+                    tuple(sorted((item.code, item.reason.value) for item in exclusions if item.reason is not None)),
+                ),
+            ),
             latency_ms=latency_ms,
+            exclusions=tuple(exclusions),
         )
 
 

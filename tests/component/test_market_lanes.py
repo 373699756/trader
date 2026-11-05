@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tests.reference_fixtures import PreparedFixture
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
+
 from tests.component.market_data_test_support import (
     FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
@@ -310,6 +313,7 @@ def test_topk_quote_lane_uses_reserved_urgent_worker_while_candidate_quotes_are_
 
 
 def test_topk_quote_refresh_uses_reserved_urgent_worker() -> None:
+    reference = PreparedFixture(NOW)
     pool = BoundedExecutor(
         worker_count=2,
         urgent_worker_count=1,
@@ -342,6 +346,9 @@ def test_topk_quote_refresh_uses_reserved_urgent_worker() -> None:
         worker_pool=pool,
         source_lanes=lanes,
         wall_clock=lambda: NOW,
+        published_references=PublishedReferences(
+            lambda: reference, lambda: reference.identity, lambda _: (), max_age_seconds=86400,
+        ),
     )
     pool.start()
     try:
