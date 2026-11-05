@@ -20,7 +20,7 @@ from trader.recommendation.infra.performance.pipeline_workload import MeasureCon
 from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
 
 
-def _replay(profiles, ticks=2, trace=None):
+def _replay(profiles, ticks=2, trace=None, factor_reuse=False):
     settings = LoadRuntimeSettings(Path("config/runtime.json"))
     workloads = tuple(
         PipelineReplayWorkload(
@@ -30,8 +30,39 @@ def _replay(profiles, ticks=2, trace=None):
     )
     with ThreadPoolExecutor(max_workers=len(workloads)) as executor:
         return MeasureContinuousPipeline(
-            workloads, settings.market_data.cache_policy, executor, ReadPerformanceMemory, ticks=ticks, trace=trace
+            workloads, settings.market_data.cache_policy, executor, ReadPerformanceMemory,
+            ticks=ticks, trace=trace, factor_reuse=factor_reuse,
         )
+
+
+@pytest.mark.parametrize("profiles", (("v3",), ("v1", "v2", "v3", "v5")))
+def test_raw_factor_candidate_preserves_complete_replay_outputs_and_one_budget(profiles):
+    baseline = _replay(profiles, ticks=1)
+    candidate = _replay(profiles, ticks=1, factor_reuse=True)
+    assert baseline["factor_candidate"] == "baseline"
+    assert candidate["factor_candidate"] == "raw_factor_reuse"
+    first = [baseline["cold"], *(case["rounds"][0] for case in baseline["scenarios"].values())]
+    second = [candidate["cold"], *(case["rounds"][0] for case in candidate["scenarios"].values())]
+    for expected, actual in zip(first, second, strict=True):
+        assert expected["raw_factor_computations"] is None
+        assert actual["raw_factor_computations"] is not None
+        for original, reused in zip(expected["profiles"], actual["profiles"], strict=True):
+            assert original["feature_hash"] == reused["feature_hash"]
+            assert original["input_version"] == reused["input_version"]
+            assert [head["result_hash"] for head in original["heads"]] == [head["result_hash"] for head in reused["heads"]]
+            assert [head["predictor_batches"] for head in original["heads"]] == [head["predictor_batches"] for head in reused["heads"]]
+    for profile in profiles:
+        assert candidate["cpu_probe"]["profiles"][profile]["raw_factor_requests"] < baseline["cpu_probe"]["profiles"][profile]["raw_factor_requests"]
+        assert candidate["cpu_probe"]["profiles"][profile]["raw_factor_cache_requests"] == baseline["cpu_probe"]["profiles"][profile]["raw_factor_requests"]
+    assert candidate["memory"]["factor_cache_max_bytes"] <= baseline["memory"]["factor_group_budget_bytes"]
+    assert candidate["memory"]["feature_group_max_bytes"] <= baseline["memory"]["factor_group_budget_bytes"]
+
+
+def test_factor_candidate_is_explicit_and_rejects_non_replay_before_loading(monkeypatch):
+    assert performance.BuildParser().parse_args(["--config", "runtime.json"]).factor_candidate == "baseline"
+    for options in ({"factor_candidate": "raw_factor_reuse"}, {"factor_candidate": "unknown"}):
+        with pytest.raises(ValueError, match="factor candidate"):
+            performance.Run(Path("missing-runtime.json"), **options)
 
 
 @pytest.mark.parametrize("functions", (False, True))

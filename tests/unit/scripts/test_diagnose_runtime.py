@@ -152,6 +152,19 @@ def test_continuous_performance_option_reaches_the_existing_child_and_report():
     assert report["checks"][0]["summary"]["continuous_pipeline"]["contract"] == "fixture-replay"
 
 
+def test_raw_factor_candidate_reaches_only_explicit_continuous_performance():
+    selected = [*SelectionArguments('performance'), "--performance-replay-ticks", "1"]
+    options, _ = ValidateOptions(BuildParser().parse_args(selected))
+    assert options.performance_factor_candidate == "baseline"
+    candidate = ["--performance-factor-candidate", "raw_factor_reuse"]
+    options, _ = ValidateOptions(BuildParser().parse_args([*selected, *candidate]))
+    command = BuildCommands(options, python_executable="/python")[0]
+    assert command.argv[command.argv.index("--factor-candidate") + 1] == "raw_factor_reuse"
+    for arguments in ([*SelectionArguments('performance'), *candidate], [*SelectionArguments('web'), *candidate]):
+        with pytest.raises(ValueError, match="performance-factor-candidate"):
+            ValidateOptions(BuildParser().parse_args(arguments))
+
+
 @pytest.mark.parametrize(
     "arguments",
     (

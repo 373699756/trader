@@ -86,6 +86,7 @@ from trader.recommendation.infra.performance.pipeline_workload import (
     PipelineReplayWorkload,
 )
 from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
+from trader.recommendation.infra.performance.raw_factor_reuse import RAW_FACTOR_REUSE_CANDIDATE
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
@@ -112,6 +113,7 @@ def BuildParser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", choices=("v1", "v2", "v3", "v5", "v1,v2,v3,v5"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--factor-candidate", choices=("baseline", RAW_FACTOR_REUSE_CANDIDATE), default="baseline")
     parser.add_argument("--steady-only", action="store_true", help="only the existing 100-tick model RSS measurement")
     parser.add_argument("--cpu-profile-dir", type=Path, help="instrumented replay evidence; not a latency gate")
     parser.add_argument("--cpu-profile-mode", choices=("functions", "gc"), default="functions")
@@ -136,7 +138,12 @@ def Run(
     replay_rows: int | None = None,
     trace: PerformanceCpuTrace | None = None,
     steady_only: bool = False,
+    factor_candidate: str = "baseline",
 ) -> dict[str, object]:
+    if factor_candidate not in {"baseline", RAW_FACTOR_REUSE_CANDIDATE}:
+        raise ValueError("unknown factor candidate")
+    if factor_candidate != "baseline" and (not replay_ticks or steady_only):
+        raise ValueError("factor candidate requires continuous replay")
     if steady_only and (replay_ticks or replay_rows is not None or trace is not None or baseline_path is not None):
         raise ValueError("steady-only cannot be combined with replay, tracing or a latency baseline")
     if not 0 <= replay_ticks <= 1000:
@@ -202,12 +209,13 @@ def Run(
         "replay_rows": replay_rows,
         "continuous_contract": CONTINUOUS_REPLAY_CONTRACT if replay_ticks else None,
         "instrumented": trace is not None,
+        "factor_candidate": factor_candidate,
     }
     baseline = _baseline(baseline_path, identity)
     if steady_only:
         return _steady_report(settings, prepared, identity)
     if replay_ticks:
-        return _continuous_report(settings, prepared, identity, replay_ticks, baseline, trace)
+        return _continuous_report(settings, prepared, identity, replay_ticks, baseline, trace, factor_candidate)
     context = _OperationContext(settings.config_version, first.policy, first.scoring())
     worst_case_plans = BuildWorstCaseCandidatePlans(budgets.workload.market_rows, market_quotes[0].received_time)
     union = ProjectCandidateUnionQuotes(market_quotes, worst_case_plans)
@@ -362,6 +370,7 @@ def _continuous_report(
     ticks: int,
     baseline: dict[str, object],
     trace: PerformanceCpuTrace | None = None,
+    factor_candidate: str = "baseline",
 ) -> dict[str, object]:
     workloads = tuple(
         PipelineReplayWorkload(
@@ -380,6 +389,7 @@ def _continuous_report(
             ReadPerformanceMemory,
             ticks=ticks,
             trace=trace,
+            factor_reuse=factor_candidate == RAW_FACTOR_REUSE_CANDIDATE,
         )
     finally:
         stopped = workers.stop(
@@ -521,6 +531,7 @@ def Main(argv: list[str] | None = None) -> int:
                 replay_rows=args.replay_rows,
                 trace=trace,
                 steady_only=args.steady_only,
+                factor_candidate=args.factor_candidate,
             )
     except ScoringModelsUnavailableError:
         report = _unavailable_report("model_unavailable")

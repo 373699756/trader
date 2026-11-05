@@ -555,6 +555,8 @@ def BuildCommands(
                 str(options.runtime_config),
                 "--replay-ticks",
                 str(options.performance_replay_ticks),
+                "--factor-candidate",
+                options.performance_factor_candidate,
                 *(("--steady-only",) if options.performance_steady_only else ()),
                 "--cpu-profile-mode",
                 options.cpu_profile_mode,

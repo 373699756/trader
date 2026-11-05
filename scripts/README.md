@@ -12,6 +12,17 @@
 
 业务检查沿用原有具名参数和上限，`--help` 展示完整参数。不会因选择某项检查而运行其它业务；训练、真实网络、浏览器、性能探针和隔离样本构建都需要明确选中对应检查。`recommendation/pipeline/snapshot` 明确选择配置、维护状态、研究就绪和离线性能四项；配置失败后其它三项报告 skipped。
 
+荐股公共原始因子复用候选只在显式连续回放中选择，默认`baseline`，不修改生产服务。D在冻结版本上使用相同配置、模型、股票数和tick数分别运行基线及下列候选；删去`--performance-factor-candidate raw_factor_reuse`即为基线。它使用现有共享`quote_factor_inputs`容量和`feature_batches`字节预算，合并完全相同的报价、日线、历史摘要、horizons和基础配置；命中后返回独立可变副本，风险/证据/分钟及模型组装仍走原流程。非有限输入不写此候选缓存，交原计算处理，原异常也继续传播。`raw_factor_computations`仅统计可规范序列化输入的候选原计算完成次数（包括缓存拒写），基线为null；不把缓存命中计数当作省下的函数调用。`feature_group_max_bytes`包含基础、候选和横截面的整个特征组，仍需另看实际RSS。
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --business recommendation --module pipeline --check latency \
+  --runtime-config /external/frozen/config/runtime.json --scoring-profile v1,v2,v3,v5 \
+  --performance-replay-ticks 5 --performance-factor-candidate raw_factor_reuse \
+  --command-timeout-seconds 1800 --output /external/raw-factor-candidate.json
+```
+
+先比较每档特征、输入版本及双头`result_hash`，再比较完整阶段耗时、原函数调用数、缓存占用、RSS及取消/恢复；CPU独立探针以`raw_factor_requests`计原算术owner调用、`raw_factor_cache_requests`计候选入口调用，后者仍有身份生成和查询成本。减少原始计算次数不代表总耗时改善。此回放使用合成报价和真实加载模型，不覆盖真实采集、盘中轮次、历史预载或Web；功能夹具预测器不算真实模型验收。候选未取得D同输入时延/资源证据前不接入生产。
+
 检测目录按 recommendation、download/history、download/market、download/company、training、infra、engineering 归属。`checks/catalog.py` 是选择关系的唯一可执行来源；`arguments.py` 校验边界，`commands.py` 组装明确选中命令，`execution.py` 管理子进程，`contracts.py` 保存不可变类型，`projections.py` 与 `reporting.py` 负责白名单投影及输出。未选 worker 不导入，入口帮助和清单不加载交易、下载或训练模块。
 
 输出为两空格缩进、中文直显 JSON。顶层 selection 保存业务/模块/检查，逐项报告 passed、degraded、failed、timed_out、cancelled、skipped、empty；超时和取消不能算通过。工程 debt 只记录退出码及输出字节数；显式 transform/skills 另保留受限的工具报告文本，供审阅命名清单、预览或评测比较，不转发行情与供应商原文。原生检查的 `-- --help` 直接显示参数帮助，不运行检查。单个子进程默认 180 秒，公共超时上限沿业务校验；原生工程参数路径前使用 `--`。捕获输出合计上限 20 MiB；POSIX 超时、取消、完成均清理自己创建的进程组。Windows 清理直接子进程，不宣称通过后代清理验收。

@@ -90,6 +90,7 @@ class DiagnosticOptions:
     performance_replay_ticks: int = 0
     performance_steady_only: bool = False
     performance_replay_rows: int | None = None
+    performance_factor_candidate: str = "baseline"
     database_probe_directory: Path | None = None
     database_rounds: int = 5
     database_training: bool = False

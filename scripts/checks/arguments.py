@@ -90,6 +90,12 @@ def BuildParser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
     parser.add_argument("--performance-steady-only", action="store_true", help="only the existing 100-tick model RSS measurement")
     parser.add_argument(
+        "--performance-factor-candidate",
+        choices=("baseline", "raw_factor_reuse"),
+        default="baseline",
+        help="explicit offline raw-factor reuse candidate; requires continuous replay",
+    )
+    parser.add_argument(
         "--performance-replay-ticks",
         type=int,
         default=0,
@@ -280,6 +286,10 @@ def ValidateOptions(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--performance-replay-ticks requires performance and a value within 0..1000")
     if args.scoring_profile == "v1,v2,v3,v5" and args.check_id != "performance":
         raise ValueError("four-profile scoring is only available for performance")
+    if args.performance_factor_candidate != "baseline" and (
+        args.check_id != "performance" or not args.performance_replay_ticks or args.performance_steady_only
+    ):
+        raise ValueError("--performance-factor-candidate requires performance continuous replay")
     codes = tuple(dict.fromkeys(args.codes))
     if not codes or any(len(code) != 6 or not code.isdigit() for code in codes):
         raise ValueError("--codes must contain six-digit A-share codes")
@@ -475,6 +485,7 @@ def ValidateOptions(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             performance_replay_ticks=args.performance_replay_ticks,
             performance_steady_only=args.performance_steady_only,
             performance_replay_rows=args.performance_replay_rows,
+            performance_factor_candidate=args.performance_factor_candidate,
             market_sources=tuple(args.market_sources),
             market_profiles=tuple(args.market_profiles),
             market_sizes=tuple(args.market_sizes),

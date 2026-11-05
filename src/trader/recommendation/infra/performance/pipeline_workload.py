@@ -47,6 +47,7 @@ from trader.recommendation.infra.performance.cpu_trace import PerformanceCpuTrac
 from trader.recommendation.infra.performance.fixtures import BuildPerformanceHistory
 from trader.recommendation.infra.performance.model_workload import PerformanceProfileWorkload
 from trader.recommendation.infra.performance.process_memory import PerformanceMemorySample
+from trader.recommendation.infra.performance.raw_factor_reuse import RAW_FACTOR_REUSE_CANDIDATE, RawFactorReuseBuilder
 
 _T = TypeVar("_T")
 _SCENARIOS = ("unchanged", "observation_time", "delivery_time", "quote_time", "one_price", "all_prices", "stale")
@@ -96,15 +97,21 @@ class _ObservedFactorCache(BoundedLruCache[object]):
         self._counter_lock = threading.Lock()
         self._computations = 0
         self._codes: set[str] = set()
+        self._raw_computations = 0
 
     def begin_round(self) -> None:
         with self._counter_lock:
             self._computations = 0
             self._codes.clear()
+            self._raw_computations = 0
 
     def computations(self) -> tuple[int, int]:
         with self._counter_lock:
             return self._computations, len(self._codes)
+
+    def raw_computations(self) -> int:
+        with self._counter_lock:
+            return self._raw_computations
 
     def put(
         self,
@@ -117,8 +124,11 @@ class _ObservedFactorCache(BoundedLruCache[object]):
     ) -> bool:
         if identity.dataset == "quote_factor_inputs":
             with self._counter_lock:
-                self._computations += 1
-                self._codes.add(identity.subject_key)
+                if identity.source == RAW_FACTOR_REUSE_CANDIDATE:
+                    self._raw_computations += 1
+                else:
+                    self._computations += 1
+                    self._codes.add(identity.subject_key)
         return super().put(identity, value, data_version=data_version, source_time=source_time, received_at=received_at)
 
 
@@ -192,10 +202,12 @@ class _TickResult:
     observation_ms: float
     memory: PerformanceMemorySample
     cache_bytes: int
+    feature_group_bytes: int
     cache_hits: int
     cache_misses: int
     factor_computations: int
     recomputed_stocks: int
+    raw_factor_computations: int | None
     cache_evictions: int
     profiles: tuple[_ProfileResult, ...]
 
@@ -209,22 +221,31 @@ class _TickResult:
             "current_rss_bytes": self.memory.current_rss_bytes,
             "process_peak_rss_bytes": self.memory.peak_rss_bytes,
             "factor_cache_bytes": self.cache_bytes,
+            "feature_group_bytes": self.feature_group_bytes,
             "factor_cache_hits": self.cache_hits,
             "factor_cache_misses": self.cache_misses,
             "factor_computations": self.factor_computations,
             "recomputed_stocks": self.recomputed_stocks,
+            "raw_factor_computations": self.raw_factor_computations,
             "factor_cache_evictions": self.cache_evictions,
             "profiles": [profile.project() for profile in self.profiles],
         }
 
 
 class _ProfileReplay:
-    def __init__(self, workload: PipelineReplayWorkload, cache: BoundedLruCache[object], clock: _ReplayClock) -> None:
+    def __init__(
+        self,
+        workload: PipelineReplayWorkload,
+        cache: BoundedLruCache[object],
+        clock: _ReplayClock,
+        factor_reuse: bool,
+    ) -> None:
         self.workload = workload.model
         self.clock = clock
         self.scoring = workload.model.scoring()
         horizons = (20, 40, 60, 120, 250) if workload.model.profile.profile_id == "v2" else (20, 40, 60)
-        self.builder = FeatureBuilder.from_settings(workload.strategy, horizons, cache)
+        builder = RawFactorReuseBuilder if factor_reuse else FeatureBuilder
+        self.builder = builder.from_settings(workload.strategy, horizons, cache)
         history = BuildPerformanceHistory(workload.model.features)
         self.histories = {item.code: item.bars for item in history}
         self.summaries = {item.code: item.context for item in history}
@@ -469,6 +490,7 @@ def MeasureContinuousPipeline(
     *,
     ticks: int,
     trace: PerformanceCpuTrace | None = None,
+    factor_reuse: bool = False,
 ) -> dict[str, object]:
     """Keep one clock, cache, model service and publication index throughout all cases."""
     if not workloads or not 1 <= ticks <= 1000:
@@ -477,7 +499,7 @@ def MeasureContinuousPipeline(
     cache = _ObservedFactorCache(cache_policy, clock)
     preparation = time.perf_counter()
     try:
-        states = tuple(_ProfileReplay(workload, cache, clock) for workload in workloads)
+        states = tuple(_ProfileReplay(workload, cache, clock, factor_reuse) for workload in workloads)
         preparation_ms = (time.perf_counter() - preparation) * 1000
         rows: list[_TickResult] = []
         for scenario in ("cold", *_SCENARIOS):
@@ -495,6 +517,13 @@ def MeasureContinuousPipeline(
                 observation_started = time.perf_counter()
                 results = tuple(state.observe() for state in states)
                 after = _cache_stats(cache)
+                feature_group = cache_policy.datasets["quote_factor_inputs"].group
+                feature_group_bytes = sum(
+                    stats.estimated_bytes
+                    for dataset, providers in cache.status().datasets.items()
+                    if cache_policy.datasets[dataset].group == feature_group
+                    for stats in providers.values()
+                )
                 observation_ms = (time.perf_counter() - observation_started) * 1000
                 rows.append(
                     _TickResult(
@@ -505,9 +534,11 @@ def MeasureContinuousPipeline(
                         observation_ms,
                         read_memory(),
                         sum(item.estimated_bytes for item in after),
+                        feature_group_bytes,
                         sum(item.hit for item in after) - sum(item.hit for item in before),
                         sum(item.miss for item in after) - sum(item.miss for item in before),
                         *cache.computations(),
+                        cache.raw_computations() if factor_reuse else None,
                         sum(item.eviction for item in after) - sum(item.eviction for item in before),
                         results,
                     )
@@ -517,7 +548,13 @@ def MeasureContinuousPipeline(
         # Profiling is a separate additional unchanged request on the already warm services.
         # Count each profile separately without concurrent cProfile activation on Python 3.14.
         probes = tuple(_profile(state) for state in states)
-        return _project(rows, preparation_ms, probes, cache_policy, ticks)
+        report = _project(rows, preparation_ms, probes, cache_policy, ticks)
+        report["factor_candidate"] = RAW_FACTOR_REUSE_CANDIDATE if factor_reuse else "baseline"
+        report["raw_factor_counting"] = (
+            "memoizable raw calculations completed before insertion, including rejected writes; null for baseline; "
+            "nonfinite inputs use original calculation without memoization"
+        )
+        return report
     finally:
         cache.stop()
 
@@ -528,6 +565,7 @@ def _profile(state: _ProfileReplay) -> tuple[str, tuple[tuple[str, int], ...]]:
     owners = (
         ("base_factor_computations", "/normalization/features.py", "_base_features"),
         ("raw_factor_requests", "/normalization/features.py", "_raw_features"),
+        ("raw_factor_cache_requests", "/performance/raw_factor_reuse.py", "_raw_features"),
         ("ridge_batch_evaluations", "/model_bundles/predictor.py", "_predict_ridge_batch"),
         ("tcn_predict_calls", "/profile/v5/network.py", "predict"),
     )
@@ -592,6 +630,7 @@ def _project(
             "growth_percent": max(0.0, (maximum - before) / before * 100),
             "peak_rss_bytes": max(row.memory.peak_rss_bytes for row in rows),
             "factor_cache_max_bytes": max(row.cache_bytes for row in rows),
+            "feature_group_max_bytes": max(row.feature_group_bytes for row in rows),
             "factor_group_budget_bytes": cache_policy.groups[
                 cache_policy.datasets["quote_factor_inputs"].group
             ].max_bytes,
