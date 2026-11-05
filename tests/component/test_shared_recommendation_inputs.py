@@ -224,9 +224,10 @@ def test_equal_base_facts_build_once_across_profiles_and_quote_changes_invalidat
         assert uncached._raw_features(quote, bars[-20:], context) == cached
 
 
-def test_minute_pool_runs_five_requests_with_one_source_worker_and_one_deadline():
+@pytest.mark.parametrize("parallel", (5, 7))
+def test_minute_pool_runs_configured_requests_with_one_source_worker_and_one_deadline(parallel):
     source = BoundedExecutor(worker_count=1, queue_capacity=2, thread_name_prefix="source-fixture")
-    minutes = BoundedExecutor(worker_count=5, queue_capacity=0, thread_name_prefix="minute-fixture")
+    minutes = BoundedExecutor(worker_count=parallel, queue_capacity=0, thread_name_prefix="minute-fixture")
     lanes = SourceLaneScheduler(source)
     ready, release = threading.Event(), threading.Event()
     lock = threading.Lock()
@@ -240,7 +241,7 @@ def test_minute_pool_runs_five_requests_with_one_source_worker_and_one_deadline(
                 running_requests += 1
                 peak = max(peak, running_requests)
                 deadlines.append(deadline)
-                if running_requests == 5:
+                if running_requests == parallel:
                     ready.set()
             try:
                 assert release.wait(2)
@@ -258,7 +259,7 @@ def test_minute_pool_runs_five_requests_with_one_source_worker_and_one_deadline(
         minute_pool=minutes,
         source_lanes=lanes,
         intraday_client=Client(),
-        intraday_workers=5,
+        intraday_workers=parallel,
         intraday_batch_timeout_seconds=3,
     )
     source.start()
@@ -270,11 +271,11 @@ def test_minute_pool_runs_five_requests_with_one_source_worker_and_one_deadline(
     try:
         worker.start()
         assert ready.wait(1)
-        assert len(deadlines) == 5
+        assert len(deadlines) == parallel
         release.set()
         worker.join(2)
         assert not worker.is_alive()
-        assert len(result[0]) == len(deadlines) == 7 and peak == 5
+        assert len(result[0]) == len(deadlines) == 7 and peak == parallel
         assert len(set(deadlines)) == 1
     finally:
         release.set()

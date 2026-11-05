@@ -11,6 +11,7 @@ from pathlib import Path
 
 from trader.infra.settings.credentials import CREDENTIAL_FILE_NAME, ReadCredentialFile
 from trader.infra.settings.data_paths import DataPaths
+from trader.infra.settings.execution import ParseExecutionSettings
 from trader.infra.settings.market_policy import (
     ParseCachePolicy as _parse_cache_policy,
 )
@@ -131,10 +132,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     pipeline_keys = {
         "event_queue_size",
         "priority_queue_size",
-        "market_workers",
-        "normalization_workers",
-        "strategy_workers",
-        "deepseek_workers",
+        "executors",
         "round_timeout_seconds",
         "shutdown_timeout_seconds",
         "history_preload",
@@ -237,10 +235,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         pipeline=PipelineSettings(
             event_queue_size=_integer(pipeline_raw, "event_queue_size", minimum=1),
             priority_queue_size=_integer(pipeline_raw, "priority_queue_size", minimum=1),
-            market_workers=_integer(pipeline_raw, "market_workers", minimum=1),
-            normalization_workers=_integer(pipeline_raw, "normalization_workers", minimum=1),
-            strategy_workers=_integer(pipeline_raw, "strategy_workers", minimum=1),
-            deepseek_workers=_integer(pipeline_raw, "deepseek_workers", minimum=1),
+            executors=ParseExecutionSettings(_mapping(pipeline_raw, "executors")),
             round_timeout_seconds=_number(
                 pipeline_raw, "round_timeout_seconds", minimum=0.1, maximum=120.0
             ),

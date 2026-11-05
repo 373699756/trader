@@ -342,7 +342,7 @@ def _service(
     intraday = IntradayLoader(
         kwargs.pop("intraday_client", None),
         runner,
-        workers=kwargs.pop("intraday_workers", 6),
+        workers=kwargs.pop("intraday_workers", 5),
         minute_pool=kwargs.pop("minute_pool", InjectedExecutor(worker_pool)),
         ttl_seconds=kwargs.pop("intraday_ttl_seconds", 45),
         batch_timeout_seconds=kwargs.pop("intraday_batch_timeout_seconds", 3),

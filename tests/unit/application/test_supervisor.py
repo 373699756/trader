@@ -184,6 +184,123 @@ def test_supervisor_scheduler_start_interruption_stops_started_pipeline(monkeypa
     assert "trader-scheduler" not in {thread.name for thread in threading.enumerate()}
 
 
+@pytest.mark.parametrize("name", ("trader-scheduler", "trader-deferred-initializer"))
+@pytest.mark.parametrize("after_start", (False, True))
+def test_startup_failure_reaps_every_thread_that_was_started(monkeypatch, name, after_start) -> None:
+    pipeline = FakePipeline()
+    release_deferred = threading.Event()
+    supervisor = RuntimeSupervisor(
+        pipeline,
+        RuntimeSupervisorConfig(
+            now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
+            initializers=(),
+            deferred_initializers=(lambda: release_deferred.wait(2.0),),
+            interval_seconds=lambda _at: 60.0,
+            shutdown_timeout_seconds=0.2,
+        ),
+    )
+    threads: list[threading.Thread] = []
+    original_start = threading.Thread.start
+
+    def failing_start(thread: threading.Thread) -> None:
+        threads.append(thread)
+        if thread.name == name:
+            if after_start:
+                original_start(thread)
+                if name == "trader-deferred-initializer":
+                    release_deferred.set()
+            raise RuntimeError("controlled_thread_start_failure")
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", failing_start)
+    try:
+        with pytest.raises(RuntimeError, match="controlled_thread_start_failure"):
+            supervisor.start()
+        assert pipeline.stopped == 1
+        assert not any(
+            thread.is_alive()
+            for thread in threads
+            if thread.name in {"trader-scheduler", "trader-deferred-initializer"}
+        )
+    finally:
+        release_deferred.set()
+        supervisor._stop_event.set()
+        supervisor._deferred_stop_event.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(1.0)
+        supervisor.stop()
+
+
+def test_stop_reports_a_blocked_deferred_initializer_and_skips_later_initializers() -> None:
+    pipeline = FakePipeline()
+    entered = threading.Event()
+    release = threading.Event()
+    errors: list[str] = []
+    later: list[str] = []
+    threads: list[threading.Thread] = []
+
+    def initialize() -> None:
+        threads.append(threading.current_thread())
+        entered.set()
+        release.wait(2.0)
+
+    supervisor = RuntimeSupervisor(
+        pipeline,
+        RuntimeSupervisorConfig(
+            now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
+            initializers=(),
+            deferred_initializers=(initialize, lambda: later.append("unexpected")),
+            interval_seconds=lambda _at: 60.0,
+            shutdown_timeout_seconds=0.05,
+            record_error=errors.append,
+        ),
+    )
+    try:
+        assert supervisor.start()
+        assert entered.wait(1.0)
+        report = supervisor.stop()
+        assert not report.completed
+        step = next(step for step in report.steps if step.name == "deferred_initializers")
+        assert not step.completed and step.timed_out
+        assert "deferred initializer shutdown exceeded timeout" in errors
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(1.0)
+            assert not thread.is_alive()
+        supervisor.stop()
+    assert later == []
+
+
+def test_shutdown_deadline_uses_the_injected_monotonic_clock() -> None:
+    deadlines = []
+    monotonic = lambda: 1234.0
+
+    class Pipeline(FakePipeline):
+        def stop(self, *, deadline: ShutdownDeadline) -> None:
+            deadlines.append(deadline)
+            super().stop(deadline=deadline)
+
+    supervisor = RuntimeSupervisor(
+        Pipeline(),
+        RuntimeSupervisorConfig(
+            now=lambda: datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI),
+            initializers=(),
+            interval_seconds=lambda _at: 60.0,
+            shutdown_timeout_seconds=1.0,
+            monotonic=monotonic,
+        ),
+    )
+    try:
+        assert supervisor.start()
+    finally:
+        assert supervisor.stop().completed
+    assert len(deadlines) == 1
+    assert deadlines[0].started_at_monotonic == 1234.0
+    assert deadlines[0].monotonic is monotonic
+
+
 def test_scheduler_cadence_stays_ten_seconds_until_freeze() -> None:
     morning = datetime(2026, 7, 16, 9, 20, tzinfo=SHANGHAI)
     main = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)

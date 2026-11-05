@@ -1134,9 +1134,12 @@ def BuildProfiledSystem(
 def _build_worker_context(
     settings: RuntimeSettings, latency: LatencyWaterfall, shared: RuntimeWorkerResources | None = None
 ) -> RuntimeWorkerResources:
-    urgent_worker_count = 1 if settings.pipeline.market_workers > 1 else 0
+    executors = settings.pipeline.executors
     control_pool = BoundedExecutor(
-        worker_count=2, urgent_worker_count=1, queue_capacity=4, thread_name_prefix="trader-control"
+        worker_count=executors.control.normal_workers + executors.control.urgent_workers,
+        urgent_worker_count=executors.control.urgent_workers,
+        queue_capacity=executors.control.queue_capacity,
+        thread_name_prefix="trader-control",
     )
     if shared is not None:
         return replace(shared, control_pool=control_pool)
@@ -1146,15 +1149,27 @@ def _build_worker_context(
         thread_name_prefix="company-exclusions",
     )
     data_pool = BoundedExecutor(
-        worker_count=settings.pipeline.market_workers + urgent_worker_count,
-        urgent_worker_count=urgent_worker_count,
-        queue_capacity=5,
+        worker_count=executors.source_data.normal_workers + executors.source_data.urgent_workers,
+        urgent_worker_count=executors.source_data.urgent_workers,
+        queue_capacity=executors.source_data.queue_capacity,
         thread_name_prefix="source-data",
     )
     source_lanes = SourceLaneScheduler(data_pool, latency=latency)
-    quote_pool = BoundedExecutor(worker_count=4, queue_capacity=4, thread_name_prefix="candidate-quotes")
-    market_quote_pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="market-quotes")
-    minute_pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="intraday-minutes")
+    quote_pool = BoundedExecutor(
+        worker_count=executors.candidate_quotes.workers,
+        queue_capacity=executors.candidate_quotes.queue_capacity,
+        thread_name_prefix="candidate-quotes",
+    )
+    market_quote_pool = BoundedExecutor(
+        worker_count=executors.market_quotes.workers,
+        queue_capacity=executors.market_quotes.queue_capacity,
+        thread_name_prefix="market-quotes",
+    )
+    minute_pool = BoundedExecutor(
+        worker_count=executors.intraday_minutes.workers,
+        queue_capacity=executors.intraday_minutes.queue_capacity,
+        thread_name_prefix="intraday-minutes",
+    )
     market_cache: BoundedLruCache[object] = BoundedLruCache(
         settings.market_data.cache_policy, cadence_seconds=settings.pipeline.cadence_seconds, wall_clock=_utc_now
     )
@@ -1167,7 +1182,7 @@ def _build_worker_context(
         company_pool=company_pool,
         source_lanes=source_lanes,
         market_cache=market_cache,
-        http_executor=IsolatedHttpExecutor(worker_count=12, transport_factory=RequestsHttpTransport),
+        http_executor=IsolatedHttpExecutor(worker_count=executors.http_workers, transport_factory=RequestsHttpTransport),
     )
 
 
@@ -1305,7 +1320,7 @@ def _build_market_data(
         intraday_loader = IntradayLoader(
             intraday_client,
             runner,
-            workers=5,
+            workers=settings.pipeline.executors.intraday_minutes.workers,
             minute_pool=workers.minute_pool,
             ttl_seconds=_fixed_cache_ttl(settings, "intraday_minutes"),
             batch_timeout_seconds=settings.market_data.candidate_timeout_seconds,

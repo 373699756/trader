@@ -6,6 +6,19 @@
 
 当前分工按用户最新要求改为A/B/C三条实现线＋独立性能任务D（第4.5节）。SSD/HDD性能基线、候选对照及重负载资源实测全部归D；A/B/C不再各自预约性能窗口，也不因等待D而停止实现、普通功能回归或类型检查。D选择开发验证之外的空闲窗口，发生争用只暂停或作废自己的轮次，不停止其它任务进程。用户另行明确的暂停验证仍有效，本批只调整文档，不恢复测试或启动实测。旧阶段的窗口暂停和性能等待是历史记录，后续执行以本分工为准；共享分支的提交窗口继续串行。
 
+### 阶段342：codexA配置荐股执行资源并闭合监督线程生命周期
+
+- owner/状态：codexA / completed（荐股执行器配置与监督线程生命周期切片）；开工/隔离验证基线`4526b4ef`，交付父基线新增C的`fd6f30d8`（仅C诊断/测试/文档，不改本批产品消费者），`Afuture`跟踪`origin/Afuture`。用户要求继续可独立完成的A工作，本阶段接续公共工程中荐股执行资源及监督线程启动/停止正确性；不等待或接管340的B接口、327真实资料/模型采用或D性能。
+- 范围/所有权：现有scheduler.json、公共settings类型/解析、bootstrap荐股组合、IntradayLoader、RuntimeSupervisor及其直接调用者/最小回归，b/c和本记录。只改A拥有的参数与生命周期，不触碰download/training业务文件、其配置、用户runtime与16个模型文件；公司预载构造器有B/C具名检测调用，须另行交接，本轮保留既有30秒/3次，不引入兼容默认或改其调用者。
+- 开工证据：组合根control/source/company/两报价/分钟池和HTTP进程数部分硬编码；normalization_workers/strategy_workers/deepseek_workers没有执行消费者。公司预载固定30秒/3次，分钟loader再硬截5，合法配置无法完整到达消费者。监督器启动后续线程失败时清掉scheduler引用且未发停止信号，停止报告也未纳入deferred线程是否仍活着。
+- 实施/验收边界：移入已有scheduler配置并删除无消费者的重复worker字段，启动解析成不可变类型并由唯一组合根注入；默认参数等价，不凭配置迁移宣称提速。集中验证合法/非法配置、实际资源容量、共享owner、默认等价、分钟取消/期限、启动失败回收和停止超时报告；运行受影响Ruff及mypy，不运行格式、真实供应商、活动数据写入或SSD/HDD性能测量。
+- 实际改动：scheduler现有文件增加pipeline.executors的13个真实消费叶子，严格解析为不可变ExecutorSettings/PriorityExecutorSettings/ExecutionSettings，组合根显式创建每档control与共享source_data/两报价/分钟/HTTP资源；默认总容量仍2（含紧急1）/6（含紧急1）/4/3/5/12，队列仍4/5/4/3/5。原market_workers迁入source_data.normal_workers，三个未消费worker字段删除，旧键直接拒绝；control保证至少一条普通/紧急线程，source紧急数可0、执行器队列可0。分钟池和每批并发共用同一设置，删除loader隐藏5线程截断；公司排除单writer的1线程/1队列按职责约束保留，不制造调参入口。
+- 生命周期修复：RuntimeSupervisor启动异常保留scheduler/deferred线程引用，沿统一stop发信号并等待实际已启动线程，避免后续线程启动失败后泄漏既有scheduler及join未启动线程掩盖原异常。停止报告增加deferred_initializers独立完成/超时结果和错误，停止后不执行后续初始化器；默认停止deadline采用已注入的单调时钟。共享资源仍只有首档owner，后续档只拥有control/自身业务runtime，组合根/CreateApp不启动线程或创建业务数据；b补资源创建/启动/停止/等待/状态表，b/c同步配置、身份及默认等价说明。
+- 失败复现：冻结`4526b4ef`叠加本批监督器与分钟回归，在`/tmp/trader-a342-baseline-4526b4ef`得到6 failed/2 passed（8.824秒）；分别复现后续线程启动前/后异常遗留线程、未启动deferred误join、deferred阻塞仍报告completed、默认deadline未用注入时钟及分钟请求被截成5路。原5路并发和scheduler尚未启动即失败的既有路径通过；测试finally释放并回收自己的fixture线程，不遗留基线探针。
+- 隔离验证：`/tmp/trader-a342-verify-4526b4ef`仅叠加本批6生产模块、5测试/夹具及scheduler配置，初组201 passed（25.047秒）。扩大18文件冷启动/组合根/只读应用/配置/多档共享/监督器与资源编排/来源lane/分钟/ST/Long/执行器/隔离HTTP真实子进程回收及调度集424 passed/1 failed（68.501秒）；唯一失败为原有页面文案断言，原提交另测同样1 failed（1.263秒），未修改UI或放宽其合同。最终同一18文件明确deselect该旧断言后424 passed（49.556秒），不声明全仓无失败或真实盘中验收。
+- 验证证据：最终`/tmp/trader-a342-complete-tests.xml`，原版6失败`/tmp/trader-a342-baseline-tests.xml`，旧页面失败`/tmp/trader-a342-existing-ui-baseline-tests.xml`；初轮/扩大报告同前缀initial/final-tests.xml。11个受影响Python文件Ruff E9/F/B/UP、6生产模块mypy均通过；13个配置叶子与字典、旧参数活动消费者、1500行上限、完整diff/新增文件及空白检查通过。12个配置/源码/测试文件逐字节匹配隔离候选，路径/字节合并SHA-256为`09c982e5386c2f61343ed3bc4f546c1a78b9b8855f6f2c1196d7b9e51ec52588`。不运行格式/改名、真实供应商、活动数据写入、模型切换或性能测量；7路请求fixture仅证明改值生效，不启用生产性能候选。
+- 不兼容配置与未完成项：自定义scheduler须把旧4个worker叶子换成完整executors结构，保留旧source容量时urgent在旧market_workers>1取1、否则0；无兼容别名，运行配置身份随有效设置更新，模型manifest/评分风险门/120秒/168次不变。本阶段无新增已知遗留；公司预载参数因B/C具名调用者需另行交接，340历史接口、327真实资料/模型采用、其余公共边界/资源及真实整链验收、A既有类型/页面回归债务、历史文档查漏与收益研究保持原归属。SSD/HDD完整生命周期及CPU/RSS/I/O对照继续由D待验，不因本切片完成关闭公共工程整组。
+
 ### 阶段341：codexA核对字段字典与评分消费合同
 
 - owner/状态：codexA / completed（A字段/评分消费合同切片；三组整体仍未完成）；基线`eca4a2bd`，`Afuture`跟踪`origin/Afuture`。用户要求未完成则继续；340仍等B的历史筛选接口，本阶段推进不依赖该接口的第二组，不接管B/C源码与字典、327真实发布欠项或D性能。

@@ -88,7 +88,10 @@ class IntradayLoader:
     ) -> None:
         self._client = client
         self._runner = runner
-        self._workers = min(5, max(1, options["workers"]))
+        workers = options["workers"]
+        if type(workers) is not int or workers < 1:
+            raise ValueError("intraday workers must be a positive integer")
+        self._workers = workers
         self._minute_pool = options["minute_pool"]
         self._ttl_seconds = max(1.0, options["ttl_seconds"])
         self._batch_timeout_seconds = max(0.01, options["batch_timeout_seconds"])

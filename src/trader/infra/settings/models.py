@@ -47,13 +47,50 @@ class HistoryPreloadSettings:
 
 
 @dataclass(frozen=True)
+class ExecutorSettings:
+    workers: int
+    queue_capacity: int
+
+    def __post_init__(self) -> None:
+        if type(self.workers) is not int or self.workers < 1:
+            raise ValueError("executor workers must be a positive integer")
+        if type(self.queue_capacity) is not int or self.queue_capacity < 0:
+            raise ValueError("executor queue capacity must be a non-negative integer")
+
+
+@dataclass(frozen=True)
+class PriorityExecutorSettings:
+    normal_workers: int
+    urgent_workers: int
+    queue_capacity: int
+
+    def __post_init__(self) -> None:
+        ExecutorSettings(self.normal_workers, self.queue_capacity)
+        if type(self.urgent_workers) is not int or self.urgent_workers < 0:
+            raise ValueError("executor urgent workers must be a non-negative integer")
+
+
+@dataclass(frozen=True)
+class ExecutionSettings:
+    control: PriorityExecutorSettings
+    source_data: PriorityExecutorSettings
+    candidate_quotes: ExecutorSettings
+    market_quotes: ExecutorSettings
+    intraday_minutes: ExecutorSettings
+    http_workers: int
+
+    def __post_init__(self) -> None:
+        if self.control.urgent_workers < 1:
+            raise ValueError("control executor requires an urgent worker")
+        if type(self.http_workers) is not int or self.http_workers < 1:
+            raise ValueError("HTTP workers must be a positive integer")
+
+
+@dataclass(frozen=True)
 class PipelineSettings:
     event_queue_size: int
     priority_queue_size: int
-    market_workers: int
-    normalization_workers: int
-    strategy_workers: int
-    deepseek_workers: int
+    executors: ExecutionSettings
     round_timeout_seconds: float
     shutdown_timeout_seconds: float
     history_preload: HistoryPreloadSettings

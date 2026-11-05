@@ -115,19 +115,14 @@ class RuntimeSupervisor:
             )
             return True
         except BaseException:
-            with self._lock:
-                runtime_started = self._runtime_started
-                self._runtime_started = False
-                self._scheduler = None
-            if runtime_started:
-                self._stop_runtime(ShutdownDeadline.start(self._shutdown_timeout_seconds))
+            self.stop(ShutdownDeadline.start(self._shutdown_timeout_seconds, monotonic=self._monotonic))
             raise
         finally:
             with self._lock:
                 self._starting = False
 
     def stop(self, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
-        deadline = deadline or ShutdownDeadline.start(self._shutdown_timeout_seconds)
+        deadline = deadline or ShutdownDeadline.start(self._shutdown_timeout_seconds, monotonic=self._monotonic)
         with self._lock:
             if self._stopped:
                 return self._shutdown_report or ShutdownReport.from_steps(deadline, ())
@@ -136,9 +131,18 @@ class RuntimeSupervisor:
             self._deferred_stop_event.set()
             scheduler = self._scheduler
             deferred = self._deferred_thread
-        if deferred is not None and deferred is not threading.current_thread():
+        if deferred is not None and deferred is not threading.current_thread() and deferred.ident is not None:
             deferred.join(deadline.remaining_seconds())
-        if scheduler is not None and scheduler is not threading.current_thread():
+            deferred_timed_out = deferred.is_alive()
+        else:
+            deferred_timed_out = False
+        deferred_step = ShutdownStep(
+            name="deferred_initializers",
+            completed=not deferred_timed_out,
+            timed_out=deferred_timed_out,
+            detail="deferred initializer shutdown exceeded timeout" if deferred_timed_out else "",
+        )
+        if scheduler is not None and scheduler is not threading.current_thread() and scheduler.ident is not None:
             scheduler.join(deadline.remaining_seconds())
             scheduler_timed_out = scheduler.is_alive()
         else:
@@ -155,7 +159,9 @@ class RuntimeSupervisor:
             self._runtime_started = False
         if scheduler_timed_out and scheduler is not None:
             self._record_error("scheduler shutdown exceeded timeout")
-        report = ShutdownReport.from_steps(deadline, (scheduler_step, runtime_step))
+        if deferred_timed_out:
+            self._record_error("deferred initializer shutdown exceeded timeout")
+        report = ShutdownReport.from_steps(deadline, (scheduler_step, runtime_step, deferred_step))
         with self._lock:
             self._shutdown_report = report
         return report

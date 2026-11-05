@@ -2,10 +2,31 @@
   "pipeline": {
     "event_queue_size": 512,
     "priority_queue_size": 64,
-    "market_workers": 5,
-    "normalization_workers": 2,
-    "strategy_workers": 3,
-    "deepseek_workers": 4,
+    "executors": {
+      "control": {
+        "normal_workers": 1,
+        "urgent_workers": 1,
+        "queue_capacity": 4
+      },
+      "source_data": {
+        "normal_workers": 5,
+        "urgent_workers": 1,
+        "queue_capacity": 5
+      },
+      "candidate_quotes": {
+        "workers": 4,
+        "queue_capacity": 4
+      },
+      "market_quotes": {
+        "workers": 3,
+        "queue_capacity": 3
+      },
+      "intraday_minutes": {
+        "workers": 5,
+        "queue_capacity": 5
+      },
+      "http_workers": 12
+    },
     "round_timeout_seconds": 120,
     "shutdown_timeout_seconds": 30,
     "history_preload": {

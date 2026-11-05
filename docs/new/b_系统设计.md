@@ -60,6 +60,19 @@ flowchart TD
 
 资源表必须列创建者、使用者、停止动作、等待上限和状态。连接、进程、线程、文件映射、队列及 OCR 子进程均不能只“发出取消”却不回收。超时轮次彻底退出前不得开始下一轮；清理耗时独立记录，不能悄悄算作正常120秒内成功。
 
+荐股执行资源已由`config/scheduler.json.pipeline.executors`启动解析并交`bootstrap._build_worker_context`创建。默认并发保持原值，运行配置身份记录有效参数；模型特征/训练manifest不因改变线程数而更换。`CreateApp`和系统组合不启动这些资源。以下是A本阶段核对的实际生命周期；下载/训练/OCR资源仍由各自owner验收，实测CPU/RSS/I/O归D。
+
+| 资源 | 创建/启动与唯一owner | 停止、等待与状态 |
+| --- | --- | --- |
+| 每档control池 | 组合根创建；SchedulerRuntime启动，normal/urgent独立；每档各一份 | RuntimeSupervisor → SchedulerRuntime按统一ShutdownDeadline停池；BoundedExecutorStatus报告在途/拒绝/完成/运行状态 |
+| source_data及两个报价池、分钟池 | 组合根创建，第一档拥有，后续档共享；ApplicationResources.start启动 | 源lane先禁新请求再等待；共享池仅第一档stop，各自回收排队Future并按同一deadline等待在途；后续档不重复关闭 |
+| HTTP隔离进程池 | 组合根创建，第一档启动；请求时惰性spawn进程并独占transport | stop先停止接收/发取消，等待并terminate/kill/join自有进程；未回收不归还并发名额，ShutdownStep报告未完成 |
+| company_exclusions单writer池 | 组合根固定1 worker/1排队，CompanyEligibility启动；它是串行事实写入的职责上限 | CompanyEligibility先停派发、排空已承诺写入，stop保留失败/未提交原因；不把单writer变成可并行写库参数 |
+| scheduler与deferred初始化线程 | RuntimeSupervisor启动，后者只在有后台初始化器时创建 | 启动异常沿同一个stop路径发停止信号并保留线程引用，等待所有实际已启动线程；未启动线程不join。停止报告分别包含scheduler/runtime/deferred_initializers，后台初始化未退出不能标completed |
+| Long、输入预载、缓存与预算 | 组合根注入；Long每档独立，共享预载/缓存/预算归第一档 | ProfiledApplicationSystem逆序停档，第一档最后关闭共享资源；超时线程不能强杀，明确返回未完成，调用者继续遵守整轮回收门 |
+
+所有监督器默认停止期限使用已注入单调时钟，显式传入deadline时各资源共用该对象。后台初始化收到停止后不再执行后续初始化器；某个正在执行的不可取消调用超时，只能报告未完成，不能以daemon线程替代回收证明。
+
 同一线程池内的任务不能同步等待自己再次提交的任务，避免池满后互等。资源上限说明实际是软件预约/观察门，还是宿主进程/系统硬隔离，不把RSS采样写成保证不会被系统杀进程。
 
 ## 4. 数据发布与读写隔离
@@ -201,16 +214,25 @@ flowchart TD
 
 #### scheduler.json
 
-来源：`config/scheduler.json`。`runtime_loader.LoadRuntimeSettings` → `PipelineSettings` → `bootstrap`、`runtime/schedule.py`、`supervisor.py`及各有界队列。队列/worker为正整数；轮期限0.1–120秒，停止期限≥0.1秒；预载提示0.001–3600秒；cadence为正秒。所有字段启动生效；除`history_preload`外进入runtime身份。
+来源：`config/scheduler.json`。`runtime_loader.LoadRuntimeSettings` → `PipelineSettings` → `bootstrap`、`runtime/schedule.py`、`supervisor.py`及各有界队列。事件队列/worker为正整数，执行器排队容量和来源urgent线程数允许0；轮期限0.1–120秒，停止期限≥0.1秒；预载提示0.001–3600秒；cadence为正秒。所有字段启动生效；除`history_preload`外进入runtime身份。
 
 | 字段路径 | 中文作用 | 当前值 | 类型/单位 |
 | --- | --- | --- | --- |
 | `pipeline.event_queue_size` | 事件队列容量 | `512` | 整数 |
 | `pipeline.priority_queue_size` | 高优先级队列容量 | `64` | 整数 |
-| `pipeline.market_workers` | 行情工作线程数 | `5` | 整数 |
-| `pipeline.normalization_workers` | 标准化工作线程数 | `2` | 整数 |
-| `pipeline.strategy_workers` | 策略工作线程数 | `3` | 整数 |
-| `pipeline.deepseek_workers` | 复核工作线程数 | `4` | 整数 |
+| `pipeline.executors.control.normal_workers` | 每档控制池普通线程数 | `1` | 正整数/线程 |
+| `pipeline.executors.control.urgent_workers` | 每档控制池紧急线程数，保证控制请求有独立lane | `1` | 正整数/线程 |
+| `pipeline.executors.control.queue_capacity` | 控制池普通排队容量 | `4` | 非负整数/任务 |
+| `pipeline.executors.source_data.normal_workers` | 共享来源调度普通线程数 | `5` | 正整数/线程 |
+| `pipeline.executors.source_data.urgent_workers` | 共享来源紧急线程数，0表示不分独立lane | `1` | 非负整数/线程 |
+| `pipeline.executors.source_data.queue_capacity` | 共享来源普通排队容量 | `5` | 非负整数/任务 |
+| `pipeline.executors.candidate_quotes.workers` | 定向报价池线程数 | `4` | 正整数/线程 |
+| `pipeline.executors.candidate_quotes.queue_capacity` | 定向报价排队容量 | `4` | 非负整数/任务 |
+| `pipeline.executors.market_quotes.workers` | 全市场报价池线程数 | `3` | 正整数/线程 |
+| `pipeline.executors.market_quotes.queue_capacity` | 全市场报价排队容量 | `3` | 非负整数/任务 |
+| `pipeline.executors.intraday_minutes.workers` | 分钟池线程数及每批分钟并发上限，使用同一值 | `5` | 正整数/线程 |
+| `pipeline.executors.intraday_minutes.queue_capacity` | 分钟请求排队容量 | `5` | 非负整数/任务 |
+| `pipeline.executors.http_workers` | HTTP隔离进程并发上限 | `12` | 正整数/进程 |
 | `pipeline.round_timeout_seconds` | 整轮统一期限 | `120` | 数值/秒 |
 | `pipeline.shutdown_timeout_seconds` | 停止等待期限 | `30` | 数值/秒 |
 | `pipeline.history_preload.warn_after_seconds` | 历史预载慢提示期限 | `300` | 数值/秒 |
@@ -228,6 +250,10 @@ flowchart TD
 | `pipeline.cadence_seconds.industry_heat.afternoon` | 任务 industry_heat 在 afternoon 阶段的派发间隔 | `60` | 数值/秒 |
 | `pipeline.cadence_seconds.industry_heat.final_review` | 任务 industry_heat 在 final_review 阶段的派发间隔 | `60` | 数值/秒 |
 | `pipeline.publish_heartbeat_seconds` | 发布心跳间隔 | `15` | 数值/秒 |
+
+上述executors由`settings/execution.ParseExecutionSettings`严格解析为不可变ExecutionSettings；缺项、未知键、布尔冒充整数及非法范围均拒绝。normal_workers与urgent_workers相加是对应池总线程数，urgent排队容量仍由有界执行器随urgent线程数推导。控制池至少各有1条普通/紧急线程；其他池不接受没有消费者的urgent配置。分钟loader已移除隐藏的5线程截断，合法值传到实际请求并发；所有新参数重启生效并进入runtime身份，不改变模型manifest、120秒整轮上限或168次复核预算。
+
+旧`pipeline.market_workers`迁为source_data的normal_workers；保留旧自定义容量时，urgent_workers按原规则在market_workers>1时填1，否则填0。三个未消费的normalization_workers/strategy_workers/deepseek_workers删除，旧键一律拒绝，无兼容别名。现有自定义scheduler配置须按此13叶子结构迁入。公司预载30秒/3次及其它业务资源参数不在本次配置切换中，跨B/C调用者交接后另行处理；不把它们写成已可调。
 
 #### market_data.json
 
