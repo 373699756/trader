@@ -16,6 +16,7 @@ import pytest
 
 from scripts.training.jobs import benchmark_process
 from scripts.training.jobs.benchmark_process import StopTrainingBenchmarkProcessTree
+from scripts.training.jobs.benchmark_process import RunTrainingBenchmarkProcess
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux proc is required")
 
@@ -195,3 +196,86 @@ def test_cleanup_failure_is_explicit_and_does_not_extend_the_wait_budget(monkeyp
         assert root.poll() is None
     finally:
         _cleanup(root)
+
+
+def test_supervision_keeps_actual_exit_and_both_logs(tmp_path: Path) -> None:
+    result = RunTrainingBenchmarkProcess(
+        (sys.executable, "-c", "import sys;print('result');print('progress',file=sys.stderr);sys.exit(7)"),
+        cwd=tmp_path, stdout=tmp_path / "stdout", stderr=tmp_path / "stderr",
+        timeout_seconds=5, minimum_free_bytes=1,
+    )
+    assert result.exit_code == 7 and result.reason == "exited"
+    assert (tmp_path / "stdout").read_text().strip() == "result"
+    assert (tmp_path / "stderr").read_text().strip() == "progress"
+
+
+@pytest.mark.parametrize("cause", ("timeout", "low_space", "output_limit"))
+def test_supervision_stops_owned_workload_and_preserves_unrelated_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cause: str,
+) -> None:
+    usage = benchmark_process.shutil.disk_usage(tmp_path)
+    calls = 0
+
+    def space(path: Path) -> object:
+        nonlocal calls
+        calls += 1
+        return usage._replace(free=0 if cause == "low_space" and calls > 2 else usage.free)
+
+    monkeypatch.setattr(benchmark_process.shutil, "disk_usage", space)
+    sentinel = _spawn(_STUBBORN)
+    program = "import os,time;print(os.getpid(),flush=True);time.sleep(60)"
+    try:
+        result = RunTrainingBenchmarkProcess(
+            (sys.executable, "-c", program), cwd=tmp_path,
+            stdout=tmp_path / "stdout", stderr=tmp_path / "stderr",
+            timeout_seconds=0.3 if cause == "timeout" else 5, minimum_free_bytes=1,
+            maximum_output_bytes=1 if cause == "output_limit" else 1024,
+        )
+        assert result.reason == cause
+        pid = int((tmp_path / "stdout").read_text())
+        assert not _running(pid) and sentinel.poll() is None
+    finally:
+        _cleanup(sentinel)
+
+
+def test_supervision_rejects_low_space_before_starting_work(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="training_benchmark_supervision_space_insufficient"):
+        RunTrainingBenchmarkProcess(
+            (sys.executable, "-c", "raise SystemExit('must not run')"), cwd=tmp_path,
+            stdout=tmp_path / "stdout", stderr=tmp_path / "stderr",
+            timeout_seconds=5, minimum_free_bytes=10**30,
+        )
+    assert not (tmp_path / "stdout").exists()
+
+
+def test_supervision_observation_failure_reaps_workload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    usage = benchmark_process.shutil.disk_usage(tmp_path)
+    calls = 0
+
+    def failed_space(path: Path) -> object:
+        nonlocal calls
+        calls += 1
+        if calls > 2:
+            raise OSError("observation_failed")
+        return usage
+
+    monkeypatch.setattr(benchmark_process.shutil, "disk_usage", failed_space)
+    with pytest.raises(OSError, match="observation_failed"):
+        RunTrainingBenchmarkProcess(
+            (sys.executable, "-c", "import os,time;print(os.getpid(),flush=True);time.sleep(60)"),
+            cwd=tmp_path, stdout=tmp_path / "stdout", stderr=tmp_path / "stderr",
+            timeout_seconds=5, minimum_free_bytes=1,
+        )
+    assert not _running(int((tmp_path / "stdout").read_text()))
+
+
+def test_supervision_refuses_existing_logs_before_creating_another_file(tmp_path: Path) -> None:
+    (tmp_path / "stderr").write_text("original", encoding="utf-8")
+    with pytest.raises(ValueError, match="training_benchmark_supervision_arguments_invalid"):
+        RunTrainingBenchmarkProcess(
+            (sys.executable, "-c", "pass"), cwd=tmp_path,
+            stdout=tmp_path / "stdout", stderr=tmp_path / "stderr",
+            timeout_seconds=5, minimum_free_bytes=1,
+        )
+    assert not (tmp_path / "stdout").exists()
+    assert (tmp_path / "stderr").read_text() == "original"
