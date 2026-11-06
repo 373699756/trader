@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import Lock, get_native_id
 import time
 from typing import Literal, TypeVar
@@ -14,6 +14,7 @@ from trader.training.application.resources import (
     TrainingMemoryAdmission,
     TrainingProfileTiming,
     TrainingResourceTiming,
+    TrainingSampleBuildTiming,
 )
 
 ValueT = TypeVar("ValueT")
@@ -49,6 +50,13 @@ class _ProfileTiming:
     cpu_held_while_memory_wait_seconds: float = 0.0
     native_id: int | None = None
     thread_cpu_seconds: float | None = None
+    sample_build: TrainingSampleBuildTiming = field(default_factory=TrainingSampleBuildTiming)
+    first_batch_after_seconds: float | None = None
+    queue_full_wait_seconds: float = 0.0
+    queue_empty_wait_seconds: float = 0.0
+    queue_full_wait_count: int = 0
+    queue_empty_wait_count: int = 0
+    queue_peak_batches: int = 0
 
     def snapshot(self) -> TrainingProfileTiming:
         return TrainingProfileTiming(
@@ -62,6 +70,13 @@ class _ProfileTiming:
             self.cpu_held_while_memory_wait_seconds,
             native_id=self.native_id,
             thread_cpu_seconds=self.thread_cpu_seconds,
+            sample_build=self.sample_build,
+            first_batch_after_seconds=self.first_batch_after_seconds,
+            queue_full_wait_seconds=self.queue_full_wait_seconds,
+            queue_empty_wait_seconds=self.queue_empty_wait_seconds,
+            queue_full_wait_count=self.queue_full_wait_count,
+            queue_empty_wait_count=self.queue_empty_wait_count,
+            queue_peak_batches=self.queue_peak_batches,
         )
 
 
@@ -153,6 +168,66 @@ class TrainingExecutionMeasurements:
             elapsed = self._monotonic() - started
             with self._lock:
                 state.queue_receive_seconds += elapsed
+
+    @contextmanager
+    def sample_build(self, profile: ScoringProfileId) -> Iterator[None]:
+        state = self._profile(profile)
+        started = self._monotonic()
+        started_cpu = self._thread_time()
+        with self._lock:
+            sample = state.sample_build
+            state.sample_build = replace(
+                sample,
+                count=sample.count + 1,
+                inflight_count=sample.inflight_count + 1,
+                first_started_after_seconds=sample.first_started_after_seconds
+                if sample.first_started_after_seconds is not None else started - self._started,
+            )
+        completed = False
+        try:
+            yield
+            completed = True
+        finally:
+            finished = self._monotonic()
+            elapsed_cpu = self._thread_time() - started_cpu
+            with self._lock:
+                sample = state.sample_build
+                state.sample_build = replace(
+                    sample,
+                    completed_count=sample.completed_count + int(completed),
+                    inflight_count=sample.inflight_count - 1,
+                    wall_seconds=(sample.wall_seconds or 0.0) + finished - started,
+                    thread_cpu_seconds=(sample.thread_cpu_seconds or 0.0) + elapsed_cpu,
+                    last_finished_after_seconds=finished - self._started,
+                )
+
+    @contextmanager
+    def wait_queue(self, profile: ScoringProfileId, reason: Literal["full", "empty"]) -> Iterator[None]:
+        state = self._profile(profile)
+        started = self._monotonic()
+        try:
+            yield
+        finally:
+            elapsed = self._monotonic() - started
+            with self._lock:
+                if reason == "full":
+                    state.queue_full_wait_seconds += elapsed
+                    state.queue_full_wait_count += 1
+                else:
+                    state.queue_empty_wait_seconds += elapsed
+                    state.queue_empty_wait_count += 1
+
+    def received_batch(self, profile: ScoringProfileId) -> None:
+        with self._lock:
+            state = self._profile(profile)
+            if state.first_batch_after_seconds is None:
+                state.first_batch_after_seconds = self._monotonic() - self._started
+
+    def queue_depth(self, profile: ScoringProfileId, batches: int) -> None:
+        # Called under the queue mutex. No measurement-lock holder accesses a queue.
+        with self._lock:
+            state = self._profile(profile)
+            state.queue_peak_batches = max(state.queue_peak_batches, batches)
 
     def cpu_admission(self, profile: ScoringProfileId, admission: TrainingCpuAdmission) -> TrainingCpuAdmission:
         return _MeasuredCpuAdmission(self, profile, admission)

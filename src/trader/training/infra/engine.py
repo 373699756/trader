@@ -11,7 +11,7 @@ import shutil
 import sqlite3
 import tempfile
 from collections.abc import Iterator
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import date
 from importlib.metadata import version
@@ -34,7 +34,7 @@ from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
-from trader.training.application.resources import TrainingCpuAdmission, TrainingMemoryAdmission
+from trader.training.application.resources import TrainingCpuAdmission, TrainingExecutionObserver, TrainingMemoryAdmission
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
@@ -191,6 +191,7 @@ class ProfileTrainingRequest:
     compute_threads: int = field(default=TOMORROW_TRAINING_COMPUTE_THREADS, kw_only=True)
     execution_options: TrainingExecutionOptions = field(default_factory=TrainingExecutionOptions, kw_only=True)
     memory_capacity_bytes: int | None = field(default=None, kw_only=True)
+    execution_observer: TrainingExecutionObserver | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         strategies = tuple(contract.strategy for contract in self.contracts)
@@ -378,6 +379,7 @@ def _run_locked(
                 ),
                 cache,
                 aligned_rows=aligned_rows,
+                observer=request.execution_observer,
             )
             # This eligibility gate must run even without optional resource ports.
             # Both heads must cover every requested mature day before any fitter runs.
@@ -587,9 +589,11 @@ def _prepare_samples(
     cache: TrainingSampleCache,
     *,
     aligned_rows: Iterator[HistoryTrainingRow] | None = None,
+    observer: TrainingExecutionObserver | None = None,
 ) -> tuple[TargetMetric, ...]:
     if not cache.reused:
-        BuildTrainingSamples(request, aligned_rows=aligned_rows)
+        with observer.sample_build(request.profile.profile_id) if observer is not None else nullcontext():
+            BuildTrainingSamples(request, aligned_rows=aligned_rows)
     if request.index.count() == 0:
         raise ValueError("profile_training_rows_empty")
     if not cache.reused:

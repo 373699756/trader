@@ -2,8 +2,8 @@
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Literal, Protocol
 
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
@@ -126,6 +126,17 @@ class TrainingResourceTiming:
 
 
 @dataclass(frozen=True)
+class TrainingSampleBuildTiming:
+    count: int = 0
+    completed_count: int = 0
+    inflight_count: int = 0
+    wall_seconds: float | None = None
+    thread_cpu_seconds: float | None = None
+    first_started_after_seconds: float | None = None
+    last_finished_after_seconds: float | None = None
+
+
+@dataclass(frozen=True)
 class TrainingProfileTiming:
     profile: ScoringProfileId
     started_after_seconds: float | None
@@ -138,6 +149,13 @@ class TrainingProfileTiming:
     native_id: int | None = None
     # Only this task's calling thread; unavailable until its scope has exited.
     thread_cpu_seconds: float | None = None
+    sample_build: TrainingSampleBuildTiming = field(default_factory=TrainingSampleBuildTiming, kw_only=True)
+    first_batch_after_seconds: float | None = field(default=None, kw_only=True)
+    queue_full_wait_seconds: float = field(default=0.0, kw_only=True)
+    queue_empty_wait_seconds: float = field(default=0.0, kw_only=True)
+    queue_full_wait_count: int = field(default=0, kw_only=True)
+    queue_empty_wait_count: int = field(default=0, kw_only=True)
+    queue_peak_batches: int = field(default=0, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -158,6 +176,14 @@ class TrainingExecutionObserver(Protocol):
     def send_queue(self, profile: ScoringProfileId) -> AbstractContextManager[None]: ...
 
     def receive_queue(self, profile: ScoringProfileId) -> AbstractContextManager[None]: ...
+
+    def sample_build(self, profile: ScoringProfileId) -> AbstractContextManager[None]: ...
+
+    def wait_queue(self, profile: ScoringProfileId, reason: Literal["full", "empty"]) -> AbstractContextManager[None]: ...
+
+    def received_batch(self, profile: ScoringProfileId) -> None: ...
+
+    def queue_depth(self, profile: ScoringProfileId, batches: int) -> None: ...
 
 
 class TrainingMemoryAdmission(Protocol):

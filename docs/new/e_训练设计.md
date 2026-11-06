@@ -427,6 +427,12 @@ Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU�
 | `native_id`、`thread_cpu_seconds` | 本次worker的操作系统线程号及该任务区间调用线程CPU秒；未开始为null，CPU仅在成功/失败/取消退出后定格，运行中仍为null | 线程号不是业务身份，不能跨作业复用；CPU不包含其它线程或原生库worker，不能把运行中null写成0 |
 | `queue_send_seconds` | 秒；向该档队列发送的累计区间，含阻塞、轮询及终止通知 | 不全是纯阻塞时间，不能当特征计算时间 |
 | `queue_receive_seconds` | 秒；该档取下一批的累计区间，含空队列轮询 | 不等于源读取时间；不同worker之间会重叠 |
+| `sample_build.count/completed_count/inflight_count` | 次；样本构造进入、成功返回及尚未退出的次数 | 构造成功不表示拟合、模型发布或收益验收通过 |
+| `sample_build.wall_seconds/thread_cpu_seconds` | 秒；样本构造区间累计墙钟与调用线程CPU，未进入时为null；异常/取消退出也累计 | 墙钟包含输入等待和SQLite，CPU不含其它线程或原生worker；在途快照未包含未退出区间 |
+| `sample_build.first_started_after_seconds/last_finished_after_seconds` | 秒；首次进入及最近一次退出相对本作业计量起点的偏移，未发生为null | 最近退出可能是失败或取消，不能当全部作业结束 |
+| `first_batch_after_seconds` | 秒；该档首次取得非空数据批的偏移，未收到为null | 结束哨兵不是数据批，也不是样本就绪或拟合开始时点 |
+| `queue_full_wait_seconds/queue_empty_wait_seconds`、对应`*_count` | 秒及次数；真实Full/Empty后进入阻塞重试的区间及次数，含成功和超时重试 | 是原send/receive区间的子集且含调用开销，不是纯内核阻塞；不得与总秒数重复相加 |
+| `queue_peak_batches` | 批；数据批入队时在原队列mutex内取得的精确占用峰值，结束哨兵不计 | 不是事后qsize抽样，不等于字节峰值或RSS |
 | `cpu.wait_seconds`、`memory.wait_seconds` | 秒；进入原预约端口至授权的耗时，失败等待同样累计 | 包含快速路径、心跳与进入开销，不只统计Condition阻塞 |
 | `cpu.hold_seconds`、`memory.hold_seconds` | 秒；已授权预约体的累计持有区间，退出体时结束 | 不含底层释放收尾，CPU持有可能包含等内存和矩阵准备 |
 | `cpu.acquired_count`、`memory.acquired_count` | 次；成功授权数 | 不是拟合行业数或新训练次数 |
@@ -434,9 +440,9 @@ Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU�
 | `cpu.inflight_count`、`memory.inflight_count` | 次；快照时尚未退出的预约体数 | 归零不单独证明原生线程、映射和底层资源都已释放；仍需生命周期回归 |
 | `cpu_held_while_memory_wait_seconds` | 秒；该档已持CPU时进入内存预约的累计等待，包含失败等待 | 不能把CPU持有整段都当这类等待 |
 
-等待、持有、任务、队列和来源区间会相互重叠，不能把所有项相加当墙钟。全作业墙钟仍看 `selected_training_result.elapsed_seconds`；实际请求/授权线程沿用CPU预算字段，真实原生线程及RSS另测。计量只在批次和预约边界读时钟，不逐历史行采样。
+等待、持有、任务、队列、样本构造和来源区间会相互重叠，不能把所有项相加当墙钟。全作业墙钟仍看 `selected_training_result.elapsed_seconds`；实际请求/授权线程沿用CPU预算字段，真实原生线程及RSS另测。计量只在批次、样本构造和预约边界读时钟，不逐历史行采样。V1及标准三档由既有编排显式注入同一observer；复用样本而未进入构造时次数为0、构造秒数为null，不把未测阶段写成零秒。新增观测开销仍须计入后续同输入性能对照，不能据此签提速。
 
-新增线程CPU由可注入`thread_time`读取，`thread_cpu_scope`白名单说明仅调用线程且任务值退出后才最终有效，不改observer协议、调度或资源准入。需要从另一个进程监控正常train时，沿`scripts/training/resources/training_process_measurement.py::ReadTrainingProcessSnapshot`读取目标`/proc`累计计数，并以`ProjectTrainingProcessSnapshot`显式投影；前后校验PID出生ticks，后续调用须携带原出生身份，退出/复用返回null、线程消失单列，其它读取/格式错误保留。进程和线程读数位于明确的非原子读取时间窗，分别按相同PID/出生身份、native_id/出生身份计算差值，不拿观察者`process_time`或`RUSAGE_SELF`替代目标CPU/缺页。原`TrainingProcessMeasurement`继续只服务当前诊断调用的自身资源计量；新能力不改变原生线程或模型计算。
+线程CPU由可注入`thread_time`读取，`thread_cpu_scope`及样本/队列scope白名单说明调用线程、嵌套和观测点边界；observer提供具名类型端口，不参与调度或资源准入。需要从另一个进程监控正常train时，沿`scripts/training/resources/training_process_measurement.py::ReadTrainingProcessSnapshot`读取目标`/proc`累计计数，并以`ProjectTrainingProcessSnapshot`显式投影；前后校验PID出生ticks，后续调用须携带原出生身份，退出/复用返回null、线程消失单列，其它读取/格式错误保留。进程和线程读数位于明确的非原子读取时间窗，分别按相同PID/出生身份、native_id/出生身份计算差值，不拿观察者`process_time`或`RUSAGE_SELF`替代目标CPU/缺页。原`TrainingProcessMeasurement`继续只服务当前诊断调用的自身资源计量；新能力不改变原生线程或模型计算。
 
 计量继续包住原 `TrainingCpuAdmission/TrainingMemoryAdmission`，原请求、授权、心跳、异常及释放语义不变；V1和其它三档都接入。全部工件复用时没有源批读或拟合预约，必须同时看到扫描0和预约授权0，不能只看耗时很短。
 

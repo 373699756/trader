@@ -22,7 +22,7 @@ from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.application.resources import TrainingCpuAdmission, TrainingMemoryAdmission
+from trader.training.application.resources import TrainingCpuAdmission, TrainingExecutionObserver, TrainingMemoryAdmission
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TomorrowTrainingProgress,
@@ -166,6 +166,7 @@ def RunV1Training(
     cpu_admission: TrainingCpuAdmission | None = None,
     compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
     execution_options: TrainingExecutionOptions = BASELINE_EXECUTION_OPTIONS,
+    execution_observer: TrainingExecutionObserver | None = None,
 ) -> V1TrainingResult:
     """Consume a pinned input; all disposable writes stay in the selected sample root."""
     if type(compute_threads) is not int or compute_threads < 1:
@@ -211,14 +212,15 @@ def RunV1Training(
             with TemporaryTrainingSamples(sample_root, "v1") as directory:
                 sample_path = directory / "samples.sqlite3"
                 with closing(LearnedRankSampleIndex(sample_path, sample_settings=sample_settings, sqlite_policy=sqlite_policy)) as index:
-                    counts = BuildLearnedRankSamples(
-                        source,
-                        splits,
-                        index,
-                        history_sessions=settings.history_sessions,
-                        stream=LearnedRankSampleStream(progress, cancel_requested, aligned_rows),
-                        final_fit_plans=final_fit_plans,
-                    )
+                    with execution_observer.sample_build("v1") if execution_observer is not None else nullcontext():
+                        counts = BuildLearnedRankSamples(
+                            source,
+                            splits,
+                            index,
+                            history_sessions=settings.history_sessions,
+                            stream=LearnedRankSampleStream(progress, cancel_requested, aligned_rows),
+                            final_fit_plans=final_fit_plans,
+                        )
                     peak_bytes = sample_path.stat().st_size
                     coverage = index.coverage(splits, final_fit_plans=final_fit_plans)
                     failures = tuple(

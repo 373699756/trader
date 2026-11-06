@@ -13,8 +13,9 @@ import time
 import pytest
 
 from trader.download.domain.history_revision import HistoryTrainingRow
-from trader.training.application.resources import TrainingExecutionTiming, TrainingProfileTiming, TrainingResourceTiming
+from trader.training.application.resources import TrainingExecutionTiming, TrainingFanoutSettings, TrainingProfileTiming, TrainingResourceTiming
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingTask
+from trader.training.application.selected_training import _TrainingQueue
 from trader.training.entrypoints.training_timing_projection import ProjectTrainingExecutionTiming
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
@@ -90,6 +91,83 @@ def test_source_thread_cpu_accumulates_completed_and_failed_read_scopes():
     assert timing.source_read_thread_cpu_seconds == 1.75
     assert ProjectTrainingExecutionTiming(timing)["source_read_thread_cpu_seconds"] == 1.75
     assert timing.profiles[0].native_id is timing.profiles[0].thread_cpu_seconds is None
+
+
+@pytest.mark.parametrize("failure", (None, ValueError("sample_failed"), InterruptedError("sample_cancelled")))
+def test_sample_phase_preserves_wall_cpu_counts_and_partial_failures(failure):
+    wall, cpu = _Clock(), _Clock()
+    measured = TrainingExecutionMeasurements(("v1", "v5"), wall, thread_time=cpu)
+    outcome = pytest.raises(type(failure)) if failure is not None else nullcontext()
+    with outcome, measured.sample_build("v1"):
+        active = measured.snapshot().profiles[0].sample_build
+        assert active.count == active.inflight_count == 1
+        assert active.wall_seconds is active.thread_cpu_seconds is None
+        wall.advance(7)
+        cpu.advance(2)
+        if failure is not None:
+            raise failure
+    observed, untouched = measured.snapshot().profiles
+    assert observed.sample_build.count == 1
+    assert observed.sample_build.completed_count == int(failure is None)
+    assert observed.sample_build.inflight_count == 0
+    assert observed.sample_build.wall_seconds == 7
+    assert observed.sample_build.thread_cpu_seconds == 2
+    assert observed.sample_build.first_started_after_seconds == 0
+    assert observed.sample_build.last_finished_after_seconds == 7
+    assert untouched.sample_build.count == 0
+    assert untouched.sample_build.wall_seconds is untouched.sample_build.thread_cpu_seconds is None
+    report = ProjectTrainingExecutionTiming(measured.snapshot())
+    assert report["profiles"][0]["sample_build"]["wall_seconds"] == 7
+    assert "do_not_add" in report["overlap_scope"]
+    assert "input_wait_and_sqlite" in report["sample_build_scope"]
+
+
+def test_zero_duration_sample_phase_is_distinct_from_an_unentered_or_reused_phase():
+    wall, cpu = _Clock(), _Clock()
+    measured = TrainingExecutionMeasurements(("v1", "v5"), wall, thread_time=cpu)
+    with measured.sample_build("v1"):
+        pass
+    zero, untouched = measured.snapshot().profiles
+    assert zero.sample_build.count == zero.sample_build.completed_count == 1
+    assert zero.sample_build.wall_seconds == zero.sample_build.thread_cpu_seconds == 0
+    assert untouched.sample_build.count == 0
+    assert untouched.sample_build.wall_seconds is untouched.sample_build.thread_cpu_seconds is None
+
+
+@pytest.mark.parametrize("reason", ("full", "empty"))
+def test_queue_retry_scope_records_interruption_in_finally(reason):
+    clock = _Clock()
+    measured = TrainingExecutionMeasurements(("v5",), clock)
+    with pytest.raises(KeyboardInterrupt), measured.wait_queue("v5", reason):
+        clock.advance(3)
+        raise KeyboardInterrupt
+    observed = measured.snapshot().profiles[0]
+    assert observed.queue_full_wait_count == int(reason == "full")
+    assert observed.queue_empty_wait_count == int(reason == "empty")
+    assert observed.queue_full_wait_seconds == (3 if reason == "full" else 0)
+    assert observed.queue_empty_wait_seconds == (3 if reason == "empty" else 0)
+
+
+def test_queue_peak_is_observed_under_mutex_and_excludes_sentinels(monkeypatch):
+    class _Measurements(TrainingExecutionMeasurements):
+        def queue_depth(self, profile, batches):
+            assert queue.mutex.locked()
+            super().queue_depth(profile, batches)
+
+    measured = _Measurements(("v5",), time.monotonic)
+    queue = _TrainingQueue(2, "v5", measured)
+    monkeypatch.setattr(queue, "qsize", lambda: pytest.fail("approximate queue size used"))
+    queue.put_nowait(None)
+    assert measured.snapshot().profiles[0].queue_peak_batches == 0
+    assert queue.get_nowait() is None
+    row = HistoryTrainingRow("600000", date(2026, 1, 5), "main", "bank", None)
+    queue.put_nowait((row,))
+    queue.put_nowait((row,))
+    assert queue.get_nowait() == (row,)
+    assert queue.get_nowait() == (row,)
+    observed = measured.snapshot().profiles[0]
+    assert observed.queue_peak_batches == 2
+    assert observed.first_batch_after_seconds is None
 
 
 def test_worker_native_ids_and_thread_cpu_do_not_include_other_threads():
@@ -263,13 +341,10 @@ def test_full_queue_wait_is_separate_from_source_reading_and_reuse_reads_nothing
     blocked, release = Event(), Event()
 
     class _QueueMeasurements(TrainingExecutionMeasurements):
-        sends = 0
-
         @contextmanager
-        def send_queue(self, profile):
-            with super().send_queue(profile):
-                self.sends += 1
-                if self.sends == 3:
+        def wait_queue(self, profile, reason):
+            with super().wait_queue(profile, reason):
+                if reason == "full":
                     blocked.set()
                 yield
 
@@ -303,6 +378,10 @@ def test_full_queue_wait_is_separate_from_source_reading_and_reuse_reads_nothing
         result = future.result(timeout=5)
     assert result.history_scan_passes == 1 and result.outcomes[0].result == rows
     assert measured.snapshot().profiles[0].queue_send_seconds == 5
+    assert measured.snapshot().profiles[0].queue_full_wait_seconds == 5
+    assert measured.snapshot().profiles[0].queue_full_wait_count >= 1
+    assert measured.snapshot().profiles[0].queue_peak_batches == 2
+    assert measured.snapshot().profiles[0].first_batch_after_seconds == 5
     assert measured.snapshot().source_read_seconds == 0
 
     reused = TrainingExecutionMeasurements(("v1",), clock)
@@ -319,6 +398,120 @@ def test_full_queue_wait_is_separate_from_source_reading_and_reuse_reads_nothing
     assert reused.snapshot().source_read_seconds == 0
     assert reused.snapshot().profiles[0].started_after_seconds is not None
     assert reused.snapshot().profiles[0].cpu.acquired_count == reused.snapshot().profiles[0].memory.acquired_count == 0
+    assert reused.snapshot().profiles[0].first_batch_after_seconds is None
+    assert reused.snapshot().profiles[0].queue_peak_batches == 0
+    assert reused.snapshot().profiles[0].sample_build.count == 0
+
+
+def test_empty_queue_wait_is_classified_only_after_empty_and_first_batch_is_data():
+    clock = _Clock()
+    waiting, release = Event(), Event()
+
+    class _Measurements(TrainingExecutionMeasurements):
+        @contextmanager
+        def wait_queue(self, profile, reason):
+            with super().wait_queue(profile, reason):
+                if reason == "empty":
+                    waiting.set()
+                yield
+
+    measured = _Measurements(("v5",), clock)
+    day = date(2026, 1, 5)
+    row = HistoryTrainingRow("600000", day, "main", "bank", None)
+
+    def source():
+        assert release.wait(3)
+        yield row
+
+    def run():
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            return RunSelectedTrainingTasks(
+                (SelectedTrainingTask("v5", frozenset((day,)), tuple),),
+                lambda _dates: nullcontext(source()),
+                workers,
+                lambda: False,
+                observer=measured,
+                settings=TrainingResourceSettingsFixture().fanout,
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as coordinator:
+        future = coordinator.submit(run)
+        try:
+            assert waiting.wait(3)
+            assert measured.snapshot().profiles[0].first_batch_after_seconds is None
+            clock.advance(3)
+        finally:
+            release.set()
+        result = future.result(timeout=5)
+    assert result.outcomes[0].result == (row,)
+    observed = measured.snapshot().profiles[0]
+    assert observed.queue_empty_wait_count >= 1
+    assert observed.queue_empty_wait_seconds == observed.queue_receive_seconds == 3
+    assert observed.queue_full_wait_count == observed.queue_full_wait_seconds == 0
+    assert observed.queue_peak_batches == 1
+    assert observed.first_batch_after_seconds == 3
+
+
+@pytest.mark.parametrize("reason", ("full", "empty"))
+@pytest.mark.parametrize("failure", (InterruptedError, OSError))
+def test_real_queue_wait_survives_cancel_or_source_failure_without_leaking_workers(reason, failure):
+    clock = _Clock()
+    waiting, release, cancelled = Event(), Event(), Event()
+
+    class _Measurements(TrainingExecutionMeasurements):
+        @contextmanager
+        def wait_queue(self, profile, actual):
+            with super().wait_queue(profile, actual):
+                if actual == reason:
+                    waiting.set()
+                yield
+
+    measured = _Measurements(("v5",), clock)
+    day = date(2026, 1, 5)
+    row = HistoryTrainingRow("600000", day, "main", "bank", None)
+
+    def source():
+        if reason == "empty":
+            assert release.wait(3)
+        else:
+            yield row
+            yield row
+        raise failure("source_stopped")
+
+    def consume(rows):
+        if reason == "full":
+            assert release.wait(3)
+        return tuple(rows)
+
+    def run():
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            RunSelectedTrainingTasks(
+                (SelectedTrainingTask("v5", frozenset((day,)), consume),),
+                lambda _dates: nullcontext(source()),
+                workers,
+                cancelled.is_set,
+                observer=measured,
+                settings=TrainingFanoutSettings(1, 1),
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as coordinator:
+        future = coordinator.submit(run)
+        try:
+            assert waiting.wait(3)
+            clock.advance(4)
+            if failure is InterruptedError:
+                cancelled.set()
+        finally:
+            release.set()
+        with pytest.raises(failure):
+            future.result(timeout=5)
+    observed = measured.snapshot().profiles[0]
+    assert observed.finished_after_seconds == 4
+    if reason == "full":
+        assert observed.queue_full_wait_count >= 1 and observed.queue_full_wait_seconds == 4
+    else:
+        assert observed.queue_empty_wait_count >= 1 and observed.queue_empty_wait_seconds == 4
+    assert observed.sample_build.inflight_count == 0
 
 
 @pytest.mark.parametrize("failure,expected_exit", ((None, 0), (ValueError, 1), (InterruptedError, 130)))

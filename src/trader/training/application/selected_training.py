@@ -50,6 +50,24 @@ class SelectedTrainingRun(Generic[ResultT]):
     timing: TrainingExecutionTiming | None = field(default=None, kw_only=True)
 
 
+class _TrainingQueue(Queue[tuple[HistoryTrainingRow, ...] | None]):
+    def __init__(
+        self,
+        batches: int,
+        profile: ScoringProfileId,
+        observer: TrainingExecutionObserver | None,
+    ) -> None:
+        super().__init__(maxsize=batches)
+        self._profile = profile
+        self._observer = observer
+
+    def _put(self, item: tuple[HistoryTrainingRow, ...] | None) -> None:
+        super()._put(item)
+        # Queue calls this hook while holding its mutex, before a consumer can drain it.
+        if item is not None and self._observer is not None:
+            self._observer.queue_depth(self._profile, self._qsize())
+
+
 def RunSelectedTrainingTasks(
     tasks: tuple[SelectedTrainingTask[ResultT], ...],
     read_rows: Callable[[frozenset[date]], AbstractContextManager[Iterator[HistoryTrainingRow]]],
@@ -89,7 +107,7 @@ class _TrainingFanout(Generic[ResultT]):
         self.on_outcome = on_outcome
         self.observer = observer
         self.queues: tuple[Queue[tuple[HistoryTrainingRow, ...] | None], ...] = tuple(
-            Queue(maxsize=settings.queue_batches) for _ in tasks
+            _TrainingQueue(settings.queue_batches, task.profile, observer) for task in tasks
         )
         self.stopped = Event()
         self.futures: list[Future[SelectedTrainingOutcome[ResultT]]] = []
@@ -101,11 +119,17 @@ class _TrainingFanout(Generic[ResultT]):
                 raise InterruptedError("selected_training_cancelled")
             try:
                 with self.observer.receive_queue(self.tasks[index].profile) if self.observer is not None else nullcontext():
-                    batch = queue.get(timeout=0.1)
+                    try:
+                        batch = queue.get_nowait()
+                    except Empty:
+                        with self.observer.wait_queue(self.tasks[index].profile, "empty") if self.observer is not None else nullcontext():
+                            batch = queue.get(timeout=0.1)
             except Empty:
                 continue
             if batch is None:
                 return
+            if batch and self.observer is not None:
+                self.observer.received_batch(self.tasks[index].profile)
             yield from batch
 
     def _run(self, index: int) -> SelectedTrainingOutcome[ResultT]:
@@ -134,7 +158,11 @@ class _TrainingFanout(Generic[ResultT]):
             if self.cancelled():
                 raise InterruptedError("selected_training_cancelled")
             try:
-                self.queues[index].put(batch, timeout=0.1)
+                try:
+                    self.queues[index].put_nowait(batch)
+                except Full:
+                    with self.observer.wait_queue(self.tasks[index].profile, "full") if self.observer is not None else nullcontext():
+                        self.queues[index].put(batch, timeout=0.1)
                 return
             except Full:
                 continue

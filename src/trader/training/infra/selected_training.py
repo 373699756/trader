@@ -201,6 +201,7 @@ class _TrainingTaskFactory:
             cpu_admission=self.measurements.cpu_admission("v1", selection.cpu_budget),
             compute_threads=selection.cpu_budget.profile_threads.v1,
             execution_options=selection.execution_options,
+            execution_observer=self.measurements,
             sqlite_policy=self.sqlite_policy,
         )
         return SelectedTrainingTask("v1", dates, partial(_run_v1, execute))
@@ -249,6 +250,7 @@ class _TrainingTaskFactory:
                 else selection.cpu_budget.profile_threads.for_profile(profile),
                 execution_options=selection.execution_options,
                 memory_capacity_bytes=selection.memory_capacity_bytes,
+                execution_observer=self.measurements,
             ), sqlite_policy=self.sqlite_policy,
         )
         if reused is not None:
