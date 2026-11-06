@@ -398,7 +398,7 @@ class ProductionModelScoringService:
         population.update((feature.quote.code, feature) for feature in features)
         rows_started = self._monotonic()
         prepared_rows = self._shared_features.prepare_rows(
-            self._input_population(tuple(population.values())),
+            self._feature_population(tuple(population.values())),
             self._row_contract,
         )
         rows, missing_population_codes = prepared_rows.rows, prepared_rows.missing_codes
@@ -628,17 +628,20 @@ class ProductionModelScoringService:
         )
         return batch
 
-    def _input_population(self, features: tuple[FeatureSnapshot, ...]) -> tuple[FeatureSnapshot, ...]:
+    def _feature_population(self, features: tuple[FeatureSnapshot, ...]) -> tuple[FeatureSnapshot, ...]:
         if self._predictor.profile_id != "v5":
             return features
-        return tuple(feature for feature in features if self.is_input_eligible(feature))
+        # Match the training reference before industry fitting qualifies model coverage.
+        # Raw-field, history-quality and point-in-time industry checks belong to prepare_rows.
+        return tuple(feature for feature in features if _valid_sequence(feature))
 
     def _cost_reference(
         self,
         features: tuple[FeatureSnapshot, ...],
         population_identity: str,
     ) -> _CostReference:
-        features = self._input_population(features)
+        if self._predictor.profile_id == "v5":
+            features = tuple(feature for feature in features if self.is_input_eligible(feature))
         rows = self._shared_features.prepare_rows(features, self._row_contract).rows
         eligible = tuple(
             row for row in rows if not self._exposure_contract.requires_industry or row.industry in self._industry_ids
