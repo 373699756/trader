@@ -41,11 +41,15 @@
 | `daily_price_observation` | sync_sequence、revision_id | 观察与修订的可见关系 |
 | `HistoryTrainingRow` | code、trade_date、board、industry、cell_status | 训练窄投影、行业和日历对齐 |
 | `HistoryTrainingPoint` | qfq_close_price、qfq_open、qfq_high、qfq_low | 收益、动量、波动及V5价格通道 |
-| 同对象 | raw_volume | 实际成交股数及V5量通道 |
-| 同对象 | qfq_amount | 模型合同金额输入；须追到存储及adapter确认与原始实际金额的关系 |
+| 同对象 | raw_volume | 未复权分支的成交量，下载合同单位为股；进入V5量通道，不取qfq_volume |
+| 同对象 | qfq_amount | qfq分支随价格取得的成交额，下载合同单位为元；用于20日均额、V1金额因子和V5金额通道，未按价格复权比重新计算 |
 | 历史行业参考 | 行业ID、日期、生效与版本 | 当时行业、横截面、行业模型，不能用当前行业倒填 |
 
 源表全列的SQL类型、单位、来源和索引归d第8章；本表只解释训练消费。尤其量额必须沿真实解析链核对，不因qfq字段名猜测或改公式。
+
+当前消费者追链与b第5.1节一致：年度库`history_prices._TRAINING_RANGE_SQL`的量额列只取`raw_volume`及`qfq_amount`，`_decode_training_row`构造`HistoryTrainingPoint`；`AlignTrainingRows`再按市场日历保留交易、确认停牌及估值状态。V1的`profile/v1/samples._complete_point`把金额交给完成日十因子；V2/V3/V5的`sample_builder._pending_sample`计算20日均额，V5的`_sequence_point`将原始量和qfq分支金额交给唯一序列公式，分别形成`log1p(volume)`和`log1p(amount)`。停牌估值的零量额由共享日历对齐规则产生，不改写年度原始事实；缺失、非有限或不满足各档准入的值不能通过换列或补0掩盖。
+
+这份追链确认当前代码读取的列及消费方式。腾讯解析的手→股、万元→元换算与raw/qfq分支写入由b第5.1节及d维护；未据此断言各供应商历史逐值一致、`raw_amount == qfq_amount`或已完成B的全历史审计。当前输入/工件的实际身份与覆盖另由本轮真实训练报告交接。
 
 ### 3.2 样本数据库
 
@@ -582,7 +586,7 @@ CPU候选为baseline、two_plus_one及three_single。后两者仅在诊断作用
 
 完整三负载曾在同机耗9113秒，不能套通用工具外层7200秒上限。持久后台沿已注册`training_alignment`内部worker逐child执行，另设6小时监督上限并立即落盘stdout、stderr、GNU time和核对记录；不缩负载躲超时。核对成功才原子固定输入/配置/数值身份，恢复时重验原报告摘要；候选纯数值差异明确拒绝该候选，源/配置/缺证据或基线失败停止依赖轮次。只停止本队列实际拥有的子树，跨session也按进程出生身份核对，不按名称停止其它进程；监督期限使用持久单调起点，重启不重置，跨boot先核验再续。
 
-已有`benchmark_process.py`通过`RunTrainingBenchmarkProcess`监督单个真实负载，复用同文件的受管进程树取消；调用方先核算实际输出盘和峰值预算，再显式传入恢复空间下限。监督每秒检查剩余空间、累计墙钟及stdout/stderr大小，超限只取消该child并保留日志，观察失败或控制器中断也先回收；返回实际退出码、退出原因、完整墙钟和观察到的最小可用空间。单child期限至多6小时，默认日志上限64MiB，日志采用独占新建，已有报告不得覆盖；这些是运行保护和诊断证据，不是性能或质量通过结论。
+已有`benchmark_process.py`通过`RunTrainingBenchmarkProcess`监督单个真实负载，复用同文件的受管进程树取消；调用方先核算实际输出盘和峰值预算，再显式传入恢复空间下限。监督每秒检查剩余空间、累计墙钟及stdout/stderr大小，超限只取消该child并保留日志，观察失败或Python的`KeyboardInterrupt`也先回收；返回实际退出码、退出原因、完整墙钟和观察到的最小可用空间。单child期限至多6小时，默认日志上限64MiB，日志采用独占新建，已有报告不得覆盖；这些是运行保护和诊断证据，不是性能或质量通过结论。
 
 V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON，保留目标、树值、特征/类别信息及外层系数、校准、iteration和原报告；不把`num_threads`等拟合记录当预测数值。任何真实树值（含一个ULP）、变换、校准或指标变化仍拒绝等价，V3/V5保留原完整值。此投影只用于诊断比较，不改模型文件、正式身份或预测器。
 
@@ -610,7 +614,7 @@ V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON
 
 以下是三负载测量合同，实际运行状态和结果只记g对应阶段。每次在同机独占测量窗口固定代码提交、配置摘要、发布快照/日历/总体、模型与样本状态、实际磁盘类型和宿主限制；配置写ssd不是设备证明。历史默认从仓库外冻结副本读取；显式选择下述已发布历史只读模式时，可以直接使用配置指向的历史，不复制整套价格文件。训练输出始终使用新建且与历史不嵌套、在项目和活动数据之外的仓库外目录，不清空活动数据或当前模型。
 
-已有`training_alignment`内部worker支持`--published-history-read-only`和`--sample-cache-transfer hardlink`，统一入口的参数整合仍交A按P61处理。前者只接受配置指向的已发布历史，真实训练继续取得原历史/档位锁；诊断边界强制源目录的SQLite连接使用`mode=ro`，将到期提醒查询的`persist`改为false，实际拟合函数保持原样。整次测量前后核对源快照及catalog/价格/参考文件、非空WAL和`.sha256`发布凭证的身份、大小、mtime与ctime；等长改写后恢复mtime仍算变化，凭证为符号链接或非普通文件明确拒绝。变化后报告不可比，不写源库或切换模型。只读模式的这两项守卫在报告中明确标记，不把它写成无诊断干预的产品整链。
+已有`training_alignment`内部worker支持`--published-history-read-only`和`--sample-cache-transfer hardlink`，统一入口的参数由A按P61维护，338已交付对应训练参数与路由。前者只接受配置指向的已发布历史，真实训练继续取得原历史/档位锁；诊断边界强制源目录的SQLite连接使用`mode=ro`，将到期提醒查询的`persist`改为false，实际拟合函数保持原样。整次测量前后核对源快照及catalog/价格/参考文件、非空WAL和`.sha256`发布凭证的身份、大小、mtime与ctime；等长改写后恢复mtime仍算变化，凭证为符号链接或非普通文件明确拒绝。变化后报告不可比，不写源库或切换模型。只读模式的这两项守卫在报告中明确标记，不把它写成无诊断干预的产品整链。
 
 硬链接选项只连接本轮隔离准备目录中的合法封存样本，不能连接活动样本或模型；失败明确报告，不隐藏回退为复制。目标执行真实重新拟合及成功清理，前后用流式摘要核验保留的源缓存不变；单列`linked_bytes`，`copied_bytes`必须为0，V1仍不适用。成功核验后仅释放本轮受管准备样本，报告保留前后摘要与释放标记，下一轮不累积整套缓存；发现未知对象先全量拒绝，不删除任何准备样本。该选项减少诊断额外副本，不改变生产样本生命周期或模型参数。资源报告采样文件系统开始及最小可用字节；它包含同盘其它进程的占用，不能冒称本作业精确文件峰值。
 
@@ -640,6 +644,7 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 | --- | --- | --- |
 | `training/jobs/training_alignment.py` | 隔离历史全训练/复用/工件加载；也含只读V1 model-inputs；训练模式写外部模型/样本 | `tools.py`、`jobs/training_performance.py`及对应测试；保留功能，按输入与整作业检查分组，不能误删model-inputs |
 | `training/jobs/training_performance.py` | 生成串并行/隔离checkout子进程命令，比较总耗时、身份、复用；无网络，子进程写隔离输出 | 公共入口及alignment的复用检查、`test_training_performance.py`；保留编排与唯一比较实现，不能删除仍被alignment调用的函数 |
+| `training/jobs/benchmark_process.py` | 监督单负载的期限/输出/剩余空间，按出生身份取消受管进程树；日志只新建，停止范围不含其它作业 | performance后台与`test_training_benchmark_process.py`；内部复用，无第二公开入口，运行保护不签性能通过 |
 | `training/samples/training_coverage.py` | 格式2样本统计、标签覆盖，只读；不重训 | 公共入口、`test_training_coverage.py`；保留，不将T+1观察投影当完整D25结果 |
 | `training/resources/training_resources.py` | 合成64×64矩阵，CPU预约/原生限制/取消归还；不读历史、不训练 | 公共入口、`test_training_resources.py`；保留资源冒烟，不作为真实四档并行基线 |
 | `training/resources/training_process_measurement.py`、`training/jobs/training_source_guard.py`（325新增/扩展） | 内部资源采样及已发布历史只读守卫；无独立入口，源SQLite只读、提醒不持久化，退出恢复函数/采样线程 | training_alignment及其定向测试；沿338的当前scripts/training目录交付，保留显式模式、空间口径和守卫标记 |
@@ -656,22 +661,22 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 
 内存检查由`core/catalog.py`的memory动作注册，脚本工具表与`tests/conftest.py::_TRAINING_SCRIPT_PATHS`同步；`scripts/engineering/quality/debt.py::TOP_LEVEL_SCRIPT_MANIFEST`只核对tools.py公开根入口，不维护另一份内存入口名单。其输出schema `tomorrow_training_memory_gate`被产品`src/trader/training/infra/history/repack_training_evidence.py::ReadTomorrowTrainingMemoryEvidence`用于重排证据核验；该证据消费者必须同步保留字段、摘要和身份要求，不能只更新入口命令就删旧报告合同。
 
-A需接收的具体接口需求如下：
+以下交接记录保留原接口需求及核销位置；321/338/345已交付部分不重复派发，真实采用和性能仍按g取证：
 
 1. 独立train继续使用 `ExecuteSelectedTraining(runtime, scoring_profiles, *, history_root=None, training_root=None)`；它返回聚合退出码，所选档位和资源由唯一组合根组装。切换CLI时保留主线程取消及原有档位选择，不添加自动下载fallback。
-2. 基线 `e69d3e02`的 `ExecuteDownloadTrain`活动消费者有 `entrypoints/cli.py::_run_history_download`、`test_profile_selection.py::test_training_selection_prepares_history_once_and_runs_only_selected_profiles`、`test_entry_contract.py::test_train_stops_before_training_on_history_failure`；还须清理CLI中训练专用的下载日历错误投影。两项旧测试期待“先下载”，不能直接当独立训练合同的通过证据。A完成调用者切换时同批删除旧组合函数和旧断言。
-3. C接收A的作业级不可变资源类型，字段/单位覆盖第6.2节运行参数；A改公共解析与bootstrap注入，C改训练消费及必要回归。`features.json`由A修改，C只提交第3.5节列序、单位和缺失需求；不改变公式owner。
+2. 基线 `e69d3e02`的 `ExecuteDownloadTrain`旧消费者包括 `entrypoints/cli.py::_run_history_download`及两项期待“先下载”的训练测试；321已切换独立训练入口并删除旧组合函数和相应断言。它们只作历史定位，不能再按旧路径新增兼容层或作为当前验收用例。
+3. 作业级不可变资源类型及第6.2节参数已经345接通，C获授权完成该批公共解析、bootstrap注入和全部训练消费者；后续公共边界仍由A维护。`features.json`由A定义，C维护第3.5节列序、单位和缺失需求，不改变公式owner。
 4. 统一检测需要保留原history/config/样本根、所选profile、隔离输出目录、baseline checkout、候选配置、超时与取消语义；显式标记纯检查、合成写入和真实隔离拟合。当前每项报告的失败/取消/超时/不适用不能压成一个空结果；最终参数与白名单由A统一裁决。
 
-独立train验收至少包含：供应商调用为0、下载断点不变、资料缺失明确失败、所选档位及八头工件按合同、取消退出与资源归还、单头/校准/部分落盘失败保留旧模型。这里只列验收和消费者，没有运行这些测试或业务命令。
+独立train验收至少包含：供应商调用为0、下载断点不变、资料缺失明确失败、所选档位及八头工件按合同、取消退出与资源归还、单头/校准/部分落盘失败保留旧模型。各切片已有功能及真实训练证据见g原325/333/334/337/343–347；本节不新增或补签证据，当前身份的整体验收和服务采用仍分列。
 
 ### 9.3 V1/V5专项数值与相对质量验收
 
 V1以具名列的float64位模式、负零、每头缺失标签、日期/代码/行业顺序及按日query分组为数值合同；同一次双头读取各有可写矩阵，改动一头不得影响另一头。跨4096行批次的取消或非法值失败由调用者ExitStack关闭全部映射，连接仍可用于下一次合法读取。V5宽列与重叠序列、共享行业读取及TCN批次缓存分别检查数值、顺序、独立双头和异常/取消关闭；这些功能证据不替代D的完整负载性能。
 
-当前`checks/training/v5_lite.py`注册worker支持`--quality-only`跳过内核性能探针，使用显式`--reference-config`及`--candidate-config`固定两组配置。两组拟合日和行业行数门相同，按双方合格行业的Tomorrow训练行数选择最小/中位/最大行业，对每个行业的两头各比较一次；六组全部通过才形成完整相对质量证据。原RMSE不超过参考1.05倍、日期平均RankIC下降不超过0.01的门和失败即停、三小时质量预算保持。数值、确认区、门槛不因结果而调整，不授予收益或生产资格；原确认区不用于反复搜索参数。
+当前`scripts/training/models/v5_lite.py`注册worker支持`--quality-only`跳过内核性能探针，使用显式`--reference-config`及`--candidate-config`固定两组配置。两组拟合日和行业行数门相同，按双方合格行业的Tomorrow训练行数选择最小/中位/最大行业，对每个行业的两头各比较一次；六组全部通过才形成完整相对质量证据。原RMSE不超过参考1.05倍、日期平均RankIC下降不超过0.01的门和失败即停、三小时质量预算保持。数值、确认区、门槛不因结果而调整，不授予收益或生产资格；原确认区不用于反复搜索参数。
 
-用户最新明确默认和后台都用10轮，沿用早停耐心3、相对阈值0.005和1线程；61日、5000行、8通道、float32及batch256保持。此前短暂选择的30轮恢复/参考运行已撤销，未启动真实30轮作业；旧30轮报告只读保留。10轮方案在C27 D25未过原相对质量门的结论不变，不能用10对10补签为通过，也不在同一确认区调参搜索。数值一致性/生命周期、预测相对质量和扣成本后的荐股收益分别判断；较多轮数不构成荐股更好的证据。本次用户恢复C并说明换到HDD PC，已授权新建独立HDD诊断样本；旧SSD输入缺失时保留原失败及身份，不将本机新输入视作其恢复。
+用户最新明确默认和后台都用10轮，沿用早停耐心3、相对阈值0.005和1线程；61日、5000行、8通道、float32及batch256保持。此前短暂选择的30轮恢复/参考运行已撤销，未启动真实30轮作业；旧30轮报告只读保留。10轮方案在C27 D25未过原相对质量门的结论不变，不能用10对10补签为通过，也不在同一确认区调参搜索。数值一致性/生命周期、预测相对质量和扣成本后的荐股收益分别判断；较多轮数不构成荐股更好的证据。历史HDD恢复时已获授权新建独立HDD诊断样本，不能视作旧SSD输入的恢复；两台机器原质量结论及证据分别保留，当前介质与作业状态只按g的最新接续记录。
 
 已有诊断封存样本直接以--sample-root配合--quality-only使用，不传--prepare-samples，不从完整历史重新生成，也不改旧清单/生产者身份以迎合新实现或拟合配置。显式输入仍按原SampleFormatId、split、源清单摘要及只读复制保护核验，报告保留原来源身份；这不授予新普通训练缓存的复用资格。双副本和缓存使用仓库外独立目录并核对实际设备/文件系统；/tmp是否tmpfs必须逐机核实，不以路径名判介质。质量结果和完整全负载性能分别记录，争用观测不当性能通过。
 
