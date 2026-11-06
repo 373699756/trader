@@ -202,6 +202,17 @@ class LearnedRankPredictionMetrics:
             raise ValueError("learned-rank prediction metrics are invalid")
 
 
+LEARNED_RANK_INDUSTRY_CLASSIFICATION = "中国上市公司协会上市公司行业分类标准"
+LEARNED_RANK_INDUSTRY_PREFIX = "capco:"
+
+
+def IsLearnedRankIndustryIdentity(industry: str) -> bool:
+    return (
+        industry.startswith(LEARNED_RANK_INDUSTRY_PREFIX)
+        and bool(industry[len(LEARNED_RANK_INDUSTRY_PREFIX):].strip())
+    )
+
+
 LEARNED_RANK_CONTRACT = (
     "learned_rank_completed_daily",
     LEARNED_RANK_FEATURE_IDS,
@@ -213,6 +224,8 @@ LEARNED_RANK_CONTRACT = (
     "daily_equal_weight_inverse_query_size_no_lambda_normalization",
     "lambdarank_top10_ndcg6_shared_ridge_calibrated_gross",
     "shared_numeric_features_no_categorical_exposure_unknown_industry_allowed_at_inference",
+    ("industry_classification", LEARNED_RANK_INDUSTRY_CLASSIFICATION),
+    ("industry_id_prefix", LEARNED_RANK_INDUSTRY_PREFIX),
     "engineering_shadow_no_return_validation_no_production_authority",
 )
 
@@ -251,6 +264,8 @@ class LearnedRankHead:
 
     def __post_init__(self) -> None:
         width = len(LEARNED_RANK_FEATURE_IDS)
+        if any(not IsLearnedRankIndustryIdentity(industry) for industry in self.industries):
+            raise ValueError("learned_rank_industry_classification_invalid")
         if (
             self.strategy not in {Strategy.TOMORROW, Strategy.D25}
             or len(self.training_contract_hash) != 64
@@ -387,6 +402,9 @@ class LearnedRankFinalPair(LearnedRankPair):
 
 
 __all__ = [
+    "IsLearnedRankIndustryIdentity",
+    "LEARNED_RANK_INDUSTRY_CLASSIFICATION",
+    "LEARNED_RANK_INDUSTRY_PREFIX",
     "LearnedRankContractHash",
     "LearnedRankFinalContractHash",
     "BuildLearnedRankDateSplit",

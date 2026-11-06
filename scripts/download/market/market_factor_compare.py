@@ -63,9 +63,9 @@ from scripts.download.market.market_factor_audit import QuoteAudit
 from scripts.download.market.market_factor_audit import QuoteFieldsComplete
 from scripts.download.market.market_factor_auxiliary import AuxiliaryInputs
 from scripts.download.market.market_factor_auxiliary import ProbeAuxiliary
-from scripts.download.market.market_factor_baostock import BaostockCapability
-from scripts.download.market.market_factor_baostock import BaoStockSourceResults
-from scripts.download.market.market_factor_baostock import ProbeBaoStockIndustry
+from scripts.download.market.market_factor_industry import IndustryCapability
+from scripts.download.market.market_factor_industry import IndustrySourceResults
+from scripts.download.market.market_factor_industry import ProbeIndustryReferences
 from scripts.download.market.market_factor_budget import MARKET_SOURCE_LOOP_LIMIT_SECONDS
 from scripts.download.market.market_factor_budget import MARKET_TASK_LIMIT_SECONDS
 from scripts.download.market.market_factor_budget import DiagnosticBudget
@@ -81,7 +81,7 @@ from scripts.core.reporting import emit_report
 from scripts.core.reporting import summarize_latency_ms
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_SOURCES = ("tencent", "eastmoney", "sina", "baostock")
+_SOURCES = ("tencent", "eastmoney", "sina", "cninfo")
 _QUOTE_SOURCES = frozenset({"tencent", "eastmoney", "sina"})
 _SOURCE_WORKERS = {"tencent": 3, "eastmoney": 6, "sina": 5}
 
@@ -778,7 +778,7 @@ def CompactSummary(
     eligible_population: int,
     eligibility: dict[str, object],
     compared_sources: tuple[str, ...],
-    baostock_results: list[dict[str, object]],
+    industry_results: list[dict[str, object]],
     preparation: list[dict[str, object]],
     reference_setup_ms: float,
     industry_probe: dict[str, object],
@@ -786,7 +786,7 @@ def CompactSummary(
     budget: dict[str, object],
 ) -> dict[str, object]:
     sources = SummarizeSources(acquisitions)
-    sources.extend(baostock_results)
+    sources.extend(industry_results)
     routes = SummarizeRoutes(samples, profiles[0])
     single_route_timings = {
         (route.get("scope"), route.get("route")): route.get("timings_ms")
@@ -834,7 +834,7 @@ def CompactSummary(
             "validation_realtime_fields": list(VALIDATION_QUOTE_FIELDS),
             "ignored_realtime_fields": list(IGNORED_REALTIME_FIELDS),
             "qfq": "local SQLite input; intentionally excluded from supplier field ranking",
-            "model_industry": "validated local industry_queries SQLite; BaoStock refresh every seven days",
+            "model_industry": "validated local industry_queries SQLite; CNINFO industry references prepared outside quote routing",
             "research": "independent financial/announcement/risk evidence",
             "intraday_minutes": "independent candidate minute series",
         },
@@ -871,7 +871,7 @@ def CompactSummary(
             "Input-seal and scoring timings do not include API/SSE/Web publication latency",
             "Eastmoney is a diagnostic-only source; the production market lane remains retired",
             "speed and change_5m are not requested by this diagnostic because they do not enter the active candidate filter, local final score, model gate, or missing-input penalty",
-            "local CSRC industry has zero numeric score weight but supplies final concentration and model exposure from one validated query",
+            "local CAPCO industry has zero numeric score weight but supplies final concentration and model exposure from one validated query",
         ],
     }
 
@@ -905,7 +905,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
     started = time.monotonic()
     local_references = ReadReferences(settings.data_paths.reference, at, sqlite_policy=sqlite_policy)
     base_references = local_references
-    baostock_capability: BaostockCapability | None = None
+    industry_capability: IndustryCapability | None = None
     comparison_references = base_references
     client = ExchangeSecurityMasterClient(
         sse_fetcher=partial(FetchSseListings, get=FetchExternalHttp),
@@ -944,8 +944,8 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
     all_codes = eligibility_index.filter_codes(official_codes, at)
     allowed_codes = set(all_codes)
     official = tuple(item for item in official if item.subject_key in allowed_codes)
-    if "baostock" in args.sources:
-        baostock_capability = ProbeBaoStockIndustry(
+    if "cninfo" in args.sources:
+        industry_capability = ProbeIndustryReferences(
             local_references.model_industries, local_references.industry_read_ms
         )
     setup_ms = _elapsed(started)
@@ -1071,16 +1071,16 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
             pool.stop(wait=True, cancel_futures=True)
     industry_probe: dict[str, object] = (
         {
-            "source": "baostock",
-            "mode": baostock_capability.mode,
+            "source": "cninfo",
+            "mode": industry_capability.mode,
             "live_rows": 0,
-            "cached_rows": len(baostock_capability.published_industries),
-            "published_rows": len(baostock_capability.published_industries),
+            "cached_rows": len(industry_capability.published_industries),
+            "published_rows": len(industry_capability.published_industries),
             "invalid_rows": 0,
             "error": None,
             "elapsed_ms": local_references.industry_read_ms,
         }
-        if baostock_capability is not None
+        if industry_capability is not None
         else {
             "source": "local_sqlite",
             "mode": "cached_only",
@@ -1089,14 +1089,14 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
             "elapsed_ms": local_references.industry_read_ms,
         }
     )
-    baostock_results = (
-        BaoStockSourceResults(
-            baostock_capability,
+    industry_results = (
+        IndustrySourceResults(
+            industry_capability,
             tuple((size or "full_market", SelectCodes(official, size)) for size in args.sizes),
             args.rounds,
             QUOTE_FIELDS,
         )
-        if baostock_capability is not None
+        if industry_capability is not None
         else []
     )
     summary = CompactSummary(
@@ -1114,7 +1114,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
             "last_error": eligibility_status.last_error,
         },
         compared_sources=tuple(args.sources),
-        baostock_results=baostock_results,
+        industry_results=industry_results,
         preparation=preparation,
         reference_setup_ms=setup_ms,
         industry_probe=industry_probe,
@@ -1178,8 +1178,8 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
         "schema_version": "market-factor-comparison",
         "status": "degraded"
         if any(sample["status"] == "measured" for sample in samples)
-        or baostock_capability is not None
-        and bool(baostock_capability.published_industries)
+        or industry_capability is not None
+        and bool(industry_capability.published_industries)
         else "failed",
         "summary": summary,
         "findings": findings,

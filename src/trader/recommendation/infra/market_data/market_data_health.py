@@ -124,7 +124,7 @@ class MarketDataHealth:
             }
         model_industry_health = self._references.model_industry_health()
         if model_industry_health is not None:
-            sources["baostock_industry"] = {
+            sources["cninfo_industry"] = {
                 "enabled": True,
                 "planned_count": model_industry_health.planned_count,
                 "success_count": model_industry_health.success_count,

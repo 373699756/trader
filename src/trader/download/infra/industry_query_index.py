@@ -8,13 +8,16 @@ from dataclasses import field
 import hashlib
 import json
 import sqlite3
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 
 from trader.download.domain.industry_evidence import OfficialIndustryEvidence
+from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError
 from trader.download.infra.industry_evidence_codec import IndustryEvidencePayload, LoadReviewedIndustryEvidence, ParseIndustryEvidence
 
 from trader.infra.sqlite_codec import DecodeHash, EncodeHash
@@ -32,15 +35,53 @@ _EVIDENCE_DDL = """CREATE TABLE official_industry_evidence(
     payload TEXT NOT NULL
 ) WITHOUT ROWID"""
 _EVIDENCE_INDEX_DDL = "CREATE INDEX official_industry_interval ON official_industry_evidence(code,effective_from,effective_to)"
+_SOURCE_DDL = """CREATE TABLE industry_source_document(
+    request_key TEXT NOT NULL, requested_start TEXT NOT NULL, requested_end TEXT NOT NULL,
+    received_at TEXT NOT NULL, payload BLOB NOT NULL,
+    content_hash BLOB NOT NULL CHECK(length(content_hash)=32),
+    receipt_hash BLOB NOT NULL CHECK(length(receipt_hash)=32),
+    PRIMARY KEY(request_key,received_at,content_hash)
+) WITHOUT ROWID"""
 
 _SCHEMA = SqliteSchema(
     tuple(
         f"CREATE TABLE {table} ({date_column} TEXT PRIMARY KEY, source TEXT NOT NULL, "
         "checked_date TEXT NOT NULL, members_json TEXT NOT NULL, "
         "content_hash BLOB NOT NULL CHECK(length(content_hash)=32)) WITHOUT ROWID"
-        for table, date_column in (("industry_query", "anchor_date"), ("current_industry_query", "as_of_date"))
-    ) + (_EVIDENCE_DDL, _EVIDENCE_INDEX_DDL),
+        for table, date_column in (("current_industry_query", "as_of_date"),)
+    ) + (_EVIDENCE_DDL, _EVIDENCE_INDEX_DDL, _SOURCE_DDL),
 )
+
+
+@dataclass(frozen=True)
+class IndustrySourceDocument:
+    request_key: str
+    requested_from: date
+    requested_to: date
+    received_at: datetime
+    content: bytes
+
+    def __post_init__(self) -> None:
+        if (
+            re.fullmatch(r"cninfo:p_(?:public0002:008001|stock2110:[0-9]{6})", self.request_key) is None
+            or type(self.requested_from) is not date or type(self.requested_to) is not date
+            or self.requested_from > self.requested_to
+            or self.received_at.utcoffset() != timedelta(hours=8)
+            or self.requested_to > self.received_at.date()
+            or not isinstance(self.content, bytes) or not 0 < len(self.content) <= 2 * 1024 * 1024
+        ):
+            raise ValueError("industry_source_document_invalid")
+
+    @property
+    def content_hash(self) -> str:
+        return hashlib.sha256(self.content).hexdigest()
+
+    @property
+    def receipt_hash(self) -> str:
+        return hashlib.sha256(json.dumps(
+            (self.request_key, self.requested_from.isoformat(), self.requested_to.isoformat(),
+             self.received_at.isoformat(), self.content_hash), separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -56,17 +97,17 @@ class IndustryQuery:
 class SQLiteIndustryQueryIndex:
     path: Path
     contract: str
-    table: str = "industry_query"
+    table: str = "current_industry_query"
 
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
 
     def __post_init__(self) -> None:
-        if self.table not in {"industry_query", "current_industry_query"}:
+        if self.table != "current_industry_query":
             raise ValueError("industry_query_table_invalid")
 
     @property
     def _date_column(self) -> str:
-        return "anchor_date" if self.table == "industry_query" else "as_of_date"
+        return "as_of_date"
 
     def prepare(self) -> None:
         if self.path.is_symlink() or self.path.parent.is_symlink():
@@ -75,6 +116,66 @@ class SQLiteIndustryQueryIndex:
         try:
             with SqliteSession(self.path, SqliteConnectionOptions(), sqlite_policy=self.sqlite_policy) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
+        except sqlite3.Error as exc:
+            if str(exc) == "sqlite_schema_unsupported":
+                raise IndustryDatabaseIncompatibleError("industry_database_incompatible") from exc
+            raise RuntimeError("industry_query_cache_unavailable") from exc
+
+    def read_source_document(self, request_key: str, as_of: datetime) -> IndustrySourceDocument | None:
+        if as_of.utcoffset() != timedelta(hours=8):
+            raise ValueError("industry_source_observation_invalid")
+        if not self.path.is_file():
+            return None
+        try:
+            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self.sqlite_policy) as connection:
+                EnsureSqliteSchema(connection, _SCHEMA)
+                row = connection.run(
+                    "SELECT request_key,requested_start,requested_end,received_at,payload,content_hash,receipt_hash "
+                    "FROM industry_source_document WHERE request_key=? AND received_at<=? "
+                    "ORDER BY received_at DESC LIMIT 1", (request_key, as_of.isoformat()),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise RuntimeError("industry_query_cache_unavailable") from exc
+        if row is None:
+            return None
+        document = IndustrySourceDocument(
+            row[0], date.fromisoformat(row[1]), date.fromisoformat(row[2]), datetime.fromisoformat(row[3]), row[4],
+        )
+        if DecodeHash(row[5]) != document.content_hash or DecodeHash(row[6]) != document.receipt_hash:
+            raise ValueError("industry_source_document_hash_conflict")
+        if document.received_at > as_of:
+            return None
+        return document
+
+    def save_source_document(self, document: IndustrySourceDocument) -> None:
+        self.prepare()
+        try:
+            with (
+                SqliteSession(self.path, SqliteConnectionOptions(), sqlite_policy=self.sqlite_policy) as connection,
+                SqliteTransaction(connection),
+            ):
+                previous = connection.run(
+                    "SELECT received_at,requested_start,requested_end,content_hash FROM industry_source_document WHERE request_key=? "
+                    "ORDER BY received_at DESC LIMIT 1",
+                    (document.request_key,),
+                ).fetchone()
+                if previous is not None and (
+                    datetime.fromisoformat(previous[0]) > document.received_at
+                    or date.fromisoformat(previous[1]) < document.requested_from
+                    or date.fromisoformat(previous[2]) > document.requested_to
+                ):
+                    raise ValueError("industry_source_document_would_shrink")
+                if previous is not None and datetime.fromisoformat(previous[0]) == document.received_at and (
+                    DecodeHash(previous[3]) != document.content_hash
+                    or date.fromisoformat(previous[1]) != document.requested_from
+                    or date.fromisoformat(previous[2]) != document.requested_to
+                ):
+                    raise ValueError("industry_source_document_time_conflict")
+                connection.run(
+                    "INSERT OR IGNORE INTO industry_source_document VALUES(?,?,?,?,?,?,?)",
+                    (document.request_key, document.requested_from.isoformat(), document.requested_to.isoformat(),
+                     document.received_at.isoformat(), document.content, EncodeHash(document.content_hash), EncodeHash(document.receipt_hash)),
+                )
         except sqlite3.Error as exc:
             raise RuntimeError("industry_query_cache_unavailable") from exc
 
@@ -248,4 +349,8 @@ class SQLiteIndustryQueryIndex:
 
 
 
-__all__ = ["IndustryQuery", "SQLiteIndustryQueryIndex"]
+__all__ = [
+    "IndustryQuery",
+    "IndustrySourceDocument",
+    "SQLiteIndustryQueryIndex",
+]

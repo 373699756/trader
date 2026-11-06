@@ -9,7 +9,7 @@ from trader.recommendation.domain.market.models import MarketQuote, ModelIndustr
 
 
 def QuoteWithIndustry(quote: MarketQuote, reference: ModelIndustryReference | None, as_of: date) -> MarketQuote:
-    industry = reference.industry_id if reference is not None and reference.effective_date <= as_of else ""
+    industry = reference.display_name if reference is not None and reference.effective_date <= as_of else ""
     return quote if quote.industry == industry else replace(quote, industry=industry)
 
 

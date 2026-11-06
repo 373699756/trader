@@ -1,106 +1,44 @@
-"""Prepare dated industry evidence before opening a supplier session."""
+"""Inspect CNINFO candidates without promoting change dates to disclosure evidence."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import date
-from itertools import groupby
+from datetime import date, datetime
 
-from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockIndustryInterval, BaoStockSecurity
-from trader.download.domain.history_sync import HistorySyncProgress
-from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-
-
-@dataclass(frozen=True)
-class IndustryPreparationRequest:
-    calendar: BaoStockCalendar
-    universe: tuple[BaoStockSecurity, ...]
-    source: str
-    fetch: Callable[[date], tuple[BaoStockIndustryInterval, ...]]
-    cache: HistoryIndustryQueryCache | None = None
-    progress: Callable[[HistorySyncProgress], None] | None = None
-    cancel_requested: Callable[[], bool] = lambda: False
+from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.domain.history_sync import HistoryIndustryReadiness, HistorySyncProgress, HistorySyncProgressPort
+from trader.download.infra.cninfo_industry import ParseCninfoIndustryChanges
+from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
 
 
-def PrepareHistoryIndustries(request: IndustryPreparationRequest) -> tuple[BaoStockIndustryInterval, ...]:
-    calendar = request.calendar
-    universe = request.universe
-    source = request.source
-    fetch = request.fetch
-    cache = request.cache
-    progress = request.progress
-    cancel_requested = request.cancel_requested
-    snapshots = _industry_snapshot_dates(calendar.open_dates)
-    as_of = calendar.open_dates[-1]
-    if cache is not None:
-        cache.prepare(source, snapshots)
-    codes = frozenset(item.code for item in universe)
-    observations: list[BaoStockIndustryInterval] = []
-    for index, snapshot_date in enumerate(snapshots):
+def InspectHistoricalIndustryQueries(
+    index: SQLiteIndustryQueryIndex | None,
+    universe: tuple[BaoStockSecurity, ...],
+    first_date: date,
+    last_date: date,
+    observed_at: datetime,
+    *,
+    cancel_requested: Callable[[], bool],
+    progress: HistorySyncProgressPort | None = None,
+) -> HistoryIndustryReadiness:
+    candidates = 0
+    for position, security in enumerate(universe):
         if cancel_requested():
             raise RuntimeError("supplier_cancelled")
+        document = index.read_source_document("cninfo:p_stock2110:" + security.code, observed_at) if index else None
+        if document is not None:
+            changes = ParseCninfoIndustryChanges(document.content, security.code, document.requested_from, document.requested_to)
+            if document.requested_from <= max(first_date, security.listed_on) and document.requested_to >= last_date:
+                candidates += int(any(item.is_current_standard for item in changes.rows))
         if progress is not None:
-            progress(HistorySyncProgress("supplier_industry", "started", index, len(snapshots), str(snapshot_date)))
-        facts = cache.read(source, snapshot_date, as_of) if cache is not None else None
-        expected_codes = frozenset(
-            item.code
-            for item in universe
-            if item.listed_on <= snapshot_date and (item.delisted_on is None or snapshot_date < item.delisted_on)
-        )
-        # The provider query is market-wide. Missing classifications are evidence
-        # gaps, not evidence that a successfully consumed query must be repeated.
-        reused = facts is not None
-        if facts is None:
-            facts = fetch(snapshot_date)
-            if cancel_requested():
-                raise RuntimeError("supplier_cancelled")
-            if cache is not None:
-                cache.save(source, snapshot_date, as_of, facts)
-        observations.extend(fact for fact in facts if fact.code in codes)
-        if progress is not None:
-            progress(
-                HistorySyncProgress(
-                    "supplier_industry",
-                    "completed",
-                    index + 1,
-                    len(snapshots),
-                    str(snapshot_date),
-                    cache_hit=reused,
-                    industry_missing_codes=len(expected_codes - {fact.code for fact in facts}),
-                )
-            )
-    return _industry_intervals(observations)
+            progress.publish(HistorySyncProgress(
+                "supplier_industry", "completed", position + 1, len(universe), security.code,
+                cache_hit=True if document is not None else None, industry_missing_codes=position + 1,
+            ))
+    # VARYDATE is a classification change date. Neither it nor the download time
+    # establishes when this classification was publicly available in the past.
+    # Keep these originals for later evidence review; price publication may proceed.
+    return HistoryIndustryReadiness(len(universe), candidates, 0)
 
 
-def _industry_intervals(observations: list[BaoStockIndustryInterval]) -> tuple[BaoStockIndustryInterval, ...]:
-    intervals: list[BaoStockIndustryInterval] = []
-    for code, facts in groupby(sorted(observations, key=lambda item: item.code), key=lambda item: item.code):
-        ordered = tuple(sorted({(fact.effective_from, fact.industry, fact.classification) for fact in facts}))
-        for left, right in zip(ordered, ordered[1:], strict=False):
-            if left[0] == right[0] and left[1:] != right[1:]:
-                raise ValueError("BaoStock industry facts conflict at the same effective date")
-        compressed: list[tuple[date, str, str]] = []
-        for value in ordered:
-            if not compressed or value[1:] != compressed[-1][1:]:
-                compressed.append(value)
-        for index, (effective_from, industry, classification) in enumerate(compressed):
-            effective_to = compressed[index + 1][0] if index + 1 < len(compressed) else None
-            intervals.append(BaoStockIndustryInterval(code, effective_from, effective_to, industry, classification))
-    return tuple(sorted(intervals, key=lambda item: (item.code, item.effective_from)))
-
-
-def _industry_snapshot_dates(open_dates: tuple[date, ...]) -> tuple[date, ...]:
-    snapshots = [open_dates[0]]
-    for day in open_dates[1:-1]:
-        previous = snapshots[-1]
-        if (day.year, (day.month - 1) // 6) != (previous.year, (previous.month - 1) // 6):
-            snapshots.append(day)
-    if open_dates[-1] != snapshots[-1]:
-        snapshots.append(open_dates[-1])
-    if len(snapshots) > 64:
-        raise ValueError("industry_cache_dates_invalid")
-    return tuple(snapshots)
-
-
-__all__ = ["IndustryPreparationRequest", "PrepareHistoryIndustries"]
+__all__ = ["InspectHistoricalIndustryQueries"]

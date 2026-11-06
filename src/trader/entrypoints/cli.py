@@ -64,7 +64,6 @@ def BuildParser() -> argparse.ArgumentParser:
     )
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
-    sync.add_argument("--industry-evidence", type=Path, help="导入已人工核验且附本地官方PDF的行业补缺证据，再执行本次同步。")
     sync.add_argument("--fill", action=_FillFlag, nargs=0, default=False, help="补充所选资料的缺口：history/market 自动用 BaoStock；company 补历史及正文并自动 OCR/扩限。")
     subparsers.add_parser(
         "history-automation-status",
@@ -130,7 +129,6 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
                     args.target,
                     cancel_requested=cancelled.is_set,
                     fill_missing=args.fill,
-                    industry_evidence_file=args.industry_evidence,
                 )
             except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
                 print(json.dumps({"status": "failed", "failure": "sync_input_invalid", "category": type(exc).__name__}))

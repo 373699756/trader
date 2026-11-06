@@ -52,7 +52,8 @@ def st_sources(monkeypatch):
             pass
 
     class Session:
-        def __init__(self):
+        def __init__(self, *, identity_content_encodings=()):
+            assert identity_content_encodings in ((), ("normal",))
             self.closed = False
             sessions.append(self)
 
@@ -79,7 +80,7 @@ def st_sources(monkeypatch):
         "FetchAkshareCalendar",
         lambda *_args, **_kwargs: tuple(NOW.date() - timedelta(days=offset) for offset in range(250, -1, -1)),
     )
-    monkeypatch.setattr(bootstrap.CurrentIndustryPublication, "fetch", lambda self, at: ())
+    monkeypatch.setattr(bootstrap.CurrentIndustryPublication, "fetch", lambda self, at, universe, calendar: ())
     monkeypatch.setattr(
         bootstrap,
         "LoadHistorySyncConfiguration",
@@ -177,9 +178,8 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(
         def __exit__(self, *_args):
             pass
 
-        def load_industry_context(self, calendar, universe, **options):
-            assert tuple(item.code for item in universe) == ("600001", "600005", "600007")
-            return super().load_industry_context(calendar, universe, **options)
+        def load_context(self, *_args, **_options):
+            raise AssertionError("BaoStock must not prepare history references")
 
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Prices)
     monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: Industry(_DAYS))

@@ -103,7 +103,7 @@ def test_current_uses_separate_classified_industry_without_changing_frozen_histo
             assert codes == ("600000",)
             return {
                 "600000": ModelIndustryReference(
-                    "D44电力、热力生产和供应业", "证监会行业分类", TRADE_DATE, "baostock", "industry:1"
+                    "capco:D44电力、热力生产和供应业", "中国上市公司协会上市公司行业分类标准", TRADE_DATE, "cninfo", "industry:1"
                 )
             }
 

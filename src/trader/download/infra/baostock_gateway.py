@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import platform
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -19,15 +19,11 @@ from trader.download.domain.baostock_daily import (
     BaoStockDailyJoinRequest,
     BaoStockDailySide,
     BaoStockDailySpec,
-    BaoStockIndustryInterval,
     BaoStockSecurity,
     BaoStockSourceVersions,
     BaoStockTradingStatus,
     JoinBaostockDailySides,
 )
-from trader.download.domain.history_sync import HistorySyncProgress
-from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_industry_preparation import IndustryPreparationRequest, PrepareHistoryIndustries
 
 _DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
 _DAILY_FACT_FIELDS = "date,code,tradestatus,isST"
@@ -111,8 +107,6 @@ class BaoStockSdkPort(Protocol):
     def query_trade_dates(self, *, start_date: str, end_date: str) -> BaoStockRowResult: ...
 
     def query_stock_basic(self) -> BaoStockRowResult: ...
-
-    def query_stock_industry(self, *, code: str = "", date: str = "") -> BaoStockRowResult: ...
 
     def query_history_k_data_plus(  # noqa: PLR0913 - exact third-party SDK signature
         self,
@@ -330,52 +324,6 @@ class BaoStockRowGateway:
         if tuple(item.trade_date for item in ordered) != expected:
             raise ValueError("BaoStock daily training facts are incomplete")
         return ordered
-
-    def fetch_industry_intervals(
-        self,
-        spec: BaoStockDailySpec,
-        calendar: BaoStockCalendar,
-        universe: tuple[BaoStockSecurity, ...],
-        *,
-        cache: HistoryIndustryQueryCache | None = None,
-        progress: Callable[[HistorySyncProgress], None] | None = None,
-    ) -> tuple[BaoStockIndustryInterval, ...]:
-        del spec
-        return PrepareHistoryIndustries(
-            IndustryPreparationRequest(
-                calendar,
-                universe,
-                self._versions.content_hash,
-                self.fetch_industry_facts,
-                cache=cache,
-                progress=progress,
-            )
-        )
-
-    def fetch_industry_facts(self, snapshot_date: date) -> tuple[BaoStockIndustryInterval, ...]:
-        """Return validated full-market facts for one historical query date."""
-        rows = _result_rows(
-            self._sdk.query_stock_industry(code="", date=snapshot_date.isoformat()), "industry_query_failed"
-        )
-        facts: dict[str, BaoStockIndustryInterval] = {}
-        for row in rows:
-            source_code = row.get("code", "")
-            industry = row.get("industry", "").strip()
-            classification = row.get("industryClassification", "").strip()
-            effective_from = _optional_date(row.get("updateDate"))
-            if (
-                not source_code.startswith(("sh.", "sz."))
-                or not industry
-                or not classification
-                or effective_from is None
-                or effective_from > snapshot_date
-            ):
-                continue
-            fact = BaoStockIndustryInterval(source_code[3:], effective_from, None, industry, classification)
-            if fact.code in facts and facts[fact.code] != fact:
-                raise ValueError("BaoStock industry facts conflict at the same query date")
-            facts[fact.code] = fact
-        return tuple(facts[code] for code in sorted(facts))
 
     def _daily_sides(
         self,

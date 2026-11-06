@@ -405,7 +405,7 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
     company_research = _mapping(payload.get("company_research"))
     scoring_profile = _mapping(payload.get("scoring_profile"))
     candidate_quote_age = _mapping(market.get("candidate_quote_age"))
-    model_industry_source = _mapping(_mapping(market.get("sources")).get("baostock_industry"))
+    model_industry_source = _mapping(_mapping(market.get("sources")).get("cninfo_industry"))
     strategies = {
         strategy: _parse_projection(value, include_items=False)
         for strategy, raw in _mapping(payload.get("strategies")).items()

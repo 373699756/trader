@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from trader.download.domain.price_review import PriceReviewExhaustionReason
+from trader.download.domain.history_sync import HistoryIndustryReadiness
 
 HistoryMaintenanceState = Literal[
     "blocked",
@@ -56,6 +57,7 @@ class HistoryMaintenanceStatus:
     unresolved_price_cells: int = 0
     price_gap_summary: HistoryPriceGapSummary | None = None
     price_review: HistoryPriceReviewSummary | None = None
+    industry_readiness: HistoryIndustryReadiness | None = None
 
     def __post_init__(self) -> None:
         if self.unresolved_price_cells < 0:

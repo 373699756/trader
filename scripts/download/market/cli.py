@@ -11,7 +11,7 @@ from scripts.core.paths import PROJECT_ROOT, ExternalPath
 from scripts.download.market.options import MarketOptions
 from scripts.download.market.market_factor_budget import MARKET_SOURCE_LOOP_LIMIT_SECONDS, MARKET_TASK_LIMIT_SECONDS
 
-_MARKET_SOURCES = ("tencent", "eastmoney", "sina", "baostock")
+_MARKET_SOURCES = ("tencent", "eastmoney", "sina", "cninfo")
 
 
 def BuildParser(
@@ -32,7 +32,7 @@ def BuildParser(
         runtime_config=PROJECT_ROOT / 'config/runtime.json',
         history_days=61,
         qfq_database=None,
-        market_sources=('tencent', 'eastmoney', 'sina', 'baostock'),
+        market_sources=('tencent', 'eastmoney', 'sina', 'cninfo'),
         market_profiles=('v2', 'v3'),
         market_sizes=(120, 720, 0),
         market_mode='all',

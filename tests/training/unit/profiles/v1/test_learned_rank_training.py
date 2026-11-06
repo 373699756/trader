@@ -505,6 +505,33 @@ def test_training_samples_use_prior_completed_sessions_and_explicit_missing_labe
             assert counts.missing_d25 > 0  # Tomorrow's newest anchors lack mature D25 labels.
 
 
+@pytest.mark.parametrize("industry", ("银行", "J66货币金融服务", "capco:"))
+def test_v1_head_rejects_legacy_industry_identity(reusable_pair, industry):
+    _, trained = reusable_pair
+    with pytest.raises(ValueError, match="learned_rank_industry_classification_invalid"):
+        replace(trained.heads[0], industries=(industry,))
+
+
+def test_v1_training_samples_reject_legacy_industry_without_relabelling(tmp_path: Path) -> None:
+    from contextlib import closing
+
+    class LegacyIndustryHistory(_History):
+        def iter_training_rows(self, allowed_dates):
+            for row in super().iter_training_rows(allowed_dates):
+                yield replace(row, industry="银行")
+
+    history = LegacyIndustryHistory()
+    plans = tuple(BuildLearnedRankDateSplit(history.dates, _settings(), maturity_sessions=value) for value in (1, 5))
+    splits = (plans[0], plans[1])
+    with closing(LearnedRankSampleIndex(
+        tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
+    )) as index:
+        with pytest.raises(ValueError, match="learned_rank_industry_classification_invalid"):
+            BuildLearnedRankSamples(history, splits, index, history_sessions=_settings().history_sessions)
+        assert all(partition.rows == 0 for partition in index.coverage(splits))
+
+
 def test_v1_missing_t1_keeps_d25_and_fixed_calendar_partitions(tmp_path: Path) -> None:
     from contextlib import ExitStack, closing
 

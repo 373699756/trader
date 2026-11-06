@@ -443,6 +443,9 @@ class StderrHistorySyncProgress:
                 summary = status.price_gap_summary
                 parts.append(f"涉及 {summary.stocks} 股 | 日期 {summary.first_date}～{summary.last_date}")
                 parts.extend(f"{item.reason} {item.cells} 股日" for item in summary.reasons)
+        if status.industry_readiness is not None and not status.industry_readiness.ready:
+            parts.append(f"历史行业待核 {status.industry_readiness.requested_codes - status.industry_readiness.point_in_time_codes} 股")
+            parts.append("训练行业未就绪")
         return parts
 
     def publish_result(self, status: HistoryMaintenanceStatus) -> None:

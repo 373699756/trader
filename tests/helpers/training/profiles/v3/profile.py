@@ -38,7 +38,7 @@ def _hash(document: dict[str, object]) -> dict[str, object]:
     return document
 
 
-def _prediction_report() -> dict[str, object]:
+def _prediction_report(industry: str = "银行") -> dict[str, object]:
     metric = {
         "input_rows": 400,
         "predicted_rows": 400,
@@ -54,9 +54,9 @@ def _prediction_report() -> dict[str, object]:
         "evaluation_contract": PREDICTION_EVALUATION_CONTRACT,
         "prediction_evaluation_mode": "prediction_diagnostic_only",
         "prediction_metrics": dict(metric),
-        "industry_prediction_metrics": {"银行": dict(metric)},
+        "industry_prediction_metrics": {industry: dict(metric)},
         "calibration_metrics": {
-            "银行": {"rows": 40, "dates": 20, "prediction_variance": 0.0001, "intercept": 0.0, "slope": 1.0}
+            industry: {"rows": 40, "dates": 20, "prediction_variance": 0.0001, "intercept": 0.0, "slope": 1.0}
         },
         "rejected_industries": [],
         "evaluation_coverage": {
@@ -73,6 +73,7 @@ def _prediction_report() -> dict[str, object]:
 def _documents(
     contract: TrainedHeadContract,
     profile: TrainedProfileContract = V3_TRAINING_PROFILE,
+    *, industry: str = "银行",
 ) -> tuple[dict[str, object], dict[str, object]]:
     codes = ["600000", "600001"]
     input_document = _hash(
@@ -114,7 +115,7 @@ def _documents(
     else:
         parameters.update({"ridge_intercept": 0.0, "ridge_coefficients": [0.1] * width})
         dependencies = {"numpy": "2.0.0"}
-    model = _hash({"industries": {"银行": parameters}})
+    model = _hash({"industries": {industry: parameters}})
     targets = (
         ("target_t2", "target_t3", "target_t4", "target_t5", "target_d25_aggregate")
         if contract.strategy is Strategy.D25
@@ -156,7 +157,7 @@ def _documents(
             "prediction_return_failure_reasons": ["daily_close_proxy_not_point_in_time"],
             "automatic_model_update": False,
             "production_authority": False,
-            **_prediction_report(),
+            **_prediction_report(industry),
         }
     )
     metadata = _hash(
@@ -178,7 +179,7 @@ def _documents(
             "dependencies": dependencies,
             "training_input": input_document,
             "validation_report": report,
-            "industry_sample_counts": {"银行": {"training_rows": 20_000, "validation_rows": 400}},
+            "industry_sample_counts": {industry: {"training_rows": 20_000, "validation_rows": 400}},
             "model_hash": model["content_hash"],
         }
     )
@@ -188,9 +189,10 @@ def _documents(
 def _recent_documents(
     contract: TrainedHeadContract,
     profile: TrainedProfileContract = V3_TRAINING_PROFILE,
+    *, industry: str = "银行",
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Build synthetic recent publisher inputs; keep old-schema reader fixtures separate."""
-    model, metadata = _documents(contract, profile)
+    model, metadata = _documents(contract, profile, industry=industry)
     source_cutoff = date(2026, 9, 9)
     candidates = tuple(source_cutoff - timedelta(days=offset) for offset in range(4_000))
     calendar = tuple(day for day in reversed(candidates) if day.weekday() < 5)[-2_000:]
@@ -217,7 +219,7 @@ def _recent_documents(
     report.update(label_cutoff=final.fit_dates[-1].isoformat(), split_hash=split_hash,
                   training_input_document_hash=inputs["content_hash"], training_rows=training_rows,
                   validation_rows=validation_rows, evaluation_contract=RECENT_PREDICTION_EVALUATION_CONTRACT)
-    for metric in (report["prediction_metrics"], report["industry_prediction_metrics"]["银行"]):
+    for metric in (report["prediction_metrics"], report["industry_prediction_metrics"][industry]):
         metric.update(input_rows=validation_rows, predicted_rows=validation_rows,
                       covered_dates=len(diagnostic.validation_dates), rank_ic_dates=len(diagnostic.validation_dates))
     for metric in report["target_metrics"].values():
@@ -231,13 +233,13 @@ def _recent_documents(
     _hash(report)
     metadata.update(
         schema_version=f"{profile.profile_id}_head_recent_refit_metadata",
-        industry_sample_counts={"银行": {"training_rows": training_rows, "validation_rows": validation_rows}},
+        industry_sample_counts={industry: {"training_rows": training_rows, "validation_rows": validation_rows}},
         final_fit={
             "contract": FINAL_FIT_CONTRACT, "source_cutoff": source_cutoff.isoformat(),
             "calendar_dates": [day.isoformat() for day in calendar],
             "maturity_sessions": final.maturity_sessions, "fit_dates": [day.isoformat() for day in final.fit_dates],
             "plan_hash": final.content_hash, "model_hash": model["content_hash"],
-            "industry_training_rows": {"银行": training_rows}, "diagnostic_model": model,
+            "industry_training_rows": {industry: training_rows}, "diagnostic_model": model,
             "diagnostic_contract": PRODUCTION_DIAGNOSTIC_CONTRACT,
             "diagnostic_source_cutoff": source_cutoff.isoformat(), "diagnostic_maturity_sessions": 5,
             "diagnostic_split_hash": diagnostic.content_hash,
@@ -264,17 +266,18 @@ def _write_bundle(
     staging: Path,
     contract: TrainedHeadContract,
     profile: TrainedProfileContract = V3_TRAINING_PROFILE,
+    *, industry: str = "银行",
 ) -> None:
     staging.mkdir(parents=True, exist_ok=True)
-    model, metadata = _recent_documents(contract, profile)
+    model, metadata = _recent_documents(contract, profile, industry=industry)
     (staging / "model.json").write_text(json.dumps(model), encoding="utf-8")
     (staging / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 
 
-def _publish_profile(training_root: Path, profile: TrainedProfileContract) -> None:
+def _publish_profile(training_root: Path, profile: TrainedProfileContract, *, industry: str = "银行") -> None:
     staged = []
     for contract in profile.heads:
         staging = training_root / f"staging-{profile.profile_id}-{contract.strategy.value}"
-        _write_bundle(staging, contract, profile)
+        _write_bundle(staging, contract, profile, industry=industry)
         staged.append((contract.strategy, staging))
     PublishProfileBundles(training_root / profile.output_directory, profile, tuple(staged))

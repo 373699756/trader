@@ -159,7 +159,7 @@ def RenderMarketFactorText(report: Mapping[str, object]) -> str:
             continue
         if source.get("kind") == "local_reference":
             lines.append(
-                f"  baostock：类型=本地证监会行业参考，范围={source.get('scope')}，"
+                f"  cninfo：类型=本地中上协行业参考，范围={source.get('scope')}，"
                 f"网络={source.get('network_status')}，模式={source.get('mode')}，"
                 f"逻辑覆盖={source.get('returned_rows')}/{source.get('requested_rows')}"
                 f"({float(source.get('coverage', 0)) * 100:.2f}%)，物理返回={source.get('physical_rows')}"

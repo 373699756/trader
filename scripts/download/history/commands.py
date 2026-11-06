@@ -20,8 +20,8 @@ def BuildCommands(
     publication_root = options.history_root
     if options.action_identity in {
         "baostock-qfq-shadow", "tencent-download", "tencent-history-window", "history-sqlite",
-        "history-publication", "history-source-compare", "price-repair-audit", "history-space", "history-industry",
-    } and options.history_root is None:
+        "history-publication", "history-source-compare", "price-repair-audit", "history-space",
+    } and options.history_root is None and not options.official_announcements:
         from trader.infra.settings import LoadRuntimeSettings
 
         options = replace(options, history_root=LoadRuntimeSettings(options.runtime_config).data_paths.history)
@@ -239,14 +239,17 @@ def BuildCommands(
             common_timeout,
         ),)
     elif options.action_identity == "history-industry":
+        if not options.official_announcements or options.industry_work_root is None:
+            raise ValueError("industry diagnostic requires explicit official announcements and external work root")
         commands = (DiagnosticCommand(
             "history_industry",
             (
                 python_executable,
                 "-m",
                 "scripts.download.history.history_industry_preparation",
-                "--history-root",
-                str(options.history_root),
+                "--official-announcements", *options.official_announcements,
+                "--industry-work-root", str(options.industry_work_root),
+                "--budget-seconds", str(common_timeout),
                 "--timeout-seconds",
                 str(options.source_timeout_seconds),
             ),
@@ -278,7 +281,7 @@ def BuildCommands(
     if options.action_identity in {
         "baostock-qfq-shadow", "tencent-download", "tencent-history-window",
         "history-source-compare", "price-repair-audit", "history-space",
-        "history-industry", "download-performance",
+        "download-performance",
     }:
         commands = tuple(replace(
             command, argv=command.argv + ("--runtime-config", str(options.runtime_config)),

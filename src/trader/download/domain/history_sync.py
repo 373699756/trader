@@ -126,6 +126,27 @@ class HistorySyncConfiguration:
 
 
 @dataclass(frozen=True)
+class HistoryIndustryReadiness:
+    requested_codes: int
+    candidate_codes: int
+    point_in_time_codes: int
+    source: str = "cninfo"
+    failure_category: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            any(type(value) is not int for value in (self.requested_codes, self.candidate_codes, self.point_in_time_codes))
+            or not 0 <= self.point_in_time_codes <= self.candidate_codes <= self.requested_codes
+            or self.source != "cninfo"
+        ):
+            raise ValueError("history_industry_readiness_invalid")
+
+    @property
+    def ready(self) -> bool:
+        return self.failure_category is None and self.requested_codes > 0 and self.point_in_time_codes == self.requested_codes
+
+
+@dataclass(frozen=True)
 class HistorySupplierContext:
     calendar: BaoStockCalendar
     universe: tuple[BaoStockSecurity, ...]
@@ -133,6 +154,7 @@ class HistorySupplierContext:
     industry_intervals: tuple[BaoStockIndustryInterval, ...] = ()
     st_evidence: tuple[HistoryStEvidence, ...] = ()
     reference_id: str | None = None
+    industry_readiness: HistoryIndustryReadiness | None = None
 
     def __post_init__(self) -> None:
         universe = tuple(sorted(self.universe, key=lambda item: item.code))
@@ -376,6 +398,7 @@ class HistoryTwoStageSupplier(Protocol):
 
 
 __all__ = [
+    "HistoryIndustryReadiness",
     "HistorySupplierContext",
     "HistorySyncConfiguration",
     "HistorySyncProgress",

@@ -350,7 +350,7 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
 
 def test_current_shared_training_bundles_score_all_default_v2_heads(tmp_path, application_feature_factory) -> None:
     training_root = tmp_path / "train"
-    _publish_profile(training_root, V2_TRAINING_PROFILE)
+    _publish_profile(training_root, V2_TRAINING_PROFILE, industry="capco:J66货币金融服务")
     profile = LoadScoringProfile("v2", training_root=training_root)
     industries = set.intersection(*(set(head.predictor.industry_ids) for head in profile.heads.values()))
     industry = sorted(industries)[0]
@@ -375,9 +375,9 @@ def test_current_shared_training_bundles_score_all_default_v2_heads(tmp_path, ap
                 history_days=251,
                 model_industry=ModelIndustryReference(
                     industry_id=industry,
-                    classification="证监会行业分类",
+                    classification="中国上市公司协会上市公司行业分类标准",
                     effective_date=NOW.date(),
-                    source="baostock",
+                    source="cninfo",
                     data_version="fixture-industry",
                 ),
             )
@@ -407,7 +407,7 @@ def test_industry_model_uses_csrc_reference_without_overwriting_display_industry
 ) -> None:
     class _IndustryPredictor(_Predictor):
         exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
-        industry_ids = ("J66货币金融服务",)
+        industry_ids = ("capco:J66货币金融服务",)
 
         def __init__(self) -> None:
             self.inputs: tuple[ModelInput, ...] = ()
@@ -425,10 +425,10 @@ def test_industry_model_uses_csrc_reference_without_overwriting_display_industry
     referenced = replace(
         feature,
         model_industry=ModelIndustryReference(
-            industry_id="J66货币金融服务",
-            classification="证监会行业分类",
+            industry_id="capco:J66货币金融服务",
+            classification="中国上市公司协会上市公司行业分类标准",
             effective_date=NOW.date(),
-            source="baostock",
+            source="cninfo",
             data_version="fixture-industry",
         ),
     )
@@ -439,7 +439,7 @@ def test_industry_model_uses_csrc_reference_without_overwriting_display_industry
     batch = service.score((referenced,))
 
     assert referenced.quote.industry == "银行"
-    assert predictor.inputs[0].industry == "J66货币金融服务"
+    assert predictor.inputs[0].industry == "capco:J66货币金融服务"
     assert set(batch.diagnostics) == {"600001"}
 
     assert referenced.model_industry is not None
@@ -505,7 +505,7 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
     class _V3Predictor(_Predictor):
         profile_id = "v3"
         model_id = "industry_ensemble_training"
-        industry_ids = ("J66货币金融服务",)
+        industry_ids = ("capco:J66货币金融服务",)
         exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
 
         def __init__(self) -> None:
@@ -521,10 +521,10 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
         supported,
         quote=replace(supported.quote, industry="银行"),
         model_industry=ModelIndustryReference(
-            "J66货币金融服务",
-            "证监会行业分类",
+            "capco:J66货币金融服务",
+            "中国上市公司协会上市公司行业分类标准",
             NOW.date(),
-            "baostock",
+            "cninfo",
             "fixture-industry",
         ),
     )
@@ -533,7 +533,7 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
 
     batch = _service(predictor).score((supported, unsupported))
 
-    assert predictor.industries == ("J66货币金融服务",)
+    assert predictor.industries == ("capco:J66货币金融服务",)
     assert set(batch.diagnostics) == {"600001"}
     assert batch.missing_codes == ("600002",)
 
@@ -541,7 +541,7 @@ def test_v3_routes_each_input_to_its_current_industry_model(application_feature_
 def test_v3_rejects_blank_industry_before_cross_sectional_prediction(application_feature_factory) -> None:
     class _V3Predictor(_Predictor):
         profile_id = "v3"
-        industry_ids = ("J66货币金融服务",)
+        industry_ids = ("capco:J66货币金融服务",)
         exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
 
     complete = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=1.0)
@@ -549,10 +549,10 @@ def test_v3_rejects_blank_industry_before_cross_sectional_prediction(application
         complete,
         quote=replace(complete.quote, industry="银行"),
         model_industry=ModelIndustryReference(
-            "J66货币金融服务",
-            "证监会行业分类",
+            "capco:J66货币金融服务",
+            "中国上市公司协会上市公司行业分类标准",
             NOW.date(),
-            "baostock",
+            "cninfo",
             "fixture-industry",
         ),
     )
@@ -778,7 +778,7 @@ def test_industry_batches_check_deadlines_and_keep_the_last_valid_batch(
 
     class _BatchPredictor(_Predictor):
         exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
-        industry_ids = ("银行", "制造")
+        industry_ids = ("capco:银行", "capco:制造")
 
         def __init__(self):
             self.calls = []
@@ -801,7 +801,7 @@ def test_industry_batches_check_deadlines_and_keep_the_last_valid_batch(
         replace(
             _model_feature(application_feature_factory(f"{600000 + index:06d}", NOW), offset=index / 10000, amihud=1.0),
             model_industry=ModelIndustryReference(
-                "制造" if index == 128 else "银行", "证监会行业分类", NOW.date(), "fixture", "fixture"
+                "capco:制造" if index == 128 else "capco:银行", "中国上市公司协会上市公司行业分类标准", NOW.date(), "fixture", "fixture"
             ),
         )
         for index in range(258)

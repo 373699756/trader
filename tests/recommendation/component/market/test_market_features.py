@@ -13,8 +13,6 @@ from tests.helpers.recommendation.market_data import (
     NEWS_POLICY,
     NOW,
     TAIL_POLICY,
-    BaoStockIndustryClient,
-    BaoStockIndustryRow,
     BuildHistoryContext,
     ConfigurationError,
     CountingHistoryClient,
@@ -165,14 +163,18 @@ def test_market_factor_budget_preserves_complete_features_without_cancellation()
 
 
 def test_current_model_industry_enriches_features_and_replaces_display_sector() -> None:
-    client = BaoStockIndustryClient(
-        fetch_rows=lambda _date, _timeout: (
-            BaoStockIndustryRow("sh.600001", "J66货币金融服务", "证监会行业分类", "2026-07-10"),
-        ),
-        timeout_seconds=1.0,
-        minimum_rows=1,
-    )
-    industries = client.fetch(NOW)
+    from trader.infra.market_data.observations import SourceObservation
+
+    industries = (SourceObservation(
+        source="cninfo_industry", subject_key="600001", observed_at=NOW, source_time=NOW, received_at=NOW,
+        effective_at=NOW, data_version="industry-fixture",
+        fields={
+            "model_industry": "capco:J66货币金融服务",
+            "model_industry_classification": "中国上市公司协会上市公司行业分类标准",
+            "model_industry_effective_date": NOW.date().isoformat(), "model_industry_source": "cninfo_industry",
+            "model_industry_data_version": "industry-fixture",
+        }, missing_reasons={}, payload_hash="", status="success", error_code=None,
+    ),)
     reference = PreparedFixture(NOW, industry_version=industries[0].data_version)
     service = _service(
         StaticGateway((_quote(industry="银行板块"),)),
@@ -187,8 +189,8 @@ def test_current_model_industry_enriches_features_and_replaces_display_sector() 
 
     assert feature.quote.industry == "J66货币金融服务"
     assert feature.model_industry is not None
-    assert feature.model_industry.industry_id == "J66货币金融服务"
-    assert service.health()["sources"]["baostock_industry"]["snapshot_rows"] == 1
+    assert feature.model_industry.industry_id == "capco:J66货币金融服务"
+    assert service.health()["sources"]["cninfo_industry"]["snapshot_rows"] == 1
 
 
 def test_feature_builder_does_not_compute_limit_proximity_when_limit_is_inapplicable() -> None:

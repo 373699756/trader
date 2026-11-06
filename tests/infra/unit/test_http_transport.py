@@ -144,6 +144,70 @@ def test_gzip_and_case_insensitive_headers_are_project_values(monkeypatch):
         response.headers["Retry-After"] = "3"
 
 
+@pytest.mark.parametrize("declared,received", (((), "normal"), (("normal",), "unknown")))
+def test_nonstandard_encoding_requires_an_exact_explicit_identity_declaration(monkeypatch, declared, received):
+    raw = _Raw([b'{"ok": true}'], headers={"Content-Encoding": received})
+    session = _Session(raw)
+    monkeypatch.setattr(driver.requests, "Session", lambda: session)
+    with driver.RequestsHttpTransport(identity_content_encodings=declared) as transport, pytest.raises(
+        HttpError, match="http_content_encoding_unsupported"
+    ):
+        transport.get("https://example.invalid/", timeout=1)
+    assert raw.closed and session.closed and len(session.calls) == 1
+
+
+def test_explicit_identity_encoding_preserves_the_original_response_header(monkeypatch):
+    raw = _Raw([b'{"ok": true}'], headers={"Content-Encoding": "normal"})
+    session = _Session(raw)
+    monkeypatch.setattr(driver.requests, "Session", lambda: session)
+    with driver.RequestsHttpTransport(identity_content_encodings=("normal",)) as transport:
+        response = transport.get("https://example.invalid/", timeout=1)
+    assert response.json() == {"ok": True}
+    assert response.headers["Content-Encoding"] == "normal"
+    assert raw.closed and session.closed and len(session.calls) == 1
+
+
+@pytest.mark.parametrize("encodings", (("",), ("Normal",), ("gzip",), ("deflate",), ("bad,normal",), (" leading",), ("bad/path",), ["normal"]))
+def test_invalid_identity_encoding_configuration_is_rejected_without_io(monkeypatch, encodings):
+    monkeypatch.setattr(driver.requests, "Session", lambda: pytest.fail("invalid configuration must not create I/O"))
+    with pytest.raises(ValueError, match="http_identity_content_encodings_invalid"):
+        driver.RequestsHttpTransport(identity_content_encodings=encodings)
+
+
+def test_explicit_identity_encoding_does_not_bypass_the_response_limit(monkeypatch):
+    raw = _Raw([b"x" * 129], headers={"Content-Encoding": "normal"})
+    session = _Session(raw)
+    monkeypatch.setattr(driver.requests, "Session", lambda: session)
+    with driver.RequestsHttpTransport(identity_content_encodings=("normal",)) as transport, pytest.raises(HttpResponseTooLarge):
+        transport.get("https://example.invalid/", timeout=1, max_response_bytes=128)
+    assert raw.closed and session.closed and len(session.calls) == 1
+
+
+def test_explicit_identity_encoding_still_cancels_during_a_stream(monkeypatch):
+    cancelled = threading.Event()
+    raw = _Raw([b"x", b"y"], headers={"Content-Encoding": "normal"}, on_read=cancelled.set)
+    session = _Session(raw)
+    monkeypatch.setattr(driver.requests, "Session", lambda: session)
+    with driver.RequestsHttpTransport(identity_content_encodings=("normal",)) as transport, pytest.raises(HttpCancelled):
+        transport.get("https://example.invalid/", timeout=1, cancel_requested=cancelled.is_set)
+    assert raw.closed and session.closed and len(session.calls) == 1
+
+
+def test_explicit_identity_encoding_keeps_the_total_deadline(monkeypatch):
+    clock = [0.0]
+
+    def advance():
+        clock[0] += 2
+
+    raw = _Raw([b"x", b"y"], headers={"Content-Encoding": "normal"}, on_read=advance)
+    session = _Session(raw)
+    monkeypatch.setattr(driver.requests, "Session", lambda: session)
+    with driver.RequestsHttpTransport(identity_content_encodings=("normal",), monotonic=lambda: clock[0]) as transport, pytest.raises(HttpTimeout):
+        transport.get("https://example.invalid/", timeout=1)
+    assert raw.closed and session.closed and len(session.calls) == 1
+
+
+
 def test_json_honors_the_supplier_response_charset():
     response = HttpResponse(200, '{"name": "股票"}'.encode("gb18030"), encoding="gb18030")
     assert response.json() == {"name": "股票"}

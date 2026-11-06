@@ -83,7 +83,7 @@ class _BrowserIndustryClassifications:
             return {}
         return {
             "600009": ModelIndustryReference(
-                "G56航空运输业", "证监会行业分类", _NOW.date(), "fixture", "industry:browser"
+                "capco:G56航空运输业", "中国上市公司协会上市公司行业分类标准", _NOW.date(), "fixture", "industry:browser"
             )
         }
 
@@ -1115,7 +1115,7 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           column_widths: Array.from(document.querySelectorAll('#tableColumns col')).slice(2, 4)
             .map((column) => column.style.width),
           stock_only: !rows[0]?.cells[2].textContent.includes('证监会行业'),
-          classified_industry: rows[0]?.cells[3].textContent.includes('证监会行业 G56航空运输业'),
+          classified_industry: rows[0]?.cells[3].textContent.includes('中上协行业 G56航空运输业'),
           board_industry_alignment: getComputedStyle(rows[0].cells[3]).textAlign,
           market_value_alignments: Array.from(rows[0].cells).slice(4, 9)
             .map((cell) => getComputedStyle(cell).textAlign),

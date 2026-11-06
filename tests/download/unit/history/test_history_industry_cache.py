@@ -1,244 +1,237 @@
-from tests.helpers.shared.configuration import SqlitePolicyFixture
-
-from dataclasses import replace
-
-from datetime import date, datetime, timedelta
-
+import hashlib
 import json
-
+from dataclasses import replace
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
-
-
-
-from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-
-
-from trader.download.infra.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
-
-from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
-
-from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
-
+from tests.helpers.shared.configuration import SqlitePolicyFixture
+from trader.download.domain.industry_evidence import IndustryCategoryMapping, OfficialIndustryEvidence
+from trader.download.infra.cninfo_industry import ParseCninfoIndustryChanges
 from trader.download.infra.industry_evidence_codec import IndustryEvidencePayload, LoadReviewedIndustryEvidence
-
+from trader.download.infra.industry_query_index import IndustrySourceDocument, SQLiteIndustryQueryIndex
+from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
-from tests.helpers.download.history.history_industry_cache import (
-    DATES,
-    UNIVERSE,
-    _IndustrySdk,
-    _fetch,
-    _official_evidence,
-)
+_ZONE = ZoneInfo("Asia/Shanghai")
+_OBSERVED_AT = datetime(2026, 11, 6, 20, tzinfo=_ZONE)
+_FIRST_DATE = date(2020, 1, 1)
+_LAST_DATE = date(2026, 11, 6)
 
 
-def test_same_day_reuses_complete_dates_and_new_universe_is_filtered_at_read(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    sdk = _IndustrySdk()
-    original = _fetch(sdk, cache)
-    assert len(sdk.calls) == 4
-    sdk.calls.clear()
-    events = []
-    assert _fetch(sdk, cache, progress=events.append) == original
-    assert sdk.calls == []
-    assert [event.completed_units for event in events if event.state == "completed"] == [1, 2, 3, 4]
-    assert all(event.cache_hit for event in events if event.state == "completed")
-    added = replace(UNIVERSE[0], code="600002")
-    result = _fetch(sdk, cache, universe=(added,))
-    assert {item.code for item in result} == {"600002"}
-    assert sdk.calls == []
+def _index(path):
+    return SQLiteIndustryQueryIndex(path / "industry.sqlite3", "cninfo_industry_queries", sqlite_policy=SqlitePolicyFixture())
 
 
-def test_failed_date_resumes_without_requerying_successful_dates(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    sdk = _IndustrySdk()
-    sdk.fail_on = DATES[2].isoformat()
-    with pytest.raises(RuntimeError, match="supplier_industry_timeout"):
-        _fetch(sdk, cache)
-    sdk.fail_on = None
-    sdk.calls.clear()
-    _fetch(sdk, cache)
-    assert sdk.calls == [str(day) for day in DATES[2:]]
+def _document(code="001222", *, latest="1"):
+    record = {
+        "SECCODE": code, "SECNAME": "测试股份", "ORGNAME": "测试股份有限公司", "VARYDATE": "2024-09-30",
+        "F001V": "008001", "F002V": "中国上市公司协会上市公司行业分类标准", "F003V": "C243",
+        "F004V": "制造业", "F005V": "造纸、印刷、文教", "F006V": "文教、工美、体育和娱乐用品制造业",
+        "F007V": "工艺美术及礼仪用品制造", "F008C": latest,
+    }
+    content = json.dumps({"resultcode": 200, "count": 1, "records": [record]}, ensure_ascii=False, indent=2).encode()
+    return IndustrySourceDocument("cninfo:p_stock2110:" + code, _FIRST_DATE, _LAST_DATE, _OBSERVED_AT, content)
 
 
-def test_calendar_roll_keeps_historical_queries_and_only_fetches_new_dates(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    sdk = _IndustrySdk()
-    _fetch(sdk, cache)
-    sdk.calls.clear()
-    dates = (date(2020, 2, 4), *DATES[1:-1], date(2026, 10, 12))
-    _fetch(sdk, cache, dates)
-    assert sdk.calls == ["2020-02-04", "2026-10-12"]
-    sdk.calls.clear()
-    _fetch(sdk, cache, (*dates[:-1], date(2026, 11, 12)))
-    assert sdk.calls == ["2026-11-12"]
-    sdk.calls.clear()
-    assert _fetch(sdk, cache)  # The old rolling-window dates remain available.
-    assert sdk.calls == []
-
-
-@pytest.mark.parametrize("kind", ("empty", "future"))
-def test_empty_or_future_only_responses_are_not_cached(tmp_path, kind):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    sdk = _IndustrySdk()
-    setattr(sdk, kind, True)
-    assert _fetch(sdk, cache) == ()
-    sdk.calls.clear()
-    assert _fetch(sdk, cache) == ()
-    assert len(sdk.calls) == 4
-
-
-def test_corrupt_cached_payload_requeries_only_that_date_and_source_change_invalidates(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    sdk = _IndustrySdk()
-    original = _fetch(sdk, cache)
-    with SqliteSession(cache.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE industry_query SET members_json='[]' WHERE anchor_date=?", (str(DATES[1]),))
-    sdk.calls.clear()
-    assert _fetch(sdk, cache) == original
-    assert sdk.calls == [str(DATES[1])]
-    sdk.__version__ = "changed"
-    sdk.calls.clear()
-    _fetch(sdk, cache)
-    assert len(sdk.calls) == 4
-
-
-def test_pagination_failure_never_creates_a_complete_query(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
-
-    class BrokenPage(_IndustrySdk):
-        def query_stock_industry(self, **kwargs):
-            result = super().query_stock_industry(**kwargs)
-
-            def fail_next():
-                raise RuntimeError("page_failed")
-
-            result.next = fail_next
-            return result
-
-    with pytest.raises(RuntimeError, match="page_failed"):
-        _fetch(BrokenPage(), cache)
-    sdk = _IndustrySdk()
-    _fetch(sdk, cache)
-    assert len(sdk.calls) == 4
-
-
-def test_recent_fixed_anchor_is_reused_when_cutoff_advances(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    sdk = _IndustrySdk()
-    dates = (date(2026, 7, 1), date(2026, 10, 9))
-    _fetch(sdk, cache, dates)
-    sdk.calls.clear()
-    _fetch(sdk, cache, (dates[0], dates[-1] + timedelta(days=3)))
-    assert sdk.calls == ["2026-10-12"]
-    sdk.calls.clear()
-    _fetch(sdk, cache, (dates[0], dates[-1] + timedelta(days=3)))
-    assert sdk.calls == []
-
-
-def test_unreadable_sqlite_cache_has_explicit_failure_and_is_not_deleted(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    cache.path.write_bytes(b"not a database")
-    with pytest.raises(RuntimeError, match="industry_query_cache_unavailable"):
-        _fetch(_IndustrySdk(), cache)
-    assert cache.path.read_bytes() == b"not a database"
-
-
-def test_missing_listed_security_reuses_full_market_query_without_inventing_industry(tmp_path):
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    sdk = _IndustrySdk()
-    _fetch(sdk, cache)
-    sdk.calls.clear()
-    missing = replace(UNIVERSE[0], code="600003", listed_on=DATES[-1])
-    for _ in range(3):
-        events = []
-        result = _fetch(sdk, cache, universe=(*UNIVERSE, missing), progress=events.append)
-        assert sdk.calls == []
-        assert {item.code for item in result} == {UNIVERSE[0].code}
-        assert events[-1].industry_missing_codes == 1
-        assert events[-1].cache_hit is True
-
-
-@pytest.mark.parametrize("day,expected", ((1, False), (2, False), (3, True), (5, True), (6, False)))
-def test_official_industry_fills_only_dated_missing_category_and_preserves_provenance(tmp_path, day, expected):
-    evidence = _official_evidence()
-    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
-    assert index.import_evidence((evidence,)) == 1
-    assert index.import_evidence((evidence,)) == 0
-    at = datetime(2026, 11, day, 19, tzinfo=ZoneInfo("Asia/Shanghai"))
-    client = BaoStockIndustryClient(
-        fetch_rows=lambda date, timeout: (BaoStockIndustryRow("sh.600001", "I65软件", "证监会行业分类", date),),
-        minimum_rows=1,
+def _official_evidence():
+    return OfficialIndustryEvidence(
+        "600003", "https://disc.static.szse.cn/fixture.pdf", "a" * 64,
+        datetime(2026, 11, 2, 12, tzinfo=_ZONE), date(2026, 11, 3), date(2026, 11, 6),
+        datetime(2026, 11, 2, 18, tzinfo=_ZONE), 1, "CAPCO2023 C29 Plastics",
+        IndustryCategoryMapping(
+            "CAPCO2023", "C29", "Plastics", "C29Plastics", "https://www.csrc.gov.cn/fixture.pdf",
+            "b" * 64, 1, "CSRC2012 C29Plastics", "Reviewed category scope in both standards.",
+        ),
     )
-    rows = CurrentIndustryPublication(index.path, client, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).fetch(at)
-    assert {row.subject_key for row in rows} == ({"600001", "600003"} if expected else {"600001"})
-    assert rows == CurrentIndustryCache(index.path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(at)
-    if expected:
-        official = next(row for row in rows if row.subject_key == "600003")
-        assert official.source == official.fields["model_industry_source"] == "official_disclosure"
-        assert official.fields["model_industry"] == "C29Plastics"
-        assert official.fields["industry_native_classification"] == "CAPCO2023"
-        assert official.fields["industry_evidence_id"] == evidence.identity
-        assert official.source_time == evidence.disclosed_at
-        assert official.payload_hash == evidence.document_sha256
 
 
-def test_current_industry_cache_rejects_expired_or_future_received_official_evidence(tmp_path):
-    evidence = replace(_official_evidence(), received_at=datetime(2026, 11, 4, 18, tzinfo=ZoneInfo("Asia/Shanghai")))
-    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
-    index.import_evidence((evidence,))
-    client = BaoStockIndustryClient(
-        fetch_rows=lambda day, timeout: (BaoStockIndustryRow("sh.600001", "I65软件", "证监会行业分类", day),),
-        minimum_rows=1,
+def test_original_response_round_trip_retains_bytes_request_window_and_digest(tmp_path):
+    index = _index(tmp_path)
+    original = _document()
+    index.save_source_document(original)
+    reopened = _index(tmp_path)
+    assert reopened.read_source_document(original.request_key, _OBSERVED_AT) == original
+    assert original.content_hash == hashlib.sha256(original.content).hexdigest()
+    with SqliteSession(index.path) as connection:
+        row = connection.run("SELECT payload,content_hash FROM industry_source_document").require_one()
+    assert row[0] == original.content
+    assert row[1] == hashlib.sha256(original.content).digest()
+
+
+@pytest.mark.parametrize("latest", (0, 1, "0", "1"))
+def test_original_latest_marker_survives_cache_without_sdk_field_projection(tmp_path, latest):
+    index = _index(tmp_path)
+    original = _document(latest=latest)
+    index.save_source_document(original)
+    document = index.read_source_document(original.request_key, _OBSERVED_AT)
+    assert document is not None
+    parsed = ParseCninfoIndustryChanges(document.content, "001222", document.requested_from, document.requested_to)
+    row, = parsed.rows
+    assert row.latest_marker == latest and type(row.latest_marker) is type(latest)
+    assert parsed.response_content == original.content
+
+
+@pytest.mark.parametrize("fields", (
+    {"requested_from": _FIRST_DATE + timedelta(days=1)},
+    {"requested_to": _LAST_DATE - timedelta(days=1)},
+    {"received_at": _OBSERVED_AT - timedelta(hours=1)},
+))
+def test_new_candidate_cannot_shrink_coverage_or_replace_a_newer_receipt(tmp_path, fields):
+    index = _index(tmp_path)
+    original = _document()
+    index.save_source_document(original)
+    with pytest.raises(ValueError, match="would_shrink"):
+        index.save_source_document(replace(original, **fields))
+    assert _index(tmp_path).read_source_document(original.request_key, _OBSERVED_AT) == original
+
+
+def test_complete_refresh_retains_previous_original_and_as_of_reads(tmp_path):
+    index = _index(tmp_path)
+    original = replace(_document(), requested_from=date(2024, 1, 1), requested_to=date(2026, 11, 5))
+    index.save_source_document(original)
+    extended = replace(_document(latest=1), received_at=_OBSERVED_AT + timedelta(minutes=1))
+    index.save_source_document(extended)
+    assert index.read_source_document(extended.request_key, extended.received_at) == extended
+    assert index.read_source_document(extended.request_key, original.received_at) == original
+    with SqliteSession(index.path) as connection:
+        rows = connection.run("SELECT payload,received_at FROM industry_source_document ORDER BY received_at").fetchall()
+    assert len(rows) == 2
+    assert tuple(row[0] for row in rows) == (original.content, extended.content)
+
+
+@pytest.mark.parametrize("field", ("content", "window"))
+def test_same_receipt_time_conflict_is_rejected_without_overwriting_either_original(tmp_path, field):
+    index = _index(tmp_path)
+    original = _document()
+    index.save_source_document(original)
+    conflict = (
+        replace(original, content=original.content + b"\n")
+        if field == "content" else replace(original, requested_from=_FIRST_DATE - timedelta(days=1))
     )
-    at = evidence.received_at + timedelta(hours=1)
-    source = CurrentIndustryPublication(index.path, client, minimum_rows=1, sqlite_policy=SqlitePolicyFixture())
-    assert len(source.fetch(at)) == 2
-    cache = CurrentIndustryCache(index.path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture())
-    assert cache.load(evidence.received_at - timedelta(hours=1)) == ()
-    assert cache.load(at + timedelta(days=2)) == ()
+    with pytest.raises(ValueError, match="time_conflict"):
+        index.save_source_document(conflict)
+    assert index.read_source_document(original.request_key, _OBSERVED_AT) == original
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM industry_source_document").require_one()[0] == 1
 
 
-def test_official_industry_never_replaces_existing_supplier_or_changes_old_publication_on_import(tmp_path):
-    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
-    at = datetime(2026, 11, 4, 19, tzinfo=ZoneInfo("Asia/Shanghai"))
-    client = BaoStockIndustryClient(
-        fetch_rows=lambda day, timeout: (BaoStockIndustryRow("sh.600003", "I65软件", "证监会行业分类", day),),
-        minimum_rows=1,
-    )
-    source = CurrentIndustryPublication(index.path, client, minimum_rows=1, sqlite_policy=SqlitePolicyFixture())
-    before = source.fetch(at)
-    index.import_evidence((_official_evidence(),))
-    assert CurrentIndustryCache(index.path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(at) == before
-    assert source.fetch(at) == before
-    assert client.health().planned_count == 1
+def test_resume_retains_completed_raw_documents_and_only_adds_the_missing_key(tmp_path):
+    first = _document()
+    index = _index(tmp_path)
+    index.save_source_document(first)
+    with pytest.raises(ValueError, match="document_invalid"):
+        replace(_document("002594"), content=b"")
+    second = _document("002594")
+    reopened = _index(tmp_path)
+    assert reopened.read_source_document(first.request_key, _OBSERVED_AT) == first
+    assert reopened.read_source_document(second.request_key, _OBSERVED_AT) is None
+    reopened.save_source_document(second)
+    assert reopened.read_source_document(first.request_key, _OBSERVED_AT) == first
+    assert reopened.read_source_document(second.request_key, _OBSERVED_AT) == second
 
 
-def test_industry_evidence_failure_keeps_previous_publication_after_supplier_refresh(tmp_path, monkeypatch):
-    path = tmp_path / "industry.sqlite3"
-    at = datetime(2026, 11, 4, 19, tzinfo=ZoneInfo("Asia/Shanghai"))
-    client = BaoStockIndustryClient(
-        fetch_rows=lambda day, timeout: (BaoStockIndustryRow("sh.600001", "I65软件", "证监会行业分类", day),),
-        minimum_rows=1,
-    )
-    source = CurrentIndustryPublication(path, client, minimum_rows=1, sqlite_policy=SqlitePolicyFixture())
-    original = source.fetch(at - timedelta(days=7))
+def test_future_receipt_is_unavailable_at_an_earlier_observation_without_rewriting(tmp_path):
+    index = _index(tmp_path)
+    original = _document()
+    index.save_source_document(original)
+    assert index.read_source_document(original.request_key, _OBSERVED_AT - timedelta(seconds=1)) is None
+    assert index.read_source_document(original.request_key, _OBSERVED_AT) == original
 
-    def fail(*args):
-        raise ValueError("industry_evidence_hash_conflict")
 
-    monkeypatch.setattr(SQLiteIndustryQueryIndex, "read_evidence", fail)
+@pytest.mark.parametrize("fields", (
+    {"requested_to": date(2026, 11, 7)},
+    {"received_at": datetime(2026, 11, 6, 20)},
+    {"request_key": "cninfo:p_stock2110:"},
+    {"requested_from": date(2026, 11, 7)},
+))
+def test_invalid_future_or_unbound_source_documents_are_rejected_before_writing(tmp_path, fields):
+    index = _index(tmp_path)
+    with pytest.raises(ValueError, match="document_invalid"):
+        index.save_source_document(replace(_document(), **fields))
+    assert not index.path.exists()
+
+
+@pytest.mark.parametrize("damage", ("payload", "digest"))
+def test_corrupt_original_is_rejected_without_requery_delete_or_digest_repair(tmp_path, damage):
+    index = _index(tmp_path)
+    original = _document()
+    index.save_source_document(original)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        if damage == "payload":
+            connection.run("UPDATE industry_source_document SET payload=?", (b"altered",))
+        else:
+            connection.run("UPDATE industry_source_document SET content_hash=?", (b"0" * 32,))
+    before = index.path.read_bytes()
     with pytest.raises(ValueError, match="hash_conflict"):
-        source.fetch(at)
-    assert client.health().planned_count == 2
-    assert CurrentIndustryCache(path, minimum_rows=1, sqlite_policy=SqlitePolicyFixture()).load(at) == original
+        index.read_source_document(original.request_key, _OBSERVED_AT)
+    assert index.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("field", ("requested_start", "received_at"))
+def test_source_receipt_metadata_cannot_change_without_invalidating_its_digest(tmp_path, field):
+    index = _index(tmp_path)
+    original = _document()
+    index.save_source_document(original)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        if field == "requested_start":
+            connection.run(
+                "UPDATE industry_source_document SET requested_start=?",
+                ((_FIRST_DATE - timedelta(days=1)).isoformat(),),
+            )
+        else:
+            connection.run(
+                "UPDATE industry_source_document SET received_at=?",
+                ((_OBSERVED_AT - timedelta(hours=1)).isoformat(),),
+            )
+        row = connection.run("SELECT payload,content_hash FROM industry_source_document").require_one()
+        assert row[0] == original.content
+        assert row[1] == hashlib.sha256(original.content).digest()
+    before = index.path.read_bytes()
+    with pytest.raises(ValueError, match="hash_conflict"):
+        index.read_source_document(original.request_key, _OBSERVED_AT)
+    assert index.path.read_bytes() == before
+
+
+def test_missing_source_database_read_does_not_create_a_database_or_parent(tmp_path):
+    index = _index(tmp_path / "missing")
+    assert index.read_source_document(_document().request_key, _OBSERVED_AT) is None
+    assert not index.path.parent.exists()
+
+
+def test_unreadable_cache_is_explicitly_rejected_and_kept_intact(tmp_path):
+    index = _index(tmp_path)
+    index.path.write_bytes(b"not a database")
+    with pytest.raises(RuntimeError, match="industry_query_cache_unavailable"):
+        index.read_source_document(_document().request_key, _OBSERVED_AT)
+    with pytest.raises(RuntimeError, match="industry_query_cache_unavailable"):
+        index.save_source_document(_document())
+    assert index.path.read_bytes() == b"not a database"
+
+
+def test_existing_schema_without_source_documents_is_rejected_without_upgrade(tmp_path):
+    index = _index(tmp_path)
+    index.save("fixture", _FIRST_DATE, _FIRST_DATE, "[]")
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        original = tuple(connection.run("SELECT * FROM current_industry_query").require_one())
+        connection.run("DROP TABLE industry_source_document")
+    before = index.path.read_bytes()
+    for failure, reason, operation in (
+        (RuntimeError, "industry_query_cache_unavailable", lambda: index.read_source_document(_document().request_key, _OBSERVED_AT)),
+        (IndustryDatabaseIncompatibleError, "industry_database_incompatible", lambda: index.save_source_document(_document())),
+        (IndustryDatabaseIncompatibleError, "industry_database_incompatible", index.prepare),
+    ):
+        with pytest.raises(failure, match=reason):
+            operation()
+        assert index.path.read_bytes() == before
+    with SqliteSession(index.path) as connection:
+        assert tuple(connection.run("SELECT * FROM current_industry_query").require_one()) == original
+        assert connection.run("SELECT name FROM sqlite_schema WHERE name='industry_source_document'").fetchone() is None
 
 
 def test_industry_evidence_conflicts_are_atomic_and_corruption_is_rejected(tmp_path):
-    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
+    index = _index(tmp_path)
     original = _official_evidence()
     index.import_evidence((original,))
     conflict = replace(original, mapping=replace(original.mapping, target_industry="C29Other"))
@@ -252,29 +245,11 @@ def test_industry_evidence_conflicts_are_atomic_and_corruption_is_rejected(tmp_p
         index.read_evidence(at)
 
 
-def test_industry_readers_and_writers_reject_missing_tables_without_upgrading(tmp_path):
-    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
-    index.save("supplier", DATES[0], DATES[0], "[]")
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        before = tuple(connection.run("SELECT * FROM industry_query").require_one())
-        connection.run("DROP TABLE official_industry_evidence")
-        connection.run("PRAGMA user_version=1")
-    with pytest.raises(RuntimeError, match="unavailable"):
-        index.read(DATES[0], DATES[0])
-    before_bytes = index.path.read_bytes()
-    with pytest.raises(RuntimeError, match="unavailable"):
-        index.import_evidence((_official_evidence(),))
-    assert index.path.read_bytes() == before_bytes
-    with SqliteSession(index.path) as connection:
-        assert tuple(connection.run("SELECT * FROM industry_query").require_one()) == before
-        assert connection.run("PRAGMA user_version").require_one()[0] == 1
-
-
 @pytest.mark.parametrize("cancelled", (True, False))
-def test_reviewed_industry_import_rejects_future_receipt_and_cancellation_before_database_write(tmp_path, monkeypatch, cancelled):
+def test_reviewed_import_rejects_future_receipt_and_cancellation_before_database_write(tmp_path, monkeypatch, cancelled):
     import trader.download.infra.industry_query_index as module
 
-    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
+    index = _index(tmp_path)
     evidence = _official_evidence()
     monkeypatch.setattr(module, "LoadReviewedIndustryEvidence", lambda _: (evidence,))
     if cancelled:

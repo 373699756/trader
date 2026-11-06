@@ -59,6 +59,8 @@ def BuildParser(
         history_comparison_rounds=None,
         history_flush_codes=None,
         history_flush_cells=None,
+        official_announcements=(),
+        industry_work_root=None,
     )
     if action_identity in ("history","baostock-concurrency","tencent-download","tencent-history-window","history-source-compare",):
         parser.add_argument('--codes', nargs='+', default=('600519', '300750', '688981'), help='one to 50 A-share codes, or up to 100 for baostock-concurrency')
@@ -74,7 +76,7 @@ def BuildParser(
         parser.add_argument('--tencent-history-host', choices=('proxy', 'direct'), default='proxy', help='Tencent K-line host for bounded history probes')
     if action_identity in ("history","baostock-concurrency","tencent-download","tencent-history-window","history-source-compare","history-industry",):
         parser.add_argument('--source-timeout-seconds', type=float, default=4.5, help='vendor HTTP timeout; SDK socket timeout for BaoStock experiments')
-    if action_identity in ("history-daily-capability","baostock-qfq-shadow","tencent-download","tencent-history-window","history-sqlite","history-publication","history-source-compare","price-repair-audit","history-write","download-performance","history-space","history-industry","qfq-sqlite","download-failures",):
+    if action_identity in ("history-daily-capability","baostock-qfq-shadow","tencent-download","tencent-history-window","history-sqlite","history-publication","history-source-compare","price-repair-audit","history-write","download-performance","history-space","qfq-sqlite","download-failures",):
         parser.add_argument('--runtime-config', default=str(PROJECT_ROOT / 'config/runtime.json'), help='runtime JSON configuration')
     if action_identity in ("baostock-concurrency",):
         rate_mode = parser.add_mutually_exclusive_group()
@@ -86,7 +88,7 @@ def BuildParser(
         parser.add_argument('--baostock-sizes', nargs='+', type=int, default=(10, 50, 100), help='sample sizes within 1..100')
     if action_identity in ("baostock-concurrency",):
         parser.add_argument('--baostock-rounds', type=int, default=1, help='serial experiment repetitions within 1..3')
-    if action_identity in ("baostock-qfq-shadow","tencent-download","tencent-history-window","history-sqlite","history-publication","history-source-compare","price-repair-audit","history-write","history-space","history-industry",):
+    if action_identity in ("baostock-qfq-shadow","tencent-download","tencent-history-window","history-sqlite","history-publication","history-source-compare","price-repair-audit","history-write","history-space",):
         parser.add_argument('--history-root', type=Path, default=None, help='published history input or explicit isolated publication replay source')
     if action_identity in ("tencent-download","history-write",):
         parser.add_argument('--download-sizes', nargs='+', type=int, default=(10, 50, 100), help='Tencent updater sample sizes')
@@ -125,6 +127,9 @@ def BuildParser(
         parser.add_argument('--comparison-rounds', dest='history_comparison_rounds', type=int, default=None, help='5..10 rounds with an explicit baseline checkout; default 5')
         parser.add_argument('--flush-codes', dest='history_flush_codes', type=int)
         parser.add_argument('--flush-cells', dest='history_flush_cells', type=int)
+    if action_identity == "history-industry":
+        parser.add_argument('--official-announcements', nargs='+', help='CAPCO structured release URLs for isolated candidates')
+        parser.add_argument('--industry-work-root', type=Path, help='external directory for original files and candidates')
     return parser
 
 
@@ -167,9 +172,22 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         history_comparison_rounds=5 if args.history_comparison_rounds is None else args.history_comparison_rounds,
         history_flush_codes=args.history_flush_codes,
         history_flush_cells=args.history_flush_cells,
+        official_announcements=tuple(args.official_announcements or ()),
+        industry_work_root=ExternalPath(args.industry_work_root, "--industry-work-root"),
     )
     if not math.isfinite(options.command_timeout_seconds) or not 0 < options.command_timeout_seconds <= 7200:
         raise ValueError("command timeout must be positive and must not exceed 7200 seconds")
+    if bool(options.official_announcements) != (options.industry_work_root is not None):
+        raise ValueError("--official-announcements and --industry-work-root must be set together")
+    if options.action_identity == "history-industry" and not options.official_announcements:
+        raise ValueError("industry diagnostic requires --official-announcements and --industry-work-root")
+    if options.official_announcements:
+        from trader.download.infra.official_industry_release import ValidateOfficialIndustryUrl
+
+        if len(options.official_announcements) > 64 or len(set(options.official_announcements)) != len(options.official_announcements):
+            raise ValueError("official announcements must be unique, with at most 64 sources")
+        for url in options.official_announcements:
+            ValidateOfficialIndustryUrl(url)
     if not options.codes or any(len(code) != 6 or not code.isdigit() for code in options.codes):
         raise ValueError("--codes must contain six-digit A-share codes")
     maximum_codes = 100 if options.action_identity == "baostock-concurrency" else 50

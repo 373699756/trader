@@ -380,7 +380,7 @@ def _sample(
             "history_maintenance_completed_units": warmup[1],
             "history_maintenance_total_units": warmup[0],
             "sources": {
-                "baostock_industry": {
+                "cninfo_industry": {
                     "snapshot_rows": model_industry_source[0],
                     "error_count": model_industry_source[1],
                     "timeout_count": model_industry_source[2],

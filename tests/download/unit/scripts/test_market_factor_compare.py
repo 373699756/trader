@@ -23,8 +23,8 @@ from scripts.download.market import market_factor_eastmoney as eastmoney_probe
 from scripts.download.market.market_factor_audit import FactorAudit
 from scripts.download.market.market_factor_audit import MissingQuoteCodes
 from scripts.download.market.market_factor_audit import QuoteAudit
-from scripts.download.market.market_factor_baostock import BaostockCapability
-from scripts.download.market.market_factor_baostock import BaoStockSourceResults
+from scripts.download.market.market_factor_industry import IndustryCapability
+from scripts.download.market.market_factor_industry import IndustrySourceResults
 from scripts.download.market.market_factor_budget import DiagnosticBudget
 from scripts.download.market.market_factor_inputs import FixedReferences
 from scripts.download.market.market_factor_inputs import HistoryAtCut
@@ -270,7 +270,7 @@ def test_market_factor_profile_uses_unified_output_and_explicit_bounds(tmp_path)
         "tencent",
         "eastmoney",
         "sina",
-        "baostock",
+        "cninfo",
     )
     assert args[1].report_format == "text"
 
@@ -330,7 +330,7 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
     batch = comparison.CollectedBatch((), (), AT, 10)
     acquired = []
     replayed = []
-    industry = ModelIndustryReference("制造业", "证监会行业分类", AT.date(), "baostock", "fixture")
+    industry = ModelIndustryReference("capco:C制造业", "中国上市公司协会上市公司行业分类标准", AT.date(), "cninfo", "fixture")
     references = FixedReferences((), {"600001": industry}, (), ())
     configured = LoadRuntimeSettings(Path("config/runtime.json"))
     monkeypatch.setattr(
@@ -457,8 +457,8 @@ def test_compact_result_omits_raw_samples_and_preserves_bounded_findings() -> No
         official_population=1,
         eligible_population=1,
         eligibility={"integrity_ok": True},
-        compared_sources=("tencent", "eastmoney", "sina", "baostock"),
-        baostock_results=[],
+        compared_sources=("tencent", "eastmoney", "sina", "cninfo"),
+        industry_results=[],
         preparation=[],
         reference_setup_ms=1,
         industry_probe={},
@@ -515,11 +515,11 @@ def test_compact_result_omits_raw_samples_and_preserves_bounded_findings() -> No
 
 
 def test_route_plans_keep_daily_industry_reference_outside_quote_combinations() -> None:
-    plans = comparison.RoutePlans(("tencent", "eastmoney", "sina", "baostock"), "all")
+    plans = comparison.RoutePlans(("tencent", "eastmoney", "sina", "cninfo"), "all")
     assert {plan.name for plan in plans} == {"tencent", "eastmoney", "sina", "tencent_then_sina"}
     assert all(plan.scheduling in {"single", "sequential_failure_backup"} for plan in plans)
     assert all(plan.sources[0] == "tencent" for plan in plans if len(plan.sources) > 1)
-    assert all("baostock" not in plan.sources for plan in plans)
+    assert all("cninfo" not in plan.sources for plan in plans)
 
 
 def test_recommendation_requires_tencent_primary_and_prefers_complete_pair() -> None:
@@ -616,17 +616,18 @@ def test_source_loop_budget_excludes_slow_source_and_task_budget_stops_work() ->
     assert [item["source"] for item in report["excluded_sources"]] == ["eastmoney", "tencent"]
 
 
-def test_baostock_reports_reference_coverage_without_claiming_instant_quotes() -> None:
+def test_cninfo_reports_reference_coverage_without_claiming_instant_quotes() -> None:
     reference = SimpleNamespace(effective_date=AT.date())
-    capability = BaostockCapability({"600001": reference}, 1500)
+    capability = IndustryCapability({"600001": reference}, 1500)
 
-    result = BaoStockSourceResults(
+    result = IndustrySourceResults(
         capability,
         (("full_market", ("600001", "600002")),),
         3,
         comparison.QUOTE_FIELDS,
     )[0]
 
+    assert result["source"] == "cninfo"
     assert result["coverage"] == 0.5
     assert result["network_fetch_rounds"] == 0
     assert result["cache_reuse_rounds"] == 3

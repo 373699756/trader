@@ -122,7 +122,7 @@ def _shared_industries(profile: LoadedScoringProfile) -> tuple[str, ...]:
     if set(profile.heads) != {Strategy.TOMORROW, Strategy.D25}:
         raise ValueError("performance_profile_requires_complete_heads")
     if profile.profile_id == "v1":
-        return tuple(f"performance-industry-{index}" for index in range(20))
+        return tuple(f"capco:performance-industry-{index}" for index in range(20))
     coverage = tuple(set(cast(ModelPredictorPort, head.predictor).industry_ids) for head in profile.heads.values())
     shared = tuple(sorted(set.intersection(*coverage)))
     if not shared:
@@ -208,7 +208,7 @@ def _model_feature(
         now,
         history_days=history_sessions,
         model_industry=ModelIndustryReference(
-            quote.industry, "证监会行业分类", days[-1], "performance_fixture", _FIXTURE_SOURCE
+            quote.industry, "中国上市公司协会上市公司行业分类标准", days[-1], "performance_fixture", _FIXTURE_SOURCE
         ),
         model_sequence=sequence,
         model_history_quality=ModelHistoryQuality(),

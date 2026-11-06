@@ -23,9 +23,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeDownload,
     BaoStockDailySpec,
-    BaoStockIndustryInterval,
     BaoStockSecurity,
-    BaoStockSourceVersions,
 )
 from trader.download.domain.history_sync import (
     BAOSTOCK_PREPARATION_INTERVAL_SECONDS,
@@ -44,8 +42,6 @@ from trader.download.infra.baostock_session import (
     LoginBaostock,
     LogoutBaostock,
 )
-from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_industry_preparation import IndustryPreparationRequest, PrepareHistoryIndustries
 
 
 @dataclass(frozen=True)
@@ -53,12 +49,6 @@ class _LoadContext:
     as_of: date
     sessions: int
     universe: tuple[BaoStockSecurity, ...]
-    industry_cache: HistoryIndustryQueryCache | None = None
-
-
-@dataclass(frozen=True)
-class _FetchIndustry:
-    day: date
 
 
 @dataclass(frozen=True)
@@ -104,7 +94,6 @@ class _RequestState:
     deadline: float = 0.0
     next_heartbeat: float = 0.0
     worker_ready: bool = False
-    industry_started_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -126,7 +115,6 @@ class _Response:
     download: BaoStockCodeDownload | None = None
     failure_reason: str | None = None
     restart_session: bool = False
-    industry_facts: tuple[BaoStockIndustryInterval, ...] | None = None
     failure_detail: str = ""
 
 
@@ -155,13 +143,6 @@ class _RateLimitedSdk:
 
     def query_stock_basic(self) -> BaoStockRowResult:
         return self._call("supplier_universe", None, self._sdk.query_stock_basic)
-
-    def query_stock_industry(self, *, code: str = "", date: str = "") -> BaoStockRowResult:
-        return self._call(
-            "supplier_industry",
-            code or date or None,
-            lambda: self._sdk.query_stock_industry(code=code, date=date),
-        )
 
     def query_history_k_data_plus(  # noqa: PLR0913
         self,
@@ -227,7 +208,6 @@ class BaoStockHistorySupplier:
         self._cancellation_grace_seconds = settings.cancellation_grace_seconds
         self._heartbeat_interval_seconds = settings.progress_heartbeat_seconds
         self._progress = progress
-        self._industry_units = (0, 1)
         self._monotonic = monotonic
         self._cancel_requested = cancel_requested
         self._process: BaseProcess | None = None
@@ -248,46 +228,11 @@ class BaoStockHistorySupplier:
         sessions: int,
         *,
         universe: tuple[BaoStockSecurity, ...],
-        industry_cache: HistoryIndustryQueryCache | None = None,
     ) -> HistorySupplierContext:
-        self._industry_units = (0, 1)
-        response = self._request(_LoadContext(as_of, sessions, universe, industry_cache))
+        response = self._request(_LoadContext(as_of, sessions, universe))
         if response.context is None:
             raise RuntimeError(response.failure_reason or "supplier_context_failed")
         return response.context
-
-    def load_industry_context(
-        self,
-        calendar: BaoStockCalendar,
-        universe: tuple[BaoStockSecurity, ...],
-        *,
-        industry_cache: HistoryIndustryQueryCache | None = None,
-    ) -> HistorySupplierContext:
-        """Use local query evidence first; only a cache miss may start the SDK child."""
-        sdk = LoadBaostockSdk()
-        versions = BaoStockSourceVersions(sdk.__version__, platform.python_version(), BaostockDependencyVersions())
-        intervals = PrepareHistoryIndustries(
-            IndustryPreparationRequest(
-                calendar,
-                universe,
-                versions.content_hash,
-                self._fetch_industry,
-                cache=industry_cache,
-                progress=self._industry_preparation_progress,
-                cancel_requested=self._cancel_requested,
-            )
-        )
-        return HistorySupplierContext(calendar, universe, versions, intervals)
-
-    def _industry_preparation_progress(self, progress: HistorySyncProgress) -> None:
-        self._industry_units = (progress.completed_units, progress.total_units)
-        self._emit_progress(progress)
-
-    def _fetch_industry(self, day: date) -> tuple[BaoStockIndustryInterval, ...]:
-        response = self._request(_FetchIndustry(day))
-        if response.industry_facts is None:
-            raise RuntimeError(response.failure_reason or "supplier_industry_failed")
-        return response.industry_facts
 
     def fetch_code(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
         response = self._request(_FetchCode(security, dates))
@@ -319,11 +264,11 @@ class BaoStockHistorySupplier:
         if self._vendor_lock is not None:
             self._vendor_lock.release()
 
-    def _request(self, command: _LoadContext | _FetchCode | _FetchIndustry) -> _Response:
+    def _request(self, command: _LoadContext | _FetchCode) -> _Response:
         with self._serial:
             return self._serial_request(command)
 
-    def _serial_request(self, command: _LoadContext | _FetchCode | _FetchIndustry) -> _Response:
+    def _serial_request(self, command: _LoadContext | _FetchCode) -> _Response:
         self._request_deadline = (
             self._monotonic() + self._price_total_seconds
             if isinstance(command, _FetchCode) and self._price_total_seconds is not None
@@ -381,7 +326,7 @@ class BaoStockHistorySupplier:
 
     def _request_once(
         self,
-        command: _LoadContext | _FetchCode | _FetchIndustry,
+        command: _LoadContext | _FetchCode,
         state: _RequestState,
         attempt: _Attempt,
         timeout_seconds: float,
@@ -406,9 +351,6 @@ class BaoStockHistorySupplier:
                 if isinstance(response, _Activity):
                     state = self._handle_activity(response, state, attempt, timeout_seconds)
                     continue
-                if isinstance(response, HistorySyncProgress):
-                    state = self._handle_industry_progress(response, state, attempt, timeout_seconds)
-                    continue
                 if not isinstance(response, _Response):
                     raise RuntimeError("supplier_protocol_invalid")
                 return _AttemptResult(response, state, response.failure_reason)
@@ -416,32 +358,6 @@ class BaoStockHistorySupplier:
             if not state.worker_ready:
                 state = replace(state, stage="supplier_login", current_item=None)
             return _AttemptResult(None, state, _failure_code(exc), exc)
-
-    def _handle_industry_progress(
-        self, progress: HistorySyncProgress, state: _RequestState, attempt: _Attempt, timeout: float
-    ) -> _RequestState:
-        if progress.stage != "supplier_industry" or progress.state not in {"started", "completed"}:
-            raise RuntimeError("supplier_protocol_invalid")
-        now = self._monotonic()
-        started = now if progress.state == "started" else state.industry_started_at
-        self._industry_units = (progress.completed_units, progress.total_units)
-        self._emit_progress(
-            replace(
-                progress,
-                attempt=attempt.number,
-                max_attempts=attempt.total,
-                call_elapsed_seconds=max(0.0, now - started),
-            )
-        )
-        return replace(
-            state,
-            stage=progress.stage,
-            current_item=progress.current_item,
-            call_started_at=now,
-            industry_started_at=started,
-            deadline=now + timeout,
-            next_heartbeat=now + self._heartbeat_interval_seconds,
-        )
 
     def _receive(
         self,
@@ -548,17 +464,12 @@ class BaoStockHistorySupplier:
         current_item: str | None,
         call_elapsed_seconds: float,
     ) -> None:
-        if stage == "supplier_industry" and state in {"started", "completed"}:
-            return  # Dated query preparation is the sole owner of these events.
-        completed, total = (
-            self._industry_units if stage == "supplier_industry" else (1 if state == "completed" else 0, 1)
-        )
         self._emit_progress(
             HistorySyncProgress(
                 stage,
                 state,
-                completed,
-                total,
+                1 if state == "completed" else 0,
+                1,
                 current_item=current_item,
                 attempt=attempt.number,
                 max_attempts=attempt.total,
@@ -574,13 +485,12 @@ class BaoStockHistorySupplier:
         call_elapsed_seconds: float,
         failure_reason: str,
     ) -> None:
-        completed, total = self._industry_units if stage == "supplier_industry" else (0, 1)
         self._emit_progress(
             HistorySyncProgress(
                 stage,
                 "failed",
-                completed,
-                total,
+                0,
+                1,
                 current_item=current_item,
                 attempt=attempt.number,
                 max_attempts=attempt.total,
@@ -622,17 +532,11 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                 if isinstance(command, _LoadContext):
                     requested = BaoStockDailySpec(sessions=command.sessions, source_cutoff=command.as_of)
                     calendar = gateway.fetch_calendar(requested)
-                    spec = BaoStockDailySpec(sessions=command.sessions, source_cutoff=calendar.open_dates[-1])
-                    industries = gateway.fetch_industry_intervals(
-                        spec, calendar, command.universe, cache=command.industry_cache, progress=connection.send
-                    )
                     connection.send(
                         _Response(
-                            HistorySupplierContext(calendar, command.universe, gateway.source_versions(), industries)
+                            HistorySupplierContext(calendar, command.universe, gateway.source_versions())
                         )
                     )
-                elif isinstance(command, _FetchIndustry):
-                    connection.send(_Response(industry_facts=gateway.fetch_industry_facts(command.day)))
                 elif isinstance(command, _FetchCode):
                     calendar = BaoStockCalendar(command.dates)
                     spec = BaoStockDailySpec(sessions=len(command.dates), source_cutoff=command.dates[-1])
@@ -678,12 +582,10 @@ def _failure_code(exc: BaseException) -> str:
 
 
 def _command_progress(
-    command: _LoadContext | _FetchCode | _FetchIndustry,
+    command: _LoadContext | _FetchCode,
 ) -> tuple[HistorySyncProgressStage, str | None]:
     if isinstance(command, _LoadContext):
         return "supplier_calendar", None
-    if isinstance(command, _FetchIndustry):
-        return "supplier_industry", str(command.day)
     return "supplier_daily_raw", command.security.code
 
 

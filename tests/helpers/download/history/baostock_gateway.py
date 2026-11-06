@@ -111,14 +111,6 @@ class _Sdk:
         )
         return _Result(tuple(fields.split(",")), tuple(row for row in rows if row[0] >= start_date))
 
-    def query_stock_industry(self, *, code="", date=""):
-        assert code == ""
-        return _Result(
-            ("updateDate", "code", "code_name", "industry", "industryClassification"),
-            ((date, "sh.600001", "A", "银行", "申万一级行业"),),
-        )
-
-
 class _LoginSdk:
     def __init__(self, error_code: str = "0") -> None:
         self.error_code = error_code

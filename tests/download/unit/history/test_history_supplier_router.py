@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
 from dataclasses import replace
+import json
 
 from datetime import date, timedelta
 
@@ -15,7 +16,7 @@ from tests.helpers.download.history_fixtures import RunHistoryFixture
 
 from tests.helpers.download.history.history_sync_progress import _compact_log
 
-from tests.helpers.download.history.infra.history_sync import NOW, FakeSupplier
+from tests.helpers.download.history.infra.history_sync import NOW
 
 
 from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
@@ -33,7 +34,7 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 
 from trader.download.infra.download_settings import LoadQfqWindowConfiguration
 
-from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
+from trader.download.infra.industry_query_index import IndustrySourceDocument, SQLiteIndustryQueryIndex
 
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 
@@ -95,7 +96,7 @@ def test_sparse_gap_request_count_covers_date_span(positions, expected):
     assert FetchTencentHistoryWindow(RecordingPrices(), _current_universe("600001")[0], requested, calendar)
 
 
-def test_prepared_calendar_is_shared_with_prices_and_industry_query() -> None:
+def test_prepared_calendar_and_universe_are_taken_only_from_tencent_context() -> None:
     dates = (date(2026, 10, 8), date(2026, 10, 9))
     universe = _current_universe("600001")
     events = []
@@ -105,50 +106,69 @@ def test_prepared_calendar_is_shared_with_prices_and_industry_query() -> None:
             events.append("tencent_calendar")
             return super().load_history_context(as_of, sessions, selected, calendar=calendar)
 
-    class IndustryOnly:
-        def load_industry_context(self, calendar, selected, *, industry_cache=None):
-            events.append("industry")
-            assert calendar.open_dates == dates
-            assert selected == universe
-            return FakeSupplier(dates).load_context(dates[-1], len(dates), universe=selected)
+    class ForbiddenBaseline:
+        def load_context(self, *_args, **_kwargs):
+            raise AssertionError("BaoStock must not prepare history references")
 
-    context = HistorySupplierRouter(IndustryOnly(), TencentCalendar(), _prepared(universe, dates)).load_context(
+        def load_industry_context(self, *_args, **_kwargs):
+            raise AssertionError("BaoStock industry requests have been removed")
+
+    context = HistorySupplierRouter(ForbiddenBaseline(), TencentCalendar(), _prepared(universe, dates)).load_context(
         dates[-1], len(dates)
     )
-    assert events == ["tencent_calendar", "industry"]
+    assert events == ["tencent_calendar"]
     assert context.calendar.open_dates == dates
+    assert context.universe == universe
+    assert context.industry_intervals == ()
+    assert context.industry_readiness is not None
+    assert context.industry_readiness.requested_codes == 1
+    assert not context.industry_readiness.ready
     assert any(name == "tencent_calendar" for name, _ in context.source_versions.dependency_versions)
 
 
-def test_history_router_forwards_the_explicit_industry_query_cache(tmp_path) -> None:
+def test_history_router_inspects_the_explicit_industry_query_index_without_promoting_change_date(tmp_path) -> None:
     dates = (date(2026, 10, 8), date(2026, 10, 9))
     baseline = Baseline(dates)
     universe = _current_universe("600001")
-    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    cache = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "cninfo", sqlite_policy=SqlitePolicyFixture())
+    payload = json.dumps({
+        "resultcode": 200, "count": 1, "records": [{
+            "SECCODE": "600001", "SECNAME": "fixture", "ORGNAME": "fixture organization",
+            "VARYDATE": dates[0].isoformat(), "F001V": "008001",
+            "F002V": "中国上市公司协会上市公司行业分类标准", "F003V": "J661",
+            "F004V": "金融业", "F005V": None, "F006V": "货币金融服务",
+            "F007V": "货币银行服务", "F008C": "1",
+        }],
+    }, ensure_ascii=False).encode()
+    document = IndustrySourceDocument("cninfo:p_stock2110:600001", dates[0], dates[-1], _at(dates[-1]), payload)
+    cache.save_source_document(document)
     router = HistorySupplierRouter(baseline, Prices(), _prepared(universe, dates), cache)
-    router.load_context(dates[-1], len(dates))
-    assert baseline.industry_cache is cache
+    context = router.load_context(dates[-1], len(dates))
+    assert context.industry_readiness is not None
+    assert context.industry_readiness.candidate_codes == 1
+    assert context.industry_readiness.point_in_time_codes == 0
+    assert not context.industry_readiness.ready
+    assert context.industry_intervals == ()
+    assert cache.read_source_document(document.request_key, _at(dates[-1])) == document
+    assert baseline.calls == []
 
 
-def test_baostock_login_timeout_falls_back_to_tencent_price_context(tmp_path) -> None:
+def test_price_publication_does_not_call_baostock_context_when_industry_is_not_ready(tmp_path) -> None:
     dates = (date(2026, 10, 8), date(2026, 10, 9))
     universe = _current_universe("600001")
 
-    class LoginTimeout(Baseline):
+    class ForbiddenBaseline(Baseline):
         def load_context(self, *_args, **_kwargs):
-            raise RuntimeError("supplier_login_timeout")
+            raise AssertionError("BaoStock context must not be queried")
 
-    class TencentContext(Prices):
-        def load_history_context(self, as_of, sessions, selected, *, calendar):
-            context = FakeSupplier(dates).load_context(as_of, sessions, universe=selected)
-            return replace(context, industry_intervals=())
-
-    router = HistorySupplierRouter(LoginTimeout(dates), TencentContext(), _prepared(universe, dates))
+    router = HistorySupplierRouter(ForbiddenBaseline(dates), Prices(), _prepared(universe, dates))
     context = router.load_context(dates[-1], len(dates))
 
     assert context.calendar.open_dates == dates
     assert context.universe == universe
     assert context.industry_intervals == ()
+    assert context.industry_readiness is not None
+    assert context.industry_readiness.point_in_time_codes == 0
     result = RunHistoryFixture(
         HistorySyncConfiguration(
             tmp_path,
@@ -162,17 +182,51 @@ def test_baostock_login_timeout_falls_back_to_tencent_price_context(tmp_path) ->
     )
     assert result.state == "completed"
     assert result.published and not result.needs_retry
+    assert result.industry_readiness is not None
+    assert not result.industry_readiness.ready
+
+    reused = RunHistoryFixture(
+        HistorySyncConfiguration(
+            tmp_path, (tmp_path).parent / "reference", sessions=2, reread_sessions=2, minimum_free_bytes=0,
+        ),
+        router,
+        clock=lambda: _at(dates[-1]),
+    )
+    assert reused.state == "already_current"
+    assert reused.industry_readiness == result.industry_readiness
 
 
-def test_non_login_context_failure_does_not_hide_reference_error() -> None:
+def test_invalid_industry_query_index_preserves_original_and_reports_unready_prices(tmp_path) -> None:
     dates = (date(2026, 10, 8), date(2026, 10, 9))
 
-    class IndustryFailure(Baseline):
+    path = tmp_path / "industry.sqlite3"
+    path.write_bytes(b"invalid sqlite evidence")
+    cache = SQLiteIndustryQueryIndex(path, "cninfo", sqlite_policy=SqlitePolicyFixture())
+    class ForbiddenBaseline(Baseline):
         def load_context(self, *_args, **_kwargs):
-            raise RuntimeError("industry_query_failed")
+            raise AssertionError("Industry failure must not query BaoStock")
 
-    with pytest.raises(RuntimeError, match="industry_query_failed"):
-        _router(IndustryFailure(dates), Prices()).load_context(dates[-1], len(dates))
+    baseline = ForbiddenBaseline(dates)
+    router = HistorySupplierRouter(baseline, Prices(), _prepared(_current_universe("600001"), dates), cache)
+    context = router.load_context(dates[-1], len(dates))
+    assert context.industry_readiness is not None
+    assert context.industry_readiness.failure_category == "RuntimeError"
+    assert context.industry_readiness.point_in_time_codes == 0
+    assert not context.industry_readiness.ready
+    assert context.industry_intervals == ()
+    assert baseline.calls == []
+    assert path.read_bytes() == b"invalid sqlite evidence"
+
+
+def test_cancelled_history_industry_inspection_is_not_downgraded() -> None:
+    dates = (date(2026, 10, 8), date(2026, 10, 9))
+    baseline = Baseline(dates)
+    router = HistorySupplierRouter(
+        baseline, Prices(), _prepared(_current_universe("600001"), dates), cancel_requested=lambda: True
+    )
+    with pytest.raises(RuntimeError, match="supplier_cancelled"):
+        router.load_context(dates[-1], len(dates))
+    assert baseline.calls == []
 
 
 @pytest.mark.parametrize("count", (5, 639, 640, 641, 2000))
@@ -186,7 +240,7 @@ def test_tencent_first_fetches_one_whole_window(count):
     assert tuple(cell.trade_date for cell in result.cells) == dates
     assert prices.calls == [dates]
     assert baseline.calls == []
-    assert context.source_versions != baseline.load_context(dates[-1], count).source_versions
+    assert context.source_versions.sdk_version.endswith("+cninfo-industry")
 
 
 @pytest.mark.parametrize("incoming", ("missing", "raw"))
@@ -267,6 +321,8 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
         clock=lambda: _at(dates[-1]), sqlite_policy=SqlitePolicyFixture(),
     )
     assert result.state == "completed"
+    assert result.industry_readiness is not None
+    assert not result.industry_readiness.ready
     assert baseline.calls == []
     assert supplier_settings["configuration"].supplier_timeout_seconds == 45.0
     assert supplier_settings["configuration"].supplier_retries == 2
@@ -340,8 +396,13 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     assert len(training_rows) == len(dates)
     assert {row.code for row in training_rows} == {"600001"}
     industry_report = AuditPublishedHistoricalIndustryFacts(config.history_root, sqlite_policy=SqlitePolicyFixture())
+    assert not training.has_industry_window(frozenset(dates), 61)
+    assert training.industry_sample_upper_bounds(frozenset(dates), 61, frozenset(dates)) == ()
     assert industry_report.sources[0].sampled_codes == 1
-    assert len(industry_report.merged_fact_hashes) == 1
+    assert industry_report.sources[0].covered_trading_dates == 0
+    assert industry_report.sources[0].missing_dates == len(dates)
+    assert industry_report.sources[0].fact_hashes == ()
+    assert industry_report.merged_fact_hashes == ()
 
 
 def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
@@ -352,7 +413,7 @@ def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
     assert RunHistoryFixture(config, Baseline(dates), clock=lambda: _at(dates[-1])).state == "completed"
 
     class Regressed(Baseline):
-        def load_context(self, as_of, sessions, *, universe=None, industry_cache=None):
+        def load_context(self, as_of, sessions, *, universe=None):
             context = super().load_context(as_of, sessions, universe=universe)
             return replace(context, universe=(context.universe[0],))
 

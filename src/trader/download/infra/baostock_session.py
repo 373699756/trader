@@ -134,9 +134,6 @@ class RateLimitedBaoStockSdk:
     def query_stock_basic(self) -> BaoStockRowResult:
         return self._query(self._sdk.query_stock_basic)
 
-    def query_stock_industry(self, *, code: str = "", date: str = "") -> BaoStockRowResult:
-        return self._query(lambda: self._sdk.query_stock_industry(code=code, date=date))
-
     def query_history_k_data_plus(  # noqa: PLR0913 - exact third-party signature
         self,
         code: str,

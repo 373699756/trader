@@ -1,4 +1,4 @@
-"""BaoStock current-industry capability for market-factor comparisons."""
+"""Published CNINFO industry references for market-factor comparisons."""
 
 from __future__ import annotations
 
@@ -6,11 +6,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from scripts.core.reporting import summarize_latency_ms
 from trader.recommendation.domain.market.models import ModelIndustryReference
 
-from scripts.core.reporting import summarize_latency_ms
-
-BAOSTOCK_REFERENCE_FIELDS = (
+INDUSTRY_REFERENCE_FIELDS = (
     "model_industry",
     "model_industry_classification",
     "model_industry_effective_date",
@@ -20,7 +19,7 @@ BAOSTOCK_REFERENCE_FIELDS = (
 
 
 @dataclass(frozen=True)
-class BaostockCapability:
+class IndustryCapability:
     published_industries: Mapping[str, ModelIndustryReference]
     elapsed_ms: float
 
@@ -31,15 +30,15 @@ class BaostockCapability:
         return "unavailable"
 
 
-def ProbeBaoStockIndustry(
+def ProbeIndustryReferences(
     existing: Mapping[str, ModelIndustryReference],
     elapsed_ms: float,
-) -> BaostockCapability:
-    return BaostockCapability(MappingProxyType(dict(existing)), elapsed_ms)
+) -> IndustryCapability:
+    return IndustryCapability(MappingProxyType(dict(existing)), elapsed_ms)
 
 
-def BaoStockSourceResults(
-    capability: BaostockCapability,
+def IndustrySourceResults(
+    capability: IndustryCapability,
     scopes: Sequence[tuple[object, tuple[str, ...]]],
     rounds: int,
     instant_quote_fields: Sequence[str],
@@ -51,7 +50,7 @@ def BaoStockSourceResults(
         coverage = covered / total if total else 0.0
         results.append(
             {
-                "source": "baostock",
+                "source": "cninfo",
                 "kind": "local_reference",
                 "scope": scope,
                 "rounds": rounds,
@@ -65,7 +64,7 @@ def BaoStockSourceResults(
                 "physical_rows": len(capability.published_industries),
                 "coverage": round(coverage, 4),
                 "request_timings_ms": summarize_latency_ms([capability.elapsed_ms]),
-                "supported_reference_fields": list(BAOSTOCK_REFERENCE_FIELDS),
+                "supported_reference_fields": list(INDUSTRY_REFERENCE_FIELDS),
                 "unsupported_instant_quote_fields": list(instant_quote_fields),
                 "invalid_rows": 0,
             }
@@ -74,8 +73,8 @@ def BaoStockSourceResults(
 
 
 __all__ = [
-    "BAOSTOCK_REFERENCE_FIELDS",
-    "BaostockCapability",
-    "BaoStockSourceResults",
-    "ProbeBaoStockIndustry",
+    "INDUSTRY_REFERENCE_FIELDS",
+    "IndustryCapability",
+    "IndustrySourceResults",
+    "ProbeIndustryReferences",
 ]

@@ -170,31 +170,6 @@ class _Sdk:
         return cast(BaoStockRowResult, object())
 
 
-def test_industry_date_progress_keeps_counts_and_elapsed_across_page_activity(tmp_path) -> None:
-    clock = _Clock()
-    recorder = _ProgressRecorder()
-    supplier = BaoStockHistorySupplier(
-        HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference"),
-        progress=recorder,
-        monotonic=clock,
-    )
-    attempt = _Attempt(2, 3)
-    state = _RequestState("supplier_industry", "2020-07-01", 0)
-    state = supplier._handle_industry_progress(
-        HistorySyncProgress("supplier_industry", "started", 4, 18, "2020-07-01"), state, attempt, 45
-    )
-    clock.value = 3
-    state = supplier._handle_activity(_Activity("supplier_industry", "started", "2020-07-01"), state, attempt, 45)
-    clock.value = 8
-    supplier._publish_failure("supplier_industry", attempt, "2020-07-01", 5, "supplier_industry_timeout")
-    assert (recorder.values[-1].completed_units, recorder.values[-1].total_units) == (4, 18)
-    supplier._handle_industry_progress(
-        HistorySyncProgress("supplier_industry", "completed", 5, 18, "2020-07-01", cache_hit=False), state, attempt, 45
-    )
-    assert recorder.values[-1].call_elapsed_seconds == 8
-    assert recorder.values[-1].attempt == 2
-
-
 def test_worker_activity_identifies_raw_and_qfq_supplier_calls() -> None:
     values: list[tuple[str, str, str | None]] = []
     sdk = _RateLimitedSdk(
@@ -474,7 +449,7 @@ def test_supplier_request_policy_rejects_unbounded_values(timeout_seconds: float
         BaoStockRequestPolicy(timeout_seconds, retries)
 
 
-def test_worker_context_keeps_official_universe_without_querying_stock_basic(monkeypatch) -> None:
+def test_worker_context_keeps_official_universe_without_querying_baostock_industry(monkeypatch) -> None:
     from trader.download.infra import baostock_sync_supplier as supplier_module
 
     dates = (date(2026, 10, 8), date(2026, 10, 9))
@@ -498,11 +473,7 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
             return _Result(("calendar_date", "is_trading_day"), tuple((day.isoformat(), "1") for day in dates))
 
         def query_stock_industry(self, **_kwargs):
-            calls.append("industry")
-            return _Result(
-                ("updateDate", "code", "industry", "industryClassification"),
-                (("2026-10-08", "sz.302132", "fixture", "fixture"), ("2026-10-08", "sh.600002", "old", "fixture")),
-            )
+            raise AssertionError("BaoStock industry queries have been removed")
 
     class Connection:
         def __init__(self):
@@ -541,6 +512,7 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
     assert context is not None
     assert context.calendar.open_dates == dates
     assert context.universe == universe
-    assert tuple(item.code for item in context.industry_intervals) == ("302132",)
-    assert calls == ["login", "calendar", "industry", "industry", "logout"]
+    assert context.industry_intervals == ()
+    assert calls == ["login", "calendar", "logout"]
+    assert not any(isinstance(item, HistorySyncProgress) for item in connection.responses)
     assert connection.closed

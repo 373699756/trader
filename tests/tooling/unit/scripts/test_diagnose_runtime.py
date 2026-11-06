@@ -445,7 +445,15 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
     ],
 )
 def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, expected: str) -> None:
-    commands = BuildToolCommands(_options(action_identity=profile), python_executable="/python")
+    if profile == "history-industry":
+        options = ParseBusinessOptions(ParseToolArguments([
+            *SelectionArguments(profile),
+            "--official-announcements", "https://www.capco.org.cn/dataFile/zsxfb/hyfl/hyfljg/fixture.js",
+            "--industry-work-root", "/tmp/industry-fixture",
+        ]))
+    else:
+        options = _options(action_identity=profile)
+    commands = BuildToolCommands(options, python_executable="/python")
 
     assert tuple(command.name for command in commands) == (expected,)
     if "--internal-worker" in commands[0].argv:

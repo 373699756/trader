@@ -35,7 +35,8 @@ from trader.download.entrypoints import company_evidence_progress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra import company_document_files, company_facts_reader
 from trader.download.infra.akshare_calendar import FetchAkshareCalendar
-from trader.download.infra.baostock_industry import BaoStockIndustryClient, FetchBaoStockIndustries
+from trader.download.infra.cninfo_industry import CninfoIndustryClient
+from trader.download.infra.cninfo_headers import CninfoIndustryHeaders
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext
@@ -57,7 +58,7 @@ from trader.download.infra.download_settings import (
 )
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
-from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
+from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_gateway import HistorySyncGateway
@@ -181,8 +182,11 @@ def OpenExternalHttp(
     *,
     observe: Callable[[HttpAttempt], None] | None = None,
     inspect_response: Callable[[HttpRequest, HttpResponse], None] | None = None,
+    identity_content_encodings: tuple[str, ...] = (),
 ) -> HttpTransport:
-    return RequestsHttpTransport(observe=observe, inspect_response=inspect_response)
+    return RequestsHttpTransport(
+        observe=observe, inspect_response=inspect_response, identity_content_encodings=identity_content_encodings,
+    )
 
 
 def FetchExternalHttp(
@@ -201,9 +205,19 @@ def _post_external_http(url: str, *, headers: Mapping[str, str], json: object, t
         return transport.post(url, headers=headers, json=json, timeout=timeout)
 
 
-def BuildIndustrySource(*, cancel_requested: Callable[[], bool] | None = None, vendor_lock: ProcessLock | None = None) -> BaoStockIndustryClient:
-    execute = partial(RunIsolatedCall, cancel_requested=cancel_requested)
-    return BaoStockIndustryClient(fetch_rows=partial(FetchBaoStockIndustries, execute=execute), vendor_lock=vendor_lock)
+def BuildIndustrySource(
+    transport: HttpTransport,
+    path: Path,
+    *,
+    sqlite_policy: SqliteIoPolicy,
+    cancel_requested: Callable[[], bool],
+    clock: Callable[[], datetime],
+    report: Callable[[ProgressMessage], None] | None = None,
+) -> CurrentIndustryPublication:
+    client = CninfoIndustryClient(transport, request_headers=lambda: CninfoIndustryHeaders(clock()))
+    return CurrentIndustryPublication(
+        path, client, sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=clock, report=report,
+    )
 
 
 def BuildPerformanceExecutor(workers: int) -> BoundedExecutor:
@@ -223,7 +237,6 @@ def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
     fill_missing: bool = False,
-    industry_evidence_file: Path | None = None,
 ) -> SyncResult:
     if fill_missing and target == "all":
         raise ValueError("fill_requires_explicit_target")
@@ -231,14 +244,6 @@ def ExecuteSync(
     sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
-    if industry_evidence_file is not None:
-        from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
-
-        industry_index = SQLiteIndustryQueryIndex(
-            paths.reference / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=sqlite_policy
-        )
-        if not industry_index.import_reviewed_file(industry_evidence_file, observed_at=clock.now(), cancelled=cancel_requested):
-            return SyncResult((), cancelled=True)
     progress = company_evidence_progress.CompanyEvidenceProgress(
         command="sync" if target == "all" else f"sync {target}"
     )
@@ -475,8 +480,10 @@ def _prepare_reference(
         calendar = partial(
             FetchAkshareCalendar, 30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested)
         )
-        industry = CurrentIndustryPublication(
-            reference_root / "industry.sqlite3", BuildIndustrySource(cancel_requested=cancel_requested, vendor_lock=ProcessLock(reference_root / "baostock.lock", label="BaoStock")), sqlite_policy=sqlite_policy
+        industry = BuildIndustrySource(
+            resources.enter_context(OpenExternalHttp(identity_content_encodings=("normal",))), reference_root / "industry.sqlite3",
+            sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=ShanghaiClock(_utc_now).now,
+            report=report,
         )
         dependencies = ReferencePreparationDependencies(
             source.fetch,
@@ -624,7 +631,11 @@ def ExecuteHistoryDownload(
                     baseline,
                     prices,
                     reference,
-                    industry_cache=HistoryIndustryQueryCache(configuration.reference_root / "industry.sqlite3", sqlite_policy=sqlite_policy),
+                    industry_cache=SQLiteIndustryQueryIndex(
+                        configuration.reference_root / "industry.sqlite3", "cninfo_industry_queries", sqlite_policy=sqlite_policy,
+                    ),
+                    progress=progress,
+                    cancel_requested=cancel_requested,
                 ),
                 clock=clock,
                 progress=progress,

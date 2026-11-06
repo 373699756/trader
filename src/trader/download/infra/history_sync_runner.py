@@ -35,6 +35,7 @@ from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_
 from trader.download.domain.price_review import PriceReviewBudgetExhausted
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_sync import (
+    HistoryIndustryReadiness,
     HistorySupplierContext,
     HistoryRepairSummary,
     HistorySyncConfiguration,
@@ -119,6 +120,11 @@ class _BatchInput:
 
 
 @dataclass(frozen=True)
+class _AlreadyCurrent:
+    industry_readiness: HistoryIndustryReadiness | None
+
+
+@dataclass(frozen=True)
 class _HistorySync:
     configuration: HistorySyncConfiguration
     supplier: HistoryTwoStageSupplier
@@ -161,7 +167,7 @@ class _HistorySync:
             )
         if isinstance(inputs, HistoryMaintenanceStatus):
             return inputs
-        if inputs is None:
+        if isinstance(inputs, _AlreadyCurrent):
             unresolved = self.index.gap_summary(
                 tuple(previous), calendar_dates=state.calendar.open_dates,
             ) if state is not None else None
@@ -173,6 +179,7 @@ class _HistorySync:
                 unresolved_price_cells=unresolved.cells if unresolved else 0,
                 price_gap_summary=unresolved,
                 price_review=self._review_summary(),
+                industry_readiness=inputs.industry_readiness,
             )
         snapshot = self._download(inputs, current_snapshot)
         unresolved = self.index.gap_summary(
@@ -186,6 +193,7 @@ class _HistorySync:
             unresolved_price_cells=unresolved.cells if unresolved else 0,
             price_gap_summary=unresolved,
             price_review=self._review_summary(),
+            industry_readiness=inputs.context.industry_readiness,
         )
 
     def _prepare(
@@ -194,7 +202,7 @@ class _HistorySync:
         pending: HistoryDownloadBatch | None,
         target: date,
         previous: frozenset[str],
-    ) -> _BatchInput | HistoryMaintenanceStatus | None:
+    ) -> _BatchInput | HistoryMaintenanceStatus | _AlreadyCurrent:
         _publish_progress(self.progress, "loading_context", "started")
         context = self.supplier.load_context(target, self.configuration.sessions)
         publication_id = _validate_context(context, self.configuration.sessions)
@@ -233,7 +241,7 @@ class _HistorySync:
             self._repair_reference(source, reference, publication_id)
             if current_snapshot is not None and self._review_current(inputs, current_snapshot, tasks, publication_id):
                 return replace(inputs, reviewed=True)
-            return None
+            return _AlreadyCurrent(context.industry_readiness)
         self.control.save_inputs((source, calendar, universe), reference, publication_id)
         self.index.begin(batch, tasks)
         return inputs
@@ -838,6 +846,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
     unresolved_price_cells: int = 0,
     price_gap_summary: HistoryPriceGapSummary | None = None,
     price_review: HistoryPriceReviewSummary | None = None,
+    industry_readiness: HistoryIndustryReadiness | None = None,
 ) -> HistoryMaintenanceStatus:
     root = configuration.history_root
     return HistoryMaintenanceStatus(
@@ -852,6 +861,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
         unresolved_price_cells=unresolved_price_cells,
         price_gap_summary=price_gap_summary,
         price_review=price_review,
+        industry_readiness=industry_readiness,
     )
 
 

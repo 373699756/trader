@@ -20,15 +20,6 @@ class Baseline(FakeSupplier):
         # success is covered by test_price_repair_pipeline.
         raise RuntimeError("fixture_baostock_unavailable")
 
-    def load_industry_context(self, calendar, universe, *, industry_cache=None):
-        return self.load_context(
-            calendar.open_dates[-1], len(calendar.open_dates), universe=universe, industry_cache=industry_cache
-        )
-
-    def load_context(self, as_of, sessions, *, universe=None, industry_cache=None):
-        self.industry_cache = industry_cache
-        return super().load_context(as_of, sessions, universe=universe)
-
     def fetch_raw_code(self, security, dates):
         self.calls.append(("raw", dates))
         value = _download(security.code, dates)

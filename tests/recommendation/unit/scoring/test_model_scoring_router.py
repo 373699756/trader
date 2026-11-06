@@ -103,7 +103,7 @@ def test_router_rejects_long_as_a_non_scoring_strategy() -> None:
 class _InputRecordingPredictor:
     model_id = "population-parity-fixture"
     model_hash = "a" * 64
-    industry_ids = ("modeled",)
+    industry_ids = ("capco:modeled",)
     exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
 
     def __init__(self, profile_id: str, feature_ids: tuple[str, ...]) -> None:
@@ -122,10 +122,10 @@ def _cross_section_population(application_feature_factory, profile):
     sequence_dates = tuple(NOW.date() - timedelta(days=61 - offset) for offset in range(61))
     returns = (0.001, 0.003, 0.005)
     for code, board, industry, momentum in (
-        ("600000", "main", "modeled", 0.02),
-        ("300000", "chinext", "modeled", 0.04),
-        ("600001", "main", "reference_only", 0.06),
-        ("300001", "chinext", "reference_only", 0.04),
+        ("600000", "main", "capco:modeled", 0.02),
+        ("300000", "chinext", "capco:modeled", 0.04),
+        ("600001", "main", "capco:reference_only", 0.06),
+        ("300001", "chinext", "capco:reference_only", 0.04),
     ):
         momenta = tuple(momentum * horizon / 20 for horizon in profile.momentum_horizons)
         feature = application_feature_factory(code, NOW)
@@ -139,7 +139,7 @@ def _cross_section_population(application_feature_factory, profile):
         }
         population.append(replace(
             feature, values=values, history_days=251, model_sequence=sequence,
-            model_industry=ModelIndustryReference(industry, "证监会行业分类", NOW.date(), "fixture", "fixture"),
+            model_industry=ModelIndustryReference(industry, "中国上市公司协会上市公司行业分类标准", NOW.date(), "fixture", "fixture"),
         ))
         pending.append(_PendingSample(
             code, NOW.date(), 251, board, industry, 100_000_000.0,
@@ -241,8 +241,8 @@ def test_v5_model_coverage_and_head_replacement_do_not_change_shared_population_
     expected = {sample.code: sample for sample in _finalize_sample_day(pending, profile)}
     shared = SharedModelFeatureCache()
     for strategy, industries in (
-        (Strategy.TOMORROW, ("modeled",)),
-        (Strategy.D25, ("modeled", "reference_only")),
+        (Strategy.TOMORROW, ("capco:modeled",)),
+        (Strategy.D25, ("capco:modeled", "capco:reference_only")),
     ):
         contract = profile.head_for_strategy(strategy)
         auxiliary_count = len(contract.feature_manifest.names) - 360

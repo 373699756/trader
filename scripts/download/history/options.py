@@ -50,3 +50,5 @@ class HistoryOptions:
     history_comparison_rounds: int = 5
     history_flush_codes: int | None = None
     history_flush_cells: int | None = None
+    official_announcements: tuple[str, ...] = ()
+    industry_work_root: Path | None = None

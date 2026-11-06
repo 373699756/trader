@@ -65,7 +65,7 @@ TOOLS = (
     ToolDefinition('company-resume', 'download', 'company', 'coverage', None, 'scripts.download.company', 'subprocess', None, reporter='scripts.download.company.reporting', effects=('read_company_data', 'explicit_network_audit_or_isolated_replay'), artifact_directory_arguments=('--company-replay-directory',)),
     ToolDefinition('company-ledger', 'recommendation', 'web', 'company-ledger', None, 'scripts.recommendation.web', 'subprocess', None, reporter='scripts.recommendation.web.reporting', effects=('isolated_browser',)),
     ToolDefinition('history-space', 'download', 'history', 'space', None, 'scripts.download.history', 'subprocess', None, reporter='scripts.download.history.reporting'),
-    ToolDefinition('history-industry', 'download', 'history', 'industry', None, 'scripts.download.history', 'subprocess', None, reporter='scripts.download.history.reporting', effects=('network', 'read_published_history')),
+    ToolDefinition('history-industry', 'download', 'history', 'industry', None, 'scripts.download.history', 'subprocess', None, reporter='scripts.download.history.reporting', effects=('network', 'writes_external_candidate'), artifact_directory_arguments=('--industry-work-root',)),
     ToolDefinition('qfq-sqlite', 'download', 'history', 'qfq', None, 'scripts.download.history', 'subprocess', None, reporter='scripts.download.history.reporting'),
     ToolDefinition('download-failures', 'download', 'history', 'failures', None, 'scripts.download.history', 'subprocess', None, reporter='scripts.download.history.reporting'),
     ToolDefinition('research', 'recommendation', 'pipeline', 'readiness', None, 'scripts.recommendation.pipeline', 'subprocess', None, reporter='scripts.recommendation.pipeline.reporting'),

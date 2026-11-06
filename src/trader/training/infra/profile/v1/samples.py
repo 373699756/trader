@@ -37,7 +37,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
 from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.domain.final_fit import FinalFitDatePlan
-from trader.training.domain.v1.learned_rank import LearnedRankDateSplit
+from trader.training.domain.v1.learned_rank import IsLearnedRankIndustryIdentity, LearnedRankDateSplit
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.sample_schema import SampleFeatureHash
@@ -456,6 +456,8 @@ def BuildLearnedRankSamples(
         if row.trade_date in selected and row.cell_status in {None, "complete"} and point.amount > 0.0:
             if row.industry is None:
                 missing_industry += 1
+            elif not IsLearnedRankIndustryIdentity(row.industry):
+                raise ValueError("learned_rank_industry_classification_invalid")
             elif (features := CalculateLearnedRankFeatures(tuple(state.points))) is None:
                 short_window += 1
             else:

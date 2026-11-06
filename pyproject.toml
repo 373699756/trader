@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=2,<2.5",
     "polars>=1.43,<2",
     "pypdf>=6.21.1,<7",
+    "pycryptodome>=3.23,<4",
     "requests>=2.22.0",
     "urllib3>=2.2,<3",
     "tushare>=1.4,<2",

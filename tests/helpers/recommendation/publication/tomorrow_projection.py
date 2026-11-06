@@ -60,7 +60,7 @@ class _NonPositiveProductionPredictor(_ProductionPredictor):
 
 class _IndustryProductionPredictor(_ProductionPredictor):
     exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
-    industry_ids = ("J66货币金融服务",)
+    industry_ids = ("capco:J66货币金融服务",)
 
 
 def _router(predictor: object) -> ModelScoringRouter:

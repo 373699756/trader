@@ -17,6 +17,15 @@ def ProjectHistoryMaintenanceStatus(status: HistoryMaintenanceStatus) -> dict[st
         "data_cutoff": status.data_cutoff.isoformat() if status.data_cutoff is not None else None,
         "label_cutoff": status.label_cutoff.isoformat() if status.label_cutoff is not None else None,
         "unresolved_price_cells": status.unresolved_price_cells,
+        "industry": None if status.industry_readiness is None else {
+            "source": status.industry_readiness.source,
+            "requested_codes": status.industry_readiness.requested_codes,
+            "candidate_codes": status.industry_readiness.candidate_codes,
+            "point_in_time_codes": status.industry_readiness.point_in_time_codes,
+            "complete": status.industry_readiness.ready,
+            "training_industry_ready": status.industry_readiness.ready,
+            "failure_category": status.industry_readiness.failure_category,
+        },
         "price_review": None if status.price_review is None else {
             "examined_codes": status.price_review.examined_codes,
             "physical_requests": status.price_review.physical_requests,

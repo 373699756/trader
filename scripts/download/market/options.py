@@ -19,7 +19,7 @@ class MarketOptions:
     runtime_config: Path = PROJECT_ROOT / 'config/runtime.json'
     history_days: int = 61
     qfq_database: Path | None = None
-    market_sources: tuple[str, ...] = ('tencent', 'eastmoney', 'sina', 'baostock')
+    market_sources: tuple[str, ...] = ('tencent', 'eastmoney', 'sina', 'cninfo')
     market_profiles: tuple[str, ...] = ('v2', 'v3')
     market_sizes: tuple[int, ...] = (120, 720, 0)
     market_mode: str = 'all'

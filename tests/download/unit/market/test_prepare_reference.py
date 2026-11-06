@@ -9,7 +9,7 @@ import pytest
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.shared.reference_fixtures import PreparedFixture
-from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
+from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError, PrepareReference, ReferencePreparationDependencies
 from trader.download.application.sync_data import SyncData
 from trader.download.application.progress_message import ProgressLevel
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
@@ -20,9 +20,27 @@ from trader.download.infra.reference_index import SQLiteReferenceIndex
 _NOW = datetime(2026, 11, 4, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
+def test_incompatible_industry_reports_its_exact_download_scope_without_stopping_price_preparation():
+    previous = PreparedFixture(_NOW)
+    reports, published = [], []
+
+    def incompatible(*_args):
+        raise IndustryDatabaseIncompatibleError("industry_database_incompatible")
+
+    result = PrepareReference(previous.official_universe, _NOW, ReferencePreparationDependencies(
+        lambda *_args: previous.st_evidence, lambda: previous.open_dates, incompatible,
+        lambda reference, evidence: published.append(reference), lambda: False,
+    ), report=reports.append)
+    text = str(reports)
+    assert "market/reference/industry.sqlite3" in text
+    assert "仅清理" in text and "其他资料同步继续" in text
+    assert result.industry_version is None and published == [result]
+
+
 @dataclass(frozen=True)
 class _Industry:
     data_version: str = "fixture-industry"
+    received_at: datetime = _NOW
 
 
 @pytest.mark.parametrize("target", ("all", "history", "market", "company"))
@@ -90,8 +108,10 @@ def test_mixed_population_uses_one_st_cut_and_keeps_original_supplier_check_date
         calls.append("calendar")
         return dates
 
-    def industry(at):
+    def industry(at, eligible, open_dates):
         calls.append("industry")
+        assert tuple(item.code for item in eligible) == ("600001", "600005")
+        assert open_dates == dates
         return (_Industry(),)
 
     def publish(reference, original):
@@ -221,8 +241,9 @@ def test_industry_progress_explains_degradation_and_still_enters_market_update(i
     expected = PreparedFixture(_NOW)
     messages, published, downloaded = [], [], []
 
-    def industry(_at):
+    def industry(_at, eligible, open_dates):
         assert messages[-1].fields[0].text == "当前行业"
+        assert eligible == expected.eligible_universe and open_dates == expected.open_dates
         assert "开始准备" in messages[-1].fields[1].text
         if industry_status == "failed":
             raise RuntimeError("private supplier payload must not appear in progress")
@@ -263,3 +284,34 @@ def test_industry_progress_explains_degradation_and_still_enters_market_update(i
         assert "继续资料同步" in industry_message.text
         assert published[0].industry_version is None
     assert "private supplier payload" not in str(messages)
+
+
+def test_reference_completion_cut_preserves_the_actual_industry_received_time():
+    expected = PreparedFixture(_NOW)
+    received = _NOW + timedelta(seconds=8)
+    dependencies = ReferencePreparationDependencies(
+        lambda *_args: expected.st_evidence,
+        lambda: expected.open_dates,
+        lambda *_args: (_Industry(received_at=received),),
+        lambda *_args: None,
+        lambda: False,
+    )
+    result = PrepareReference(expected.official_universe, _NOW, dependencies)
+    assert result.checked_at == received
+    assert result.st_evidence == expected.st_evidence
+
+
+def test_partial_industry_preparation_reports_coverage_and_missing_count():
+    first = PreparedFixture(_NOW).official_universe[0]
+    expected = PreparedFixture(_NOW, (first, replace(first, code="600002")))
+    messages = []
+    dependencies = ReferencePreparationDependencies(
+        lambda *_args: expected.st_evidence,
+        lambda: expected.open_dates,
+        lambda *_args: (_Industry(),),
+        lambda *_args: None,
+        lambda: False,
+    )
+    PrepareReference(expected.official_universe, _NOW, dependencies, report=messages.append)
+    assert messages[1].fields[1].level is ProgressLevel.WARNING
+    assert "1/2 股，缺分类 1 股" in messages[1].fields[1].text

@@ -45,7 +45,7 @@ class _History:
                     code,
                     day,
                     "main",
-                    f"industry-{index % 2}",
+                    f"capco:industry-{index % 2}",
                     HistoryTrainingPoint(day, point.close_price, point.amount),
                     "complete",
                 )

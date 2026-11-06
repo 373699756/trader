@@ -29,7 +29,7 @@ class Board(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ModelIndustryReference:
-    """Point-in-time CSRC classification for model inputs and labeled read-only display."""
+    """Current CAPCO classification with a distinct model-routing identity."""
 
     industry_id: str
     classification: str
@@ -39,12 +39,16 @@ class ModelIndustryReference:
 
     def __post_init__(self) -> None:
         if (
-            not self.industry_id.strip()
-            or self.classification != "证监会行业分类"
+            not self.industry_id.startswith("capco:") or not self.industry_id[6:].strip()
+            or self.classification != "中国上市公司协会上市公司行业分类标准"
             or not self.source.strip()
             or not self.data_version.strip()
         ):
             raise ValueError("model industry reference identity is invalid")
+
+    @property
+    def display_name(self) -> str:
+        return self.industry_id[6:]
 
 
 @dataclass(frozen=True, slots=True)

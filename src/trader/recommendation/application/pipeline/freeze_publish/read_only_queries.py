@@ -266,9 +266,9 @@ class UnifiedFreezeQueries:
         codes = tuple(item.code for item in VisibleScoredSeats(freeze) if not item.industry.strip())
         references = source.model_industries(codes) if codes else {}
         return {
-            code: reference.industry_id
+            code: reference.display_name
             for code, reference in references.items()
-            if code in codes and reference.classification == "证监会行业分类" and reference.effective_date <= now.date()
+            if code in codes and reference.classification == "中国上市公司协会上市公司行业分类标准" and reference.effective_date <= now.date()
         }
 
     def history(self, strategy: Strategy, trade_date: date) -> FreezeView:

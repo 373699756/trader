@@ -1,9 +1,10 @@
-"""Expose Tencent history prices with BaoStock historical industry references."""
+"""Expose Tencent history and independently inspect CNINFO industry evidence."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+import logging
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_price_qualification import (
@@ -15,8 +16,15 @@ from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
+from trader.download.infra.history_industry_preparation import InspectHistoricalIndustryQueries
+from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
+from trader.download.domain.history_sync import HistorySyncProgressPort
+from trader.download.domain.history_sync import HistoryIndustryReadiness, HistorySyncProgress
+from collections.abc import Callable
+
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class HistorySupplierRouter:
@@ -25,12 +33,17 @@ class HistorySupplierRouter:
         baseline: BaoStockHistorySupplier,
         prices: TencentQfqSupplier,
         reference: PreparedReference,
-        industry_cache: HistoryIndustryQueryCache | None = None,
+        industry_cache: SQLiteIndustryQueryIndex | None = None,
+        *,
+        progress: HistorySyncProgressPort | None = None,
+        cancel_requested: Callable[[], bool] = lambda: False,
     ) -> None:
         self._baseline = baseline
         self._prices = prices
         self._reference = reference
         self._industry_cache = industry_cache
+        self._progress = progress
+        self._cancel_requested = cancel_requested
         self._calendar: tuple[date, ...] = ()
 
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
@@ -38,25 +51,31 @@ class HistorySupplierRouter:
         price_context = self._prices.load_history_context(
             as_of, sessions, universe, calendar=self._reference.calendar(as_of, sessions)
         )
+        context = price_context
         try:
-            context = self._baseline.load_industry_context(
-                price_context.calendar,
-                universe,
-                industry_cache=self._industry_cache,
+            readiness = InspectHistoricalIndustryQueries(
+                self._industry_cache, universe, context.calendar.open_dates[0], context.calendar.open_dates[-1],
+                self._reference.checked_at, cancel_requested=self._cancel_requested, progress=self._progress,
             )
-        except RuntimeError as exc:
-            if str(exc) != "supplier_login_timeout":
+        except (OSError, RuntimeError, ValueError) as exc:
+            if self._cancel_requested() or str(exc) == "supplier_cancelled":
                 raise
-            context = price_context
+            _LOGGER.warning("historical_industry_unavailable category=%s", type(exc).__name__, exc_info=True)
+            readiness = HistoryIndustryReadiness(len(universe), 0, 0, failure_category=type(exc).__name__)
+            if self._progress is not None:
+                self._progress.publish(HistorySyncProgress(
+                    "supplier_industry", "failed", 0, len(universe), "cninfo", failure_detail=type(exc).__name__,
+                ))
         self._calendar = context.calendar.open_dates
         versions = context.source_versions
         return replace(
             context,
             st_evidence=self._reference.st_evidence,
             reference_id=self._reference.identity,
+            industry_readiness=readiness,
             source_versions=replace(
                 versions,
-                sdk_version=f"{versions.sdk_version}+tencent-history",
+                sdk_version=f"{versions.sdk_version}+cninfo-industry",
                 dependency_versions=(
                     *versions.dependency_versions,
                     ("tencent_calendar", price_context.source_versions.content_hash),

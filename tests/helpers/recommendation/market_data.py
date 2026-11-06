@@ -20,7 +20,6 @@ from scripts.download.history.history_fallback import FallbackHistoryClient
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.infra import tushare_records as tushare_records_module
-from trader.download.infra.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
 from trader.download.infra.exchange_security_master import ExchangeSecurityMasterClient
 from tests.helpers.shared.configuration import TushareClientFixture as TushareClient
 from trader.infra.cache import BoundedLruCache

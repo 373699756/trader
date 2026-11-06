@@ -339,14 +339,14 @@
 
   function stock(item, includeContext = true) {
     const industry = String(item.industry || "").trim()
-      || (item.classified_industry ? `证监会行业 ${item.classified_industry}` : "");
+      || (item.classified_industry ? `中上协行业 ${item.classified_industry}` : "");
     const context = [BOARD_LABELS[item.board], industry].filter(Boolean).join(" · ");
     return `<span class="stock-name">${escapeHtml(item.name || "-")}</span><span class="stock-code">${escapeHtml([item.code || "-", includeContext ? context : ""].filter(Boolean).join(" · "))}</span>`;
   }
 
   function boardIndustry(item) {
     const industry = String(item.industry || "").trim()
-      || (item.classified_industry ? `证监会行业 ${item.classified_industry}` : "");
+      || (item.classified_industry ? `中上协行业 ${item.classified_industry}` : "");
     return `<span class="stock-name">${escapeHtml(BOARD_LABELS[item.board] || "-")}</span><span class="stock-code">${escapeHtml(industry || "-")}</span>`;
   }
 

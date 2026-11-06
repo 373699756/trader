@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as json_codec
+import re
 import threading
 import time
 import zlib
@@ -38,11 +39,20 @@ class RequestsHttpTransport:
         observe: Callable[[HttpAttempt], None] | None = None,
         inspect_response: Callable[[HttpRequest, HttpResponse], None] | None = None,
         execute_request: Callable[[HttpRequest], HttpResponse] | None = None,
+        identity_content_encodings: tuple[str, ...] = (),
     ) -> None:
+        if not isinstance(identity_content_encodings, tuple) or any(
+            not isinstance(encoding, str)
+            or re.fullmatch(r"[!#$%&'*+.^_`|~0-9a-z-]+", encoding) is None
+            or encoding in {"gzip", "deflate"}
+            for encoding in identity_content_encodings
+        ):
+            raise ValueError("http_identity_content_encodings_invalid")
         self._monotonic = monotonic
         self._observe = observe
         self._inspect_response = inspect_response
         self._execute_request = execute_request
+        self._identity_content_encodings = frozenset(identity_content_encodings)
         self._lock = threading.Lock()
         self._session: requests.Session | None = None
         self._closed = False
@@ -193,6 +203,8 @@ class RequestsHttpTransport:
                 if request.receive_headers is not None:
                     request.receive_headers(status, tuple(raw.headers.items()))
                 encoding = raw.headers.get("Content-Encoding", "identity").lower()
+                if encoding in self._identity_content_encodings:
+                    encoding = "identity"
                 if encoding not in {"identity", "gzip", "deflate"}:
                     raise HttpError("http_content_encoding_unsupported")
                 decoder = zlib.decompressobj(31 if encoding == "gzip" else 15) if encoding != "identity" else None

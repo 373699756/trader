@@ -125,7 +125,7 @@ def test_v5_ineligible_peer_cannot_change_cost_population_or_receive_prediction(
 ):
     class IndustryPredictor(_SequencePredictor):
         exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
-        industry_ids = ("C39",)
+        industry_ids = ("capco:C39",)
         predicted = 0.0025
 
     predictor = IndustryPredictor()
@@ -133,7 +133,7 @@ def test_v5_ineligible_peer_cannot_change_cost_population_or_receive_prediction(
         profile_for(predictor), Strategy.TOMORROW, cost_policy=ExecutionCostPolicy(0.002, 1.0)
     )
     dates = tuple(NOW.date() - timedelta(days=61 - i) for i in range(61))
-    industry = ModelIndustryReference("C39", "证监会行业分类", NOW.date(), "fixture", "industry")
+    industry = ModelIndustryReference("capco:C39", "中国上市公司协会上市公司行业分类标准", NOW.date(), "fixture", "industry")
     candidate, peer = tuple(
         replace(
             _model_feature(application_feature_factory(code, NOW), offset=index * 0.01, amihud=index + 1),
@@ -155,7 +155,7 @@ def test_v5_ineligible_peer_cannot_change_cost_population_or_receive_prediction(
     elif invalid_input == "history_failure":
         peer = replace(peer, model_history_quality=ModelHistoryQuality("history_model_date_mismatch"))
     else:
-        peer = replace(peer, model_industry=replace(industry, industry_id="C38"))
+        peer = replace(peer, model_industry=replace(industry, industry_id="capco:C38"))
     assert service.is_input_eligible(candidate)
     assert not service.is_input_eligible(peer)
     baseline = service.score((candidate,), context=ModelScoringContext(population_features=(candidate,)))

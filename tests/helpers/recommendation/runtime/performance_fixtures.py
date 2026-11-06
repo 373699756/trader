@@ -32,7 +32,7 @@ from trader.training.infra.training_settings import LoadRuntimeTrainingSettings
 class _Predictor:
     profile_id: ScoringProfileId
     feature_ids: tuple[str, ...]
-    industry_ids: tuple[str, ...] = ("fixture-bank", "fixture-energy")
+    industry_ids: tuple[str, ...] = ("capco:fixture-bank", "capco:fixture-energy")
     model_id: str = "performance-model"
     model_hash: str = "a" * 64
     exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
