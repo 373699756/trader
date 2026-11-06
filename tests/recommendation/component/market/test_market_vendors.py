@@ -48,6 +48,8 @@ from tests.helpers.recommendation.market_data import (
 from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpStatusError, HttpTimeout
 from trader.recommendation.infra.market_data.providers.tencent import TencentFullMarketSource
 from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
+from trader.recommendation.domain.candidate.filters import HardFilter
+from tests.helpers.shared.configuration import HardFilterPolicyFixture
 
 import pytest
 
@@ -136,6 +138,101 @@ def test_tencent_normalizes_targeted_quote(wire_volume: str, shares: float | Non
     assert quotes[0].market_cap == 12_050_000_000.0
     assert quotes[0].source_time.isoformat() == "2026-07-16T10:00:00+08:00"
     assert session.calls[0][1]["timeout"] == 0.75
+
+
+def _tencent_status_payload(
+    observed_at: datetime,
+    *,
+    marker: str = "",
+    price: str = "12.00",
+    amount: str = "300000000",
+    field_count: int = 50,
+) -> bytes:
+    fields = [""] * 50
+    for index, value in {
+        1: "测试股份", 2: "600001", 3: price, 4: "11.65", 5: "11.80", 6: "250000",
+        30: observed_at.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d%H%M%S"),
+        32: "3.00", 33: "12.20", 34: "11.70", 35: f"0/0/{amount}", 38: "3.0",
+        40: marker, 43: "4.0", 45: "120.5", 49: "2.0",
+    }.items():
+        fields[index] = value
+    return f'v_sh600001="{"~".join(fields[:field_count])}";'.encode("gb18030")
+
+
+@pytest.mark.parametrize("mode", ("targeted", "market"))
+@pytest.mark.parametrize("marker", ("S", ""))
+def test_tencent_supplier_status_controls_suspension_with_positive_trades(
+    observed_at, feature_factory, mode, marker,
+):
+    # Protocol fixtures establish parser/filter behavior, not a real intraday
+    # halt response or a complete recommendation outcome.
+    session = FakeSession([_tencent_status_payload(observed_at, marker=marker)])
+    client = TencentClient(
+        worker_pool=None,
+        timeout_seconds=2,
+        session_factory=lambda: session,
+        wall_clock=lambda: observed_at,
+    )
+    quote, = client.fetch_quotes(("600001",), observed_at) if mode == "targeted" else client.fetch_market(("600001",))
+    feature = replace(feature_factory(), quote=quote)
+    filtered = HardFilter(feature, observed_at, max_age_seconds=30, policy=HardFilterPolicyFixture())
+
+    assert quote.price == 12.0 and quote.amount == 300000000.0
+    assert quote.volume == 25000000.0 and quote.source_time == observed_at
+    assert quote.is_suspended is (marker == "S")
+    assert filtered.allowed is (marker != "S")
+    assert [reason.code for reason in filtered.reasons] == (["suspended"] if marker == "S" else [])
+    assert not filtered.deferred
+    assert len(session.calls) == 1
+    assert session.calls[0][0][0] == "https://qt.gtimg.cn/q=sh600001"
+    if mode == "market":
+        assert quote.data_version == f"tencent-market:{int(observed_at.timestamp())}"
+
+
+@pytest.mark.parametrize("price", ("0", "nan"))
+def test_tencent_unmarked_invalid_price_preserves_suspension_guard(observed_at, feature_factory, price):
+    session = FakeSession([_tencent_status_payload(observed_at, price=price)])
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
+    quote, = client.fetch_quotes(("600001",), observed_at)
+    filtered = HardFilter(
+        replace(feature_factory(), quote=quote), observed_at,
+        max_age_seconds=30, policy=HardFilterPolicyFixture(),
+    )
+
+    assert quote.is_suspended and not filtered.allowed
+    assert "suspended" in {reason.code for reason in filtered.reasons}
+    assert "invalid_price" in {reason.code for reason in filtered.deferred}
+
+
+def test_tencent_unmarked_zero_amount_remains_deferred(observed_at, feature_factory):
+    session = FakeSession([_tencent_status_payload(observed_at, amount="0")])
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
+    quote, = client.fetch_quotes(("600001",), observed_at)
+    filtered = HardFilter(
+        replace(feature_factory(), quote=quote), observed_at,
+        max_age_seconds=30, policy=HardFilterPolicyFixture(),
+    )
+
+    assert not quote.is_suspended and not filtered.allowed
+    assert not filtered.reasons
+    assert [reason.code for reason in filtered.deferred] == ["invalid_amount"]
+
+
+@pytest.mark.parametrize("mode", ("targeted", "market"))
+def test_tencent_short_status_payload_is_rejected_without_indexing_past_its_end(observed_at, mode):
+    session = FakeSession([_tencent_status_payload(observed_at, marker="S", field_count=49)])
+    client = TencentClient(
+        worker_pool=None,
+        timeout_seconds=2,
+        session_factory=lambda: session,
+        wall_clock=lambda: observed_at,
+    )
+    with pytest.raises(RuntimeError, match="no usable candidate quotes"):
+        if mode == "targeted":
+            client.fetch_quotes(("600001",), observed_at)
+        else:
+            client.fetch_market(("600001",))
+    assert len(session.calls) == 1
 
 
 def test_tencent_quote_without_supplier_timestamp_uses_shanghai_fallback() -> None:

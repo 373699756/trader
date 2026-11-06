@@ -350,7 +350,7 @@ def _parse_payload(fields: Mapping[str, object], received_at: datetime, requeste
             received_time=received_at,
             data_version=f"tencent:{int(source_time.timestamp())}",
             is_st="ST" in str(fields.get("1") or "").upper() or "退" in str(fields.get("1") or ""),
-            is_suspended=price is None or price <= 0,
+            is_suspended=fields.get("40") == "S" or price is None or price <= 0,
         )
     )
 
