@@ -82,6 +82,7 @@ from trader.recommendation.infra.performance.model_workload import (
 )
 from trader.recommendation.infra.performance.pipeline_workload import (
     CONTINUOUS_REPLAY_CONTRACT,
+    CONTINUOUS_TIMING_CONTRACT,
     MeasureContinuousPipeline,
     PipelineReplayWorkload,
 )
@@ -213,6 +214,7 @@ def Run(
         "replay_ticks": replay_ticks,
         "replay_rows": replay_rows,
         "continuous_contract": CONTINUOUS_REPLAY_CONTRACT if replay_ticks else None,
+        "continuous_timing_contract": CONTINUOUS_TIMING_CONTRACT if replay_ticks else None,
         "instrumented": trace is not None,
         "factor_candidate": factor_candidate,
         "scoring_candidate": scoring_candidate,
@@ -974,6 +976,10 @@ def _baseline(path: Path | None, identity: dict[str, object]) -> dict[str, objec
         "replay_ticks", 0
     ):
         raise ValueError("performance baseline replay identity does not match")
+    if isinstance(previous_identity, dict) and previous_identity.get("continuous_timing_contract") != identity.get(
+        "continuous_timing_contract"
+    ):
+        raise ValueError("performance baseline continuous timing contract does not match")
     if not isinstance(previous_identity, dict) or any(
         key not in previous_identity or key not in identity or previous_identity[key] != identity[key]
         for key in (

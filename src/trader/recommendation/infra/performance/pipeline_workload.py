@@ -35,6 +35,10 @@ from trader.recommendation.application.pipeline.final_selection.freeze_projectio
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.stage_output import StageOutput
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
+    PrepareNativeQualityBatch,
+    QualityScoringBatch,
+)
 from trader.recommendation.application.ports.loaded_profile import IndustryPredictionPort, ModelComputationStatus, ModelScoringContext
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, PipelineStageSnapshot, SourceHealth, SourceHealthState
@@ -55,6 +59,7 @@ from trader.recommendation.infra.performance.industry_prediction import Parallel
 _T = TypeVar("_T")
 _SCENARIOS = ("unchanged", "observation_time", "delivery_time", "quote_time", "one_price", "all_prices", "stale")
 CONTINUOUS_REPLAY_CONTRACT = "acquired_quotes_to_paired_memory_publication"
+CONTINUOUS_TIMING_CONTRACT = "separate_candidate_planning_features_and_quality"
 
 
 @dataclass(frozen=True)
@@ -136,6 +141,33 @@ class _ObservedFactorCache(BoundedLruCache[object]):
 
 
 @dataclass(frozen=True)
+class _HeadPreparation:
+    dynamic_filter: PipelineStageSnapshot
+    planning: PipelineStageSnapshot
+    feature_build_ms: float
+    quality: PipelineStageSnapshot
+
+
+def _project_stage(stage: PipelineStageSnapshot) -> dict[str, object]:
+    return {
+        "stage": stage.stage.value,
+        "stage_order": stage.stage_order,
+        "state": stage.state.value,
+        "input_count": stage.input_count,
+        "output_count": stage.output_count,
+        "rejected_count": stage.rejected_count,
+        "pending_count": stage.pending_count,
+        "failed_count": stage.failed_count,
+        "not_selected_count": stage.not_selected_count,
+        "latency_ms": stage.latency_ms,
+        "operation_durations": [
+            {"operation": name, "duration_ms": duration}
+            for name, duration in stage.operation_durations
+        ],
+    }
+
+
+@dataclass(frozen=True)
 class _HeadResult:
     strategy: Strategy
     input_count: int
@@ -149,6 +181,7 @@ class _HeadResult:
     result_hash: str
     pipeline_stages: tuple[PipelineStageSnapshot, ...]
     selection_features_hash: str
+    preparation: _HeadPreparation
 
     def project(self) -> dict[str, object]:
         return {
@@ -163,24 +196,13 @@ class _HeadResult:
             "model_stage_ms": dict(self.model_stages),
             "result_hash": self.result_hash,
             "selection_features_hash": self.selection_features_hash,
-            "pipeline_stages": [
-                {
-                    "stage": stage.stage.value,
-                    "stage_order": stage.stage_order,
-                    "state": stage.state.value,
-                    "input_count": stage.input_count,
-                    "output_count": stage.output_count,
-                    "rejected_count": stage.rejected_count,
-                    "pending_count": stage.pending_count,
-                    "failed_count": stage.failed_count,
-                    "latency_ms": stage.latency_ms,
-                    "operation_durations": [
-                        {"operation": name, "duration_ms": duration}
-                        for name, duration in stage.operation_durations
-                    ],
-                }
-                for stage in self.pipeline_stages
-            ],
+            "candidate_preparation": {
+                "dynamic_filter": _project_stage(self.preparation.dynamic_filter),
+                "planning": _project_stage(self.preparation.planning),
+                "feature_build_ms": self.preparation.feature_build_ms,
+                "quality": _project_stage(self.preparation.quality),
+            },
+            "pipeline_stages": [_project_stage(stage) for stage in self.pipeline_stages],
         }
 
 
@@ -215,6 +237,7 @@ class _RunFacts:
     changed: bool
     stages: tuple[tuple[str, float], ...]
     observations: tuple[tuple[Strategy, int, ModelComputationStatus, ModelComputationStatus], ...]
+    preparations: tuple[_HeadPreparation, ...]
 
 
 @dataclass(frozen=True)
@@ -363,12 +386,17 @@ class _ProfileReplay:
             ),
         )
         plans = candidate_pipeline.plans
-        union = frozenset(plans.physical_union())
-        quotes = tuple(quote for quote in self.quotes if quote.code in union)
+
+        def prepare_quotes() -> tuple[MarketQuote, ...]:
+            union = frozenset(plans.physical_union())
+            return tuple(quote for quote in self.quotes if quote.code in union)
+
+        quotes = timings.run("candidate_refresh_plan", prepare_quotes)
         # The production quote boundary enriches the refreshed union before preparing each head.
         timings.run("candidate_refresh_features", lambda: self._build(quotes, candidates=True))
         projections: list[ScoredLocalProjection] = []
         observations: list[tuple[Strategy, int, ModelComputationStatus, ModelComputationStatus]] = []
+        preparations: list[_HeadPreparation] = []
         for strategy, input_type in ((Strategy.TOMORROW, TomorrowNativeInput), (Strategy.D25, D25NativeInput)):
             requested = plans.strategy_codes(strategy)
             codes = frozenset(requested)
@@ -380,6 +408,7 @@ class _ProfileReplay:
                 f"{strategy.value}.features",
                 build_candidates,
             )
+            feature_ms = timings.values[-1][1]
             native = input_type(
                 self.clock.now().date(),
                 "afternoon",
@@ -392,9 +421,30 @@ class _ProfileReplay:
                 30.0,
                 30.0,
             )
+            minimum_history = self.scoring.history_required_sessions(strategy) if self.scoring.uses_model(strategy) else 20
+
+            def prepare_quality(
+                native: ScoredNativeInput = native, minimum_history: int = minimum_history
+            ) -> QualityScoringBatch:
+                return PrepareNativeQualityBatch(
+                    native, self.workload.policy.hard_filter, minimum_history, time.monotonic,
+                )
+
+            quality = timings.run(
+                f"{strategy.value}.candidate_validation",
+                prepare_quality,
+            )
+            preparations.append(_HeadPreparation(
+                candidate_pipeline.filtered[strategy].snapshot,
+                candidate_pipeline.candidates[strategy].snapshot,
+                feature_ms,
+                quality.output.snapshot,
+            ))
             before = self._status(strategy)
 
-            def build_projection(native: ScoredNativeInput = native) -> ScoredLocalProjection:
+            def build_projection(
+                native: ScoredNativeInput = native, quality: QualityScoringBatch = quality
+            ) -> ScoredLocalProjection:
                 return BuildScoredLocal(
                     native,
                     self.workload.policy,
@@ -402,6 +452,7 @@ class _ProfileReplay:
                     runtime=ScoredProjectionInputs(
                         model_scoring=self.scoring,
                         ranking_selection=self.ranking,
+                        quality_batch=quality,
                         population_qualifications=candidate_pipeline.qualifications[native.strategy],
                         scoring_context=ModelScoringContext(industry_prediction=self.industry_prediction)
                         if self.industry_prediction is not None else None,
@@ -417,7 +468,7 @@ class _ProfileReplay:
         self.projections = tuple(projections)
         timings.run("paired_publish", self._publish)
         wall_ms, cpu_ms = (time.perf_counter() - start) * 1000, (time.thread_time() - cpu) * 1000
-        self.last_run = _RunFacts(wall_ms, cpu_ms, changed, tuple(timings.values), tuple(observations))
+        self.last_run = _RunFacts(wall_ms, cpu_ms, changed, tuple(timings.values), tuple(observations), tuple(preparations))
 
     def observe(self) -> _ProfileResult:
         # Hashing is diagnostic work; collect it after all timed workers have finished.
@@ -425,8 +476,8 @@ class _ProfileReplay:
         if run is None:
             raise ValueError("continuous replay has not run")
         heads = tuple(
-            _head_result(projection, *observation)
-            for projection, observation in zip(self.projections, run.observations, strict=True)
+            _head_result(projection, *observation, preparation)
+            for projection, observation, preparation in zip(self.projections, run.observations, run.preparations, strict=True)
         )
         return _ProfileResult(
             self.workload.profile.profile_id,
@@ -471,6 +522,7 @@ def _head_result(
     input_count: int,
     before: ModelComputationStatus,
     after: ModelComputationStatus,
+    preparation: _HeadPreparation,
 ) -> _HeadResult:
     previous = {item.calculator_group: item.cumulative_duration_ms for item in before.stage_durations}
     business = (
@@ -510,6 +562,7 @@ def _head_result(
         ContentHash(business),
         projection.stages.snapshots,
         ContentHash(tuple((item.code, item.features) for item in projection.selection.evaluations)),
+        preparation,
     )
 
 
@@ -662,6 +715,7 @@ def _project(
     maximum = max(row.memory.current_rss_bytes for row in rows)
     return {
         "contract": CONTINUOUS_REPLAY_CONTRACT,
+        "timing_contract": CONTINUOUS_TIMING_CONTRACT,
         "ticks_per_scenario": ticks,
         "execution_mode": "concurrent_profiles_serial_heads_shared_factor_cache",
         "scope": "synthetic_acquired_quotes_production_calculations_paired_memory_publish",
@@ -676,7 +730,12 @@ def _project(
             "web_delivery",
         ],
         "preparation_ms_excluded": preparation_ms,
-        "timing": "profile stages are disjoint; model stages are nested in score_to_draft, never add them",
+        "timing": (
+            "profile stage_ms operations are disjoint; candidate_preparation planning/filter are nested in "
+            "candidate_filter, quality is nested in candidate_validation; shared candidate_refresh_features "
+            "is measured once per profile, not per head; model and pipeline stages are nested in score_to_draft"
+        ),
+        "stage3_scope": "market_features measures factor assembly only; supplier, minute and research I/O remain excluded",
         "cpu_scope": "process CPU excludes observation hashes; per-profile thread CPU excludes native worker CPU",
         "cache_counting": "computations count completed factor evaluations before insertion, including rejected writes; hits alone do not prove reuse",
         "invalidation": "scenario is the controlled input change; input_revision_changed and model groups are observed, not inferred causes",
@@ -707,4 +766,9 @@ def _project(
     }
 
 
-__all__ = ["CONTINUOUS_REPLAY_CONTRACT", "PipelineReplayWorkload", "MeasureContinuousPipeline"]
+__all__ = [
+    "CONTINUOUS_REPLAY_CONTRACT",
+    "CONTINUOUS_TIMING_CONTRACT",
+    "PipelineReplayWorkload",
+    "MeasureContinuousPipeline",
+]

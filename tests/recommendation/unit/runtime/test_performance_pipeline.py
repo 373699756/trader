@@ -82,6 +82,61 @@ def test_replay_projects_measured_stages_and_full_selection_features_after_scori
         ))
 
 
+def test_separate_candidate_quality_keeps_all_heads_and_reports_actual_preparation(monkeypatch):
+    from trader.recommendation.application.pipeline.final_selection import freeze_projection
+    from trader.recommendation.infra.performance import pipeline_workload
+
+    original = pipeline_workload.BuildScoredLocal
+
+    def prepare_inside_projection(native, policy, *, sequence, runtime):
+        return original(native, policy, sequence=sequence, runtime=replace(runtime, quality_batch=None))
+
+    monkeypatch.setattr(pipeline_workload, "BuildScoredLocal", prepare_inside_projection)
+    baseline = _replay(("v1", "v2", "v3", "v5"), ticks=1)
+    monkeypatch.setattr(pipeline_workload, "BuildScoredLocal", original)
+    monkeypatch.setattr(
+        freeze_projection, "PrepareNativeQualityBatch",
+        lambda *args: pytest.fail("replay quality must not be calculated twice"),
+    )
+    actual = _replay(("v1", "v2", "v3", "v5"), ticks=1)
+    assert actual["timing_contract"] == pipeline_workload.CONTINUOUS_TIMING_CONTRACT
+    assert "supplier_io" in actual["exclusions"]
+    def rounds(report):
+        return [report["cold"], *(case["rounds"][0] for case in report["scenarios"].values())]
+    for before, after in zip(rounds(baseline), rounds(actual), strict=True):
+        for left, right in zip(before["profiles"], after["profiles"], strict=True):
+            assert left["input_version"] == right["input_version"]
+            assert left["feature_hash"] == right["feature_hash"]
+            assert right["stage_ms"]["candidate_refresh_plan"] >= 0
+            for old_head, head in zip(left["heads"], right["heads"], strict=True):
+                for key in ("result_hash", "selection_features_hash", "predictor_batches", "model_cache_hits"):
+                    assert old_head[key] == head[key]
+                preparation = head["candidate_preparation"]
+                assert preparation["dynamic_filter"]["stage_order"] == 4
+                assert preparation["planning"]["stage_order"] == preparation["quality"]["stage_order"] == 5
+                assert preparation["planning"]["output_count"] == preparation["quality"]["input_count"]
+                for stage in (preparation["dynamic_filter"], preparation["planning"], preparation["quality"]):
+                    assert stage["input_count"] == sum(stage[key] for key in (
+                        "output_count", "rejected_count", "pending_count", "failed_count", "not_selected_count",
+                    ))
+                assert preparation["feature_build_ms"] == right["stage_ms"][f"{head['strategy']}.features"]
+                assert right["stage_ms"][f"{head['strategy']}.candidate_validation"] >= 0
+                assert tuple(stage["stage_order"] for stage in head["pipeline_stages"]) == tuple(range(6, 12))
+
+
+@pytest.mark.parametrize("previous_contract", (None, "legacy_quality_inside_projection"))
+def test_replay_rejects_a_baseline_with_a_different_candidate_timing_contract(tmp_path, previous_contract):
+    path = tmp_path / "baseline.json"
+    identity = {
+        "continuous_contract": "acquired_quotes_to_paired_memory_publication",
+        "continuous_timing_contract": previous_contract,
+    }
+    path.write_text(json.dumps({"identity": identity, "measurements": {}}))
+    current = {**identity, "continuous_timing_contract": "separate_candidate_planning_features_and_quality"}
+    with pytest.raises(ValueError, match="continuous timing contract"):
+        performance._baseline(path, current)
+
+
 @pytest.mark.parametrize("candidate", ("prepared_reuse", "v5_industry_parallel", "combined"))
 def test_scoring_candidates_preserve_complete_four_profile_replay(candidate):
     baseline = _replay(("v1", "v2", "v3", "v5"), ticks=1)

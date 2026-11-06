@@ -25,6 +25,8 @@
 
 先比较每档特征、输入版本及双头`result_hash`，再比较完整阶段耗时、原函数调用数、缓存占用、RSS及取消/恢复；CPU独立探针以`raw_factor_requests`计原算术owner调用、`raw_factor_cache_requests`计候选入口调用，后者仍有身份生成和查询成本。减少原始计算次数不代表总耗时改善。此回放使用合成报价和真实加载模型，不覆盖真实采集、盘中轮次、历史预载或Web；功能夹具预测器不算真实模型验收。候选未取得D同输入时延/资源证据前不接入生产。
 
+连续回放用`timing_contract`区分候选质量检查的计时口径；旧口径报告不能直接用作新口径基线。每档`stage_ms`单列候选并集规划、共享刷新特征和逐头特征/质量检查，质量仍由生产`PrepareNativeQualityBatch`只计算一次。每头`candidate_preparation`投影动态过滤、候选规划和质量检查的实际计数及原阶段耗时；它们嵌套在对应外层操作中，不与`stage_ms`再次相加。共享刷新特征只在档位计一次，不重复分摊至双头；阶段3仍仅测已取得报价的因子组装，采集/分钟/研究I/O、预载、正式冻结和Web继续排除。
+
 业务目录直接位于`scripts/`下，按recommendation、download、training、infra、engineering归属。`core/catalog.py`是选择关系的唯一可执行来源；`core`只持有中立选择、执行、报告和公共类型，不导入业务参数或默认值。各业务的`cli.py`解析和校验输入，`options.py`持有不可变业务类型，`commands.py`构造明确选中的命令；没有包含全部业务字段的全局Options对象。未选worker不导入，根帮助和清单不加载产品、下载或训练实现。
 
 JSON输出为两空格缩进、中文直显，schema为`trader-tools`。顶层selection保存business/module/action，逐项报告passed、degraded、failed、timed_out、cancelled、skipped、empty；超时和取消不能算通过。工程debt只记录退出码及输出字节数；显式transform/skills另保留受限的工具报告文本，供审阅命名清单、预览或评测比较，不转发行情与供应商原文。原生动作的`-- --help`或`-- -h`直接显示参数帮助，不运行业务。单个子进程默认180秒，公共超时上限沿业务校验；原生工程参数路径前使用`--`。捕获输出合计上限20 MiB；普通诊断超时或取消后，POSIX先发送SIGINT并最多留5秒让worker的finally回收其自行创建的session，再强制清理自有进程组并wait；这段回收时间另计，正常完成也回收自有进程组。Windows清理直接子进程，不宣称通过后代清理验收。
