@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+from types import MappingProxyType
+
+import pytest
+
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.risk.fusion import FusionPolicy
+from tests.helpers.shared.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
+
+
+def test_selection_policy_default_competition_limits_are_isolated_and_immutable() -> None:
+    first = _selection_policy()
+    second = _selection_policy()
+
+    assert first.competition_group_limits == {}
+    assert second.competition_group_limits == {}
+    assert first.competition_group_limits is not second.competition_group_limits
+    with pytest.raises(TypeError):
+        first.competition_group_limits[Board.MAIN] = 3  # type: ignore[index]
+
+
+def test_recommendation_policy_weight_maps_are_isolated_and_immutable() -> None:
+    first = _recommendation_policy()
+    second = _recommendation_policy()
+
+    assert first.board_local_strategy_weights == {}
+    assert first.local_component_weights == {}
+    assert first.board_local_strategy_weights is not second.board_local_strategy_weights
+    assert isinstance(first.board_local_strategy_weights, MappingProxyType)
+    with pytest.raises(TypeError):
+        first.board_local_strategy_weights[Strategy.TOMORROW] = {}  # type: ignore[index]
+
+
+def _selection_policy() -> RecommendationSelectionSettings:
+    return RecommendationSelectionSettings(
+        default_top_k=10,
+        maximum_top_k=18,
+        observation_margin=5.0,
+        thresholds={"morning_main": 70.0},
+        maximum_board_fraction=1.0,
+        competition_group_limits={},
+        minimum_board_reliability=0.0,
+        review_candidate_limit=6,
+    )
+
+
+def _recommendation_policy() -> RecommendationPolicy:
+    return RecommendationPolicy(
+        strategy_version="strategy-fixture",
+        fusion_version="fusion-fixture",
+        fusion=FusionPolicy(25.0),
+        selection=_selection_policy(),
+        dimension_weights={},
+        risk_rules={},
+        board_policy_version="fixture",
+        board_local_strategy_weights={},
+        local_component_weights={},
+        hard_filter=HardFilterPolicyFixture(),
+        company_scoring=CompanyScoringPolicyFixture(),
+    )

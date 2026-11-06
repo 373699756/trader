@@ -1,0 +1,464 @@
+from __future__ import annotations
+
+from dataclasses import replace
+
+from datetime import datetime, timedelta
+
+from itertools import count
+
+
+import pytest
+
+from trader.infra.shutdown import ShutdownDeadline
+
+from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
+
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+
+from trader.recommendation.application.ports.long import LongRefreshRequest
+
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
+
+from trader.recommendation.domain.publication.freeze_identity import LongProjection
+
+from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
+
+from trader.recommendation.domain.publication.models import Strategy
+
+from trader.recommendation.domain.publication.preview import PreviewContext
+
+from tests.helpers.recommendation.runtime.long_runtime import (
+    NOW,
+    SHANGHAI,
+    _Quotes,
+    _runtime,
+)
+
+
+@pytest.mark.parametrize("age_seconds, stale", ((29.999, False), (30.0, False), (30.001, True)))
+def test_long_uses_source_age_at_completion_and_preserves_stale_price(
+    application_feature_factory, age_seconds, stale
+):
+    source_at = NOW - timedelta(seconds=age_seconds)
+    feature = application_feature_factory("600001", NOW)
+    feature = replace(feature, quote=replace(feature.quote, source_time=source_at))
+    runtime, index = _runtime(_Quotes([(feature,)]))
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+        assert isinstance(current, LongProjection)
+        assert current.items[0].quote_status == ("retained" if stale else "live")
+        assert current.items[0].price == feature.quote.price
+        assert current.items[0].source_time == source_at
+        assert ("long_quotes_stale" in runtime.status().degraded_reasons) is stale
+    finally:
+        assert runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0)).completed
+
+
+def test_long_does_not_mark_recent_retained_quote_stale_because_an_older_response_was_rejected(
+    application_feature_factory,
+):
+    recent = application_feature_factory("600001", NOW)
+    older = replace(recent, quote=replace(recent.quote, source_time=NOW - timedelta(minutes=1)))
+    runtime, index = _runtime(_Quotes([(recent,), (older,)]))
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        assert runtime.offer_refresh(LongRefreshRequest(NOW + timedelta(seconds=1), "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+        assert isinstance(current, LongProjection)
+        assert current.items[0].source_time == NOW
+        assert current.items[0].quote_status == "retained"
+        assert "long_quotes_stale" not in runtime.status().degraded_reasons
+    finally:
+        assert runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0)).completed
+
+
+@pytest.mark.parametrize("response", ((), MarketDataUnavailableError("supplier payload")))
+def test_long_reports_age_of_retained_quotes_when_refresh_has_no_usable_quote(application_feature_factory, response):
+    feature = application_feature_factory("600001", NOW)
+    runtime, index = _runtime(_Quotes([(feature,), response]))
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        assert runtime.offer_refresh(LongRefreshRequest(NOW + timedelta(seconds=31), "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+        assert isinstance(current, LongProjection)
+        assert current.items[0].quote_status == "retained"
+        assert current.items[0].price == feature.quote.price
+        assert current.items[0].source_time == NOW
+        assert "long_quotes_stale" in runtime.status().degraded_reasons
+        assert runtime.status().retained_count == 1
+        assert runtime.status().live_count == 0
+    finally:
+        assert runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0)).completed
+
+
+def test_long_age_uses_fetch_completion_and_recovers_on_fresh_source(application_feature_factory):
+    completed_at = NOW + timedelta(seconds=31)
+    first = application_feature_factory("600001", NOW)
+    fresh = application_feature_factory("600001", completed_at)
+    runtime, index = _runtime(_Quotes([(first,), (fresh,)]), completed_at=completed_at)
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        assert "long_quotes_stale" in runtime.status().degraded_reasons
+        assert runtime.offer_refresh(LongRefreshRequest(completed_at, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+        assert isinstance(current, LongProjection)
+        assert current.items[0].quote_status == "live"
+        assert current.items[0].source_time == completed_at
+        assert "long_quotes_stale" not in runtime.status().degraded_reasons
+    finally:
+        assert runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0)).completed
+
+
+@pytest.mark.parametrize("maximum_age", (0.0, -1.0, float("inf"), float("nan")))
+def test_long_rejects_invalid_quote_age_before_starting(maximum_age):
+    with pytest.raises(ValueError, match="maximum age"):
+        _runtime(_Quotes([]), quote_max_age_seconds=maximum_age)
+
+
+@pytest.mark.parametrize("days_since_close", (1, 2, 7))
+def test_nontrading_long_preserves_last_close_price_change_and_source_time(
+    application_feature_factory, days_since_close
+):
+    close = datetime(2026, 10, 23, 15, 0, tzinfo=SHANGHAI)
+    observed = close + timedelta(days=days_since_close)
+    context = PreviewContext("long-preview", close.date(), observed)
+    feature = application_feature_factory("600001", observed)
+    feature = replace(feature, quote=replace(feature.quote, source_time=close, pct_change=-2.5))
+    intraday = replace(feature, quote=replace(feature.quote, code="600002", source_time=close - timedelta(minutes=1)))
+    older = replace(feature, quote=replace(feature.quote, code="600003", source_time=close - timedelta(days=1)))
+    quotes = _Quotes([(feature, intraday, older)])
+    runtime, index = _runtime(quotes, completed_at=observed)
+    try:
+        runtime.start()
+        assert runtime.offer_refresh(LongRefreshRequest(observed, "after_close", preview_context=context))
+        assert runtime.wait_idle(2.0)
+        snapshot = index.snapshot(Strategy.LONG)
+        current = snapshot.current
+        assert isinstance(current, LongProjection)
+        assert current.trade_date == observed.date() and current.observed_at == observed
+        assert snapshot.formal is None
+        assert current.items[0].price == 12.0 and current.items[0].pct_change == -2.5
+        assert current.items[0].source_time == close
+        assert all(item.quote_status == "missing" for item in current.items[1:])
+        assert quotes.contexts == [context]
+        assert "long_quotes_stale" not in runtime.status().degraded_reasons
+    finally:
+        assert runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0)).completed
+
+
+def test_disabled_long_lane_accepts_scheduler_handoffs_without_fetching_or_publishing() -> None:
+    quotes = _Quotes([])
+    runtime, index = _runtime(quotes, enabled=False)
+
+    assert runtime.start() is False
+    assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main")) is True
+    assert runtime.wait_idle(0.01) is True
+    assert runtime.stop(wait=True, deadline=ShutdownDeadline.start(0.01)).completed is True
+    assert quotes.calls == []
+    assert index.snapshot(Strategy.LONG).current is None
+    assert runtime.status().published_count == 0
+
+
+def test_long_publishes_full_fixed_order_without_scoring(application_feature_factory) -> None:
+    quotes = _Quotes(
+        [
+            (
+                application_feature_factory("600001", NOW),
+                application_feature_factory("600002", NOW),
+                application_feature_factory("600003", NOW),
+            )
+        ]
+    )
+    runtime, index = _runtime(quotes)
+
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+
+        assert isinstance(current, LongProjection)
+        assert tuple(item.code for item in current.items) == ("600001", "600002", "600003")
+        assert all(item.quote_status == "live" for item in current.items)
+        assert all(item.price == 12.0 for item in current.items)
+        assert tuple(item.selection_date for item in current.items) == (NOW.date(),) * 3
+        assert current.items[0].selection_price == 10.0
+        assert current.items[0].selection_to_now_pct == pytest.approx(20.0)
+        assert len({item.group for item in current.items}) == 2
+        assert index.snapshot(Strategy.LONG).formal is None
+        assert runtime.status().score_status == "not_applicable"
+        assert runtime.status().published_count == 1
+        assert runtime.status().missing_count == 0
+    finally:
+        runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+
+def test_long_partial_refresh_retains_same_day_quote_and_keeps_missing_slot(
+    application_feature_factory,
+) -> None:
+    first_at = NOW
+    second_at = NOW + timedelta(seconds=1)
+    quotes = _Quotes(
+        [
+            (application_feature_factory("600001", first_at), application_feature_factory("600002", first_at)),
+            (application_feature_factory("600001", second_at),),
+        ]
+    )
+    runtime, index = _runtime(quotes)
+
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(first_at, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        assert runtime.offer_refresh(LongRefreshRequest(second_at, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+
+        assert isinstance(current, LongProjection)
+        by_code = {item.code: item for item in current.items}
+        assert by_code["600001"].quote_status == "live"
+        assert by_code["600002"].quote_status == "retained"
+        assert by_code["600002"].source_time == first_at
+        assert by_code["600003"].quote_status == "missing"
+        assert by_code["600003"].price is None
+        assert tuple(item.code for item in current.items) == ("600001", "600002", "600003")
+        assert runtime.status().degraded_reasons == ("long_quotes_partial",)
+        assert runtime.status().retained_count == 1
+        assert runtime.status().missing_count == 1
+    finally:
+        runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+
+def test_long_quote_failure_retains_current_and_does_not_replace_codes(application_feature_factory) -> None:
+    quotes = _Quotes(
+        [
+            (application_feature_factory("600001", NOW),),
+            MarketDataUnavailableError("injected"),
+        ]
+    )
+    runtime, index = _runtime(quotes)
+
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        assert runtime.offer_refresh(LongRefreshRequest(NOW + timedelta(seconds=1), "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+
+        assert isinstance(current, LongProjection)
+        assert tuple(item.code for item in current.items) == ("600001", "600002", "600003")
+        assert current.items[0].quote_status == "retained"
+        assert runtime.status().fetch_failure_count == 1
+        assert runtime.status().degraded_reasons == ("long_quote_unavailable", "long_quotes_partial")
+    finally:
+        runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+
+def test_empty_long_watchlist_keeps_current_unready_without_fetching() -> None:
+    quotes = _Quotes([])
+    index = UnifiedFreezeIndex()
+    runtime = LongRuntime(
+        LongRuntimeDependencies(next_sequence=count(1).__next__, quote_max_age_seconds=30.0, quotes=quotes, index=index, now=lambda: NOW),
+        config_version="config-fixture",
+        watchlist_version="empty-watchlist",
+        items=(),
+        groups=(),
+    )
+    assert runtime.codes == ()
+    assert runtime.status().degraded_reasons == ("long_watchlist_empty",)
+    assert runtime.offer_refresh(LongRefreshRequest(observed_at=NOW, phase="morning_main")) is False
+    assert quotes.calls == []
+    assert index.snapshot(Strategy.LONG).current is None
+    assert runtime.status().published_count == 0
+
+
+def test_long_rejects_duplicate_or_unassigned_group_membership() -> None:
+    quotes = _Quotes([()])
+    item = LongWatchItemDefinition("600001", "甲公司", "设备", NOW.date(), 10.0)
+
+    for groups in (
+        (),
+        (
+            LongGroupDefinition("一组", "chokepoint", ("600001",)),
+            LongGroupDefinition("二组", "future_growth", ("600001",)),
+        ),
+    ):
+        try:
+            LongRuntime(
+                LongRuntimeDependencies(
+                    next_sequence=count(1).__next__, quote_max_age_seconds=30.0, quotes=quotes, index=UnifiedFreezeIndex(), now=lambda: NOW
+                ),
+                config_version="config-fixture",
+                watchlist_version="watchlist-fixture",
+                items=(item,),
+                groups=groups,
+            )
+        except ValueError as exc:
+            assert "exactly one long group" in str(exc)
+        else:
+            raise AssertionError("invalid long group ownership was accepted")
+
+
+def test_long_ignores_future_and_unknown_quotes(application_feature_factory) -> None:
+    future = application_feature_factory("600001", NOW + timedelta(seconds=1))
+    unknown = application_feature_factory("600999", NOW)
+    runtime, index = _runtime(_Quotes([(future, unknown)]))
+
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+
+        assert isinstance(current, LongProjection)
+        assert all(item.quote_status == "missing" for item in current.items)
+        assert runtime.status().missing_count == 3
+    finally:
+        runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+
+def test_long_accepts_quote_received_after_request_before_completion(application_feature_factory) -> None:
+    feature = application_feature_factory("600001", NOW)
+    feature = replace(feature, quote=replace(feature.quote, received_time=NOW + timedelta(seconds=1)))
+    runtime, index = _runtime(_Quotes([(feature,)]), completed_at=NOW + timedelta(seconds=2))
+
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+
+        assert isinstance(current, LongProjection)
+        assert current.observed_at == NOW + timedelta(seconds=2)
+        assert current.items[0].quote_status == "live"
+    finally:
+        runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+
+def test_long_rejects_stale_refresh_and_does_not_replace_newer_retained_quote(
+    application_feature_factory,
+) -> None:
+    old_at = NOW
+    new_at = NOW + timedelta(seconds=2)
+    newer_quote = application_feature_factory("600001", new_at)
+    older_quote = application_feature_factory("600001", old_at)
+    runtime, index = _runtime(_Quotes([(newer_quote,), (older_quote,), (older_quote,)]))
+
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(new_at, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        assert runtime.offer_refresh(LongRefreshRequest(new_at + timedelta(seconds=1), "morning_main"))
+        assert runtime.wait_idle(2.0)
+        retained = index.snapshot(Strategy.LONG).current
+        assert isinstance(retained, LongProjection)
+        assert retained.items[0].source_time == new_at
+        assert retained.items[0].quote_status == "retained"
+
+        assert runtime.offer_refresh(LongRefreshRequest(old_at, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        assert index.snapshot(Strategy.LONG).current == retained
+        assert runtime.status().input_rejection_count == 1
+    finally:
+        runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+
+def test_long_clears_retained_quotes_on_the_next_trade_date(application_feature_factory) -> None:
+    next_day = NOW + timedelta(days=1)
+    runtime, index = _runtime(
+        _Quotes(
+            [
+                (application_feature_factory("600001", NOW),),
+                MarketDataUnavailableError("injected"),
+            ]
+        )
+    )
+
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        assert runtime.offer_refresh(LongRefreshRequest(next_day, "morning_main"))
+        assert runtime.wait_idle(2.0)
+        current = index.snapshot(Strategy.LONG).current
+
+        assert isinstance(current, LongProjection)
+        assert current.trade_date == next_day.date()
+        assert all(item.quote_status == "missing" for item in current.items)
+        assert runtime.status().retained_count == 0
+    finally:
+        runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+
+def test_long_identity_is_independent_of_quote_return_order(application_feature_factory) -> None:
+    first = application_feature_factory("600001", NOW)
+    second = application_feature_factory("600002", NOW)
+    first_runtime, first_index = _runtime(_Quotes([(first, second)]))
+    second_runtime, second_index = _runtime(_Quotes([(second, first)]))
+
+    for runtime in (first_runtime, second_runtime):
+        runtime.start()
+    try:
+        request = LongRefreshRequest(NOW, "morning_main")
+        assert first_runtime.offer_refresh(request)
+        assert second_runtime.offer_refresh(request)
+        assert first_runtime.wait_idle(2.0)
+        assert second_runtime.wait_idle(2.0)
+    finally:
+        first_runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+        second_runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+    assert first_index.snapshot(Strategy.LONG).current == second_index.snapshot(Strategy.LONG).current
+
+
+def test_long_rejects_conflicting_equal_identity_and_sanitizes_optional_values(
+    application_feature_factory,
+) -> None:
+    first = application_feature_factory("600001", NOW)
+    conflicting = replace(first, quote=replace(first.quote, price=13.0))
+    partially_invalid = application_feature_factory("600002", NOW)
+    partially_invalid = replace(
+        partially_invalid,
+        quote=replace(
+            partially_invalid.quote,
+            pct_change=float("nan"),
+            amount=-1.0,
+            turnover_rate=float("inf"),
+            market_cap=-1.0,
+        ),
+    )
+    invalid_price = application_feature_factory("600003", NOW)
+    invalid_price = replace(invalid_price, quote=replace(invalid_price.quote, price=float("nan")))
+    runtime, index = _runtime(_Quotes([(first, conflicting, partially_invalid, invalid_price)]))
+
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main"))
+        assert runtime.wait_idle(2.0)
+    finally:
+        runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+    current = index.snapshot(Strategy.LONG).current
+    assert isinstance(current, LongProjection)
+    by_code = {item.code: item for item in current.items}
+    assert by_code["600001"].quote_status == "missing"
+    assert by_code["600002"].quote_status == "live"
+    assert by_code["600002"].price == 12.0
+    assert by_code["600002"].pct_change is None
+    assert by_code["600002"].amount is None
+    assert by_code["600002"].turnover_rate is None
+    assert by_code["600002"].market_cap is None
+    assert by_code["600003"].quote_status == "missing"

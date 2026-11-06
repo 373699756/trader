@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
+
+from tests.helpers.shared.configuration import SqlitePolicyFixture
+
+import math
+
+from dataclasses import replace
+
+
+from importlib.util import find_spec
+
+
+
+import numpy as np
+
+import pytest
+
+
+
+from trader.recommendation.application.ports.loaded_profile import ModelInput
+
+from trader.recommendation.domain.market.v5.features import CalculatePriceVolumeSequence, PriceVolumePoint
+
+from trader.recommendation.domain.publication.models import Strategy
+
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+
+
+
+from trader.training.infra.profile.v5.tensors import DecodeTcnTensors, TensorShapes
+
+from trader.training.infra.profile.v5.training import RunV5Training
+
+from trader.training.infra.training_settings import LoadProfileTrainingSettings
+
+from tests.helpers.shared.configuration import TcnFittingParametersFixture
+
+from tests.helpers.training.profiles.v5.v5_training import (
+    ROOT,
+    _history,
+    _point,
+)
+
+
+def test_missing_future_label_reports_exact_partition_without_discarding_other_head(tmp_path, monkeypatch):
+    from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
+
+    history = _history(tmp_path / "history")
+    settings = LoadProfileTrainingSettings(ROOT, "v5")
+    split = BuildProductionDiagnosticDatePlan(
+        history.snapshot.calendar.open_dates,
+        source_cutoff=history.snapshot.source_cutoff,
+        fit_sessions=settings.fit_dates,
+        early_stopping_sessions=20,
+        history_sessions=61,
+        history_excludes_signal=True,
+    )
+    signal = split.fitting_dates[30]
+    absent = history.snapshot.calendar.open_dates[history.snapshot.calendar.open_dates.index(signal) + 2]
+    original = history.iter_training_rows
+
+    def rows(allowed, progress=None):
+        for row in original(allowed, progress):
+            yield (replace(row, point=None, cell_status="unknown_missing") if row.trade_date == absent else row)
+
+    history.iter_training_rows = rows
+    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p, *, sqlite_policy: history)
+    result = RunV5Training(
+        history.history_root, tmp_path / "models", sample_root=tmp_path / "samples", settings=settings, sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
+    )
+    assert result.status == "blocked"
+    d25 = next(head for head in result.heads if head.strategy is Strategy.D25)
+    coverage = next(item for item in d25.coverage if item.partition == "training")
+    gap = next(item for item in coverage.missing if item.trade_date == signal)
+    assert gap.sample_rows == gap.candidates == 6
+    assert gap.missing_future_returns == (0, 6, 0, 0, 0)
+    assert coverage.sample_rows > coverage.target_rows > 0
+    assert d25.training_rows == 0
+    assert not tuple((tmp_path / "models").rglob("model.json"))
+
+
+@pytest.mark.skipif(find_spec("torch") is None, reason="V5 optional CPU dependency")
+def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tmp_path, monkeypatch):
+    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
+
+    ConfigureTcnRuntime(training=True)
+    history = _history(tmp_path / "history")
+    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p, *, sqlite_policy: history)
+    settings = replace(
+        LoadProfileTrainingSettings(ROOT, "v5"),
+        fit_dates=61,
+        fitting=TcnFittingParametersFixture(
+            minimum_industry_training_rows=10,
+            epochs=2,
+            early_stopping_rounds=2,
+            hidden_channels=8,
+            compute_dtype="float32",
+            early_stopping_relative_delta=0.001,
+        ),
+    )
+    models = tmp_path / "models"
+    updates = []
+
+    class Progress:
+        def publish(self, update):
+            updates.append(update)
+
+    result = RunV5Training(
+        history.history_root, models, sample_root=tmp_path / "samples", settings=settings, progress=Progress(), sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
+    )
+    assert result.status == "engineering_ready", result.heads
+    assert {h.strategy for h in result.heads} == {Strategy.TOMORROW, Strategy.D25}
+    for head in result.heads:
+        diagnostic = [
+            update.fit_detail for update in updates
+            if update.stage == "model_fit" and update.strategy is head.strategy and update.fit_detail
+        ]
+        final = [
+            update.fit_detail for update in updates
+            if update.stage == "final_model_refit" and update.strategy is head.strategy and update.fit_detail
+        ]
+        assert {item.phase for item in diagnostic} == {
+            "preparation",
+            "batch_cache",
+            "normalization",
+            "training",
+            "early_stopping",
+            "calibration",
+            "completed",
+        }
+        assert {item.phase for item in final} == {"preparation", "normalization", "training", "completed"}
+        for details in (diagnostic, final):
+            assert all(item.industry == "bank" and item.training_rows == head.training_rows for item in details)
+            for epoch in (1, 2):
+                trained = [item for item in details if item.phase == "training" and item.epoch == epoch]
+                assert trained[0].completed_batches == 0
+                assert trained[-1].completed_batches == trained[-1].total_batches == math.ceil(head.training_rows / 256)
+                assert all(item.total_epochs == 2 for item in trained)
+                assert [item.completed_batches for item in trained] == sorted(item.completed_batches for item in trained)
+            assert details[-1].phase == "completed"
+    assert sorted(p.relative_to(models).as_posix() for p in models.rglob("*.json")) == [
+        "v5/d25/metadata.json",
+        "v5/d25/model.json",
+        "v5/tomorrow/metadata.json",
+        "v5/tomorrow/model.json",
+    ]
+    assert not (tmp_path / "samples").exists()
+    loaded = LoadScoringProfile("v5", training_root=models)
+    dates = history.snapshot.calendar.open_dates[:61]
+    points = tuple(_point(d, i, 0) for i, d in enumerate(dates))
+    sequence = CalculatePriceVolumeSequence(
+        "600000",
+        tuple(
+            PriceVolumePoint(
+                p.trade_date, p.qfq_open, p.qfq_high, p.qfq_low, p.qfq_close_price, p.raw_volume, p.qfq_amount
+            )
+            for p in points
+        ),
+        expected_dates=dates,
+        source_identity="fixture",
+    )
+    for strategy, width in ((Strategy.TOMORROW, 6), (Strategy.D25, 5)):
+        inputs = (ModelInput("600000", (0.1,) * width, "bank", sequence),)
+        first = loaded.heads[strategy].predictor.predict(inputs)[0].predicted_excess_return
+        second = LoadScoringProfile("v5", training_root=models).heads[strategy].predictor.predict(inputs)[0]
+        np.testing.assert_allclose(first, second.predicted_excess_return, rtol=1e-10, atol=1e-12)
+        with pytest.raises(ValueError, match="sequence"):
+            loaded.heads[strategy].predictor.predict((ModelInput("600000", (0.1,) * width, "bank"),))
+    original = {p: p.read_bytes() for p in models.rglob("*.json")}
+    rejected = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=1000000))
+    failed = RunV5Training(history.history_root, models, sample_root=tmp_path / "samples", settings=rejected, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
+    assert failed.status != "engineering_ready"
+    assert all(p.read_bytes() == before for p, before in original.items())
+
+    class _CancelledFit:
+        def publish(self, progress):
+            detail = progress.fit_detail
+            if detail is not None and detail.phase == "training" and detail.completed_batches == 1:
+                raise InterruptedError("cancelled fixture")
+
+    with pytest.raises(InterruptedError):
+        RunV5Training(
+            history.history_root,
+            models,
+            sample_root=tmp_path / "samples",
+            settings=replace(settings, fitting=replace(settings.fitting, seed=1)),
+            progress=_CancelledFit(), sqlite_policy=SqlitePolicyFixture(),
+            sample_settings=TrainingSampleSettingsFixture(),
+        )
+    assert all(p.read_bytes() == before for p, before in original.items())
+
+
+def test_v5_tensor_codec_rejects_duplicate_wrong_shape_and_nonfinite():
+    from trader.training.infra.profile.v5.settings import TcnArchitecture
+
+    architecture = TcnArchitecture(8, "float32")
+    weights = [
+        {"name": name, "shape": list(shape), "values": [0.0] * math.prod(shape)}
+        for name, shape in TensorShapes(6, architecture)
+    ]
+    assert DecodeTcnTensors(weights, 6, architecture)
+    with pytest.raises(ValueError):
+        DecodeTcnTensors([weights[0]] * len(weights), 6, architecture)
+    weights[0]["values"][0] = float("nan")
+    with pytest.raises(ValueError):
+        DecodeTcnTensors(weights, 6, architecture)

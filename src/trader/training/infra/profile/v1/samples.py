@@ -36,6 +36,7 @@ from trader.recommendation.domain.market.v1.features import (
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
 from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
+from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.v1.learned_rank import LearnedRankDateSplit
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
@@ -133,7 +134,7 @@ def _empty_output(rows: int, directory: Path, resources: ExitStack) -> _MatrixOu
 @dataclass(frozen=True)
 class LearnedRankPartitionCoverage:
     strategy: Strategy
-    partition: Literal["fitting", "early_stopping", "calibration", "validation"]
+    partition: Literal["fitting", "early_stopping", "calibration", "validation", "final_fitting"]
     expected_dates: int
     effective_dates: int
     rows: int
@@ -236,7 +237,10 @@ class LearnedRankSampleIndex:
         return converted, missing_t1, missing_d25
 
     def coverage(
-        self, splits: tuple[LearnedRankDateSplit, LearnedRankDateSplit]
+        self,
+        splits: tuple[LearnedRankDateSplit, LearnedRankDateSplit],
+        *,
+        final_fit_plans: tuple[FinalFitDatePlan, FinalFitDatePlan] | None = None,
     ) -> tuple[LearnedRankPartitionCoverage, ...]:
         counts = {
             DecodeDate(day): (int(t1_rows), int(d25_rows))
@@ -247,13 +251,15 @@ class LearnedRankSampleIndex:
         result: list[LearnedRankPartitionCoverage] = []
         for position, (strategy, split) in enumerate(zip((Strategy.TOMORROW, Strategy.D25), splits, strict=True)):
             partitions: tuple[
-                tuple[Literal["fitting", "early_stopping", "calibration", "validation"], tuple[date, ...]], ...
+                tuple[Literal["fitting", "early_stopping", "calibration", "validation", "final_fitting"], tuple[date, ...]], ...
             ] = (
                 ("fitting", split.fitting),
                 ("early_stopping", split.early_stopping),
                 ("calibration", split.calibration),
                 ("validation", split.validation),
             )
+            if final_fit_plans is not None:
+                partitions = (*partitions, ("final_fitting", final_fit_plans[position].fit_dates))
             for name, days in partitions:
                 rows = tuple(counts.get(day, (0, 0))[position] for day in days)
                 result.append(
@@ -370,15 +376,24 @@ def BuildLearnedRankSamples(
     *,
     history_sessions: int,
     stream: LearnedRankSampleStream = _STANDALONE_STREAM,
+    final_fit_plans: tuple[FinalFitDatePlan, FinalFitDatePlan] | None = None,
 ) -> LearnedRankSampleCounts:
     progress, cancel_requested, aligned_rows = stream.progress, stream.cancel_requested, stream.aligned_rows
     calendar = source.snapshot.calendar.open_dates
     positions = {day: position for position, day in enumerate(calendar)}
     selected = frozenset(day for split in splits for day in split.sample_dates)
+    if final_fit_plans is not None:
+        if any(
+            plan.source_cutoff != source.snapshot.source_cutoff
+            or plan.maturity_sessions != split.maturity_sessions
+            for plan, split in zip(final_fit_plans, splits, strict=True)
+        ):
+            raise ValueError("learned_rank_final_fit_source_conflict")
+        selected = selected.union(day for plan in final_fit_plans for day in plan.fit_dates)
     if history_sessions < 1:
         raise ValueError("learned-rank history sessions must be positive")
     first_position = min(positions[day] for day in selected) - history_sessions
-    readable = frozenset(calendar[first_position:])
+    readable = frozenset(day for day in calendar[first_position:] if day <= source.snapshot.source_cutoff)
     readable = AlignmentReadDates(calendar, readable)
     total = source.training_row_upper_bound(readable)
     rolling: dict[str, _RollingCode] = {}

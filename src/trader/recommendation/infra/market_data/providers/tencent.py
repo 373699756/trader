@@ -322,7 +322,9 @@ def _parse_payload(fields: Mapping[str, object], received_at: datetime, requeste
         return None
     if code not in requested:
         return None
-    source_time = _timestamp(str(fields.get("30") or ""), received_at)
+    source_time = _timestamp(str(fields.get("30") or ""))
+    if source_time is None:
+        return None
     transaction = str(fields.get("35") or "").split("/") if len(fields) > 35 else []
     amount = ToFloat(transaction[2]) if len(transaction) >= 3 else None
     price = ToFloat(fields.get("3"))
@@ -350,7 +352,7 @@ def _parse_payload(fields: Mapping[str, object], received_at: datetime, requeste
             received_time=received_at,
             data_version=f"tencent:{int(source_time.timestamp())}",
             is_st="ST" in str(fields.get("1") or "").upper() or "退" in str(fields.get("1") or ""),
-            is_suspended=price is None or price <= 0,
+            is_suspended=fields.get("40") == "S" or price is None or price <= 0,
         )
     )
 
@@ -364,11 +366,14 @@ def _market_cap(raw: object) -> float | None:
     return value * 100_000_000.0 if value is not None and value > 0 else None
 
 
-def _timestamp(raw: str, fallback: datetime) -> datetime:
+def _timestamp(raw: str) -> datetime | None:
+    raw = raw.strip()
+    if re.fullmatch(r"[0-9]{14}", raw) is None:
+        return None
     try:
-        parsed = datetime.strptime(raw.strip(), "%Y%m%d%H%M%S")
+        parsed = datetime.strptime(raw, "%Y%m%d%H%M%S")
     except ValueError:
-        return fallback.astimezone(_SHANGHAI)
+        return None
     return parsed.replace(tzinfo=_SHANGHAI)
 
 

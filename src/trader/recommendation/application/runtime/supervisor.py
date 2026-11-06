@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.infra.shutdown import ObserveShutdownStep, ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.runtime.schedule import (
     SecondsUntilNextScheduleBoundary,
 )
@@ -123,7 +123,7 @@ class RuntimeSupervisor:
 
     def stop(self, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
         deadline = deadline or ShutdownDeadline.start(self._shutdown_timeout_seconds, monotonic=self._monotonic)
-        with self._lock:
+        with ObserveShutdownStep(deadline, "supervisor:state"), self._lock:
             if self._stopped:
                 return self._shutdown_report or ShutdownReport.from_steps(deadline, ())
             self._stopped = True
@@ -132,7 +132,8 @@ class RuntimeSupervisor:
             scheduler = self._scheduler
             deferred = self._deferred_thread
         if deferred is not None and deferred is not threading.current_thread() and deferred.ident is not None:
-            deferred.join(deadline.remaining_seconds())
+            with ObserveShutdownStep(deadline, "supervisor:deferred_initializers"):
+                deferred.join(deadline.remaining_seconds())
             deferred_timed_out = deferred.is_alive()
         else:
             deferred_timed_out = False
@@ -143,7 +144,8 @@ class RuntimeSupervisor:
             detail="deferred initializer shutdown exceeded timeout" if deferred_timed_out else "",
         )
         if scheduler is not None and scheduler is not threading.current_thread() and scheduler.ident is not None:
-            scheduler.join(deadline.remaining_seconds())
+            with ObserveShutdownStep(deadline, "supervisor:scheduler"):
+                scheduler.join(deadline.remaining_seconds())
             scheduler_timed_out = scheduler.is_alive()
         else:
             scheduler_timed_out = False
@@ -155,7 +157,8 @@ class RuntimeSupervisor:
         )
         runtime_step = ShutdownStep(name="runtime", completed=True, timed_out=False)
         if self._runtime_started:
-            runtime_step = self._stop_runtime(deadline)
+            with ObserveShutdownStep(deadline, "supervisor:runtime"):
+                runtime_step = self._stop_runtime(deadline)
             self._runtime_started = False
         if scheduler_timed_out and scheduler is not None:
             self._record_error("scheduler shutdown exceeded timeout")

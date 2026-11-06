@@ -178,10 +178,15 @@ class QuoteCache:
         *,
         research_observations: Mapping[str, ResearchObservation] | None = None,
         action_restrictions: Mapping[str, set[str]],
+        check_budget: Callable[[], None] | None = None,
     ) -> tuple[FeatureSnapshot, ...]:
+        if check_budget is not None:
+            check_budget()
         started = self._monotonic()
         summaries = self._history.summaries(histories, observed_at)
         local_quotes = self._with_industry_quotes(quotes, observed_at)
+        if check_budget is not None:
+            check_budget()
         self.gateway.record_local_latency("market_history_summary", (self._monotonic() - started) * 1000)
         started = self._monotonic()
         features = self._feature_builder.build(
@@ -191,10 +196,13 @@ class QuoteCache:
             research_observations=research_observations,
             history_summaries=summaries,
             preview_context=self._preview_context,
+            check_budget=check_budget,
         )
         self.gateway.record_local_latency("market_factor_build", (self._monotonic() - started) * 1000)
         started = self._monotonic()
         features = self._with_model_industries(features, action_restrictions=action_restrictions)
+        if check_budget is not None:
+            check_budget()
         self.gateway.record_local_latency("market_model_inputs", (self._monotonic() - started) * 1000)
         return features
 

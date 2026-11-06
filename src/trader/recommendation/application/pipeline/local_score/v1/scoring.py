@@ -54,6 +54,7 @@ class LearnedRankScoringService:
         self._predictor_batch_count = 0
         self._candidate_count = 0
         self._lock = threading.RLock()
+        self._status_lock = threading.Lock()
         self._prediction_ms = 0.0
         self._cumulative_prediction_ms = 0.0
         self._contract_hash = content_hash(
@@ -65,6 +66,7 @@ class LearnedRankScoringService:
                 cost_policy,
             )
         )
+        self._status_snapshot = self._status_locked()
 
     @property
     def model_version(self) -> str:
@@ -93,7 +95,14 @@ class LearnedRankScoringService:
             else None
         )
         with self._lock:
-            return self._score_locked(features, context=context, deadline=deadline)
+            try:
+                return self._score_locked(features, context=context, deadline=deadline)
+            finally:
+                # Publish attempts and failures together after calculation settles
+                # its counters; readers keep the last complete head.
+                snapshot = self._status_locked()
+                with self._status_lock:
+                    self._status_snapshot = snapshot
 
     def _score_locked(
         self,
@@ -197,8 +206,8 @@ class LearnedRankScoringService:
         return batch
 
     def status(self) -> ScoringHeadRuntimeStatus:
-        with self._lock:
-            return self._status_locked()
+        with self._status_lock:
+            return self._status_snapshot
 
     def _status_locked(self) -> ScoringHeadRuntimeStatus:
         evidence = self._head.evidence

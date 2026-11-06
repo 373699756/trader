@@ -104,6 +104,7 @@ def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int,
                 sys.executable, str(project / "scripts/tools.py"),
                 "--internal-worker", "scripts.training.samples.sample_comparison_worker", "--", "--checkout", str(checkout),
                 "--root", str(work / f"samples-{number}-{label}"), "--size", str(size), "--sessions", str(sessions),
+                "--medium", location.disk_kind,
                 "--runtime-config", str(config),
             ), checkout, work))
     sample_comparison = _compare(runs, "baseline", "candidate", budget.relative_regression_percent)

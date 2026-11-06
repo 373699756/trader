@@ -326,11 +326,16 @@ def _probe(
         ReadOnlyTrainingSource(history) if published_history_read_only else nullcontext(),
     ):
         initial = _train_once(runtime, history, work, profiles)
+        _write_workload_checkpoint(work, "initial", initial)
         repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None
+        if repeat is not None:
+            _write_workload_checkpoint(work, "all_artifacts_reuse", repeat)
         sample_reuse = (
             _sample_reuse(runtime, history, work, profiles, initial, transfer=sample_cache_transfer)
             if initial["complete"] else None
         )
+        if sample_reuse is not None:
+            _write_workload_checkpoint(work, "sample_reuse", sample_reuse)
     if schedule is not None:
         scheduling_report = ProjectSchedulingExperiment(schedule)
     if computation is not None:
@@ -385,6 +390,29 @@ def _probe(
             "cache_conditions": "operating_system_cache_uncontrolled; sample_copy_verification_precedes_refit",
         },
     }
+
+
+def _write_workload_checkpoint(
+    work: Path,
+    name: Literal["initial", "all_artifacts_reuse", "sample_preparation", "sample_refit", "sample_reuse"],
+    result: dict[str, object],
+) -> None:
+    from trader.infra.atomic_files.json import AtomicWriteJson
+
+    directory = work / "workload-checkpoints"
+    if directory.is_symlink() or directory.exists() and not directory.is_dir():
+        raise ValueError("training_workload_checkpoint_directory_invalid")
+    path = directory / (name + ".json")
+    if path.exists() or path.is_symlink():
+        raise FileExistsError("training_workload_checkpoint_output_exists")
+    AtomicWriteJson(path, {
+        "schema_version": "training-workload-checkpoint-1",
+        "workload": name,
+        "audit_state": "pending_final_source_and_reuse_audit",
+        "performance_acceptance": False,
+        "production_authority": False,
+        "result": result,
+    })
 
 
 def _published_input_signature(history: Path) -> tuple[tuple[str, int, int, int, int, int], ...]:
@@ -448,6 +476,7 @@ def _sample_reuse(
         if target.exists() or target.is_symlink():
             raise ValueError("training_sample_probe_output_exists")
         preparation = _prepare_sample_reuse(runtime, history, preparation_root, selected)
+        _write_workload_checkpoint(work, "sample_preparation", preparation)
         result["preparation"] = preparation
         failures = TrainingSamplePreparationFailures(initial, preparation, selected)
         if failures:
@@ -483,7 +512,9 @@ def _sample_reuse(
         result["copy_verification_seconds"] = time.monotonic() - copy_started
         result["preparation_seconds"] = time.monotonic() - started
         result["linked_bytes" if transfer == "hardlink" else "copied_bytes"] = copied
-        result["run"] = _train_once(runtime, history, target, selected)
+        refit = _train_once(runtime, history, target, selected)
+        result["run"] = refit
+        _write_workload_checkpoint(work, "sample_refit", refit)
         after = _sample_signatures(preparation_root, selected)
         result["source_cache_signatures_after"] = after
         result["source_cache_unchanged"] = before == after
@@ -724,6 +755,26 @@ def _numeric_fingerprints(model_root: Path, profiles: tuple[ScoringProfileId, ..
             if not isinstance(report, dict):
                 raise ValueError("training_alignment_validation_report_invalid")
             components = _fingerprint_model_values(profile, model)
+            # Historical schemas retain their original fingerprint; only Final schemas
+            # contain a separately evaluated estimator. Reuse the numeric projection for
+            # both estimators, leaving date plans and calibration policy to bundle identity.
+            if profile == "v1" and metadata.get("schema_version") == "learned_rank_final_head_metadata":
+                diagnostic = _fingerprint_model_object(report.get("diagnostic_head"))
+                fields = _fingerprint_model_object(model["components"])
+                if not fields.keys() <= diagnostic.keys():
+                    raise ValueError("training_alignment_diagnostic_model_document_invalid")
+                diagnostic_values = _fingerprint_model_values(profile, {
+                    "components": {name: diagnostic[name] for name in fields},
+                })
+                components = {"final": components, "diagnostic": diagnostic_values}
+            elif profile != "v1" and metadata.get("schema_version") in {
+                f"{profile}_head_refit_metadata", f"{profile}_head_recent_refit_metadata",
+            }:
+                final_fit = _fingerprint_model_object(metadata.get("final_fit"))
+                diagnostic = _fingerprint_model_object(final_fit.get("diagnostic_model"))
+                if "industries" not in diagnostic:
+                    raise ValueError("training_alignment_diagnostic_model_document_invalid")
+                components = {"final": components, "diagnostic": _fingerprint_model_values(profile, diagnostic)}
             metrics = report["validation"] if profile == "v1" else {field: report[field] for field in metric_fields}
             numeric = json.dumps((components, metrics), ensure_ascii=True, sort_keys=True, allow_nan=False).encode()
             fingerprints.append(

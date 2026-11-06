@@ -1,1 +1,0 @@
-"""Domain research unit tests."""

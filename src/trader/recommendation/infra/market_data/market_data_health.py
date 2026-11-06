@@ -21,6 +21,24 @@ from trader.recommendation.infra.market_data.published_references import Publish
 from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome
 
 
+_COMPANY_ERROR_CODES = frozenset({
+    "company_not_loaded",
+    "company_population_unavailable",
+    "company_preload_cancelled",
+    "company_preload_deadline",
+    "company_preload_capacity",
+    "company_publication_changed",
+    "company_snapshot:missing",
+    "company_snapshot:OSError",
+    "company_snapshot:RuntimeError",
+    "company_snapshot:ValueError",
+    "company_snapshot:TypeError",
+    "company_snapshot:FileNotFoundError",
+    "company_snapshot:PermissionError",
+    "company_snapshot:TimeoutError",
+})
+
+
 @dataclass(frozen=True)
 class MarketDataHealthDependencies:
     quotes: QuoteCache
@@ -77,7 +95,7 @@ class MarketDataHealth:
             "last_latency_ms": round(latencies[-1], 2) if latencies else None,
             "p50_latency_ms": _latency_percentile(latencies, 0.50),
             "p95_latency_ms": _latency_percentile(latencies, 0.95),
-            "last_error": research.last_error,
+            "last_error_code": _company_error_code(research.last_error),
             "data_age_seconds": max(0.0, (measured_at - latest_research).total_seconds())
             if isinstance(latest_research, datetime)
             else None,
@@ -424,6 +442,12 @@ def _route_payload(route: RouteOutcome | None) -> dict[str, JsonInput]:
             for vendor in route.results
         ],
     }
+
+
+def _company_error_code(reason: str) -> str | None:
+    if not reason:
+        return None
+    return reason if reason in _COMPANY_ERROR_CODES else "company_snapshot_unavailable"
 
 
 def _market_source_payload(status: MarketSourceHealthStatus) -> dict[str, JsonInput]:

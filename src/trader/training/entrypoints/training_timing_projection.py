@@ -16,6 +16,8 @@ def _resource(timing: TrainingResourceTiming) -> dict[str, object]:
 def ProjectTrainingExecutionTiming(timing: TrainingExecutionTiming) -> dict[str, object]:
     return {
         "source_read_seconds": timing.source_read_seconds,
+        "source_read_thread_cpu_seconds": timing.source_read_thread_cpu_seconds,
+        "thread_cpu_scope": "calling_thread_only; excludes_other_threads_and_native_workers; task_values_final_on_exit",
         "peak_cpu_reservations": timing.peak_cpu_reservations,
         "peak_memory_reservations": timing.peak_memory_reservations,
         "profiles": [
@@ -23,6 +25,8 @@ def ProjectTrainingExecutionTiming(timing: TrainingExecutionTiming) -> dict[str,
                 "profile": item.profile,
                 "started_after_seconds": item.started_after_seconds,
                 "finished_after_seconds": item.finished_after_seconds,
+                "native_id": item.native_id,
+                "thread_cpu_seconds": item.thread_cpu_seconds,
                 "queue_send_seconds": item.queue_send_seconds,
                 "queue_receive_seconds": item.queue_receive_seconds,
                 "cpu": _resource(item.cpu),

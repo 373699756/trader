@@ -18,6 +18,7 @@ import lightgbm as lgb
 import numpy as np
 from lightgbm.basic import LightGBMError
 
+from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.serialization.canonical import CanonicalValue, ContentHash
 from trader.infra.serialization.fields import IsFiniteNumber, IsInteger, IsNonEmptyText, IsTextSequence
@@ -36,9 +37,13 @@ from trader.training.domain.model_publication import ModelPublicationIdentity
 from trader.training.domain.v1.learned_rank import (
     LearnedRankDateSplit,
     LearnedRankHead,
+    LearnedRankFinalHead,
+    LearnedRankFinalPair,
     LearnedRankPair,
     LearnedRankPredictionMetrics,
 )
+from trader.training.domain.final_fit import FinalFitDatePlan
+from trader.training.domain.training_dates import MAX_TRAINING_SESSIONS
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
 from trader.training.infra.model_bundles.profile_publication import ProfilePublicationLock, RecoverProfilePublication
 from trader.training.infra.profile.composition import SingleHeadCombiner
@@ -108,6 +113,10 @@ _VALIDATION_REPORT_FIELDS = frozenset(
         "label_anchor",
     }
 )
+_FINAL_VALIDATION_REPORT_FIELDS = _VALIDATION_REPORT_FIELDS | {
+    "diagnostic_head", "diagnostic_head_hash", "evaluation_scope", "calibration_source_model_hash",
+    "calibration_transfer", "final_model_unseen_validation_passed", "selected_rank_iterations", "final_rank_iterations",
+}
 _SHARED_METADATA_FIELDS = _METADATA_DOCUMENT_FIELDS - {
     "strategy_head",
     "head_content_hash",
@@ -172,8 +181,10 @@ class LearnedRankPredictor:
         )
 
 
-def PublishLearnedRankPair(model_root: Path, pair: LearnedRankPair) -> None:
-    """Publish two validated head bundles as one locked profile directory."""
+def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None:
+    """Publish only the two validated final-refit heads as one locked profile directory."""
+    if not isinstance(pair, LearnedRankFinalPair):
+        raise ValueError("V1 publication requires a final-refit pair; diagnostic schemas are read-only")
     for head in pair.heads:
         LearnedRankPredictor(head)
     model_root.mkdir(parents=True, exist_ok=True)
@@ -189,7 +200,7 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankPair) -> None:
             directory = staging / head.strategy.value
             values = _object(CanonicalValue(head))
             model = {
-                "schema_version": "learned_rank_head_model",
+                "schema_version": "learned_rank_final_head_model",
                 "profile_id": "v1",
                 "strategy_head": head.strategy.value,
                 "pair_content_hash": pair.content_hash,
@@ -198,7 +209,7 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankPair) -> None:
             }
             model["content_hash"] = ContentHash(model)
             metadata = {
-                "schema_version": "learned_rank_head_metadata",
+                "schema_version": "learned_rank_final_head_metadata",
                 "profile_id": "v1",
                 "strategy_head": head.strategy.value,
                 "model_id": "learned_rank",
@@ -217,6 +228,10 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankPair) -> None:
                     "settings": CanonicalValue(pair.settings),
                     "training_identity_hash": pair.training_identity_hash,
                     **{key: values[key] for key in _HEAD_INPUT_FIELDS},
+                    "calendar_dates": [day.isoformat() for day in pair.calendar_dates],
+                    "final_fit": {
+                        **_object(values["final_fit"]), "content_hash": head.final_fit.content_hash,
+                    },
                 },
                 "validation_report": {
                     "validation": values["validation"],
@@ -225,6 +240,14 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankPair) -> None:
                     "point_in_time_parity": False,
                     "feature_anchor": "previous_completed_session",
                     "label_anchor": "signal_close_proxy",
+                    "diagnostic_head": values["diagnostic"],
+                    "diagnostic_head_hash": head.diagnostic.content_hash,
+                    "evaluation_scope": "independent_pre_refit_model",
+                    "calibration_source_model_hash": head.diagnostic.content_hash,
+                    "calibration_transfer": True,
+                    "final_model_unseen_validation_passed": False,
+                    "selected_rank_iterations": head.diagnostic.rank_iterations,
+                    "final_rank_iterations": head.rank_iterations,
                 },
             }
             metadata["content_hash"] = ContentHash(metadata)
@@ -336,14 +359,18 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
         }
         if metadata["model_hash"] != model["content_hash"]:
             raise ModelBundleIntegrityError("V1 model and metadata hash differ")
+        schemas = (
+            ("learned_rank_head_model", "learned_rank_head_metadata"),
+            ("learned_rank_final_head_model", "learned_rank_final_head_metadata"),
+        )
         if (
-            model["schema_version"] != "learned_rank_head_model"
-            or metadata["schema_version"] != "learned_rank_head_metadata"
+            (model["schema_version"], metadata["schema_version"]) not in schemas
             or any(model[key] != value or metadata[key] != value for key, value in expected.items())
         ):
             raise ModelBundleContractError("V1 head identity differs")
         documents.append((model, metadata))
     first = documents[0][1]
+    final_fit = first["schema_version"] == "learned_rank_final_head_metadata"
     expected_metadata: Mapping[str, object] = {
         "model_id": "learned_rank",
         "score_scale": LEARNED_RANK_SCORE_SCALE,
@@ -368,34 +395,56 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
         training = _object(metadata["training_input"])
         report = _object(metadata["validation_report"])
         RequireExactKeys(components, set(_MODEL_FIELDS), "learned_rank_components")
-        RequireExactKeys(training, set(_SHARED_INPUT_FIELDS | _HEAD_INPUT_FIELDS), "learned_rank_training_input")
-        RequireExactKeys(report, set(_VALIDATION_REPORT_FIELDS), "learned_rank_validation_report")
+        input_fields = _SHARED_INPUT_FIELDS | _HEAD_INPUT_FIELDS
+        if final_fit:
+            input_fields = input_fields | {"calendar_dates", "final_fit"}
+        RequireExactKeys(training, set(input_fields), "learned_rank_training_input")
+        RequireExactKeys(
+            report,
+            set(_FINAL_VALIDATION_REPORT_FIELDS if final_fit else _VALIDATION_REPORT_FIELDS),
+            "learned_rank_validation_report",
+        )
         if any(type(report[key]) is not type(value) or report[key] != value for key, value in expected_report.items()):
             raise ModelBundleContractError("V1 validation report identity is invalid")
-        head = _head(
-            {
-                "strategy": metadata["strategy_head"],
-                **components,
-                **{key: training[key] for key in _HEAD_INPUT_FIELDS},
-                "validation": report["validation"],
-            }
-        )
+        head_values = {
+            "strategy": metadata["strategy_head"],
+            **components,
+            **{key: training[key] for key in _HEAD_INPUT_FIELDS},
+            "validation": report["validation"],
+        }
+        head = _final_head(head_values, training["final_fit"], report) if final_fit else _head(head_values)
         if head.content_hash != metadata["head_content_hash"]:
             raise ModelBundleIntegrityError("V1 head hash differs")
         heads.append(head)
         inputs.append(training)
-    if any(inputs[1][key] != inputs[0][key] for key in _SHARED_INPUT_FIELDS):
+    shared_input_fields = _SHARED_INPUT_FIELDS | {"calendar_dates"} if final_fit else _SHARED_INPUT_FIELDS
+    if any(inputs[1][key] != inputs[0][key] for key in shared_input_fields):
         raise ModelBundleContractError("V1 pair training input differs")
     first_input = inputs[0]
-    pair = LearnedRankPair(
-        _text(first_input, "training_input_hash"),
-        _text(first_input, "source_identity_hash"),
-        _text(first_input, "calendar_hash"),
-        date.fromisoformat(_text(first_input, "source_cutoff")),
-        ParseV1TrainingSettings(_object(first_input["settings"])),
-        (heads[0], heads[1]),
-        _text(first_input, "training_identity_hash"),
-    )
+    if final_fit:
+        calendar_dates = _date_vector(first_input["calendar_dates"])
+        if BaoStockCalendar(calendar_dates).content_hash != _text(first_input, "calendar_hash"):
+            raise ModelBundleContractError("V1 final calendar differs from its published identity")
+        pair: LearnedRankPair = LearnedRankFinalPair(
+            _text(first_input, "training_input_hash"),
+            _text(first_input, "source_identity_hash"),
+            _text(first_input, "calendar_hash"),
+            date.fromisoformat(_text(first_input, "source_cutoff")),
+            ParseV1TrainingSettings(_object(first_input["settings"])),
+            (cast(LearnedRankFinalHead, heads[0]), cast(LearnedRankFinalHead, heads[1])),
+            _text(first_input, "training_identity_hash"),
+            calendar_dates,
+        )
+    else:
+        pair = LearnedRankPair(
+            _text(first_input, "training_input_hash"),
+            _text(first_input, "source_identity_hash"),
+            _text(first_input, "calendar_hash"),
+            date.fromisoformat(_text(first_input, "source_cutoff")),
+            ParseV1TrainingSettings(_object(first_input["settings"])),
+            (heads[0], heads[1]),
+            _text(first_input, "training_identity_hash"),
+        )
     if first["pair_content_hash"] != pair.content_hash:
         raise ModelBundleIntegrityError("V1 pair content hash differs")
     if first["contract_hash"] != pair.contract_hash:
@@ -438,7 +487,9 @@ def LoadV1ScoringProfile(model_root: Path) -> LoadedScoringProfile:
                 head.strategy,
                 LearnedRankPredictor(head),
                 SingleHeadCombiner(),
-                replace(evidence, training_label_cutoff=head.split.label_cutoff),
+                replace(evidence, training_label_cutoff=(
+                    head.final_fit.fit_dates[-1] if isinstance(head, LearnedRankFinalHead) else head.split.label_cutoff
+                )),
             )
             for head in pair.heads
         },
@@ -447,8 +498,9 @@ def LoadV1ScoringProfile(model_root: Path) -> LoadedScoringProfile:
                 "v1",
                 head.strategy,
                 head.content_hash,
-                ContentHash((pair.contract_hash, head.split)),
-                head.split.label_cutoff,
+                ContentHash((pair.contract_hash, head.split, head.final_fit))
+                if isinstance(head, LearnedRankFinalHead) else ContentHash((pair.contract_hash, head.split)),
+                head.final_fit.fit_dates[-1] if isinstance(head, LearnedRankFinalHead) else head.split.label_cutoff,
                 pair.training_input_hash,
                 pair.content_hash,
             )
@@ -576,6 +628,58 @@ def _head(raw: object) -> LearnedRankHead:
         _integer(values, "calibration_rows"),
         tuple(industries),
         validation,
+    )
+
+
+def _date_vector(raw: object) -> tuple[date, ...]:
+    if not IsTextSequence(raw) or not 1 <= len(raw) <= MAX_TRAINING_SESSIONS:
+        raise ModelBundleContractError("V1 final-fit date evidence is invalid")
+    return tuple(date.fromisoformat(day) for day in raw)
+
+
+def _final_head(raw: object, raw_plan: object, report: Mapping[str, object]) -> LearnedRankFinalHead:
+    head, diagnostic = _head(raw), _head(report["diagnostic_head"])
+    plan_values = _object(raw_plan)
+    RequireExactKeys(
+        plan_values, {"source_cutoff", "maturity_sessions", "fit_dates", "content_hash"}, "learned_rank_final_fit_plan",
+    )
+    plan = FinalFitDatePlan(
+        date.fromisoformat(_text(plan_values, "source_cutoff")),
+        _integer(plan_values, "maturity_sessions"),
+        _date_vector(plan_values["fit_dates"]),
+    )
+    if plan.content_hash != _text(plan_values, "content_hash"):
+        raise ModelBundleIntegrityError("V1 final-fit plan hash differs")
+    if (
+        report["evaluation_scope"] != "independent_pre_refit_model"
+        or report["calibration_transfer"] is not True
+        or report["final_model_unseen_validation_passed"] is not False
+        or _text(report, "diagnostic_head_hash") != diagnostic.content_hash
+        or _text(report, "calibration_source_model_hash") != diagnostic.content_hash
+        or _integer(report, "selected_rank_iterations") != diagnostic.rank_iterations
+        or _integer(report, "final_rank_iterations") != head.rank_iterations
+    ):
+        raise ModelBundleContractError("V1 final-fit diagnostic or calibration provenance differs")
+    LearnedRankPredictor(diagnostic)
+    return LearnedRankFinalHead(
+        head.strategy,
+        head.training_contract_hash,
+        head.split,
+        head.transformer_means,
+        head.transformer_scales,
+        head.ridge_coefficients,
+        head.ridge_intercept,
+        head.calibration_intercept,
+        head.calibration_slope,
+        head.rank_model,
+        head.rank_iterations,
+        head.training_rows,
+        head.early_stopping_rows,
+        head.calibration_rows,
+        head.industries,
+        head.validation,
+        plan,
+        diagnostic,
     )
 
 

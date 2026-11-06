@@ -2,7 +2,7 @@
 
 from trader.infra.sqlite_connection import SqliteSchema
 
-COMPANY_FACTS_VERSION = 3
+COMPANY_FACTS_VERSION = 4
 
 COMPANY_FACTS_SCHEMA = SqliteSchema(
     COMPANY_FACTS_VERSION,
@@ -121,11 +121,38 @@ COMPANY_FACTS_SCHEMA = SqliteSchema(
           UNIQUE(code,reason,source,source_key)
         )""",
         """CREATE TABLE company_publication (
-          singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=3),
+          singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=4),
           extraction_hash BLOB NOT NULL CHECK(typeof(extraction_hash)='blob' AND length(extraction_hash)=32),
           content_hash BLOB NOT NULL CHECK(typeof(content_hash)='blob' AND length(content_hash)=32),
           published_at INTEGER NOT NULL
         )""",
+        """CREATE TABLE company_field_result (
+          code TEXT NOT NULL REFERENCES company_facts(code) ON DELETE CASCADE,
+          event_key TEXT NOT NULL CHECK(length(event_key) BETWEEN 1 AND 240),
+          field TEXT NOT NULL CHECK(field IN ('start_date','end_date','planned_pct','completion_disclosed_at',
+            'actual_pct','repurchase_purpose','contract_amount','annual_revenue','revenue_report_date',
+            'revenue_disclosed_at','contract_revenue_pct','amount_basis')),
+          state TEXT NOT NULL CHECK(state IN ('verified','present_unverified','not_applicable','pending_download',
+            'pending_extraction','pending_publication','verification_required','unsupported','out_of_range','not_disclosed')),
+          applicable INTEGER NOT NULL CHECK(applicable IN (0,1)),
+          reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 240),
+          PRIMARY KEY(code,event_key,field), CHECK((state='not_applicable')=(applicable=0))
+        ) WITHOUT ROWID""",
+        """CREATE TABLE company_field_evidence (
+          code TEXT NOT NULL,event_key TEXT NOT NULL,field TEXT NOT NULL,
+          position INTEGER NOT NULL CHECK(position>=0),
+          source TEXT NOT NULL CHECK(length(source) BETWEEN 1 AND 240),
+          source_key TEXT NOT NULL CHECK(length(source_key) BETWEEN 1 AND 240),
+          record_hash TEXT NOT NULL CHECK(length(record_hash) BETWEEN 1 AND 240),
+          body_hash BLOB NOT NULL CHECK(typeof(body_hash)='blob' AND length(body_hash)=32),
+          rule_id TEXT NOT NULL CHECK(length(rule_id) BETWEEN 1 AND 240),published_at INTEGER NOT NULL,
+          start_line INTEGER NOT NULL CHECK(start_line>=1),end_line INTEGER NOT NULL CHECK(end_line>=start_line),
+          quote TEXT NOT NULL CHECK(length(quote) BETWEEN 1 AND 1000),
+          unit TEXT NOT NULL CHECK(unit IN ('percent','cny','date','time','text')),
+          subject_type INTEGER NOT NULL CHECK(subject_type BETWEEN 1 AND 4),
+          PRIMARY KEY(code,event_key,field,position),
+          FOREIGN KEY(code,event_key,field) REFERENCES company_field_result(code,event_key,field) ON DELETE CASCADE
+        ) WITHOUT ROWID""",
     ),
 )
 

@@ -23,6 +23,7 @@ from trader.recommendation.domain.scoring.residualization import (
     ResidualizeExposureWithContext,
 )
 from trader.training.application.tomorrow_training import (
+    ProductionTrainingWindow,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
@@ -58,7 +59,7 @@ class TrainingHistorySource(Protocol):
 class TrainingSampleBuildRequest:
     history: TrainingHistorySource
     codes: tuple[str, ...]
-    window: TomorrowTrainingWindow
+    window: TomorrowTrainingWindow | ProductionTrainingWindow
     index: SQLiteTrainingSampleIndex
     profile: TrainedProfileContract
     progress: TomorrowTrainingProgressPort | None = None

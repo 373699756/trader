@@ -18,6 +18,7 @@ from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import ScoredSelectionResult
 from trader.recommendation.domain.selection.scored_selection import (
     BuildScoredCandidateReferences,
+    FilteredCandidateInputs,
     RankFilteredCandidates,
     ScorePlannedLocalEvidence,
 )
@@ -40,6 +41,7 @@ class RankingSelectionPort(Protocol):
         identity: ScoredSelectionIdentity,
         *,
         execution_gate_reasons: Mapping[str, str] | None = None,
+        population_qualifications: FilteredCandidateInputs | None = None,
     ) -> RankingSelectionResult: ...
 
 
@@ -57,6 +59,7 @@ class RankingSelectionService(RankingSelectionPort):
         identity: ScoredSelectionIdentity,
         *,
         execution_gate_reasons: Mapping[str, str] | None = None,
+        population_qualifications: FilteredCandidateInputs | None = None,
     ) -> RankingSelectionResult:
         started = self.monotonic()
         filtered = FilterFeatureCandidates(
@@ -65,6 +68,7 @@ class RankingSelectionService(RankingSelectionPort):
             options,
             identity,
             execution_gate_reasons=execution_gate_reasons,
+            population_qualifications=population_qualifications,
         )
         qualified = self.monotonic()
         references = BuildScoredCandidateReferences(filtered)

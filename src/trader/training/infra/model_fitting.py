@@ -18,6 +18,8 @@ from trader.training.application.tomorrow_training import (
     TrainingFitDetail,
 )
 from trader.training.domain.training_dates import TrainingDateSplit
+from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan
+from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.infra.model_bundles.bundle_codec import (
     TrainedLightGBMModelSnapshot,
     TrainedRidgeModelSnapshot,
@@ -41,6 +43,7 @@ from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
     TrainingIndustryCounts,
+    FinalFitIndustryCounts,
     TrainingSampleBatch,
     TrainingSampleMatrix,
 )
@@ -103,9 +106,17 @@ class _IndustryProgress:
         self.heartbeat()
 
 
+@dataclass(frozen=True)
+class _FinalRefitProgress:
+    target: TomorrowTrainingProgressPort
+
+    def publish(self, event: TomorrowTrainingProgress) -> None:
+        self.target.publish(replace(event, stage="final_model_refit"))
+
+
 def FitIndustryModels(
     samples: SQLiteTrainingSampleIndex,
-    split: TrainingDateSplit,
+    split: TrainingDateSplit | ProductionDiagnosticDatePlan,
     contracts: tuple[TrainedHeadContract, ...],
     parameters: ModelFittingParameters,
     *,
@@ -157,6 +168,85 @@ def FitIndustryModels(
         _finish_head_fit(samples, state, progress, compute_threads, evaluation=evaluation)
         for state, evaluation in zip(states, evaluations, strict=True)
     )
+
+
+def RefitIndustryModels(
+    samples: SQLiteTrainingSampleIndex,
+    contract: TrainedHeadContract,
+    plan: FinalFitDatePlan,
+    diagnostic: IndustryFitResult,
+    parameters: ModelFittingParameters,
+    *,
+    compute_threads: int,
+    progress: TomorrowTrainingProgressPort | None = None,
+) -> tuple[FittedIndustryModel, ...]:
+    """Refit on mature recent labels; never evaluate the resulting model on its training rows."""
+    if type(compute_threads) is not int or compute_threads < 1:
+        raise ValueError("training_compute_threads_invalid")
+    refit_progress = _FinalRefitProgress(progress) if progress is not None else None
+    counts = {item.industry: item for item in samples.final_fit_counts(contract, plan)}
+    fitted: list[FittedIndustryModel] = []
+    _publish(refit_progress, contract, _FitProgress("started", 0, len(diagnostic.models)))
+    for position, original in enumerate(diagnostic.models):
+        selected = counts.get(original.industry)
+        if selected is None or selected.rows < parameters.minimum_industry_training_rows:
+            raise ValueError("final_fit_industry_training_rows_insufficient")
+        observer = _IndustryProgress(
+            refit_progress, contract,
+            _FitProgress("running", position, len(diagnostic.models), len(fitted),
+                         TrainingFitDetail(original.industry, selected.rows, "preparation")),
+        )
+        observer.heartbeat()
+        if isinstance(parameters, TcnFittingParameters):
+            from trader.training.infra.profile.v5.fitting import RefitTcnIndustry
+
+            model = RefitTcnIndustry(samples, selected, contract, plan, parameters, original,
+                                     observer.heartbeat, report=observer.publish)
+        else:
+            model = _refit_industry(samples, selected, contract, plan, parameters, original,
+                                    observer.heartbeat, compute_threads)
+        fitted.append(model)
+        observer.update = replace(observer.update, completed_units=position + 1, produced_units=len(fitted))
+        observer.publish(TrainingFitDetail(original.industry, selected.rows, "completed"))
+    _publish(refit_progress, contract, _FitProgress("completed", len(diagnostic.models), len(diagnostic.models), len(fitted)))
+    return tuple(fitted)
+
+
+def _refit_industry(
+    samples: SQLiteTrainingSampleIndex,
+    counts: FinalFitIndustryCounts,
+    contract: TrainedHeadContract,
+    plan: FinalFitDatePlan,
+    parameters: LightGBMFittingParameters | RidgeFittingParameters,
+    original: FittedIndustryModel,
+    heartbeat: Callable[[], None],
+    compute_threads: int,
+) -> FittedIndustryModel:
+    with samples.final_fit_data(counts, contract, plan) as data:
+        means = data.features.mean(axis=0)
+        deviations = data.features.std(axis=0)
+        scales = np.where(deviations > _MINIMUM_FEATURE_DEVIATION, deviations, 1.0)
+        normalized = data.features
+        normalized -= means
+        normalized /= scales
+        heartbeat()
+        common = (tuple(float(value) for value in means), tuple(float(value) for value in scales),
+                  original.calibration.intercept, original.calibration.slope)
+        if isinstance(parameters, LightGBMFittingParameters):
+            if not isinstance(original.model, TrainedLightGBMModelSnapshot):
+                raise ValueError("final_fit_diagnostic_algorithm_mismatch")
+            rounds = original.model.lightgbm_best_iteration
+            booster = _fit_lightgbm(data, None, replace(parameters, boosting_rounds=rounds), heartbeat, compute_threads)
+            actual_rounds = booster.current_iteration()
+            model: FittedModelSnapshot = TrainedLightGBMModelSnapshot(
+                *common, booster.model_to_string(num_iteration=actual_rounds), actual_rounds,
+            )
+        else:
+            coefficients = _ridge_coefficients(data.features, data.labels, parameters.penalty)
+            model = TrainedRidgeModelSnapshot(
+                *common, float(coefficients[0]), tuple(float(value) for value in coefficients[1:]),
+            )
+        return FittedIndustryModel(counts.industry, model, counts.rows, original.calibration)
 
 
 @dataclass
@@ -436,7 +526,7 @@ def _ridge_coefficients(features: np.ndarray, labels: np.ndarray, penalty_value:
 
 def _fit_lightgbm(
     training: TrainingSampleMatrix,
-    early: TrainingSampleMatrix,
+    early: TrainingSampleMatrix | None,
     parameters: LightGBMFittingParameters,
     heartbeat: Callable[[], None],
     compute_threads: int,
@@ -462,8 +552,9 @@ def _fit_lightgbm(
         },
         lgb.Dataset(training.features, label=training.labels),
         num_boost_round=parameters.boosting_rounds,
-        valid_sets=[lgb.Dataset(early.features, label=early.labels)],
-        callbacks=[lgb.early_stopping(parameters.early_stopping_rounds, verbose=False), lambda _env: heartbeat()],
+        valid_sets=[lgb.Dataset(early.features, label=early.labels)] if early is not None else None,
+        callbacks=[*( [lgb.early_stopping(parameters.early_stopping_rounds, verbose=False)] if early is not None else []),
+                   lambda _env: heartbeat()],
     )
     booster.free_dataset()
     return booster
@@ -476,4 +567,5 @@ __all__ = [
     "FittingParameterDocument",
     "RidgeFittingParameters",
     "FitIndustryModels",
+    "RefitIndustryModels",
 ]

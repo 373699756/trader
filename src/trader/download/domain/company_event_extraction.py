@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from enum import Enum
+from typing import Literal
 
+from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.domain.company_events import (
     CompanyEventPolicy,
     CompanyEventStatus,
@@ -27,6 +30,7 @@ from trader.download.domain.company_events import (
     RepurchasePurpose,
 )
 from trader.download.domain.company_evidence import CompanyDocument
+from trader.download.domain.company_field_results import CompanyFieldConclusion, CompanyFieldEvidence
 
 _RISK_HINTS = (
     "立案",
@@ -45,7 +49,6 @@ _RISK_HINTS = (
     "警示函",
     "监管措施",
 )
-_POSITIVE_HINTS = ("回购股份", "回购公司", "股份回购", "增持", "重大合同", "经营合同", "签订合同", "签署合同")
 _OFFICIAL_SOURCES = frozenset(
     {
         "cninfo",
@@ -66,6 +69,11 @@ _SUBJECT_MARKERS = (
     ("大股东", CompanySubject.MAJOR_SHAREHOLDER),
 )
 _SUBSIDIARY_MARKERS = ("子公司", "参股公司")
+_REPURCHASE_OPTION = re.compile(
+    r"([□☐√✓☑■☒])((?:用于)?减少注册资本|用于注销(?:并减少注册资本)?|"
+    r"(?:用于)?员工持股计划(?:或股权激励(?:计划)?)?|(?:用于)?股权激励(?:计划)?|"
+    r"用于转换公司(?:可转债|发行的可转换为股票的公司债券)|为维护公司价值及股东权益)"
+)
 _CONTRACT_ACTOR = re.compile(
     r"(?P<outside>子公司|参股公司)|"
     r"(?P<issuer>(?:本公司|上市公司|(?:^|[，,：:])公司)"
@@ -110,6 +118,8 @@ def ExtractCompanyLinkCandidate(document: CompanyDocument, now: datetime, policy
     closures = tuple(kind for kind in _risk_closure(verified.title) if kind in _risk_closure(body))
     if any(marker in body for marker in ("尚未", "未解除", "未终止", "未结案", "未完成")):
         closures = ()
+    if not _reduction_closure_is_unambiguous(verified):
+        closures = tuple(kind for kind in closures if kind is not CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION)
     kind = _positive_type(verified.title)
     supersedes = tuple(sorted(set(re.findall(r"(?:本公告|本次公告)(?:的全部内容)?(?:更正并替代|完整替代|全部替代)(?:原)?公告(?:编号)?[：:（(]?([A-Za-z0-9_-]{4,80})", body))))
     cancellation = any(x in verified.title for x in ("终止", "撤销", "取消"))
@@ -121,6 +131,165 @@ def ExtractCompanyLinkCandidate(document: CompanyDocument, now: datetime, policy
         tuple(sorted(set(re.findall(r"[A-Za-z0-9_]+(?:[-/.][A-Za-z0-9_]+)*", body)))),
         tuple(sorted(set(_CASE.findall(body)))), closures, positive, cancellation, supersedes,
     )
+
+
+def ExtractCompanyFieldEvidence(
+    document: CompanyDocument, observed_at: datetime, policy: CompanyEventPolicy
+) -> tuple[CompanyFieldConclusion, ...]:
+    """Prove supported source fields without changing event qualification.
+
+    Results retain this document's candidate identity. The publication owner
+    must bind them to the unique formal event and compare its actual value.
+    A source field is proved only when its exact statement has a unique locator
+    in the complete original text; unsupported and ambiguous fields stay absent.
+    """
+    item = document.disclosure
+    if observed_at.utcoffset() is None or item.published_at.utcoffset() is None:
+        raise ValueError("company_field_evidence_time_invalid")
+    if (item.kind != "announcement" or document.terminal_failure or len(item.codes) != 1
+        or item.published_at > observed_at or not CompanyDocumentNeedsReview(item.title)):
+        return ()
+    issuer_codes = ExtractCompanyAnnouncementNumbers(document.text).issuer_codes
+    if issuer_codes and item.codes[0] not in issuer_codes:
+        return ()
+    verified, _ = _verify_document(document, observed_at)
+    if verified is None or any(marker in verified.title for marker in ("终止", "撤销", "取消")):
+        return ()
+    kind = _positive_type(verified.title)
+    if kind not in (CompanyPositiveType.SHARE_REPURCHASE, CompanyPositiveType.SHAREHOLDER_INCREASE):
+        return ()
+    if ((kind is CompanyPositiveType.SHARE_REPURCHASE and verified.subject is not CompanySubject.ISSUER)
+        or (kind is CompanyPositiveType.SHAREHOLDER_INCREASE and verified.subject is CompanySubject.ISSUER)):
+        return ()
+    event, _ = _positive_event(verified, kind, policy, None)
+    body = _subject_body(verified)
+    results: list[CompanyFieldConclusion] = []
+    if isinstance(event.measurements, (RepurchaseMeasurements, IncreaseMeasurements)):
+        ratio = event.measurements.actual_ratio_pct
+        if ratio is not None:
+            verb = "回购" if kind is CompanyPositiveType.SHARE_REPURCHASE else "增持"
+            for match in _actual_ratio_matches(body, verb):
+                evidence = _field_statement_evidence(
+                    document,
+                    match[0],
+                    "implemented_total_capital_ratio:2",
+                    "percent",
+                    verified.subject,
+                )
+                if evidence is not None:
+                    results.append(CompanyFieldConclusion(
+                        item.codes[0], event.event_id, "actual_pct", ratio, "verified", True,
+                        "explicit_implemented_total_capital_ratio", (evidence,),
+                    ))
+                    break
+    if isinstance(event.measurements, RepurchaseMeasurements):
+        purpose = event.measurements.purpose
+        statement = _repurchase_purpose_statement(body, purpose)
+        evidence = _field_statement_evidence(
+            document,
+            statement,
+            "explicit_repurchase_purpose:2",
+            "text",
+            verified.subject,
+        ) if statement is not None else None
+        if evidence is not None:
+            results.append(CompanyFieldConclusion(
+                item.codes[0], event.event_id, "repurchase_purpose", purpose.value, "verified", True,
+                "explicit_repurchase_purpose", (evidence,),
+            ))
+    return tuple(results)
+
+
+def _field_statement_evidence(
+    document: CompanyDocument,
+    statement: str,
+    rule_id: str,
+    unit: Literal["percent", "text"],
+    subject: CompanySubject,
+) -> CompanyFieldEvidence | None:
+    if not statement:
+        return None
+    compact = "".join(document.text.split())
+    start = compact.find(statement)
+    if start < 0 or compact.find(statement, start + 1) >= 0:
+        return None
+    offset = first = last = 0
+    for index, character in enumerate(document.text):
+        if character.isspace():
+            continue
+        if offset == start:
+            first = index
+        offset += 1
+        if offset == start + len(statement):
+            last = index + 1
+            break
+    quote = document.text[first:last]
+    if len(quote) > 1000:
+        return None
+    line_offset = 0
+    start_line = end_line = 1
+    for number, line in enumerate(document.text.splitlines(keepends=True), 1):
+        if line_offset <= first < line_offset + len(line):
+            start_line = number
+        if line_offset <= last - 1 < line_offset + len(line):
+            end_line = number
+            break
+        line_offset += len(line)
+    item = document.disclosure
+    return CompanyFieldEvidence(
+        item.source,
+        item.identity,
+        item.digest,
+        hashlib.sha256(document.text.encode("utf-8")).digest(),
+        rule_id,
+        item.published_at,
+        start_line,
+        end_line,
+        quote,
+        unit,
+        subject,
+    )
+
+
+def _repurchase_purpose_statement(body: str, purpose: RepurchasePurpose) -> str | None:
+    if purpose is RepurchasePurpose.UNKNOWN:
+        return None
+    options = tuple(_REPURCHASE_OPTION.finditer(body))
+    selected = tuple(match for match in options if match[1] not in {"□", "☐"})
+    normalized = body
+    for match in reversed(options):
+        if match[1] in {"□", "☐"}:
+            normalized = normalized[:match.start()] + normalized[match.end():]
+    signals = (
+        (RepurchasePurpose.CANCELLATION, r"减少注册资本|用于注销"),
+        (RepurchasePurpose.EMPLOYEE_PLAN, r"员工持股"),
+        (RepurchasePurpose.INCENTIVE, r"股权激励"),
+        (RepurchasePurpose.OTHER, r"用于转换公司|维护公司价值"),
+    )
+    if tuple(value for value, expression in signals if re.search(expression, normalized)) != (purpose,):
+        return None
+    if re.search(
+        r"(?:不是|并不|不再|不会|不得|不能|并非|无需|无须|尚未|未|不|非)(?:用于)?"
+        r"(?:注销|减少注册资本|员工持股|股权激励|转换公司|为?维护公司价值)", normalized,
+    ):
+        return None
+    if selected:
+        statement = selected[0][0] if len(selected) == 1 and _repurchase_purpose(selected[0][0]) is purpose else None
+    else:
+        expression = {
+            RepurchasePurpose.CANCELLATION: r"用于注销(?:并减少注册资本)?|注销并减少注册资本",
+            RepurchasePurpose.EMPLOYEE_PLAN: r"用于员工持股(?:计划)?",
+            RepurchasePurpose.INCENTIVE: r"用于股权激励(?:计划)?",
+            RepurchasePurpose.OTHER: r"用于转换公司(?:可转债|发行的可转换为股票的公司债券)|为维护公司价值及股东权益",
+        }[purpose]
+        statements = tuple(re.finditer(expression, body))
+        statement = statements[0][0] if len(statements) == 1 else None
+    if statement is not None and re.search(
+        r"(?:不是|并不|不再|不会|不得|不能|并非|无需|无须|尚未|未曾|不将|未将)[^。；;]{0,40}$",
+        body[:body.find(statement)],
+    ):
+        return None
+    return statement
 
 
 def ResolveCompanyLinks(
@@ -138,12 +307,21 @@ def ResolveCompanyLinks(
             continue
         matched = False
         satisfied_positive_evidence: set[str] = set()
+        risk_matches: list[int] = []
         for index, event in enumerate(risk_rows):
             if (event.risk_type not in candidate.closures or event.subject_type is not candidate.subject
                 or candidate.published_at < event.first_disclosed_at or len(candidate.cases) > 1
                 or event.case_id and candidate.cases and event.case_id not in candidate.cases):
                 continue
             if not (set(event.evidence_ids).intersection(candidate.references) or event.case_id and event.case_id in candidate.cases):
+                continue
+            risk_matches.append(index)
+        reduction_matches = sum(
+            risk_rows[index].risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION for index in risk_matches
+        )
+        for index in risk_matches:
+            event = risk_rows[index]
+            if event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION and reduction_matches != 1:
                 continue
             at = min(candidate.published_at, event.resolved_at) if event.resolved_at else candidate.published_at
             tail = timedelta(days=policy.reduction_tail_days) if event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION else timedelta(0)
@@ -187,7 +365,9 @@ class _VerifiedDocument:
 
 
 def CompanyDocumentNeedsReview(title: str) -> bool:
-    return not CompanyDocumentOutsideSubjectScope(title) and any(marker in title for marker in (*_RISK_HINTS, *_POSITIVE_HINTS))
+    return not CompanyDocumentOutsideSubjectScope(title) and (
+        any(marker in title for marker in _RISK_HINTS) or _positive_type(title) is not None
+    )
 
 
 def CompanyDocumentRiskRelevant(title: str) -> bool:
@@ -206,7 +386,21 @@ def ExtractCompanyEvents(
     if observed_at.utcoffset() is None:
         raise ValueError("company_event_observation_requires_timezone")
     risks = list(previous_risks)
-    positives = list(previous_positives)
+    tables = {
+        item.disclosure.identity for item in documents
+        if item.checked and item.text.strip() and item.disclosure.source in _OFFICIAL_SOURCES
+        and item.disclosure.published_at <= observed_at and IsCompanyRepurchaseShareholderTable(item.disclosure.title)
+        and IsCompanyRepurchaseShareholderTable("".join(item.text.split())[:800].partition("本公司")[0].rstrip("。；;，,：:"))
+    }
+    tables = {
+        evidence_id for evidence_id in tables
+        if sum(evidence_id in event.evidence_ids for event in previous_positives) <= 1
+        and not any(evidence_id in event.evidence_ids and not IsCompanyRepurchasePlaceholder(event)
+                    for event in previous_positives)
+    }
+    positives = [event for event in previous_positives if not (
+        IsCompanyRepurchasePlaceholder(event) and event.evidence_ids[0] in tables
+    )]
     processed_evidence = {
         item.disclosure.identity for item in documents
         if item.checked and item.text.strip() and item.disclosure.published_at <= observed_at
@@ -214,6 +408,7 @@ def ExtractCompanyEvents(
     }
     reviews = [
         item for item in previous_reviews if item.evidence_id is not None and item.evidence_id not in processed_evidence
+        and not (item.scope == "positive" and item.evidence_id in tables)
     ]
     checked = 0
     for document in sorted(documents, key=lambda item: (item.disclosure.published_at, item.disclosure.identity)):
@@ -231,6 +426,21 @@ def ExtractCompanyEvents(
         if verified is None:
             continue
         checked += 1
+        if (CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION in _risk_closure(verified.title)
+            and _reduction_closure_is_confirmed(verified.body)):
+            # Earlier parsers treated expiry notices as new plans. Only the
+            # notice's own isolated derivation can be retired on exact replay.
+            # Full notice classification never authorizes resolving another
+            # plan: resolution below still requires its subject-specific body.
+            risks = [event for event in risks if not (
+                event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION
+                and event.status is CompanyEventStatus.ONGOING and event.resolved_at is None
+                and event.evidence_ids == (item.identity,)
+                and event.event_id == f"{item.identity}:{CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION.value}"
+                and event.first_disclosed_at == event.last_disclosed_at == item.published_at
+                and (sum(item.identity in other.evidence_ids for other in risks)
+                     + sum(item.identity in other.evidence_ids for other in positives)) == 1
+            )]
         resolved = _resolve_risks(risks, verified, policy)
         if _risk_closure(verified.title):
             if not resolved:
@@ -472,7 +682,9 @@ def _append_risk(
 
 def _risk_closure(text: str) -> tuple[CompanyRiskType, ...]:
     result: list[CompanyRiskType] = []
-    if any(x in text for x in ("减持完成", "减持结果", "减持期限届满", "终止减持", "提前终止减持")):
+    if (any(x in text for x in ("减持结果", "终止减持"))
+        or re.search(r"减持(?:股份)?(?:计划)?(?:已)?(?:实施)?(?:完成|完毕|期限(?:已)?届满)", text)
+        or "减持" in text and "期限已届满" in text):
         result.append(CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION)
     if any(x in text for x in ("撤销立案", "终止调查", "调查终结", "不予处罚决定")):
         result.append(CompanyRiskType.OFFICIAL_INVESTIGATION)
@@ -493,20 +705,64 @@ def _risk_closure(text: str) -> tuple[CompanyRiskType, ...]:
     return tuple(result)
 
 
+def _reduction_closure_is_unambiguous(verified: _VerifiedDocument) -> bool:
+    # Subject enums cannot distinguish several named holders in one notice.
+    # Such a notice can be classified, but cannot clear a whole linked plan.
+    if any(marker in verified.body for marker in ("分别", "各自", "一致行动人", "间接持有", "间接持股")):
+        return False
+    if re.search(r"(?:股东|实际控制人)[^。；;，,]{0,60}[、及与和]", verified.body):
+        return False
+    subjects = {subject for marker, subject in _SUBJECT_MARKERS if marker in verified.body}
+    if len(subjects) > 1:
+        return False
+    return _reduction_closure_is_confirmed(_subject_body(verified))
+
+
+def _reduction_closure_is_confirmed(body: str) -> bool:
+    if re.search(
+        r"尚未|未解除|未终止|未结案|未完成|未届满|尚不确定|部分完成|完成部分"
+        r"|剩余[^。；;]{0,40}(?:继续|尚未|仍)|(?:仍在?|继续|正在)实施", body,
+    ):
+        return False
+    conclusion = (
+        r"(?:减持(?:股份)?(?:计划)?(?:已)?(?:实施)?(?:完成|完毕|期限(?:已)?届满)"
+        r"|(?:提前)?终止减持(?:股份|计划)?)"
+        r"(?=$|[。；;！？!?，,]|且|并|均未|未减持)"
+    )
+    for clause in re.split(r"[。；;！？!?，,]", body):
+        if re.search(r"尚未|未|不|预计|拟|将|可能", clause):
+            continue
+        if re.search(conclusion, clause):
+            return True
+    return False
+
+
 def _reduction_plan(body: str) -> ReductionPlan | None:
     ratio = _planned_reduction_ratio(body)
-    dates = re.search(
-        r"减持(?:计划)?期间(?:为|：|:)?(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?(?:至|到|~)(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?",
-        body,
+    interval = (
+        r"(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?(?:至|到|~)"
+        r"(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?"
     )
-    if dates is None:
-        return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
-    try:
-        start = date(*(int(dates[i]) for i in (1, 2, 3)))
-        end = date(*(int(dates[i]) for i in (4, 5, 6)))
-    except ValueError:
-        return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
-    if start <= end:
+    patterns = (
+        rf"减持(?:计划)?期间(?:为|：|:)?{interval}",
+        r"减持(?:计划)?期间(?:为|：|:)?"
+        r"(?:自(?:本公告|本次公告|本?减持计划)(?:发布|披露|公告)之日起"
+        r"[一二三四五六七八九十百0-9]{1,4}个交易日后(?:的)?[一二三四五六七八九十0-9]{1,3}个月内)?"
+        rf"[（(](?:即)?{interval}[）)]",
+    )
+    periods: set[tuple[date, date]] = set()
+    for pattern in patterns:
+        for dates in re.finditer(pattern, body):
+            try:
+                start = date(*(int(dates[i]) for i in (1, 2, 3)))
+                end = date(*(int(dates[i]) for i in (4, 5, 6)))
+            except ValueError:
+                return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+            if start > end:
+                return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+            periods.add((start, end))
+    if len(periods) == 1:
+        start, end = next(iter(periods))
         return ReductionPlan(start, end, ratio)
     return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
 
@@ -554,10 +810,14 @@ def _resolve_risks(risks: list[CompanyRiskEvent], verified: _VerifiedDocument, p
     if len(case_ids) > 1:
         return False
     matched = False
+    matches: list[int] = []
     for index, event in enumerate(risks):
         if event.subject_type is not verified.subject:
             continue
         if event.risk_type not in _risk_closure(title) or event.risk_type not in _risk_closure(body):
+            continue
+        if (event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION
+            and not _reduction_closure_is_unambiguous(verified)):
             continue
         if event.case_id and case_ids and event.case_id not in case_ids:
             continue
@@ -566,6 +826,15 @@ def _resolve_risks(risks: list[CompanyRiskEvent], verified: _VerifiedDocument, p
         at = document.disclosure.published_at
         if at < event.first_disclosed_at:
             continue
+        matches.append(index)
+    reduction_matches = sum(
+        risks[index].risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION for index in matches
+    )
+    for index in matches:
+        event = risks[index]
+        if event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION and reduction_matches != 1:
+            continue
+        at = document.disclosure.published_at
         at = min(at, event.resolved_at) if event.resolved_at is not None else at
         tail = (
             timedelta(days=policy.reduction_tail_days)
@@ -586,6 +855,8 @@ def _resolve_risks(risks: list[CompanyRiskEvent], verified: _VerifiedDocument, p
 
 
 def _positive_type(title: str) -> CompanyPositiveType | None:
+    if IsCompanyRepurchaseShareholderTable(title):
+        return None
     if "增持" in title:
         return CompanyPositiveType.SHAREHOLDER_INCREASE
     if any(x in title for x in ("回购股份", "回购公司", "股份回购")):
@@ -593,6 +864,32 @@ def _positive_type(title: str) -> CompanyPositiveType | None:
     if any(x in title for x in ("重大合同", "经营合同", "签订合同", "签署合同")):
         return CompanyPositiveType.OPERATING_CONTRACT
     return None
+
+
+def IsCompanyRepurchaseShareholderTable(title: str) -> bool:
+    """Recognize a standalone holder list, preserving mixed event disclosures."""
+    compact = "".join(title.split())
+    return (
+        any(marker in compact for marker in ("回购股份", "回购公司", "股份回购"))
+        and re.search(r"前(?:十|10)(?:名|大)?(?:普通股)?股东", compact) is not None
+        and re.search(r"股东(?:持股(?:情况|信息)|情况)?(?:的公告|公告|表)?$", compact) is not None
+        and not any(marker in compact for marker in (
+            *_RISK_HINTS, "增持", "重大合同", "经营合同", "签订", "签署", "进展", "首次", "完成", "实施",
+            "终止", "取消", "撤销", "变更", "调整", "更正", "修订", "回购报告书", "预案", "议案", "方案",
+        ))
+    )
+
+
+def IsCompanyRepurchasePlaceholder(event: CompanyPositiveEvent) -> bool:
+    """An empty plan shape; material classification is still required to retire it."""
+    return (
+        event.event_type is CompanyPositiveType.SHARE_REPURCHASE
+        and event.status is CompanyPositiveStatus.PLANNED
+        and isinstance(event.measurements, RepurchaseMeasurements)
+        and event.measurements.actual_ratio_pct is None and event.measurements.purpose is RepurchasePurpose.UNKNOWN
+        and event.positive_level == 0 and not event.level_milestones
+        and len(event.evidence_ids) == 1 and event.event_id == f"{event.evidence_ids[0]}:share_repurchase"
+    )
 
 
 def _append_positive(
@@ -703,19 +1000,7 @@ def _positive_measurements(
         ratio = _actual_ratio(body, verb)
         eligible = ratio is not None
         if kind is CompanyPositiveType.SHARE_REPURCHASE:
-            purpose = (
-                RepurchasePurpose.CANCELLATION
-                if ("用于注销" in body or "注销并减少注册资本" in body)
-                and not re.search(
-                    r"(?:不再|不会|不得|不能|并非|无需|无须|尚未|未|不|非)(?:用于注销|注销并减少注册资本)", body
-                )
-                and not any(x in body for x in ("员工持股", "股权激励"))
-                else RepurchasePurpose.EMPLOYEE_PLAN
-                if "员工持股" in body
-                else RepurchasePurpose.INCENTIVE
-                if "股权激励" in body
-                else RepurchasePurpose.UNKNOWN
-            )
+            purpose = _repurchase_purpose(body)
             measurements = RepurchaseMeasurements(ratio, purpose)
             eligible = eligible and purpose is RepurchasePurpose.CANCELLATION
         else:
@@ -724,20 +1009,54 @@ def _positive_measurements(
     return measurements, ratio, eligible
 
 
+def _repurchase_purpose(body: str) -> RepurchasePurpose:
+    # Exchange templates print every option. An empty box does not disclose a
+    # purpose, even when its words would otherwise match an affirmative rule.
+    options = tuple(_REPURCHASE_OPTION.finditer(body))
+    selected_cancellation = any(
+        match[1] not in {"□", "☐"} and any(word in match[2] for word in ("减少注册资本", "用于注销"))
+        for match in options
+    )
+    for match in reversed(options):
+        body = body[:match.start()] + (match[2] if match[1] not in {"□", "☐"} else "") + body[match.end():]
+    cancellation = selected_cancellation or any(word in body for word in ("用于注销", "注销并减少注册资本"))
+    denied = re.search(
+        r"(?:不再|不会|不得|不能|并非|无需|无须|尚未|未|不|非)(?:用于注销|注销并减少注册资本|减少注册资本)", body
+    )
+    if cancellation and not denied and not any(word in body for word in ("员工持股", "股权激励", "用于转换", "维护公司价值")):
+        return RepurchasePurpose.CANCELLATION
+    if "员工持股" in body:
+        return RepurchasePurpose.EMPLOYEE_PLAN
+    if "股权激励" in body:
+        return RepurchasePurpose.INCENTIVE
+    if "用于转换公司" in body or "为维护公司价值及股东权益" in body:
+        return RepurchasePurpose.OTHER
+    return RepurchasePurpose.UNKNOWN
+
+
 def _actual_ratio(body: str, verb: str) -> float | None:
+    values = {float(match[1]) for match in _actual_ratio_matches(body, verb)}
+    return next(iter(values)) if len(values) == 1 and all(0 <= value <= 100 for value in values) else None
+
+
+def _actual_ratio_matches(body: str, verb: str) -> tuple[re.Match[str], ...]:
+    action = (r"(?:累计(?:已)?|已|首次(?=回购(?:公司)?(?:股份)?(?:[0-9]|[，,]?占)))"
+              if verb == "回购" else r"(?:累计(?:已)?|已)")
     pattern = (
-        rf"(?:累计(?:已)?|已)(?:实际|通过[^。；;]{{0,30}})?{verb}[^。；;]{{0,140}}?"
+        rf"{action}(?:实际|通过[^。；;]{{0,30}})?{verb}[^。；;]{{0,140}}?"
         r"占(?:本公司|公司)?(?:目前|当前|现有)?总股本(?:的?比例|的)?"
         r"(?:为|约为|为约)?[：:]?([0-9]+(?:\.[0-9]+)?)[%％]"
     )
     # The measurement must describe the same actual action, without crossing a plan or negation.
-    values = {
-        float(match[1])
+    return tuple(
+        match
         for match in re.finditer(pattern, body)
         if not any(marker in match[0] for marker in ("拟", "计划", "预计", "将", "尚未", "未实施", "持有", "所持股份"))
         and not re.search(r"(?:未|不|尚未)$", body[max(0, match.start() - 3) : match.start()])
-    }
-    return next(iter(values)) if len(values) == 1 and all(0 <= x <= 100 for x in values) else None
+        and not (match[0].startswith("首次") and re.search(
+            r"(?:拟|计划|预计|将|尚待|尚未|未曾|未|不会|不)[^。；;，,]{0,30}$", body[max(0, match.start() - 40):match.start()]
+        ))
+    )
 
 
 def _contract(body: str, published: datetime) -> ContractMeasurements:
@@ -862,6 +1181,18 @@ def _subject(title: str, body: str) -> CompanySubject | None:
     subjects = {subject for marker, subject in _SUBJECT_MARKERS if marker in title and marker in body}
     if subjects:
         return next(iter(subjects)) if len(subjects) == 1 else None
+    if (_positive_type(title) is CompanyPositiveType.SHARE_REPURCHASE
+        and any(marker in title for marker in ("回购报告书", "回购股份方案", "回购公司股份方案"))):
+        # Plans also disclose holders' trading/intentions. Only an explicit
+        # issuer decision establishes this plan's actor; incidental mentions
+        # neither establish another actor nor supply its numeric measurements.
+        decisions = re.finditer(
+            r"(?:本公司|上市公司|(?:^|[。；;，,：:])公司)将(?:在回购期限内|根据董事会决议)"
+            r"[^。；;]{0,100}(?:作出回购决策|进行回购)", body,
+        )
+        if any(not any(marker in match[0] for marker in (*_SUBSIDIARY_MARKERS, *(word for word, _ in _SUBJECT_MARKERS)))
+               for match in decisions):
+            return CompanySubject.ISSUER
     if any(marker in body for marker, _ in _SUBJECT_MARKERS):
         return None
     return CompanySubject.ISSUER if any(x in body for x in (

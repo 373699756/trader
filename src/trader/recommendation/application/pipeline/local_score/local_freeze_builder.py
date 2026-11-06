@@ -130,6 +130,8 @@ class LocalFreezeBuilder(FreezeBuilderPort):
             raise FreezeUnavailableError("candidate observations are unavailable")
         if batch.quality_identity is None:
             raise FreezeUnavailableError("scoring input identity is unavailable")
+        if batch.population_qualifications is None:
+            raise FreezeUnavailableError("discovery population qualifications are unavailable")
         try:
             evaluated_at = _freeze_observed_at(batch)
             started = self._monotonic()
@@ -179,6 +181,7 @@ class LocalFreezeBuilder(FreezeBuilderPort):
                     candidate_stage_counts=batch.candidate_stage_counts,
                     preselection_transient_invalid=batch.preselection_transient_invalid,
                     quality_batch=QualityScoringBatch(quality_stage, native_input),
+                    population_qualifications=batch.population_qualifications,
                     monotonic=self._monotonic,
                 ),
             )

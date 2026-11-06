@@ -33,6 +33,8 @@ def BuildCommands(
                 "--consecutive-zero-threshold",
                 str(options.consecutive_zero_threshold),
                 *(argument for strategy in options.strategies for argument in ("--strategy", strategy)),
+                *(("--complete-rounds", str(options.web_complete_rounds),
+                   "--observation-seconds", str(options.web_observation_seconds)) if options.web_complete_rounds else ()),
             ),
             common_timeout,
         ),)

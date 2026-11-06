@@ -7,7 +7,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.download.domain.company_event_extraction import CompanyLinkCandidate, ExtractCompanyLinkCandidate
+from trader.download.domain.company_event_extraction import (
+    CompanyLinkCandidate, ExtractCompanyLinkCandidate, IsCompanyRepurchaseShareholderTable,
+)
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveType, CompanyReviewReason, ContractMeasurements
 from trader.download.domain.company_evidence import CompanyDocument, Disclosure
 from trader.download.infra.company_contract_link_rules import (
@@ -89,6 +91,8 @@ def ReadCompanyPublicationLinks(
     refreshes: dict[str, list[CompanyContractLinkRefresh]] = {code: [] for code in codes}
     checked: dict[tuple[str, str, str, bytes | None], _ContractRecheck] = {}
     for row in rows:
+        if IsCompanyRepurchaseShareholderTable(row.title):
+            continue
         candidate = DecodeCompanyLink(row.payload)
         if candidate.positive is None or candidate.positive.event_type is not CompanyPositiveType.OPERATING_CONTRACT:
             payloads[row.code].append(candidate)

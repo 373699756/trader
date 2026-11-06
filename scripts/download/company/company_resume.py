@@ -281,6 +281,8 @@ def Main() -> int:
     audit = parser.add_mutually_exclusive_group()
     audit.add_argument("--audit-only", action="store_true")
     audit.add_argument("--database-only", action="store_true")
+    audit.add_argument("--field-migration-only", action="store_true")
+    audit.add_argument("--field-replay-keys", nargs="+")
     audit.add_argument("--pagination-only", action="store_true")
     audit.add_argument("--pipeline-only", action="store_true")
     audit.add_argument("--pacing-only", action="store_true", help="Compare shared/per-host pacing with identical real PDFs and one complete directory sample in isolation.")
@@ -290,8 +292,10 @@ def Main() -> int:
     audit.add_argument("--document-only", action="store_true")
     audit.add_argument("--directory-only", action="store_true")
     args = parser.parse_args()
-    if args.database is None or args.budget_seconds is None:
-        parser.error("--database and --budget-seconds are required")
+    if args.budget_seconds is None:
+        parser.error("--budget-seconds is required")
+    if args.database is None and not args.field_migration_only:
+        parser.error("--database is required except with --field-migration-only")
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
     runtime = LoadRuntimeSettings(args.config or TOOL_ROOT / "config/runtime.json")
@@ -310,9 +314,35 @@ def Main() -> int:
         "src/trader/download/infra/company_document_parser.py",
     ):
         implementation.update((_ROOT / relative).read_bytes())
-    source_path = args.database.resolve(strict=True)
     if not 30 <= args.budget_seconds <= 10800:
         parser.error("budget within 30..10800 seconds required")
+    if args.field_replay_keys is not None:
+        if args.facts_database is None or args.directory is None:
+            parser.error("--field-replay-keys requires --facts-database and a new external --directory")
+        from scripts.download.company.company_field_replay import AuditCompanyFieldReplay
+
+        report = AuditCompanyFieldReplay(
+            args.database.expanduser().absolute(), args.facts_database.expanduser().absolute(), tuple(args.field_replay_keys), args.directory,
+            observed_at=datetime.now(ZoneInfo("Asia/Shanghai")), budget_seconds=args.budget_seconds,
+            sqlite_policy=sqlite_policy, event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
+            protected_roots=(runtime.project_root, runtime.data_paths.root, runtime.runtime_dir),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if args.field_migration_only:
+        if args.facts_database is None or args.directory is None:
+            parser.error("--field-migration-only requires --facts-database and a new external --directory")
+        from scripts.download.company.company_field_migration import AuditCompanyFieldMigration
+
+        report = AuditCompanyFieldMigration(
+            args.facts_database.expanduser().absolute(), args.directory, budget_seconds=args.budget_seconds,
+            sqlite_policy=sqlite_policy,
+            event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
+            protected_roots=(runtime.project_root, runtime.data_paths.root, runtime.runtime_dir),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    source_path = args.database.resolve(strict=True)
     if args.document_only:
         report = AuditCompanyDocumentDownloads(source_path, budget_seconds=min(150.0, args.budget_seconds), sqlite_policy=sqlite_policy)
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -322,6 +352,8 @@ def Main() -> int:
             parser.error("--material-keys requires --facts-database")
         print(json.dumps(InspectCompanyFieldMaterial(
             source_path, args.facts_database.resolve(strict=True), tuple(args.material_keys), sqlite_policy=sqlite_policy,
+            observed_at=datetime.now(ZoneInfo("Asia/Shanghai")),
+            event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
         ), ensure_ascii=False, indent=2))
         return 0
     if args.database_only:

@@ -7,12 +7,14 @@ from scripts.core.paths import PROJECT_ROOT as TOOL_ROOT
 from pathlib import Path
 from collections.abc import Mapping
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime
 
 from trader.infra.sqlite_connection import SqliteConnection
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
-from trader.download.domain.company_events import ContractMeasurements
+from trader.download.domain.company_events import CompanyEventPolicy, ContractMeasurements, IncreaseMeasurements, RepurchaseMeasurements
+from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
+from trader.download.domain.company_evidence import CompanyDocument, Disclosure
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -20,12 +22,13 @@ from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
 from trader.download.infra.company_field_recovery import ReadRequiredCompanyMaterialDependencies
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
-from trader.download.domain.company_field_plan import BuildCompanyFieldResults
+from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 
 
 def InspectCompanyFieldMaterial(
-    raw_path: Path, facts_path: Path, source_keys: tuple[str, ...], *, sqlite_policy: SqliteIoPolicy
+    raw_path: Path, facts_path: Path, source_keys: tuple[str, ...], *, sqlite_policy: SqliteIoPolicy,
+    observed_at: datetime, event_policy: CompanyEventPolicy,
 ) -> dict[str, object]:
     """Project bounded local excerpts and contract facts for source-value annotation.
 
@@ -36,6 +39,8 @@ def InspectCompanyFieldMaterial(
         not key or len(key) > 240 or any(character.isspace() for character in key) for key in source_keys
     ):
         raise ValueError("company_material_keys_invalid")
+    if observed_at.utcoffset() is None:
+        raise ValueError("company_material_observation_requires_timezone")
     configuration = LoadCompanySyncConfiguration(TOOL_ROOT)
     documents = CompanyDocumentFiles(
         raw_path.parent / "text", max_text_characters=configuration.extended_document_limits.max_text_characters,
@@ -49,6 +54,7 @@ def InspectCompanyFieldMaterial(
     ) as formal:
         before = (raw.run("PRAGMA data_version").require_one()[0], formal.run("PRAGMA data_version").require_one()[0])
         with SqliteTransaction(raw), SqliteTransaction(formal):
+            publication = ReadCompanyPublicationIdentity(formal)
             placeholders = ",".join("?" for _ in source_keys)
             rows = raw.run(
                 "SELECT d.source_key,d.title,d.published_at,d.record_hash,d.body_hash,d.body_checked,c.code,d.url "
@@ -78,17 +84,64 @@ def InspectCompanyFieldMaterial(
                         lines = text.splitlines()
                         positions: set[int] = set()
                         for position, line in enumerate(lines):
-                            if any(marker in line for marker in ("签订", "签署", "金额", "营业收入", "营业总收入", "生效")):
+                            if any(marker in line for marker in (
+                                "签订", "签署", "金额", "营业收入", "营业总收入", "生效", "首次回购", "累计",
+                                "总股本", "回购用途", "减少注册资本", "用于员工", "用于转换", "股权激励",
+                            )):
                                 positions.update(range(max(0, position - 1), min(len(lines), position + 2)))
                         selected = sorted(positions)[:16]
                         item.update({"material_available": True, "excerpts": [
                             {"line": position + 1, "text": lines[position][:150]} for position in selected
                         ], "excerpt_truncated": len(selected) < len(lines) or any(len(lines[position]) > 150 for position in selected)})
+                        candidate = ExtractCompanyLinkCandidate(CompanyDocument(
+                            Disclosure("cninfo", row[0], (row[6],), row[1], datetime.fromisoformat(row[2]), row[7], row[3]),
+                            text, True,
+                        ), observed_at, event_policy)
+                        positive = candidate.positive if candidate is not None else None
+                        if positive is not None and isinstance(positive.measurements, (RepurchaseMeasurements, IncreaseMeasurements)):
+                            item["reparsed_share_action"] = {
+                                "event_type": positive.event_type.value, "subject": positive.subject_type.value,
+                                "status": positive.status.value, "actual_pct": positive.measurements.actual_ratio_pct,
+                                "repurchase_purpose": positive.measurements.purpose.value
+                                if isinstance(positive.measurements, RepurchaseMeasurements) else None,
+                                "positive_level": positive.positive_level,
+                                "published": False,
+                            }
                 item["current_receipt"] = formal.run(
                     "SELECT 1 FROM company_input_receipt WHERE source='cninfo' AND source_key=? AND code=? "
-                    "AND record_hash=? AND body_hash IS ? AND outcome='valid' LIMIT 1",
-                    (row[0], row[6], row[3], row[4]),
+                    "AND record_hash=? AND body_hash IS ? AND extraction_hash=? AND outcome='valid' LIMIT 1",
+                    (row[0], row[6], row[3], row[4], publication.extraction_hash if publication is not None else b""),
                 ).fetchone() is not None
+                facts = ReadCompanyFactRows(formal, (row[6],))
+                conclusions = ReadCompanyFieldResults(formal, (row[6],))
+                item["field_conclusions"] = [{
+                    "event_id": result.event_id, "field": result.field, "state": result.state,
+                    "value": result.value.isoformat() if isinstance(result.value, date) else result.value,
+                    "applicable": result.applicable, "reason": result.reason,
+                    "evidence": [{
+                        "source": proof.source, "source_key": proof.source_key,
+                        "record_hash": proof.record_hash, "body_hash": proof.body_hash.hex(),
+                        "rule_id": proof.rule_id, "start_line": proof.start_line, "end_line": proof.end_line,
+                        "unit": proof.unit, "subject": proof.subject.value,
+                        "published_at": proof.published_at.isoformat(),
+                    } for proof in result.evidence[:4]],
+                } for result in conclusions if any(
+                    proof.source == "cninfo" and proof.source_key == row[0]
+                    and proof.record_hash == row[3] and proof.body_hash == row[4]
+                    and proof.published_at == datetime.fromisoformat(row[2])
+                    for proof in result.evidence
+                )]
+                item["share_actions"] = [
+                    {
+                        "event_id": event.event_id, "event_type": event.event_type.value,
+                        "subject": event.subject_type.value, "status": event.status.value,
+                        "actual_pct": event.measurements.actual_ratio_pct,
+                        "repurchase_purpose": event.measurements.purpose.value
+                        if isinstance(event.measurements, RepurchaseMeasurements) else None,
+                    }
+                    for fact in facts for event in fact.positive_events
+                    if row[0] in event.evidence_ids and isinstance(event.measurements, (RepurchaseMeasurements, IncreaseMeasurements))
+                ]
                 item["contracts"] = [
                     {
                         "event_id": event.event_id, "subject": event.subject_type.value, "status": event.status.value,
@@ -99,7 +152,7 @@ def InspectCompanyFieldMaterial(
                         "binding_confirmed": event.measurements.binding_confirmed,
                         "amount_basis": event.measurements.amount_basis,
                     }
-                    for facts in ReadCompanyFactRows(formal, (row[6],)) for event in facts.positive_events
+                    for fact in facts for event in fact.positive_events
                     if row[0] in event.evidence_ids and isinstance(event.measurements, ContractMeasurements)
                 ]
                 items.append(item)
@@ -202,12 +255,8 @@ def AuditCompanyFields(
         formal, raw, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),
         observed_at, raw_path.parent,
     )
-    field_results = tuple(
-        result
-        for fact in (() if invalid_types or nonfinite_values else ReadCompanyFactRows(
-            formal, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),
-        ))
-        for result in BuildCompanyFieldResults(fact, recovery)
+    field_results = () if invalid_types or nonfinite_values else ReadCompanyFieldResults(
+        formal, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),
     )
     has_dependencies = raw.run(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='company_material_dependencies'"
@@ -257,15 +306,20 @@ def AuditCompanyFields(
             } for item in recovery[:100]],
         },
         "field_results": {
-            "derived_from_current_facts": True, "field_correctness_verified": False,
+            "derived_from_current_facts": False, "published_conclusions": True,
+            "verified_fields": sum(item.state == "verified" for item in field_results),
+            "field_correctness_verified": False,
             "field_evidence_locator_verified": False,
             "applicable": sum(item.applicable for item in field_results),
             "states": dict(Counter(item.state for item in field_results)),
             "truncated": len(field_results) > 100,
             "items": [{
-                "code": item.code, "event_id": item.event_id, "source_key": item.evidence_id,
+                "code": item.code, "event_id": item.event_id,
+                "source_key": item.evidence[0].source_key if item.evidence else None,
                 "field": item.field, "state": item.state, "applicable": item.applicable,
-                "reason": item.reason, "next_step": item.recovery_action,
+                "reason": item.reason,
+                "next_step": next((plan.action for plan in recovery if plan.gap.code == item.code
+                                   and plan.gap.event_id == item.event_id and plan.gap.field == item.field), None),
             } for item in field_results[:100]],
         },
         "material_dependencies": {
@@ -314,7 +368,7 @@ def ProjectCompanyFieldAudit(source: Mapping[str, object]) -> dict[str, object]:
             )} for row in _rows(recovery.get("items"), 100)],
         }
     for name, summary_keys in (
-        ("field_results", ("derived_from_current_facts", "field_correctness_verified", "field_evidence_locator_verified", "applicable", "states", "truncated")),
+        ("field_results", ("derived_from_current_facts", "published_conclusions", "verified_fields", "field_correctness_verified", "field_evidence_locator_verified", "applicable", "states", "truncated")),
         ("material_dependencies", ("ledger_available", "reason", "required_reviews", "required_versions", "file_presence_is_not_hash_verification", "truncated")),
     ):
         value = source.get(name)

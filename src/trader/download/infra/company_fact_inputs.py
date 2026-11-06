@@ -230,7 +230,15 @@ def CompanyCoverageComplete(ranges: Sequence[sqlite3.Row], start: date, end: dat
     return frontier > end
 
 
+def BindCompanyEvidenceSource(sources: dict[str, str], key: str, source: str) -> None:
+    previous = sources.get(key)
+    if previous is not None and previous != source:
+        raise ValueError("company_evidence_source_ambiguous")
+    sources[key] = source
+
+
 __all__ = [
+    "BindCompanyEvidenceSource",
     "BuildCompanySnapshot",
     "CompanyCoverageComplete",
     "CompanySnapshotRows",

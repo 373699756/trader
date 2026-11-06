@@ -20,7 +20,8 @@ from trader.recommendation.application.pipeline.final_selection.grouped_ranking 
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.selection.scored_selection import (
-    BuildScoredCandidateReferences, RankFilteredCandidates, ScoredCandidateReferences, ScorePlannedLocalEvidence,
+    BuildScoredCandidateReferences, FilteredCandidateInputs, RankFilteredCandidates, ScoredCandidateReferences,
+    ScorePlannedLocalEvidence,
 )
 
 @dataclass(frozen=True)
@@ -61,14 +62,20 @@ class ScoringInputsReuse:
         identity: ScoredSelectionIdentity,
         *,
         execution_gate_reasons: Mapping[str, str] | None = None,
+        population_qualifications: FilteredCandidateInputs | None = None,
     ) -> RankingSelectionResult:
         started = time.monotonic()
         self._count(requests=1)
         try:
-            digest = CanonicalDigest((tuple(features), policy, options, identity, execution_gate_reasons))
+            digest = CanonicalDigest((
+                tuple(features), policy, options, identity, execution_gate_reasons, population_qualifications,
+            ))
         except ValueError:
             self._count(bypasses=1)
-            return self._baseline.select(features, policy, options, identity, execution_gate_reasons=execution_gate_reasons)
+            return self._baseline.select(
+                features, policy, options, identity, execution_gate_reasons=execution_gate_reasons,
+                population_qualifications=population_qualifications,
+            )
         key = CacheIdentity(
             "quote_factor_inputs", "scoring_inputs_reuse", "complete_population", RequestKey({"input": digest}),
             identity.trade_date.isoformat(), "local_scoring", "qfq", policy.strategy_version, "qualified_board_inputs",
@@ -84,7 +91,10 @@ class ScoringInputsReuse:
             if cached is not None and cached.value is not None:
                 return cast(ScoredCandidateReferences, cached.value)
             before = time.monotonic()
-            qualified = FilterFeatureCandidates(features, policy, options, identity, execution_gate_reasons=execution_gate_reasons)
+            qualified = FilterFeatureCandidates(
+                features, policy, options, identity, execution_gate_reasons=execution_gate_reasons,
+                population_qualifications=population_qualifications,
+            )
             filtered_at = time.monotonic()
             prepared = BuildScoredCandidateReferences(qualified)
             referenced_at = time.monotonic()

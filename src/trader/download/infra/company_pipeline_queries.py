@@ -18,7 +18,7 @@ from trader.download.domain.company_evidence import (
 from trader.download.infra.company_facts_protocol import COMPANY_EXTRACTION_IDENTITY
 from trader.infra.sqlite_connection import SqliteConnection
 
-_COMPANY_WORK_POLICY = COMPANY_EXTRACTION_IDENTITY + ":applicable-subjects:1"
+_COMPANY_WORK_POLICY = COMPANY_EXTRACTION_IDENTITY + ":applicable-subjects:1:repurchase-events:2"
 
 
 def EnsureCompanyPipelineQueries(connection: SqliteConnection) -> None:
@@ -225,6 +225,26 @@ def SelectCompanyDocuments(
     )
 
 
+def CountCompanyUnpublishedBodies(connection: SqliteConnection, cutoff: datetime, extraction_hash: bytes) -> int:
+    """Count accepted required bodies still missing a current per-security publication.
+
+    SelectCompanyDocuments owns the requested population on this connection.
+    Retained evidence is not pending when already published or superseded.
+    """
+    return int(connection.run(
+        "SELECT COUNT(*) FROM company_document_requirements q JOIN disclosures d ON d.id=q.disclosure_id "
+        "WHERE d.body_checked=1 AND d.body_retained=1 AND d.published_at<=? "
+        "AND EXISTS(SELECT 1 FROM disclosure_codes c JOIN temp.requested_codes u ON u.code=c.code "
+        "WHERE c.disclosure_id=d.id AND NOT EXISTS(SELECT 1 FROM document_publications p "
+        "WHERE p.disclosure_id=d.id AND p.code=c.code AND p.record_hash=d.record_hash AND p.extraction_hash=?) "
+        "AND NOT EXISTS(SELECT 1 FROM document_supersessions s JOIN disclosures n ON n.id=s.replacement_id "
+        "JOIN document_publications p ON p.disclosure_id=n.id AND p.code=c.code AND p.record_hash=n.record_hash "
+        "AND p.extraction_hash=s.extraction_hash WHERE s.disclosure_id=d.id AND s.code=c.code "
+        "AND s.record_hash=d.record_hash AND s.replacement_hash=n.record_hash AND s.extraction_hash=?))",
+        (cutoff.isoformat(), extraction_hash, extraction_hash),
+    ).require_one()[0])
+
+
 __all__ = [
     "EnsureCompanyPipelineQueries",
     "CheckDisclosureQueryContract",
@@ -235,4 +255,5 @@ __all__ = [
     "IndexCompanyDocument",
     "PrepareCompanyPublication",
     "SelectCompanyDocuments",
+    "CountCompanyUnpublishedBodies",
 ]

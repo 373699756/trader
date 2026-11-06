@@ -8,7 +8,10 @@ from trader.training.infra.model_bundles.bundle_codec import (
     TrainedRidgeModelSnapshot,
     TrainedTcnModelSnapshot,
 )
-from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
+from trader.training.infra.model_evaluation import (
+    PREDICTION_EVALUATION_CONTRACT,
+    RECENT_PREDICTION_EVALUATION_CONTRACT,
+)
 from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
 from trader.training.infra.profile.v5.settings import TCN_NETWORK_CONTRACT
 from trader.training.infra.sample_index import TargetMetric
@@ -46,9 +49,14 @@ def _model_document(item: FittedIndustryModel) -> dict[str, object]:
     return document
 
 
-def BuildPredictionMetricsDocument(result: IndustryFitResult) -> dict[str, object]:
+def BuildPredictionMetricsDocument(result: IndustryFitResult, *, evaluation_contract: str) -> dict[str, object]:
+    if evaluation_contract not in {PREDICTION_EVALUATION_CONTRACT, RECENT_PREDICTION_EVALUATION_CONTRACT}:
+        raise ValueError("prediction_evaluation_contract_invalid")
+    recent = evaluation_contract == RECENT_PREDICTION_EVALUATION_CONTRACT
+    if recent and result.sealed_holdout_rows != 0:
+        raise ValueError("recent_production_diagnostic_has_no_research_holdout")
     return {
-        "evaluation_contract": PREDICTION_EVALUATION_CONTRACT,
+        "evaluation_contract": evaluation_contract,
         "prediction_evaluation_mode": "prediction_diagnostic_only",
         "prediction_metrics": asdict(result.metrics),
         "industry_prediction_metrics": {industry: asdict(metrics) for industry, metrics in result.industry_metrics},
@@ -60,7 +68,7 @@ def BuildPredictionMetricsDocument(result: IndustryFitResult) -> dict[str, objec
             "candidate_validation_rows": result.metrics.input_rows,
             "predicted_rows": result.validation_rows,
             "sealed_holdout_rows": result.sealed_holdout_rows,
-            "holdout_status": "sealed_rows_count_only",
+            "holdout_status": "not_applicable_recent_production_diagnostic" if recent else "sealed_rows_count_only",
         },
     }
 

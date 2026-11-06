@@ -79,9 +79,12 @@ class RuntimeIssueIndex:
         strategy: Strategy | None = None,
         stages: frozenset[str] | None = None,
         task: PipelineTask | None = None,
+        code: str | None = None,
     ) -> None:
         for key, issue in tuple(self._recent_errors.items()):
             if issue.recovery_status != "active":
+                continue
+            if code is not None and (issue.code != code or issue.strategy is not strategy):
                 continue
             if strategy is not None and issue.strategy is not strategy:
                 continue

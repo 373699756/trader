@@ -31,11 +31,13 @@ def BuildParser(
         company_replay_directory=None,
         company_query_audit=False,
         company_database_audit=False,
+        company_field_migration_audit=False,
         company_pagination_audit=False,
         company_pipeline_audit=False,
         company_pacing_audit=False,
         company_io_candidates_audit=False,
         company_material_keys=(),
+        company_field_replay_keys=(),
         company_audit_budget_seconds=None,
         company_ocr_audit=False,
         company_document_audit=False,
@@ -61,11 +63,13 @@ def BuildParser(
         modes = parser.add_mutually_exclusive_group()
         modes.add_argument('--company-query-audit', action='store_true', help='read-only bounded CNInfo query coverage audit')
         modes.add_argument('--company-database-audit', action='store_true', help='read-only local company text and retry counts; no network')
+        modes.add_argument('--company-field-migration-audit', action='store_true', help='rehearse formal field schema migration only in a new external directory')
         modes.add_argument('--company-pagination-audit', action='store_true', help='read-only CNInfo page-size comparison')
         modes.add_argument('--company-pipeline-audit', action='store_true', help='isolated same-PDF serial/parallel comparison')
         modes.add_argument('--company-pacing-audit', action='store_true', help='isolated same-PDF shared/per-host pacing comparison')
         modes.add_argument('--company-io-candidates-audit', action='store_true', help='paired isolated publication candidates; never enables production settings')
         modes.add_argument('--company-material-keys', nargs='+', help='read-only source excerpts for one to six distinct source keys; requires published facts')
+        modes.add_argument('--company-field-replay-keys', nargs='+', help='replay one to six source keys through real field publication only in a new external copy; no network')
         modes.add_argument('--company-ocr-audit', action='store_true', help='compare OCR on up to seven failed announcements without active writes')
         modes.add_argument('--company-document-audit', action='store_true', help='read-only failed PDF request comparison')
         modes.add_argument('--company-directory-audit', action='store_true', help='repair failed directories only in an external backup')
@@ -88,6 +92,17 @@ def BuildParser(
 
 
 def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
+    if (args.company_field_migration_audit or args.company_field_replay_keys) and args.company_replay_directory is None:
+        raise ValueError("field migration/replay requires a new external --company-replay-directory")
+    if (args.company_field_migration_audit or args.company_field_replay_keys) and args.company_replay_directory is not None:
+        candidate = args.company_replay_directory.expanduser().absolute()
+        if any(path.is_symlink() for path in (candidate, *candidate.parents)):
+            raise ValueError("field migration output cannot contain symbolic links")
+        for original in (args.company_evidence_database, args.company_collection_database):
+            if original is not None:
+                source = original.expanduser().absolute()
+                if any(path.is_symlink() for path in (source, *source.parents)):
+                    raise ValueError("field migration/replay source cannot contain symbolic links")
     options = CompanyOptions(
         action_identity=args.action_identity,
         command_timeout_seconds=args.command_timeout_seconds,
@@ -97,11 +112,13 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_replay_directory=ExternalPath(args.company_replay_directory, "--company-replay-directory"),
         company_query_audit=args.company_query_audit,
         company_database_audit=args.company_database_audit,
+        company_field_migration_audit=args.company_field_migration_audit,
         company_pagination_audit=args.company_pagination_audit,
         company_pipeline_audit=args.company_pipeline_audit,
         company_pacing_audit=args.company_pacing_audit,
         company_io_candidates_audit=args.company_io_candidates_audit,
         company_material_keys=tuple(args.company_material_keys),
+        company_field_replay_keys=tuple(args.company_field_replay_keys),
         company_audit_budget_seconds=(
             args.command_timeout_seconds - 30.0
             if args.company_audit_budget_seconds is None
@@ -132,7 +149,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         options.company_query_audit, options.company_database_audit, options.company_pagination_audit,
         options.company_pipeline_audit, options.company_ocr_audit, options.company_document_audit,
         options.company_directory_audit, options.company_pacing_audit, options.company_io_candidates_audit,
-        bool(options.company_material_keys),
+        bool(options.company_material_keys), options.company_field_migration_audit, bool(options.company_field_replay_keys),
     )) > 1:
         raise ValueError("company audit modes are mutually exclusive")
     if options.action_identity == "company-resume" and options.company_replay_directory is None and not (
@@ -146,6 +163,12 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         or any(not key or len(key) > 240 or any(character.isspace() for character in key) for key in options.company_material_keys)
     ):
         raise ValueError("--company-material-keys requires one to six distinct nonempty source keys without whitespace")
+    if options.company_field_replay_keys and (
+        not 1 <= len(options.company_field_replay_keys) <= 6
+        or len(set(options.company_field_replay_keys)) != len(options.company_field_replay_keys)
+        or any(not key or len(key) > 240 or any(character.isspace() for character in key) for key in options.company_field_replay_keys)
+    ):
+        raise ValueError("--company-field-replay-keys requires one to six distinct source keys without whitespace")
     if options.action_identity == "company-resume" and (
         not math.isfinite(options.company_audit_budget_seconds)
         or not 30 <= options.company_audit_budget_seconds <= 10800

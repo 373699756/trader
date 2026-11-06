@@ -40,11 +40,16 @@ from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_PEAK_RSS_MIB,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
-    TomorrowTrainingWindow,
+    ProductionTrainingWindow,
 )
+from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT, FinalFitDatePlan
 from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
 from trader.training.domain.tomorrow_training_input import EvaluateTomorrowTrainingInput, FrozenDailyInputDescriptor
-from trader.training.domain.training_dates import BuildTrainingDateSplit, TrainingDateSplit
+from trader.training.domain.production_diagnostic_dates import (
+    BuildProductionDiagnosticDatePlan,
+    PRODUCTION_DIAGNOSTIC_CONTRACT,
+    ProductionDiagnosticDatePlan,
+)
 from trader.training.infra.history.history_training_input import (
     HistoryTrainingInputError,
     HistoryTrainingInputSnapshot,
@@ -68,9 +73,10 @@ from trader.training.infra.model_bundles.profile_publication import (
     PublishProfileBundles,
     RecoverProfileBundles,
 )
-from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
-from trader.training.infra.model_fitting import FitIndustryModels, FittingParameterDocument, LightGBMFittingParameters
-from trader.training.infra.model_fitting_results import IndustryFitResult
+from trader.training.infra.model_evaluation import RECENT_PREDICTION_EVALUATION_CONTRACT
+from trader.training.infra.model_fitting import FitIndustryModels, FittingParameterDocument, LightGBMFittingParameters, RefitIndustryModels
+from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
+from trader.training.infra.model_bundles.final_fit_evidence import BuildFinalFitEvidence
 from trader.training.infra.profile.v5.configuration import TcnConfigurationDocument
 from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.sample_builder import (
@@ -125,6 +131,8 @@ class HeadTrainingResult:
     label_cutoff: date | None = None
     sample_database_peak_bytes: int = 0
     coverage: tuple[SampleCoverage, ...] = ()
+    final_fit: FinalFitDatePlan | None = None
+    diagnostic_plan: ProductionDiagnosticDatePlan | None = None
 
 
 @dataclass(frozen=True)
@@ -159,7 +167,7 @@ class _TrainingRunContext:
     snapshot: HistoryTrainingInputSnapshot
     label_cutoff: date
     training_input_document_hash: str
-    split: TrainingDateSplit
+    split: ProductionDiagnosticDatePlan
     split_hash: str
     training_contract_hash: str
     training_rows: int
@@ -209,12 +217,13 @@ class _HeadFitRequest:
     profile: TrainedProfileContract
     settings: ProfileTrainingSettings
     snapshot: HistoryTrainingInputSnapshot
-    split: TrainingDateSplit
+    split: ProductionDiagnosticDatePlan
     metrics: tuple[TargetMetric, ...]
     train_root: Path
     run_id: str
     progress: TomorrowTrainingProgressPort | None
     peak_bytes: int
+    final_fit_plan: FinalFitDatePlan
 
 
 @dataclass(frozen=True)
@@ -307,7 +316,7 @@ def InspectSelectedProfile(
         raise ValueError(reason)
     cache = _sample_cache_for(history.snapshot, split, request, sqlite_policy=sqlite_policy)
     reused = _reuse_profile(history.snapshot, request)
-    dates = frozenset() if reused is not None or cache.inspect() else TomorrowTrainingWindow(split).readable_dates
+    dates = frozenset() if reused is not None or cache.inspect() else _production_window(history.snapshot, split).readable_dates
     return request, cache, dates, reused
 
 
@@ -332,11 +341,11 @@ def _run_locked(
         return TrainingRunResult(None, snapshot.snapshot_hash, 0, heads)
     plans, completed = _build_head_plans(snapshot, request)
     if not plans:
-        ordered = _ordered_results(request.contracts, completed)
+        ordered = tuple(replace(item, diagnostic_plan=split) for item in _ordered_results(request.contracts, completed))
         return TrainingRunResult(None, snapshot.snapshot_hash, 0, ordered)
     preflight_result = _preflight_failure_result(history, snapshot, plans, request.contracts, completed)
     if preflight_result is not None:
-        return preflight_result
+        return replace(preflight_result, heads=tuple(replace(item, diagnostic_plan=split) for item in preflight_result.heads))
     _publish(request.progress, TomorrowTrainingProgress("training_preparation", "completed", 1, 1))
     run_id = ContentHash(
         (
@@ -349,6 +358,7 @@ def _run_locked(
     peak_bytes = 0
     cache: TrainingSampleCache | None = None
     coverage: tuple[SampleCoverage, ...] = ()
+    profile_published = False
     try:
         training_window = _require_industry_coverage(
             history,
@@ -369,14 +379,20 @@ def _run_locked(
                 cache,
                 aligned_rows=aligned_rows,
             )
+            # This eligibility gate must run even without optional resource ports.
+            # Both heads must cover every requested mature day before any fitter runs.
+            final_counts = tuple(
+                (contract, samples.final_fit_counts(contract, _final_fit_plan(snapshot, request.settings, contract)))
+                for contract in request.contracts
+            )
             expected_dates = tuple(
                 len(days)
                 for days in (
-                    split.model_fit_dates,
+                    split.fitting_dates,
                     split.early_stopping_dates,
                     split.calibration_dates,
-                    split.confirmation_dates,
-                    split.daily_proxy_holdout_dates,
+                    split.validation_dates,
+                    (),
                 )
             )
             coverage = tuple(
@@ -408,7 +424,16 @@ def _run_locked(
                     ),
                     default=0,
                 )
-                estimate = 512 * 1024**2 if request.profile.algorithm == "tcn" else 256 * 1024**2 + matrix_bytes * 4
+                final_matrix_bytes = max(
+                    (item.rows * (len(contract.feature_positions) + 1) * 8
+                     for contract, counts in final_counts for item in counts),
+                    default=0,
+                )
+                matrix_bytes = max(matrix_bytes, final_matrix_bytes)
+                estimate = (
+                    512 * 1024**2 + final_matrix_bytes * 2 if request.profile.algorithm == "tcn"
+                    else 256 * 1024**2 + matrix_bytes * 4
+                )
                 if request.execution_options.shared_validation:
                     estimate += (512 if request.profile.algorithm == "tcn" else 256) * 1024**2
                 if request.execution_options.shared_matrix_memory:
@@ -430,6 +455,11 @@ def _run_locked(
             prepared: list[tuple[Strategy, Path]] = []
             fitted_heads = FitIndustryModels(samples, split, tuple(plan.contract for plan in plans), request.settings.fitting, progress=request.progress, compute_threads=compute_threads)
             for plan, fitted in zip(plans, fitted_heads, strict=True):
+                final_fit_plan = _final_fit_plan(snapshot, request.settings, plan.contract)
+                refitted = RefitIndustryModels(
+                    samples, plan.contract, final_fit_plan, fitted, request.settings.fitting,
+                    compute_threads=compute_threads, progress=request.progress,
+                )
                 result, staging = _fit_and_prepare_head(
                     _HeadFitRequest(
                         plan,
@@ -442,8 +472,10 @@ def _run_locked(
                         run_id,
                         request.progress,
                         peak_bytes,
+                        final_fit_plan,
                     ),
                     fitted,
+                    refitted,
                 )
                 completed.append(result)
                 if staging is not None:
@@ -457,6 +489,7 @@ def _run_locked(
                     if request.execution_options.release_cpu_before_publish:
                         reservation.release_cpu()
                     PublishProfileBundles(request.train_root, request.profile, tuple(prepared))
+                    profile_published = True
                     _publish(request.progress, TomorrowTrainingProgress("artifact_publish", "completed", 1, 1))
                 except InterruptedError:
                     raise
@@ -477,9 +510,15 @@ def _run_locked(
             PruneEmptySampleDirectories(request.sample_root, request.sample_root.parent)
     except InterruptedError:
         raise
-    except (HistoryTrainingInputError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+    except (HistoryTrainingInputError, LightGBMError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         peak_bytes = max(peak_bytes, SampleCacheBytes(cache))
         reason = _reason(exc)
+        if not profile_published:
+            completed = [
+                replace(item, status="blocked", model_hash="", failure_reasons=(reason,))
+                if item.status == "engineering_ready" else item
+                for item in completed
+            ]
         for plan in plans:
             if not any(item.strategy is plan.contract.strategy for item in completed):
                 completed.append(
@@ -490,13 +529,13 @@ def _run_locked(
                         coverage=tuple(item for item in coverage if item.target == plan.contract.target_column),
                     )
                 )
-    ordered = _ordered_results(request.contracts, completed)
+    ordered = tuple(replace(item, diagnostic_plan=split) for item in _ordered_results(request.contracts, completed))
     return TrainingRunResult(run_id, snapshot.snapshot_hash, peak_bytes, ordered)
 
 
 def _sample_cache_for(
     snapshot: HistoryTrainingInputSnapshot,
-    split: TrainingDateSplit,
+    split: ProductionDiagnosticDatePlan,
     request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingSampleCache:
     feature_names = TrainingFeatureNames(request.profile.heads)
@@ -512,7 +551,10 @@ def _sample_cache_for(
             feature_count,
             SEQUENCE_FORMAT if sequence_layout else "monthly_samples",
             HISTORY_ALIGNMENT_CONTRACT,
-            PREDICTION_EVALUATION_CONTRACT,
+            RECENT_PREDICTION_EVALUATION_CONTRACT,
+            PRODUCTION_DIAGNOSTIC_CONTRACT,
+            FINAL_FIT_CONTRACT,
+            tuple(_final_fit_plan(snapshot, request.settings, contract).content_hash for contract in request.contracts),
             request.profile.history_sessions,
             request.profile.momentum_horizons,
             request.profile.market_state_momentum_horizons,
@@ -560,27 +602,41 @@ def _prepare_samples(
 
 def _require_industry_coverage(
     history: _TrainingInputSnapshot,
-    split: TrainingDateSplit,
+    split: ProductionDiagnosticDatePlan,
     algorithm: Literal["lightgbm", "ridge", "tcn"],
     minimum_training_rows: int,
-) -> TomorrowTrainingWindow:
-    window = TomorrowTrainingWindow(split)
+) -> ProductionTrainingWindow:
+    window = _production_window(history.snapshot, split)
     # Calendar continuity is checked by the aligner; these are signal-fact bounds.
     if not history.has_industry_window(window.readable_dates, 1):
         raise ValueError("history_industry_coverage_insufficient")
     for anchors in (
-        split.model_fit_dates,
+        split.fitting_dates,
         *((split.early_stopping_dates,) if algorithm in {"lightgbm", "tcn"} else ()),
         split.calibration_dates,
-        split.confirmation_dates,
-        split.daily_proxy_holdout_dates,
+        split.validation_dates,
     ):
         if not history.has_industry_window(window.readable_dates, 1, anchor_dates=frozenset(anchors)):
             raise ValueError("history_industry_split_coverage_insufficient")
-    bounds = history.industry_sample_upper_bounds(window.readable_dates, 1, frozenset(split.model_fit_dates))
+    bounds = history.industry_sample_upper_bounds(window.readable_dates, 1, frozenset(split.fitting_dates))
     if not any(count >= minimum_training_rows for _, count in bounds):
         raise ValueError("history_industry_training_rows_insufficient")
     return window
+
+
+def _production_window(snapshot: HistoryTrainingInputSnapshot, split: ProductionDiagnosticDatePlan) -> ProductionTrainingWindow:
+    return ProductionTrainingWindow(
+        split, tuple(day for day in snapshot.calendar.open_dates if day <= snapshot.source_cutoff),
+    )
+
+
+def _final_fit_plan(
+    snapshot: HistoryTrainingInputSnapshot, settings: ProfileTrainingSettings, contract: TrainedHeadContract,
+) -> FinalFitDatePlan:
+    return BuildFinalFitDatePlan(
+        snapshot.calendar.open_dates, source_cutoff=snapshot.source_cutoff,
+        fit_sessions=settings.fit_dates, maturity_sessions=contract.maturity_sessions,
+    )
 
 
 def _reopen_expected_snapshot(
@@ -597,19 +653,18 @@ def _prepare_locked_split(
     snapshot: HistoryTrainingInputSnapshot,
     profile: TrainedProfileContract,
     settings: ProfileTrainingSettings,
-) -> tuple[TrainingDateSplit | None, str]:
+) -> tuple[ProductionDiagnosticDatePlan | None, str]:
     try:
-        split = BuildTrainingDateSplit(
+        split = BuildProductionDiagnosticDatePlan(
             snapshot.calendar.open_dates,
-            parent_manifest_hash=snapshot.snapshot_hash,
-            fit_dates=settings.fit_dates,
-            recent_fit=profile.profile_id == "v5",
+            source_cutoff=snapshot.source_cutoff,
+            fit_sessions=settings.fit_dates,
             early_stopping_sessions=20 if profile.algorithm in {"lightgbm", "tcn"} else 0,
             history_sessions=profile.history_sessions,
             history_excludes_signal=profile.algorithm == "tcn",
         )
-    except ValueError:
-        return None, "training_split_unavailable"
+    except ValueError as exc:
+        return None, _reason(exc)
     return split, ""
 
 
@@ -660,13 +715,15 @@ def _preflight_failure_result(
     )
 
 
-def _fit_and_prepare_head(request: _HeadFitRequest, fitted: IndustryFitResult) -> tuple[HeadTrainingResult, Path | None]:
+def _fit_and_prepare_head(
+    request: _HeadFitRequest, fitted: IndustryFitResult, refitted: tuple[FittedIndustryModel, ...],
+) -> tuple[HeadTrainingResult, Path | None]:
     plan = request.plan
     snapshot = request.snapshot
     contract = plan.contract
     staging: Path | None = None
     try:
-        models, training_rows, validation_rows = fitted.models, fitted.training_rows, fitted.validation_rows
+        models, training_rows, validation_rows = refitted, sum(item.training_rows for item in refitted), fitted.validation_rows
         split_hash = _head_split_hash(request.split, contract)
         training_input = _training_input_document(
             _TrainingInputDocumentContext(
@@ -689,14 +746,17 @@ def _fit_and_prepare_head(request: _HeadFitRequest, fitted: IndustryFitResult) -
             request.split,
             split_hash,
             plan.training_contract_hash,
-            training_rows,
+            fitted.training_rows,
             validation_rows,
             request.run_id,
         )
-        model = BuildIndustryModelDocument(fitted.models)
+        diagnostic_model = BuildIndustryModelDocument(fitted.models)
+        diagnostic_hash = ContentHash(diagnostic_model)
+        diagnostic_model["content_hash"] = diagnostic_hash
+        model = BuildIndustryModelDocument(refitted)
         model_hash = ContentHash(model)
         model["content_hash"] = model_hash
-        report = _report_document(context, fitted, model_hash, request.metrics)
+        report = _report_document(context, fitted, diagnostic_hash, request.metrics)
         report_hash = ContentHash(report)
         report["content_hash"] = report_hash
         if not report["artifact_structure_valid"]:
@@ -716,8 +776,14 @@ def _fit_and_prepare_head(request: _HeadFitRequest, fitted: IndustryFitResult) -
                 tuple(cast(list[str], report["artifact_structure_failure_reasons"])),
                 label_cutoff=plan.label_cutoff,
                 sample_database_peak_bytes=request.peak_bytes,
+                final_fit=request.final_fit_plan,
+                diagnostic_plan=request.split,
             ), None
         metadata = _metadata_document(context, model_hash, fitted, training_input, report)
+        metadata["final_fit"] = BuildFinalFitEvidence(
+            request.final_fit_plan, request.split, diagnostic_model, model_hash, refitted,
+            snapshot.calendar.open_dates,
+        )
         if isinstance(request.settings.fitting, TcnFittingParameters):
             metadata["training_configuration"] = TcnConfigurationDocument(
                 request.settings.fit_dates, request.settings.fitting
@@ -742,6 +808,8 @@ def _fit_and_prepare_head(request: _HeadFitRequest, fitted: IndustryFitResult) -
             (),
             label_cutoff=plan.label_cutoff,
             sample_database_peak_bytes=request.peak_bytes,
+            final_fit=request.final_fit_plan,
+            diagnostic_plan=request.split,
         )
         return result, staging
     except InterruptedError:
@@ -756,6 +824,7 @@ def _fit_and_prepare_head(request: _HeadFitRequest, fitted: IndustryFitResult) -
             run_id=request.run_id,
             label_cutoff=plan.label_cutoff,
             sample_database_peak_bytes=request.peak_bytes,
+            diagnostic_plan=request.split,
         ), None
 
 
@@ -800,7 +869,7 @@ def _report_document(
         "prediction_return_failure_reasons": ["daily_close_proxy_not_point_in_time"],
         "automatic_model_update": False,
     }
-    document.update(BuildPredictionMetricsDocument(fitted))
+    document.update(BuildPredictionMetricsDocument(fitted, evaluation_contract=RECENT_PREDICTION_EVALUATION_CONTRACT))
     return document
 
 
@@ -812,7 +881,7 @@ def _metadata_document(
     report: dict[str, object],
 ) -> dict[str, object]:
     return {
-        "schema_version": f"{context.profile.profile_id}_head_metadata",
+        "schema_version": f"{context.profile.profile_id}_head_recent_refit_metadata",
         "profile_id": context.profile.profile_id,
         "model_id": context.contract.model_id,
         "strategy_head": context.contract.strategy.value,
@@ -898,6 +967,9 @@ def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrain
         bundles = InspectPublishedProfileBundles(request.train_root, request.profile)
     except (OSError, ValueError, RuntimeError):
         return None
+    diagnostic_plan, _failure = _prepare_locked_split(snapshot, request.profile, request.settings)
+    if diagnostic_plan is None:
+        return None
     heads: list[HeadTrainingResult] = []
     for bundle, contract in zip(bundles, request.contracts, strict=True):
         if (
@@ -906,6 +978,8 @@ def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrain
             or bundle.training_contract_hash != _training_contract_hash(
                 request.profile, contract, request.settings, compute_threads=request.compute_threads,
             )
+            or bundle.model.final_fit != _final_fit_plan(snapshot, request.settings, contract)
+            or bundle.model.diagnostic_plan != diagnostic_plan
         ):
             return None
         model = bundle.model
@@ -925,6 +999,8 @@ def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrain
                 model.validation_rows,
                 (),
                 bundle.label_cutoff,
+                final_fit=model.final_fit,
+                diagnostic_plan=model.diagnostic_plan,
             )
         )
     return TrainingRunResult(bundles[0].training_run_hash, snapshot.snapshot_hash, 0, tuple(heads), reused=True)
@@ -964,7 +1040,9 @@ def _training_contract_hash(
             "training_cost_bps": 0,
             "evaluation_cost_bps": [20, 50, 100],
             "minimum_industry_training_rows": fitting.minimum_industry_training_rows,
-            "prediction_evaluation_contract": PREDICTION_EVALUATION_CONTRACT,
+            "prediction_evaluation_contract": RECENT_PREDICTION_EVALUATION_CONTRACT,
+            "diagnostic_date_contract": PRODUCTION_DIAGNOSTIC_CONTRACT,
+            "final_fit_contract": FINAL_FIT_CONTRACT,
             "model_parameters": FittingParameterDocument(fitting)
             if isinstance(fitting, TcnFittingParameters)
             else {"ridge_penalty": fitting.penalty}
@@ -984,19 +1062,19 @@ def _training_contract_hash(
                 "histogram_pool_size_mib": fitting.histogram_pool_mib,
             },
             "parallel_industries": 1,
-            "calibration": "independent_linear",
+            "calibration": "frozen_recent_diagnostic_linear_transfer_to_final_refit",
             "training_anchor": "15:00_close_proxy",
             "runtime_anchor": contract.runtime_anchor,
             "point_in_time_parity": False,
             "validation_scope": "daily_close_engineering_proxy",
-            "terminal_holdout_opened": False,
+            "research_holdout_status": "not_part_of_recent_production_diagnostic",
             "automatic_model_update": False,
             "production_authority": False,
         }
     )
 
 
-def _head_split_hash(split: TrainingDateSplit, contract: TrainedHeadContract) -> str:
+def _head_split_hash(split: ProductionDiagnosticDatePlan, contract: TrainedHeadContract) -> str:
     return ContentHash(
         {
             "calendar_split_hash": split.content_hash,
@@ -1109,6 +1187,12 @@ def _reason(exc: BaseException) -> str:
         "history_industry_training_rows_insufficient",
         "history_training_data_incomplete",
         "training_split_unavailable",
+        "final_fit_effective_dates_insufficient",
+        "final_fit_industry_training_rows_insufficient",
+        "final_fit_industry_counts_changed",
+        "production_diagnostic_calendar_insufficient",
+        "production_diagnostic_calendar_or_settings_invalid",
+        "production_diagnostic_date_plan_invalid",
     }:
         return value
     return (

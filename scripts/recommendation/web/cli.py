@@ -36,6 +36,8 @@ def BuildParser(
         browser_strategy="tomorrow",
         simulated_start=DEFAULT_SIMULATED_START,
         consecutive_zero_threshold=None,
+        web_complete_rounds=0,
+        web_observation_seconds=None,
     )
     if action_identity in ("web","browser-live",):
         parser.add_argument('--base-url', default='http://127.0.0.1:5000', help='running trader-server base URL')
@@ -49,6 +51,8 @@ def BuildParser(
         parser.add_argument('--scoring-profile', type=ParseScoringProfile, default=None, help='one of v1/v2/v3/v5, or all four comma-separated profiles for performance')
         parser.add_argument('--strategy', choices=("tomorrow", "d25"), action='append', dest='strategies', help='short strategy to inspect; repeat to select multiple (default: all)')
         parser.add_argument('--consecutive-zero-threshold', type=int, help='persistent-zero rounds within 1..web-samples (default: min(3, web-samples))')
+        parser.add_argument('--web-complete-rounds', type=int, default=0, help='explicit live SSE/atomic eight-head observation; require 1..20 consecutive fresh rounds')
+        parser.add_argument('--web-observation-seconds', type=float, help='bounded complete-round observation, at most 900 seconds')
     if action_identity in ("browser","company-ledger",):
         parser.add_argument('--runtime-config', default=str(PROJECT_ROOT / 'config/runtime.json'), help='runtime JSON configuration')
     if action_identity in ("browser",):
@@ -76,6 +80,8 @@ def ParseOptions(args: argparse.Namespace) -> WebOptions:
         browser_strategy=args.browser_strategy,
         simulated_start=args.simulated_start,
         consecutive_zero_threshold=min(3, args.web_samples) if args.consecutive_zero_threshold is None else args.consecutive_zero_threshold,
+        web_complete_rounds=args.web_complete_rounds,
+        web_observation_seconds=args.web_observation_seconds,
     )
     if not math.isfinite(options.command_timeout_seconds) or not 0 < options.command_timeout_seconds <= 7200:
         raise ValueError("command timeout must be positive and must not exceed 7200 seconds")
@@ -89,6 +95,21 @@ def ParseOptions(args: argparse.Namespace) -> WebOptions:
         raise ValueError("sample intervals must be finite and nonnegative")
     if not 1 <= options.consecutive_zero_threshold <= options.web_samples:
         raise ValueError("--consecutive-zero-threshold must be within 1..web-samples")
+    if options.web_complete_rounds:
+        duration = options.web_observation_seconds
+        if (
+            not 1 <= options.web_complete_rounds <= 20 or duration is None
+            or not math.isfinite(duration) or not 0 < duration <= 900
+        ):
+            raise ValueError("--web-complete-rounds requires 1..20 rounds and --web-observation-seconds within (0, 900]")
+        if options.web_interval_seconds < 15:
+            raise ValueError("complete-round observation requires --web-interval-seconds at least 15")
+        if options.strategies:
+            raise ValueError("complete-round observation requires both short strategies")
+        if options.command_timeout_seconds < duration + 2 * options.web_timeout_seconds + 10:
+            raise ValueError("command timeout must leave HTTP and cleanup time beyond the observation duration")
+    elif options.web_observation_seconds is not None:
+        raise ValueError("--web-observation-seconds requires --web-complete-rounds")
     return options
 
 

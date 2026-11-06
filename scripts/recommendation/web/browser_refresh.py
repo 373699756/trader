@@ -8,16 +8,18 @@ from scripts.core.paths import PROJECT_ROOT as TOOL_ROOT
 import argparse
 import json
 import math
+import os
 import shutil
 import socket
 import statistics
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from datetime import date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from werkzeug.serving import WSGIRequestHandler, make_server
 
@@ -273,7 +275,7 @@ def _research_factory() -> _NoopResearchRuntime:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--live-url", help="read-only Chrome check of an already-running service, without fixtures")
+    parser.add_argument("--live-url", help="read-only Chrome or Firefox check of an already-running service, without fixtures")
     parser.add_argument("--duration-seconds", type=float, default=65.0, help="measurement duration (default: 65)")
     parser.add_argument("--minimum-updates", type=int, default=3, help="minimum DOM price changes required to pass")
     parser.add_argument(
@@ -794,30 +796,115 @@ def _run(
     }
 
 
-def _live_browser(url: str) -> dict[str, object]:
-    from tests.performance.run_desktop_dashboard import _ChromeSession
+class _LiveBrowser(Protocol):
+    def set_viewport(self, width: int, height: int) -> None: ...
+    def navigate(self, url: str) -> None: ...
+    def execute(self, script: str) -> object: ...
 
+
+class _FirefoxBrowser:
+    def __init__(self, base_url: str) -> None:
+        self._base_url = base_url
+
+    def set_viewport(self, width: int, height: int) -> None:
+        _request_json(
+            f"{self._base_url}/window/rect", method="POST",
+            payload={"width": width, "height": height}, timeout=5,
+        )
+
+    def navigate(self, url: str) -> None:
+        _request_json(f"{self._base_url}/url", method="POST", payload={"url": url}, timeout=20)
+
+    def execute(self, script: str) -> object:
+        return _request_json(
+            f"{self._base_url}/execute/sync", method="POST",
+            payload={"script": script, "args": []}, timeout=20,
+        ).get("value")
+
+
+@contextmanager
+def _live_browser_session() -> Iterator[tuple[str, _LiveBrowser]]:
+    """Prefer the existing Chrome path; own a bounded Firefox session when Chrome is absent."""
     binary = shutil.which("google-chrome") or shutil.which("chromium")
-    if binary is None:
-        raise RuntimeError("Chrome is required for the live browser check")
-    chrome = _ChromeSession(binary, _free_port())
+    if binary is not None:
+        from tests.helpers.recommendation.desktop_dashboard import _ChromeSession
+
+        chrome = _ChromeSession(binary, _free_port())
+        try:
+            yield "chrome", chrome
+        finally:
+            chrome.close()
+        return
+    driver_binary = shutil.which("geckodriver")
+    if driver_binary is None or shutil.which("firefox") is None:
+        raise RuntimeError("Chrome/Chromium or Firefox with geckodriver is required for the live browser check")
+    port = _free_port()
+    # Keep the driver and browser in the public tool worker's process group. RunBoundedCommand owns
+    # that group and reaps descendants even if session creation fails before we receive a session id.
+    driver = subprocess.Popen(
+        [driver_binary, "--host", "127.0.0.1", "--port", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=False,
+        # Desktop geckodriver does not apply moz:firefoxOptions.env; inherit the official switch instead.
+        env={**os.environ, "MOZ_CRASHREPORTER_DISABLE": "1"},
+    )
+    session_url: str | None = None
     try:
-        chrome.set_viewport(1440, 1100)
-        chrome.navigate(url)
-        _wait(lambda: bool(chrome.execute("return !!window.TraderDashboardDiagnostics;")), timeout_seconds=15)
-        profiles = chrome.execute("return Array.from(document.querySelectorAll('.profile-tab'), b => b.dataset.profile);")
+        _wait_driver(port, driver)
+        created = _request_json(
+            f"http://127.0.0.1:{port}/session", method="POST",
+            payload={"capabilities": {"alwaysMatch": {
+                "browserName": "firefox", "moz:firefoxOptions": {"args": ["-headless"]},
+            }}}, timeout=30,
+        )
+        value = created.get("value")
+        session_id = value.get("sessionId") if isinstance(value, dict) else None
+        if (
+            not isinstance(session_id, str) or not 1 <= len(session_id) <= 128
+            or not all(character.isascii() and (character.isalnum() or character in "-_") for character in session_id)
+        ):
+            raise RuntimeError("WebDriver did not return a valid session id")
+        session_url = f"http://127.0.0.1:{port}/session/{session_id}"
+        _request_json(
+            f"{session_url}/timeouts", method="POST",
+            payload={"script": 15000, "pageLoad": 15000, "implicit": 0}, timeout=5,
+        )
+        yield "firefox", _FirefoxBrowser(session_url)
+    finally:
+        try:
+            if session_url is not None:
+                # A closed/crashed browser may reject DELETE; the owned driver is still stopped and waited below.
+                with suppress(OSError, RuntimeError, TypeError, ValueError):
+                    _request_json(session_url, method="DELETE", timeout=3)
+        finally:
+            if driver.poll() is None:
+                driver.terminate()
+            try:
+                driver.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                driver.kill()
+                driver.wait(timeout=5)
+
+
+def _live_browser(url: str) -> dict[str, object]:
+    with _live_browser_session() as (browser_name, browser):
+        browser.set_viewport(1440, 1100)
+        browser.navigate(url)
+        _wait(lambda: bool(browser.execute("return !!window.TraderDashboardDiagnostics;")), timeout_seconds=15)
+        profiles = browser.execute("return Array.from(document.querySelectorAll('.profile-tab'), b => b.dataset.profile);")
         if not isinstance(profiles, list) or not profiles or any(p not in ("v1", "v2", "v3", "v5") for p in profiles):
             raise RuntimeError("live browser has no valid enabled profiles")
         results = []
         views = [(p, s) for p in profiles for s in ("tomorrow", "d25")]
         views.append((profiles[0], "long"))
         for profile, strategy in views:
-            chrome.execute(f"document.querySelector('.profile-tab[data-profile={profile}]').click(); return true;")
-            chrome.execute(f"document.querySelector('.strategy-tab[data-strategy={strategy}]').click(); return true;")
+            browser.execute(f"document.querySelector('.profile-tab[data-profile={profile}]').click(); return true;")
+            browser.execute(f"document.querySelector('.strategy-tab[data-strategy={strategy}]').click(); return true;")
             result: object = None
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
-                result = chrome.execute("""return (async () => {
+                result = browser.execute("""return (async () => {
                   const profile = document.querySelector('.profile-tab[aria-selected=true]')?.dataset.profile;
                   const strategy = document.querySelector('.strategy-tab[aria-selected=true]')?.dataset.strategy;
                   const response = await fetch(`/api/freezes/${strategy}/current?profile=${profile}`);
@@ -880,9 +967,7 @@ def _live_browser(url: str) -> dict[str, object]:
                      and row.get("stream") == "实时" and row.get("requested_view_matched")
                      and row.get("status") == "ready" and row.get("quotes_complete") for row in results)
         return {"schema_version": "web-live-browser", "passed": passed,
-                "summary": {"fixture": False, "profiles": profiles, "strategies": results}}
-    finally:
-        chrome.close()
+                "summary": {"fixture": False, "browser": browser_name, "profiles": profiles, "strategies": results}}
 
 
 def Main() -> int:

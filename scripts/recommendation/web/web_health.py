@@ -79,6 +79,8 @@ def _parser() -> argparse.ArgumentParser:
         help="wall-clock delay between samples (default: 5)",
     )
     parser.add_argument("--timeout-seconds", type=float, default=3.0, help="timeout per HTTP request")
+    parser.add_argument("--complete-rounds", type=int, default=0, help="explicit SSE/atomic API eight-head observation")
+    parser.add_argument("--observation-seconds", type=float, help="complete-round observation budget, at most 900 seconds")
     parser.add_argument(
         "--consecutive-zero-threshold",
         type=int,
@@ -571,6 +573,11 @@ def _freeze_contract_findings(
         )
     )
     for code_field, evidence_field, status_value, freeze_value in comparisons:
+        if (
+            code_field == "projection" and strategy_status is not None
+            and _private_draft_projection(strategy_status, freeze)
+        ):
+            continue
         if status_value != freeze_value:
             findings.append(
                 _finding(
@@ -1268,11 +1275,35 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
     }
 
 
+def _private_draft_projection(status: ProjectionSnapshot, current: ProjectionSnapshot) -> bool:
+    if not (
+        status.status == current.status == "not_ready"
+        and status.freeze_identity_known and current.freeze_identity_known
+        and status.freeze_version is None and current.freeze_version is None
+        and status.projection_version is None
+        and status.frozen is False and current.frozen is False
+        and current.item_count == 0
+    ):
+        return False
+    projection = current.projection_version
+    draft = current.draft_version
+    if projection is None or draft is None:
+        return False
+    if projection == draft:
+        return True
+    prefix = f"{draft}+industry:"
+    suffix = projection[len(prefix):]
+    return projection.startswith(prefix) and len(suffix) == 16 and all(char in "0123456789abcdef" for char in suffix)
+
+
 def _projection_summary(payload: ProjectionSnapshot | None) -> dict[str, object]:
     return {
         "status": payload.status if payload is not None else None,
         "trade_date": payload.trade_date if payload is not None else None,
         "projection_version": payload.projection_version if payload is not None else None,
+        "freeze_version": payload.freeze_version if payload is not None else None,
+        "freeze_identity_known": payload.freeze_identity_known if payload is not None else False,
+        "draft_version": payload.draft_version if payload is not None else None,
         "frozen": payload.frozen if payload is not None else None,
         "candidate_count": payload.coverage.candidate_count if payload is not None else None,
         "evaluated_count": payload.coverage.evaluated_count if payload is not None else None,
@@ -1364,6 +1395,11 @@ def _validate_args(args: argparse.Namespace) -> tuple[str, tuple[str, ...]]:
     if not 1 <= args.consecutive_zero_threshold <= args.samples:
         raise ValueError("--consecutive-zero-threshold must be between 1 and --samples")
     strategies = tuple(dict.fromkeys(args.strategies or _STRATEGIES))
+    if args.complete_rounds:
+        if args.strategies or args.observation_seconds is None:
+            raise ValueError("complete-round observation requires both strategies and an observation budget")
+    elif args.observation_seconds is not None:
+        raise ValueError("--observation-seconds requires --complete-rounds")
     return _normalize_base_url(args.base_url), strategies
 
 
@@ -1382,6 +1418,29 @@ def Main() -> int:
     args = parser.parse_args()
     try:
         base_url, strategies = _validate_args(args)
+        if args.complete_rounds:
+            from trader.bootstrap import OpenExternalHttp
+            from scripts.recommendation.web.complete_round_observation import ObservationFetchError, ObserveCompleteRounds
+
+            def fetch_mapping(url: str, timeout_seconds: float) -> Mapping[str, object]:
+                try:
+                    return _fetch_mapping(url, timeout_seconds)
+                except FetchError as exc:
+                    raise ObservationFetchError(exc.error_code) from exc
+
+            with OpenExternalHttp() as transport:
+                report = ObserveCompleteRounds(
+                    base_url,
+                    required_rounds=args.complete_rounds,
+                    observation_seconds=args.observation_seconds,
+                    interval_seconds=args.interval_seconds,
+                    timeout_seconds=args.timeout_seconds,
+                    scoring_profile=args.profile,
+                    fetch_mapping=fetch_mapping,
+                    transport=transport,
+                )
+            emit_report(report)
+            return 0 if report.get("status") == "passed" else 1
         samples = collect_samples(
             base_url,
             strategies=strategies,

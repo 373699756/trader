@@ -17,6 +17,36 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
     if source is None or result.error_code is not None:
         return result
     schema = source.get("schema_version")
+    if schema == "company-field-replay":
+        valid = (
+            isinstance(source.get("status"), str) and source.get("status") in ("passed", "degraded", "failed")
+            and source.get("read_only_source") is True and source.get("isolated_copy") is True
+            and source.get("production_authorized") is False and source.get("field_correctness_verified") is False
+            and source.get("full_market_verified") is False and source.get("performance_verified") is False
+            and _migration_count(source.get("network_requests")) == 0
+            and _migration_count(source.get("source_data_writes")) == 0
+        )
+        if source.get("status") == "passed":
+            valid = valid and all(_migration_count(source.get(name)) == 0 for name in (
+                "second_new_field_attempted", "missing_texts", "round_2_publication_text_reads",
+            )) and all(source.get(name) is True for name in (
+                "source_input_unchanged", "collection_backup_generation_stable", "original_valid_receipts_unchanged",
+                "second_fields_and_publication_unchanged", "second_zero_publication_text_reads",
+            )) and source.get("migration_status") == "passed"
+        return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
+    if schema == "company-field-migration":
+        valid = (
+            isinstance(source.get("status"), str) and source.get("status") in ("passed", "degraded", "failed")
+            and source.get("read_only_source") is True and source.get("isolated_copy") is True
+            and source.get("production_authorized") is False and source.get("source_schema") == 3
+            and source.get("target_schema") == 4 and source.get("field_correctness_verified") is False
+        )
+        if source.get("status") == "passed":
+            valid = valid and _migration_count(source.get("source_data_writes")) == 0 and all(source.get(name) is True for name in (
+                "source_input_unchanged", "business_data_unchanged", "original_receipts_unchanged",
+                "target_reader_verified", "target_integrity_verified", "target_foreign_keys_verified",
+            ))
+        return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
     if schema in ("company-annual-income-source", "company-structured-field-sampling"):
         return _normalize_source_probe(result, source)
     if schema != "company-field-material":
@@ -181,6 +211,24 @@ def _structured_field_details(source: Mapping[str, object], payload: dict[str, o
         ]
         projected["fields"] = _field_statistics(sample.get("fields"))
         projected["identity_samples"] = _identity_samples(sample.get("identity_samples"), sample.get("dataset"))
+        typed = sample.get("typed_fields")
+        if isinstance(typed, dict):
+            typed_status = typed.get("status")
+            failure = typed.get("failure")
+            observations = SafeNonnegativeInt(typed.get("observations"))
+            reasons = ProjectMapping(typed.get("reasons"))
+            projected["typed_fields"] = {
+                "status": typed_status if typed_status in ("decoded", "rejected") else None,
+                "failure": failure if failure in ("TypeError", "ValueError") else None,
+                "observations": observations if observations is not None and observations <= 500 else None,
+                "reasons": {
+                    reason: count for reason in (
+                        "event_identity_unverified", "point_in_time_unverified", "source_after_cutoff",
+                    ) if (count := SafeNonnegativeInt(reasons.get(reason))) is not None and count <= 500
+                },
+                "production_adopted": False,
+                "field_correctness_verified": False,
+            }
         samples.append(projected)
     observation = source.get("observation_status", source.get("status"))
     payload["summary"] = {
@@ -240,6 +288,25 @@ def _material_details(source: Mapping[str, object], payload: dict[str, object]) 
             if isinstance(contract, dict)
         ]
         row["contracts_truncated"] = isinstance(contracts, list) and len(contracts) > 16
+        actions = item.get("share_actions")
+        row["share_actions"] = [
+            {**{name: _text(action.get(name)) for name in (
+                "event_id", "event_type", "subject", "status", "repurchase_purpose",
+            )}, "actual_pct": _number(action.get("actual_pct"))}
+            for action in (actions[:16] if isinstance(actions, list) else []) if isinstance(action, dict)
+        ]
+        row["share_actions_truncated"] = isinstance(actions, list) and len(actions) > 16
+        conclusions = item.get("field_conclusions")
+        row["field_conclusions"] = _field_conclusions(conclusions)
+        row["field_conclusions_truncated"] = isinstance(conclusions, list) and len(conclusions) > 32
+        reparsed = item.get("reparsed_share_action")
+        if isinstance(reparsed, dict):
+            row["reparsed_share_action"] = {
+                **{name: _text(reparsed.get(name)) for name in ("event_type", "subject", "status", "repurchase_purpose")},
+                "actual_pct": _number(reparsed.get("actual_pct")),
+                "positive_level": SafeNonnegativeInt(reparsed.get("positive_level")),
+                "published": False,
+            }
         projected.append(row)
     observation = source.get("observation_status", source.get("status"))
     missing = source.get("missing_source_keys")
@@ -252,6 +319,28 @@ def _material_details(source: Mapping[str, object], payload: dict[str, object]) 
         "items": projected,
         "items_truncated": isinstance(items, list) and len(items) > 32,
     }
+
+
+def _field_conclusions(value: object, limit: int = 32) -> list[dict[str, object]]:
+    projected: list[dict[str, object]] = []
+    for result in (value[:limit] if isinstance(value, list) else []):
+        if not isinstance(result, dict):
+            continue
+        raw_value = result.get("value")
+        proofs = result.get("evidence")
+        projected.append({
+            **{name: _text(result.get(name)) for name in ("event_id", "field", "state", "reason")},
+            "code": _text(result.get("code"), 6),
+            "value": _text(raw_value) if isinstance(raw_value, str) else _number(raw_value),
+            "applicable": result.get("applicable") is True,
+            "evidence": [{
+                **{name: _text(proof.get(name)) for name in (
+                    "source", "source_key", "record_hash", "body_hash", "rule_id", "unit", "subject", "published_at",
+                )},
+                **{name: SafeNonnegativeInt(proof.get(name)) for name in ("start_line", "end_line")},
+            } for proof in (proofs[:4] if isinstance(proofs, list) else []) if isinstance(proof, dict)],
+        })
+    return projected
 
 
 def _research_source_compare_details(
@@ -310,6 +399,69 @@ _DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[st
 
 
 def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    if source.get("schema_version") == "company-field-replay":
+        codes = source.get("codes")
+        keys = source.get("source_keys")
+        payload["summary"] = {
+            **{name: source.get(name) is True for name in (
+                "read_only_source", "isolated_copy", "collection_backup_generation_stable",
+                "original_valid_receipts_unchanged", "second_fields_and_publication_unchanged",
+                "second_zero_publication_text_reads", "source_input_unchanged", "fields_truncated", "deadline_exceeded",
+                "collection_source_files_unchanged", "facts_source_files_unchanged", "source_empty_wal_created",
+            )},
+            **{name: _migration_count(source.get(name)) for name in (
+                "network_requests", "source_data_writes", "required_texts", "copied_texts", "missing_texts",
+                "compressed_text_bytes", "expanded_text_bytes", "round_1_initialize_text_reads",
+                "round_1_publication_text_reads", "round_1_total_text_reads", "round_2_initialize_text_reads",
+                "round_2_publication_text_reads", "round_2_total_text_reads", "initial_field_attempted",
+                "first_field_attempted", "second_field_attempted", "second_new_field_attempted", "fields",
+            )},
+            **{name: _text(source.get(name), 110) for name in (
+                "migration_status", "first_publication_hash", "second_publication_hash", "failure_category", "failure_code",
+            )},
+            "source_input_comparison": "database_wal_receipt_sha256_exact",
+            "codes": [code for code in (codes[:6] if isinstance(codes, (tuple, list)) else [])
+                      if isinstance(code, str) and len(code) == 6 and code.isascii() and code.isdigit()],
+            "source_keys": [key[:240] for key in (keys[:6] if isinstance(keys, (tuple, list)) else []) if isinstance(key, str)],
+            "field_items": _field_conclusions(source.get("field_items"), 100),
+            "field_states": _bounded_migration_counts(source.get("field_states"), (
+                "verified", "present_unverified", "not_applicable", "pending_download", "pending_extraction",
+                "pending_publication", "verification_required", "unsupported", "out_of_range", "not_disclosed",
+            )),
+            "production_authorized": False, "field_correctness_verified": False,
+            "full_market_verified": False, "performance_verified": False,
+            **{name: _digest_triplet(source.get(name)) for name in (
+                "collection_source_files_sha256_before", "collection_source_files_sha256_after",
+            )},
+        }
+        return
+    if source.get("schema_version") == "company-field-migration":
+        payload["summary"] = {
+            **{name: source.get(name) is True for name in (
+                "read_only_source", "isolated_copy",
+                "baseline_is_not_field_verification", "source_input_unchanged", "business_data_unchanged",
+                "original_receipts_unchanged", "target_reader_verified", "target_integrity_verified",
+                "target_foreign_keys_verified", "deadline_exceeded",
+            )},
+            **{name: _migration_count(source.get(name)) for name in (
+                "source_schema", "target_schema", "source_data_writes", "fields",
+            )},
+            **{name: _text(source.get(name), 64) for name in (
+                "source_publication_hash", "source_extraction_hash", "source_snapshot_sha256",
+                "target_publication_hash", "failure_category",
+            )},
+            "production_authorized": False, "field_correctness_verified": False,
+            "field_states": _bounded_migration_counts(source.get("field_states"), (
+                "verified", "present_unverified", "not_applicable", "pending_download", "pending_extraction",
+                "pending_publication", "verification_required", "unsupported", "out_of_range", "not_disclosed",
+            )),
+            "preserved_business_tables": _bounded_migration_counts(source.get("preserved_business_tables"), (
+                "company_facts", "company_input_receipt", "company_evidence_ref", "company_risk_event",
+                "company_reduction_plan", "company_positive_event", "company_positive_milestone", "company_unlock",
+                "company_review", "company_risk_evidence", "company_positive_evidence", "company_exclusion",
+            )),
+        }
+        return
     if source.get("schema_version") == "company-field-material":
         _material_details(source, payload)
         return
@@ -320,3 +472,20 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
         _structured_field_details(source, payload)
         return
     _DETAILS.get(result.name, ProjectSummary)(result, source, payload)
+
+
+def _bounded_migration_counts(value: object, names: tuple[str, ...]) -> dict[str, int]:
+    fields = ProjectMapping(value)
+    return {name: count for name in names
+            if (count := _migration_count(fields.get(name))) is not None}
+
+
+def _migration_count(value: object) -> int | None:
+    count = SafeNonnegativeInt(value)
+    return count if count is not None and count <= 1_000_000_000 else None
+
+
+def _digest_triplet(value: object) -> dict[str, str | None]:
+    values = value if isinstance(value, (tuple, list)) and len(value) == 3 else (None, None, None)
+    return {name: digest if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) else None
+            for name, digest in zip(("database", "wal", "receipt"), values, strict=True)}

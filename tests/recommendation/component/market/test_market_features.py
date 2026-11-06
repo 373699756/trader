@@ -1,0 +1,549 @@
+from __future__ import annotations
+
+import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
+
+from tests.helpers.recommendation.market_data import (
+    AFTERNOON,
+    FEATURE_WEIGHT_POLICY,
+    LONG_POLICY,
+    MARKET_REGIME_POLICY,
+    NEWS_POLICY,
+    NOW,
+    TAIL_POLICY,
+    BaoStockIndustryClient,
+    BaoStockIndustryRow,
+    BuildHistoryContext,
+    ConfigurationError,
+    CountingHistoryClient,
+    DailyBar,
+    FeatureBuilder,
+    HistoryAdjustmentError,
+    LoadStrategySettings,
+    Path,
+    PriceAdjustment,
+    StaticGateway,
+    StaticHistoryClient,
+    _history_bars,
+    _quote,
+    _service,
+    _tail_minute_bars,
+    json,
+    pytest,
+    replace,
+)
+from tests.helpers.shared.reference_fixtures import PreparedFixture
+from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.infra.settings.models import HistoryPreloadSettings
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
+from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs, RoundInputs
+from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
+
+
+def test_profile_candidate_features_share_one_quote_cut_without_hot_database_connections(monkeypatch):
+    class Gateway(StaticGateway):
+        def __init__(self):
+            super().__init__(tuple(_quote(code=code) for code in ("600001", "600002", "600003")))
+            self.requests = []
+
+        def fetch_candidates(self, codes, **kwargs):
+            self.requests.append(codes)
+            return super().fetch_candidates(codes, **kwargs)
+
+    gateway = Gateway()
+    profiles = ("v1", "v2", "v3", "v5")
+    services = tuple(
+        _service(gateway, StaticHistoryClient(), FeatureBuilder(
+            NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY,
+        )) for _ in profiles
+    )
+    requested = ((), ("600001",), ("600001", "600002"), ("600003",))
+    inputs = RoundInputs(profiles, lambda: 10.0)
+
+    def no_database(*args, **kwargs):
+        pytest.fail("candidate hot path opened a database")
+
+    monkeypatch.setattr("sqlite3.connect", no_database)
+
+    def refresh(index):
+        return services[index].refresh_candidate_quotes(
+            requested[index], NOW, round_inputs=ProfileRoundInputs(profiles[index], inputs),
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        features = tuple(pool.map(refresh, range(4)))
+    assert gateway.requests == [("600001", "600002", "600003")]
+    assert tuple(tuple(feature.quote.code for feature in group) for group in features) == requested
+    assert features[1][0].quote == features[2][0].quote
+
+
+@pytest.mark.parametrize("stop_at", ("raw", "cross_section", "snapshot"))
+def test_cancelled_market_factor_build_preserves_last_published_cache(monkeypatch, stop_at):
+    from trader.recommendation.infra.normalization import features as feature_module
+
+    quotes = (_quote(code="600001"), _quote(code="600002"))
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    service = _service(StaticGateway(quotes), StaticHistoryClient(), builder)
+    previous = service.fetch_market_feature_batch(NOW, force=True)
+    published = service.quotes.market_features()
+    remaining = [10.0]
+    inputs = RoundInputs(("v2",), lambda: remaining[0])
+    observed = []
+
+    if stop_at == "raw":
+        original_raw = builder._raw_features
+
+        def expire_after_raw(quote, bars, history_summary=None):
+            observed.append(quote.code)
+            result = original_raw(quote, bars, history_summary)
+            remaining[0] = 0.0
+            return result
+
+        monkeypatch.setattr(builder, "_raw_features", expire_after_raw)
+    elif stop_at == "cross_section":
+        original_cross_section = feature_module.BuildCrossSectionFeatures
+
+        def expire_after_cross_section(*args, **kwargs):
+            result = original_cross_section(*args, **kwargs)
+            remaining[0] = 0.0
+            return result
+
+        monkeypatch.setattr(feature_module, "BuildCrossSectionFeatures", expire_after_cross_section)
+    else:
+        original_news = feature_module.DeriveNewsSignals
+
+        def expire_during_snapshot(*args, **kwargs):
+            observed.append("snapshot")
+            result = original_news(*args, **kwargs)
+            remaining[0] = 0.0
+            return result
+
+        monkeypatch.setattr(feature_module, "DeriveNewsSignals", expire_during_snapshot)
+
+    with pytest.raises(MarketDataDeadlineExceededError, match="market_feature_calculation_cancelled"):
+        service.fetch_market_feature_batch(
+            NOW,
+            force=True,
+            deadline=NOW + timedelta(seconds=120),
+            round_inputs=ProfileRoundInputs("v2", inputs),
+        )
+
+    assert inputs.cancelled()
+    assert service.quotes.market_features() is published
+    assert service.quotes.market_features() == previous.features
+    if stop_at == "raw":
+        assert observed == ["600001"]
+    elif stop_at == "snapshot":
+        assert observed == ["snapshot"]
+
+
+def test_market_factor_budget_preserves_complete_features_without_cancellation():
+    quotes = (_quote(code="600001"), _quote(code="600002"))
+    services = tuple(
+        _service(
+            StaticGateway(quotes),
+            StaticHistoryClient(),
+            FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        )
+        for _ in range(2)
+    )
+    expected = services[0].fetch_market_feature_batch(NOW, force=True)
+    inputs = RoundInputs(("v2",), lambda: 120.0)
+    actual = services[1].fetch_market_feature_batch(
+        NOW,
+        force=True,
+        deadline=NOW + timedelta(seconds=120),
+        round_inputs=ProfileRoundInputs("v2", inputs),
+    )
+    assert actual.features == expected.features
+    assert services[1].quotes.market_features() == services[0].quotes.market_features()
+
+
+def test_current_model_industry_enriches_features_and_replaces_display_sector() -> None:
+    client = BaoStockIndustryClient(
+        fetch_rows=lambda _date, _timeout: (
+            BaoStockIndustryRow("sh.600001", "J66货币金融服务", "证监会行业分类", "2026-07-10"),
+        ),
+        timeout_seconds=1.0,
+        minimum_rows=1,
+    )
+    industries = client.fetch(NOW)
+    reference = PreparedFixture(NOW, industry_version=industries[0].data_version)
+    service = _service(
+        StaticGateway((_quote(industry="银行板块"),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        published_references=PublishedReferences(
+            lambda: reference, lambda: reference.identity, lambda _: industries, max_age_seconds=86400
+        ),
+    )
+
+    feature = service.fetch_market_features(NOW, force=True)[0]
+
+    assert feature.quote.industry == "J66货币金融服务"
+    assert feature.model_industry is not None
+    assert feature.model_industry.industry_id == "J66货币金融服务"
+    assert service.health()["sources"]["baostock_industry"]["snapshot_rows"] == 1
+
+
+def test_feature_builder_does_not_compute_limit_proximity_when_limit_is_inapplicable() -> None:
+    quote = replace(
+        _quote(),
+        has_price_limit=False,
+        exchange_limit_pct=None,
+        listing_age_sessions=1,
+    )
+
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
+        (quote,), {}, NOW
+    )[0]
+
+    assert feature.values["limit_proximity"] is None
+    assert feature.values["limit_distance_safety"] is None
+
+
+def test_model_binding_replaces_auxiliary_restrictions_and_preserves_exchange_restrictions() -> None:
+    quote = replace(_quote(), execution_restrictions=("exchange_suspension", "history_data_degraded"))
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    service = _service(StaticGateway((quote,)), StaticHistoryClient(), builder)
+    bars = {quote.code: _history_bars()}
+    expected = builder.build(service.quotes._with_industry_quotes((quote,), NOW), bars, NOW)[0]
+    feature = service.quotes.build_market_features(
+        (quote,), bars, NOW, action_restrictions={quote.code: {"research_data_degraded"}}
+    )[0]
+    assert feature.quote.execution_restrictions == ("exchange_suspension", "research_data_degraded")
+    assert quote.execution_restrictions == ("exchange_suspension", "history_data_degraded")
+    assert feature.values == expected.values
+    assert feature.evidence == expected.evidence
+    assert feature.model_history_quality is not None
+
+
+def test_feature_builder_marks_history_missing_and_builds_cross_section() -> None:
+    quote = _quote()
+    bars = tuple(
+        DailyBar(
+            trade_date=f"2026-06-{index:02d}",
+            open_price=10 + index / 100,
+            close=10 + index / 100,
+            high=10.2 + index / 100,
+            low=9.8 + index / 100,
+            volume=1_000_000,
+            amount=100_000_000 + index,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index in range(1, 61)
+    )
+
+    with_history, without_history = FeatureBuilder(
+        NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY
+    ).build(
+        (quote, _quote(code="600002", industry="银行")),
+        {"600001": bars},
+        NOW,
+    )
+
+    assert with_history.history_days == 60
+    assert with_history.optional_value("return_20d") is not None
+    assert without_history.history_days == 0
+    assert without_history.optional_value("return_20d") is None
+    assert "return_20d" in without_history.missing_fields
+
+
+def test_targeted_feature_build_preserves_full_market_cross_section() -> None:
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    low = replace(_quote(code="600001"), speed=0.1)
+    middle = replace(_quote(code="600002"), speed=0.2)
+    high = replace(_quote(code="600003"), speed=0.3)
+    market = builder.build((low, middle, high), {}, NOW)
+    reference = {item.quote.code: item.values for item in market}
+
+    targeted = builder.build((high,), {}, NOW, cross_section_reference=reference)
+
+    assert market[-1].values["speed_percentile"] == 100.0
+    assert targeted[0].values["speed_percentile"] == 100.0
+
+
+def test_feature_builder_partitions_cross_sections_and_excludes_missing_breadth() -> None:
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    quotes = (
+        replace(_quote(code="600001"), speed=0.1, pct_change=1.0, data_version="fixture-group-a"),
+        replace(_quote(code="600002"), speed=0.2, pct_change=-1.0, data_version="fixture-group-a"),
+        replace(_quote(code="600003"), speed=0.1, pct_change=None, data_version="fixture-group-b"),
+        replace(_quote(code="600004"), speed=0.2, pct_change=2.0, data_version="fixture-group-b"),
+    )
+
+    features = builder.build(quotes, {}, NOW)
+
+    assert [item.values["speed_percentile"] for item in features] == [0.0, 100.0, 0.0, 100.0]
+    assert features[0].values["market_breadth"] == 50.0
+    assert features[2].values["market_breadth"] == 100.0
+    assert features[0].market_regime == "neutral"
+    assert features[2].market_regime == "risk_on"
+    assert features[0].normalization["speed_percentile"].sample_size == 2
+    assert features[2].normalization["market_breadth"].missing_count == 1
+    assert features[2].values["limit_proximity"] is None
+    assert "pct_change" in features[2].missing_fields
+    assert "limit_proximity" in features[2].missing_fields
+
+
+def test_market_service_loads_history_before_cold_start_candidate_cross_section() -> None:
+    history = CountingHistoryClient(_history_bars())
+    service = _service(
+        StaticGateway((_quote(), _quote(code="600002"))),
+        history,
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        history_workers=2,
+    )
+
+    features = service.fetch_market_features(NOW)
+
+    assert sorted(history.calls) == ["600001", "600002"]
+    assert all(item.history_days == 60 for item in features)
+    assert service.health()["history_coverage_ratio"] == 1.0
+    assert service.health()["history_universe_rows"] == 2
+
+
+def test_missing_history_remains_unavailable_without_recovery() -> None:
+    class _MissingHistory:
+        def manifest(self):
+            return None
+
+    source = _MissingHistory()
+    history = PublishedHistoryCache(
+        source,
+        lookback_sessions=61,
+        monotonic=time.monotonic,
+        projection_owner=SharedHistoryProjection(
+            source, monotonic=time.monotonic,
+            settings=HistoryPreloadSettings(warn_after_seconds=300.0),
+        ),
+    )
+    restrictions = {}
+    assert history.load(("600001", "600002"), action_restrictions=restrictions) == {}
+    assert restrictions == {code: {"history_data_pending"} for code in ("600001", "600002")}
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+    )
+    health = MarketDataHealth(
+        MarketDataHealthDependencies(
+            service.quotes,
+            history,
+            service.research,
+            service.intraday,
+            service.references,
+            service.eligibility,
+        ),
+        wall_clock=lambda: NOW,
+    ).health()
+    assert health["published_history_state"] == "unavailable"
+    assert not any(key.startswith(("history_recovery_", "history_tail_")) for key in health)
+
+
+def test_feature_builder_rejects_unadjusted_history_for_qfq_features() -> None:
+    raw_bars = tuple(replace(bar, adjustment=PriceAdjustment.RAW, source="tushare") for bar in _history_bars())
+
+    with pytest.raises(HistoryAdjustmentError, match="requires qfq"):
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
+            (_quote(),),
+            {"600001": raw_bars},
+            NOW,
+        )
+
+
+def test_strategy_factor_index_is_complete_and_required() -> None:
+    path = Path(__file__).parents[4] / "config" / "strategy.json"
+    settings = LoadStrategySettings(path)
+
+    assert settings.factor_index["atr20_pct"].factor_id == "atr20_pct"
+    assert settings.strategy_version.startswith("strategy_sha256_")
+
+
+def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
+    source = Path(__file__).parents[4] / "config"
+    target = tmp_path / "config"
+    shutil.copytree(source, target)
+    features = target / "features.json"
+    raw = json.loads(features.read_text(encoding="utf-8"))
+    del raw["factor_index"]["atr20_pct"]
+    features.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="factor_index mismatch"):
+        LoadStrategySettings(target / "strategy.json")
+
+
+def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_inputs() -> None:
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
+        (_quote(),),
+        {"600001": _history_bars()},
+        AFTERNOON,
+        intraday_minutes={"600001": _tail_minute_bars()},
+    )[0]
+
+    required = {
+        "amount_percentile_20d",
+        "relative_strength_5d",
+        "relative_strength_20d",
+        "price_volume_confirmation",
+        "moderate_daily_return",
+        "ma20_60_position",
+        "ma_slope",
+        "breakout_20d",
+        "industry_trend",
+        "risk_adjusted_return_20d",
+        "low_drawdown_score",
+        "upward_consistency",
+        "capacity_score",
+        "moderate_amplitude",
+        "limit_distance_safety",
+        "tail_return_30m",
+        "tail_volume_ratio",
+        "close_location",
+    }
+    assert all(feature.optional_value(name) is not None for name in required)
+    assert required.isdisjoint(feature.missing_fields)
+
+
+@pytest.mark.parametrize("minutes", ({}, {"600001": _tail_minute_bars()}))
+def test_minute_extension_matches_full_build_and_preserves_base(minutes) -> None:
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    base = builder.build((_quote(),), {"600001": _history_bars()}, AFTERNOON)
+    expected = builder.build((_quote(),), {"600001": _history_bars()}, AFTERNOON, intraday_minutes=minutes)
+    extended = builder.with_intraday(base, minutes, AFTERNOON)
+    assert extended == expected
+    assert "tail_return_30m" not in base[0].values
+    assert extended[0].quote is base[0].quote
+    assert extended[0].model_sequence is base[0].model_sequence
+    assert extended[0].company_context is base[0].company_context
+    assert builder.with_intraday(extended, minutes, AFTERNOON) == extended
+
+
+def test_scoring_preparation_reuses_accepted_base_without_history_or_quote_reads(monkeypatch) -> None:
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    service = _service(StaticGateway((_quote(),)), StaticHistoryClient(), builder)
+    base = tuple(service.refresh_candidate_quotes(("600001",), NOW))
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("scoring preparation must reuse the accepted base")
+
+    monkeypatch.setattr(service.history, "cached", unexpected)
+    monkeypatch.setattr(service.history, "load", unexpected)
+    monkeypatch.setattr(service.research, "cached", unexpected)
+    monkeypatch.setattr(service.quotes, "candidate_snapshot", unexpected)
+    monkeypatch.setattr(service.quotes, "build_candidate_features", unexpected)
+    assert service.prepare_scoring_features(base, NOW, include_intraday_tail=False) == base
+    tomorrow = service.prepare_scoring_features(base, NOW, include_intraday_tail=True)
+    assert tomorrow[0].quote is base[0].quote
+    assert tomorrow[0].company_context is base[0].company_context
+    assert tomorrow[0].optional_value("tail_return_30m") is None
+
+
+def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_sessions() -> None:
+    bars = tuple(
+        DailyBar(
+            trade_date=(date(2026, 7, 16) - timedelta(days=60 - index)).isoformat(),
+            open_price=10.0 + index / 100.0,
+            close=10.0 + index / 100.0,
+            high=10.1 + index / 100.0,
+            low=9.9 + index / 100.0,
+            volume=1_000_000.0,
+            amount=100_000_000.0 + index,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index in range(61)
+    )
+    quote = replace(_quote(), price=bars[-1].close, source_time=AFTERNOON)
+
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
+        (quote,),
+        {quote.code: bars[-20:]},
+        AFTERNOON,
+        history_summaries={quote.code: BuildHistoryContext(bars)},
+    )[0]
+
+    required = {
+        "qfq_return_1d",
+        "qfq_return_3d",
+        "qfq_return_5d",
+        "qfq_momentum_20d_skip5",
+        "qfq_momentum_40d_skip5",
+        "qfq_momentum_60d_skip5",
+        "qfq_amihud_20d",
+        "qfq_average_amount_20d",
+    }
+    assert all(feature.optional_value(name) is not None for name in required)
+    assert required.isdisjoint(feature.missing_fields)
+    assert feature.optional_value("qfq_return_1d") == pytest.approx(bars[-1].close / bars[-2].close - 1.0)
+    assert feature.optional_value("qfq_return_3d") == pytest.approx(bars[-1].close / bars[-4].close - 1.0)
+    assert feature.optional_value("qfq_return_5d") == pytest.approx(bars[-1].close / bars[-6].close - 1.0)
+    assert feature.optional_value("qfq_momentum_20d_skip5") == pytest.approx(bars[-6].close / bars[-21].close - 1.0)
+    assert feature.optional_value("qfq_momentum_40d_skip5") == pytest.approx(bars[-6].close / bars[-41].close - 1.0)
+    assert feature.optional_value("qfq_momentum_60d_skip5") == pytest.approx(bars[-6].close / bars[-61].close - 1.0)
+
+
+def test_live_quote_uses_yesterday_as_one_day_anchor_with_or_without_summary() -> None:
+    bars = tuple(
+        DailyBar(
+            trade_date=(date(2026, 7, 15) - timedelta(days=60 - index)).isoformat(),
+            open_price=90.0 + index / 3,
+            close=90.0 + index / 3,
+            high=91.0 + index / 3,
+            low=89.0 + index / 3,
+            volume=1_000_000.0,
+            amount=100_000_000.0,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index in range(61)
+    )
+    quote = replace(_quote(), price=121.0, source_time=AFTERNOON)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+
+    summarized = builder.build(
+        (quote,),
+        {quote.code: bars[-20:]},
+        AFTERNOON,
+        history_summaries={quote.code: BuildHistoryContext(bars)},
+    )[0]
+    direct = builder.build((quote,), {quote.code: bars}, AFTERNOON)[0]
+
+    expected = 121.0 / bars[-1].close - 1.0
+    assert summarized.optional_value("qfq_return_1d") == pytest.approx(expected)
+    assert direct.optional_value("qfq_return_1d") == pytest.approx(expected)
+    assert summarized.values["return_3d"] == pytest.approx((121.0 / bars[-3].close - 1.0) * 100.0)
+
+
+def test_future_history_summary_is_not_used_for_live_quote() -> None:
+    bars = tuple(
+        DailyBar(
+            trade_date=(date(2026, 7, 15) + timedelta(days=index)).isoformat(),
+            open_price=10.0 + index,
+            close=10.0 + index,
+            high=11.0 + index,
+            low=9.0 + index,
+            volume=1_000_000.0,
+            amount=100_000_000.0,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index in range(3)
+    )
+    quote = replace(_quote(), price=12.0, source_time=AFTERNOON)
+    context = BuildHistoryContext(bars)
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
+        (quote,), {quote.code: bars}, AFTERNOON, history_summaries={quote.code: context}
+    )[0]
+
+    assert context.anchor_price(1, quote.source_time.date().isoformat()) is None
+    assert feature.optional_value("qfq_return_1d") == pytest.approx(12.0 / 10.0 - 1.0)

@@ -300,6 +300,7 @@ class ProductionModelScoringService:
         self._monotonic = monotonic
         self._shared_features = shared_features or SharedModelFeatureCache()
         self._lock = threading.RLock()
+        self._status_lock = threading.Lock()
         self._state: _ModelComputationState | None = None
         self._cost_references: OrderedDict[_CostReferenceIdentity, _CostReference] = OrderedDict()
         self._request_count = 0
@@ -351,7 +352,7 @@ class ProductionModelScoringService:
         )
 
     def computation_status(self) -> ModelComputationStatus:
-        with self._lock:
+        with self._status_lock:
             return self._computation_status
 
     def score(
@@ -397,7 +398,7 @@ class ProductionModelScoringService:
         population.update((feature.quote.code, feature) for feature in features)
         rows_started = self._monotonic()
         prepared_rows = self._shared_features.prepare_rows(
-            self._input_population(tuple(population.values())),
+            self._feature_population(tuple(population.values())),
             self._row_contract,
         )
         rows, missing_population_codes = prepared_rows.rows, prepared_rows.missing_codes
@@ -627,17 +628,20 @@ class ProductionModelScoringService:
         )
         return batch
 
-    def _input_population(self, features: tuple[FeatureSnapshot, ...]) -> tuple[FeatureSnapshot, ...]:
+    def _feature_population(self, features: tuple[FeatureSnapshot, ...]) -> tuple[FeatureSnapshot, ...]:
         if self._predictor.profile_id != "v5":
             return features
-        return tuple(feature for feature in features if self.is_input_eligible(feature))
+        # Match the training reference before industry fitting qualifies model coverage.
+        # Raw-field, history-quality and point-in-time industry checks belong to prepare_rows.
+        return tuple(feature for feature in features if _valid_sequence(feature))
 
     def _cost_reference(
         self,
         features: tuple[FeatureSnapshot, ...],
         population_identity: str,
     ) -> _CostReference:
-        features = self._input_population(features)
+        if self._predictor.profile_id == "v5":
+            features = tuple(feature for feature in features if self.is_input_eligible(feature))
         rows = self._shared_features.prepare_rows(features, self._row_contract).rows
         eligible = tuple(
             row for row in rows if not self._exposure_contract.requires_industry or row.industry in self._industry_ids
@@ -724,7 +728,7 @@ class ProductionModelScoringService:
     ) -> None:
         all_groups = tuple(stage.calculator_group for stage in self._runtime_features.computation_plan.stages)
         computed = set(computed_groups)
-        self._computation_status = ModelComputationStatus(
+        snapshot = ModelComputationStatus(
             candidate_count=candidate_count,
             request_count=self._request_count,
             cache_hit_count=self._cache_hit_count,
@@ -738,6 +742,8 @@ class ProductionModelScoringService:
             freeze_age_ms=deadline.freeze_age_ms,
             deadline_abandon_reason=abandon_reason,
         )
+        with self._status_lock:
+            self._computation_status = snapshot
 
 
 def _valid_sequence(feature: FeatureSnapshot) -> bool:

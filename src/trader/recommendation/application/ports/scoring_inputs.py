@@ -14,7 +14,11 @@ from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts, SelectedCandidateInput
+from trader.recommendation.domain.selection.scored_selection import (
+    FilteredCandidateInputs,
+    ScoredCandidateStageCounts,
+    SelectedCandidateInput,
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,7 @@ class InputBatch:
     candidate_stage: PipelineStageOutput[SelectedCandidateInput] | None = None
     quality_identity: ScoringInputIdentity | None = None
     started_monotonic: float | None = None
+    population_qualifications: FilteredCandidateInputs | None = None
 
 
 @dataclass(frozen=True)

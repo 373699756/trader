@@ -74,7 +74,11 @@ from trader.infra.workers import BoundedExecutor
 _Parameters = ParamSpec("_Parameters")
 _Value = TypeVar("_Value")
 _ROOT = TOOL_ROOT
-_DOCUMENT_FAILURES = frozenset(failure for failure, _route, _transient in CompanyDocumentFailureRules())
+# The OCR handoff is an internal control signal, absent from persisted retry
+# rules. Preserve its known identity instead of hiding it as an unknown error.
+_DOCUMENT_FAILURES = frozenset(failure for failure, _route, _transient in CompanyDocumentFailureRules()) | {
+    "disclosure_document_ocr_required",
+}
 _SOURCE_FAILURES = frozenset({"access_denied", "rate_limited", "http_error", "timeout", "schema_invalid"})
 _RUNNING_REPORT_INTERVAL_SECONDS = 30.0
 _OPERATIONS = (

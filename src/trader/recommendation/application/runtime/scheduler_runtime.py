@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from datetime import time as wall_time
 from typing import Literal
 
-from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.infra.shutdown import ObserveShutdownStep, ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
     FreezeCommitted,
     FreezeObservation,
@@ -336,7 +336,7 @@ class SchedulerRuntime:
     ) -> bool:
         rounds = self._dependencies.rounds
         profile = self._dependencies.round_profile
-        admission = rounds.enter(profile, tasks)
+        admission = rounds.enter(profile, tuple(replace(task, session=scheduled.session) for task in tasks))
         if admission is None:
             return False
         round_deadline = ShanghaiNow(self._dependencies.clock.now()) + timedelta(
@@ -351,7 +351,7 @@ class SchedulerRuntime:
             round_deadline=round_deadline,
         )):
             return True
-        rounds.finish(profile, admission.sequence)
+        rounds.release_unqueued(profile, admission.sequence)
         return False
 
     def _submit_preview(self, observed_at: datetime) -> float:
@@ -730,30 +730,40 @@ class SchedulerRuntime:
         self,
         deadline: ShutdownDeadline,
     ) -> ShutdownReport:
-        with self._lock:
+        with ObserveShutdownStep(deadline, "runtime:state"), self._lock:
             if self._stopped:
                 return self._shutdown_report or ShutdownReport.from_steps(deadline, ())
             self._running = False
             self._stopped = True
-        self._dependencies.rounds.withdraw(self._dependencies.round_profile)
-        self._research.stop(wait=False, deadline=deadline)
-        self._dependencies.observer.close()
-        for task_lane in self._task_lanes.values():
-            task_lane.close()
-        self._score_lane.close()
-        for strategy_lane in self._lanes.values():
-            strategy_lane.close()
-        for hybrid_lane in self._hybrid_lanes.values():
-            hybrid_lane.close()
-        steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
-        steps.extend(lane.stop(deadline=deadline) for lane in self._task_lanes.values())
-        steps.append(self._score_lane.stop(deadline=deadline))
-        steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
-        steps.extend(
-            self._hybrid_lanes[strategy].stop(deadline=deadline) for strategy in (Strategy.TOMORROW, Strategy.D25)
-        )
-        steps.append(self._dependencies.observer.stop(deadline=deadline))
-        steps.append(self._research.stop(wait=True, deadline=deadline))
+        with ObserveShutdownStep(deadline, "runtime:rounds"):
+            self._dependencies.rounds.withdraw(self._dependencies.round_profile)
+        with ObserveShutdownStep(deadline, "runtime:research_close"):
+            self._research.stop(wait=False, deadline=deadline)
+        with ObserveShutdownStep(deadline, "runtime:lanes_close"):
+            self._dependencies.observer.close()
+            for task_lane in self._task_lanes.values():
+                task_lane.close()
+            self._score_lane.close()
+            for strategy_lane in self._lanes.values():
+                strategy_lane.close()
+            for hybrid_lane in self._hybrid_lanes.values():
+                hybrid_lane.close()
+        with ObserveShutdownStep(deadline, "runtime:control"):
+            steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
+        with ObserveShutdownStep(deadline, "runtime:task_lanes"):
+            steps.extend(lane.stop(deadline=deadline) for lane in self._task_lanes.values())
+        with ObserveShutdownStep(deadline, "runtime:score_wave"):
+            steps.append(self._score_lane.stop(deadline=deadline))
+        for strategy in Strategy:
+            with ObserveShutdownStep(deadline, f"runtime:local:{strategy.value}"):
+                steps.append(self._lanes[strategy].stop(deadline=deadline))
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
+            with ObserveShutdownStep(deadline, f"runtime:hybrid:{strategy.value}"):
+                steps.append(self._hybrid_lanes[strategy].stop(deadline=deadline))
+        with ObserveShutdownStep(deadline, "runtime:observer"):
+            steps.append(self._dependencies.observer.stop(deadline=deadline))
+        with ObserveShutdownStep(deadline, "runtime:research"):
+            steps.append(self._research.stop(wait=True, deadline=deadline))
         report = ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
         with self._lock:
             self._shutdown_report = report
@@ -767,6 +777,17 @@ class SchedulerRuntime:
         task_lanes = (*tuple(lane.status() for lane in self._task_lanes.values()), self._score_lane.status())
         preview = self._preview.status()
         preview_context = self._dependencies.run_scope.preview if self._dependencies.run_scope else None
+        recommendation_round = self._dependencies.rounds.status()
+        cadence = self._dependencies.cadence.status()
+        observer = self._dependencies.observer.status()
+        deepseek = self._dependencies.reviews.runtime_contract
+        company_research = self._research.status()
+        input_quality = self._dependencies.freezes.input_quality_status()
+        publication_io = (
+            self._dependencies.publication_io.snapshots() if self._dependencies.publication_io is not None else ()
+        )
+        # A collaborator may wait on its own work; keep that wait outside the
+        # scheduler lock while capturing our counters and issues together.
         with self._lock:
             issues = self._issues.snapshot()
             if preview_context is not None and preview.state == "ready":
@@ -778,16 +799,16 @@ class SchedulerRuntime:
                 preview = replace(preview, error=issues.last_error_code or preview.error)
             return SchedulerRuntimeStatus(
                 running=self._running,
-                recommendation_round=self._dependencies.rounds.status(),
+                recommendation_round=recommendation_round,
                 phase=self._phase,
                 config_version=self._config_version,
                 lanes=lanes,
                 hybrid_lanes=hybrid_lanes,
                 task_lanes=task_lanes,
-                cadence=self._dependencies.cadence.status(),
-                observer=self._dependencies.observer.status(),
-                deepseek=self._dependencies.reviews.runtime_contract,
-                company_research=self._research.status(),
+                cadence=cadence,
+                observer=observer,
+                deepseek=deepseek,
+                company_research=company_research,
                 control_running=control.running,
                 control_inflight=control.inflight,
                 control_rejected_count=control.rejected_count,
@@ -807,14 +828,12 @@ class SchedulerRuntime:
                 last_error_code=issues.last_error_code,
                 strategy_error_codes=issues.strategy_error_codes,
                 recent_errors=issues.recent_errors,
-                input_quality=self._dependencies.freezes.input_quality_status(),
+                input_quality=input_quality,
                 preview_context=preview_context,
                 preview_state=preview.state if preview_context is not None else None,
                 preview_error=preview.error if preview_context is not None else None,
                 session=session,
-                publication_io=self._dependencies.publication_io.snapshots()
-                if self._dependencies.publication_io is not None
-                else (),
+                publication_io=publication_io,
                 calendar=TradingCalendarRuntimeStatus(
                     state=self._calendar_state,
                     trade_date=self._calendar_trade_date,
@@ -869,6 +888,12 @@ class SchedulerRuntime:
                 strategy=strategy,
                 stages=frozenset({"refresh", "freeze", "review", "publish"}),
             )
+            if not hybrid and not publish_event:
+                # This callback follows acceptance of the complete profile
+                # batch; a standalone publication cannot recover its timeout.
+                self._resolve_issues_locked(
+                    stages=frozenset({"refresh"}), code="refresh:round_collection_timeout",
+                )
         if event is not None and publish_event:
             try:
                 assert isinstance(identity, ScoredFreeze)
@@ -981,12 +1006,14 @@ class SchedulerRuntime:
         strategy: Strategy | None = None,
         stages: frozenset[str] | None = None,
         task: PipelineTask | None = None,
+        code: str | None = None,
     ) -> None:
         self._issues.resolve(
             ShanghaiNow(self._dependencies.clock.now()),
             strategy=strategy,
             stages=stages,
             task=task,
+            code=code,
         )
 
 

@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from datetime import datetime
 
 from trader.infra.sqlite_observation import SqliteActivity, SqliteObservation
 from trader.recommendation.application.pipeline.freeze_publish.current_publisher import (
@@ -18,7 +19,7 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
     UnifiedPairedPublishResult,
     UnifiedProfiledPublishResult,
 )
-from trader.recommendation.application.runtime.cadence import ScheduledPipelineTask
+from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
 from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs, RoundInputs
 
 ROUND_TIMEOUT_SECONDS = 120.0
@@ -66,6 +67,7 @@ class RecommendationRounds:
         self._prepare_publication: dict[str, Callable[[], None]] = {}
         self._sequence = 0
         self._active: RoundAdmission | None = None
+        self._deferred_tasks: dict[PipelineTask, ScheduledPipelineTask] = {}
         self._pending: set[str] = set()
         self._collecting: set[str] = set()
         self._preparing: set[str] = set()
@@ -99,11 +101,14 @@ class RecommendationRounds:
                 return None
             self._expire_locked()
             self._close_finished_locked()
+            if self._active is not None:
+                self._remember_deferred_tasks_locked(tasks)
             if self._active is None:
                 if not tasks:
                     return None
                 for prepare in self._prepare_publication.values():
                     prepare()
+                tasks = self._take_deferred_tasks_locked(tasks)
                 self._sequence += 1
                 started = self._monotonic()
                 self._active = RoundAdmission(
@@ -130,6 +135,36 @@ class RecommendationRounds:
             self._preparing.add(profile)
             self._running.add(profile)
             return self._active
+
+    def _remember_deferred_tasks_locked(self, tasks: tuple[ScheduledPipelineTask, ...]) -> None:
+        admission = self._active
+        if admission is None:
+            return
+        for task in tasks:
+            covered = {item.task for item in admission.tasks if _same_task_scope(item, task)}
+            if PipelineTask.FULL_MARKET in covered:
+                covered.add(PipelineTask.CANDIDATE_QUOTES)
+            if task.task in covered:
+                continue
+            self._retain_deferred_task_locked(task)
+
+    def _retain_deferred_task_locked(self, task: ScheduledPipelineTask) -> None:
+        previous = self._deferred_tasks.get(task.task)
+        if previous is None or _task_order(task) > _task_order(previous):
+            self._deferred_tasks[task.task] = task
+
+    def _take_deferred_tasks_locked(
+        self, tasks: tuple[ScheduledPipelineTask, ...]
+    ) -> tuple[ScheduledPipelineTask, ...]:
+        # Due work omitted by a busy round belongs to the next admission, never
+        # to the immutable task cut already shared by its participating heads.
+        pending = {item.task: item for item in self._deferred_tasks.values() if _same_task_scope(item, tasks[0])}
+        self._deferred_tasks.clear()
+        for task in tasks:
+            previous = pending.get(task.task)
+            if previous is None or _task_order(task) >= _task_order(previous):
+                pending[task.task] = task
+        return tuple(pending.values())
 
     def observe(self, sequence: int) -> AbstractContextManager[None]:
         with self._condition:
@@ -276,10 +311,20 @@ class RecommendationRounds:
             self._running.discard(profile)
             self._close_finished_locked()
 
+    def release_unqueued(self, profile: str, sequence: int) -> None:
+        """Return an unqueued admission's tasks before releasing its round slot."""
+        with self._condition:
+            if self._active is not None and self._active.sequence == sequence and profile in self._running:
+                for task in self._active.tasks:
+                    self._retain_deferred_task_locked(task)
+            self.finish(profile, sequence)
+
     def withdraw(self, profile: str) -> None:
         with self._condition:
             if profile in self._profiles:
                 self._profiles.remove(profile)
+            if not self._profiles:
+                self._deferred_tasks.clear()
             self._prepare_publication.pop(profile, None)
             admitted = profile in self._pending or profile in self._running
             self._pending.discard(profile)
@@ -324,6 +369,18 @@ class RecommendationRounds:
     def _workers_drained(self) -> None:
         with self._condition:
             self._close_finished_locked()
+
+
+def _same_task_scope(first: ScheduledPipelineTask, second: ScheduledPipelineTask) -> bool:
+    return (
+        first.scheduled_at.date() == second.scheduled_at.date()
+        and first.phase is second.phase
+        and first.session == second.session
+    )
+
+
+def _task_order(task: ScheduledPipelineTask) -> tuple[int, datetime]:
+    return task.session.generation if task.session is not None else 0, task.scheduled_at
 
 
 __all__ = ["ROUND_TIMEOUT_SECONDS", "RecommendationRounds", "RecommendationRoundStatus", "RoundAdmission"]

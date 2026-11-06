@@ -28,6 +28,13 @@ class FilterTier(str, Enum):
     DYNAMIC = "dynamic"
 
 
+class QuoteFreshnessBasis(str, Enum):
+    """Choose the quote-time check clock without changing the observation."""
+
+    EVALUATION = "evaluation"
+    RECEIPT = "receipt"
+
+
 @dataclass(frozen=True)
 class HardFilterPolicy:
     blacklist_codes: frozenset[str]
@@ -175,9 +182,15 @@ def ApplyFilters(
 
 
 class _DefaultFilterRules:
-    def __init__(self, max_age_seconds: float, policy: HardFilterPolicy) -> None:
+    def __init__(
+        self,
+        max_age_seconds: float,
+        policy: HardFilterPolicy,
+        quote_freshness_basis: QuoteFreshnessBasis = QuoteFreshnessBasis.EVALUATION,
+    ) -> None:
         self.max_age_seconds = max_age_seconds
         self.policy = policy
+        self.quote_freshness_basis = quote_freshness_basis
 
     def unsupported_code(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if BoardForCode(snapshot.quote.code) is Board.UNSUPPORTED:
@@ -213,6 +226,14 @@ class _DefaultFilterRules:
         quote = snapshot.quote
         if quote.source_time.tzinfo is None or quote.source_time.utcoffset() is None:
             return _make_audit(snapshot, "invalid_quote_time", "timezone-aware", quote.source_time.isoformat())
+        if self.quote_freshness_basis is QuoteFreshnessBasis.RECEIPT:
+            # Discovery retains a refresh obligation for quotes that were fresh
+            # on arrival. It never changes the observation or its source time.
+            evaluation_age = QuoteFreshnessAgeSeconds(
+                quote.source_time, now, preview_context=snapshot.preview_context,
+            )
+            if math.isfinite(evaluation_age):
+                now = min(now, quote.received_time)
         if quote.source_time > now:
             return _make_audit(snapshot, "future_quote", "<= evaluation time", quote.source_time.isoformat())
         if (
@@ -451,10 +472,15 @@ _PERMANENT_STRUCTURED_RISK_FIELDS = frozenset(
 )
 
 
-def LevelOneFilterRules(*, max_age_seconds: float, policy: HardFilterPolicy) -> tuple[FilterRule, ...]:
+def LevelOneFilterRules(
+    *,
+    max_age_seconds: float,
+    policy: HardFilterPolicy,
+    quote_freshness_basis: QuoteFreshnessBasis = QuoteFreshnessBasis.EVALUATION,
+) -> tuple[FilterRule, ...]:
     if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
         raise ValueError("max_age_seconds must be finite and non-negative")
-    rules = _DefaultFilterRules(max_age_seconds, policy)
+    rules = _DefaultFilterRules(max_age_seconds, policy, quote_freshness_basis)
     return (
         FilterRule("st_or_delisting", FilterSeverity.REQUIRED, rules.st_or_delisting),
         FilterRule("unsupported_code", FilterSeverity.REQUIRED, rules.unsupported_code),
@@ -548,6 +574,7 @@ __all__ = [
     "FilterRule",
     "FilterSeverity",
     "FilterTier",
+    "QuoteFreshnessBasis",
     "ApplyFilters",
     "BoardForCode",
     "BoardForSnapshot",

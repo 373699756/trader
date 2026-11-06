@@ -8,6 +8,12 @@
 
 每次作业固定一个已发布历史版本及配置、特征身份。四档各有 Tomorrow、D25，共八个模型头；每档双头合格才发布该档模型。某档失败不污染其它档位，不覆盖旧有效工件。
 
+正常训练先形成近期生产诊断模型，再将最终模型重新拟合到该头最新标签成熟日。`BuildFinalFitDatePlan`按冻结交易日历，从源截止日回退Tomorrow的1个交易日或D25的5个交易日，取配置的最近N个成熟信号日；V1/V2/V3/V5分别仍为750/1000/750/61日。读取源末日用于观测标签，不把源末日本身当成成熟信号日，也不把`label_cutoff`当作诊断模型的实际拟合终点。源版本没有最近资料时，训练不会自行下载或伪补，须先完成历史同步。
+
+V2/V3/V5的近期生产诊断由`BuildProductionDiagnosticDatePlan`拥有：两头共用D25的5交易日成熟末日，倒序分配20日验证、5日隔离、20日校准、需要时5日隔离及20日早停、5日隔离、配置N日拟合和原特征预热。共用分区只是诊断的保守日期选择，最终拟合仍分别到各头1/5交易日成熟末日。研究的`BuildTrainingDateSplit`保留原200日确认及留出合同，研究模型和旧记录只按各自身份解释；正常生产诊断不再使用这套长期留出决定轮次、行业资格或校准。
+
+近期诊断保留自己的拟合、早停、校准和验证日期及实际模型。V1/V2最终重拟合以近期诊断选出的树轮数为固定上限，无法继续分裂时如实保存实际树数；V3按原Ridge设置重拟合；V5最终按当前配置10轮拟合，不再对最终训练行做早停或伪装成未见验证。最终模型重新估计训练变换及模型权重，冻结并转移近期诊断模型的收益校准系数，明确标为校准转移；诊断指标只属于受评价的诊断模型，不能证明最终模型的校准或收益已经通过独立验证。最终重拟合可能使用研究留出中的日期，不能继续把这些日期称为最终模型的未见留出；历史记录和独立研究日期类型保持原身份。新行业必须满足近期诊断与最终样本门，不能仅凭最终窗口有样本就声明全行业覆盖。
+
 独立训练入口为 `ExecuteSelectedTraining`。A的提交 `7a562886`已将CLI切换到该入口并删除 `ExecuteDownloadTrain`及旧下载异常分支；该提交的远端交付状态见g，不由C推断。下面原始字段字典以 `e69d3e02`核对，第9.2节保留该基线旧消费者作为交接证据；C的计量改动不新增下载或组合入口。
 
 ## 2. 四档比较
@@ -41,11 +47,15 @@
 | `daily_price_observation` | sync_sequence、revision_id | 观察与修订的可见关系 |
 | `HistoryTrainingRow` | code、trade_date、board、industry、cell_status | 训练窄投影、行业和日历对齐 |
 | `HistoryTrainingPoint` | qfq_close_price、qfq_open、qfq_high、qfq_low | 收益、动量、波动及V5价格通道 |
-| 同对象 | raw_volume | 实际成交股数及V5量通道 |
-| 同对象 | qfq_amount | 模型合同金额输入；须追到存储及adapter确认与原始实际金额的关系 |
+| 同对象 | raw_volume | 未复权分支的成交量，下载合同单位为股；进入V5量通道，不取qfq_volume |
+| 同对象 | qfq_amount | qfq分支随价格取得的成交额，下载合同单位为元；用于20日均额、V1金额因子和V5金额通道，未按价格复权比重新计算 |
 | 历史行业参考 | 行业ID、日期、生效与版本 | 当时行业、横截面、行业模型，不能用当前行业倒填 |
 
 源表全列的SQL类型、单位、来源和索引归d第8章；本表只解释训练消费。尤其量额必须沿真实解析链核对，不因qfq字段名猜测或改公式。
+
+当前消费者追链与b第5.1节一致：年度库`history_prices._TRAINING_RANGE_SQL`的量额列只取`raw_volume`及`qfq_amount`，`_decode_training_row`构造`HistoryTrainingPoint`；`AlignTrainingRows`再按市场日历保留交易、确认停牌及估值状态。V1的`profile/v1/samples._complete_point`把金额交给完成日十因子；V2/V3/V5的`sample_builder._pending_sample`计算20日均额，V5的`_sequence_point`将原始量和qfq分支金额交给唯一序列公式，分别形成`log1p(volume)`和`log1p(amount)`。停牌估值的零量额由共享日历对齐规则产生，不改写年度原始事实；缺失、非有限或不满足各档准入的值不能通过换列或补0掩盖。
+
+这份追链确认当前代码读取的列及消费方式。腾讯解析的手→股、万元→元换算与raw/qfq分支写入由b第5.1节及d维护；未据此断言各供应商历史逐值一致、`raw_amount == qfq_amount`或已完成B的全历史审计。当前输入/工件的实际身份与覆盖另由本轮真实训练报告交接。
 
 ### 3.2 样本数据库
 
@@ -69,9 +79,11 @@ V1十因子和V5的60×6通道在c第7章逐项解释；物理字段、列顺序
 
 ### 3.3 日期与标签
 
-2000日是整体历史目标，251/61日是特征回看，750/1000/61日是各档有效拟合日期，200日是终端留出最低范围，它们不是同一门槛。新股不要求上市前有数据，不统一要求每股拥有全部历史。
+2000日是整体历史目标，251/61日是特征回看，750/1000/61日是各档有效拟合日期，200日属于原研究/诊断切分的终端留出最低范围，不能据此把正常最终模型长期停在旧数据窗口。它们不是同一门槛。新股不要求上市前有数据，不统一要求每股拥有全部历史。
 
 同一市场日历定位标签。已发布资料中的确认停牌、推定停牌、个股缺行和整市场缺日分别处理；可按合同用此前同源收盘作估值时保留estimated标志，量额为0不等于随意填缺失为0。异常单侧价格不能补造，不能向后借值；原始库事实不改写。
+
+训练准入按每头全局有效日期核验拟合、早停、校准、验证与最终拟合分区；缺日不得静默缩短分区后继续，也不要求每个证券或每个行业都拥有全部日期。上市前无数据、个别股票某期限缺标签分别按原合同处理，缺T+1不自动删除有效D25。标准档最终N日覆盖检查必须在任何拟合之前执行，不能依赖可选内存预约端口才触发。
 
 ### 3.4 V2/V3/V5物理样本字典
 
@@ -185,7 +197,7 @@ V5在各头辅助列后接360个序列值；两个头完整输入维数分别366
 
 写入者 `BuildLearnedRankSamples` 先从251个历史完成日构造特征，再加入当前信号日；因此不能将V2同名收益列直接借给V1。`LearnedRankSampleIndex.read_matrices` 一次按日期/代码排序读取，最多分发双头四分区共8个独立矩阵，4096行批读并恢复负零；query组内同日、两个头分别按自身有效标签过滤。
 
-V1日期切分由 `BuildLearnedRankDateSplit` 拥有：拟合、早停、校准、验证四段，每段之间至少5个市场日隔离；两头成熟期分别1/5日。它没有V2/V3/V5的 `sample_split_dates`、统计表和 `complete.json`。当前工件有效时可直接复用工件；工件不能复用时，V1从历史重建临时样本，“样本缓存复用”实验对V1须记为不适用，不能伪报缓存命中或另造缓存。
+V1独立诊断日期切分由 `BuildLearnedRankDateSplit` 拥有：拟合、早停、校准、验证四段，每段之间至少5个市场日隔离；两头成熟期分别1/5日。正常最终拟合另用`FinalFitDatePlan`。八份诊断矩阵关闭后，独立重读双头最终原始矩阵，避免拼接已标准化的诊断矩阵污染最终变换。它没有V2/V3/V5的 `sample_split_dates`、统计表和 `complete.json`。只有当前最终工件身份匹配才允许正常训练复用；旧诊断工件仍按原身份只读，不能补签成最终拟合。工件不能复用时，V1从历史重建临时样本，“样本缓存复用”实验对V1须记为不适用，不能伪报缓存命中或另造缓存。
 
 ### 3.7 训练到期和提醒表
 
@@ -369,7 +381,7 @@ P54本批按用户授权由C接通公共解析及训练组合根。`config/train
 | CPU现值留1、原生基线2 | `TrainingCpuBudget`及训练启动环境/原生上下文 | 已由cpu资源段注入；普通拟合请求2仍保留独立算法合同 |
 | 每档队列2、公共批次256行 | `_TrainingFanout`发送/接收与取消清空 | 已由fanout资源段注入；不是V5张量batch_size |
 | 拟合容量最多3GiB、预留1.5GiB、宿主低水位256MiB | `FittingMemoryCapacity → TrainingMemoryBudget` | 已由memory资源段注入；实际cgroup各级上限继续收紧，约束不可核验时拒绝 |
-| `engine.py`TCN预约512MiB，普通模型256MiB＋最大行业矩阵估计×4 | 拟合前内存预约 | 先实测估计与RSS误差；不能因常量小就直接降低预约 |
+| `engine.py`TCN预约512MiB＋最终最大行业矩阵估计×2，普通模型256MiB＋诊断/最终较大行业矩阵估计×4 | 拟合前内存预约 | 最终近期行业可能比旧诊断行业更大，不能只按旧窗口预约；估计与RSS误差仍待实测 |
 | `sample_index.py`页缓存/mmap、独立矩阵阈值 | 样本index及行业独立矩阵 | 已由samples前三字段注入；共享行业矩阵仍按原设计始终映射，不被此阈值改成驻内存 |
 | V1 `samples.py`页缓存及具名批读 | V1临时样本及最多8矩阵 | 已由samples.v1两字段独立注入；矩阵仍按原设计映射 |
 | `sample_sequences.py`reader缓存及writer尾部证券数 | V5重叠序列读写 | 已由samples.sequence两字段注入所有入口；256窗在途上限为批次安全边界，保留 |
@@ -407,11 +419,13 @@ Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU�
 | 字段路径，相对timing | 单位与含义 | 不能据此推断 |
 | --- | --- | --- |
 | `source_read_seconds` | 秒；共享流每批取数的累计耗时，含价格读取、解码、日历对齐 | 不等于纯磁盘I/O，未包含打开历史和前期复用检查 |
+| `source_read_thread_cpu_seconds` | 秒；相同来源读取区间中调用线程实际消耗的累计CPU，真实观测无读取为0，手工构造旧计量缺观测为null | 不等于墙钟或整进程CPU，不包含其它线程和原生worker |
 | `peak_cpu_reservations` | 同时进入CPU预约体的观测峰值，次数 | 不等于实际同时拟合的模型数或原生线程数 |
 | `peak_memory_reservations` | 同时进入内存预约体的观测峰值，次数 | 不等于实际RSS或宿主硬隔离 |
 | `profiles[].profile` | v1/v2/v3/v5，保持请求顺序 | 不按完成顺序重排档位身份 |
 | `started_after_seconds` | 秒；该档worker相对计量对象创建时点的开始偏移，可空 | 不包括该档worker开始前的准备工作 |
 | `finished_after_seconds` | 秒；worker退出偏移，可空；异常/取消也记录 | 不等于全部作业的收尾/提醒完成时点 |
+| `native_id`、`thread_cpu_seconds` | 本次worker的操作系统线程号及该任务区间调用线程CPU秒；未开始为null，CPU仅在成功/失败/取消退出后定格，运行中仍为null | 线程号不是业务身份，不能跨作业复用；CPU不包含其它线程或原生库worker，不能把运行中null写成0 |
 | `queue_send_seconds` | 秒；向该档队列发送的累计区间，含阻塞、轮询及终止通知 | 不全是纯阻塞时间，不能当特征计算时间 |
 | `queue_receive_seconds` | 秒；该档取下一批的累计区间，含空队列轮询 | 不等于源读取时间；不同worker之间会重叠 |
 | `cpu.wait_seconds`、`memory.wait_seconds` | 秒；进入原预约端口至授权的耗时，失败等待同样累计 | 包含快速路径、心跳与进入开销，不只统计Condition阻塞 |
@@ -422,6 +436,8 @@ Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU�
 | `cpu_held_while_memory_wait_seconds` | 秒；该档已持CPU时进入内存预约的累计等待，包含失败等待 | 不能把CPU持有整段都当这类等待 |
 
 等待、持有、任务、队列和来源区间会相互重叠，不能把所有项相加当墙钟。全作业墙钟仍看 `selected_training_result.elapsed_seconds`；实际请求/授权线程沿用CPU预算字段，真实原生线程及RSS另测。计量只在批次和预约边界读时钟，不逐历史行采样。
+
+新增线程CPU由可注入`thread_time`读取，`thread_cpu_scope`白名单说明仅调用线程且任务值退出后才最终有效，不改observer协议、调度或资源准入。需要从另一个进程监控正常train时，沿`scripts/training/resources/training_process_measurement.py::ReadTrainingProcessSnapshot`读取目标`/proc`累计计数，并以`ProjectTrainingProcessSnapshot`显式投影；前后校验PID出生ticks，后续调用须携带原出生身份，退出/复用返回null、线程消失单列，其它读取/格式错误保留。进程和线程读数位于明确的非原子读取时间窗，分别按相同PID/出生身份、native_id/出生身份计算差值，不拿观察者`process_time`或`RUSAGE_SELF`替代目标CPU/缺页。原`TrainingProcessMeasurement`继续只服务当前诊断调用的自身资源计量；新能力不改变原生线程或模型计算。
 
 计量继续包住原 `TrainingCpuAdmission/TrainingMemoryAdmission`，原请求、授权、心跳、异常及释放语义不变；V1和其它三档都接入。全部工件复用时没有源批读或拟合预约，必须同时看到扫描0和预约授权0，不能只看耗时很短。
 
@@ -448,6 +464,10 @@ D可在原内部worker命令追加`--scheduling-candidate fixed|long_task_first|
 当前已有同档双头行业共享读取、4096行批读、较大矩阵临时映射、V5重叠序列块和统计小表；下一步核对是否实际命中及退出释放。V1/V5模型、样本和决策身份独立，不借别档补工件。
 
 每档先写候选双头和报告，再检查完整工件组、输入/配置/特征身份和工程资格，通过才切换。取消、单头失败、校准拒绝或落盘失败均保留上一有效模型；复用不刷新拟合日期，不把复用标成新训练。
+
+标准生产发布入口只接受含可重建近期诊断计划的双头工件，在目录写入前和复制后分别核验；旧研究/旧refit工件仍可读取及恢复原身份，但不能通过当前生产发布入口重新安装。该门只证明用途和工程一致性，不代表收益质量通过。
+
+V2/V3/V5当前最终工件使用显式`*_head_recent_refit_metadata`版本，`final_fit`保存完整源日历及其绑定、最终实际拟合日期/行业行数、近期诊断模型完整载荷及摘要、近期计划完整分区/摘要、校准转移政策和`final_model_unseen_validation_passed=false`。`validation_report.model_hash`始终指向实际受评价的诊断模型，顶层`model_hash`指向最终模型；读取时同时校验两者，不能用最终模型摘要替代诊断摘要。近期诊断的holdout为0并明确不适用，不称研究封存。旧`*_head_refit_metadata`和更早版本只按原研究切分及评价合同读取，不能复用成近期生产工件。V1使用独立`learned_rank_final_head_model/metadata`版本并保存完整近期诊断头与最终计划。前台进度分别报告`model_fit`和`final_model_refit`；命令回执分别列源截止、标签成熟截止、最终拟合首尾/N、诊断拟合首尾、校准首尾和独立评价首尾。
 
 训练工件字典至少说明：档位、策略头、算法、样本/特征/数据身份、日期范围、拟合/早停/校准区、行业覆盖、质量状态、模型文件及摘要、发布版本。定义和全部消费者由训练负责，不由Web推断。
 
@@ -485,6 +505,7 @@ V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要�
 | `validation_report` | object，工程评价报告 | 切分/目标/模型身份及实际覆盖、预测诊断；收益资格独立 |
 | `industry_sample_counts` | object，行业→计数 | 每行业 `training_rows/validation_rows`，与报告预测覆盖交叉核对 |
 | `model_hash` | string，SHA-256 | 与model文档content_hash一致 |
+| 最终版本 `final_fit` | object，最终成熟日拟合及诊断凭证 | recent/refit两种显式版本分别按近期或原研究合同校验；原版本禁止补签，见本节上文 |
 | V5 `training_configuration` | object，fit_dates/parameters/content_hash | 完整TCN参数及架构摘要，非V5不能带此字段 |
 | `content_hash` | string，SHA-256 | metadata自身规范化内容摘要 |
 
@@ -550,7 +571,9 @@ P52/P55的候选由既有`sample_comparison_worker --construct-features`或完�
 - schema_cache最多保留64个完全相同的不可变列序/序列布局校验摘要；实际摘要仍由`SampleFeatureHash`首次校验/计算。列序、布局值与标量类型均区分，异常不缓存。库内schema、feature/split身份、样本形状/值、标签成熟和防泄漏检查全部保留，不把“曾校验”当作跳过逐行或外部内容审计的资格。
 - 候选只允许在隔离worker主线程安装；完整作业的四档线程沿原执行器运行并在退出候选作用域前收尾，计数加锁，LRU允许并发首次计算同一键。样本构建/拟合过程中可按原语义失败或取消；finally恢复三个原调用绑定并清空本轮缓存。唯一白名单投影列出索引调用、schema请求/实际计算和缓存容量，production_enabled及performance_evidence均为false；计数锁与钩子开销包含在候选耗时内，完整对照另行裁决。
 
-使用既有统一入口的内部worker参数，在外部输出目录运行：`python3 -m scripts.tools --internal-worker scripts.training.samples.sample_comparison_worker -- --checkout <冻结版本> --root <全新仓库外目录> --size 64 --sessions 2000 --construct-features --computation-candidate combined --runtime-config <对应PC配置>`。baseline及两种单候选分别运行，不能只测组合后将收益归给某一项；该fixture最大128代码，不替代真实完整负载。
+使用既有统一入口的内部worker参数，在外部输出目录运行：`python3 -m scripts.tools --internal-worker scripts.training.samples.sample_comparison_worker -- --checkout <冻结版本> --root <全新仓库外目录> --size 64 --sessions 2000 --medium ssd --construct-features --computation-candidate combined --runtime-config <对应PC配置>`。`--medium`必须明确选择本轮hdd/ssd，并透传给样本资源配置；上层采用探测后的介质，不能仍硬编码另一机器段。baseline及两种单候选分别运行，不能只测组合后将收益归给某一项；该fixture最大128代码，不替代真实完整负载。
+
+仅在上述特征构造模式显式加`--profile-functions`，用进程CPU时钟的cProfile在四档实际样本builder调用期间启用，报告最多30项调用次数和自身/累计CPU；夹具准备、配置和摘要扫描在启用区间之外，不执行模型拟合。不保证线程隔离：解释器事件覆盖随Python运行时而异，较新运行时可记录同进程其它Python线程，进程CPU计时也包含其它线程及原生计算。已有`sys.getprofile`状态或解释器保留的profiler槽已占用时明确拒绝，避免覆盖调用者；成功、失败及取消均退出本轮profiler作用域。源码路径只给相对checkout/工具路径，运行库绝对路径省略；累计时间相互重叠且含插桩开销，始终标fixture/instrumented、性能与生产授权false。默认不开profiler；当前1000日V2拟合加预热和隔离要求下，四档完整夹具应保留2000日，不能为凑1800日降低训练合同。
 
 完整三负载沿用同一个注册worker：`python3 -m scripts.tools --internal-worker scripts.training.jobs.training_alignment -- --history-root <本机合法历史> --work-root <全新仓库外目录> --profiles v1,v2,v3,v5 --product-checkout <冻结版本> --runtime-config <冻结且绑定本机资料的配置> --published-history-read-only --sample-cache-transfer hardlink --computation-candidate combined`。同一候选覆盖首次全训练、全工件复用及样本复用重拟合，保留每次资源计量、数值/指标指纹、源只读守卫和身份核对；V1样本复用仍明确不适用。baseline不安装候选钩子，单候选及combined分别与同输入baseline比较；这里只提供诊断选择，不授权生产启用、活动模型切换或调整10轮方案。
 
@@ -582,6 +605,8 @@ CPU候选为baseline、two_plus_one及three_single。后两者仅在诊断作用
 
 完整三负载曾在同机耗9113秒，不能套通用工具外层7200秒上限。持久后台沿已注册`training_alignment`内部worker逐child执行，另设6小时监督上限并立即落盘stdout、stderr、GNU time和核对记录；不缩负载躲超时。核对成功才原子固定输入/配置/数值身份，恢复时重验原报告摘要；候选纯数值差异明确拒绝该候选，源/配置/缺证据或基线失败停止依赖轮次。只停止本队列实际拥有的子树，跨session也按进程出生身份核对，不按名称停止其它进程；监督期限使用持久单调起点，重启不重置，跨boot先核验再续。
 
+已有`benchmark_process.py`通过`RunTrainingBenchmarkProcess`监督单个真实负载，复用同文件的受管进程树取消；调用方先核算实际输出盘和峰值预算，再显式传入恢复空间下限。监督每秒检查剩余空间、累计墙钟及stdout/stderr大小，超限只取消该child并保留日志，观察失败或Python的`KeyboardInterrupt`也先回收；返回实际退出码、退出原因、完整墙钟和观察到的最小可用空间。单child期限至多6小时，默认日志上限64MiB，日志采用独占新建，已有报告不得覆盖；这些是运行保护和诊断证据，不是性能或质量通过结论。
+
 V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON，保留目标、树值、特征/类别信息及外层系数、校准、iteration和原报告；不把`num_threads`等拟合记录当预测数值。任何真实树值（含一个ULP）、变换、校准或指标变化仍拒绝等价，V3/V5保留原完整值。此投影只用于诊断比较，不改模型文件、正式身份或预测器。
 
 ## 8. 质量和收益的边界
@@ -608,7 +633,7 @@ V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON
 
 以下是三负载测量合同，实际运行状态和结果只记g对应阶段。每次在同机独占测量窗口固定代码提交、配置摘要、发布快照/日历/总体、模型与样本状态、实际磁盘类型和宿主限制；配置写ssd不是设备证明。历史默认从仓库外冻结副本读取；显式选择下述已发布历史只读模式时，可以直接使用配置指向的历史，不复制整套价格文件。训练输出始终使用新建且与历史不嵌套、在项目和活动数据之外的仓库外目录，不清空活动数据或当前模型。
 
-已有`training_alignment`内部worker支持`--published-history-read-only`和`--sample-cache-transfer hardlink`，统一入口的参数整合仍交A按P61处理。前者只接受配置指向的已发布历史，真实训练继续取得原历史/档位锁；诊断边界强制源目录的SQLite连接使用`mode=ro`，将到期提醒查询的`persist`改为false，实际拟合函数保持原样。整次测量前后核对源快照及catalog/价格/参考文件、非空WAL和`.sha256`发布凭证的身份、大小、mtime与ctime；等长改写后恢复mtime仍算变化，凭证为符号链接或非普通文件明确拒绝。变化后报告不可比，不写源库或切换模型。只读模式的这两项守卫在报告中明确标记，不把它写成无诊断干预的产品整链。
+已有`training_alignment`内部worker支持`--published-history-read-only`和`--sample-cache-transfer hardlink`，统一入口的参数由A按P61维护，338已交付对应训练参数与路由。前者只接受配置指向的已发布历史，真实训练继续取得原历史/档位锁；诊断边界强制源目录的SQLite连接使用`mode=ro`，将到期提醒查询的`persist`改为false，实际拟合函数保持原样。整次测量前后核对源快照及catalog/价格/参考文件、非空WAL和`.sha256`发布凭证的身份、大小、mtime与ctime；等长改写后恢复mtime仍算变化，凭证为符号链接或非普通文件明确拒绝。变化后报告不可比，不写源库或切换模型。只读模式的这两项守卫在报告中明确标记，不把它写成无诊断干预的产品整链。
 
 硬链接选项只连接本轮隔离准备目录中的合法封存样本，不能连接活动样本或模型；失败明确报告，不隐藏回退为复制。目标执行真实重新拟合及成功清理，前后用流式摘要核验保留的源缓存不变；单列`linked_bytes`，`copied_bytes`必须为0，V1仍不适用。成功核验后仅释放本轮受管准备样本，报告保留前后摘要与释放标记，下一轮不累积整套缓存；发现未知对象先全量拒绝，不删除任何准备样本。该选项减少诊断额外副本，不改变生产样本生命周期或模型参数。资源报告采样文件系统开始及最小可用字节；它包含同盘其它进程的占用，不能冒称本作业精确文件峰值。
 
@@ -630,6 +655,8 @@ V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON
 
 CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分段基线、实际拟合重叠及原生线程利用率仍须实测；`stage_seconds`或采样线程数不能替代。重放的工件/报告指纹一致也不等于独立输入上的全部预测回放一致。历史准备复用同一诊断模块的SQLite只读在线备份能力，镜像catalog、价格分区及关联资格/行业库，备份前后核对发布输入身份；备份超时或来源变化不产生成功凭据，不能将目录存在当作冻结完成。实现与实测状态只记g中的对应阶段。
 
+长作业在显式`work-root/workload-checkpoints/`逐段原子保存`initial.json`、`all_artifacts_reuse.json`、`sample_preparation.json`、`sample_refit.json`及`sample_reuse.json`，只写实际已返回的步骤；后续中断不删除已保存结果。初训未完成时不生成复用文件，V1仍没有样本重拟合步骤。每份使用`training-workload-checkpoint-1`，`audit_state`始终为`pending_final_source_and_reuse_audit`，性能/生产授权均为false；它保留局部事实，不替代整轮最终报告。审核须同时绑定该作业冻结清单、配置/输入/模型身份和最终源稳定性、数值及零扫描复用核对；缺最终报告时继续保留未验。目录/文件符号链接及既有同名报告会被拒绝，不覆盖旧证据。原子落盘发生在对应训练/准备返回之后，工具总墙钟包含其开销，比较仍须统一工具版本和计量口径。
+
 ### 9.2 P61训练检测清单与A交接
 
 下表保留训练工具的用途和消费者清点；当前路径与公共命令以scripts/README及b第9章为准。公共入口、报告白名单、Makefile与README由A拥有；训练参数、校验、不可变TrainingOptions和命令构造由scripts/training持有，core不再保存全业务DiagnosticOptions。公开选择统一为tools.py的business/module/action，训练内部worker仍由同一入口限定调用；迁移不改变训练输出schema或性能验收结论。
@@ -638,6 +665,7 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 | --- | --- | --- |
 | `training/jobs/training_alignment.py` | 隔离历史全训练/复用/工件加载；也含只读V1 model-inputs；训练模式写外部模型/样本 | `tools.py`、`jobs/training_performance.py`及对应测试；保留功能，按输入与整作业检查分组，不能误删model-inputs |
 | `training/jobs/training_performance.py` | 生成串并行/隔离checkout子进程命令，比较总耗时、身份、复用；无网络，子进程写隔离输出 | 公共入口及alignment的复用检查、`test_training_performance.py`；保留编排与唯一比较实现，不能删除仍被alignment调用的函数 |
+| `training/jobs/benchmark_process.py` | 监督单负载的期限/输出/剩余空间，按出生身份取消受管进程树；日志只新建，停止范围不含其它作业 | performance后台与`test_training_benchmark_process.py`；内部复用，无第二公开入口，运行保护不签性能通过 |
 | `training/samples/training_coverage.py` | 格式2样本统计、标签覆盖，只读；不重训 | 公共入口、`test_training_coverage.py`；保留，不将T+1观察投影当完整D25结果 |
 | `training/resources/training_resources.py` | 合成64×64矩阵，CPU预约/原生限制/取消归还；不读历史、不训练 | 公共入口、`test_training_resources.py`；保留资源冒烟，不作为真实四档并行基线 |
 | `training/resources/training_process_measurement.py`、`training/jobs/training_source_guard.py`（325新增/扩展） | 内部资源采样及已发布历史只读守卫；无独立入口，源SQLite只读、提醒不持久化，退出恢复函数/采样线程 | training_alignment及其定向测试；沿338的当前scripts/training目录交付，保留显式模式、空间口径和守卫标记 |
@@ -652,24 +680,24 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 
 还要与A共同核对`infra/database/database_layout_comparison.py`的训练样本/窄扫描负载、`download/history/history_sqlite_performance.py`的training_projection，以及`download/history/history_parquet.py`的共享投影，owner不能仅凭文件名判定。前两者是跨业务检查，不由C擅自搬走；Parquet仅供现有诊断比较，不能因生产未采用就删除有效研究能力。
 
-内存检查由`core/catalog.py`的memory动作注册，脚本工具表与`tests/conftest.py::_TRAINING_SCRIPT_PATHS`同步；`scripts/engineering/quality/debt.py::TOP_LEVEL_SCRIPT_MANIFEST`只核对tools.py公开根入口，不维护另一份内存入口名单。其输出schema `tomorrow_training_memory_gate`被产品`src/trader/training/infra/history/repack_training_evidence.py::ReadTomorrowTrainingMemoryEvidence`用于重排证据核验；该证据消费者必须同步保留字段、摘要和身份要求，不能只更新入口命令就删旧报告合同。
+内存检查由`core/catalog.py`的memory动作注册，对应回归位于`tests/training/unit/scripts/test_check_tomorrow_training_memory.py`，`tests/conftest.py`按`tests/training/`目录推导`train`标记；`scripts/engineering/quality/debt.py::TOP_LEVEL_SCRIPT_MANIFEST`只核对tools.py公开根入口，不维护另一份内存入口名单。其输出schema `tomorrow_training_memory_gate`被产品`src/trader/training/infra/history/repack_training_evidence.py::ReadTomorrowTrainingMemoryEvidence`用于重排证据核验；该证据消费者必须同步保留字段、摘要和身份要求，不能只更新入口命令就删旧报告合同。
 
-A需接收的具体接口需求如下：
+以下交接记录保留原接口需求及核销位置；321/338/345已交付部分不重复派发，真实采用和性能仍按g取证：
 
 1. 独立train继续使用 `ExecuteSelectedTraining(runtime, scoring_profiles, *, history_root=None, training_root=None)`；它返回聚合退出码，所选档位和资源由唯一组合根组装。切换CLI时保留主线程取消及原有档位选择，不添加自动下载fallback。
-2. 基线 `e69d3e02`的 `ExecuteDownloadTrain`活动消费者有 `entrypoints/cli.py::_run_history_download`、`test_profile_selection.py::test_training_selection_prepares_history_once_and_runs_only_selected_profiles`、`test_entry_contract.py::test_train_stops_before_training_on_history_failure`；还须清理CLI中训练专用的下载日历错误投影。两项旧测试期待“先下载”，不能直接当独立训练合同的通过证据。A完成调用者切换时同批删除旧组合函数和旧断言。
-3. C接收A的作业级不可变资源类型，字段/单位覆盖第6.2节运行参数；A改公共解析与bootstrap注入，C改训练消费及必要回归。`features.json`由A修改，C只提交第3.5节列序、单位和缺失需求；不改变公式owner。
+2. 基线 `e69d3e02`的 `ExecuteDownloadTrain`旧消费者包括 `entrypoints/cli.py::_run_history_download`及两项期待“先下载”的训练测试；321已切换独立训练入口并删除旧组合函数和相应断言。它们只作历史定位，不能再按旧路径新增兼容层或作为当前验收用例。
+3. 作业级不可变资源类型及第6.2节参数已经345接通，C获授权完成该批公共解析、bootstrap注入和全部训练消费者；后续公共边界仍由A维护。`features.json`由A定义，C维护第3.5节列序、单位和缺失需求，不改变公式owner。
 4. 统一检测需要保留原history/config/样本根、所选profile、隔离输出目录、baseline checkout、候选配置、超时与取消语义；显式标记纯检查、合成写入和真实隔离拟合。当前每项报告的失败/取消/超时/不适用不能压成一个空结果；最终参数与白名单由A统一裁决。
 
-独立train验收至少包含：供应商调用为0、下载断点不变、资料缺失明确失败、所选档位及八头工件按合同、取消退出与资源归还、单头/校准/部分落盘失败保留旧模型。这里只列验收和消费者，没有运行这些测试或业务命令。
+独立train验收至少包含：供应商调用为0、下载断点不变、资料缺失明确失败、所选档位及八头工件按合同、取消退出与资源归还、单头/校准/部分落盘失败保留旧模型。各切片已有功能及真实训练证据见g原325/333/334/337/343–347；本节不新增或补签证据，当前身份的整体验收和服务采用仍分列。
 
 ### 9.3 V1/V5专项数值与相对质量验收
 
 V1以具名列的float64位模式、负零、每头缺失标签、日期/代码/行业顺序及按日query分组为数值合同；同一次双头读取各有可写矩阵，改动一头不得影响另一头。跨4096行批次的取消或非法值失败由调用者ExitStack关闭全部映射，连接仍可用于下一次合法读取。V5宽列与重叠序列、共享行业读取及TCN批次缓存分别检查数值、顺序、独立双头和异常/取消关闭；这些功能证据不替代D的完整负载性能。
 
-当前`checks/training/v5_lite.py`注册worker支持`--quality-only`跳过内核性能探针，使用显式`--reference-config`及`--candidate-config`固定两组配置。两组拟合日和行业行数门相同，按双方合格行业的Tomorrow训练行数选择最小/中位/最大行业，对每个行业的两头各比较一次；六组全部通过才形成完整相对质量证据。原RMSE不超过参考1.05倍、日期平均RankIC下降不超过0.01的门和失败即停、三小时质量预算保持。数值、确认区、门槛不因结果而调整，不授予收益或生产资格；原确认区不用于反复搜索参数。
+当前`scripts/training/models/v5_lite.py`注册worker支持`--quality-only`跳过内核性能探针，使用显式`--reference-config`及`--candidate-config`固定两组配置。两组拟合日和行业行数门相同，按双方合格行业的Tomorrow训练行数选择最小/中位/最大行业，对每个行业的两头各比较一次；六组全部通过才形成完整相对质量证据。原RMSE不超过参考1.05倍、日期平均RankIC下降不超过0.01的门和失败即停、三小时质量预算保持。数值、确认区、门槛不因结果而调整，不授予收益或生产资格；原确认区不用于反复搜索参数。
 
-用户最新明确默认和后台都用10轮，沿用早停耐心3、相对阈值0.005和1线程；61日、5000行、8通道、float32及batch256保持。此前短暂选择的30轮恢复/参考运行已撤销，未启动真实30轮作业；旧30轮报告只读保留。10轮方案在C27 D25未过原相对质量门的结论不变，不能用10对10补签为通过，也不在同一确认区调参搜索。数值一致性/生命周期、预测相对质量和扣成本后的荐股收益分别判断；较多轮数不构成荐股更好的证据。本次用户恢复C并说明换到HDD PC，已授权新建独立HDD诊断样本；旧SSD输入缺失时保留原失败及身份，不将本机新输入视作其恢复。
+用户最新明确默认和后台都用10轮，沿用早停耐心3、相对阈值0.005和1线程；61日、5000行、8通道、float32及batch256保持。此前短暂选择的30轮恢复/参考运行已撤销，未启动真实30轮作业；旧30轮报告只读保留。10轮方案在C27 D25未过原相对质量门的结论不变，不能用10对10补签为通过，也不在同一确认区调参搜索。数值一致性/生命周期、预测相对质量和扣成本后的荐股收益分别判断；较多轮数不构成荐股更好的证据。历史HDD恢复时已获授权新建独立HDD诊断样本，不能视作旧SSD输入的恢复；两台机器原质量结论及证据分别保留，当前介质与作业状态只按g的最新接续记录。
 
 已有诊断封存样本直接以--sample-root配合--quality-only使用，不传--prepare-samples，不从完整历史重新生成，也不改旧清单/生产者身份以迎合新实现或拟合配置。显式输入仍按原SampleFormatId、split、源清单摘要及只读复制保护核验，报告保留原来源身份；这不授予新普通训练缓存的复用资格。双副本和缓存使用仓库外独立目录并核对实际设备/文件系统；/tmp是否tmpfs必须逐机核实，不以路径名判介质。质量结果和完整全负载性能分别记录，争用观测不当性能通过。
 

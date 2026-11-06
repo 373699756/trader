@@ -18,7 +18,7 @@ from trader.recommendation.application.pipeline.policy import RecommendationPoli
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import QualityScoringBatch
 from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
-from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
+from trader.recommendation.domain.selection.scored_selection import FilteredCandidateInputs, ScoredCandidateStageCounts
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,7 @@ class LocalScoringContext:
     candidate_stage_counts: ScoredCandidateStageCounts | None = None
     preselection_transient_invalid: bool = False
     quality_batch: QualityScoringBatch | None = None
+    population_qualifications: FilteredCandidateInputs | None = None
     monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
 
 
@@ -74,6 +75,7 @@ class LocalScoringService(LocalScoringPort):
                 ranking_selection=self.ranking_selection,
                 risk_control=self.risk_control,
                 quality_batch=context.quality_batch,
+                population_qualifications=context.population_qualifications,
                 monotonic=context.monotonic,
             ),
         )

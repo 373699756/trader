@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import re
+import sqlite3
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, TypeVar
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -34,6 +38,78 @@ from trader.recommendation.domain.market.research import (
 )
 from trader.recommendation.domain.scoring.company import BuildCompanyScoringContext, CompanyScoringCalendar, CompanyScoringPolicy
 from trader.recommendation.infra.market_data.research_load_status import ResearchComponentCoverage, ResearchLoaderStatus
+
+_LOGGER = logging.getLogger(__name__)
+_SQLITE_LOGGER = _LOGGER.getChild("sqlite")
+_ReadValue = TypeVar("_ReadValue")
+_SQLITE_INTERNAL_FAILURES = frozenset({
+    "sqlite_schema_unsupported", "sqlite_required_row_missing", "sqlite_integrity_failed",
+})
+
+
+def _observe_snapshot_read(
+    stage: Literal["before", "visit", "after"], read: Callable[[], _ReadValue]
+) -> _ReadValue:
+    try:
+        return read()
+    except InterruptedError:
+        raise
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        cause = exc.__cause__
+        _LOGGER.warning(
+            "company preload read failed stage=%s error_type=%s cause_type=%s",
+            stage,
+            type(exc).__name__,
+            type(cause).__name__ if cause is not None else "none",
+        )
+        detail = _snapshot_sqlite_failure_detail(exc)
+        if detail is not None:
+            _SQLITE_LOGGER.warning("company preload sqlite failure stage=%s detail=%s", stage, detail)
+        raise
+
+
+def _snapshot_sqlite_failure_detail(exc: BaseException) -> str | None:
+    """Project the full causal frame chain without exception messages or local values."""
+    chain: list[dict[str, object]] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    has_sqlite_failure = False
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        sqlite_code: int | None = None
+        sqlite_name: str | None = None
+        internal_code: str | None = None
+        if isinstance(current, sqlite3.Error):
+            has_sqlite_failure = True
+            # Python 3.10 has no native SQLite error attributes. A manually
+            # raised DatabaseError also carries neither; preserve that fact.
+            raw_code = getattr(current, "sqlite_errorcode", None)
+            raw_name = getattr(current, "sqlite_errorname", None)
+            if type(raw_code) is int and 0 <= raw_code <= 65535:
+                sqlite_code = raw_code
+            if isinstance(raw_name, str) and re.fullmatch(r"SQLITE_[A-Z0-9_]{1,48}", raw_name):
+                sqlite_name = raw_name
+            if len(current.args) == 1 and isinstance(current.args[0], str):
+                if current.args[0] in _SQLITE_INTERNAL_FAILURES:
+                    internal_code = current.args[0]
+        frames: list[str] = []
+        trace = current.__traceback__
+        while trace is not None:
+            frame = trace.tb_frame
+            module = frame.f_globals.get("__name__")
+            if not isinstance(module, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", module) is None:
+                module = "unknown"
+            function = re.sub(r"[^A-Za-z0-9_<>]", "_", frame.f_code.co_name)
+            frames.append(f"{module}:{function}:{trace.tb_lineno}")
+            trace = trace.tb_next
+        chain.append({
+            "error_type": type(current).__name__, "sqlite_errorcode": sqlite_code,
+            "sqlite_errorname": sqlite_name, "internal_code": internal_code, "frames": frames,
+        })
+        current = current.__cause__ if current.__cause__ is not None else (
+            current.__context__ if not current.__suppress_context__ else None
+        )
+    return json.dumps(chain, separators=(",", ":"), ensure_ascii=True) if has_sqlite_failure else None
 
 
 class CompanyEvidenceReadPort(Protocol):
@@ -118,7 +194,7 @@ class PublishedCompanyResearch:
                 return
             try:
                 before, rows = self._capture_publication(requested, observed_at, cancelled, deadline)
-                after = self._reader.publication_version()
+                after = _observe_snapshot_read("after", self._reader.publication_version)
             except InterruptedError:
                 self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
                 return
@@ -137,8 +213,8 @@ class PublishedCompanyResearch:
     def _capture_publication(
         self, requested: tuple[str, ...], observed_at: datetime, cancelled: Callable[[], bool], deadline: float
     ) -> tuple[str, dict[str, ResearchObservation]]:
-        before = self._reader.publication_version()
-        calendar = CompanyScoringCalendar(self._open_dates())
+        before = _observe_snapshot_read("before", self._reader.publication_version)
+        calendar = _observe_snapshot_read("before", lambda: CompanyScoringCalendar(self._open_dates()))
         rows: dict[str, ResearchObservation] = {}
 
         def capture(snapshot: CompanyFacts) -> None:
@@ -147,7 +223,12 @@ class PublishedCompanyResearch:
             if snapshot.published_at <= observed_at:
                 rows[snapshot.code] = _observation(snapshot, observed_at, before, calendar, self._company_policy)
 
-        self._reader.visit(requested, capture, cancel_requested=lambda: cancelled() or self._monotonic() >= deadline)
+        _observe_snapshot_read(
+            "visit",
+            lambda: self._reader.visit(
+                requested, capture, cancel_requested=lambda: cancelled() or self._monotonic() >= deadline
+            ),
+        )
         return before, rows
 
     def _adopt_projection(
@@ -209,20 +290,21 @@ class PublishedCompanyResearch:
         required = self._required_coverage(now)
         result: dict[str, ResearchObservation] = {}
         with self._lock:
-            for code in codes:
-                original = self._epoch.observations.get(code) if self._epoch is not None else None
-                if original is not None and original.snapshot_at is not None and original.snapshot_at > now:
-                    original = None
-                item = (
-                    _qualified(original, now, required, self._company_policy.events.unlock_days)
-                    if original is not None
-                    else None
-                )
-                if item is None or not _action_ready(item):
-                    if action_restrictions is not None:
-                        action_restrictions.setdefault(code, set()).add("research_data_degraded")
-                if item is not None and (not fresh_only or _action_ready(item)):
-                    result[code] = item
+            epoch = self._epoch
+        for code in codes:
+            original = epoch.observations.get(code) if epoch is not None else None
+            if original is not None and original.snapshot_at is not None and original.snapshot_at > now:
+                original = None
+            item = (
+                _qualified(original, now, required, self._company_policy.events.unlock_days)
+                if original is not None
+                else None
+            )
+            if item is None or not _action_ready(item):
+                if action_restrictions is not None:
+                    action_restrictions.setdefault(code, set()).add("research_data_degraded")
+            if item is not None and (not fresh_only or _action_ready(item)):
+                result[code] = item
         return MappingProxyType(result)
 
     def load(
@@ -241,42 +323,46 @@ class PublishedCompanyResearch:
         now = ShanghaiNow(self._wall_clock())
         required = self._required_coverage(now)
         with self._lock:
-            rows = tuple(
-                _qualified(item, now, required, self._company_policy.events.unlock_days)
-                for item in (self._epoch.observations.values() if self._epoch is not None else ())
-            )
-            coverages = tuple(ResearchComponentCoverage(item) for item in rows)
-            covered = tuple(sum(coverage[index] for coverage in coverages) for index in range(4))
-            verified = sum(_action_ready(item) for item in rows)
-            partial = sum(
-                any(coverage) and not _action_ready(item) for item, coverage in zip(rows, coverages, strict=True)
-            )
-            return ResearchLoaderStatus(
-                entries=len(rows),
-                success_count=len(rows),
-                error_count=sum(bool(item.source_errors) for item in rows),
-                planned_count=len(rows),
-                timeout_count=0,
-                consecutive_failures=0,
-                circuit_open=False,
-                latencies_ms=(),
-                latest_source_time=max((row.snapshot_at for row in rows if row.snapshot_at is not None), default=None),
-                last_error=self._last_error,
-                out_of_order_count=0,
-                corporate_risk_covered_count=sum(item.corporate_risk_window_complete for item in rows),
-                corporate_risk_fact_count=sum(len(item.corporate_risk_facts) for item in rows),
-                corporate_risk_evidence_versions=tuple(sorted({item.corporate_risk_evidence_version for item in rows})),
-                verified_count=verified,
-                partial_count=partial,
-                unavailable_count=len(rows) - verified - partial,
-                financial_covered_count=covered[0],
-                announcements_covered_count=covered[1],
-                pledge_covered_count=covered[2],
-                unlock_covered_count=covered[3],
-                loaded_identity=self._publication_version,
-                disk_identity=self._disk_version,
-                restart_required=self._publication_version != self._disk_version,
-            )
+            epoch = self._epoch
+            last_error = self._last_error
+            publication_version = self._publication_version
+            disk_version = self._disk_version
+        rows = tuple(
+            _qualified(item, now, required, self._company_policy.events.unlock_days)
+            for item in (epoch.observations.values() if epoch is not None else ())
+        )
+        coverages = tuple(ResearchComponentCoverage(item) for item in rows)
+        covered = tuple(sum(coverage[index] for coverage in coverages) for index in range(4))
+        verified = sum(_action_ready(item) for item in rows)
+        partial = sum(
+            any(coverage) and not _action_ready(item) for item, coverage in zip(rows, coverages, strict=True)
+        )
+        return ResearchLoaderStatus(
+            entries=len(rows),
+            success_count=len(rows),
+            error_count=sum(bool(item.source_errors) for item in rows),
+            planned_count=len(rows),
+            timeout_count=0,
+            consecutive_failures=0,
+            circuit_open=False,
+            latencies_ms=(),
+            latest_source_time=max((row.snapshot_at for row in rows if row.snapshot_at is not None), default=None),
+            last_error=last_error,
+            out_of_order_count=0,
+            corporate_risk_covered_count=sum(item.corporate_risk_window_complete for item in rows),
+            corporate_risk_fact_count=sum(len(item.corporate_risk_facts) for item in rows),
+            corporate_risk_evidence_versions=tuple(sorted({item.corporate_risk_evidence_version for item in rows})),
+            verified_count=verified,
+            partial_count=partial,
+            unavailable_count=len(rows) - verified - partial,
+            financial_covered_count=covered[0],
+            announcements_covered_count=covered[1],
+            pledge_covered_count=covered[2],
+            unlock_covered_count=covered[3],
+            loaded_identity=publication_version,
+            disk_identity=disk_version,
+            restart_required=publication_version != disk_version,
+        )
 
 
 def _research_epoch(

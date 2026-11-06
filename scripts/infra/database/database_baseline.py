@@ -396,6 +396,7 @@ def _worker(
                     Path(scratch) / "training",
                     size,
                     min(sessions, 750),
+                    medium=disk_kind,
                     sqlite_policy=sqlite_policy,
                 )
             training = {"samples": samples, "measurement": measurement.result}

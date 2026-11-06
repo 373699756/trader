@@ -25,10 +25,8 @@ from trader.infra.cache import BoundedLruCache
 from trader.infra.cache_contracts import CacheIdentity, CachePolicy, CacheStats
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.settings import StrategySettings
-from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
-    BuildCandidatePlans,
-    CandidatePlanningContext,
-)
+from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanningContext
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import ExecuteCandidatePipeline
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredLocal,
@@ -36,8 +34,10 @@ from trader.recommendation.application.pipeline.final_selection.freeze_projectio
     ScoredProjectionInputs,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.application.pipeline.stage_output import StageOutput
 from trader.recommendation.application.ports.loaded_profile import IndustryPredictionPort, ModelComputationStatus, ModelScoringContext
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, PipelineStageSnapshot, SourceHealth, SourceHealthState
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay
@@ -147,6 +147,8 @@ class _HeadResult:
     reused_groups: tuple[str, ...]
     model_stages: tuple[tuple[str, float], ...]
     result_hash: str
+    pipeline_stages: tuple[PipelineStageSnapshot, ...]
+    selection_features_hash: str
 
     def project(self) -> dict[str, object]:
         return {
@@ -160,6 +162,25 @@ class _HeadResult:
             "reused_groups": list(self.reused_groups),
             "model_stage_ms": dict(self.model_stages),
             "result_hash": self.result_hash,
+            "selection_features_hash": self.selection_features_hash,
+            "pipeline_stages": [
+                {
+                    "stage": stage.stage.value,
+                    "stage_order": stage.stage_order,
+                    "state": stage.state.value,
+                    "input_count": stage.input_count,
+                    "output_count": stage.output_count,
+                    "rejected_count": stage.rejected_count,
+                    "pending_count": stage.pending_count,
+                    "failed_count": stage.failed_count,
+                    "latency_ms": stage.latency_ms,
+                    "operation_durations": [
+                        {"operation": name, "duration_ms": duration}
+                        for name, duration in stage.operation_durations
+                    ],
+                }
+                for stage in self.pipeline_stages
+            ],
         }
 
 
@@ -325,14 +346,23 @@ class _ProfileReplay:
         version = timings.run("input_identity", lambda: self.versions.features("market", self.market))
         changed = version != self.version
         self.version = version
-        plans = timings.run(
+        candidate_pipeline = timings.run(
             "candidate_filter",
-            lambda: BuildCandidatePlans(
-                self.market,
-                None,
+            lambda: ExecuteCandidatePipeline(
+                StageOutput(
+                    PipelineStage.DYNAMIC_MARKET,
+                    self.market,
+                    input_batch_id=version,
+                    as_of=self.clock.now(),
+                    input_count=len(self.market),
+                    source_health=SourceHealth(SourceHealthState.READY, 1, 1),
+                    latency_ms=None,
+                ),
                 CandidatePlanningContext(self.clock.now(), version, self.workload.policy, self.scoring),
+                time.monotonic,
             ),
         )
+        plans = candidate_pipeline.plans
         union = frozenset(plans.physical_union())
         quotes = tuple(quote for quote in self.quotes if quote.code in union)
         # The production quote boundary enriches the refreshed union before preparing each head.
@@ -372,6 +402,7 @@ class _ProfileReplay:
                     runtime=ScoredProjectionInputs(
                         model_scoring=self.scoring,
                         ranking_selection=self.ranking,
+                        population_qualifications=candidate_pipeline.qualifications[native.strategy],
                         scoring_context=ModelScoringContext(industry_prediction=self.industry_prediction)
                         if self.industry_prediction is not None else None,
                     ),
@@ -477,6 +508,8 @@ def _head_result(
             for item in after.stage_durations
         ),
         ContentHash(business),
+        projection.stages.snapshots,
+        ContentHash(tuple((item.code, item.features) for item in projection.selection.evaluations)),
     )
 
 

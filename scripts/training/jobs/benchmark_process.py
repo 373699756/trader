@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 import signal
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 _PROC = Path("/proc")
 _POLL_SECONDS = 0.05
@@ -29,6 +32,71 @@ class _Process:
     @property
     def running(self) -> bool:
         return self.state not in {"Z", "X", "x"}
+
+
+@dataclass(frozen=True)
+class TrainingBenchmarkProcessResult:
+    exit_code: int
+    reason: Literal["exited", "timeout", "low_space", "output_limit"]
+    seconds: float
+    minimum_free_bytes: int
+
+
+def RunTrainingBenchmarkProcess(
+    command: tuple[str, ...], *, cwd: Path, stdout: Path, stderr: Path,
+    timeout_seconds: float, minimum_free_bytes: int,
+    maximum_output_bytes: int = 64 * 1024**2,
+) -> TrainingBenchmarkProcessResult:
+    """Supervise one real workload, preserving logs and cancelling only its tree.
+
+    The output filesystem supplies the space guard. Callers select a real disk,
+    budget workload space before admission, and keep each result separate from
+    performance acceptance. Polling adds at most one second to observation.
+    """
+    if (not command or any(not isinstance(item, str) or not item for item in command)
+            or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))):
+        raise ValueError("training_benchmark_supervision_arguments_invalid")
+    try:
+        duration = float(timeout_seconds)
+    except OverflowError as exc:
+        raise ValueError("training_benchmark_supervision_arguments_invalid") from exc
+    if (not math.isfinite(duration) or not 0 < duration <= 6 * 3600
+            or type(minimum_free_bytes) is not int or minimum_free_bytes <= 0
+            or type(maximum_output_bytes) is not int or maximum_output_bytes <= 0
+            or stdout.resolve() == stderr.resolve() or not cwd.is_dir()
+            or stdout.exists() or stderr.exists() or stdout.is_symlink() or stderr.is_symlink()):
+        raise ValueError("training_benchmark_supervision_arguments_invalid")
+    if os.name != "posix" or not (_PROC / "self/stat").is_file():
+        raise RuntimeError("training_benchmark_process_linux_required")
+    free = shutil.disk_usage(stdout.parent).free
+    if free < minimum_free_bytes:
+        raise ValueError("training_benchmark_supervision_space_insufficient")
+    started = time.monotonic()
+    reason: Literal["exited", "timeout", "low_space", "output_limit"] = "exited"
+    with stdout.open("xb") as output, stderr.open("xb") as errors:
+        process = subprocess.Popen(
+            command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=output, stderr=errors,
+            start_new_session=True,
+        )
+        try:
+            while True:
+                free = min(free, shutil.disk_usage(stdout.parent).free)
+                if free < minimum_free_bytes:
+                    reason = "low_space"
+                elif time.monotonic() - started >= duration:
+                    reason = "timeout"
+                elif os.fstat(output.fileno()).st_size + os.fstat(errors.fileno()).st_size > maximum_output_bytes:
+                    reason = "output_limit"
+                if process.poll() is not None or reason != "exited":
+                    break
+                time.sleep(1.0)
+        finally:
+            try:
+                if process.poll() is None:
+                    StopTrainingBenchmarkProcessTree(process.pid)
+            finally:
+                code = process.wait(timeout=5)
+    return TrainingBenchmarkProcessResult(code, reason, time.monotonic() - started, free)
 
 
 def StopTrainingBenchmarkProcessTree(root_pid: int, *, timeout_seconds: float = 30.0) -> tuple[int, ...]:
@@ -160,4 +228,4 @@ def _running(owned: dict[int, _ProcessIdentity], snapshot: dict[int, _Process]) 
     ))
 
 
-__all__ = ["StopTrainingBenchmarkProcessTree"]
+__all__ = ["RunTrainingBenchmarkProcess", "StopTrainingBenchmarkProcessTree", "TrainingBenchmarkProcessResult"]

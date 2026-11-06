@@ -9,11 +9,17 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 from trader.download.domain.company_events import CompanyEventPolicy
+from trader.download.domain.company_field_plan import BuildCompanyFieldResults
+from trader.download.domain.company_field_results import (
+    CompanyFieldConclusion, CompanyFieldConclusionState, CompanyFieldName,
+)
 from trader.download.domain.company_exclusions import CompanyExclusion, CompanyExclusionReason, CompanyExclusionSource
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.infra.company_fact_rows import WriteCompanyFactRows
+from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults, WriteCompanyFieldResults
 from trader.download.infra.company_facts_protocol import (
     CompanyExtractionHash,
     EncodeCompanyTime,
@@ -129,7 +135,15 @@ class SQLiteCompanyFactsIndex:
         at: datetime,
         *,
         receipts: Sequence[CompanyInputReceipt] = (),
+        field_results: Sequence[CompanyFieldConclusion] | None = None,
     ) -> None:
+        prepared_fields = tuple(field_results) if field_results is not None else tuple(
+            CompanyFieldConclusion(
+                item.code, item.event_id, cast(CompanyFieldName, item.field),
+                float(item.value) if type(item.value) is int else item.value,
+                cast(CompanyFieldConclusionState, item.state), item.applicable, item.reason, (),
+            ) for fact in facts for item in BuildCompanyFieldResults(fact)
+        )
         with (
             SqliteSession(
                 self.path,
@@ -141,10 +155,18 @@ class SQLiteCompanyFactsIndex:
             if ReadCompanyPublicationIdentity(connection) != parent:
                 raise RuntimeError("company_publication_parent_changed")
             before_changes = connection.total_changes
+            fact_codes = frozenset(fact.code for fact in facts)
+            field_codes = tuple(sorted(fact_codes | {item.code for item in prepared_fields}))
+            previous_fields = ReadCompanyFieldResults(connection, field_codes)
             for item in facts:
                 if self._cancel_requested is not None and self._cancel_requested():
                     raise InterruptedError("company_sync_cancelled")
                 WriteCompanyFactRows(connection, item, sources)
+            for code in field_codes:
+                values = tuple(sorted((item for item in prepared_fields if item.code == code),
+                                      key=lambda item: (item.event_id, item.field)))
+                if code in fact_codes or tuple(item for item in previous_fields if item.code == code) != values:
+                    WriteCompanyFieldResults(connection, code, values)
             connection.run_many(
                 "INSERT INTO company_input_receipt VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(source,source_key,code,record_hash,extraction_hash) "
                 "DO UPDATE SET body_hash=excluded.body_hash,published_at=excluded.published_at,outcome=excluded.outcome,policy_id=excluded.policy_id "
@@ -169,10 +191,18 @@ class SQLiteCompanyFactsIndex:
                     )
                     for r in sorted(receipts, key=lambda r: (r.source, r.source_key, r.code, r.record_hash))
                 )
+                field_identities = tuple(
+                    (result.code, result.event_id, result.field, result.value, result.state, result.applicable,
+                     result.reason, tuple(
+                         (proof.source, proof.source_key, proof.record_hash, proof.body_hash.hex(), proof.rule_id,
+                          proof.published_at, proof.start_line, proof.end_line, proof.quote, proof.unit, proof.subject.value)
+                         for proof in result.evidence
+                     )) for result in sorted(prepared_fields, key=lambda result: (result.code, result.event_id, result.field))
+                )
                 identity = bytes.fromhex(CanonicalDigest((
                     "company-publication-generation:1", _parent_identity(parent), self.extraction_hash.hex(),
                     tuple(sorted(facts, key=lambda fact: fact.code)), tuple(sorted(sources.items())),
-                    receipt_identities, at,
+                    receipt_identities, field_identities, at,
                 )))
                 _write_identity(connection, self.extraction_hash, at, identity)
         self.publish_file()

@@ -10,7 +10,9 @@ import hashlib
 import json
 import resource
 import platform
+import re
 import sqlite3
+import sys
 import time
 from contextlib import ExitStack, closing, nullcontext
 from datetime import date, timedelta
@@ -18,6 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
+    from cProfile import Profile
+
     from trader.infra.sqlite_policy import SqliteIoPolicy
     from scripts.training.samples.computation_candidates import ComputationCandidate
     from trader.infra.disk_types import DiskKind
@@ -56,16 +60,36 @@ def _measure_feature_construction(
     size: int,
     sessions: int,
     *,
+    medium: DiskKind,
     sqlite_policy: SqliteIoPolicy,
     computation_candidate: ComputationCandidate = "baseline",
+    profile_functions: bool = False,
 ) -> dict[str, object]:
     from scripts.training.samples.computation_candidates import ProjectComputationCandidate
     from scripts.training.samples.computation_candidates import UseComputationCandidate
 
     with UseComputationCandidate(computation_candidate) as counts:
-        report = _construct_samples(checkout, root, size, sessions, sqlite_policy=sqlite_policy)
+        report = _construct_samples(
+            checkout,
+            root,
+            size,
+            sessions,
+            medium=medium,
+            sqlite_policy=sqlite_policy,
+            profile_functions=profile_functions,
+        )
         report["computation_candidate"] = ProjectComputationCandidate(counts)
     return report
+
+
+def _require_profile_available() -> None:
+    if sys.getprofile() is not None:
+        raise ValueError("sample_function_profile_already_running")
+    if sys.version_info >= (3, 12):
+        from sys import monitoring
+
+        if monitoring.get_tool(monitoring.PROFILER_ID) is not None:
+            raise ValueError("sample_function_profile_already_running")
 
 
 def _construct_samples(
@@ -74,11 +98,15 @@ def _construct_samples(
     size: int,
     sessions: int,
     *,
+    medium: DiskKind,
     sqlite_policy: SqliteIoPolicy,
+    profile_functions: bool = False,
 ) -> dict[str, object]:
     """Measure actual sample builders on one deterministic full-date fixture; no fitting."""
     RequireIndependentOutput(root, TOOL_ROOT)
     RequireIndependentOutput(root, checkout)
+    if profile_functions:
+        _require_profile_available()
     from collections.abc import Callable, Iterator
     from dataclasses import dataclass
 
@@ -101,7 +129,7 @@ def _construct_samples(
     from trader.training.infra.sample_sequences import SampleSequenceLayout
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
-    sample_arguments = SampleArgumentsForCheckout(checkout, medium="hdd")
+    sample_arguments = SampleArgumentsForCheckout(checkout, medium=medium)
 
     if not 1 <= size <= 128 or not 1800 <= sessions <= 2000:
         raise ValueError("sample_construction_requires_1_to_128_codes_and_1800_to_2000_dates")
@@ -172,6 +200,11 @@ def _construct_samples(
 
     source = _FixtureHistory(snapshot)
     root.mkdir(parents=True)
+    profiler = None
+    if profile_functions:
+        from cProfile import Profile
+
+        profiler = Profile(timer=time.process_time)
     cases = {}
     for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE):
         settings = LoadProfileTrainingSettings(checkout, profile.profile_id)
@@ -194,13 +227,14 @@ def _construct_samples(
             sqlite_policy=sqlite_policy,
             **sample_arguments,
         ) as index:
-            BuildTrainingSamples(TrainingSampleBuildRequest(
-                source,
-                codes,
-                TomorrowTrainingWindow(split),
-                index,
-                profile,
-            ))
+            with profiler if profiler is not None else nullcontext():
+                BuildTrainingSamples(TrainingSampleBuildRequest(
+                    source,
+                    codes,
+                    TomorrowTrainingWindow(split),
+                    index,
+                    profile,
+                ))
         seconds = time.perf_counter() - started
         cpu_seconds = time.process_time() - cpu_started
         digest = hashlib.sha256()
@@ -224,15 +258,17 @@ def _construct_samples(
     started = time.perf_counter()
     cpu_started = time.process_time()
     with closing(LearnedRankSampleIndex(path, sqlite_policy=sqlite_policy, **sample_arguments)) as v1_index:
-        counts = BuildLearnedRankSamples(source, splits, v1_index, history_sessions=v1_settings.history_sessions)
+        with profiler if profiler is not None else nullcontext():
+            counts = BuildLearnedRankSamples(source, splits, v1_index, history_sessions=v1_settings.history_sessions)
     seconds = time.perf_counter() - started
     cases["v1"] = {
         "seconds": seconds, "cpu_seconds": time.process_time() - cpu_started,
         "numeric_hash": hashlib.sha256(path.read_bytes()).hexdigest(), "samples": counts.samples,
     }
-    return {
+    report: dict[str, object] = {
         "scope": "deterministic_sample_construction_no_model_fitting",
         "fixture": True,
+        "sample_policy_medium": medium,
         "stocks": size,
         "calendar_dates": sessions,
         "source_rows": len(rows),
@@ -245,16 +281,87 @@ def _construct_samples(
         "implementation_hash": TrainingImplementationIdentity(),
         "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
     }
+    if profiler is not None:
+        report["function_profile"] = _project_function_profile(profiler, checkout)
+    return report
+
+
+def _project_function_profile(profiler: Profile, checkout: Path) -> dict[str, object]:
+    from types import CodeType
+
+    entries = profiler.getstats()
+    functions: list[dict[str, object]] = []
+    for entry in entries:
+        code = entry.code
+        if isinstance(code, CodeType):
+            filename, line, name = code.co_filename, code.co_firstlineno, code.co_name
+        else:
+            filename, line, name = "~", 0, code
+        origin, relative = "runtime", None
+        if Path(filename).is_absolute():
+            source = Path(filename).resolve()
+            for label, directory in (("checkout", checkout.resolve()), ("tool", TOOL_ROOT.resolve())):
+                if source.is_relative_to(directory):
+                    path = source.relative_to(directory)
+                    if path.parts and path.parts[0] in {"src", "scripts"}:
+                        origin, relative = label, path.as_posix()
+                    break
+        if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9.]*|<(?:lambda|listcomp|dictcomp|setcomp|genexpr|module)>", name):
+            function = name
+        else:
+            match = re.search(r"(?:method|function) '?([A-Za-z_][A-Za-z_0-9.]*)", name)
+            function = match.group(1) if match is not None else "native"
+        functions.append({
+            "source": origin,
+            "path": relative,
+            "line": line if relative is not None else None,
+            "function": function[:160],
+            "calls": entry.callcount,
+            "primitive_calls": entry.callcount - entry.reccallcount,
+            "self_cpu_seconds": entry.inlinetime,
+            "cumulative_cpu_seconds": entry.totaltime,
+        })
+    functions.sort(key=lambda row: -cast(float, row["self_cpu_seconds"]))
+    return {
+        "enabled": True,
+        "fixture": True,
+        "instrumented": True,
+        "scope": "enabled_during_sample_builders; sequential_fixture; cProfile_overhead_included; no_model_fitting",
+        "timer": "process_cpu_seconds; includes_CPU_of_all_process_threads",
+        "event_scope": "interpreter_profile_events; thread_coverage_depends_on_python_runtime",
+        "python_implementation": platform.python_implementation(),
+        "python_version": platform.python_version(),
+        "thread_isolation": False,
+        "source_paths": "relative_to_checkout_or_tool; external_runtime_paths_omitted",
+        "sort": "self_cpu_seconds_descending",
+        "limit": 30,
+        "function_count": len(functions),
+        "total_calls": sum(entry.callcount for entry in entries),
+        "primitive_calls": sum(entry.callcount - entry.reccallcount for entry in entries),
+        "total_self_cpu_seconds": sum(entry.inlinetime for entry in entries),
+        "cumulative_times_overlap": True,
+        "top_functions": functions[:30],
+        "performance_evidence": False,
+        "production_authority": False,
+    }
 
 
 
-def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqlite_policy: SqliteIoPolicy | None) -> dict[str, object]:
+def MeasureSamples(
+    checkout: Path,
+    root: Path,
+    size: int,
+    sessions: int,
+    *,
+    medium: DiskKind,
+    sqlite_policy: SqliteIoPolicy | None,
+) -> dict[str, object]:
     RequireIndependentOutput(root, TOOL_ROOT)
     RequireIndependentOutput(root, checkout)
     # The two explicitly selected offline checkouts have different physical APIs.
     # No compatibility selection is installed in the application.
     sqlite_arguments: _SqliteArguments = {"sqlite_policy": sqlite_policy} if sqlite_policy is not None else {}
-    sample_arguments = SampleArgumentsForCheckout(checkout, medium="hdd")
+    sample_arguments = SampleArgumentsForCheckout(checkout, medium=medium)
     import numpy as np
     import trader.training.infra.sample_index as sample_module
 
@@ -387,6 +494,7 @@ def MeasureSamples(checkout: Path, root: Path, size: int, sessions: int, *, sqli
         raise RuntimeError("training_sample_connection_leak")
     return {
         "cases": cases, "peak_rss_bytes": usage.ru_maxrss * 1024,
+        "sample_policy_medium": medium,
         "io_read_blocks": usage.ru_inblock, "io_write_blocks": usage.ru_oublock,
         "minor_page_faults": usage.ru_minflt, "major_page_faults": usage.ru_majflt,
         "database": counters, "implementation_hash": TrainingImplementationIdentity(),
@@ -400,7 +508,9 @@ def Main() -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--size", type=int, required=True)
     parser.add_argument("--sessions", type=int, required=True)
+    parser.add_argument("--medium", choices=("hdd", "ssd"), required=True)
     parser.add_argument("--construct-features", action="store_true")
+    parser.add_argument("--profile-functions", action="store_true")
     parser.add_argument(
         "--computation-candidate", choices=("baseline", "indexed_anchors", "schema_cache", "combined"), default="baseline"
     )
@@ -410,6 +520,8 @@ def Main() -> int:
     RequireIndependentOutput(args.root, args.checkout)
     if not args.construct_features and args.computation_candidate != "baseline":
         raise ValueError("computation_candidate_requires_feature_construction")
+    if args.profile_functions and not args.construct_features:
+        raise ValueError("function_profile_requires_feature_construction")
     sqlite_policy = None
     if (args.checkout / "src/trader/infra/sqlite_policy.py").is_file():
         from trader.bootstrap import BuildSqlitePolicy
@@ -424,10 +536,19 @@ def Main() -> int:
             args.root,
             args.size,
             args.sessions,
+            medium=args.medium,
             sqlite_policy=sqlite_policy,
             computation_candidate=cast("ComputationCandidate", args.computation_candidate),
+            profile_functions=args.profile_functions,
         )
     else:
-        report = MeasureSamples(args.checkout, args.root, args.size, args.sessions, sqlite_policy=sqlite_policy)
+        report = MeasureSamples(
+            args.checkout,
+            args.root,
+            args.size,
+            args.sessions,
+            medium=args.medium,
+            sqlite_policy=sqlite_policy,
+        )
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0

@@ -12,11 +12,9 @@ from trader.recommendation.application.pipeline.dynamic_filter.filter_executor i
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
 )
-from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_normalization import (
-    NormalizeCandidateDiscoveryPopulation,
-)
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
+from trader.recommendation.domain.candidate.filters import QuoteFreshnessBasis
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidatePlan
@@ -87,7 +85,7 @@ def BuildCandidatePlans(
     population_at = context.population_evaluated_at or context.evaluated_at
     if population_at.date() != context.evaluated_at.date():
         raise ValueError("candidate_population_trade_date_mismatch")
-    features = NormalizeCandidateDiscoveryPopulation(population, population_at)
+    features = tuple(population)
     candidates = tuple(candidate_features) if candidate_features is not None else None
     plans = {
         strategy: PlanScoredFeatureCandidates(
@@ -98,9 +96,9 @@ def BuildCandidatePlans(
                 max_age_seconds=_maximum_age_seconds(strategy),
                 population_evaluated_at=population_at,
                 population_max_age_seconds=_maximum_age_seconds(strategy),
+                population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
                 phase="candidate_discovery",
                 candidate_features=candidates,
-                normalize_discovery_source_time=False,
                 strategy=strategy,
                 minimum_history_sessions=_history_required_sessions(
                     context.model_scoring if context.apply_model_eligibility else None,

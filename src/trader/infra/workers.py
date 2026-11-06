@@ -115,6 +115,7 @@ class BoundedExecutor:
         self._urgent_inflight = 0
         self._normal_running_count = 0
         self._worker_idents: set[int] = set()
+        self._worker_threads: tuple[threading.Thread, ...] = ()
         self._futures: set[Future[object]] = set()
 
     def start(self) -> bool:
@@ -136,7 +137,7 @@ class BoundedExecutor:
                 else None
             )
             ready = threading.Barrier(self._worker_count + 1)
-            warmups: list[Future[int]] = []
+            warmups: list[Future[threading.Thread]] = []
             try:
                 warmups.extend(executor.submit(_warm_worker, ready) for _index in range(self._normal_worker_count))
                 if urgent_executor is not None:
@@ -144,7 +145,9 @@ class BoundedExecutor:
                         urgent_executor.submit(_warm_worker, ready) for _index in range(self._urgent_worker_count)
                     )
                 ready.wait(_START_TIMEOUT_SECONDS)
-                self._worker_idents = {future.result() for future in warmups}
+                self._worker_threads = tuple(future.result() for future in warmups)
+                # Warmup results come from already started pool threads.
+                self._worker_idents = {cast(int, thread.ident) for thread in self._worker_threads}
             except BaseException:
                 ready.abort()
                 for future in warmups:
@@ -152,6 +155,8 @@ class BoundedExecutor:
                 executor.shutdown(wait=True, cancel_futures=True)
                 if urgent_executor is not None:
                     urgent_executor.shutdown(wait=True, cancel_futures=True)
+                self._worker_threads = ()
+                self._worker_idents.clear()
                 self._executor = executor
                 self._urgent_executor = urgent_executor
                 raise
@@ -235,50 +240,39 @@ class BoundedExecutor:
         deadline: ShutdownDeadline | None = None,
     ) -> ShutdownStep:
         with self._lock:
-            if not self._running:
-                completed = self._inflight == 0
-                return ShutdownStep(
-                    name=self._thread_name_prefix,
-                    completed=completed,
-                    timed_out=not completed and deadline is not None and deadline.expired,
-                )
+            first_stop = self._running
             self._running = False
             executor = self._executor
             urgent_executor = self._urgent_executor
             futures = tuple(self._futures)
+            workers = self._worker_threads
+        can_wait = wait and threading.current_thread() not in workers
+        cancel_pending = cancel_futures or (first_stop and deadline is not None)
         cancelled = sum(future.cancel() for future in futures) if cancel_futures else 0
-        if deadline is None:
-            if executor is not None:
-                executor.shutdown(wait=wait, cancel_futures=cancel_futures)
-            if urgent_executor is not None:
-                urgent_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
-            with self._lock:
-                completed = self._inflight == 0
-            return ShutdownStep(
-                name=self._thread_name_prefix,
-                completed=completed,
-                timed_out=False,
-                cancelled_count=cancelled,
-            )
-        if wait:
+        if can_wait and deadline is not None:
             with self._lock:
                 while self._inflight:
                     remaining = deadline.remaining_seconds()
                     if remaining <= 0.0:
                         break
                     self._lock.wait(remaining)
-        with self._lock:
-            completed = self._inflight == 0
         if executor is not None:
-            executor.shutdown(wait=completed, cancel_futures=True)
+            executor.shutdown(wait=False, cancel_futures=cancel_pending)
         if urgent_executor is not None:
-            urgent_executor.shutdown(wait=completed, cancel_futures=True)
+            urgent_executor.shutdown(wait=False, cancel_futures=cancel_pending)
+        if can_wait:
+            for worker in workers:
+                worker.join(None if deadline is None else deadline.remaining_seconds())
+        # A Future can be done and our counters zero while its worker is still
+        # executing later callbacks. Only joined workers close that lifetime.
+        with self._lock:
+            completed = self._inflight == 0 and not any(worker.is_alive() for worker in workers)
         return ShutdownStep(
             name=self._thread_name_prefix,
             completed=completed,
-            timed_out=wait and not completed and deadline.expired,
+            timed_out=wait and not completed and deadline is not None and deadline.expired,
             cancelled_count=cancelled,
-            detail="inflight workers remain at shutdown deadline" if not completed else "",
+            detail="worker threads or task callbacks remain at shutdown" if not completed else "",
         )
 
     def status(self) -> BoundedExecutorStatus:
@@ -329,9 +323,9 @@ class BoundedExecutor:
             slots.release()
 
 
-def _warm_worker(ready: threading.Barrier) -> int:
+def _warm_worker(ready: threading.Barrier) -> threading.Thread:
     ready.wait(_START_TIMEOUT_SECONDS)
-    return threading.get_ident()
+    return threading.current_thread()
 
 
 def InjectedExecutor(shared: BoundedExecutor | None, *, inline: bool = False) -> WorkerExecutor:

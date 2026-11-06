@@ -135,6 +135,9 @@ class TrainingProfileTiming:
     cpu: TrainingResourceTiming
     memory: TrainingResourceTiming
     cpu_held_while_memory_wait_seconds: float
+    native_id: int | None = None
+    # Only this task's calling thread; unavailable until its scope has exited.
+    thread_cpu_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +146,8 @@ class TrainingExecutionTiming:
     peak_cpu_reservations: int
     peak_memory_reservations: int
     profiles: tuple[TrainingProfileTiming, ...]
+    # None denotes a manually constructed timing without this observation.
+    source_read_thread_cpu_seconds: float | None = None
 
 
 class TrainingExecutionObserver(Protocol):

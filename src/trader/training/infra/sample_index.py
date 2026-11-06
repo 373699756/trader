@@ -23,8 +23,11 @@ from trader.infra.sqlite_connection import (
     OpenSqliteConnection,
     SqliteConnection,
     SqliteConnectionOptions,
+    SqliteResult,
     SqliteTransaction,
 )
+from trader.training.domain.final_fit import FinalFitDatePlan
+from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan, TrainingSampleDatePartitions
 from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.application.resources import TrainingSampleSettings
 from trader.training.infra.execution_options import TrainingExecutionOptions
@@ -69,6 +72,23 @@ class TrainingIndustryCounts:
     validation: int
     calibration_dates: int = 0
     holdout: int = 0
+
+
+@dataclass(frozen=True)
+class FinalFitIndustryCounts:
+    industry: str
+    rows: int
+    dates: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.industry, str)
+            or not self.industry
+            or type(self.rows) is not int
+            or type(self.dates) is not int
+            or not 1 <= self.dates <= self.rows
+        ):
+            raise ValueError("final_fit_industry_counts_invalid")
 
 
 @dataclass(frozen=True)
@@ -279,16 +299,17 @@ class SQLiteTrainingSampleIndex:
             "INSERT INTO sample_day_diagnostics VALUES (?, ?, ?, ?, ?, ?, ?)", (EncodeDate(day), candidates, *missing)
         )
 
-    def prepare_for_model_fitting(self, split: TrainingDateSplit) -> None:
+    def prepare_for_model_fitting(self, split: TrainingDateSplit | ProductionDiagnosticDatePlan) -> None:
         if self._prepared_split_hash is not None:
             raise RuntimeError("training sample split is already prepared")
         self._counts_by_target.clear()
+        partitions = TrainingSampleDatePartitions(split)
         split_dates = (
-            *((EncodeDate(day), "training") for day in split.model_fit_dates),
-            *((EncodeDate(day), "early_stopping") for day in split.early_stopping_dates),
-            *((EncodeDate(day), "calibration") for day in split.calibration_dates),
-            *((EncodeDate(day), "validation") for day in split.confirmation_dates),
-            *((EncodeDate(day), "holdout") for day in split.daily_proxy_holdout_dates),
+            *((EncodeDate(day), "training") for day in partitions.training),
+            *((EncodeDate(day), "early_stopping") for day in partitions.early_stopping),
+            *((EncodeDate(day), "calibration") for day in partitions.calibration),
+            *((EncodeDate(day), "validation") for day in partitions.validation),
+            *((EncodeDate(day), "holdout") for day in partitions.holdout),
         )
         self._connection.run_many("INSERT INTO sample_split_dates VALUES (?, ?)", split_dates)
         if self._sequence_writer is not None:
@@ -298,7 +319,7 @@ class SQLiteTrainingSampleIndex:
         self._transaction.commit()
         self._prepared_split_hash = split.content_hash
 
-    def require_split(self, split: TrainingDateSplit) -> None:
+    def require_split(self, split: TrainingDateSplit | ProductionDiagnosticDatePlan) -> None:
         self.require_split_hash(split.content_hash)
 
     def require_split_hash(self, split_hash: str) -> None:
@@ -310,6 +331,109 @@ class SQLiteTrainingSampleIndex:
         if not self._counts_by_target:
             self._prepare_industry_counts()
         return self._counts_by_target[target]
+
+    def _final_fit_selection(
+        self, contract: TrainedHeadContract, plan: FinalFitDatePlan,
+    ) -> tuple[str, tuple[int, ...]]:
+        if self._prepared_split_hash is None:
+            raise RuntimeError("final_fit_requires_sealed_samples")
+        if not isinstance(plan, FinalFitDatePlan) or plan.maturity_sessions != contract.maturity_sessions:
+            raise ValueError("final_fit_head_maturity_mismatch")
+        self._feature_columns(contract)
+        return _require_target_column(contract.target_column), tuple(EncodeDate(day) for day in plan.fit_dates)
+
+    def final_fit_counts(
+        self, contract: TrainedHeadContract, plan: FinalFitDatePlan,
+    ) -> tuple[FinalFitIndustryCounts, ...]:
+        target, dates = self._final_fit_selection(contract, plan)
+        placeholders = ",".join("?" for _day in dates)
+        result = self._connection.run(
+            f"SELECT industry,trade_date,COUNT(*) FROM samples WHERE {target} IS NOT NULL "
+            f"AND trade_date IN ({placeholders}) GROUP BY industry,trade_date ORDER BY industry,trade_date",
+            dates,
+        )
+        effective: set[int] = set()
+        totals: dict[str, FinalFitIndustryCounts] = {}
+        try:
+            while groups := result.fetch_values(4_096):
+                for industry, day, count in groups:
+                    name = str(industry)
+                    encoded_day, rows = int(cast(int, day)), int(cast(int, count))
+                    effective.add(encoded_day)
+                    previous = totals.get(name)
+                    totals[name] = FinalFitIndustryCounts(
+                        name,
+                        rows + (previous.rows if previous is not None else 0),
+                        1 + (previous.dates if previous is not None else 0),
+                    )
+        finally:
+            result.close()
+        if effective != set(dates):
+            raise ValueError("final_fit_effective_dates_insufficient")
+        return tuple(totals[industry] for industry in sorted(totals))
+
+    def iter_final_fit_batches(
+        self,
+        industry: str,
+        contract: TrainedHeadContract,
+        plan: FinalFitDatePlan,
+        *,
+        batch_size: int = 256,
+    ) -> Generator[TrainingSampleBatch, None, None]:
+        """Read only explicit mature final-fit dates, independently of diagnostic partitions."""
+        if type(batch_size) is not int or not 1 <= batch_size <= 256 or type(industry) is not str or not industry:
+            raise ValueError("final_fit_batch_arguments_invalid")
+        target, dates = self._final_fit_selection(contract, plan)
+        placeholders = ",".join("?" for _day in dates)
+        columns = (
+            ",".join(f's."{name}"' for name in self._feature_names[:self._column_features]) + ",s.sequence_start"
+            if self._sequence_layout is not None
+            else ",".join(f's."{name}"' for name in self._feature_columns(contract))
+        )
+        rows = self._connection.run(
+            f"SELECT s.trade_date,s.code,s.industry,{columns},s.{target} FROM samples s "
+            f"WHERE s.industry=? AND s.trade_date IN ({placeholders}) AND s.{target} IS NOT NULL "
+            "ORDER BY s.trade_date,s.code",
+            (industry, *dates),
+        )
+        yield from self._decode_sample_batches(rows, contract, batch_size=batch_size)
+
+    @contextmanager
+    def final_fit_data(
+        self, counts: FinalFitIndustryCounts, contract: TrainedHeadContract, plan: FinalFitDatePlan,
+    ) -> Iterator[TrainingSampleMatrix]:
+        """Allocate an independent bounded matrix and close mappings on every exit."""
+        target, dates = self._final_fit_selection(contract, plan)
+        placeholders = ",".join("?" for _day in dates)
+        actual = self._connection.run(
+            f"SELECT COUNT(*),COUNT(DISTINCT trade_date) FROM samples WHERE industry=? "
+            f"AND trade_date IN ({placeholders}) AND {target} IS NOT NULL",
+            (counts.industry, *dates),
+        ).require_one()
+        if (int(actual[0]), int(actual[1])) != (counts.rows, counts.dates):
+            raise ValueError("final_fit_industry_counts_changed")
+        width = len(contract.feature_positions)
+        with ExitStack() as resources:
+            directory = (
+                Path(resources.enter_context(TemporaryDirectory(prefix="sample-fit-", dir=self.workspace)))
+                if counts.rows * (width + 1) * 8 > self.sample_settings.matrix_memory_bytes else None
+            )
+            matrix = _empty_matrix(counts.rows, width, "training", directory, resources)
+            batches = self.iter_final_fit_batches(counts.industry, contract, plan)
+            resources.callback(batches.close)
+            position = 0
+            observed_dates: set[date] = set()
+            for batch in batches:
+                end = position + len(batch.labels)
+                if end > counts.rows:
+                    raise ValueError("final_fit_industry_counts_changed")
+                matrix.features[position:end] = batch.features
+                matrix.labels[position:end] = batch.labels
+                observed_dates.update(batch.trade_dates)
+                position = end
+            if position != counts.rows or len(observed_dates) != counts.dates:
+                raise ValueError("final_fit_industry_counts_changed")
+            yield matrix
 
     def iter_batches(
         self,
@@ -437,6 +561,11 @@ class SQLiteTrainingSampleIndex:
             f"WHERE d.split_name=? {selected}AND s.{target} IS NOT NULL ORDER BY s.trade_date,s.code",
             (split_name, industry) if industry is not None else (split_name,),
         )
+        yield from self._decode_sample_batches(rows, contract, batch_size=batch_size)
+
+    def _decode_sample_batches(
+        self, rows: SqliteResult, contract: TrainedHeadContract, *, batch_size: int,
+    ) -> Iterator[TrainingSampleBatch]:
         decoder = (
             SampleSequenceReader(self._connection, self._sequence_layout, cache_bytes=self.sample_settings.sequence_cache_bytes)
             if self._sequence_layout else None
@@ -828,6 +957,7 @@ __all__ = [
     "SQLiteTrainingSampleIndex",
     "TargetMetric",
     "TrainingIndustryCounts",
+    "FinalFitIndustryCounts",
     "TrainingIndustryData",
     "TrainingSample",
     "TrainingSampleMatrix",

@@ -22,6 +22,7 @@ _TRAINING_STAGES: frozenset[str] = frozenset(
         "target_statistics",
         "industry_statistics",
         "model_fit",
+        "final_model_refit",
         "artifact_publish",
     )
 )
