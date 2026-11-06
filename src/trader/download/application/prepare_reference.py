@@ -11,6 +11,10 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.prepared_reference import PreparedReference, SelectEligibleSecurities
 
 
+class ReferenceDatabaseIncompatibleError(ValueError):
+    """The reference repository does not satisfy the current storage contract."""
+
+
 class IndustryVersionPort(Protocol):
     @property
     def data_version(self) -> str: ...
@@ -84,4 +88,6 @@ def _report(
         report(ProgressMessage((ProgressField(stage), ProgressField(details, level))))
 
 
-__all__ = ["IndustryVersionPort", "PrepareReference", "ReferencePreparationDependencies"]
+__all__ = [
+    "IndustryVersionPort", "PrepareReference", "ReferenceDatabaseIncompatibleError", "ReferencePreparationDependencies",
+]

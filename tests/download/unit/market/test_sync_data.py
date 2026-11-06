@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.shared.reference_fixtures import PreparedFixture
+from trader.download.application.prepare_reference import ReferenceDatabaseIncompatibleError
 from trader.download.application.sync_data import SyncData
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
@@ -83,6 +84,18 @@ def test_common_preparation_failure_stops_all_tasks(target):
         pytest.fail("dependent task ran after preparation failed")
 
     result = SyncData(fail, forbidden, forbidden, forbidden, lambda: False).execute(target)
+    assert result.tasks == () and result.exit_code == 1
+
+
+def test_incompatible_reference_database_keeps_specific_failure_category():
+    def fail():
+        raise ReferenceDatabaseIncompatibleError("reference_database_incompatible")
+
+    def forbidden(value):
+        pytest.fail("dependent task ran after preparation failed")
+
+    result = SyncData(fail, forbidden, forbidden, forbidden, lambda: False).execute("history")
+    assert result.failure == "preparation_ReferenceDatabaseIncompatibleError"
     assert result.tasks == () and result.exit_code == 1
 
 

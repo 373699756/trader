@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.shared.reference_fixtures import PreparedFixture
+from trader.download.application.prepare_reference import ReferenceDatabaseIncompatibleError
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.infra.akshare_calendar import AkshareCalendarTimeoutError
 from trader.download.infra.reference_index import SQLiteReferenceIndex
@@ -137,5 +138,29 @@ def test_old_st_schema_is_not_accepted_as_reference_database(tmp_path):
     with SqliteSession(path) as connection:
         connection.run("CREATE TABLE st_evidence(code TEXT,checked_on TEXT,status TEXT)")
         connection.run("PRAGMA user_version=1")
-    with pytest.raises(ValueError, match="unavailable"):
-        SQLiteReferenceIndex(path, sqlite_policy=SqlitePolicyFixture()).read_st()
+    original = path.read_bytes()
+    index = SQLiteReferenceIndex(path, sqlite_policy=SqlitePolicyFixture())
+    with pytest.raises(ReferenceDatabaseIncompatibleError, match="reference_database_incompatible") as failure:
+        index.read_st()
+    assert isinstance(failure.value.__cause__, sqlite3.DatabaseError)
+    assert str(failure.value.__cause__) == "sqlite_schema_unsupported"
+    assert path.read_bytes() == original
+    path.unlink()
+    reference = PreparedFixture(_NOW)
+    index.merge_st(reference.st_evidence)
+    index.publish(reference, reference.st_evidence)
+    assert index.read_st() == reference.st_evidence
+
+
+def test_reference_database_lock_is_not_reported_as_incompatible(tmp_path, monkeypatch):
+    path = tmp_path / "company_st.sqlite3"
+    path.touch()
+    index = SQLiteReferenceIndex(path, sqlite_policy=SqlitePolicyFixture())
+
+    def locked(*, write):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(index, "_open", locked)
+    with pytest.raises(ValueError, match="reference_database_unavailable") as failure:
+        index.read_st()
+    assert type(failure.value) is ValueError

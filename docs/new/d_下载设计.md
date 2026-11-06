@@ -77,7 +77,7 @@
 
 | 消费者 | 当前输入及派发约束 | 仍需区分的边界 |
 | --- | --- | --- |
-| `application/prepare_reference.py` | 先取ST证据并核对完整性，无合格者不取日历/行业、不发布完整参考 | 返回给`SyncData`的仍为既有准备失败类别；不是资料完整成功 |
+| `application/prepare_reference.py` | 先取ST证据并核对完整性，无合格者不取日历/行业、不发布完整参考 | 参考库结构不兼容返回`preparation_ReferenceDatabaseIncompatibleError`，CLI明确提示清理`market/reference/company_st.sqlite3`及配套文件后重下；锁定或其它数据库异常不归为结构不兼容 |
 | `infra/history_supplier_router.py` | `load_context`将`eligible_universe`交给价格和历史行业准备 | 价格截止日可以是恢复的旧日，资格仍来自本次准备的参考 |
 | 组合根中的market供应商构造 | 既有`load_universe`回调返回`reference.eligible_universe`，日历沿同一参考 | 普通与补缺共用；公共组合根仍由A拥有，B不另建入口 |
 | `domain/company_evidence.py` | `CompanyEvidenceRequest.from_reference`只由合格者形成代码、名称和上市日 | 新闻名单随后与合格总体求交；`fill_missing`不扩大资格 |

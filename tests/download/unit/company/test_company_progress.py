@@ -28,6 +28,7 @@ from trader.entrypoints.cli import Main
 @pytest.mark.parametrize(
     ("result", "expected"),
     (
+        (SyncResult((), failure="preparation_ReferenceDatabaseIncompatibleError"), "company_st.sqlite3 的结构不兼容"),
         (SyncResult((), failure="preparation_AkshareCalendarTimeoutError"), "交易日历准备超时"),
         (SyncResult((SyncTaskResult("company", "failed", "ProcessLockError"),)), "用 fg 恢复对应任务后按 Ctrl+C"),
     ),

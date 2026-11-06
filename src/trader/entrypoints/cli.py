@@ -175,6 +175,13 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
 
 
 def _report_sync_failure(result: SyncResult) -> None:
+    if result.failure == "preparation_ReferenceDatabaseIncompatibleError":
+        print(
+            "sync: ST资格及交易日历参考库 company_st.sqlite3 的结构不兼容，尚未进入下载。"
+            "请退出使用该库的任务，删除下载目录 market/reference 下的 company_st.sqlite3 及其"
+            " -wal、-shm、-journal 配套文件，再重新运行原同步命令；程序会重新下载参考资料。",
+            file=sys.stderr,
+        )
     if result.failure == "preparation_AkshareCalendarTimeoutError":
         print(
             "sync: 交易日历准备超时，AkShare/Sina 在30秒内未完成；本轮尚未进入下载，已有断点保留，请稍后重试。",

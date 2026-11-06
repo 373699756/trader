@@ -12,6 +12,7 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
+from trader.download.application.prepare_reference import ReferenceDatabaseIncompatibleError
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockSecurity
 from trader.download.domain.company_evidence import EvidenceSyncProgress
 from trader.download.domain.history_reference import HistoryStEvidence
@@ -50,6 +51,8 @@ class SQLiteReferenceIndex:
                 )
                 yield connection
         except sqlite3.Error as exc:
+            if str(exc) == "sqlite_schema_unsupported":
+                raise ReferenceDatabaseIncompatibleError("reference_database_incompatible") from exc
             raise ValueError("reference_database_unavailable") from exc
 
     def _open(self, *, write: bool) -> SqliteConnection:
