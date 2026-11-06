@@ -636,6 +636,8 @@ V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON
 
 CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分段基线、实际拟合重叠及原生线程利用率仍须实测；`stage_seconds`或采样线程数不能替代。重放的工件/报告指纹一致也不等于独立输入上的全部预测回放一致。历史准备复用同一诊断模块的SQLite只读在线备份能力，镜像catalog、价格分区及关联资格/行业库，备份前后核对发布输入身份；备份超时或来源变化不产生成功凭据，不能将目录存在当作冻结完成。实现与实测状态只记g中的对应阶段。
 
+长作业在显式`work-root/workload-checkpoints/`逐段原子保存`initial.json`、`all_artifacts_reuse.json`、`sample_preparation.json`、`sample_refit.json`及`sample_reuse.json`，只写实际已返回的步骤；后续中断不删除已保存结果。初训未完成时不生成复用文件，V1仍没有样本重拟合步骤。每份使用`training-workload-checkpoint-1`，`audit_state`始终为`pending_final_source_and_reuse_audit`，性能/生产授权均为false；它保留局部事实，不替代整轮最终报告。审核须同时绑定该作业冻结清单、配置/输入/模型身份和最终源稳定性、数值及零扫描复用核对；缺最终报告时继续保留未验。目录/文件符号链接及既有同名报告会被拒绝，不覆盖旧证据。原子落盘发生在对应训练/准备返回之后，工具总墙钟包含其开销，比较仍须统一工具版本和计量口径。
+
 ### 9.2 P61训练检测清单与A交接
 
 下表保留训练工具的用途和消费者清点；当前路径与公共命令以scripts/README及b第9章为准。公共入口、报告白名单、Makefile与README由A拥有；训练参数、校验、不可变TrainingOptions和命令构造由scripts/training持有，core不再保存全业务DiagnosticOptions。公开选择统一为tools.py的business/module/action，训练内部worker仍由同一入口限定调用；迁移不改变训练输出schema或性能验收结论。

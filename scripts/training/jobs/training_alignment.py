@@ -326,11 +326,16 @@ def _probe(
         ReadOnlyTrainingSource(history) if published_history_read_only else nullcontext(),
     ):
         initial = _train_once(runtime, history, work, profiles)
+        _write_workload_checkpoint(work, "initial", initial)
         repeat = _train_once(runtime, history, work, profiles) if initial["complete"] else None
+        if repeat is not None:
+            _write_workload_checkpoint(work, "all_artifacts_reuse", repeat)
         sample_reuse = (
             _sample_reuse(runtime, history, work, profiles, initial, transfer=sample_cache_transfer)
             if initial["complete"] else None
         )
+        if sample_reuse is not None:
+            _write_workload_checkpoint(work, "sample_reuse", sample_reuse)
     if schedule is not None:
         scheduling_report = ProjectSchedulingExperiment(schedule)
     if computation is not None:
@@ -385,6 +390,29 @@ def _probe(
             "cache_conditions": "operating_system_cache_uncontrolled; sample_copy_verification_precedes_refit",
         },
     }
+
+
+def _write_workload_checkpoint(
+    work: Path,
+    name: Literal["initial", "all_artifacts_reuse", "sample_preparation", "sample_refit", "sample_reuse"],
+    result: dict[str, object],
+) -> None:
+    from trader.infra.atomic_files.json import AtomicWriteJson
+
+    directory = work / "workload-checkpoints"
+    if directory.is_symlink() or directory.exists() and not directory.is_dir():
+        raise ValueError("training_workload_checkpoint_directory_invalid")
+    path = directory / (name + ".json")
+    if path.exists() or path.is_symlink():
+        raise FileExistsError("training_workload_checkpoint_output_exists")
+    AtomicWriteJson(path, {
+        "schema_version": "training-workload-checkpoint-1",
+        "workload": name,
+        "audit_state": "pending_final_source_and_reuse_audit",
+        "performance_acceptance": False,
+        "production_authority": False,
+        "result": result,
+    })
 
 
 def _published_input_signature(history: Path) -> tuple[tuple[str, int, int, int, int, int], ...]:
@@ -448,6 +476,7 @@ def _sample_reuse(
         if target.exists() or target.is_symlink():
             raise ValueError("training_sample_probe_output_exists")
         preparation = _prepare_sample_reuse(runtime, history, preparation_root, selected)
+        _write_workload_checkpoint(work, "sample_preparation", preparation)
         result["preparation"] = preparation
         failures = TrainingSamplePreparationFailures(initial, preparation, selected)
         if failures:
@@ -483,7 +512,9 @@ def _sample_reuse(
         result["copy_verification_seconds"] = time.monotonic() - copy_started
         result["preparation_seconds"] = time.monotonic() - started
         result["linked_bytes" if transfer == "hardlink" else "copied_bytes"] = copied
-        result["run"] = _train_once(runtime, history, target, selected)
+        refit = _train_once(runtime, history, target, selected)
+        result["run"] = refit
+        _write_workload_checkpoint(work, "sample_refit", refit)
         after = _sample_signatures(preparation_root, selected)
         result["source_cache_signatures_after"] = after
         result["source_cache_unchanged"] = before == after

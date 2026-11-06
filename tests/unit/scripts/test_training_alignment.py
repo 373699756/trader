@@ -80,6 +80,92 @@ def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp
         _probe(tmp_path / "history", tmp_path, sqlite_policy=SqlitePolicyFixture())
 
 
+@pytest.mark.parametrize("interrupt_at", ("all_artifacts_reuse", "sample_reuse"))
+def test_alignment_keeps_completed_workload_checkpoints_after_later_interruption(tmp_path, monkeypatch, interrupt_at):
+    from scripts.training.jobs import training_alignment
+    from trader.infra import settings
+    from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+
+    project = Path(__file__).resolve().parents[3]
+    source = SimpleNamespace(snapshot=SimpleNamespace(snapshot_hash="a" * 64, training_codes=("600001",)))
+    monkeypatch.setattr(SQLiteHistoryTrainingInputSnapshot, "open", lambda *_args, **_kwargs: source)
+    monkeypatch.setattr(settings, "LoadRuntimeSettings", lambda _path: SimpleNamespace(
+        project_root=project,
+        data_paths=SimpleNamespace(root=tmp_path / "active", history=tmp_path / "active/history"),
+    ))
+    runs = 0
+
+    def train_once(*_args, **_kwargs):
+        nonlocal runs
+        runs += 1
+        if runs == 2 and interrupt_at == "all_artifacts_reuse":
+            raise KeyboardInterrupt
+        return {"complete": True, "seconds": 1.0, "resources": {"cpu_seconds": 0.5}, "run": runs}
+
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(training_alignment, "_train_once", train_once)
+    monkeypatch.setattr(training_alignment, "_sample_reuse", interrupt)
+    work = tmp_path / "output"
+    with pytest.raises(KeyboardInterrupt):
+        _probe(tmp_path / "history", work, ("v1",), sqlite_policy=SqlitePolicyFixture())
+    saved = json.loads((work / "workload-checkpoints/initial.json").read_text())
+    assert saved["result"] == {"complete": True, "seconds": 1.0, "resources": {"cpu_seconds": 0.5}, "run": 1}
+    assert saved["audit_state"] == "pending_final_source_and_reuse_audit"
+    assert saved["performance_acceptance"] is saved["production_authority"] is False
+    assert (work / "workload-checkpoints/all_artifacts_reuse.json").exists() is (interrupt_at == "sample_reuse")
+    assert not (work / "workload-checkpoints/sample_reuse.json").exists()
+
+
+@pytest.mark.parametrize("foreign", ("directory_symlink", "directory_file", "existing_report", "report_symlink"))
+def test_workload_checkpoint_preserves_existing_objects_and_rejects_symlinks(tmp_path, foreign):
+    from scripts.training.jobs import training_alignment
+
+    work = tmp_path / "output"
+    work.mkdir()
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    sentinel = protected / "keep"
+    sentinel.write_text("original")
+    directory = work / "workload-checkpoints"
+    if foreign == "directory_symlink":
+        directory.symlink_to(protected, target_is_directory=True)
+    elif foreign == "directory_file":
+        directory.write_text("original")
+    else:
+        directory.mkdir()
+        if foreign == "existing_report":
+            (directory / "initial.json").write_text("original")
+        else:
+            (directory / "initial.json").symlink_to(sentinel)
+    with pytest.raises((ValueError, FileExistsError), match="training_workload_checkpoint_"):
+        training_alignment._write_workload_checkpoint(work, "initial", {"complete": True})
+    assert sentinel.read_text() == "original"
+    assert tuple(path.name for path in protected.iterdir()) == ("keep",)
+    if foreign == "existing_report":
+        assert (directory / "initial.json").read_text() == "original"
+
+
+def test_first_workload_checkpoint_syncs_its_new_directory_entry(tmp_path, monkeypatch):
+    from scripts.training.jobs import training_alignment
+    from trader.infra.atomic_files import json as atomic_json
+
+    work = tmp_path / "output"
+    work.mkdir()
+    synced = []
+    original = atomic_json.SyncDirectory
+
+    def sync(path):
+        synced.append(path)
+        original(path)
+
+    monkeypatch.setattr(atomic_json, "SyncDirectory", sync)
+    training_alignment._write_workload_checkpoint(work, "initial", {"complete": False})
+    assert work in synced
+    assert work / "workload-checkpoints" in synced
+
+
 @pytest.mark.parametrize("inputs_only", (True, False))
 @pytest.mark.parametrize("explicit_config", (True, False))
 @pytest.mark.parametrize("benchmark_mode", (None, "baseline_before", "baseline_after", "candidate"))
@@ -543,6 +629,8 @@ def test_real_published_history_training_never_persists_due_observations(tmp_pat
     settings = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=10))
     monkeypatch.setattr(selected_training, "LoadProfileTrainingSettings", lambda *_args: settings)
     monkeypatch.setattr("trader.infra.settings.LoadRuntimeSettings", lambda _path: runtime)
+    # This checks file protection and report boundaries; host-pressure guards have dedicated tests.
+    monkeypatch.setattr("trader.training.infra.memory_admission.FittingMemoryCapacity", lambda _settings: 512 * 1024**2)
     before = training_alignment._published_input_signature(history)
     report = training_alignment._probe(
         history,
@@ -564,3 +652,15 @@ def test_real_published_history_training_never_persists_due_observations(tmp_pat
     assert summary["repeat"]["execution"]["history_scan_passes"] == 0
     assert summary["sample_reuse"]["run"]["execution"]["history_scan_passes"] == 0
     assert before == training_alignment._published_input_signature(history)
+    checkpoints = tmp_path / "output/workload-checkpoints"
+    assert {path.name for path in checkpoints.iterdir()} == {
+        "initial.json", "all_artifacts_reuse.json", "sample_preparation.json", "sample_refit.json", "sample_reuse.json",
+    }
+    saved = {path.stem: json.loads(path.read_text()) for path in checkpoints.iterdir()}
+    assert all(item["audit_state"] == "pending_final_source_and_reuse_audit" for item in saved.values())
+    assert all(item["performance_acceptance"] is item["production_authority"] is False for item in saved.values())
+    assert saved["initial"]["result"]["execution"]["history_scan_passes"] == 1
+    assert saved["all_artifacts_reuse"]["result"]["execution"]["history_scan_passes"] == 0
+    assert saved["sample_preparation"]["result"]["fault_injected"] is True
+    assert saved["sample_refit"]["result"]["execution"]["history_scan_passes"] == 0
+    assert not saved["sample_reuse"]["result"]["failures"]
