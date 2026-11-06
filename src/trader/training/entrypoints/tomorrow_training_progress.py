@@ -129,11 +129,7 @@ class StderrTomorrowTrainingProgress:
         now = self._monotonic()
         with self._lock:
             self._latest = None
-            print(
-                f"{_format_duration(now - self._started_at)} | {self._command_label} | 0/1 (0.00%) | 已取消",
-                file=sys.stderr,
-                flush=True,
-            )
+            _write_line(f"{_format_duration(now - self._started_at)} | {self._command_label} | 0/1 (0.00%) | 已取消")
             self._last_emitted_at = now
 
     def publish_result(self, status: TomorrowTrainingCommandStatus, failure_reason: str | None) -> None:
@@ -149,7 +145,7 @@ class StderrTomorrowTrainingProgress:
             parts.append(f"错误 {failure_reason}")
         with self._lock:
             self._latest = None
-            print(" | ".join(parts), file=sys.stderr, flush=True)
+            _write_line(" | ".join(parts))
             self._last_emitted_at = now
 
     def _heartbeat_loop(self) -> None:
@@ -218,8 +214,14 @@ class StderrTomorrowTrainingProgress:
                 f" | 停牌日 {diagnostic.suspended_sessions} | 缺行估算日 {diagnostic.estimated_sessions}"
                 f" | T+1标签缺失 {diagnostic.missing_t1} | D25标签缺失 {diagnostic.missing_d25}"
             )
-        print(" | ".join(parts), file=sys.stderr, flush=True)
+        _write_line(" | ".join(parts))
         self._last_emitted_at = now
+
+
+def _write_line(line: str) -> None:
+    # Keep the newline in the same stream write across independent profile emitters.
+    sys.stderr.write(line + "\n")
+    sys.stderr.flush()
 
 
 def _format_duration(seconds: float) -> str:

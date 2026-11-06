@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import io
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
@@ -14,6 +18,31 @@ class _Clock:
 
     def __call__(self) -> float:
         return next(self._values)
+
+
+def test_parallel_profiles_keep_complete_lines_when_the_stream_yields_between_writes(monkeypatch) -> None:
+    barrier = threading.Barrier(2)
+
+    class YieldingStream(io.StringIO):
+        def write(self, text: str) -> int:
+            count = super().write(text)
+            if text:
+                barrier.wait(timeout=3)
+            return count
+
+    stream = YieldingStream()
+    monkeypatch.setattr(sys, "stderr", stream)
+    outputs = tuple(
+        StderrTomorrowTrainingProgress(monotonic=lambda: 0.0, start_heartbeat=False, command_label=label)
+        for label in ("V1训练", "V2训练")
+    )
+    update = TomorrowTrainingProgress("history_conversion", "started", 0, 100)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(lambda output: output.publish(update), outputs))
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 2
+    assert all(line.startswith("00:00:00 | ") and line.endswith("已生成样本 0") for line in lines)
+    assert sorted(line.split(" | ")[1] for line in lines) == ["V1训练", "V2训练"]
 
 
 def test_cache_sealing_has_its_own_clock_and_byte_progress(capsys):
