@@ -349,7 +349,7 @@ def Main() -> int:
             budget_seconds=min(180.0, args.budget_seconds),
             facts_path=args.facts_database, sqlite_policy=sqlite_policy,
         )
-        if args.directory is not None:
+        if args.directory is not None and report["status"] != "failed":
             summary = report["summary"]
             if not isinstance(summary, dict):
                 raise ValueError("company_database_summary_invalid")
@@ -357,7 +357,7 @@ def Main() -> int:
                 source_path, args.directory.resolve(), budget_seconds=args.budget_seconds, sqlite_policy=sqlite_policy
             )
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0
+        return 1 if report["status"] == "failed" else 0
     if args.pagination_only:
         print(
             json.dumps(

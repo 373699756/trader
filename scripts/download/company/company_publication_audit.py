@@ -7,6 +7,7 @@ from scripts.download.company.company_field_audit import AuditCompanyFields
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -23,16 +24,18 @@ from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSessio
 
 
 def AuditCompanyPublication(
-    path: Path, facts_path: Path | None, *, now: datetime, deadline: float, sqlite_policy: SqliteIoPolicy
+    path: Path, facts_path: Path | None, *, now: datetime, deadline: float, sqlite_policy: SqliteIoPolicy,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> dict[str, object]:
     """Two read snapshots, with concurrent changes rejected; not a source completeness certificate."""
     if facts_path is None or not facts_path.exists():
         return {"available": False, "findings": ["company_formal_unavailable"]}
     options = SqliteConnectionOptions(read_only=True, timeout_seconds=5)
     findings: list[str] = []
+    cancel = cancel_requested if cancel_requested is not None else lambda: time.monotonic() >= deadline
     with (
-        SqliteSession(path, options, cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy) as raw,
-        SqliteSession(facts_path, options, cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy) as formal,
+        SqliteSession(path, options, cancel_requested=cancel, sqlite_policy=sqlite_policy) as raw,
+        SqliteSession(facts_path, options, cancel_requested=cancel, sqlite_policy=sqlite_policy) as formal,
     ):
         versions = (raw.run("PRAGMA data_version").require_one()[0], formal.run("PRAGMA data_version").require_one()[0])
         with SqliteTransaction(raw), SqliteTransaction(formal):

@@ -8,8 +8,9 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import json
 import re
+import sqlite3
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -207,6 +208,49 @@ def AuditCompanyDatabase(
 ) -> dict[str, object]:
     """Count local records and persisted retry reasons without reading bodies into the report."""
     deadline = time.monotonic() + budget_seconds
+    deadline_cancelled = False
+
+    def cancel_requested() -> bool:
+        nonlocal deadline_cancelled
+        if time.monotonic() >= deadline:
+            deadline_cancelled = True
+        return deadline_cancelled
+
+    try:
+        return _audit_company_database(
+            path, now=now, deadline=deadline, cancel_requested=cancel_requested,
+            facts_path=facts_path, sqlite_policy=sqlite_policy,
+        )
+    except sqlite3.OperationalError as exc:
+        # Python 3.10 has no sqlite_errorcode. The exact SQLite interruption
+        # message alone is insufficient: our own deadline callback must cancel.
+        if str(exc) != "interrupted" or not deadline_cancelled:
+            raise
+        return {
+            "schema_version": "company-resume",
+            "status": "failed",
+            "summary": {"database": {
+                "read_only": True,
+                "complete": False,
+                "budget_exhausted": True,
+                "failure_category": "budget_exhausted",
+                "failure_code": "company_database_audit_budget_exhausted",
+                "field_correctness_verified": False,
+                "full_market_verified": False,
+            }},
+            "findings": ["company_database_audit_budget_exhausted"],
+        }
+
+
+def _audit_company_database(
+    path: Path,
+    *,
+    now: datetime,
+    deadline: float,
+    cancel_requested: Callable[[], bool],
+    facts_path: Path | None,
+    sqlite_policy: SqliteIoPolicy,
+) -> dict[str, object]:
     cutoff = (now.date() - timedelta(days=365)).isoformat()
     pending = cooling = ready = deterministic = 0
     failures: dict[str, int] = {}
@@ -224,7 +268,7 @@ def AuditCompanyDatabase(
         SqliteSession(
             path,
             SqliteConnectionOptions(read_only=True, timeout_seconds=5),
-            cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy,
+            cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
         ) as connection,
         SqliteTransaction(connection),
     ):
@@ -357,7 +401,7 @@ def AuditCompanyDatabase(
     if facts_path is not None and facts_path.exists():
         with SqliteSession(
             facts_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5),
-            cancel_requested=lambda: time.monotonic() >= deadline, sqlite_policy=sqlite_policy,
+            cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
         ) as connection, SqliteTransaction(connection):
             formal = {
                 "available": True,
@@ -384,7 +428,9 @@ def AuditCompanyDatabase(
                         ("source", "source_key", "code", "record_hash", "outcome", "policy", "published_at"),
                         tuple(receipt), strict=True,
                     )))
-    publication = AuditCompanyPublication(path, facts_path, now=now, deadline=deadline, sqlite_policy=sqlite_policy)
+    publication = AuditCompanyPublication(
+        path, facts_path, now=now, deadline=deadline, sqlite_policy=sqlite_policy, cancel_requested=cancel_requested,
+    )
     publication_findings = publication["findings"]
     if not isinstance(publication_findings, list):
         raise ValueError("company_publication_findings_invalid")

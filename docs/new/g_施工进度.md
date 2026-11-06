@@ -476,6 +476,10 @@
 
 ### 阶段332：按最新有效公司事实生成一年内定向补缺计划
 
+- **本HDD只读审计预算分类接续（2026-11-06，completed，仅P46诊断修复）**：沿既有coverage/database-audit真实只读核验，30秒预算在dbstat扫描耗尽后返回invalid_json；同一注册worker的受控复核保留`OperationalError: interrupted`，不把它判为公司库结构或字段已通过。原公共/worker报告及stderr分别在`/tmp/trader-hdd-followup-company-preflight-20261106-01.json`、`/tmp/trader-hdd-company-preflight-worker-20261106-01.stderr.log`；未写活动数据库或联网。修复仅在本次deadline回调确实已触发且SQLite精确报告interrupted时返回结构化failed预算类别，完整/质量为false；原生入口非0，失败不继续压实，公开白名单保留失败码。采集/正式两连接共用同一回调，其它异常与cause保留，预算不扩大、dbstat不跳过。
+- **验证与范围**：6项新用例及7项直接消费者按用例身份以最新结果覆盖后13项通过，含真实内存SQLite进度中断、未证实interrupt/其它错误原cause、双连接、原生/公共JSON及退出码；报告`/tmp/trader-company-budget-final-20261106.xml`、`budget-consumers-20261106.xml`及`field-count-consumer-20261106.xml`（后两者同前缀trader-company-）。中间唯一旧消费者仍断言127列，按351现行126列独立修正并由已推送`1bb16e1c`交付，不混入本批DDL。4工具源码mypy、5个Python文件Ruff E9/F/B/UP、完整diff/空白及独立Review通过。
+- **接续限制**：本切片无已知遗留；仅验证上述SQLite进度预算分支，不签Python库存遍历等其它超时分类，也未重跑实际库、全量字段或性能。公司稳定全库审计、同步终态和字段/活动采用仍未闭合；本批父基线`1bb16e1c`，只纳工具、定向测试及说明，不混README导航或其它修改。
+
 - **本HDD计划比例与人民币合同额接续（2026-11-06，completed，仅本切片实现及隔离验证；332整体in_progress）**：沿用户本次按计划修复要求，补单主体总股本计划比例的明确交易方式及直接“不超过总股本”句式、人民币“合同额”词形；分母中的“本公司”不再误当第二行动主体。主体转换、否定、多主体、持股/流通股分母、唯一值、币种及合同生效守卫继续保留，不开启公司奖励或改变硬过滤。真实局部解析规则修订只让对应旧attempted缺项重核一次，优先复用当前hash本地文字，正式reader读回后重启不重复尝试，原valid及全局提取身份保持。
 - **本切片验证**：8文件功能集299项通过；Review收窄“以…减持”的方式语法并补3条否定反例后，最终纯解析30项及同最终源码reader隔离3项通过，按用例身份去重302项。报告为`/tmp/trader-332-measurement-functional-20261106.xml`、同前缀guards-final和reader-final；共享工具证据guard同步真实规则身份后15项通过（`/tmp/trader-332-measurement-tool-consumer-20261106.xml`），不重复合计。8个修改/新增Python文件Ruff E9/F/B/UP、2生产模块mypy、完整diff/空白及独立Review通过。
 - **输入与交付边界**：本HDD未取得旧SSD的三份封存公告，以上明确为按g摘要构造的合成fixture及隔离正式库证据，不补造原文、不签真实公告回放、全字段召回或活动采用。字段取得仍present_unverified，未凭空补营收、税口径、汇率或生效结论；父基线为已推送`379a5416`，仅纳本切片，保留281/347/README修改。未触碰活动数据、联网采集、生产训练或性能作业，原332全字段/免费源/终态及8小时欠项继续保留。

@@ -133,6 +133,12 @@ def ProjectCompanyResume(
             key: database.get(key)
             for key in (
                 "read_only",
+                "complete",
+                "budget_exhausted",
+                "failure_category",
+                "failure_code",
+                "field_correctness_verified",
+                "full_market_verified",
                 "pdf_archived",
                 "database_bytes",
                 "free_bytes",
