@@ -160,14 +160,17 @@ def _final_documents(profile, model_text):
 
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
+@pytest.mark.parametrize("recent_diagnostic", (False, True))
 def test_final_diagnostic_weights_change_fingerprint_and_reject_benchmark_with_final_and_metrics_unchanged(
-    tmp_path, models_by_profile, profile,
+    tmp_path, models_by_profile, profile, recent_diagnostic,
 ):
     from scripts.training.jobs.training_performance import SummarizeTrainingBenchmark
     from tests.helpers.training.scripts.training_execution_performance import _results, _summary
 
     text = models_by_profile[profile].two_threads if profile in {"v1", "v2"} else None
     model, metadata = _final_documents(profile, text)
+    if recent_diagnostic and profile != "v1":
+        metadata["schema_version"] = f"{profile}_head_recent_refit_metadata"
     final_before = deepcopy(model)
     report_before = deepcopy(metadata["validation_report"])
     _write_documents(tmp_path, profile, model, metadata)

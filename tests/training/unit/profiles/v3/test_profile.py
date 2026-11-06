@@ -65,6 +65,7 @@ def test_two_file_pair_loads_both_heads(profile: TrainedProfileContract, tmp_pat
     located = InspectPublishedProfileBundles(root, profile)
     scoring = LoadScoringProfile(profile.profile_id, training_root=tmp_path)
     assert tuple(item.strategy for item in located) == (Strategy.TOMORROW, Strategy.D25)
+    assert all(item.model.diagnostic_plan is not None for item in located)
     assert tuple(scoring.heads) == (Strategy.TOMORROW, Strategy.D25)
     assert len({head.predictor.model_hash for head in scoring.heads.values()}) == 2
 

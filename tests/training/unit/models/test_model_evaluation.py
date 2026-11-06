@@ -15,6 +15,7 @@ import pytest
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.model_bundles.documents import BuildPredictionMetricsDocument
 from trader.training.infra.model_evaluation import (
+    PREDICTION_EVALUATION_CONTRACT,
     CalibrationAccumulator,
     CalibrationUnavailableError,
     PredictionMetricsAccumulator,
@@ -119,7 +120,7 @@ def test_one_degenerate_industry_does_not_block_other_models_or_count_as_fitted(
         assert (result.candidate_training_rows, result.training_rows) == (12, 6)
         assert (result.metrics.input_rows, result.validation_rows) == (8, 4)
         assert result.sealed_holdout_rows == 1
-        report = BuildPredictionMetricsDocument(result)
+        report = BuildPredictionMetricsDocument(result, evaluation_contract=PREDICTION_EVALUATION_CONTRACT)
         assert report["prediction_evaluation_mode"] == "prediction_diagnostic_only"
         assert report["evaluation_coverage"]["holdout_status"] == "sealed_rows_count_only"
         assert all("split_name='holdout'" not in statement for statement in statements)

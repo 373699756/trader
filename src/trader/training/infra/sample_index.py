@@ -27,6 +27,7 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 from trader.training.domain.final_fit import FinalFitDatePlan
+from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan, TrainingSampleDatePartitions
 from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.application.resources import TrainingSampleSettings
 from trader.training.infra.execution_options import TrainingExecutionOptions
@@ -298,16 +299,17 @@ class SQLiteTrainingSampleIndex:
             "INSERT INTO sample_day_diagnostics VALUES (?, ?, ?, ?, ?, ?, ?)", (EncodeDate(day), candidates, *missing)
         )
 
-    def prepare_for_model_fitting(self, split: TrainingDateSplit) -> None:
+    def prepare_for_model_fitting(self, split: TrainingDateSplit | ProductionDiagnosticDatePlan) -> None:
         if self._prepared_split_hash is not None:
             raise RuntimeError("training sample split is already prepared")
         self._counts_by_target.clear()
+        partitions = TrainingSampleDatePartitions(split)
         split_dates = (
-            *((EncodeDate(day), "training") for day in split.model_fit_dates),
-            *((EncodeDate(day), "early_stopping") for day in split.early_stopping_dates),
-            *((EncodeDate(day), "calibration") for day in split.calibration_dates),
-            *((EncodeDate(day), "validation") for day in split.confirmation_dates),
-            *((EncodeDate(day), "holdout") for day in split.daily_proxy_holdout_dates),
+            *((EncodeDate(day), "training") for day in partitions.training),
+            *((EncodeDate(day), "early_stopping") for day in partitions.early_stopping),
+            *((EncodeDate(day), "calibration") for day in partitions.calibration),
+            *((EncodeDate(day), "validation") for day in partitions.validation),
+            *((EncodeDate(day), "holdout") for day in partitions.holdout),
         )
         self._connection.run_many("INSERT INTO sample_split_dates VALUES (?, ?)", split_dates)
         if self._sequence_writer is not None:
@@ -317,7 +319,7 @@ class SQLiteTrainingSampleIndex:
         self._transaction.commit()
         self._prepared_split_hash = split.content_hash
 
-    def require_split(self, split: TrainingDateSplit) -> None:
+    def require_split(self, split: TrainingDateSplit | ProductionDiagnosticDatePlan) -> None:
         self.require_split_hash(split.content_hash)
 
     def require_split_hash(self, split_hash: str) -> None:

@@ -767,7 +767,9 @@ def _numeric_fingerprints(model_root: Path, profiles: tuple[ScoringProfileId, ..
                     "components": {name: diagnostic[name] for name in fields},
                 })
                 components = {"final": components, "diagnostic": diagnostic_values}
-            elif profile != "v1" and metadata.get("schema_version") == f"{profile}_head_refit_metadata":
+            elif profile != "v1" and metadata.get("schema_version") in {
+                f"{profile}_head_refit_metadata", f"{profile}_head_recent_refit_metadata",
+            }:
                 final_fit = _fingerprint_model_object(metadata.get("final_fit"))
                 diagnostic = _fingerprint_model_object(final_fit.get("diagnostic_model"))
                 if "industries" not in diagnostic:

@@ -13,6 +13,7 @@ import shutil
 from contextlib import contextmanager
 
 from dataclasses import replace
+from datetime import timedelta
 
 
 from pathlib import Path
@@ -63,6 +64,7 @@ from trader.training.infra.profile.v1.samples import (
 )
 
 from trader.training.infra.profile.v1.training import InspectV1Training, RunV1Training
+from trader.training.infra.profile.v1 import training as v1_training
 
 from tests.helpers.training.profiles.v1.learned_rank_training import (
     _History,
@@ -302,8 +304,19 @@ def test_final_heads_fit_latest_raw_features_and_keep_distinct_diagnostic_eviden
         assert report["final_rank_iterations"] == head.rank_iterations
         assert LearnedRankPredictor(head.diagnostic).model_hash == head.diagnostic.content_hash
         assert summary["source_cutoff"] == history.dates[-1].isoformat()
+        assert summary["label_cutoff"] == head.split.label_cutoff.isoformat()
+        assert summary["final_fit_start"] == history.dates[last - settings.fit_dates + 1].isoformat()
         assert summary["final_fit_end"] == history.dates[last].isoformat()
         assert summary["final_fit_sessions"] == settings.fit_dates
+        assert summary["diagnostic_fit_start"] == head.diagnostic.split.fitting[0].isoformat()
+        assert summary["diagnostic_fit_end"] == head.diagnostic.split.fitting[-1].isoformat()
+        assert summary["calibration_start"] == head.diagnostic.split.calibration[0].isoformat()
+        assert summary["calibration_end"] == head.diagnostic.split.calibration[-1].isoformat()
+        assert summary["diagnostic_validation_start"] == head.diagnostic.split.validation[0].isoformat()
+        assert summary["diagnostic_validation_end"] == head.diagnostic.split.validation[-1].isoformat()
+        assert summary["diagnostic_maturity_sessions"] == head.diagnostic.split.maturity_sessions
+        assert summary["diagnostic_fit_end"] < summary["calibration_start"] < summary["diagnostic_validation_start"]
+        assert summary["final_fit_end"] == summary["label_cutoff"] < summary["source_cutoff"]
         assert summary["evaluation_model_role"] == "pre_refit_diagnostic"
         assert summary["final_model_unseen_validation_passed"] is False
 
@@ -526,6 +539,131 @@ def test_v1_missing_t1_keeps_d25_and_fixed_calendar_partitions(tmp_path: Path) -
             )
             assert d25.dates.count(anchor) == len(history.codes)
             assert counts.estimated_sessions == 1 and counts.missing_t1 >= 1
+
+
+def test_missing_required_initial_warmup_blocks_incomplete_diagnostic_dates_before_fitting(tmp_path, monkeypatch):
+    history = _History()
+    settings = replace(_settings(), fit_dates=54)
+    history.snapshot = replace(history.snapshot, listing_intervals=tuple(
+        (code, history.dates[0] - timedelta(days=1), None) for code in history.codes
+    ))
+    original = history.iter_training_rows
+
+    def missing_first_day(dates):
+        yield from (row for row in original(dates) if row.trade_date != history.dates[0])
+
+    reached = []
+
+    class _ReachedFitting(BaseException):
+        pass
+
+    def forbidden(*_args, **_kwargs):
+        reached.append("fit_or_publication")
+        raise _ReachedFitting()
+
+    monkeypatch.setattr(history, "iter_training_rows", missing_first_day)
+    for name in ("FitLearnedRankHead", "RefitLearnedRankHead", "PublishLearnedRankPair"):
+        monkeypatch.setattr(v1_training, name, forbidden)
+    result = None
+    try:
+        result = RunV1Training(
+            lambda: history, tmp_path / "models", history_root=tmp_path / "history",
+            sample_root=tmp_path / "samples", settings=settings,
+            sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture(),
+        )
+    except _ReachedFitting:
+        pass
+    assert not reached, "incomplete diagnostic dates must be rejected before fitting or publication"
+    assert result is not None
+    assert result.status == "failed"
+    assert "learned_rank_sample_dates_insufficient:d25:fitting" in result.failure_reasons
+    coverage = next(item for item in result.coverage if item.strategy is Strategy.D25 and item.partition == "fitting")
+    assert (coverage.expected_dates, coverage.effective_dates, coverage.rows) == (54, 53, 636)
+    assert not tuple((tmp_path / "models").rglob("*.json"))
+
+
+def _run_v1_without_fitting(tmp_path, monkeypatch, history, settings):
+    reached = []
+
+    class _ReachedFitting(BaseException):
+        pass
+
+    def stop_at_fit(*_args, **_kwargs):
+        reached.append("fit")
+        raise _ReachedFitting()
+
+    def stop_at_publication(*_args, **_kwargs):
+        reached.append("publication")
+        raise _ReachedFitting()
+
+    monkeypatch.setattr(v1_training, "FitLearnedRankHead", stop_at_fit)
+    monkeypatch.setattr(v1_training, "RefitLearnedRankHead", stop_at_fit)
+    monkeypatch.setattr(v1_training, "PublishLearnedRankPair", stop_at_publication)
+    result = None
+    try:
+        result = RunV1Training(
+            lambda: history, tmp_path / "models", history_root=tmp_path / "history",
+            sample_root=tmp_path / "samples", settings=settings,
+            sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture(),
+        )
+    except _ReachedFitting:
+        pass
+    return result, tuple(reached)
+
+
+@pytest.mark.parametrize("partition", ("fitting", "early_stopping", "calibration", "validation"))
+def test_each_diagnostic_partition_requires_its_complete_global_dates_before_fitting(tmp_path, monkeypatch, partition):
+    history = _History()
+    settings = _settings()
+    split = BuildLearnedRankDateSplit(history.dates, settings, maturity_sessions=1)
+    selected = {
+        "fitting": split.fitting,
+        "early_stopping": split.early_stopping,
+        "calibration": split.calibration,
+        "validation": split.validation,
+    }[partition][1]
+    original = history.iter_training_rows
+
+    def unobserved_signal(dates):
+        for row in original(dates):
+            yield replace(row, point=None, cell_status="unknown_missing") if row.trade_date == selected else row
+
+    monkeypatch.setattr(history, "iter_training_rows", unobserved_signal)
+    result, reached = _run_v1_without_fitting(tmp_path, monkeypatch, history, settings)
+    assert reached == () and result is not None
+    assert result.status == "failed"
+    assert f"learned_rank_sample_dates_insufficient:tomorrow:{partition}" in result.failure_reasons
+    coverage = next(item for item in result.coverage if item.strategy is Strategy.TOMORROW and item.partition == partition)
+    assert coverage.effective_dates < coverage.expected_dates and coverage.rows > 0
+    assert not tuple((tmp_path / "models").rglob("*.json"))
+
+
+@pytest.mark.parametrize("scenario", ("one_stock_missing_future", "new_listing"))
+def test_individual_missing_targets_and_prelisting_rows_do_not_require_each_stock_to_have_all_dates(
+    tmp_path, monkeypatch, scenario,
+):
+    history = _History()
+    settings = _settings()
+    if scenario == "new_listing":
+        history.snapshot = replace(history.snapshot, listing_intervals=tuple(
+            (code, history.dates[300] if code == history.codes[0] else history.dates[0] - timedelta(days=1), None)
+            for code in history.codes
+        ))
+    else:
+        split = BuildLearnedRankDateSplit(history.dates, settings, maturity_sessions=1)
+        missing = history.dates[history.dates.index(split.fitting[5]) + 1]
+        original = history.iter_training_rows
+
+        def one_stock_missing(dates):
+            for row in original(dates):
+                yield replace(row, point=None, cell_status="unknown_missing") if (
+                    row.code == history.codes[0] and row.trade_date == missing
+                ) else row
+
+        monkeypatch.setattr(history, "iter_training_rows", one_stock_missing)
+    result, reached = _run_v1_without_fitting(tmp_path, monkeypatch, history, settings)
+    assert result is None and reached == ("fit",)
+    assert not tuple((tmp_path / "models").rglob("*.json"))
 
 
 def test_missing_d25_partition_fails_before_either_head_fit_and_reports_coverage(tmp_path, monkeypatch):

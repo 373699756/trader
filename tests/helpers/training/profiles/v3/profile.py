@@ -1,13 +1,18 @@
 from __future__ import annotations
 import json
+from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
 import numpy as np
+from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.training.infra.model_bundles.profile_publication import PublishProfileBundles
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
+from trader.training.infra.model_evaluation import RECENT_PREDICTION_EVALUATION_CONTRACT
+from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT
+from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan, PRODUCTION_DIAGNOSTIC_CONTRACT
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 
@@ -180,13 +185,88 @@ def _documents(
     return model, metadata
 
 
+def _recent_documents(
+    contract: TrainedHeadContract,
+    profile: TrainedProfileContract = V3_TRAINING_PROFILE,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Build synthetic recent publisher inputs; keep old-schema reader fixtures separate."""
+    model, metadata = _documents(contract, profile)
+    source_cutoff = date(2026, 9, 9)
+    candidates = tuple(source_cutoff - timedelta(days=offset) for offset in range(4_000))
+    calendar = tuple(day for day in reversed(candidates) if day.weekday() < 5)[-2_000:]
+    fit_sessions = 1_000 if profile.profile_id == "v2" else 750
+    diagnostic = BuildProductionDiagnosticDatePlan(
+        calendar, source_cutoff=source_cutoff, fit_sessions=fit_sessions,
+        early_stopping_sessions=20 if profile.algorithm == "lightgbm" else 0,
+        history_sessions=profile.history_sessions,
+    )
+    final = BuildFinalFitDatePlan(
+        calendar, source_cutoff=source_cutoff, fit_sessions=fit_sessions,
+        maturity_sessions=contract.maturity_sessions,
+    )
+    split_hash = ContentHash({
+        "calendar_split_hash": diagnostic.content_hash, "strategy_head": contract.strategy.value,
+        "maturity_sessions": contract.maturity_sessions, "label_target": contract.label_target,
+    })
+    training_rows, validation_rows = fit_sessions * 2, len(diagnostic.validation_dates) * 2
+    inputs, report = metadata["training_input"], metadata["validation_report"]
+    inputs.update(label_cutoff=final.fit_dates[-1].isoformat(), calendar_hash=BaoStockCalendar(calendar).content_hash,
+                  source_cutoff=source_cutoff.isoformat(), requested_sessions=len(calendar), split_hash=split_hash)
+    inputs.pop("content_hash")
+    _hash(inputs)
+    report.update(label_cutoff=final.fit_dates[-1].isoformat(), split_hash=split_hash,
+                  training_input_document_hash=inputs["content_hash"], training_rows=training_rows,
+                  validation_rows=validation_rows, evaluation_contract=RECENT_PREDICTION_EVALUATION_CONTRACT)
+    for metric in (report["prediction_metrics"], report["industry_prediction_metrics"]["银行"]):
+        metric.update(input_rows=validation_rows, predicted_rows=validation_rows,
+                      covered_dates=len(diagnostic.validation_dates), rank_ic_dates=len(diagnostic.validation_dates))
+    for metric in report["target_metrics"].values():
+        metric["count"] = validation_rows
+    report["evaluation_coverage"].update(
+        candidate_training_rows=training_rows, trained_rows=training_rows,
+        candidate_validation_rows=validation_rows, predicted_rows=validation_rows, sealed_holdout_rows=0,
+        holdout_status="not_applicable_recent_production_diagnostic",
+    )
+    report.pop("content_hash")
+    _hash(report)
+    metadata.update(
+        schema_version=f"{profile.profile_id}_head_recent_refit_metadata",
+        industry_sample_counts={"银行": {"training_rows": training_rows, "validation_rows": validation_rows}},
+        final_fit={
+            "contract": FINAL_FIT_CONTRACT, "source_cutoff": source_cutoff.isoformat(),
+            "calendar_dates": [day.isoformat() for day in calendar],
+            "maturity_sessions": final.maturity_sessions, "fit_dates": [day.isoformat() for day in final.fit_dates],
+            "plan_hash": final.content_hash, "model_hash": model["content_hash"],
+            "industry_training_rows": {"银行": training_rows}, "diagnostic_model": model,
+            "diagnostic_contract": PRODUCTION_DIAGNOSTIC_CONTRACT,
+            "diagnostic_source_cutoff": source_cutoff.isoformat(), "diagnostic_maturity_sessions": 5,
+            "diagnostic_split_hash": diagnostic.content_hash,
+            "diagnostic_dates": {
+                "fitting": [day.isoformat() for day in diagnostic.fitting_dates],
+                "early_stopping": [day.isoformat() for day in diagnostic.early_stopping_dates],
+                "calibration": [day.isoformat() for day in diagnostic.calibration_dates],
+                "validation": [day.isoformat() for day in diagnostic.validation_dates],
+                "warmup": [day.isoformat() for day in diagnostic.warmup_dates],
+                "embargo": [[day.isoformat() for day in days] for days in diagnostic.embargo_dates],
+            },
+            "evaluation_model_role": "pre_refit_diagnostic",
+            "calibration_policy": "frozen_recent_diagnostic_model_transfer",
+            "final_model_unseen_validation_passed": False,
+            "research_holdout_status": "not_part_of_recent_production_diagnostic",
+        },
+    )
+    metadata.pop("content_hash")
+    _hash(metadata)
+    return model, metadata
+
+
 def _write_bundle(
     staging: Path,
     contract: TrainedHeadContract,
     profile: TrainedProfileContract = V3_TRAINING_PROFILE,
 ) -> None:
     staging.mkdir(parents=True, exist_ok=True)
-    model, metadata = _documents(contract, profile)
+    model, metadata = _recent_documents(contract, profile)
     (staging / "model.json").write_text(json.dumps(model), encoding="utf-8")
     (staging / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 

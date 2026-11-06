@@ -20,11 +20,15 @@ from trader.download.infra.history_control_index import HistoryMaintenanceAlread
 from trader.download.infra.history_partition_repack import HistoryPartitionRepackFenceError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ResidualizeExposure
+from trader.infra.sqlite_codec import EncodeDate
 from trader.training.application.tomorrow_training import ProductionTrainingWindow, TomorrowTrainingProgress, TomorrowTrainingWindow
 from trader.training.domain.final_fit import BuildFinalFitDatePlan
 from trader.training.domain.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.training.domain.training_dates import BuildTrainingDateSplit
+from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan, TrainingSampleDatePartitions
 from trader.training.infra.engine import (
+    ProfileTrainingRequest,
+    RunProfileTraining,
     _cleanup_abandoned_workspaces,
     _mature_label_cutoff,
     _training_contract_hash,
@@ -60,6 +64,7 @@ from trader.training.infra.profile.v3.training_sample_index import (
 )
 from trader.training.infra.sample_builder import TrainingSampleBuildRequest, _finalize_sample_day, _PendingSample
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from tests.helpers.training.profiles.v5.v5_training import _history
 
 PROJECT_ROOT = Path(__file__).resolve().parents[5]
 
@@ -141,19 +146,14 @@ def _patch_history(monkeypatch: pytest.MonkeyPatch, history: SimpleNamespace) ->
 
 def _populate_samples(request: TrainingSampleBuildRequest) -> None:
     split = request.window.split
-    days = (
-        split.model_fit_dates
-        + split.early_stopping_dates
-        + split.calibration_dates
-        + split.confirmation_dates
-        + split.daily_proxy_holdout_dates
-    )
+    partitions = TrainingSampleDatePartitions(split)
+    days = partitions.training + partitions.early_stopping + partitions.calibration + partitions.validation + partitions.holdout
     if isinstance(request.window, ProductionTrainingWindow):
         plans = tuple(
             BuildFinalFitDatePlan(
                 request.window.source_dates,
                 source_cutoff=request.history.snapshot.source_cutoff,
-                fit_sessions=len(split.model_fit_dates),
+                fit_sessions=len(partitions.training),
                 maturity_sessions=contract.maturity_sessions,
             )
             for contract in request.profile.heads
@@ -236,6 +236,57 @@ def test_missing_industry_in_fit_split_blocks_before_history_scan(tmp_path: Path
     result = run_tomorrow_training(tmp_path / "history", tmp_path / "train")
     assert result.status == "blocked"
     assert result.failure_reasons == ("history_industry_split_coverage_insufficient",)
+
+
+@pytest.mark.parametrize("maturity,target", ((1, "target_t1"), (5, "target_d25_aggregate")))
+def test_latest_final_day_is_required_before_any_fit_without_resource_ports(tmp_path, monkeypatch, maturity, target):
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
+    missing_day = history.snapshot.calendar.open_dates[-1 - maturity]
+
+    def build(request, **_kwargs):
+        _populate_samples(request)
+        request.index._connection.run(f"UPDATE samples SET {target}=NULL WHERE trade_date=?", (EncodeDate(missing_day),))
+
+    monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build)
+    monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", lambda *_args, **_kwargs: pytest.fail("final dates must be checked before fitting"))
+    monkeypatch.setattr("trader.training.infra.engine.RefitIndustryModels", lambda *_args, **_kwargs: pytest.fail("invalid final dates must not refit"))
+    result = run_v3_training(tmp_path / "history", tmp_path / "models")
+    assert result.status == "blocked"
+    assert all(head.failure_reasons == ("final_fit_effective_dates_insufficient",) for head in result.heads)
+    assert all(head.diagnostic_plan is not None and not head.model_hash for head in result.heads)
+    assert not tuple((tmp_path / "models").rglob("model.json"))
+
+
+@pytest.mark.parametrize("profile", (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE), ids=lambda item: item.profile_id)
+def test_first_production_fitting_date_requires_the_full_prior_warmup(tmp_path, monkeypatch, profile):
+    history = _history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
+    settings = LoadProfileTrainingSettings(PROJECT_ROOT, profile.profile_id)
+    plan = BuildProductionDiagnosticDatePlan(
+        history.snapshot.calendar.open_dates, source_cutoff=history.snapshot.source_cutoff,
+        fit_sessions=settings.fit_dates, early_stopping_sessions=20 if profile.algorithm == "lightgbm" else 0,
+        history_sessions=profile.history_sessions,
+    )
+    original = history.iter_training_rows
+
+    def rows(dates, progress=None):
+        yield from (row for row in original(dates, progress) if row.trade_date > plan.warmup_dates[0])
+
+    history.iter_training_rows = rows
+    monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", lambda *_args, **_kwargs: pytest.fail("a missing initial fitting date must block fitting"))
+    request = ProfileTrainingRequest(
+        history.history_root, tmp_path / "models", profile, profile.heads, settings,
+        sample_root=tmp_path / "samples", sample_settings=TrainingSampleSettingsFixture(),
+    )
+    result = RunProfileTraining(request, sqlite_policy=SqlitePolicyFixture())
+    assert result.status == "blocked"
+    assert all(head.failure_reasons == ("profile_training_effective_dates_insufficient",) for head in result.heads)
+    assert all(head.diagnostic_plan == plan for head in result.heads)
+    for head in result.heads:
+        fitting = next(item for item in head.coverage if item.partition == "training")
+        assert fitting.effective_dates == fitting.expected_dates - 1
+        assert fitting.missing[0].trade_date == plan.fitting_dates[0]
 
 
 @pytest.mark.parametrize("failure", (ValueError, sqlite3.OperationalError))

@@ -45,19 +45,19 @@ from tests.helpers.training.profiles.v5.v5_training import (
 
 
 def test_missing_future_label_reports_exact_partition_without_discarding_other_head(tmp_path, monkeypatch):
-    from trader.training.domain.training_dates import BuildTrainingDateSplit
+    from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 
     history = _history(tmp_path / "history")
     settings = LoadProfileTrainingSettings(ROOT, "v5")
-    split = BuildTrainingDateSplit(
+    split = BuildProductionDiagnosticDatePlan(
         history.snapshot.calendar.open_dates,
-        parent_manifest_hash="a" * 64,
-        fit_dates=settings.fit_dates,
-        recent_fit=True,
+        source_cutoff=history.snapshot.source_cutoff,
+        fit_sessions=settings.fit_dates,
+        early_stopping_sessions=20,
         history_sessions=61,
         history_excludes_signal=True,
     )
-    signal = split.model_fit_dates[30]
+    signal = split.fitting_dates[30]
     absent = history.snapshot.calendar.open_dates[history.snapshot.calendar.open_dates.index(signal) + 2]
     original = history.iter_training_rows
 

@@ -8,6 +8,7 @@ from trader.infra.serialization.fields import IsFiniteNumber, IsInteger
 from trader.training.infra.model_evaluation import (
     MINIMUM_CALIBRATION_VARIANCE,
     PREDICTION_EVALUATION_CONTRACT,
+    RECENT_PREDICTION_EVALUATION_CONTRACT,
 )
 
 PREDICTION_REPORT_FIELDS = {
@@ -41,9 +42,10 @@ _FAILURE_REASONS = {
 _RANK_IC_ABSOLUTE_LIMIT = 1.000001
 
 
-def ValidatePredictionReport(payload: dict[str, object]) -> None:
+def ValidatePredictionReport(payload: dict[str, object], *, evaluation_contract: str) -> None:
     if (
-        payload["evaluation_contract"] != PREDICTION_EVALUATION_CONTRACT
+        evaluation_contract not in {PREDICTION_EVALUATION_CONTRACT, RECENT_PREDICTION_EVALUATION_CONTRACT}
+        or payload["evaluation_contract"] != evaluation_contract
         or payload["prediction_evaluation_mode"] != "prediction_diagnostic_only"
     ):
         raise ValueError("trained-head prediction evaluation contract is invalid")
@@ -102,6 +104,7 @@ def _validated_coverage(
     raw: object, payload: dict[str, object], overall: dict[str, object], predicted_rows: int
 ) -> dict[str, object]:
     coverage = _object(raw)
+    recent = payload["evaluation_contract"] == RECENT_PREDICTION_EVALUATION_CONTRACT
     if set(coverage) != {
         "candidate_training_rows",
         "trained_rows",
@@ -120,7 +123,10 @@ def _validated_coverage(
     ):
         _count(coverage, name)
     if (
-        coverage["holdout_status"] != "sealed_rows_count_only"
+        coverage["holdout_status"] != (
+            "not_applicable_recent_production_diagnostic" if recent else "sealed_rows_count_only"
+        )
+        or (recent and coverage["sealed_holdout_rows"] != 0)
         or coverage["trained_rows"] != payload["training_rows"]
         or coverage["predicted_rows"] != predicted_rows
         or coverage["candidate_validation_rows"] != overall["input_rows"]

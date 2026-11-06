@@ -9,14 +9,14 @@ import shutil
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle, ModelBundleContractError
+from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle, ModelBundleContractError, TrainedHeadModelBundle
 from trader.training.infra.model_bundles.bundle_snapshot import InspectPublishedHeadBundle, LoadedPublishedHeadBundle
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
@@ -90,7 +90,7 @@ def PublishProfileBundles(
     *,
     timeout_seconds: float = 2.0,
 ) -> tuple[LoadedPublishedHeadBundle, ...]:
-    """Expose a complete fixed-directory pair only after both heads validate."""
+    """Publish a recent production pair after validating both heads and their shared source."""
 
     if tuple(strategy for strategy, _ in staged) != tuple(head.strategy for head in profile.heads):
         raise ValueError("profile publication requires both ordered strategy heads")
@@ -101,6 +101,7 @@ def PublishProfileBundles(
         or len({item.source_identity_hash for item in bundles}) != 1
     ):
         raise ValueError("profile publication heads have different source snapshots")
+    _require_recent_diagnostics(bundles)
     profile_root.parent.mkdir(parents=True, exist_ok=True)
     RecoverProfileBundles(profile_root, profile, timeout_seconds=timeout_seconds)
     if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
@@ -125,6 +126,7 @@ def PublishProfileBundles(
             for contract in profile.heads
         )
         _validate_profile_pair(heads)
+        _require_recent_diagnostics(head.model for head in heads)
         with ProfilePublicationLock(profile_root, timeout_seconds):
             if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
                 raise ValueError("trained profile directory is invalid")
@@ -220,6 +222,11 @@ def _validate_profile_pair(heads: tuple[LoadedPublishedHeadBundle, ...]) -> None
         or len({item.source_identity_hash for item in heads}) != 1
     ):
         raise ModelBundleContractError("trained profile pair identity is inconsistent")
+
+
+def _require_recent_diagnostics(models: Iterable[TrainedHeadModelBundle]) -> None:
+    if any(model.diagnostic_plan is None for model in models):
+        raise ModelBundleContractError("profile publication requires recent production diagnostics")
 
 
 def _fsync_directory(path: Path) -> None:

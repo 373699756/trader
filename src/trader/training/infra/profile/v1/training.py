@@ -226,11 +226,13 @@ def RunV1Training(
                         if item.rows == 0
                         else f"learned_rank_final_fit_dates_insufficient:{item.strategy.value}"
                         if item.partition == "final_fitting" and item.effective_dates != item.expected_dates
+                        else f"learned_rank_sample_dates_insufficient:{item.strategy.value}:{item.partition}"
+                        if item.effective_dates != item.expected_dates
                         else f"learned_rank_training_rows_insufficient:{item.strategy.value}:{item.partition}"
                         for item in coverage
                         if item.rows == 0
                         or (item.partition in {"fitting", "final_fitting"} and item.rows < settings.minimum_training_rows)
-                        or (item.partition == "final_fitting" and item.effective_dates != item.expected_dates)
+                        or item.effective_dates != item.expected_dates
                     )
                     if failures:
                         return V1TrainingResult(

@@ -9,6 +9,7 @@ from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 from trader.training.application.tomorrow_training import ProductionTrainingWindow, TomorrowTrainingWindow
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FinalFitDatePlan
+from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.profile.v3.contracts import D25_HEAD_CONTRACT, TOMORROW_HEAD_CONTRACT
 from trader.training.infra.profile.v3.training_sample_index import SQLiteV3TrainingSampleIndex
@@ -73,15 +74,18 @@ def test_production_window_reads_through_source_end_without_opening_research_win
     calendar = _calendar()
     split = BuildTrainingDateSplit(calendar, parent_manifest_hash="a" * 64)
     research = TomorrowTrainingWindow(split)
-    production = ProductionTrainingWindow(split, calendar)
+    plan = BuildProductionDiagnosticDatePlan(
+        calendar, source_cutoff=calendar[-1], fit_sessions=61, early_stopping_sessions=20, history_sessions=61,
+    )
+    production = ProductionTrainingWindow(plan, calendar)
     production.require_readable(split.point_in_time_holdout_dates)
-    assert production.readable_dates == frozenset(calendar[calendar.index(split.warmup_dates[0]):])
+    assert production.readable_dates == frozenset(calendar[calendar.index(plan.warmup_dates[0]):])
     with pytest.raises(ValueError, match="point-in-time holdout is not readable"):
         research.require_readable((calendar[-1],))
     with pytest.raises(ValueError, match="production_training_date_outside_source"):
         production.require_readable((calendar[-1] + timedelta(days=1),))
     with pytest.raises(ValueError, match="production_training_source_calendar_mismatch"):
-        ProductionTrainingWindow(split, calendar[:-1])
+        ProductionTrainingWindow(plan, calendar[:-1])
 
 
 def test_final_fit_counts_require_head_date_coverage_and_keep_industry_gaps(tmp_path: Path) -> None:

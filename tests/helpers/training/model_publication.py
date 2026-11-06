@@ -8,6 +8,7 @@ from unittest.mock import patch
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.training.domain.v1.learned_rank import LearnedRankFinalPair
 from trader.training.infra.model_bundles.bundle_snapshot import MakeBundleStagingDirectory
+from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle
 from trader.training.infra.model_bundles.profile_publication import PublishProfileBundles
 from trader.training.infra.profile.v1.models import PublishLearnedRankPair, ReadLearnedRankPair
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -42,6 +43,12 @@ def _publish_until_exit(model_root: Path, profile_id: str, point: str) -> None:
             item for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
             if item.profile_id == profile_id
         )
+        bundles = tuple(
+            LoadHeadBundle(profile_root / head.directory_name / "model.json", head.strategy, profile)
+            for head in profile.heads
+        )
+        if any(bundle.diagnostic_plan is None for bundle in bundles):
+            raise ValueError("publication crash fixture requires recent production diagnostics")
         staged = tuple(
             (head.strategy, MakeBundleStagingDirectory(profile_root))
             for head in profile.heads

@@ -18,6 +18,7 @@ from trader.training.application.tomorrow_training import (
     TrainingFitDetail,
 )
 from trader.training.domain.training_dates import TrainingDateSplit
+from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.infra.model_bundles.bundle_codec import (
     TrainedLightGBMModelSnapshot,
@@ -115,7 +116,7 @@ class _FinalRefitProgress:
 
 def FitIndustryModels(
     samples: SQLiteTrainingSampleIndex,
-    split: TrainingDateSplit,
+    split: TrainingDateSplit | ProductionDiagnosticDatePlan,
     contracts: tuple[TrainedHeadContract, ...],
     parameters: ModelFittingParameters,
     *,

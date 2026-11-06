@@ -11,6 +11,7 @@ import numpy as np
 from trader.recommendation.domain.market.factors import AverageRankPercentiles
 
 PREDICTION_EVALUATION_CONTRACT = "centered_calibration_two_dates_confirmation_predictions_sealed_holdout"
+RECENT_PREDICTION_EVALUATION_CONTRACT = "recent_mature_production_diagnostic_predictions_no_research_holdout"
 MINIMUM_CALIBRATION_VARIANCE = 1e-20
 
 
@@ -155,6 +156,7 @@ class PredictionMetricsAccumulator:
 
 __all__ = [
     "PREDICTION_EVALUATION_CONTRACT",
+    "RECENT_PREDICTION_EVALUATION_CONTRACT",
     "MINIMUM_CALIBRATION_VARIANCE",
     "CalibrationUnavailableError",
     "CalibrationResult",
