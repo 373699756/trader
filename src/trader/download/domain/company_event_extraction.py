@@ -110,6 +110,8 @@ def ExtractCompanyLinkCandidate(document: CompanyDocument, now: datetime, policy
     closures = tuple(kind for kind in _risk_closure(verified.title) if kind in _risk_closure(body))
     if any(marker in body for marker in ("尚未", "未解除", "未终止", "未结案", "未完成")):
         closures = ()
+    if not _reduction_closure_is_unambiguous(verified):
+        closures = tuple(kind for kind in closures if kind is not CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION)
     kind = _positive_type(verified.title)
     supersedes = tuple(sorted(set(re.findall(r"(?:本公告|本次公告)(?:的全部内容)?(?:更正并替代|完整替代|全部替代)(?:原)?公告(?:编号)?[：:（(]?([A-Za-z0-9_-]{4,80})", body))))
     cancellation = any(x in verified.title for x in ("终止", "撤销", "取消"))
@@ -138,12 +140,21 @@ def ResolveCompanyLinks(
             continue
         matched = False
         satisfied_positive_evidence: set[str] = set()
+        risk_matches: list[int] = []
         for index, event in enumerate(risk_rows):
             if (event.risk_type not in candidate.closures or event.subject_type is not candidate.subject
                 or candidate.published_at < event.first_disclosed_at or len(candidate.cases) > 1
                 or event.case_id and candidate.cases and event.case_id not in candidate.cases):
                 continue
             if not (set(event.evidence_ids).intersection(candidate.references) or event.case_id and event.case_id in candidate.cases):
+                continue
+            risk_matches.append(index)
+        reduction_matches = sum(
+            risk_rows[index].risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION for index in risk_matches
+        )
+        for index in risk_matches:
+            event = risk_rows[index]
+            if event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION and reduction_matches != 1:
                 continue
             at = min(candidate.published_at, event.resolved_at) if event.resolved_at else candidate.published_at
             tail = timedelta(days=policy.reduction_tail_days) if event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION else timedelta(0)
@@ -231,6 +242,21 @@ def ExtractCompanyEvents(
         if verified is None:
             continue
         checked += 1
+        if (CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION in _risk_closure(verified.title)
+            and _reduction_closure_is_confirmed(verified.body)):
+            # Earlier parsers treated expiry notices as new plans. Only the
+            # notice's own isolated derivation can be retired on exact replay.
+            # Full notice classification never authorizes resolving another
+            # plan: resolution below still requires its subject-specific body.
+            risks = [event for event in risks if not (
+                event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION
+                and event.status is CompanyEventStatus.ONGOING and event.resolved_at is None
+                and event.evidence_ids == (item.identity,)
+                and event.event_id == f"{item.identity}:{CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION.value}"
+                and event.first_disclosed_at == event.last_disclosed_at == item.published_at
+                and (sum(item.identity in other.evidence_ids for other in risks)
+                     + sum(item.identity in other.evidence_ids for other in positives)) == 1
+            )]
         resolved = _resolve_risks(risks, verified, policy)
         if _risk_closure(verified.title):
             if not resolved:
@@ -472,7 +498,9 @@ def _append_risk(
 
 def _risk_closure(text: str) -> tuple[CompanyRiskType, ...]:
     result: list[CompanyRiskType] = []
-    if any(x in text for x in ("减持完成", "减持结果", "减持期限届满", "终止减持", "提前终止减持")):
+    if (any(x in text for x in ("减持结果", "终止减持"))
+        or re.search(r"减持(?:股份)?(?:计划)?(?:已)?(?:实施)?(?:完成|完毕|期限(?:已)?届满)", text)
+        or "减持" in text and "期限已届满" in text):
         result.append(CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION)
     if any(x in text for x in ("撤销立案", "终止调查", "调查终结", "不予处罚决定")):
         result.append(CompanyRiskType.OFFICIAL_INVESTIGATION)
@@ -493,20 +521,64 @@ def _risk_closure(text: str) -> tuple[CompanyRiskType, ...]:
     return tuple(result)
 
 
+def _reduction_closure_is_unambiguous(verified: _VerifiedDocument) -> bool:
+    # Subject enums cannot distinguish several named holders in one notice.
+    # Such a notice can be classified, but cannot clear a whole linked plan.
+    if any(marker in verified.body for marker in ("分别", "各自", "一致行动人", "间接持有", "间接持股")):
+        return False
+    if re.search(r"(?:股东|实际控制人)[^。；;，,]{0,60}[、及与和]", verified.body):
+        return False
+    subjects = {subject for marker, subject in _SUBJECT_MARKERS if marker in verified.body}
+    if len(subjects) > 1:
+        return False
+    return _reduction_closure_is_confirmed(_subject_body(verified))
+
+
+def _reduction_closure_is_confirmed(body: str) -> bool:
+    if re.search(
+        r"尚未|未解除|未终止|未结案|未完成|未届满|尚不确定|部分完成|完成部分"
+        r"|剩余[^。；;]{0,40}(?:继续|尚未|仍)|(?:仍在?|继续|正在)实施", body,
+    ):
+        return False
+    conclusion = (
+        r"(?:减持(?:股份)?(?:计划)?(?:已)?(?:实施)?(?:完成|完毕|期限(?:已)?届满)"
+        r"|(?:提前)?终止减持(?:股份|计划)?)"
+        r"(?=$|[。；;！？!?，,]|且|并|均未|未减持)"
+    )
+    for clause in re.split(r"[。；;！？!?，,]", body):
+        if re.search(r"尚未|未|不|预计|拟|将|可能", clause):
+            continue
+        if re.search(conclusion, clause):
+            return True
+    return False
+
+
 def _reduction_plan(body: str) -> ReductionPlan | None:
     ratio = _planned_reduction_ratio(body)
-    dates = re.search(
-        r"减持(?:计划)?期间(?:为|：|:)?(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?(?:至|到|~)(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?",
-        body,
+    interval = (
+        r"(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?(?:至|到|~)"
+        r"(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?"
     )
-    if dates is None:
-        return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
-    try:
-        start = date(*(int(dates[i]) for i in (1, 2, 3)))
-        end = date(*(int(dates[i]) for i in (4, 5, 6)))
-    except ValueError:
-        return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
-    if start <= end:
+    patterns = (
+        rf"减持(?:计划)?期间(?:为|：|:)?{interval}",
+        r"减持(?:计划)?期间(?:为|：|:)?"
+        r"(?:自(?:本公告|本次公告|本?减持计划)(?:发布|披露|公告)之日起"
+        r"[一二三四五六七八九十百0-9]{1,4}个交易日后(?:的)?[一二三四五六七八九十0-9]{1,3}个月内)?"
+        rf"[（(](?:即)?{interval}[）)]",
+    )
+    periods: set[tuple[date, date]] = set()
+    for pattern in patterns:
+        for dates in re.finditer(pattern, body):
+            try:
+                start = date(*(int(dates[i]) for i in (1, 2, 3)))
+                end = date(*(int(dates[i]) for i in (4, 5, 6)))
+            except ValueError:
+                return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+            if start > end:
+                return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+            periods.add((start, end))
+    if len(periods) == 1:
+        start, end = next(iter(periods))
         return ReductionPlan(start, end, ratio)
     return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
 
@@ -554,10 +626,14 @@ def _resolve_risks(risks: list[CompanyRiskEvent], verified: _VerifiedDocument, p
     if len(case_ids) > 1:
         return False
     matched = False
+    matches: list[int] = []
     for index, event in enumerate(risks):
         if event.subject_type is not verified.subject:
             continue
         if event.risk_type not in _risk_closure(title) or event.risk_type not in _risk_closure(body):
+            continue
+        if (event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION
+            and not _reduction_closure_is_unambiguous(verified)):
             continue
         if event.case_id and case_ids and event.case_id not in case_ids:
             continue
@@ -566,6 +642,15 @@ def _resolve_risks(risks: list[CompanyRiskEvent], verified: _VerifiedDocument, p
         at = document.disclosure.published_at
         if at < event.first_disclosed_at:
             continue
+        matches.append(index)
+    reduction_matches = sum(
+        risks[index].risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION for index in matches
+    )
+    for index in matches:
+        event = risks[index]
+        if event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION and reduction_matches != 1:
+            continue
+        at = document.disclosure.published_at
         at = min(at, event.resolved_at) if event.resolved_at is not None else at
         tail = (
             timedelta(days=policy.reduction_tail_days)

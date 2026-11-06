@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from itertools import groupby
 from pathlib import Path
 from dataclasses import dataclass, replace
 import hashlib
 
+from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.domain.company_events import (
-    CompanyPositiveEvent, CompanyPositiveStatus, CompanyRiskEvent, IncreaseMeasurements, RepurchaseMeasurements,
+    CompanyEventPolicy, CompanyEventStatus, CompanyPositiveEvent, CompanyPositiveStatus, CompanyRiskEvent,
+    CompanyRiskType, IncreaseMeasurements, RepurchaseMeasurements,
 )
-from trader.download.domain.company_evidence import CompanyDocumentFailureRules
+from trader.download.domain.company_evidence import CompanyDocument, CompanyDocumentFailureRules, Disclosure
+from trader.download.domain.company_event_extraction import ExtractCompanyEvents, ExtractCompanyLinkCandidate
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_plan import (
     BuildCompanyFieldGaps,
@@ -23,6 +26,7 @@ from trader.download.domain.company_field_plan import (
     PlanCompanyFieldRecovery,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_link_codec import EncodeCompanyLink
 from trader.download.infra.company_facts_index import CompanyInputReceipt
 from trader.download.infra.company_facts_protocol import (
     DecodeCompanyLabel,
@@ -36,8 +40,8 @@ from trader.infra.sqlite_connection import SqliteConnection
 # These rules change measurements only; old document receipts keep their identity.
 # Unknown dependencies/subjects still require verification and are not download jobs.
 COMPANY_FIELD_RULES = (
-    ("start_date", "explicit_reduction_start_date:1"),
-    ("end_date", "explicit_reduction_end_date:1"),
+    ("start_date", "explicit_reduction_start_date:2"),
+    ("end_date", "explicit_reduction_end_date:2"),
     ("planned_pct", "reduction_total_capital_ratio:1"),
     ("actual_pct", "implemented_total_capital_ratio:1"),
     ("repurchase_purpose", "explicit_repurchase_purpose:1"),
@@ -372,6 +376,84 @@ def RegisterCompanyFieldAttempts(
                 )
 
 
+def QueueCompanyReductionRechecks(
+    collected: SqliteConnection,
+    formal: SqliteConnection,
+    codes: Sequence[str],
+    observed_at: datetime,
+    extraction_hash: bytes,
+    event_policy: CompanyEventPolicy,
+    read_document: Callable[[bytes], str],
+) -> None:
+    """Recompile a receipted closure previously mistaken for an independent plan.
+
+    Only its exact retained input can retire that single-evidence derivation.
+    Existing linked plans and shared evidence remain untouched; the normal
+    compiler owns both the resulting review and any verified original closure.
+    """
+    for offset in range(0, len(codes), 128):
+        for fact in ReadCompanyFactRows(formal, codes[offset:offset + 128]):
+            for event in fact.risk_events:
+                if (event.risk_type is not CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION
+                    or event.status is not CompanyEventStatus.ONGOING or event.resolved_at is not None
+                    or event.first_disclosed_at != event.last_disclosed_at or len(event.evidence_ids) != 1
+                    or event.last_disclosed_at > observed_at):
+                    continue
+                evidence_id = event.evidence_ids[0]
+                reference_count = sum(evidence_id in other.evidence_ids for other in fact.risk_events)
+                reference_count += sum(evidence_id in other.evidence_ids for other in fact.positive_events)
+                if reference_count != 1:
+                    continue
+                rows = collected.run(
+                    "SELECT d.id,d.source,d.record_hash,d.body_hash,d.title,d.published_at,d.url "
+                    "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+                    "WHERE c.code=? AND d.source_key=? AND d.kind='announcement' "
+                    "AND d.body_checked=1 AND d.body_retained=1 "
+                    "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
+                    (fact.code, evidence_id),
+                ).fetchall()
+                if len(rows) != 1:
+                    continue
+                row = rows[0]
+                body_hash = row[3]
+                if (not isinstance(body_hash, bytes) or len(body_hash) != 32
+                    or datetime.fromisoformat(row[5]) != event.last_disclosed_at
+                    or not _has_valid_material_receipt(
+                        formal, row[1], evidence_id, fact.code, row[2], body_hash, extraction_hash,
+                    )):
+                    continue
+                try:
+                    text = read_document(body_hash)
+                except (OSError, ValueError, EOFError):
+                    continue
+                if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
+                    continue
+                issuer_codes = ExtractCompanyAnnouncementNumbers(text).issuer_codes
+                if issuer_codes and fact.code not in issuer_codes:
+                    continue
+                document = CompanyDocument(
+                    Disclosure(row[1], evidence_id, (fact.code,), row[4], event.last_disclosed_at, row[6], row[2]),
+                    text, True,
+                )
+                parsed = ExtractCompanyEvents((document,), observed_at, event_policy, previous_risks=(event,))
+                if (any(item.event_id == event.event_id for item in parsed.risks)
+                    or not any(review.evidence_id == evidence_id and review.reason_code == "resolution_unlinked"
+                               for review in parsed.reviews)):
+                    continue
+                collected.run(
+                    "DELETE FROM document_link_candidates WHERE source=? AND source_key=? "
+                    "AND record_hash=? AND extraction_hash=?", (row[1], evidence_id, row[2], extraction_hash),
+                )
+                candidate = ExtractCompanyLinkCandidate(document, observed_at, event_policy)
+                if candidate is not None:
+                    collected.run(
+                        "INSERT OR REPLACE INTO document_link_candidates VALUES(?,?,?,?,?)",
+                        (row[1], evidence_id, row[2], extraction_hash, EncodeCompanyLink(candidate)),
+                    )
+                collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], fact.code))
+                collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (fact.code,))
+
+
 def CompleteCompanyFieldRepairs(
     connection: SqliteConnection,
     formal: SqliteConnection,
@@ -389,7 +471,8 @@ def CompleteCompanyFieldRepairs(
     for fact in facts:
         gaps = _field_gaps(fact, connection)
         rows = connection.run(
-            "SELECT f.disclosure_id,f.record_hash,f.field,f.rule_id,f.event_id,d.body_checked "
+            "SELECT f.disclosure_id,f.record_hash,f.field,f.rule_id,f.event_id,d.body_checked,"
+            "d.source,d.source_key,d.body_hash "
             "FROM company_field_repairs f "
             "JOIN disclosures d ON d.id=f.disclosure_id AND d.record_hash=f.record_hash "
             "WHERE f.code=? AND f.state<>'complete'", (fact.code,),
@@ -400,7 +483,29 @@ def CompleteCompanyFieldRepairs(
                 continue
             missing = any(gap.event_id == row[4] and gap.field == row[2] for gap in gaps)
             if not available and not missing:
-                continue
+                retired_reduction = (
+                    row[4] == f"{row[7]}:{CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION.value}"
+                    and row[2] in {"start_date", "end_date", "planned_pct"}
+                    and not any(event.event_id == row[4] for event in fact.risk_events)
+                    and (
+                        any(review.evidence_id == row[7] and review.reason_code == "resolution_unlinked"
+                            for review in fact.review_reasons)
+                        or any(event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION
+                               and event.status is CompanyEventStatus.RESOLVED and row[7] in event.evidence_ids
+                               for event in fact.risk_events)
+                    )
+                )
+                if not retired_reduction:
+                    continue
+                policy = _repair_policy(row[4], row[2], row[3])
+                if formal.run(
+                    "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
+                    "AND record_hash=? AND extraction_hash=? AND outcome='field_attempted' AND policy_id=? AND body_hash=?",
+                    (row[6], row[7], fact.code, row[1], hashlib.sha256(policy.encode()).digest(), policy, row[8]),
+                ).fetchone() is None:
+                    continue
+                # Reclassifying the notice does not prove any old plan field.
+                # Its exact committed attempt merely retires the stale work.
             connection.run(
                 "UPDATE company_field_repairs SET state=? WHERE disclosure_id=? AND code=? "
                 "AND record_hash=? AND field=? AND rule_id=? AND event_id=?",
@@ -590,6 +695,7 @@ __all__ = [
     "EnsureCompanyFieldRepairs",
     "ReadCompanyFieldRecovery",
     "QueueCompanyFieldRepairs",
+    "QueueCompanyReductionRechecks",
     "RegisterCompanyFieldAttempts",
     "CompleteCompanyFieldRepairs",
     "CompanyFieldRepairReceipts",

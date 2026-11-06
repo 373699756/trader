@@ -278,7 +278,7 @@ def test_existing_reduction_date_rules_recover_old_generic_tasks_from_local_text
         ))
         assert len(rows) == 4 and all(row[2] == "complete" for row in rows)
         assert {(row[0], row[1]) for row in rows if row[1] != "required_field_evidence:1"} == {
-            ("start_date", "explicit_reduction_start_date:1"), ("end_date", "explicit_reduction_end_date:1"),
+            ("start_date", "explicit_reduction_start_date:2"), ("end_date", "explicit_reduction_end_date:2"),
         }
         assert tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == valid
 

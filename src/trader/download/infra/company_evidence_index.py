@@ -83,6 +83,7 @@ from trader.download.infra.company_field_recovery import (
     CompanyFieldRepairReceipts,
     EnsureCompanyFieldRepairs,
     QueueCompanyFieldRepairs,
+    QueueCompanyReductionRechecks,
     RegisterCompanyFieldAttempts,
     RegisterCompanyMaterialDependencies,
     RestoreCompanyMaterialDependencies,
@@ -1223,10 +1224,13 @@ class SQLiteCompanyEvidenceIndex:
             if parent is not None and parent.extraction_hash == self._facts.extraction_hash:
                 with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                     QueueCompanyFieldRepairs(connection, formal, codes, observed_at, self.path.parent)
+                    QueueCompanyReductionRechecks(
+                        connection, formal, codes, observed_at, self._facts.extraction_hash,
+                        self._event_policy, self._documents.read,
+                    )
         if parent is not None and parent.extraction_hash != self._facts.extraction_hash:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-                # Retained text is still a valid input for new field rules. Keep
-                # immutable old receipts and re-open only inputs without local text.
+                # Reuse retained text and immutable receipts; re-open only inputs without local text.
                 connection.run("UPDATE disclosures SET body_checked=0 WHERE body_retained=0 AND kind='announcement'")
                 MarkCompanyDirty(connection, tuple(codes))
         with self._connect() as connection:
