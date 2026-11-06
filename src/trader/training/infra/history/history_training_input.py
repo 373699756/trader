@@ -224,7 +224,7 @@ def _snapshot_for_training(
         "complete_manifest",
         current_snapshot.content_hash,
         current_snapshot.source_identity_hash,
-        current_snapshot.calendar_hash,
+        calendar.content_hash,
         current_snapshot.data_cutoff,
         current_snapshot.label_cutoff,
         calendar,

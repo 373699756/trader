@@ -520,7 +520,7 @@ V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要�
 | `training_run_hash` | 同档本次作业身份，双头一致 |
 | `label_cutoff` | 标签截止，早于source_cutoff |
 | `source_identity_hash` | 已发布历史源身份 |
-| `calendar_hash` | 固定市场日历身份 |
+| `calendar_hash` | 训练用 `BaoStockCalendar` 的内容摘要，由工件中的完整日期序列重建；历史发布日历及其来源仍由 `training_input_hash` 指向的原快照绑定，不混用两种摘要 |
 | `source_cutoff` | 已发布历史资料截止 |
 | `requested_sessions` | 请求历史日期数，1250–2000；不是fit_dates |
 | `input_descriptor_hash` | 输入描述身份 |

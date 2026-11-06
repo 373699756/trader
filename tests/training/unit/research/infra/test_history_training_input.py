@@ -180,6 +180,26 @@ def test_training_input_streams_rows_from_published_snapshot(tmp_path: Path, pre
     assert len(tuple(history.iter_training_rows(frozenset(dates)))) == 3
 
 
+def test_training_calendar_hash_is_reconstructible_without_changing_published_identity(
+    tmp_path: Path, prepared_history
+) -> None:
+    history_root = tmp_path / "history"
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    prepared_history(history_root, dates)
+    control = HistoryControlIndex(history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    published = control.load_published_state()
+    assert published is not None
+
+    history = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=SqlitePolicyFixture())
+
+    assert history.snapshot.calendar_hash == BaoStockCalendar(dates).content_hash
+    assert history.snapshot.calendar_hash != published.snapshot.calendar_hash
+    assert history.snapshot.snapshot_hash == published.snapshot.content_hash
+    assert history.snapshot.source_identity_hash == published.snapshot.source_identity_hash
+    assert history.published_snapshot == published.snapshot
+    assert control.load_published_state() == published
+
+
 def test_training_reader_uses_narrow_projection_without_rechecking_published_payloads(
     tmp_path: Path, monkeypatch, prepared_history
 ) -> None:
