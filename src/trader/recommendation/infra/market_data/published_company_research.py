@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
+import sqlite3
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -37,7 +40,11 @@ from trader.recommendation.domain.scoring.company import BuildCompanyScoringCont
 from trader.recommendation.infra.market_data.research_load_status import ResearchComponentCoverage, ResearchLoaderStatus
 
 _LOGGER = logging.getLogger(__name__)
+_SQLITE_LOGGER = _LOGGER.getChild("sqlite")
 _ReadValue = TypeVar("_ReadValue")
+_SQLITE_INTERNAL_FAILURES = frozenset({
+    "sqlite_schema_unsupported", "sqlite_required_row_missing", "sqlite_integrity_failed",
+})
 
 
 def _observe_snapshot_read(
@@ -55,7 +62,54 @@ def _observe_snapshot_read(
             type(exc).__name__,
             type(cause).__name__ if cause is not None else "none",
         )
+        detail = _snapshot_sqlite_failure_detail(exc)
+        if detail is not None:
+            _SQLITE_LOGGER.warning("company preload sqlite failure stage=%s detail=%s", stage, detail)
         raise
+
+
+def _snapshot_sqlite_failure_detail(exc: BaseException) -> str | None:
+    """Project the full causal frame chain without exception messages or local values."""
+    chain: list[dict[str, object]] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    has_sqlite_failure = False
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        sqlite_code: int | None = None
+        sqlite_name: str | None = None
+        internal_code: str | None = None
+        if isinstance(current, sqlite3.Error):
+            has_sqlite_failure = True
+            # Python 3.10 has no native SQLite error attributes. A manually
+            # raised DatabaseError also carries neither; preserve that fact.
+            raw_code = getattr(current, "sqlite_errorcode", None)
+            raw_name = getattr(current, "sqlite_errorname", None)
+            if type(raw_code) is int and 0 <= raw_code <= 65535:
+                sqlite_code = raw_code
+            if isinstance(raw_name, str) and re.fullmatch(r"SQLITE_[A-Z0-9_]{1,48}", raw_name):
+                sqlite_name = raw_name
+            if len(current.args) == 1 and isinstance(current.args[0], str):
+                if current.args[0] in _SQLITE_INTERNAL_FAILURES:
+                    internal_code = current.args[0]
+        frames: list[str] = []
+        trace = current.__traceback__
+        while trace is not None:
+            frame = trace.tb_frame
+            module = frame.f_globals.get("__name__")
+            if not isinstance(module, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", module) is None:
+                module = "unknown"
+            function = re.sub(r"[^A-Za-z0-9_<>]", "_", frame.f_code.co_name)
+            frames.append(f"{module}:{function}:{trace.tb_lineno}")
+            trace = trace.tb_next
+        chain.append({
+            "error_type": type(current).__name__, "sqlite_errorcode": sqlite_code,
+            "sqlite_errorname": sqlite_name, "internal_code": internal_code, "frames": frames,
+        })
+        current = current.__cause__ if current.__cause__ is not None else (
+            current.__context__ if not current.__suppress_context__ else None
+        )
+    return json.dumps(chain, separators=(",", ":"), ensure_ascii=True) if has_sqlite_failure else None
 
 
 class CompanyEvidenceReadPort(Protocol):

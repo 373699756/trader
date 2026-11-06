@@ -18,6 +18,7 @@ from trader.recommendation.infra.performance.fixtures import BuildPerformanceFix
 from trader.recommendation.infra.performance.model_workload import PerformanceProfileWorkload
 from trader.recommendation.infra.performance.pipeline_workload import MeasureContinuousPipeline, PipelineReplayWorkload
 from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
+from trader.infra.serialization.canonical import ContentHash
 
 
 def _replay(profiles, ticks=2, trace=None, factor_reuse=False, scoring_candidate="baseline"):
@@ -35,6 +36,50 @@ def _replay(profiles, ticks=2, trace=None, factor_reuse=False, scoring_candidate
             scoring_candidate=scoring_candidate,
             prediction_executor=predictions if scoring_candidate in {"v5_industry_parallel", "combined"} else None,
         )
+
+
+def test_replay_projects_measured_stages_and_full_selection_features_after_scoring(monkeypatch):
+    from trader.recommendation.infra.performance import pipeline_workload
+
+    captured = []
+    original = pipeline_workload.BuildScoredLocal
+
+    def project(*args, **kwargs):
+        result = original(*args, **kwargs)
+        stages = replace(
+            result.stages,
+            model_filter=replace(result.stages.model_filter, snapshot=replace(
+                result.stages.model_filter.snapshot, latency_ms=None, operation_durations=(),
+            )),
+            local_score=replace(result.stages.local_score, snapshot=replace(
+                result.stages.local_score.snapshot, latency_ms=20,
+                operation_durations=(("qualification", 8), ("ranking", 12)),
+            )),
+        )
+        result = replace(result, stages=stages)
+        captured.append(result)
+        return result
+
+    monkeypatch.setattr(pipeline_workload, "BuildScoredLocal", project)
+    report = _replay(("v2",), ticks=1)
+    heads = report["cold"]["profiles"][0]["heads"]
+    assert len(heads) == 2
+    for head, projection in zip(heads, captured[:2], strict=True):
+        stages = {stage["stage"]: stage for stage in head["pipeline_stages"]}
+        assert stages["model_filter"]["latency_ms"] is None
+        assert stages["local_score"]["latency_ms"] == 20
+        assert stages["local_score"]["operation_durations"] == [
+            {"operation": "qualification", "duration_ms": 8}, {"operation": "ranking", "duration_ms": 12},
+        ]
+        assert stages["local_score"]["input_count"] > 0
+        assert head["selection_features_hash"] == ContentHash(tuple(
+            (item.code, item.features) for item in projection.selection.evaluations
+        ))
+        modified = replace(projection.selection.evaluations[0].features, board_data_reliability=0.123)
+        assert head["selection_features_hash"] != ContentHash((
+            (projection.selection.evaluations[0].code, modified),
+            *((item.code, item.features) for item in projection.selection.evaluations[1:]),
+        ))
 
 
 @pytest.mark.parametrize("candidate", ("prepared_reuse", "v5_industry_parallel", "combined"))

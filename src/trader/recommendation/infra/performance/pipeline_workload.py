@@ -37,7 +37,7 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
 from trader.recommendation.application.pipeline.stage_output import StageOutput
 from trader.recommendation.application.ports.loaded_profile import IndustryPredictionPort, ModelComputationStatus, ModelScoringContext
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
-from trader.recommendation.domain.evidence.pipeline import PipelineStage, SourceHealth, SourceHealthState
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, PipelineStageSnapshot, SourceHealth, SourceHealthState
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay
@@ -147,6 +147,8 @@ class _HeadResult:
     reused_groups: tuple[str, ...]
     model_stages: tuple[tuple[str, float], ...]
     result_hash: str
+    pipeline_stages: tuple[PipelineStageSnapshot, ...]
+    selection_features_hash: str
 
     def project(self) -> dict[str, object]:
         return {
@@ -160,6 +162,25 @@ class _HeadResult:
             "reused_groups": list(self.reused_groups),
             "model_stage_ms": dict(self.model_stages),
             "result_hash": self.result_hash,
+            "selection_features_hash": self.selection_features_hash,
+            "pipeline_stages": [
+                {
+                    "stage": stage.stage.value,
+                    "stage_order": stage.stage_order,
+                    "state": stage.state.value,
+                    "input_count": stage.input_count,
+                    "output_count": stage.output_count,
+                    "rejected_count": stage.rejected_count,
+                    "pending_count": stage.pending_count,
+                    "failed_count": stage.failed_count,
+                    "latency_ms": stage.latency_ms,
+                    "operation_durations": [
+                        {"operation": name, "duration_ms": duration}
+                        for name, duration in stage.operation_durations
+                    ],
+                }
+                for stage in self.pipeline_stages
+            ],
         }
 
 
@@ -487,6 +508,8 @@ def _head_result(
             for item in after.stage_durations
         ),
         ContentHash(business),
+        projection.stages.snapshots,
+        ContentHash(tuple((item.code, item.features) for item in projection.selection.evaluations)),
     )
 
 
