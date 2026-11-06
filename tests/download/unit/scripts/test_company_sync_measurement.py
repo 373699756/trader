@@ -257,6 +257,8 @@ def test_operation_failure_categories_remain_bounded_when_the_known_taxonomy_gro
 
 
 @pytest.mark.parametrize("error, category", (
+    (CompanyDocumentFailure("disclosure_document_ocr_required"), "disclosure_document_ocr_required"),
+    (CompanyDocumentFailure("disclosure_document_private_payload"), "document_other"),
     (HttpTimeout("private-transport-payload"), "timeout"),
     (CompanySourceFailure("timeout"), "timeout"),
     (CompanySourceFailure("schema_invalid"), "schema_invalid"),

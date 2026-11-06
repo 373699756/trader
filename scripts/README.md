@@ -61,6 +61,10 @@ isolated比较可读取明确指定的旧checkout；只在隔离演练内处理�
 
 公司coverage原生用途已公开为具名业务参数：`--company-pacing-audit`比较真实PDF/目录的共享与分源限速，`--company-material-keys <源键...>`核对1至6个唯一材料键。两者与既有审计模式互斥；pacing模式必须提供`--company-replay-directory`仓库外绝对目录，材料事实由显式`--company-evidence-database`或所选runtime正式facts路径提供，不用空数据回退。`--company-audit-budget-seconds`范围30至10800秒，子进程deadline至少多留30秒回收，例如预算120秒时配置`--command-timeout-seconds 150`。公司I/O候选及其新增消费者由B独立交付，不纳入本批候选或功能验收。
 
+字段schema升级演练仍走同一coverage入口，显式选择`--company-field-migration-audit --company-replay-directory <新仓库外目录>`，并可用`--company-evidence-database`指定有合法发布凭据的旧schema3正式库。该模式只读源库，在隔离目录保存一致备份、schema4候选及`field-migration.json`，不联网、不切换活动资料；源凭据缺失/损坏、备份期间变动、符号链接、目录重叠或输出非空均拒绝。旧字段只建未核实基线，迁移通过不表示字段质量或生产授权通过；具名材料诊断另可读取正式字段结论及有限证据定位。
+
+已有原文的发布复查也走coverage，选择`--company-field-replay-keys <1至6个cninfo材料键> --company-replay-directory <新仓库外目录>`，与升级演练及其它专用模式互斥。工具只读备份采集与正式库、核验并复制有界保留文本，先升级隔离正式库，再两次启动真实发布者及字段reader，分别记录正文读取、字段尝试、旧valid和发布身份是否变化。缺材料或来源文件变化明确降级，原始文件/WAL/凭据hash按实际比较，不以空WAL差异归一化为通过；不联网、不改源库、不签全市场质量或性能。
+
 公司sources的普通与字段模式均检查全市场来源，不按证券清单过滤；另以`--field-sources-only`选择字段观测，`--field-source-rows`限定样本，`--field-source-schema`和`--field-source-identities`仅在字段模式明确选择。`--annual-income-period`查询单个年末期间，必须配合单个`--codes`，不能与字段模式混用；其它模式拒绝codes。每种模式都消费所选`--runtime-config`并报告`runtime_configuration_sha256`，身份摘要不表示字段质量、覆盖或生产采用已合格。
 
 Web health支持可重复的`--strategy tomorrow|d25`，连续空结果阈值`--consecutive-zero-threshold`须在样本数以内，默认min(3,样本数)。浏览器动作另支持`--strategy`与带时区ISO时间`--simulated-start`；Long admission的`--strategy`表示策略JSON路径，`--workers`范围1至8。这些参数只属于各自选中的动作，不能跨动作隐式生效。

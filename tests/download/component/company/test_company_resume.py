@@ -18,6 +18,7 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.infra.company_raw_files import CompanyRawFiles
+from trader.download.infra.company_facts_schema import COMPANY_FACTS_VERSION
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from tests.helpers.shared.configuration import (
     SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
@@ -477,14 +478,14 @@ def test_company_noop_publish_keeps_identity_and_closes_wal_before_sealing(tmp_p
     index.publish(("600001",), NOW)
     reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
     identity = reader.publication_version()
-    first = VerifySqliteFile(index.facts_path, 3, sqlite_policy=SqlitePolicyFixture())
+    first = VerifySqliteFile(index.facts_path, COMPANY_FACTS_VERSION, sqlite_policy=SqlitePolicyFixture())
     assert first.fingerprint.wal_size == 0
 
     index.publish(("600001",), NOW)
     index.initialize()
 
     assert reader.publication_version() == identity
-    assert VerifySqliteFile(index.facts_path, 3, sqlite_policy=SqlitePolicyFixture()).fingerprint == first.fingerprint
+    assert VerifySqliteFile(index.facts_path, COMPANY_FACTS_VERSION, sqlite_policy=SqlitePolicyFixture()).fingerprint == first.fingerprint
 
 
 def test_company_generation_tracks_sources_and_receipts_with_identical_facts(tmp_path):
@@ -543,5 +544,5 @@ def test_company_first_initialization_recovers_only_empty_leftover(tmp_path, lef
     writer.initialize()
 
     with SqliteSession(path) as connection:
-        assert connection.run("PRAGMA user_version").require_one()[0] == 3
+        assert connection.run("PRAGMA user_version").require_one()[0] == COMPANY_FACTS_VERSION
         assert connection.run("SELECT COUNT(*) FROM company_facts").require_one()[0] == 0

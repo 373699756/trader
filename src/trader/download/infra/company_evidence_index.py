@@ -47,6 +47,8 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.domain.company_facts import CompanyFacts, CompileCompanyFacts
+from trader.download.domain.company_field_results import CompanyFieldConclusion
+from trader.download.infra.company_field_publication import PrepareCompanyFieldResults
 from trader.download.infra.company_disclosure_queries import (
     ActivateDisclosureQueryPolicy,
     CommitDisclosureQueryPage,
@@ -72,6 +74,7 @@ from trader.download.infra.company_evidence_sql import (
     SCHEMA,
 )
 from trader.download.infra.company_fact_inputs import (
+    BindCompanyEvidenceSource,
     BuildCompanySnapshot,
     DecodeCompanyDisclosure,
     ReadCompanySnapshotRows,
@@ -83,7 +86,9 @@ from trader.download.infra.company_field_recovery import (
     CompanyFieldRepairReceipts,
     EnsureCompanyFieldRepairs,
     QueueCompanyFieldRepairs,
+    QueueCompanyRepurchaseRechecks,
     QueueCompanyReductionRechecks,
+    PrioritizeCompanyRepurchaseInputs,
     RegisterCompanyFieldAttempts,
     RegisterCompanyMaterialDependencies,
     RestoreCompanyMaterialDependencies,
@@ -105,6 +110,7 @@ from trader.download.infra.company_annual_income_index import (
 from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES, DecodeCompanyLabel, RequireCompanyTime
 from trader.download.infra.company_pipeline_queries import (
     CheckDisclosureQueryContract,
+    CountCompanyUnpublishedBodies,
     EnsureCompanyPipelineQueries,
     IndexCompanyDocument,
     MarkCompanyDirty,
@@ -710,6 +716,9 @@ class SQLiteCompanyEvidenceIndex:
             raise ValueError("company_document_batch_invalid")
         with self._connect() as connection:
             SelectCompanyDocuments(connection, codes, observed_at, policies, excluded, repair, start=(self._run_cutoff or observed_at).date() - timedelta(days=365), extraction_hash=self._facts.extraction_hash, until=self._run_cutoff)
+            with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True),
+                               sqlite_policy=self._sqlite_policy, cancel_requested=self._cancel_requested) as formal:
+                PrioritizeCompanyRepurchaseInputs(connection, formal, codes, observed_at, self._facts.extraction_hash)
             rows = connection.run(
                 "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,c.code,p.route FROM disclosures d "
                 "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN temp.requested_codes u ON u.code=c.code "
@@ -717,10 +726,11 @@ class SQLiteCompanyEvidenceIndex:
                 "SELECT selected.id FROM temp.pending_documents selected JOIN disclosures s ON s.id=selected.id "
                 "WHERE (?=0 OR selected.due=1) AND (?=0 OR EXISTS(SELECT 1 FROM document_tasks t "
                 "WHERE t.source=s.source AND t.source_key=s.source_key AND t.record_hash=s.record_hash AND t.path IS NOT NULL)) "
-                "ORDER BY s.published_at DESC,EXISTS(SELECT 1 FROM document_tasks t "
+                "ORDER BY EXISTS(SELECT 1 FROM temp.company_field_inputs f WHERE f.id=s.id) DESC,"
+                "s.published_at DESC,EXISTS(SELECT 1 FROM document_tasks t "
                 "WHERE t.source=s.source AND t.source_key=s.source_key AND t.record_hash=s.record_hash AND t.path IS NOT NULL) DESC,"
                 "s.id LIMIT ?) "
-                "ORDER BY d.published_at DESC,d.id,c.code",
+                "ORDER BY EXISTS(SELECT 1 FROM temp.company_field_inputs f WHERE f.id=d.id) DESC,d.published_at DESC,d.id,c.code",
                 (limit is not None or bool(excluded) or repair is not None, local_only, -1 if limit is None else limit),
             ).fetchall()
         items: dict[tuple[str, str], CompanyDocumentTask] = {}
@@ -756,10 +766,7 @@ class SQLiteCompanyEvidenceIndex:
                 "JOIN document_tasks t ON t.source=d.source AND t.source_key=d.source_key AND t.record_hash=d.record_hash "
                 "WHERE t.path IS NOT NULL AND p.unextractable=0"
             ).require_one()[0]
-            analyzed = connection.run(
-                "SELECT COUNT(*) FROM disclosures d WHERE body_retained=1 AND EXISTS(SELECT 1 FROM disclosure_codes c "
-                "JOIN temp.requested_codes u ON u.code=c.code WHERE c.disclosure_id=d.id)"
-            ).require_one()[0]
+            analyzed = CountCompanyUnpublishedBodies(connection, self._run_cutoff or observed_at, self._facts.extraction_hash)
             published = connection.run(
                 "SELECT COUNT(DISTINCT p.disclosure_id) FROM document_publications p JOIN disclosures d ON d.id=p.disclosure_id "
                 "JOIN temp.requested_codes u ON u.code=p.code WHERE p.record_hash=d.record_hash AND p.extraction_hash=?",
@@ -1224,6 +1231,10 @@ class SQLiteCompanyEvidenceIndex:
             if parent is not None and parent.extraction_hash == self._facts.extraction_hash:
                 with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                     QueueCompanyFieldRepairs(connection, formal, codes, observed_at, self.path.parent)
+                    QueueCompanyRepurchaseRechecks(
+                        connection, formal, codes, observed_at, self._facts.extraction_hash,
+                        self._event_policy, self._documents.read,
+                    )
                     QueueCompanyReductionRechecks(
                         connection, formal, codes, observed_at, self._facts.extraction_hash,
                         self._event_policy, self._documents.read,
@@ -1268,6 +1279,7 @@ class SQLiteCompanyEvidenceIndex:
         previous_facts: dict[str, CompanyFacts] = {}
         receipts: list[tuple[object, ...]] = []
         formal_receipts: list[CompanyInputReceipt] = []
+        field_results: list[CompanyFieldConclusion] = []
         contract_refreshes: list[CompanyContractLinkRefresh] = []
         listing_dates = {item.code: item.listed_on for item in self._listings}
         with (
@@ -1297,7 +1309,7 @@ class SQLiteCompanyEvidenceIndex:
                     return 0
                 sources: dict[str, str] = {}
                 for row in formal.run("SELECT source,source_key FROM company_evidence_ref"):
-                    self._bind_evidence(sources, row[1], DecodeCompanyLabel(EVIDENCE_SOURCES, row[0]))
+                    BindCompanyEvidenceSource(sources, row[1], DecodeCompanyLabel(EVIDENCE_SOURCES, row[0]))
                 shared = ReadCompanySnapshotShared(source, observed_at)
                 for offset in range(0, len(requested), 128):
                     batch = requested[offset : offset + 128]
@@ -1313,7 +1325,7 @@ class SQLiteCompanyEvidenceIndex:
                         rows = inputs[code].disclosures
                         for row in rows:
                             if row["kind"] == "announcement":
-                                self._bind_evidence(sources, row["source_key"], row["source"])
+                                BindCompanyEvidenceSource(sources, row["source_key"], row["source"])
                         snapshot = BuildCompanySnapshot(
                             code,
                             observed_at,
@@ -1360,6 +1372,12 @@ class SQLiteCompanyEvidenceIndex:
                         if prior is not None and replace(facts, published_at=prior.published_at) == prior:
                             facts = prior
                         prepared.append(facts)
+                        fields = PrepareCompanyFieldResults(
+                            source, formal, facts, snapshot.announcements, observed_at=observed_at,
+                            extraction_hash=self._facts.extraction_hash, event_policy=self._event_policy, read_document=self._documents.read,
+                        )
+                        field_results.extend(fields.results)
+                        formal_receipts.extend(fields.receipts)
                         receipts.extend(
                             (row["id"], code, row["record_hash"], self._facts.extraction_hash, observed_at.isoformat())
                             for row in rows
@@ -1430,6 +1448,7 @@ class SQLiteCompanyEvidenceIndex:
                     parent,
                     observed_at,
                     receipts=(*formal_receipts, *CompanyFieldRepairReceipts(connection, requested, observed_at)),
+                    field_results=field_results,
                 )
                 connection.run_many("INSERT OR REPLACE INTO document_publications VALUES(?,?,?,?,?)", receipts)
                 ApplyCompanyContractLinkRefreshes(connection, contract_refreshes)
@@ -1447,13 +1466,6 @@ class SQLiteCompanyEvidenceIndex:
         if not changed_only:
             self.finish(observed_at)
         return len(requested)
-
-    @staticmethod
-    def _bind_evidence(sources: dict[str, str], key: str, source: str) -> None:
-        previous = sources.get(key)
-        if previous is not None and previous != source:
-            raise ValueError("company_evidence_source_ambiguous")
-        sources[key] = source
 
     def _release_files(self) -> None:
         with (

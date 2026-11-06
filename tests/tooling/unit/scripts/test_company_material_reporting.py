@@ -66,6 +66,10 @@ def test_material_projection_limits_every_document_and_drops_unselected_fields()
     item = {
         "source_key": "k" * 1000, "code": "600001", "title": "题" * 1000,
         "excerpts": [excerpt] * 25, "contracts": [contract] * 25,
+        "share_actions": [{"event_id": "s" * 1000, "actual_pct": 0.062, "repurchase_purpose": "other",
+                           "body": "PRIVATE_FULL_MATERIAL"}] * 25,
+        "reparsed_share_action": {"actual_pct": 0.1, "repurchase_purpose": "employee_plan", "positive_level": 0,
+                                  "published": True, "body": "PRIVATE_FULL_MATERIAL"},
         "source_url": "https://untrusted.invalid/PRIVATE_FULL_MATERIAL",
         "body": "PRIVATE_FULL_MATERIAL",
     }
@@ -79,5 +83,9 @@ def test_material_projection_limits_every_document_and_drops_unselected_fields()
     assert len(first["excerpts"]) == 16 and len(first["excerpts"][0]["text"]) == 150
     assert len(first["contracts"]) == 16 and first["contracts_truncated"]
     assert len(first["contracts"][0]["event_id"]) == 160
+    assert len(first["share_actions"]) == 16 and first["share_actions_truncated"]
+    assert len(first["share_actions"][0]["event_id"]) == 160
+    assert first["reparsed_share_action"]["actual_pct"] == 0.1
+    assert first["reparsed_share_action"]["published"] is False
     assert first["source_url"] is None
     assert "PRIVATE_FULL_MATERIAL" not in json.dumps(report)

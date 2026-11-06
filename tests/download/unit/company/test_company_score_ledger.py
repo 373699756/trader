@@ -11,7 +11,7 @@ from trader.download.domain.company_descriptions import CompanyPositiveDescripti
 
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents
 
-from trader.download.domain.company_events import CompanyDataState, CompanyPositiveStatus, CompanySubject, RepurchasePurpose
+from trader.download.domain.company_events import CompanyDataState, CompanyPositiveStatus, CompanyPositiveType, CompanySubject, RepurchasePurpose
 
 
 
@@ -39,6 +39,7 @@ from tests.helpers.download.company.company_score_ledger import (
     _document,
     _facts,
 )
+
 
 
 @pytest.mark.parametrize(
@@ -642,3 +643,89 @@ def test_contract_conflicting_formatted_amounts_are_not_selected_arbitrarily():
     assert event.measurements.contract_amount_cny is None
     assert event.measurements.reference_annual_revenue_cny == 100_000_000
     assert event.measurements.amount_to_revenue_pct is None
+
+
+@pytest.mark.parametrize("decision", (
+    "公司将根据董事会决议支持控股股东进行回购。",
+    "公司将根据董事会决议由子公司进行回购。",
+    "控股股东将根据董事会决议进行回购。",
+))
+def test_repurchase_plan_requires_the_issuer_decision_to_identify_issuer(decision):
+    result = ExtractCompanyEvents((_document("plan", "关于回购股份的回购报告书",
+                                            "本公司董事会保证公告真实。" + decision + "控股股东暂无减持计划。"),),
+                                  AT, CompanyEventPolicy())
+    assert result.positives == ()
+    assert any(review.reason_code == "subject_unverified" for review in result.reviews)
+
+
+@pytest.mark.parametrize(("options", "purpose", "level"), (
+    ("√减少注册资本□用于员工持股计划或股权激励□用于转换公司可转债□为维护公司价值及股东权益",
+     RepurchasePurpose.CANCELLATION, 2),
+    ("□减少注册资本√用于员工持股计划或股权激励□用于转换公司可转债□为维护公司价值及股东权益",
+     RepurchasePurpose.EMPLOYEE_PLAN, 0),
+    ("□减少注册资本□用于员工持股计划或股权激励√用于转换公司可转债□为维护公司价值及股东权益",
+     RepurchasePurpose.OTHER, 0),
+    ("□减少注册资本□用于员工持股计划或股权激励□用于转换公司可转债√为维护公司价值及股东权益",
+     RepurchasePurpose.OTHER, 0),
+    ("☑减少注册资本☐用于员工持股计划或股权激励", RepurchasePurpose.CANCELLATION, 2),
+    ("□减少注册资本□用于员工持股计划或股权激励", RepurchasePurpose.UNKNOWN, 0),
+    ("√减少注册资本√用于员工持股计划或股权激励", RepurchasePurpose.EMPLOYEE_PLAN, 0),
+    ("√减少注册资本√用于转换公司可转债", RepurchasePurpose.OTHER, 0),
+    ("√减少注册资本。回购股份不用于注销。", RepurchasePurpose.UNKNOWN, 0),
+    ("√减少注册资本。本次回购不减少注册资本。", RepurchasePurpose.UNKNOWN, 0),
+))
+def test_repurchase_template_ignores_unchecked_options(options, purpose, level):
+    body = "本公司累计已回购股份占总股本比例为0.3%。回购用途" + options
+    event, = ExtractCompanyEvents((_document("buy", "关于回购股份的公告", body),), AT, CompanyEventPolicy()).positives
+    assert event.measurements.actual_ratio_pct == 0.3
+    assert event.measurements.purpose is purpose
+    assert event.positive_level == level
+
+
+def test_holder_table_material_cannot_retire_an_event_when_another_event_shares_its_evidence():
+    plan = _document("table", "关于回购股份的公告", "本公司拟回购股份。")
+    old, = ExtractCompanyEvents((plan,), AT, CompanyEventPolicy()).positives
+    measured = replace(old, event_id="other-event", status=CompanyPositiveStatus.IMPLEMENTING,
+                       measurements=replace(old.measurements, actual_ratio_pct=0.3, purpose=RepurchasePurpose.EMPLOYEE_PLAN))
+    title = "关于回购股份事项前十大股东持股情况的公告"
+    table = _document("table", title, title + "。本公司董事会保证披露真实。以下为股东名单。")
+
+    result = ExtractCompanyEvents((table,), AT, CompanyEventPolicy(), previous_positives=(old, measured))
+
+    assert set(result.positives) == {old, measured}
+
+
+@pytest.mark.parametrize("decision", (
+    "公司将在回购期限内根据市场情况择机作出回购决策予以实施。",
+    "公司将根据董事会决议，在回购期限内，根据市场情况择机进行回购。",
+))
+def test_issuer_repurchase_plan_can_include_holder_trading_disclosures(decision):
+    body = ("本公司董事会保证公告真实。" + decision
+            + "公司控股股东、实际控制人暂无减持计划。控股股东累计已增持股份占总股本比例为2%。")
+    result = ExtractCompanyEvents((_document("plan", "关于回购股份的回购报告书", body),), AT, CompanyEventPolicy())
+    event, = result.positives
+    assert event.subject_type is CompanySubject.ISSUER
+    assert event.event_type is CompanyPositiveType.SHARE_REPURCHASE
+    assert event.status is CompanyPositiveStatus.PLANNED and event.positive_level == 0
+    assert event.measurements.actual_ratio_pct is None
+
+
+@pytest.mark.parametrize(("statement", "ratio"), (
+    ("本公司首次回购股份987791股，占公司总股本的比例约为0.10%。", 0.1),
+    ("本公司以集中竞价方式首次回购股份100万股，占公司总股本的0.062%。", 0.062),
+    ("本公司根据相关规定，现将公司首次回购股份情况公告如下：2026年11月5日，公司通过交易系统"
+     "首次回购公司股份987,791股，占公司总股本的比例约为0.10%。", 0.1),
+    ("本公司拟首次回购股份，占公司总股本的比例为0.3%。", None),
+    ("本公司计划于明日首次回购股份，占公司总股本的比例为0.3%。", None),
+    ("本公司未首次回购股份，占公司总股本的比例为0.3%。", None),
+    ("本公司尚未实际首次回购股份，占公司总股本的比例为0.3%。", None),
+    ("本公司首次回购股份100万股，拟回购股份占公司总股本的比例为0.3%。", None),
+    ("本公司首次回购股份占公司总股本比例为0.1%；首次回购股份占公司总股本比例为0.2%。", None),
+))
+def test_first_repurchase_ratio_is_an_actual_measurement_with_plan_guards(statement, ratio):
+    document = _document("first", "关于首次回购公司股份的公告", statement + "回购股份用于员工持股计划。")
+    event, = ExtractCompanyEvents((document,), AT, CompanyEventPolicy()).positives
+    assert event.measurements.actual_ratio_pct == ratio
+    assert event.measurements.purpose is RepurchasePurpose.EMPLOYEE_PLAN
+    assert event.positive_level == 0
+    assert event.status is (CompanyPositiveStatus.IMPLEMENTING if ratio is not None else CompanyPositiveStatus.PLANNED)

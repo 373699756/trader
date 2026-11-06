@@ -6,10 +6,14 @@ from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.shared.configuration import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents
 from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition
-from trader.download.domain.company_events import CompanyEventStatus, CompanyReviewReason, CompanyRiskEvent, CompanyRiskType, CompanySeverityBasis, CompanySubject, ReductionPlan, RepurchasePurpose
+from trader.download.domain.company_events import CompanyEventStatus, CompanyPositiveStatus, CompanyReviewReason, CompanyRiskEvent, CompanyRiskType, CompanySeverityBasis, CompanySubject, ReductionPlan, RepurchasePurpose
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.download.infra.company_field_recovery import CompanyFieldRepairReceipts
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+
+from trader.download.domain.company_event_extraction import CompanyLinkCandidate
+from trader.download.infra.company_facts_protocol import COMPANY_EXTRACTION_IDENTITY
+from trader.download.infra.company_link_codec import EncodeCompanyLink
 
 NOW = fixtures.NOW
 
@@ -151,3 +155,64 @@ def _publish_latest_ratio(index, item, *, different_event=False):
     SQLiteCompanyFactsIndexFixture(index.facts_path).publish(
         (updated,), {item.identity: item.source}, parent, NOW + timedelta(minutes=1),
     )
+
+
+def _legacy_repurchase_template(tmp_path):
+    body = (
+        "本公司首次回购股份100万股，占公司总股本的0.062%。"
+        "回购用途□减少注册资本□用于员工持股计划或股权激励√用于转换公司可转债"
+        "□为维护公司价值及股东权益。" + _DETAIL
+    )
+    index, item = _legacy_repurchase(tmp_path, body)
+    facts = _facts(index)
+    current = facts.positive_events[0]
+    old = replace(
+        current, status=CompanyPositiveStatus.PLANNED,
+        measurements=replace(current.measurements, actual_ratio_pct=None, purpose=RepurchasePurpose.EMPLOYEE_PLAN),
+    )
+    formal_index = SQLiteCompanyFactsIndexFixture(index.facts_path)
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+    formal_index.publish((replace(facts, positive_events=(old,)),), {item.identity: item.source}, parent, NOW)
+    return index, item
+
+
+def _legacy_holder_table(tmp_path, title="关于回购股份事项前十大股东持股情况的公告"):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("holder-table", title)
+    body = (item.title + "。本公司董事会保证本次披露真实。公司董事会已审议通过回购股份议案，"
+            "现公布决议前一交易日的前十大股东持股情况。" + _DETAIL)
+    index.commit_page(DisclosurePartition("sse", item.published_at.date(), item.published_at.date()),
+                      DisclosurePage((item,), 1, False), NOW)
+    index.publish(item.codes, NOW)
+    index.commit_page(DisclosurePartition("sse", item.published_at.date(), item.published_at.date()),
+                      DisclosurePage((item,), 1, False), NOW)
+    assert index.commit_document(item, fixtures._extraction(body), NOW)
+    legacy = ExtractCompanyEvents((CompanyDocument(replace(item, title="关于回购股份的公告"), "本公司拟回购股份。", True),),
+                                  NOW, fixtures.CompanyEventPolicy()).positives[0]
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+    with SqliteSession(index.path) as collected:
+        digest = collected.run("SELECT body_hash FROM disclosures WHERE source_key=?", (item.identity,)).require_one()[0]
+    SQLiteCompanyFactsIndexFixture(index.facts_path).publish(
+        (replace(_facts(index), positive_events=(legacy,), review_reasons=(
+            CompanyReviewReason("positive", "implementation_or_measurement_unverified", item.identity, NOW, "旧空占位"),
+        )),), {item.identity: item.source}, parent, NOW,
+        receipts=(CompanyInputReceipt(item.source, item.identity, item.codes[0], item.digest,
+                                      parent.extraction_hash, digest, NOW),),
+    )
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        disclosure_id = collected.run("SELECT id FROM disclosures WHERE source_key=?", (item.identity,)).require_one()[0]
+        collected.run("INSERT OR REPLACE INTO document_publications VALUES(?,?,?,?,?)",
+                      (disclosure_id, item.codes[0], item.digest, parent.extraction_hash, NOW.isoformat()))
+        collected.run("INSERT OR REPLACE INTO document_link_candidates VALUES(?,?,?,?,?)",
+                      (item.source, item.identity, item.digest, parent.extraction_hash,
+                       EncodeCompanyLink(CompanyLinkCandidate(item.identity, item.published_at, legacy.subject_type,
+                                                             (), (), (), legacy, False))))
+        collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'attempted')",
+                      (disclosure_id, item.codes[0], item.digest, legacy.event_id,
+                       "repurchase_purpose", "explicit_repurchase_purpose:1"))
+        collected.run("INSERT OR IGNORE INTO company_document_requirements VALUES(?)", (disclosure_id,))
+        collected.run("UPDATE company_work_policy SET work_policy_id=?",
+                      (COMPANY_EXTRACTION_IDENTITY + ":applicable-subjects:1:repurchase-events:1",))
+    return index, item, legacy

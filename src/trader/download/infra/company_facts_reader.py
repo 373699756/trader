@@ -12,10 +12,13 @@ from pathlib import Path
 
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyEvidenceLink
 from trader.download.domain.company_facts import CompanyFacts
+from trader.download.domain.company_field_results import CompanyFieldSnapshot
 from trader.download.infra.company_evidence_sql import SCHEMA
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash
+from trader.download.infra.company_facts_schema import COMPANY_FACTS_VERSION
+from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     SqliteConnection,
@@ -36,15 +39,20 @@ class SQLiteCompanyEvidenceReader:
         self._extraction_hash = CompanyExtractionHash(event_policy)
         self._file_verification: VerifiedSqlitePublication | None = None
 
-    def _publication_version(self, connection: SqliteConnection) -> str:
+    def _publication_version(self, connection: SqliteConnection, *, check: Callable[[], None] | None = None) -> str:
+        if check is not None:
+            check()
         identity = ReadCompanyPublicationIdentity(connection)
+        if check is not None:
+            check()
         if identity is None:
             return ""
         self._file_verification = VerifySqliteFile(
             self.path,
-            3,
+            COMPANY_FACTS_VERSION,
             sqlite_policy=self._sqlite_policy,
             previous=self._file_verification,
+            check=check,
         )
         if identity.extraction_hash != self._extraction_hash:
             raise ValueError("company_publication_identity_mismatch")
@@ -80,6 +88,32 @@ class SQLiteCompanyEvidenceReader:
         self.visit(codes, snapshots.append)
         return tuple(snapshots)
 
+    def read_fields(
+        self, codes: Sequence[str], *, cancel_requested: Callable[[], bool] | None = None,
+    ) -> CompanyFieldSnapshot:
+        """Return only published field conclusions with their pinned fact identity."""
+        def check_cancelled() -> None:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_field_read_cancelled")
+
+        check_cancelled()
+        if not self.path.exists():
+            return CompanyFieldSnapshot("", ())
+        try:
+            with SqliteSession(
+                self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
+                cancel_requested=cancel_requested,
+            ) as connection:
+                with SqliteTransaction(connection):
+                    version = self._publication_version(connection, check=check_cancelled)
+                    results = ReadCompanyFieldResults(connection, codes) if version else ()
+                    check_cancelled()
+                    return CompanyFieldSnapshot(version, results)
+        except sqlite3.Error as exc:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_field_read_cancelled") from exc
+            raise RuntimeError("company_fields_unreadable") from exc
+
     def publication_version(self) -> str:
         if not self.path.exists():
             return ""
@@ -96,6 +130,11 @@ class SQLiteCompanyEvidenceReader:
         *,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
+        def check_cancelled() -> None:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_preload_cancelled")
+
+        check_cancelled()
         if not self.path.exists():
             return
         captured: list[CompanyFacts] = []
@@ -104,17 +143,18 @@ class SQLiteCompanyEvidenceReader:
                 self.path, SqliteConnectionOptions(read_only=True), cancel_requested=cancel_requested, sqlite_policy=self._sqlite_policy
             ) as connection:
                 with SqliteTransaction(connection):
-                    if not self._publication_version(connection):
+                    if not self._publication_version(connection, check=check_cancelled):
                         return
                     for offset in range(0, len(codes), 512):
-                        if cancel_requested is not None and cancel_requested():
-                            raise InterruptedError("company_preload_cancelled")
+                        check_cancelled()
                         batch = tuple(codes[offset : offset + 512])
                         captured.extend(ReadCompanyFactRows(connection, batch))
+                    check_cancelled()
         except sqlite3.Error as exc:
             if cancel_requested is not None and cancel_requested():
                 raise InterruptedError("company_preload_cancelled") from exc
             raise RuntimeError("company_snapshot_unreadable") from exc
+        check_cancelled()
         self._consume_publication(codes, captured, consume, cancel_requested)
 
     @staticmethod

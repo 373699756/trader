@@ -11,6 +11,8 @@ from trader.download.domain.company_event_extraction import CompanyDocumentNeeds
 from trader.download.domain.company_evidence import CompanyDocument, CompanyEvidenceInput, CompanyRatio
 from trader.download.domain.company_facts import CompileCompanyFacts
 
+from trader.download.domain.company_event_extraction import IsCompanyRepurchaseShareholderTable
+
 
 @pytest.mark.parametrize("title", (
     "关于董事减持股份计划的公告",
@@ -243,3 +245,45 @@ def test_future_previous_unlock_snapshot_is_not_reused_after_source_failure():
     )
     assert current.unlock_schedule == () and current.unlock_state is CompanyDataState.UNAVAILABLE
     assert current.unlock_checked_at is None and current.unlock_coverage_end is None
+
+
+@pytest.mark.parametrize("title", (
+    "关于前十名股东表决股份回购事项的公告",
+    "关于回购股份事项前十名股东表态的公告",
+    "关于回购股份事项前十名股东的公告暨回购股份资金用途的说明",
+))
+def test_holder_table_words_do_not_exclude_other_event_material(title):
+    assert not IsCompanyRepurchaseShareholderTable(title)
+    assert CompanyDocumentNeedsReview(title)
+
+
+@pytest.mark.parametrize("title", (
+    "关于回购股份事项前十大股东持股情况的公告",
+    "关于回购公司股份的前十名股东和前十名无限售条件股东持股情况的公告",
+    "关于股份回购事项前10名普通股股东持股情况的公告",
+    "关于回购股份事项前十名股东持股信息的公告",
+    "关于回购股份事项前十名股东和前十名无限售条件股东情况的公告",
+    "上海艾力斯医药科技股份有限公司关于回购股份事项前十名股东和前十名无限售条件股东的公告",
+))
+def test_standalone_repurchase_holder_tables_are_not_event_inputs(title):
+    assert IsCompanyRepurchaseShareholderTable(title)
+    assert not CompanyDocumentNeedsReview(title)
+    assert not CompanyDocumentRiskRelevant(title)
+    item = fixtures._disclosure(title=title)
+    source = CompanyEvidenceInput(
+        "600001", fixtures.NOW, fixtures.NOW.date() - timedelta(days=365), fixtures.NOW.date(),
+        "test", (CompanyDocument(item, "", False),), True,
+        (), None, (), False, (), False, (),
+    )
+    facts = CompileCompanyFacts(source, fixtures.CompanyEventPolicy())
+    assert not facts.positive_events and not facts.review_reasons and facts.pending_document_count == 0
+
+
+@pytest.mark.parametrize("suffix", (
+    "暨首次回购进展", "及减持计划", "暨控股股东增持", "及收到警示函", "暨签订重大合同",
+    "及实施结果", "及回购方案变更", "及回购报告书", "及风险提示涉及违规担保", "和回购方案", "与回购方案", "、回购方案",
+))
+def test_holder_table_titles_with_separate_events_remain_required(suffix):
+    title = "关于回购股份事项前十大股东持股情况" + suffix + "的公告"
+    assert not IsCompanyRepurchaseShareholderTable(title)
+    assert CompanyDocumentNeedsReview(title)

@@ -11,12 +11,13 @@ from tests.helpers.shared.configuration import CompanyDocumentFilesFixture, SQLi
 
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 
-from trader.download.domain.company_events import CompanyPositiveStatus, RepurchasePurpose
+from trader.download.domain.company_events import CompanyPositiveStatus, CompanyReviewReason, RepurchasePurpose
 
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 
 from trader.download.infra.company_field_recovery import (
     CompanyFieldRepairReceipts,
+    QueueCompanyRepurchaseRechecks,
     ReadCompanyFieldRecovery,
     RegisterCompanyFieldAttempts,
     RestoreCompanyFieldRepairs,
@@ -32,10 +33,15 @@ from tests.helpers.download.company.company_field_recovery import (
     _facts,
     _legacy_reduction,
     _legacy_repurchase,
+    _legacy_repurchase_template,
+    _legacy_holder_table,
     _publish_latest_ratio,
     _put,
     _state,
 )
+
+from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
+from trader.download.infra.company_publication_reads import ReadCompanyPublicationLinks
 
 
 def test_legacy_reduction_repairs_only_its_missing_field_and_stays_complete_after_restart(tmp_path):
@@ -53,7 +59,9 @@ def test_legacy_reduction_repairs_only_its_missing_field_and_stays_complete_afte
     index.publish(item.codes, NOW)
     assert _facts(index).risk_events[0].reduction_plan.planned_ratio_pct == 2
     assert [tuple(row) for row in _state(index)] == [("planned_pct", "complete")]
-    assert not tuple((tmp_path / "text").rglob("*.gz"))
+    assert tuple((tmp_path / "text").rglob("*.gz"))  # A repaired value still needs its field-level source proof.
+    with SqliteSession(index.facts_path) as formal:
+        assert formal.run("SELECT state FROM company_field_result WHERE field='planned_pct'").require_one()[0] == "present_unverified"
     with SqliteSession(index.facts_path) as formal:
         assert tuple(formal.run(
             "SELECT record_hash,extraction_hash,outcome FROM company_input_receipt WHERE outcome='valid'"
@@ -308,11 +316,11 @@ def test_repurchase_purpose_rule_preserves_planned_state_and_other_event_require
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
         assert collected.run(
             "SELECT state FROM company_field_repairs WHERE event_id=? AND field='repurchase_purpose' "
-            "AND rule_id='explicit_repurchase_purpose:1'", (planned.event_id,),
+            "AND rule_id='explicit_repurchase_purpose:2'", (planned.event_id,),
         ).require_one()[0] == "complete"
         assert collected.run(
             "SELECT state FROM company_field_repairs WHERE event_id=? AND field='repurchase_purpose' "
-            "AND rule_id='explicit_repurchase_purpose:1'", (untouched.event_id,),
+            "AND rule_id='explicit_repurchase_purpose:2'", (untouched.event_id,),
         ).require_one()[0] == "attempted"
         assert collected.run(
             "SELECT count(*) FROM company_field_repairs WHERE event_id=? AND field='actual_pct'", (planned.event_id,),
@@ -334,7 +342,8 @@ def test_unmatched_repurchase_purpose_is_attempted_once_then_verified_without_re
         attempts = tuple(tuple(row) for row in formal.run(
             "SELECT * FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY policy_id",
         ))
-    assert len(attempts) == 2
+    assert len(tuple(row for row in attempts if not row[-1].startswith("field_source_lines:"))) == 2
+    assert len(tuple(row for row in attempts if row[-1].startswith("field_source_lines:"))) == 1
     for _ in range(2):
         restarted = fixtures._index(tmp_path)
         restarted.prepare_publication(item.codes, NOW)
@@ -348,7 +357,7 @@ def test_unmatched_repurchase_purpose_is_attempted_once_then_verified_without_re
             )) == attempts
             assert tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == valid
             assert collected.run(
-                "SELECT state FROM company_field_repairs WHERE field='repurchase_purpose' AND rule_id='explicit_repurchase_purpose:1'"
+                "SELECT state FROM company_field_repairs WHERE field='repurchase_purpose' AND rule_id='explicit_repurchase_purpose:2'"
             ).require_one()[0] == "attempted"
 
 
@@ -492,7 +501,9 @@ def test_formal_field_receipt_recovers_collection_rollback_without_another_docum
     restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
     assert [tuple(row) for row in _state(restarted)] == [("planned_pct", "complete")]
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
-    assert not tuple((tmp_path / "text").rglob("*.gz"))
+    assert tuple((tmp_path / "text").rglob("*.gz"))  # Recovering a repair receipt does not certify source lines.
+    with SqliteSession(index.facts_path) as formal:
+        assert formal.run("SELECT state FROM company_field_result WHERE field='planned_pct'").require_one()[0] == "present_unverified"
 
 
 def test_document_selection_prefers_latest_date_but_local_only_can_recover_older_pdf(tmp_path):
@@ -669,3 +680,273 @@ def test_receipt_restore_keeps_missing_event_field_open_when_evidence_changes_an
             "SELECT event_id,state FROM company_field_repairs"
         )}
     assert states == {event.event_id: "attempted", "other-event": "pending"}
+
+
+def test_same_body_repurchase_replay_corrects_old_nonnull_purpose_and_missing_actual_ratio(tmp_path):
+    index, item = _legacy_repurchase_template(tmp_path)
+    with SqliteSession(index.facts_path) as formal:
+        before = tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
+        identity = ReadCompanyPublicationIdentity(formal).extraction_hash
+
+    index.prepare_publication(item.codes, NOW)
+
+    event, = _facts(index).positive_events
+    assert event.measurements.actual_ratio_pct == 0.062
+    assert event.measurements.purpose is RepurchasePurpose.OTHER
+    assert event.status is CompanyPositiveStatus.IMPLEMENTING and event.positive_level == 0
+    with SqliteSession(index.facts_path) as formal:
+        assert tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == before
+        assert ReadCompanyPublicationIdentity(formal).extraction_hash == identity
+    with SqliteSession(index.path) as collected:
+        states = tuple(collected.run(
+            "SELECT field,state FROM company_field_repairs WHERE rule_id='same_body_repurchase_fields:1' ORDER BY field"
+        ))
+        assert [tuple(row) for row in states] == [("actual_pct", "complete"), ("repurchase_purpose", "complete")]
+    for _ in range(2):
+        index.prepare_publication(item.codes, NOW)
+        assert index.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
+        assert _facts(index).positive_events == (event,)
+
+
+@pytest.mark.parametrize("title", (
+    "关于回购股份事项前十大股东持股情况的公告",
+    "关于回购股份事项前十名股东持股信息的公告",
+    "关于回购股份事项前十名股东和前十名无限售条件股东情况的公告",
+    "关于回购股份事项前十名股东和前十名无限售条件股东的公告",
+))
+def test_holder_table_recheck_retires_only_empty_event_and_review_without_blessing_field_or_redownload(tmp_path, title):
+    index, item, _ = _legacy_holder_table(tmp_path, title)
+    with SqliteSession(index.facts_path) as formal:
+        before = tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
+        identity = ReadCompanyPublicationIdentity(formal).extraction_hash
+    for _ in range(2):
+        index.initialize()
+        index.prepare_publication(item.codes, NOW)
+        assert _facts(index).positive_events == ()
+        assert not any(review.evidence_id == item.identity for review in _facts(index).review_reasons)
+        assert index.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
+    with SqliteSession(index.facts_path) as formal:
+        assert tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == before
+        assert ReadCompanyPublicationIdentity(formal).extraction_hash == identity
+    with SqliteSession(index.path) as collected:
+        assert collected.run("SELECT state FROM company_field_repairs WHERE field='repurchase_purpose'").require_one()[0] == "attempted"
+        assert collected.run("SELECT 1 FROM company_document_requirements").fetchone() is None
+
+
+def test_repurchase_recheck_does_not_complete_from_old_nonnull_value_before_new_receipt(tmp_path):
+    index, item = _legacy_repurchase_template(tmp_path)
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
+        identity = ReadCompanyPublicationIdentity(formal).extraction_hash
+        QueueCompanyRepurchaseRechecks(
+            collected, formal, item.codes, NOW, identity, fixtures.CompanyEventPolicy(),
+            CompanyDocumentFilesFixture(tmp_path / "text").read,
+        )
+        RestoreCompanyFieldRepairs(collected, formal)
+        pending = tuple(collected.run(
+            "SELECT state FROM company_field_repairs WHERE rule_id='same_body_repurchase_fields:1'"
+        ))
+        assert [row[0] for row in pending] == ["pending", "pending"]
+        assert collected.run("SELECT 1 FROM document_publications WHERE code=?", (item.codes[0],)).fetchone() is None
+    index.prepare_publication(item.codes, NOW)
+    assert _facts(index).positive_events[0].measurements.purpose is RepurchasePurpose.OTHER
+
+
+def test_holder_table_recheck_clears_old_subject_review_without_creating_a_repurchase(tmp_path):
+    index, item, _ = _legacy_holder_table(tmp_path)
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+        before = tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
+    SQLiteCompanyFactsIndexFixture(index.facts_path).publish(
+        (replace(_facts(index), positive_events=(), review_reasons=(
+            CompanyReviewReason("positive", "subject_unverified", item.identity, NOW, "旧主体待核"),
+        )),), {item.identity: item.source}, parent, NOW,
+    )
+    index.initialize()
+    index.prepare_publication(item.codes, NOW)
+    assert _facts(index).positive_events == ()
+    assert not any(review.evidence_id == item.identity for review in _facts(index).review_reasons)
+    with SqliteSession(index.facts_path) as formal:
+        assert tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == before
+
+
+def test_repurchase_recheck_does_not_request_missing_local_material(tmp_path):
+    index, item = _legacy_repurchase_template(tmp_path)
+    def unavailable(_digest):
+        raise ValueError("fixture_missing_text")
+
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
+        QueueCompanyRepurchaseRechecks(
+            collected, formal, item.codes, NOW, ReadCompanyPublicationIdentity(formal).extraction_hash,
+            fixtures.CompanyEventPolicy(), unavailable,
+        )
+        assert collected.run(
+            "SELECT 1 FROM company_field_repairs WHERE rule_id='same_body_repurchase_fields:1'"
+        ).fetchone() is None
+    event, = _facts(index).positive_events
+    assert event.measurements.purpose is RepurchasePurpose.EMPLOYEE_PLAN
+    assert event.measurements.actual_ratio_pct is None
+
+
+@pytest.mark.parametrize("guard", ("missing_text", "missing_receipt", "known_purpose", "linked_progress"))
+def test_holder_table_recheck_keeps_unproven_or_measured_previous_events(tmp_path, guard):
+    index, item, legacy = _legacy_holder_table(tmp_path)
+    if guard == "missing_receipt":
+        with SqliteSession(index.facts_path) as formal, SqliteTransaction(formal):
+            formal.run("DELETE FROM company_input_receipt WHERE outcome='valid'")
+        with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
+            QueueCompanyRepurchaseRechecks(
+                collected, formal, item.codes, NOW, ReadCompanyPublicationIdentity(formal).extraction_hash,
+                fixtures.CompanyEventPolicy(), CompanyDocumentFilesFixture(tmp_path / "text").read,
+            )
+            assert collected.run("SELECT 1 FROM document_publications WHERE code=?", (item.codes[0],)).fetchone() is not None
+        with SqliteSession(index.facts_path) as formal:
+            assert [row[0] for row in formal.run("SELECT event_key FROM company_positive_event")] == [legacy.event_id]
+        return
+    elif guard == "missing_text":
+        with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+            collected.run("UPDATE disclosures SET body_retained=0 WHERE source_key=?", (item.identity,))
+    else:
+        old = replace(legacy, measurements=replace(legacy.measurements, purpose=RepurchasePurpose.EMPLOYEE_PLAN))
+        if guard == "linked_progress":
+            old = replace(legacy, evidence_ids=(item.identity, "actual-progress"))
+        with SqliteSession(index.facts_path) as formal:
+            parent = ReadCompanyPublicationIdentity(formal)
+        SQLiteCompanyFactsIndexFixture(index.facts_path).publish(
+            (replace(_facts(index), positive_events=(old,)),), {item.identity: item.source, "actual-progress": item.source}, parent, NOW,
+        )
+    index.initialize()
+    index.prepare_publication(item.codes, NOW)
+    assert len(_facts(index).positive_events) == 1
+    assert index.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
+    if guard == "known_purpose":
+        with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+            links, = ReadCompanyPublicationLinks(
+                collected, item.codes, ReadCompanyPublicationIdentity(formal).extraction_hash,
+                observed_at=NOW, event_policy=fixtures.CompanyEventPolicy(),
+                read_document=CompanyDocumentFilesFixture(tmp_path / "text").read,
+            )
+            assert links.candidates == ()
+
+
+def test_repurchase_recheck_keeps_same_source_multiple_events_unmodified(tmp_path):
+    index, item = _legacy_repurchase_template(tmp_path)
+    facts = _facts(index)
+    first, = facts.positive_events
+    second = replace(first, event_id="another-repurchase")
+    formal_index = SQLiteCompanyFactsIndexFixture(index.facts_path)
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+    formal_index.publish((replace(facts, positive_events=(first, second)),), {item.identity: item.source}, parent, NOW)
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
+        QueueCompanyRepurchaseRechecks(
+            collected, formal, item.codes, NOW, ReadCompanyPublicationIdentity(formal).extraction_hash,
+            fixtures.CompanyEventPolicy(), CompanyDocumentFilesFixture(tmp_path / "text").read,
+        )
+        assert collected.run(
+            "SELECT 1 FROM company_field_repairs WHERE rule_id='same_body_repurchase_fields:1'"
+        ).fetchone() is None
+
+
+def test_unlinked_repurchase_cache_uses_fixed_measurements_when_plan_arrives(tmp_path):
+    index = fixtures._index(tmp_path)
+    progress = fixtures._disclosure("progress", "关于回购股份进展的公告")
+    body = ("本公司根据公告plan，首次回购股份100万股，占公司总股本的0.062%。"
+            "回购用途□减少注册资本□用于员工持股计划或股权激励√用于转换公司可转债。" + _DETAIL)
+    _put(index, progress, body)
+    index.publish(progress.codes, NOW)
+    assert not _facts(index).positive_events
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        row = collected.run("SELECT payload FROM document_link_candidates WHERE source_key='progress'").require_one()
+        candidate = DecodeCompanyLink(row[0])
+        old = replace(candidate.positive, status=CompanyPositiveStatus.PLANNED, positive_level=0, level_milestones=(),
+                      measurements=replace(candidate.positive.measurements, actual_ratio_pct=None, purpose=RepurchasePurpose.EMPLOYEE_PLAN))
+        collected.run("UPDATE document_link_candidates SET payload=? WHERE source_key='progress'",
+                      (EncodeCompanyLink(replace(candidate, positive=old)),))
+    with SqliteSession(index.facts_path) as formal:
+        receipt = tuple(formal.run("SELECT * FROM company_input_receipt WHERE source_key='progress' AND outcome='valid'"))
+
+    index.prepare_publication(progress.codes, NOW)
+    with SqliteSession(index.path) as collected:
+        refreshed = DecodeCompanyLink(collected.run(
+            "SELECT payload FROM document_link_candidates WHERE source_key='progress'"
+        ).require_one()[0])
+        assert refreshed.positive.measurements.actual_ratio_pct == 0.062
+        assert refreshed.positive.measurements.purpose is RepurchasePurpose.OTHER
+    assert not _facts(index).positive_events
+    plan = fixtures._disclosure("plan", "关于回购股份的公告", when=NOW - timedelta(days=1))
+    _put(index, plan, "本公司拟回购股份，股份用于转换公司可转债。" + _DETAIL)
+    index.publish(plan.codes, NOW)
+    event, = _facts(index).positive_events
+    assert event.measurements.actual_ratio_pct == 0.062
+    assert event.measurements.purpose is RepurchasePurpose.OTHER and event.positive_level == 0
+    with SqliteSession(index.facts_path) as formal:
+        assert tuple(formal.run("SELECT * FROM company_input_receipt WHERE source_key='progress' AND outcome='valid'")) == receipt
+
+
+@pytest.mark.parametrize("valid_receipt", (True, False))
+def test_retained_issuer_plan_recheck_links_progress_without_reissuing_valid_receipt(tmp_path, valid_receipt):
+    index = fixtures._index(tmp_path)
+    plan = fixtures._disclosure("plan", "关于回购股份的回购报告书", when=NOW - timedelta(days=1))
+    progress = fixtures._disclosure("progress", "关于回购股份进展的公告")
+    _put(index, plan, "本公司董事会保证公告真实。公司将在回购期限内根据市场情况择机作出回购决策予以实施。"
+                    "控股股东暂无减持计划。" + _DETAIL)
+    _put(index, progress, "本公司根据公告plan，首次回购股份100万股，占公司总股本的0.062%。"
+                        "回购用途□减少注册资本□用于员工持股计划或股权激励√用于转换公司可转债。" + _DETAIL)
+    index.publish(plan.codes, NOW)
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+        before = tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
+    facts = _facts(index)
+    review = CompanyReviewReason("positive", "subject_unverified", "plan", NOW, "旧规则主体不明")
+    unlinked = CompanyReviewReason("positive", "progress_unlinked", "progress", NOW, "等待方案")
+    SQLiteCompanyFactsIndexFixture(index.facts_path).publish(
+        (replace(facts, positive_events=(), review_reasons=(review, unlinked)),),
+        {"plan": "cninfo", "progress": "cninfo"}, parent, NOW,
+    )
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("DELETE FROM document_link_candidates WHERE source_key='plan'")
+    if not valid_receipt:
+        with SqliteSession(index.facts_path) as formal, SqliteTransaction(formal):
+            formal.run("DELETE FROM company_input_receipt WHERE source_key='plan' AND outcome='valid'")
+            before = tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
+
+    index.prepare_publication(plan.codes, NOW)
+
+    if valid_receipt:
+        event, = _facts(index).positive_events
+        assert event.event_id == "plan:share_repurchase"
+        assert event.evidence_ids == ("plan", "progress")
+        assert event.measurements.actual_ratio_pct == 0.062
+        assert event.measurements.purpose is RepurchasePurpose.OTHER and event.positive_level == 0
+        for _ in range(2):
+            index.prepare_publication(plan.codes, NOW)
+            assert index.pending_documents(plan.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
+    else:
+        assert _facts(index).positive_events == ()
+    with SqliteSession(index.facts_path) as formal:
+        assert tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == before
+        assert ReadCompanyPublicationIdentity(formal).extraction_hash == parent.extraction_hash
+
+
+@pytest.mark.parametrize("valid_receipt", (True, False))
+def test_verified_progress_prioritizes_existing_plan_before_newer_unrelated_documents(tmp_path, valid_receipt):
+    index = fixtures._index(tmp_path)
+    progress = fixtures._disclosure("progress", "关于回购股份进展的公告")
+    _put(index, progress, "本公司根据公告plan，累计回购股份占总股本比例为0.3%，股份用于注销。" + _DETAIL)
+    index.publish(progress.codes, NOW)
+    plan = fixtures._disclosure("plan", "关于回购股份的回购报告书", when=NOW - timedelta(days=2))
+    unrelated = fixtures._disclosure("unrelated", "关于回购股份用途安排的公告",
+                                     when=NOW - timedelta(days=1))
+    for item in (plan, unrelated):
+        index.commit_page(DisclosurePartition("sse", item.published_at.date(), item.published_at.date()),
+                          DisclosurePage((item,), 1, False), NOW)
+    if not valid_receipt:
+        with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+            collected.run("UPDATE disclosures SET record_hash='unverified-version' WHERE source_key='progress'")
+
+    tasks = index.pending_documents(plan.codes, NOW, limit=1, policies=fixtures._TEST_DOCUMENT_POLICIES)
+
+    assert tasks[0].disclosure.identity == ("plan" if valid_receipt else "unrelated")
+    all_tasks = index.pending_documents(plan.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
+    assert {task.disclosure.identity for task in all_tasks}.issuperset({"plan", "unrelated"})
+    assert not _facts(index).positive_events

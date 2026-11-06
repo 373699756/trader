@@ -50,7 +50,7 @@ def test_published_projection_keeps_unknown_components_and_valid_released_receip
     assert "company_reviews_pending" in result["findings"]
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
     audit = result["field_audit"]
-    assert audit["table_count"] == 13 and audit["field_count"] == 106
+    assert audit["table_count"] == 15 and audit["field_count"] == 127
     assert audit["invalid_value_types"] == 0 and audit["source_agreement"]["unlocated_evidence_refs"] == 0
 
 
@@ -250,7 +250,8 @@ def test_local_material_inspection_verifies_text_and_compares_formal_contract_wi
     index = fixtures._index(tmp_path)
     _contract(index)
     before = (index.path.read_bytes(), index.facts_path.read_bytes())
-    report = InspectCompanyFieldMaterial(index.path, index.facts_path, ("contract-income",), sqlite_policy=SqlitePolicyFixture())
+    report = InspectCompanyFieldMaterial(index.path, index.facts_path, ("contract-income",), sqlite_policy=SqlitePolicyFixture(),
+                                        observed_at=fixtures.NOW, event_policy=fixtures.CompanyEventPolicy())
     assert report["stable_read"] and report["read_only"] and not report["field_correctness_verified"]
     item = report["items"][0]
     assert item["material_available"] and item["current_receipt"]
@@ -266,5 +267,22 @@ def test_material_inspection_rejects_unbounded_or_duplicate_keys_before_io(tmp_p
     from scripts.download.company.company_field_audit import InspectCompanyFieldMaterial
 
     with pytest.raises(ValueError, match="company_material_keys_invalid"):
-        InspectCompanyFieldMaterial(tmp_path / "missing.sqlite3", tmp_path / "missing-facts.sqlite3", keys, sqlite_policy=SqlitePolicyFixture())
+        InspectCompanyFieldMaterial(tmp_path / "missing.sqlite3", tmp_path / "missing-facts.sqlite3", keys, sqlite_policy=SqlitePolicyFixture(),
+                                    observed_at=fixtures.NOW, event_policy=fixtures.CompanyEventPolicy())
     assert not tuple(tmp_path.iterdir())
+
+
+def test_material_inspection_does_not_count_a_previous_extraction_receipt_as_current(tmp_path):
+    from scripts.download.company.company_field_audit import InspectCompanyFieldMaterial
+    from tests.helpers.download.company.company_annual_income import _contract
+
+    index = fixtures._index(tmp_path)
+    _contract(index)
+    with SqliteSession(index.facts_path) as formal, SqliteTransaction(formal, immediate=True):
+        formal.run("UPDATE company_input_receipt SET extraction_hash=? WHERE outcome='valid'", (b"x" * 32,))
+    before = (index.path.read_bytes(), index.facts_path.read_bytes())
+    report = InspectCompanyFieldMaterial(index.path, index.facts_path, ("contract-income",), sqlite_policy=SqlitePolicyFixture(),
+                                        observed_at=fixtures.NOW, event_policy=fixtures.CompanyEventPolicy())
+    assert report["stable_read"] and report["items"][0]["material_available"]
+    assert report["items"][0]["current_receipt"] is False
+    assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before

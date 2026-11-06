@@ -464,3 +464,72 @@ def test_deterministic_document_failure_reopens_only_for_matching_route_policy_o
     partition = DisclosurePartition("sse", NOW.date(), NOW.date())
     index.commit_page(partition, DisclosurePage((revised,), 1, False), NOW)
     assert index.document_workload(("600001",), NOW, policies).due == 1
+
+
+def test_analyzed_pending_requires_unpublished_current_receipt_for_requested_code(tmp_path):
+    index = fixtures._index(tmp_path)
+    item = replace(_seed(index, 1)[0], codes=("600001", "600002"))
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection, immediate=True):
+        document_id = connection.run("SELECT id FROM disclosures WHERE source_key=?", (item.identity,)).require_one()[0]
+        connection.run("INSERT INTO disclosure_codes(disclosure_id,code) VALUES(?,?)", (document_id, "600002"))
+    index.commit_document(item, fixtures._extraction("本公司收到中国证监会立案告知书。"), NOW)
+
+    def pending(codes):
+        return index.document_workload(codes, NOW, fixtures._TEST_DOCUMENT_POLICIES).analyzed_pending
+
+    def receipt(code, record_hash, extraction_hash):
+        with SqliteSession(index.path) as connection, SqliteTransaction(connection, immediate=True):
+            connection.run("INSERT OR REPLACE INTO document_publications VALUES(?,?,?,?,?)",
+                           (document_id, code, record_hash, extraction_hash, NOW.isoformat()))
+
+    assert pending(item.codes) == 1  # One document, even when two securities still need publication.
+    assert pending(("600003",)) == 0
+    receipt("600001", "old-directory-version", index._facts.extraction_hash)
+    assert pending(("600001",)) == 1
+    receipt("600001", item.digest, b"x" * 32)
+    assert pending(("600001",)) == 1
+    receipt("600001", item.digest, index._facts.extraction_hash)
+    assert pending(("600001",)) == 0
+    assert pending(("600002",)) == pending(item.codes) == 1
+    receipt("600002", item.digest, index._facts.extraction_hash)
+    assert pending(item.codes) == 0
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT body_retained FROM disclosures WHERE id=?", (document_id,)).require_one()[0] == 1
+
+
+@pytest.mark.parametrize("invalid", ["none", "record", "replacement", "extraction", "publication"])
+def test_analyzed_pending_respects_only_current_published_supersession(tmp_path, invalid):
+    index = fixtures._index(tmp_path)
+    item, replacement = _seed(index, 2)
+    index.commit_document(item, fixtures._extraction("本公司收到中国证监会立案告知书。"), NOW)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection, immediate=True):
+        ids = {row[1]: row[0] for row in connection.run("SELECT id,source_key FROM disclosures")}
+        extraction = index._facts.extraction_hash
+        connection.run("INSERT INTO document_publications VALUES(?,?,?,?,?)",
+                       (ids[replacement.identity], "600001", replacement.digest,
+                        b"x" * 32 if invalid == "publication" else extraction, NOW.isoformat()))
+        connection.run("INSERT INTO document_supersessions VALUES(?,?,?,?,?,?,?)",
+                       (ids[item.identity], "600001", "old" if invalid == "record" else item.digest,
+                        ids[replacement.identity], "old" if invalid == "replacement" else replacement.digest,
+                        b"x" * 32 if invalid == "extraction" else extraction, "newer_applicable_evidence"))
+    work = index.document_workload(item.codes, NOW, fixtures._TEST_DOCUMENT_POLICIES)
+    assert work.analyzed_pending == int(invalid != "none")
+
+
+@pytest.mark.parametrize("state", ["unchecked", "ordinary", "outside_subject", "future", "old_accepted"])
+def test_analyzed_pending_only_counts_applicable_accepted_body(tmp_path, state):
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    index.commit_document(item, fixtures._extraction("本公司收到中国证监会立案告知书。"), NOW)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection, immediate=True):
+        if state == "unchecked":
+            connection.run("UPDATE disclosures SET body_checked=0")
+        elif state in ("ordinary", "outside_subject"):
+            connection.run("DELETE FROM company_document_requirements")
+            if state == "outside_subject":
+                connection.run("INSERT INTO company_document_exclusions SELECT id,'subject_outside_scope' FROM disclosures")
+        else:
+            day = NOW + timedelta(days=1) if state == "future" else NOW - timedelta(days=366)
+            connection.run("UPDATE disclosures SET published_at=?", (day.isoformat(),))
+    work = index.document_workload(item.codes, NOW, fixtures._TEST_DOCUMENT_POLICIES)
+    assert work.analyzed_pending == int(state == "old_accepted")

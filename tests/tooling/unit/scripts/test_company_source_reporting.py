@@ -109,3 +109,46 @@ def test_structured_projection_bounds_schema_fields_and_explicit_source_identiti
     assert len(first["identity_samples"]) == 5
     assert first["identity_samples"][0] == {"SECURITYCODE": "x" * 160}
     assert "PRIVATE_PROVIDER_PAYLOAD" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("typed,expected", (
+    (
+        {"status": "decoded", "observations": 5, "reasons": {"event_identity_unverified": 5},
+         "production_adopted": True, "field_correctness_verified": True},
+        {"status": "decoded", "failure": None, "observations": 5,
+         "reasons": {"event_identity_unverified": 5}, "production_adopted": False, "field_correctness_verified": False},
+    ),
+    (
+        {"status": "rejected", "failure": "ValueError", "production_adopted": False},
+        {"status": "rejected", "failure": "ValueError", "observations": None,
+         "reasons": {}, "production_adopted": False, "field_correctness_verified": False},
+    ),
+))
+def test_structured_projection_preserves_type_decoding_and_identity_rejection(typed, expected) -> None:
+    sample = {"source": "eastmoney", "dataset": "contract", "status": "sampled", "rows": 5, "typed_fields": typed}
+    report = BuildReport("research-source-compare", (
+        DiagnosticResult("research_source_compare", 0, 1.0, _structured(sources=[sample]), None),
+    ))
+    summary = report["checks"][0]["summary"]
+    assert report["status"] == "degraded"
+    assert summary["sources"][0]["typed_fields"] == expected
+    assert summary["production_adopted"] is False and summary["field_correctness_verified"] is False
+
+
+@pytest.mark.parametrize("count", (True, -1, 501, float("nan"), "PRIVATE_PROVIDER_PAYLOAD"))
+def test_structured_type_projection_bounds_counts_and_rejects_unselected_payloads(count) -> None:
+    typed = {
+        "status": "PRIVATE_PROVIDER_PAYLOAD", "failure": "PRIVATE_PROVIDER_PAYLOAD", "observations": count,
+        "reasons": {"event_identity_unverified": count, "point_in_time_unverified": 500,
+                    "source_after_cutoff": 1, "PRIVATE_PROVIDER_PAYLOAD": 1},
+        "raw": "PRIVATE_PROVIDER_PAYLOAD", "observations_payload": [{"raw": "PRIVATE_PROVIDER_PAYLOAD"}] * 1000,
+    }
+    sample = {"source": "eastmoney", "dataset": "contract", "status": "sampled", "typed_fields": typed}
+    report = BuildReport("research-source-compare", (
+        DiagnosticResult("research_source_compare", 0, 1.0, _structured(sources=[sample]), None),
+    ))
+    result = report["checks"][0]["summary"]["sources"][0]["typed_fields"]
+    assert result["status"] is None and result["failure"] is None and result["observations"] is None
+    assert result["reasons"] == {"point_in_time_unverified": 500, "source_after_cutoff": 1}
+    assert result["production_adopted"] is False and result["field_correctness_verified"] is False
+    assert "PRIVATE_PROVIDER_PAYLOAD" not in json.dumps(report)
