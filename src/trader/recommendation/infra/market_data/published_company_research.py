@@ -209,20 +209,21 @@ class PublishedCompanyResearch:
         required = self._required_coverage(now)
         result: dict[str, ResearchObservation] = {}
         with self._lock:
-            for code in codes:
-                original = self._epoch.observations.get(code) if self._epoch is not None else None
-                if original is not None and original.snapshot_at is not None and original.snapshot_at > now:
-                    original = None
-                item = (
-                    _qualified(original, now, required, self._company_policy.events.unlock_days)
-                    if original is not None
-                    else None
-                )
-                if item is None or not _action_ready(item):
-                    if action_restrictions is not None:
-                        action_restrictions.setdefault(code, set()).add("research_data_degraded")
-                if item is not None and (not fresh_only or _action_ready(item)):
-                    result[code] = item
+            epoch = self._epoch
+        for code in codes:
+            original = epoch.observations.get(code) if epoch is not None else None
+            if original is not None and original.snapshot_at is not None and original.snapshot_at > now:
+                original = None
+            item = (
+                _qualified(original, now, required, self._company_policy.events.unlock_days)
+                if original is not None
+                else None
+            )
+            if item is None or not _action_ready(item):
+                if action_restrictions is not None:
+                    action_restrictions.setdefault(code, set()).add("research_data_degraded")
+            if item is not None and (not fresh_only or _action_ready(item)):
+                result[code] = item
         return MappingProxyType(result)
 
     def load(
@@ -241,42 +242,46 @@ class PublishedCompanyResearch:
         now = ShanghaiNow(self._wall_clock())
         required = self._required_coverage(now)
         with self._lock:
-            rows = tuple(
-                _qualified(item, now, required, self._company_policy.events.unlock_days)
-                for item in (self._epoch.observations.values() if self._epoch is not None else ())
-            )
-            coverages = tuple(ResearchComponentCoverage(item) for item in rows)
-            covered = tuple(sum(coverage[index] for coverage in coverages) for index in range(4))
-            verified = sum(_action_ready(item) for item in rows)
-            partial = sum(
-                any(coverage) and not _action_ready(item) for item, coverage in zip(rows, coverages, strict=True)
-            )
-            return ResearchLoaderStatus(
-                entries=len(rows),
-                success_count=len(rows),
-                error_count=sum(bool(item.source_errors) for item in rows),
-                planned_count=len(rows),
-                timeout_count=0,
-                consecutive_failures=0,
-                circuit_open=False,
-                latencies_ms=(),
-                latest_source_time=max((row.snapshot_at for row in rows if row.snapshot_at is not None), default=None),
-                last_error=self._last_error,
-                out_of_order_count=0,
-                corporate_risk_covered_count=sum(item.corporate_risk_window_complete for item in rows),
-                corporate_risk_fact_count=sum(len(item.corporate_risk_facts) for item in rows),
-                corporate_risk_evidence_versions=tuple(sorted({item.corporate_risk_evidence_version for item in rows})),
-                verified_count=verified,
-                partial_count=partial,
-                unavailable_count=len(rows) - verified - partial,
-                financial_covered_count=covered[0],
-                announcements_covered_count=covered[1],
-                pledge_covered_count=covered[2],
-                unlock_covered_count=covered[3],
-                loaded_identity=self._publication_version,
-                disk_identity=self._disk_version,
-                restart_required=self._publication_version != self._disk_version,
-            )
+            epoch = self._epoch
+            last_error = self._last_error
+            publication_version = self._publication_version
+            disk_version = self._disk_version
+        rows = tuple(
+            _qualified(item, now, required, self._company_policy.events.unlock_days)
+            for item in (epoch.observations.values() if epoch is not None else ())
+        )
+        coverages = tuple(ResearchComponentCoverage(item) for item in rows)
+        covered = tuple(sum(coverage[index] for coverage in coverages) for index in range(4))
+        verified = sum(_action_ready(item) for item in rows)
+        partial = sum(
+            any(coverage) and not _action_ready(item) for item, coverage in zip(rows, coverages, strict=True)
+        )
+        return ResearchLoaderStatus(
+            entries=len(rows),
+            success_count=len(rows),
+            error_count=sum(bool(item.source_errors) for item in rows),
+            planned_count=len(rows),
+            timeout_count=0,
+            consecutive_failures=0,
+            circuit_open=False,
+            latencies_ms=(),
+            latest_source_time=max((row.snapshot_at for row in rows if row.snapshot_at is not None), default=None),
+            last_error=last_error,
+            out_of_order_count=0,
+            corporate_risk_covered_count=sum(item.corporate_risk_window_complete for item in rows),
+            corporate_risk_fact_count=sum(len(item.corporate_risk_facts) for item in rows),
+            corporate_risk_evidence_versions=tuple(sorted({item.corporate_risk_evidence_version for item in rows})),
+            verified_count=verified,
+            partial_count=partial,
+            unavailable_count=len(rows) - verified - partial,
+            financial_covered_count=covered[0],
+            announcements_covered_count=covered[1],
+            pledge_covered_count=covered[2],
+            unlock_covered_count=covered[3],
+            loaded_identity=publication_version,
+            disk_identity=disk_version,
+            restart_required=publication_version != disk_version,
+        )
 
 
 def _research_epoch(

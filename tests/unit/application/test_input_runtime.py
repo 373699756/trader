@@ -15,7 +15,7 @@ from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     BuildModelScoringContext as _model_scoring_context,
 )
-from trader.recommendation.application.pipeline.data_source.input_assembly import MergeOverlayQuote
+from trader.recommendation.application.pipeline.data_source.input_assembly import FreezeObservedAt, MergeOverlayQuote
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.ports.market_data import MarketDataPendingError, MarketDataUnavailableError
 from trader.recommendation.application.ports.runtime import (
@@ -41,6 +41,7 @@ from trader.recommendation.domain.market.refresh import (
 )
 from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -304,6 +305,115 @@ def _prime_scoring_cache(adapter: CycleFixture, observed_at: datetime) -> None:
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 
 
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize("mode", ("after_assembly", "close_fallback", "preview"))
+def test_freeze_observation_includes_the_bound_population_completion(
+    application_feature_factory, strategy, mode,
+):
+    observed_at = TEST_NOW.replace(hour=15, minute=5) if mode == "close_fallback" else TEST_NOW
+    preview = None
+    if mode == "preview":
+        observed_at = TEST_NOW.replace(day=15, hour=10, minute=0)
+        preview = PreviewContext("completed-population-preview", observed_at.date() - timedelta(days=1), observed_at)
+    completed_at = observed_at + timedelta(seconds=5)
+    feature = application_feature_factory("600001", observed_at)
+    source_time = (
+        preview.market_as_of if preview is not None
+        else observed_at.replace(hour=15, minute=0) if mode == "close_fallback"
+        else observed_at
+    )
+    feature = replace(feature, quote=replace(feature.quote, source_time=source_time), preview_context=preview)
+
+    class AssembledMarket(_Market):
+        def fetch_market_feature_batch(self, observed_at, *, force=False, deadline=None, round_inputs=None):
+            features = self.fetch_market_features(observed_at, force=force, deadline=deadline)
+            return observed_market_batch(features, completed_at)
+
+    adapter = build_cycle_fixture(
+        AssembledMarket((feature,)), config_version="test-config", freeze_build=_freeze_build(now=lambda: completed_at),
+    )
+    task = PipelineTask.CLOSE_QUOTES if mode == "close_fallback" else PipelineTask.FULL_MARKET
+    adapter.data.refresh_task(PipelineTaskRequest(task, observed_at, preview_context=preview))
+    if mode != "close_fallback":
+        adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at, preview_context=preview))
+    request = replace(
+        _request(observed_at, strategy=strategy, phase="close_fallback" if mode == "close_fallback" else "afternoon"),
+        preview_context=preview,
+    )
+    adapter.data.refresh(request)
+    batch = adapter.data.batch(request)
+
+    assert batch is not None and batch.population_qualifications is not None
+    assert batch.population_qualifications.request.evaluated_at == completed_at
+    assert FreezeObservedAt(batch) == completed_at
+    assert batch.market_features[0].quote.source_time == source_time
+    assert batch.market_features[0].quote.received_time == observed_at
+    result = adapter.freezes.build_local(request)
+    assert result is not None and len(result.items) == 1
+    assert result.observed_at == completed_at
+
+
+def test_population_completion_does_not_make_an_expired_candidate_fresh(application_feature_factory):
+    completed_at = TEST_NOW + timedelta(seconds=45)
+    feature = application_feature_factory("600001", TEST_NOW)
+
+    class AssembledMarket(_Market):
+        def fetch_market_feature_batch(self, observed_at, *, force=False, deadline=None, round_inputs=None):
+            features = self.fetch_market_features(observed_at, force=force, deadline=deadline)
+            return observed_market_batch(features, completed_at)
+
+    adapter = build_cycle_fixture(
+        AssembledMarket((feature,)), config_version="test-config", freeze_build=_freeze_build(now=lambda: completed_at),
+    )
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, TEST_NOW))
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, completed_at))
+    request = _request(TEST_NOW, phase="afternoon")
+    adapter.data.refresh(request)
+    batch = adapter.data.batch(request)
+
+    assert batch is not None
+    assert FreezeObservedAt(batch) == completed_at
+    with pytest.raises(FreezeUnavailableError, match="transient_invalid_empty"):
+        adapter.freezes.build_local(request)
+    assert feature.quote.source_time == feature.quote.received_time == TEST_NOW
+
+
+@pytest.mark.parametrize("mismatch", ("data_version", "merge_epoch", "missing"))
+def test_source_capture_rejects_discovery_from_another_market_cut(application_feature_factory, mismatch):
+    feature = application_feature_factory("600001", TEST_NOW)
+    adapter = build_cycle_fixture(
+        _Market((feature,)), config_version="test-config", freeze_build=_freeze_build(),
+    )
+    _prime_scoring_cache(adapter, TEST_NOW)
+    pipeline = adapter.data._candidate_pipeline
+    qualifications = dict(pipeline.qualifications)
+    if mismatch == "missing":
+        qualifications.pop(Strategy.TOMORROW)
+    else:
+        original = qualifications[Strategy.TOMORROW]
+        qualifications[Strategy.TOMORROW] = replace(
+            original, request=replace(original.request, **{mismatch: "market:wrong-cut"}),
+        )
+    adapter.data._candidate_pipeline = replace(pipeline, qualifications=qualifications)
+    with pytest.raises(DataRefreshUnavailableError, match="discovery_population_"):
+        adapter.data.refresh(_request(TEST_NOW, phase="afternoon"))
+
+
+def test_production_freeze_does_not_recompute_missing_discovery(application_feature_factory, monkeypatch):
+    feature = application_feature_factory("600001", TEST_NOW)
+    adapter = build_cycle_fixture(
+        _Market((feature,)), config_version="test-config", freeze_build=_freeze_build(),
+    )
+    _prime_scoring_cache(adapter, TEST_NOW)
+    request = _request(TEST_NOW, phase="afternoon")
+    adapter.data.refresh(request)
+    batch = adapter.data.batch(request)
+    assert batch.population_qualifications is not None
+    monkeypatch.setattr(adapter.data, "batch", lambda _request: replace(batch, population_qualifications=None))
+    with pytest.raises(FreezeUnavailableError, match="discovery population qualifications are unavailable"):
+        adapter.freezes.build_local(request)
+
+
 def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_change(
     application_feature_factory,
 ) -> None:
@@ -454,6 +564,9 @@ def test_pair_capture_keeps_both_populations_when_source_refreshes_during_prepar
     first, second = (adapter.data.batch(request) for request in requests)
     assert first is not None and second is not None
     assert first.market_features is second.market_features
+    assert first.population_qualifications.request.features == second.population_qualifications.request.features == (original,)
+    assert first.population_qualifications.request.policy.strategy is Strategy.TOMORROW
+    assert second.population_qualifications.request.policy.strategy is Strategy.D25
     assert first.candidate_features == second.candidate_features == (original,)
     assert first.quality_identity.source_revision == second.quality_identity.source_revision == revision
     assert market.candidate_reads == []
@@ -570,7 +683,7 @@ def test_primary_blocker_reports_blocked_history_and_retains_partial_stale_marke
 ) -> None:
     observed_at = datetime(2026, 8, 12, 15, 5, tzinfo=SHANGHAI)
     stale_source = application_feature_factory("600001", observed_at.replace(hour=14, minute=59))
-    stale = replace(stale_source, quote=replace(stale_source.quote, board=Board.MAIN))
+    stale = replace(stale_source, quote=replace(stale_source.quote, board=Board.MAIN, received_time=observed_at))
     fresh_source = application_feature_factory("600002", observed_at - timedelta(seconds=1))
     history_incomplete = replace(
         fresh_source,
@@ -1539,6 +1652,77 @@ def test_all_121_inputs_are_requested_once_even_when_first_quote_fails(
     assert len(tuple(code for wave in market.candidate_requests for code in wave)) == 121
     assert len(set(code for wave in market.candidate_requests for code in wave)) == 121
     assert adapter.data._strategy_requested_codes[Strategy.TOMORROW] == tuple(f"600{index:03d}" for index in range(121))
+
+
+@pytest.mark.parametrize("refresh_age_seconds", [0, 45])
+def test_slow_market_assembly_refreshes_only_quotes_that_were_fresh_when_received(
+    application_feature_factory,
+    refresh_age_seconds: int,
+) -> None:
+    received_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    assembled_at = received_at + timedelta(seconds=45)
+    fresh = application_feature_factory("600001", received_at)
+    old = replace(
+        application_feature_factory("600002", received_at),
+        quote=replace(fresh.quote, code="600002", source_time=received_at - timedelta(seconds=31)),
+    )
+    future = replace(
+        application_feature_factory("600003", received_at),
+        quote=replace(fresh.quote, code="600003", source_time=received_at + timedelta(seconds=1)),
+    )
+    st = replace(fresh, quote=replace(fresh.quote, code="600004", is_st=True))
+    current_time = [received_at]
+
+    class SlowMarket(_Market):
+        def fetch_market_feature_batch(self, observed_at, *, force=False, deadline=None, round_inputs=None):
+            features = self.fetch_market_features(observed_at, force=force, deadline=deadline)
+            current_time[0] = assembled_at
+            return observed_market_batch(features, assembled_at)
+
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None, round_inputs=None):
+            return tuple(
+                replace(
+                    item,
+                    observed_at=assembled_at,
+                    quote=replace(
+                        item.quote,
+                        source_time=assembled_at - timedelta(seconds=refresh_age_seconds),
+                        received_time=assembled_at,
+                    ),
+                )
+                for item in super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline)
+            )
+
+    market = SlowMarket((fresh, old, future, st))
+    adapter = build_cycle_fixture(
+        market,
+        config_version="test-config",
+        freeze_build=_freeze_build(now=lambda: current_time[0]),
+    )
+
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, received_at))
+    plans = adapter.data._candidate_plans
+    assert plans is not None
+    assert plans.physical_union() == (fresh.quote.code,)
+    assert all(plans.strategy_codes(strategy) == (fresh.quote.code,) for strategy in (Strategy.TOMORROW, Strategy.D25))
+    assert fresh.quote.source_time == fresh.observed_at == received_at
+    for plan in plans.plans.values():
+        evaluations = {item.code: item for item in plan.evaluations}
+        retained = evaluations[fresh.quote.code].features
+        assert retained.quote.source_time == retained.quote.received_time == received_at
+        assert retained.observed_at == received_at
+        assert "stale_quote" in {reason.code for reason in evaluations[old.quote.code].filter_reasons}
+        assert "future_quote" in {reason.code for reason in evaluations[future.quote.code].filter_reasons}
+        assert "st_or_delisting" in {reason.code for reason in evaluations[st.quote.code].filter_reasons}
+
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, assembled_at))
+
+    assert market.candidate_requests == [(fresh.quote.code,)]
+    for status in adapter.data.input_quality_status():
+        quality = next(stage for stage in status.stage_snapshots if stage.stage.value == "market_features")
+        assert quality.output_count == (1 if refresh_age_seconds == 0 else 0)
+        if refresh_age_seconds:
+            assert any(reason.code == "stale_quote" for reason in quality.reasons)
 
 
 @pytest.mark.parametrize("quote_age", [0, 31])

@@ -28,7 +28,6 @@ from trader.recommendation.application.pipeline.final_selection.scored_stage_cha
     ScoredStageContext,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.policy_projection import PreselectionReplayFeature
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
     AssessScoredInputQuality,
     PrepareNativeQualityBatch,
@@ -49,7 +48,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
-from trader.recommendation.domain.candidate.filters import HardFilter
+from trader.recommendation.domain.candidate.filters import ApplyFilters, DefaultFilterRules
 from trader.recommendation.domain.evidence.pipeline import PipelineStage
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.market.history_alignment import HISTORY_INPUT_FAILURES
@@ -84,6 +83,10 @@ from trader.recommendation.domain.risk.scored_fusion import (
 from trader.recommendation.domain.scoring.profile_identity import MODEL_RANK_SCORE_SCALES
 from trader.recommendation.domain.selection.scored_selection import (
     ApplySelectionRisks,
+    FilteredCandidateInputs,
+    PreselectionReplayFeature,
+    QualifiedPopulationFeatures,
+    ValidatePopulationQualifications,
     LocalRiskPolicy,
     ScoredCandidateStageCounts,
 )
@@ -143,6 +146,7 @@ class ScoredProjectionInputs:
     risk_control: RiskControlPort | None = None
     ranking_selection: RankingSelectionPort | None = None
     quality_batch: QualityScoringBatch | None = None
+    population_qualifications: FilteredCandidateInputs | None = None
     monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
 
 
@@ -174,6 +178,16 @@ def BuildScoredLocal(
         if quality_batch.native_input != native_input:
             raise ValueError("scoring context does not match its quality batch")
     native_input = quality_batch.native_input
+    population_qualifications = runtime.population_qualifications
+    if population_qualifications is not None:
+        ValidatePopulationQualifications(
+            population_qualifications,
+            native_input.market_features,
+            evaluated_at=native_input.evaluated_at,
+            hard_filter=policy.hard_filter,
+            strategy=native_input.strategy,
+            max_age_seconds=native_input.preselect_max_age_seconds,
+        )
     scoring_input = replace(native_input, candidate_features=quality_batch.output.records)
     started = runtime.monotonic()
     strategy = native_input.strategy
@@ -199,15 +213,19 @@ def BuildScoredLocal(
             ),
             context=replace(
                 runtime.scoring_context or ModelScoringContext(),
-                population_features=_model_eligible_features(
-                    native_input.market_features,
-                    policy,
-                    evaluated_at=(
-                        _market_population_watermark(native_input.market_features)
-                        if native_input.market_features
-                        else native_input.evaluated_at
-                    ),
-                    max_age_seconds=native_input.preselect_max_age_seconds,
+                population_features=(
+                    QualifiedPopulationFeatures(population_qualifications)
+                    if population_qualifications is not None
+                    else _model_eligible_features(
+                        native_input.market_features,
+                        policy,
+                        evaluated_at=(
+                            _market_population_watermark(native_input.market_features)
+                            if native_input.market_features
+                            else native_input.evaluated_at
+                        ),
+                        max_age_seconds=native_input.preselect_max_age_seconds,
+                    )
                 ),
                 population_identity=(
                     f"{native_input.trade_date.isoformat()}:{native_input.phase}:{native_input.config_version}"
@@ -284,7 +302,6 @@ def BuildScoredLocal(
             # The quality batch also retains directed inputs for rejected/pending
             # audit records; they cannot become a scoring output (checked below).
             candidate_features=quality_batch.native_input.candidate_features,
-            normalize_discovery_source_time=True,
             strategy=strategy,
             minimum_history_sessions=minimum_history_sessions,
             model_input_eligible_codes=profile_history_qualified_codes,
@@ -303,6 +320,7 @@ def BuildScoredLocal(
             **model_reasons,
             **missing_model_reasons,
         },
+        population_qualifications=population_qualifications,
     )
     selection = ranking_result.selection
     scored_stage = _local_score_stage(
@@ -499,13 +517,9 @@ def _model_eligible_features(
     max_age_seconds: float,
 ) -> tuple[FeatureSnapshot, ...]:
     eligible: list[FeatureSnapshot] = []
+    rules = DefaultFilterRules(max_age_seconds=max_age_seconds, policy=policy.hard_filter)
     for feature in features:
-        filtered = HardFilter(
-            feature,
-            evaluated_at,
-            max_age_seconds=max_age_seconds,
-            policy=policy.hard_filter,
-        )
+        filtered = ApplyFilters(feature, rules, now=evaluated_at)
         if filtered.allowed:
             eligible.append(
                 feature

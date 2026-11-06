@@ -125,17 +125,43 @@ def test_instrumented_results_cannot_be_used_as_latency_baseline(tmp_path):
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
 def test_continuous_chain_keeps_instances_and_fingerprints_while_counting_real_work(profile, monkeypatch):
+    from trader.recommendation.application.pipeline.final_selection import freeze_projection
+    from trader.recommendation.infra.performance import pipeline_workload
+
     calls = []
     original = PerformanceProfileWorkload.scoring
+    projection_sources, model_sources = [], []
+    original_projection = pipeline_workload.BuildScoredLocal
+    original_population = freeze_projection.QualifiedPopulationFeatures
 
     def scoring(workload):
         result = original(workload)
         calls.append(result)
         return result
 
+    def project(native, policy, *, sequence, runtime):
+        source = runtime.population_qualifications
+        assert source is not None
+        assert source.request.features == native.market_features
+        assert all(
+            frozen is original
+            for frozen, original in zip(source.request.features, native.market_features, strict=True)
+        )
+        assert source.request.policy.strategy is native.strategy
+        projection_sources.append(source)
+        return original_projection(native, policy, sequence=sequence, runtime=runtime)
+
+    def population(source):
+        model_sources.append(source)
+        return original_population(source)
+
     monkeypatch.setattr(PerformanceProfileWorkload, "scoring", scoring)
+    monkeypatch.setattr(pipeline_workload, "BuildScoredLocal", project)
+    monkeypatch.setattr(freeze_projection, "QualifiedPopulationFeatures", population)
     report = _replay((profile,))
     assert len(calls) == 1
+    assert projection_sources and len(projection_sources) == len(model_sources)
+    assert all(projected is adopted for projected, adopted in zip(projection_sources, model_sources, strict=True))
     cold = report["cold"]
     assert cold["recomputed_stocks"] == 12
     assert all(head["predicted_count"] == 12 for head in cold["profiles"][0]["heads"])
@@ -170,7 +196,8 @@ def test_continuous_chain_keeps_instances_and_fingerprints_while_counting_real_w
     assert changed["recomputed_stocks"] == 1
     assert changed["profiles"][0]["feature_hash"] != cold["profiles"][0]["feature_hash"]
     stale = report["scenarios"]["stale"]["rounds"][0]
-    assert all(head["input_count"] == 0 for head in stale["profiles"][0]["heads"])
+    assert all(head["input_count"] == 12 for head in stale["profiles"][0]["heads"])
+    assert all(head["predicted_count"] == head["selected_count"] == 0 for head in stale["profiles"][0]["heads"])
     assert report["memory"]["factor_cache_max_bytes"] <= report["memory"]["factor_group_budget_bytes"]
 
 

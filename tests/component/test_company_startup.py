@@ -1,6 +1,8 @@
 """Company facts keep disclosure time separate from risk coverage and load time."""
 
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -19,6 +21,7 @@ from trader.download.domain.company_facts import CompileCompanyFacts
 from trader.recommendation.domain.market.research import DeriveCorporateRiskFeatures, ResearchComponentsFromObservation
 from tests.helpers.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
 from trader.infra.settings.models import CompanyPreloadSettings
+from trader.recommendation.infra.market_data import published_company_research
 
 _AT = datetime(2026, 9, 30, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 _DATES = (date(2026, 9, 29), date(2026, 9, 30), date(2026, 10, 8), date(2026, 10, 9))
@@ -64,6 +67,44 @@ class _Reader:
 
 def _research(reader, now, monotonic=time.monotonic):
     return PublishedCompanyResearch(reader, wall_clock=lambda: now, open_dates=lambda: _DATES, monotonic=monotonic)
+
+
+@pytest.mark.parametrize("blocked_operation", ("status", "cached"))
+def test_company_qualification_does_not_hold_the_publication_lock(monkeypatch, blocked_operation):
+    research = _research(_Reader(_snapshot()), _AT)
+    research.initialize(("600001",), cancelled=lambda: False)
+    expected_status = research.status()
+    expected_rows = research.cached(("600001",), include_structured=True)
+    entered = threading.Event()
+    release = threading.Event()
+    qualified = published_company_research._qualified
+
+    def blocked_qualification(*args):
+        if threading.current_thread().name.startswith("company-heavy"):
+            entered.set()
+            assert release.wait(5)
+        return qualified(*args)
+
+    def read_publication():
+        return research.loaded_identity, research.cached(("600001",), include_structured=True), research.status()
+
+    monkeypatch.setattr(published_company_research, "_qualified", blocked_qualification)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="company-heavy") as heavy, ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="company-reader",
+    ) as reader:
+        pending = heavy.submit(
+            research.status if blocked_operation == "status"
+            else lambda: research.cached(("600001",), include_structured=True)
+        )
+        try:
+            assert entered.wait(1)
+            identity, rows, status = reader.submit(read_publication).result(timeout=1)
+            assert identity == expected_status.loaded_identity
+            assert rows == expected_rows
+            assert status == expected_status
+        finally:
+            release.set()
+        assert pending.result(timeout=1) == (expected_status if blocked_operation == "status" else expected_rows)
 
 
 @pytest.mark.parametrize(

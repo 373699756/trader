@@ -494,6 +494,70 @@ def _round_cleanup_runtime() -> SchedulerRuntime:
     )
 
 
+@pytest.mark.parametrize("outcome", ("ready", "failure"))
+def test_status_waiting_for_input_quality_does_not_hold_scheduler_lock(monkeypatch, record_property, outcome) -> None:
+    runtime = _round_cleanup_runtime()
+    before = runtime.status()
+    entered, release, updated = threading.Event(), threading.Event(), threading.Event()
+    observations, errors = [], []
+
+    def input_quality_status():
+        entered.set()
+        assert release.wait(10), "test input quality reader was not released"
+        if outcome == "failure":
+            raise RuntimeError("controlled_quality_unavailable")
+        return ()
+
+    def read_status():
+        try:
+            observations.append(runtime.status())
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    def record_failure():
+        runtime._record_failure("refresh", "controlled_input_wait", Strategy.TOMORROW)
+        updated.set()
+
+    monkeypatch.setattr(runtime._dependencies.freezes, "input_quality_status", input_quality_status)
+    reader = threading.Thread(target=read_status)
+    recorder = threading.Thread(target=record_failure)
+    reader.start()
+    try:
+        assert entered.wait(5), "test input quality reader was not reached"
+        started = time.perf_counter()
+        recorder.start()
+        responsive = updated.wait(1)
+        record_property("scheduler_update_wait_seconds", time.perf_counter() - started)
+        record_property("scheduler_updated_during_quality_wait", responsive)
+        assert responsive, "read-only dependency wait held the scheduler state lock"
+        assert reader.is_alive(), "the read-only request must still wait for its dependency"
+    finally:
+        release.set()
+        reader.join(5)
+        if recorder.ident is not None:
+            recorder.join(5)
+        assert not reader.is_alive() and not recorder.is_alive()
+        runtime.stop(ShutdownDeadline.start(2.0))
+    if outcome == "failure":
+        assert not observations and len(errors) == 1
+        assert str(errors[0]) == "controlled_quality_unavailable"
+    else:
+        assert not errors and len(observations) == 1
+        observed = observations[0]
+        assert observed.refresh_failure_count == 1
+        assert observed.last_error_code == "refresh:controlled_input_wait"
+        assert observed.strategy_error_codes == (("tomorrow", "refresh:controlled_input_wait"),)
+        assert len(observed.recent_errors) == 1
+        assert observed.recent_errors[0].code == observed.last_error_code
+        assert replace(
+            observed,
+            refresh_failure_count=before.refresh_failure_count,
+            last_error_code=before.last_error_code,
+            strategy_error_codes=before.strategy_error_codes,
+            recent_errors=before.recent_errors,
+        ) == before
+
+
 @pytest.mark.parametrize("outcome,reported", (
     ("cancelled", False), ("waiting_inputs", False), ("publication_window_closed", False), ("timeout", True),
 ))
@@ -512,6 +576,47 @@ def test_round_collection_reports_only_an_actual_deadline_timeout(monkeypatch, o
         assert runtime.status().refresh_failure_count == int(reported)
     finally:
         rounds.finish(profile, admission.sequence)
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+
+@pytest.mark.parametrize("accepted_round", (False, True))
+def test_only_a_complete_round_recovers_its_global_collection_timeout(monkeypatch, accepted_round):
+    runtime = _round_cleanup_runtime()
+    dependencies = runtime._dependencies
+    now = [0.0]
+    monkeypatch.setattr(dependencies.rounds, "_monotonic", lambda: now[0])
+    task = ScheduledPipelineTask(PipelineTask.SCORE, NOW, MarketPhase.BEFORE_CLOSE)
+    profile = dependencies.round_profile
+    expired = dependencies.rounds.enter(profile, (task,))
+    assert expired is not None
+    now[0] = 121.0
+    assert not dependencies.rounds.collected(profile, expired.sequence)
+    runtime._record_collection_failure(expired.sequence)
+    dependencies.rounds.finish(profile, expired.sequence)
+    runtime._record_failure("refresh", "unrelated_pending")
+    requests = tuple(runtime._scheduled_request(strategy, NOW, "before_close") for strategy in (
+        Strategy.TOMORROW, Strategy.D25,
+    ))
+    following = dependencies.rounds.enter(profile, (task,)) if accepted_round else None
+    runtime.start()
+    try:
+        if accepted_round:
+            assert following is not None
+            runtime._cycles.execute_round_pair(requests, round_sequence=following.sequence)
+            assert dependencies.rounds.status().outcome == "published"
+        else:
+            runtime._cycles.execute_pair(requests)
+        status = runtime.status()
+        assert status.local_publish_count == 2
+        issues = {issue.code: issue for issue in status.recent_errors}
+        assert issues["refresh:round_collection_timeout"].recovery_status == (
+            "recovered" if accepted_round else "active"
+        )
+        assert issues["refresh:unrelated_pending"].recovery_status == "active"
+        assert status.refresh_failure_count == 2
+    finally:
+        if following is not None:
+            dependencies.rounds.finish(profile, following.sequence)
         runtime.stop(ShutdownDeadline.start(2.0))
 
 

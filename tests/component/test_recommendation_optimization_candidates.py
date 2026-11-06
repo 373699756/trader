@@ -10,13 +10,18 @@ import pytest
 
 from tests.component.market_data_test_support import _history_bars
 from tests.unit.application.test_recommendation_boundaries import _features, _runtime_policy
-from tests.unit.application.test_tomorrow_projection import EVALUATED_AT
+from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.history import BuildHistoryContext
 from trader.infra.settings import LoadRuntimeSettings
-from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import ScoredSelectionIdentity, ScoredSelectionOptions
+from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
+    FilterFeatureCandidates, ScoredSelectionIdentity, ScoredSelectionOptions,
+)
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import BuildScoredLocal, ScoredProjectionInputs
 from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
+from trader.recommendation.domain.candidate.filters import QuoteFreshnessBasis
+from trader.recommendation.domain.selection.scored_selection import PreselectionReplayFeature
 from trader.recommendation.infra.performance.history_context_reuse import ReusableHistoryContexts
 from trader.recommendation.infra.performance.industry_prediction import ParallelIndustryPrediction
 from trader.recommendation.infra.performance.scoring_inputs_reuse import ScoringInputsReuse
@@ -74,6 +79,158 @@ def test_scoring_reuse_coalesces_and_budget_rejection_keeps_full_result(scoring_
     second = candidate.select(features, policy, options, identity)
     assert first.selection == second.selection
     assert candidate.counts.calculations == 3
+
+
+@pytest.mark.parametrize("identity_failure", (False, True))
+def test_scoring_reuse_binds_frozen_population_in_cache_and_fallback(
+    scoring_cache, application_feature_factory, monkeypatch, identity_failure,
+):
+    import trader.recommendation.infra.performance.scoring_inputs_reuse as module
+
+    original = _features(application_feature_factory)
+    population = tuple(
+        replace(item, quote=replace(
+            item.quote,
+            source_time=EVALUATED_AT - timedelta(seconds=45),
+            received_time=EVALUATED_AT - timedelta(seconds=45),
+        ))
+        for item in original
+    )
+    features = tuple(PreselectionReplayFeature(item) for item in population)
+    policy = _runtime_policy()
+    identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
+    qualifications = FilterFeatureCandidates(
+        population,
+        policy,
+        ScoredSelectionOptions(
+            evaluated_at=EVALUATED_AT,
+            max_age_seconds=30.0,
+            phase="candidate_discovery",
+            population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
+        ),
+        identity,
+    )
+    options = ScoredSelectionOptions(
+        evaluated_at=EVALUATED_AT, max_age_seconds=30.0, candidate_features=original[:2],
+    )
+    candidate = ScoringInputsReuse(scoring_cache)
+    unqualified = candidate.select(features, policy, options, identity)
+    if identity_failure:
+        def reject_identity(_value):
+            raise ValueError("unsupported_identity")
+
+        monkeypatch.setattr(module, "CanonicalDigest", reject_identity)
+    actual = candidate.select(
+        features, policy, options, identity, population_qualifications=qualifications,
+    )
+    expected = RankingSelectionService().select(
+        features, policy, options, identity, population_qualifications=qualifications,
+    )
+    assert actual.selection == expected.selection
+    assert actual.selection != unqualified.selection
+    assert actual.selection.population_filter_reason_counts == {}
+    if identity_failure:
+        assert candidate.counts.bypasses == 1
+    else:
+        assert candidate.counts.calculations == 2 and candidate.counts.hits == 0
+        assert candidate.select(
+            features, policy, options, identity, population_qualifications=qualifications,
+        ).selection == expected.selection
+        assert candidate.counts.calculations == 2 and candidate.counts.hits == 1
+
+
+@pytest.mark.parametrize("change", ("none_candidates", "empty_candidates", "quote", "value", "history"))
+def test_frozen_population_requires_exact_projection_and_independent_candidates(application_feature_factory, change):
+    original = _features(application_feature_factory)
+    features = tuple(PreselectionReplayFeature(item) for item in original)
+    policy = _runtime_policy()
+    identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
+    qualifications = FilterFeatureCandidates(
+        original,
+        policy,
+        ScoredSelectionOptions(
+            evaluated_at=EVALUATED_AT,
+            max_age_seconds=30.0,
+            phase="candidate_discovery",
+            population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
+        ),
+        identity,
+    )
+    candidates = None if change == "none_candidates" else () if change == "empty_candidates" else original[:2]
+    if change == "quote":
+        features = (replace(features[0], quote=replace(features[0].quote, price=13.0)), *features[1:])
+    elif change == "value":
+        features = (replace(features[0], values={**features[0].values, "trend_score": 123.0}), *features[1:])
+    elif change == "history":
+        features = (replace(features[0], history_days=features[0].history_days + 1), *features[1:])
+    options = ScoredSelectionOptions(
+        evaluated_at=EVALUATED_AT, max_age_seconds=30.0, candidate_features=candidates,
+    )
+    if change == "empty_candidates":
+        result = RankingSelectionService().select(
+            features, policy, options, identity, population_qualifications=qualifications,
+        )
+        assert not result.selection.scored_candidates
+        return
+    with pytest.raises(ValueError, match="independently evaluated candidates|preselection projection"):
+        RankingSelectionService().select(
+            features, policy, options, identity, population_qualifications=qualifications,
+        )
+
+
+def test_scoring_reuse_supports_local_projection_consumer(scoring_cache, application_feature_factory):
+    native = _native_input(_features(application_feature_factory))
+    policy = _runtime_policy()
+    expected = BuildScoredLocal(native, policy, sequence=1)
+    actual = BuildScoredLocal(
+        native, policy, sequence=1, runtime=ScoredProjectionInputs(ranking_selection=ScoringInputsReuse(scoring_cache)),
+    )
+    assert actual.selection == expected.selection
+    assert actual.local == expected.local
+
+
+def test_frozen_population_cannot_revive_an_old_day_through_its_source_watermark(application_feature_factory):
+    current = _features(application_feature_factory)
+    previous_at = EVALUATED_AT - timedelta(days=1)
+    previous = tuple(
+        replace(item, observed_at=previous_at, quote=replace(
+            item.quote, source_time=previous_at, received_time=previous_at,
+        ))
+        for item in current
+    )
+    policy = _runtime_policy()
+    identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "old-market", "epoch")
+    qualifications = FilterFeatureCandidates(
+        previous,
+        policy,
+        ScoredSelectionOptions(
+            evaluated_at=EVALUATED_AT,
+            max_age_seconds=30.0,
+            phase="candidate_discovery",
+            population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
+        ),
+        identity,
+    )
+    assert all(
+        any(reason.code == "stale_quote" for reason in item.filter_reasons)
+        for item in qualifications.population.evaluations.values()
+    )
+
+    result = RankingSelectionService().select(
+        tuple(PreselectionReplayFeature(item) for item in previous),
+        policy,
+        ScoredSelectionOptions(
+            evaluated_at=EVALUATED_AT,
+            max_age_seconds=30.0,
+            population_evaluated_at=previous_at,
+            candidate_features=current[:2],
+        ),
+        identity,
+        population_qualifications=qualifications,
+    )
+
+    assert result.selection.population_filter_reason_counts["stale_quote"] == len(previous)
+    assert not result.selection.scored_candidates
 
 
 def test_failed_scoring_preparation_is_never_cached(scoring_cache, application_feature_factory, monkeypatch):

@@ -93,7 +93,11 @@ from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQu
 from trader.recommendation.domain.market.refresh import IntradayRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
-from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts, SelectedCandidateInput
+from trader.recommendation.domain.selection.scored_selection import (
+    FilteredCandidateInputs,
+    ScoredCandidateStageCounts,
+    SelectedCandidateInput,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,6 +117,7 @@ class _SharedInputBatch:
     source_revision: int
     source_epoch: str
     reference_version: str
+    population_qualifications: FilteredCandidateInputs
 
 
 @dataclass(frozen=True)
@@ -775,6 +780,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 request.sequence,
             ),
             shared.started_monotonic,
+            population_qualifications=shared.population_qualifications,
         )
 
     def _capture_input_locked(self, request: CycleRequest) -> _SharedInputBatch:
@@ -786,8 +792,17 @@ class MarketInputCoordinator(DataRefreshPort):
         requested = self._strategy_requested_codes[request.strategy]
         candidate_features = self._strategy_candidate_features[request.strategy]
         candidate_plans = self._candidate_plans
-        if not market_features or candidate_plans is None or issuer_eligibility is None:
+        pipeline = self._candidate_pipeline
+        if not market_features or candidate_plans is None or issuer_eligibility is None or pipeline is None:
             raise DataRefreshUnavailableError("market_snapshot_unavailable")
+        qualifications = pipeline.qualifications.get(request.strategy)
+        if qualifications is None:
+            raise DataRefreshUnavailableError("discovery_population_unavailable")
+        if (
+            qualifications.request.data_version != self._market_version
+            or qualifications.request.merge_epoch != self._market_version
+        ):
+            raise DataRefreshUnavailableError("discovery_population_version_mismatch")
         if request.phase == "close_fallback":
             requested = candidate_plans.strategy_codes(request.strategy)
             candidate_features = ()
@@ -808,6 +823,7 @@ class MarketInputCoordinator(DataRefreshPort):
             self._quality_revision,
             self._scoring_epoch_locked(include_intraday_tail=request.strategy is Strategy.TOMORROW),
             self._market.reference_version(),
+            qualifications,
         )
 
     def _observed_input_locked(

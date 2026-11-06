@@ -38,6 +38,8 @@ from tests.component.market_data_test_support import (
     timedelta,
 )
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.infra.normalization.merge import MergeMarketObservations, ObservationFromQuote
 
 
 def test_gateway_falls_back_and_tracks_health() -> None:
@@ -766,3 +768,205 @@ def test_targeted_quote_overlay_updates_canonical_value_and_field_attribution() 
     assert snapshot.field_sources["600001"]["price"] == "tencent"
     assert "speed" not in snapshot.field_sources["600001"]
     assert snapshot.source_versions["tencent"] == "a-tencent"
+
+
+@pytest.mark.parametrize("baseline_source", ("tencent_market", "sina", "synthetic"))
+def test_targeted_refresh_replaces_old_realtime_batch_and_keeps_static_reference(baseline_source) -> None:
+    initial = replace(_quote(), price=12.0, speed=0.7, data_version="full-market")
+    refreshed_at = NOW + timedelta(seconds=45)
+    targeted = replace(
+        initial,
+        price=12.02,
+        speed=None,
+        source_time=refreshed_at,
+        received_time=refreshed_at,
+        data_version="targeted-latest",
+    )
+    current_time = [NOW]
+    gateway = MarketDataGateway(
+        FailingMarketClient() if baseline_source == "sina" else StaticMarketClient((initial,)),
+        StaticMarketClient((initial,)),
+        StaticTencentClient((targeted,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: current_time[0],
+    )
+    reference = replace(
+        ObservationFromQuote(initial, source="exchange", observed_at=NOW),
+        fields={"board": "main", "exchange": "SSE", "listing_age_sessions": 100.0},
+    )
+    gateway.update_reference_observations((reference,))
+    gateway.fetch_market(observed_at=NOW, force=True)
+    if baseline_source == "synthetic":
+        gateway._latest_observations.clear()
+
+    # These are actual helper-generated collection coordinates, not matching
+    # fixture points that would hide a full-market/targeted batch conflict.
+    older = ObservationFromQuote(initial, source="tencent_market", observed_at=NOW)
+    incoming = ObservationFromQuote(targeted, source="tencent", observed_at=refreshed_at)
+    assert older.observation_point != incoming.observation_point
+    mixed = MergeMarketObservations((older, incoming), observed_at=refreshed_at, merge_epoch="mixed-batch")
+    assert mixed.quotes == ()
+    assert "observation_point_conflict:600001" in mixed.degraded_reasons
+
+    current_time[0] = refreshed_at
+    quotes = gateway.fetch_candidates((initial.code,), observed_at=NOW, force=True)
+
+    assert quotes[0].price == targeted.price
+    assert quotes[0].source_time == quotes[0].received_time == refreshed_at
+    assert quotes[0].speed is None
+    assert quotes[0].board is Board.MAIN
+    assert quotes[0].board_source == "exchange"
+    snapshot = gateway.canonical_snapshot()
+    assert snapshot is not None
+    assert snapshot.field_sources[initial.code]["price"] == "tencent"
+    assert not any("observation_point_conflict" in reason for reason in snapshot.degraded_reasons)
+
+
+def test_targeted_partial_response_keeps_missing_quotes_old_and_marks_the_gap() -> None:
+    initial = (_quote(), _quote(code="600002"))
+    refreshed_at = NOW + timedelta(seconds=45)
+    targeted = replace(
+        initial[0], source_time=refreshed_at, received_time=refreshed_at, data_version="targeted-latest",
+    )
+    current_time = [NOW]
+    gateway = MarketDataGateway(
+        StaticMarketClient(initial),
+        StaticMarketClient(initial),
+        StaticTencentClient((targeted,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: current_time[0],
+    )
+    previous = {quote.code: quote for quote in gateway.fetch_market(observed_at=NOW, force=True)}
+    current_time[0] = refreshed_at
+
+    refreshed = {
+        quote.code: quote for quote in gateway.fetch_candidates(tuple(previous), observed_at=NOW, force=True)
+    }
+
+    assert refreshed[initial[0].code].source_time == refreshed_at
+    missing = refreshed[initial[1].code]
+    assert missing == previous[initial[1].code]
+    assert missing.source_time == missing.received_time == NOW
+    assert missing.age_seconds(refreshed_at) == 45
+    snapshot = gateway.canonical_snapshot()
+    assert snapshot is not None
+    assert "tencent:partial_response" in snapshot.degraded_reasons
+    assert snapshot.missing_reasons["600002.price.tencent"] == "targeted_quote_missing"
+
+
+@pytest.mark.parametrize("returned_quote", ("newer", "older", "none"))
+def test_targeted_missing_after_success_keeps_last_quotes_and_current_gap(returned_quote) -> None:
+    initial = (_quote(), _quote(code="600002"))
+    first_at = NOW + timedelta(seconds=45)
+    first_quotes = tuple(
+        replace(item, price=12.02, source_time=first_at, received_time=first_at, data_version="first-targeted")
+        for item in initial
+    )
+    tencent = StaticTencentClient(first_quotes)
+    current_time = [NOW]
+    gateway = MarketDataGateway(
+        StaticMarketClient(initial),
+        StaticMarketClient(initial),
+        tencent,
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: current_time[0],
+    )
+    codes = tuple(item.code for item in initial)
+    gateway.fetch_market(observed_at=NOW, force=True)
+    current_time[0] = first_at
+    first_result = tuple(gateway.fetch_candidates(codes, observed_at=NOW, force=True))
+    assert all(item.source_time == first_at for item in first_result)
+
+    next_at = first_at + timedelta(seconds=45)
+    source_at = next_at if returned_quote == "newer" else NOW
+    tencent._quotes = (
+        (replace(first_quotes[0], price=12.03, source_time=source_at, received_time=next_at, data_version="next-targeted"),)
+        if returned_quote != "none" else ()
+    )
+    current_time[0] = next_at
+
+    result = tuple(gateway.fetch_candidates(codes, observed_at=first_at, force=True))
+
+    assert result[1] == first_result[1]
+    assert result[1].source_time == result[1].received_time == first_at
+    assert result[1].age_seconds(next_at) == 45
+    snapshot = gateway.canonical_snapshot()
+    assert snapshot is not None
+    if returned_quote == "none":
+        assert result == first_result
+        assert gateway.health().sources["tencent"].error_count == 1
+        assert any(reason.startswith("tencent:") for reason in snapshot.degraded_reasons)
+    else:
+        assert snapshot.missing_reasons["600002.price.tencent"] == "targeted_quote_missing"
+        assert "tencent:partial_response" in snapshot.degraded_reasons
+        if returned_quote == "newer":
+            assert result[0].source_time == next_at
+            assert result[0].price == 12.03
+        else:
+            assert result == first_result
+
+
+@pytest.mark.parametrize("failure", ("future", "late", "cancelled", "older"))
+def test_targeted_invalid_or_cancelled_result_preserves_last_quote(failure) -> None:
+    initial = _quote()
+    refreshed_at = NOW + timedelta(seconds=45)
+    source_at = (
+        refreshed_at + timedelta(seconds=1) if failure == "future"
+        else NOW - timedelta(seconds=1) if failure == "older"
+        else refreshed_at
+    )
+    targeted = replace(
+        initial, price=12.02, source_time=source_at, received_time=refreshed_at, data_version="invalid-target",
+    )
+    current_time = [NOW]
+    cancelled = [False]
+
+    class InvalidTencent(StaticTencentClient):
+        def fetch_quotes(self, codes, *, timeout_seconds=None, cancel_event=None):
+            result = super().fetch_quotes(codes, timeout_seconds=timeout_seconds)
+            if failure == "late":
+                current_time[0] = refreshed_at + timedelta(seconds=1)
+            if failure == "cancelled":
+                cancelled[0] = True
+            return result
+
+    gateway = MarketDataGateway(
+        StaticMarketClient((initial,)),
+        StaticMarketClient((initial,)),
+        InvalidTencent((targeted,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: current_time[0],
+    )
+    previous = tuple(gateway.fetch_market(observed_at=NOW, force=True))
+    current_time[0] = refreshed_at - timedelta(seconds=1) if failure == "late" else refreshed_at
+
+    def refresh():
+        return tuple(gateway.fetch_candidates(
+            (initial.code,),
+            observed_at=NOW,
+            force=True,
+            deadline=refreshed_at if failure == "late" else None,
+            cancelled=lambda: cancelled[0],
+        ))
+
+    if failure == "cancelled":
+        with pytest.raises(MarketDataDeadlineExceededError, match="round_input_cancelled"):
+            refresh()
+    else:
+        assert refresh() == previous
+
+    assert tuple(gateway.current_quotes((initial.code,))) == previous
+    if failure in ("future", "late", "cancelled"):
+        assert not any(
+            observation.data_version == "invalid-target"
+            for by_source in gateway._latest_observations.values()
+            for observation in by_source.values()
+        )

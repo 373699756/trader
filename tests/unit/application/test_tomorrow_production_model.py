@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+import threading
+import time
+from concurrent.futures import CancelledError
 from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -10,6 +13,7 @@ import pytest
 from tests.unit.application.scoring_helpers import profile_for
 from tests.unit.training.infra.profile.v3.test_profile import _publish_profile
 from trader.recommendation.application.pipeline.local_score import model_scoring
+from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
@@ -135,6 +139,101 @@ def test_model_builds_one_vector_per_requested_stock(application_feature_factory
         "model_rows",
         "model_input_vectors",
     }
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize("outcome", ("success", "failure", "cancelled", "deadline"))
+def test_model_status_reads_last_complete_head_snapshots_while_prediction_is_blocked(
+    application_feature_factory, strategy, outcome, record_property,
+) -> None:
+    entered, release, status_ready = threading.Event(), threading.Event(), threading.Event()
+    elapsed = [0.0]
+
+    class BlockingPredictor(_Predictor):
+        armed = False
+
+        def predict(self, inputs):
+            if self.armed:
+                entered.set()
+                assert release.wait(10), "test predictor was not released"
+                if outcome == "failure":
+                    raise RuntimeError("prediction_failed")
+                if outcome == "cancelled":
+                    raise CancelledError("prediction_cancelled")
+                if outcome == "deadline":
+                    elapsed[0] = 20.0
+            return super().predict(inputs)
+
+    predictor = BlockingPredictor()
+    service = ProductionModelScoringService(
+        profile_for(predictor, strategy),
+        strategy,
+        cost_policy=_COST_POLICY,
+        monotonic=lambda: elapsed[0],
+    )
+    other_strategy = Strategy.D25 if strategy is Strategy.TOMORROW else Strategy.TOMORROW
+    other_predictor = _Predictor()
+    other_predictor.model_hash = "b" * 64
+    other = _strategy_service(other_predictor, other_strategy)
+    router = ModelScoringRouter("v2", {strategy: service, other_strategy: other})
+    original = _model_feature(application_feature_factory("600000", NOW), offset=0.0, amihud=1.0)
+    changed = _model_feature(application_feature_factory("600000", NOW), offset=0.01, amihud=1.0)
+    service.score((original,))
+    before = router.status()
+    predictor.armed = True
+    results, errors, observations = [], [], []
+
+    def score():
+        try:
+            results.append(service.score((changed,), context=ModelScoringContext(time_budget_seconds=10.0)))
+        except (CancelledError, RuntimeError) as exc:
+            errors.append(exc)
+
+    def read_status():
+        observations.append(router.status())
+        status_ready.set()
+
+    scoring = threading.Thread(target=score)
+    reader = threading.Thread(target=read_status)
+    scoring.start()
+    try:
+        assert entered.wait(5), "test predictor was not reached"
+        started = time.perf_counter()
+        reader.start()
+        responsive = status_ready.wait(1)
+        record_property("status_probe_wait_seconds", time.perf_counter() - started)
+        record_property("status_ready_during_prediction", responsive)
+        assert responsive, "read-only status waited behind the blocked predictor"
+        assert observations == [before]
+    finally:
+        release.set()
+        scoring.join(5)
+        if reader.ident is not None:
+            reader.join(5)
+        assert not scoring.is_alive() and not reader.is_alive()
+    assert before is not None
+    assert router.status().heads[other_strategy] == before.heads[other_strategy]
+    if outcome == "success":
+        assert not errors and len(results) == 1
+        completed = service.computation_status()
+        assert completed.request_count == completed.predictor_batch_count == 2
+    elif outcome == "deadline":
+        assert not results and len(errors) == 1 and isinstance(errors[0], ModelScoringDeadlineError)
+        failed = service.computation_status()
+        assert failed.request_count == failed.predictor_batch_count == 2
+        assert failed.deadline_abandon_reason == "completed_after_batch_prediction_deadline"
+    else:
+        expected_error = CancelledError if outcome == "cancelled" else RuntimeError
+        assert not results and len(errors) == 1 and isinstance(errors[0], expected_error)
+        assert service.computation_status() == before.heads[strategy].computation
+    predictor.armed = False
+    service.score((changed,))
+    completed = service.computation_status()
+    assert completed.request_count == 3
+    assert completed.predictor_batch_count == (3 if outcome == "deadline" else 2)
+    assert completed.cache_hit_count == int(outcome == "success")
+    assert completed.deadline_abandon_reason is None
+    assert router.status().heads[other_strategy] == before.heads[other_strategy]
 
 
 @pytest.mark.parametrize("profile_id", ("v2", "v3"))

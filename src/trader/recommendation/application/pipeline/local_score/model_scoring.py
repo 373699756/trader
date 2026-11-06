@@ -300,6 +300,7 @@ class ProductionModelScoringService:
         self._monotonic = monotonic
         self._shared_features = shared_features or SharedModelFeatureCache()
         self._lock = threading.RLock()
+        self._status_lock = threading.Lock()
         self._state: _ModelComputationState | None = None
         self._cost_references: OrderedDict[_CostReferenceIdentity, _CostReference] = OrderedDict()
         self._request_count = 0
@@ -351,7 +352,7 @@ class ProductionModelScoringService:
         )
 
     def computation_status(self) -> ModelComputationStatus:
-        with self._lock:
+        with self._status_lock:
             return self._computation_status
 
     def score(
@@ -724,7 +725,7 @@ class ProductionModelScoringService:
     ) -> None:
         all_groups = tuple(stage.calculator_group for stage in self._runtime_features.computation_plan.stages)
         computed = set(computed_groups)
-        self._computation_status = ModelComputationStatus(
+        snapshot = ModelComputationStatus(
             candidate_count=candidate_count,
             request_count=self._request_count,
             cache_hit_count=self._cache_hit_count,
@@ -738,6 +739,8 @@ class ProductionModelScoringService:
             freeze_age_ms=deadline.freeze_age_ms,
             deadline_abandon_reason=abandon_reason,
         )
+        with self._status_lock:
+            self._computation_status = snapshot
 
 
 def _valid_sequence(feature: FeatureSnapshot) -> bool:

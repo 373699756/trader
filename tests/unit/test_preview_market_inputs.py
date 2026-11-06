@@ -33,9 +33,6 @@ from tests.unit.domain.test_tail import POLICY
 from tests.unit.infra.test_shared_history_projection import _cache
 from tests.unit.test_market_data_merge import _observation
 from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import DynamicSourceHealth
-from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_normalization import (
-    NormalizeCandidateDiscoveryPopulation,
-)
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
@@ -74,7 +71,6 @@ def test_preview_accepts_only_its_close_without_rewriting_quote_age(application_
         if rule.name == "invalid_quote_time"
     )
     assert rule.predicate(feature, observed) is None
-    assert NormalizeCandidateDiscoveryPopulation((feature,), observed)[0].quote.source_time == close
     health = DynamicSourceHealth((feature,), observed)
     assert health.healthy_source_count == 1
     assert health.age_seconds == (observed - close).total_seconds()

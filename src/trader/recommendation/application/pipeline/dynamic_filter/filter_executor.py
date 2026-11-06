@@ -12,9 +12,7 @@ from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feat
     FeatureCalculationService,
     ScoredSelectionNotReadyError,
 )
-from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_normalization import (
-    NormalizeCandidateDiscoveryPopulation,
-)
+from trader.recommendation.domain.candidate.filters import QuoteFreshnessBasis
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.ports.market_data import DataPlaneReadPort
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
@@ -43,12 +41,12 @@ class ScoredSelectionOptions:
     phase: str = "tomorrow"
     fallbacks: Mapping[Board, BoardCrossSectionFallback] | None = None
     candidate_features: tuple[FeatureSnapshot, ...] | None = None
-    normalize_discovery_source_time: bool = False
     strategy: Strategy = Strategy.TOMORROW
     population_evaluated_at: datetime | None = None
     population_max_age_seconds: float | None = None
     minimum_history_sessions: int = 20
     model_input_eligible_codes: frozenset[str] | None = None
+    population_quote_freshness_basis: QuoteFreshnessBasis = QuoteFreshnessBasis.EVALUATION
 
 
 @dataclass(frozen=True)
@@ -191,9 +189,11 @@ def FilterFeatureCandidates(
     identity: ScoredSelectionIdentity,
     *,
     execution_gate_reasons: Mapping[str, str] | None = None,
+    population_qualifications: FilteredCandidateInputs | None = None,
 ) -> FilteredCandidateInputs:
     return FilterCandidateInputs(
-        _selection_request(features, policy, options, identity, execution_gate_reasons=execution_gate_reasons)
+        _selection_request(features, policy, options, identity, execution_gate_reasons=execution_gate_reasons),
+        population_qualifications=population_qualifications,
     )
 
 
@@ -212,8 +212,6 @@ def _selection_request(
     if not population:
         raise ScoredSelectionNotReadyError("coherent_market_epoch_unavailable")
     population_evaluated_at = options.population_evaluated_at or evaluated_at
-    if options.normalize_discovery_source_time:
-        population = NormalizeCandidateDiscoveryPopulation(population, population_evaluated_at)
     return ScoredSelectionRequest(
         features=population,
         evaluated_at=evaluated_at,
@@ -229,6 +227,7 @@ def _selection_request(
         population_max_age_seconds=options.population_max_age_seconds,
         minimum_history_sessions=options.minimum_history_sessions,
         model_input_eligible_codes=options.model_input_eligible_codes,
+        population_quote_freshness_basis=options.population_quote_freshness_basis,
     )
 
 

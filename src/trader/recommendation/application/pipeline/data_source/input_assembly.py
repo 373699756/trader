@@ -133,6 +133,8 @@ def FreezeObservedAt(batch: InputBatch) -> datetime:
     if target_zone is None:
         raise ValueError("freeze request time must be timezone-aware")
     values = [batch.request.observed_at]
+    if batch.population_qualifications is not None:
+        values.append(batch.population_qualifications.request.evaluated_at)
     for feature in (*batch.market_features, *batch.candidate_features):
         values.extend((feature.observed_at, feature.quote.received_time))
         values.extend(evidence.received_at for evidence in feature.evidence if evidence.received_at is not None)

@@ -18,6 +18,7 @@ from trader.recommendation.domain.candidate.filters import (
     HardFilterPolicy,
     LevelOneFilterRules,
     LevelTwoFilterRules,
+    QuoteFreshnessBasis,
 )
 from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.factors import RoundScore
@@ -31,6 +32,7 @@ from trader.recommendation.domain.publication.models import (
     Strategy,
 )
 from trader.recommendation.domain.risk.rules import DeduplicateRiskFacts, DeriveLocalRiskFacts
+from trader.recommendation.domain.selection.ranking import CORE_FIELDS
 from trader.recommendation.domain.scoring.company import (
     AssessCompanyAdjustments,
     BuildScoreLedger,
@@ -50,6 +52,7 @@ from trader.recommendation.domain.scoring.scoring import (
 _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _STRUCTURED_REASON = re.compile(r"^[a-z0-9_]{1,64}$")
+_PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 _DEFERRED_FILTER_REASONS = frozenset(
     {
         "future_quote",
@@ -214,8 +217,11 @@ class ScoredSelectionRequest:
     population_max_age_seconds: float | None = None
     minimum_history_sessions: int = 20
     model_input_eligible_codes: frozenset[str] | None = None
+    population_quote_freshness_basis: QuoteFreshnessBasis = QuoteFreshnessBasis.EVALUATION
 
     def __post_init__(self) -> None:
+        if self.population_quote_freshness_basis is QuoteFreshnessBasis.RECEIPT and self.phase != "candidate_discovery":
+            raise ValueError("receipt quote freshness is only valid for candidate discovery")
         features, codes = _validated_selection_features(self)
         population_evaluated_at, population_max_age_seconds = _validated_population_window(
             features,
@@ -311,6 +317,8 @@ def _validated_population_window(
         raise ValueError("population evaluation time cannot exceed candidate evaluation time")
     if not math.isfinite(max_age_seconds) or max_age_seconds < 0.0:
         raise ValueError("population maximum quote age must be finite and non-negative")
+    if any(item.quote.received_time.tzinfo is None or item.quote.received_time.utcoffset() is None for item in features):
+        raise ValueError("scored population receipt time must be timezone-aware")
     if any(value > evaluated_at for item in features for value in (item.observed_at, item.quote.received_time)):
         raise ValueError("scored population cannot contain data after its evaluation time")
     return evaluated_at, max_age_seconds
@@ -388,12 +396,83 @@ class SelectedCandidateInput:
             raise ValueError("directed input must match its selected candidate")
 
 
-def FilterCandidateInputs(request: ScoredSelectionRequest) -> FilteredCandidateInputs:
+def ValidatePopulationQualifications(
+    source: FilteredCandidateInputs,
+    features: Sequence[FeatureSnapshot],
+    *,
+    evaluated_at: datetime,
+    hard_filter: HardFilterPolicy,
+    strategy: Strategy,
+    max_age_seconds: float,
+) -> None:
+    """Bind discovery qualifications to the same complete immutable market cut."""
+    frozen = source.request
+    if (
+        frozen.phase != "candidate_discovery"
+        or frozen.population_quote_freshness_basis is not QuoteFreshnessBasis.RECEIPT
+        or frozen.candidate_features is not None
+        or frozen.population_evaluated_at != frozen.evaluated_at
+        or frozen.evaluated_at > evaluated_at
+        or frozen.evaluated_at.date().isoformat() != frozen.trade_date
+        or frozen.trade_date != evaluated_at.date().isoformat()
+        or frozen.policy.strategy is not strategy
+        or frozen.policy.hard_filter != hard_filter
+        or frozen.policy.max_age_seconds != max_age_seconds
+        or frozen.population_max_age_seconds != max_age_seconds
+        or (frozen.features is not features and tuple(frozen.features) != tuple(features))
+    ):
+        raise ValueError("discovery population qualifications do not match the scoring input")
+
+
+def QualifiedPopulationFeatures(source: FilteredCandidateInputs) -> tuple[FeatureSnapshot, ...]:
+    """Project model reference rows from the existing complete qualification pass."""
+    return tuple(item.features for item in source.population.evaluations.values() if _business_ready(item))
+
+
+def PreselectionReplayFeature(feature: FeatureSnapshot) -> FeatureSnapshot:
+    """Remove post-selection evidence from the market population view."""
+    return replace(
+        feature,
+        values={name: feature.values.get(name) for name in dict.fromkeys(_PRESELECTION_VALUE_FIELDS)},
+        normalization=feature.normalization,
+        evidence=(),
+        external_risk_facts=(),
+    )
+
+
+def FilterCandidateInputs(
+    request: ScoredSelectionRequest,
+    *,
+    population_qualifications: FilteredCandidateInputs | None = None,
+) -> FilteredCandidateInputs:
+    population_basis = request.population_quote_freshness_basis
+    population_evaluated_at = request.population_evaluated_at
+    if population_qualifications is not None:
+        if request.candidate_features is None or request.phase == "candidate_discovery":
+            raise ValueError("frozen population references require independently evaluated candidates")
+        source = population_qualifications.request
+        ValidatePopulationQualifications(
+            population_qualifications,
+            source.features,
+            evaluated_at=request.evaluated_at,
+            hard_filter=request.policy.hard_filter,
+            strategy=request.policy.strategy,
+            max_age_seconds=(
+                request.population_max_age_seconds
+                if request.population_max_age_seconds is not None else request.policy.max_age_seconds
+            ),
+        )
+        projected = tuple(PreselectionReplayFeature(feature) for feature in source.features)
+        if request.features != projected:
+            raise ValueError("frozen population references do not match the preselection projection")
+        population_basis = QuoteFreshnessBasis.RECEIPT
+        population_evaluated_at = source.evaluated_at
     population_filtered = _filter_features(
         request.features,
         request,
-        evaluated_at=request.population_evaluated_at,
+        evaluated_at=population_evaluated_at,
         max_age_seconds=request.population_max_age_seconds,
+        quote_freshness_basis=population_basis,
     )
     candidate_filtered = (
         population_filtered
@@ -462,9 +541,8 @@ def RankFilteredCandidates(references: ScoredCandidateReferences) -> ScoredCandi
         )
         population_versions[board] = cross_section.population.population_version
         policy = request.policy.board_policies[board]
-        enriched_population = ApplyBoardPolicy(cross_section, request.policy.strategy, policy)
         enriched = (
-            enriched_population
+            ApplyBoardPolicy(cross_section, request.policy.strategy, policy)
             if request.candidate_features is None
             else ProjectBoardPolicy(cross_section, request.policy.strategy, policy, candidates)
         )
@@ -532,11 +610,16 @@ def _filter_features(
     *,
     evaluated_at: datetime | None = None,
     max_age_seconds: float | None = None,
+    quote_freshness_basis: QuoteFreshnessBasis = QuoteFreshnessBasis.EVALUATION,
 ) -> _FilteredFeatures:
     filter_time = evaluated_at or request.evaluated_at
     quote_max_age = request.policy.max_age_seconds if max_age_seconds is None else max_age_seconds
     rules = (
-        *LevelOneFilterRules(max_age_seconds=quote_max_age, policy=request.policy.hard_filter),
+        *LevelOneFilterRules(
+            max_age_seconds=quote_max_age,
+            policy=request.policy.hard_filter,
+            quote_freshness_basis=quote_freshness_basis,
+        ),
         *LevelTwoFilterRules(
             max_age_seconds=quote_max_age,
             policy=request.policy.hard_filter,
@@ -765,6 +848,9 @@ __all__ = [
     "ScoredCandidateStageCounts",
     "FilteredCandidateInputs",
     "FilterCandidateInputs",
+    "ValidatePopulationQualifications",
+    "QualifiedPopulationFeatures",
+    "PreselectionReplayFeature",
     "ScoredCandidateReferences",
     "BuildScoredCandidateReferences",
     "RankFilteredCandidates",

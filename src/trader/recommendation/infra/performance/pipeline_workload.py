@@ -25,10 +25,8 @@ from trader.infra.cache import BoundedLruCache
 from trader.infra.cache_contracts import CacheIdentity, CachePolicy, CacheStats
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.settings import StrategySettings
-from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
-    BuildCandidatePlans,
-    CandidatePlanningContext,
-)
+from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanningContext
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import ExecuteCandidatePipeline
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredLocal,
@@ -36,8 +34,10 @@ from trader.recommendation.application.pipeline.final_selection.freeze_projectio
     ScoredProjectionInputs,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.application.pipeline.stage_output import StageOutput
 from trader.recommendation.application.ports.loaded_profile import IndustryPredictionPort, ModelComputationStatus, ModelScoringContext
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, SourceHealth, SourceHealthState
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay
@@ -325,14 +325,23 @@ class _ProfileReplay:
         version = timings.run("input_identity", lambda: self.versions.features("market", self.market))
         changed = version != self.version
         self.version = version
-        plans = timings.run(
+        candidate_pipeline = timings.run(
             "candidate_filter",
-            lambda: BuildCandidatePlans(
-                self.market,
-                None,
+            lambda: ExecuteCandidatePipeline(
+                StageOutput(
+                    PipelineStage.DYNAMIC_MARKET,
+                    self.market,
+                    input_batch_id=version,
+                    as_of=self.clock.now(),
+                    input_count=len(self.market),
+                    source_health=SourceHealth(SourceHealthState.READY, 1, 1),
+                    latency_ms=None,
+                ),
                 CandidatePlanningContext(self.clock.now(), version, self.workload.policy, self.scoring),
+                time.monotonic,
             ),
         )
+        plans = candidate_pipeline.plans
         union = frozenset(plans.physical_union())
         quotes = tuple(quote for quote in self.quotes if quote.code in union)
         # The production quote boundary enriches the refreshed union before preparing each head.
@@ -372,6 +381,7 @@ class _ProfileReplay:
                     runtime=ScoredProjectionInputs(
                         model_scoring=self.scoring,
                         ranking_selection=self.ranking,
+                        population_qualifications=candidate_pipeline.qualifications[native.strategy],
                         scoring_context=ModelScoringContext(industry_prediction=self.industry_prediction)
                         if self.industry_prediction is not None else None,
                     ),

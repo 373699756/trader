@@ -22,6 +22,7 @@ from trader.recommendation.application.pipeline.dynamic_filter.filter_executor i
     ScoredSelectionOptions,
 )
 from trader.recommendation.application.pipeline.stage_output import MeasuredOutput, PipelineStageOutput, StageOutput
+from trader.recommendation.domain.candidate.filters import QuoteFreshnessBasis
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineStage,
     PipelineStageSnapshot,
@@ -33,6 +34,7 @@ from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import (
     BuildScoredCandidateReferences,
+    FilteredCandidateInputs,
     RankFilteredCandidates,
     ScoredCandidatePlan,
     SelectedCandidateInput,
@@ -44,10 +46,12 @@ class CandidatePipelineResult:
     plans: CandidatePlanSet
     filtered: Mapping[Strategy, PipelineStageOutput[FeatureSnapshot]]
     candidates: Mapping[Strategy, PipelineStageOutput[SelectedCandidateInput]]
+    qualifications: Mapping[Strategy, FilteredCandidateInputs]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "filtered", MappingProxyType(dict(self.filtered)))
         object.__setattr__(self, "candidates", MappingProxyType(dict(self.candidates)))
+        object.__setattr__(self, "qualifications", MappingProxyType(dict(self.qualifications)))
 
     def stages(self, strategy: Strategy) -> tuple[PipelineStageSnapshot, ...]:
         return (self.filtered[strategy].snapshot, self.candidates[strategy].snapshot)
@@ -61,6 +65,7 @@ def ExecuteCandidatePipeline(
     plans: dict[Strategy, ScoredCandidatePlan] = {}
     filtered: dict[Strategy, PipelineStageOutput[FeatureSnapshot]] = {}
     candidates: dict[Strategy, PipelineStageOutput[SelectedCandidateInput]] = {}
+    qualifications: dict[Strategy, FilteredCandidateInputs] = {}
     for strategy in SCORED_STRATEGIES:
         started = monotonic()
         qualified = QualifyCandidateInputs(
@@ -71,8 +76,8 @@ def ExecuteCandidatePipeline(
                 max_age_seconds=_maximum_age_seconds(strategy),
                 population_evaluated_at=context.evaluated_at,
                 population_max_age_seconds=_maximum_age_seconds(strategy),
+                population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
                 phase="candidate_discovery",
-                normalize_discovery_source_time=False,
                 strategy=strategy,
                 minimum_history_sessions=_history_required_sessions(
                     context.model_scoring if context.apply_model_eligibility else None,
@@ -87,6 +92,7 @@ def ExecuteCandidatePipeline(
             ScoredSelectionIdentity(context.evaluated_at.date(), context.data_version, context.data_version),
         )
         filtered[strategy] = MeasuredOutput(qualified.output, started, monotonic)
+        qualifications[strategy] = qualified.qualifications
         started = monotonic()
         plan = RankFilteredCandidates(BuildScoredCandidateReferences(qualified.qualifications))
         plans[strategy] = plan
@@ -95,7 +101,7 @@ def ExecuteCandidatePipeline(
             started,
             monotonic,
         )
-    return CandidatePipelineResult(CandidatePlanSet(plans, context.evaluated_at), filtered, candidates)
+    return CandidatePipelineResult(CandidatePlanSet(plans, context.evaluated_at), filtered, candidates, qualifications)
 
 
 def SelectCandidateOutput(

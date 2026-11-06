@@ -19,6 +19,7 @@ from trader.infra.cache_contracts import BoundedCache
 from trader.infra.cancellation import CancellationEvent
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.references.security_references import SecurityReferenceObservations
+from trader.infra.market_data.source_identity import SourceName
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
 from trader.recommendation.application.ports.market_data import (
@@ -71,6 +72,7 @@ from trader.recommendation.infra.normalization.columnar import (
     NormalizedMarketChangeSet,
     TargetedMarketChanges,
 )
+from trader.recommendation.infra.normalization.field_quality import REALTIME_SOURCES
 from trader.recommendation.infra.normalization.merge import (
     MergeMarketObservations,
     MergeObservationLimits,
@@ -495,6 +497,7 @@ class MarketDataGateway:
         isolated = request.isolated
         physical_source = "tencent_long" if isolated else "tencent"
         normalized_codes = tuple(sorted(set(codes)))
+        requested_codes = frozenset(normalized_codes)
         try:
             observations = self._target_quote_observations(
                 request,
@@ -522,25 +525,34 @@ class MarketDataGateway:
             self._mark_snapshot_degraded("tencent:late", completed_at)
             with self._state_lock:
                 return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+        refreshed_codes = frozenset(
+            observation.subject_key
+            for observation in observations
+            if observation.subject_key in requested_codes and RejectionReason(observation, completed_at) is None
+        )
         with self._state_lock:
             baseline = tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
-            refreshed_sources = {(observation.subject_key, observation.source) for observation in observations}
+            # A directed result owns this code's new realtime cut. Older
+            # provider batches have different observation points and cannot
+            # participate in this merge, even through a different source name.
             raw_baseline = tuple(
                 observation
                 for code in normalized_codes
                 for observation in self._latest_observations.get(code, {}).values()
-                if (observation.subject_key, observation.source) not in refreshed_sources
+                if code not in refreshed_codes
+                or SourceName(observation.source) not in REALTIME_SOURCES
+                or "price" not in observation.fields
             )
             references = tuple(
                 observation
                 for code, observation in self._reference_observations.items()
-                if code in set(normalized_codes)
+                if code in requested_codes
             )
         raw_codes = {observation.subject_key for observation in raw_baseline}
         baseline_observations = tuple(
             ObservationFromQuote(quote, source=quote.source, observed_at=completed_at)
             for quote in baseline
-            if quote.code not in raw_codes
+            if quote.code not in raw_codes and quote.code not in refreshed_codes
         )
         merge_started = self._monotonic()
         snapshot = MergeMarketObservations(
@@ -631,6 +643,17 @@ class MarketDataGateway:
         commit_snapshot = OverlayCanonicalSnapshot(
             previous, snapshot, merge_epoch=self._versions.advance("targeted_commit")
         )
+        missing_codes = set(codes) - {observation.subject_key for observation in observations}
+        if missing_codes:
+            # A missing code retains its previous quote, so the quote overlay
+            # deliberately cannot carry this request's separate failure facts.
+            commit_snapshot = replace(
+                _with_snapshot_degradation(commit_snapshot, {"tencent:partial_response"}),
+                missing_reasons={
+                    **commit_snapshot.missing_reasons,
+                    **{f"{code}.price.tencent": "targeted_quote_missing" for code in sorted(missing_codes)},
+                },
+            )
         selected_codes = set(codes)
         self._latest_snapshot = commit_snapshot
         self._latest_changes = TargetedMarketChanges(previous, commit_snapshot, codes)

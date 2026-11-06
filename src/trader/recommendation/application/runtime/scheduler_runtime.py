@@ -767,6 +767,17 @@ class SchedulerRuntime:
         task_lanes = (*tuple(lane.status() for lane in self._task_lanes.values()), self._score_lane.status())
         preview = self._preview.status()
         preview_context = self._dependencies.run_scope.preview if self._dependencies.run_scope else None
+        recommendation_round = self._dependencies.rounds.status()
+        cadence = self._dependencies.cadence.status()
+        observer = self._dependencies.observer.status()
+        deepseek = self._dependencies.reviews.runtime_contract
+        company_research = self._research.status()
+        input_quality = self._dependencies.freezes.input_quality_status()
+        publication_io = (
+            self._dependencies.publication_io.snapshots() if self._dependencies.publication_io is not None else ()
+        )
+        # A collaborator may wait on its own work; keep that wait outside the
+        # scheduler lock while capturing our counters and issues together.
         with self._lock:
             issues = self._issues.snapshot()
             if preview_context is not None and preview.state == "ready":
@@ -778,16 +789,16 @@ class SchedulerRuntime:
                 preview = replace(preview, error=issues.last_error_code or preview.error)
             return SchedulerRuntimeStatus(
                 running=self._running,
-                recommendation_round=self._dependencies.rounds.status(),
+                recommendation_round=recommendation_round,
                 phase=self._phase,
                 config_version=self._config_version,
                 lanes=lanes,
                 hybrid_lanes=hybrid_lanes,
                 task_lanes=task_lanes,
-                cadence=self._dependencies.cadence.status(),
-                observer=self._dependencies.observer.status(),
-                deepseek=self._dependencies.reviews.runtime_contract,
-                company_research=self._research.status(),
+                cadence=cadence,
+                observer=observer,
+                deepseek=deepseek,
+                company_research=company_research,
                 control_running=control.running,
                 control_inflight=control.inflight,
                 control_rejected_count=control.rejected_count,
@@ -807,14 +818,12 @@ class SchedulerRuntime:
                 last_error_code=issues.last_error_code,
                 strategy_error_codes=issues.strategy_error_codes,
                 recent_errors=issues.recent_errors,
-                input_quality=self._dependencies.freezes.input_quality_status(),
+                input_quality=input_quality,
                 preview_context=preview_context,
                 preview_state=preview.state if preview_context is not None else None,
                 preview_error=preview.error if preview_context is not None else None,
                 session=session,
-                publication_io=self._dependencies.publication_io.snapshots()
-                if self._dependencies.publication_io is not None
-                else (),
+                publication_io=publication_io,
                 calendar=TradingCalendarRuntimeStatus(
                     state=self._calendar_state,
                     trade_date=self._calendar_trade_date,
@@ -869,6 +878,12 @@ class SchedulerRuntime:
                 strategy=strategy,
                 stages=frozenset({"refresh", "freeze", "review", "publish"}),
             )
+            if not hybrid and not publish_event:
+                # This callback follows acceptance of the complete profile
+                # batch; a standalone publication cannot recover its timeout.
+                self._resolve_issues_locked(
+                    stages=frozenset({"refresh"}), code="refresh:round_collection_timeout",
+                )
         if event is not None and publish_event:
             try:
                 assert isinstance(identity, ScoredFreeze)
@@ -981,12 +996,14 @@ class SchedulerRuntime:
         strategy: Strategy | None = None,
         stages: frozenset[str] | None = None,
         task: PipelineTask | None = None,
+        code: str | None = None,
     ) -> None:
         self._issues.resolve(
             ShanghaiNow(self._dependencies.clock.now()),
             strategy=strategy,
             stages=stages,
             task=task,
+            code=code,
         )
 
 

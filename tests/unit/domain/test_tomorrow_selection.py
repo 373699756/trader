@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
+from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.models import Board
@@ -128,6 +132,70 @@ def _request(features, policy: ScoredSelectionPolicy) -> ScoredSelectionRequest:
         merge_epoch="market:2026-07-28:1",
         policy=policy,
     )
+
+
+@pytest.mark.parametrize("candidate_mode", ("population", "empty", "subset"))
+def test_explicit_candidate_ranking_does_not_apply_discarded_population_policy(
+    application_feature_factory,
+    monkeypatch,
+    tmp_path,
+    record_property,
+    candidate_mode,
+) -> None:
+    features = list(_features(application_feature_factory, 315))
+    for offset, (board, prefix) in enumerate(((Board.MAIN, "600"), (Board.CHINEXT, "300"), (Board.STAR, "688"))):
+        for local in range(105):
+            index = offset * 105 + local
+            feature = features[index]
+            features[index] = replace(feature, quote=replace(
+                feature.quote,
+                code=f"{prefix}{local:03d}",
+                board=board,
+                exchange_limit_pct=10.0 if board is Board.MAIN else 20.0,
+            ))
+        first = offset * 105
+        features[first] = replace(features[first], quote=replace(features[first].quote, is_st=True))
+        features[first + 1] = replace(
+            features[first + 1], values={**features[first + 1].values, "amount_median_20d": None},
+        )
+        features[first + 2] = replace(
+            features[first + 2], quote=replace(features[first + 2].quote, source_time=NOW - timedelta(seconds=61)),
+        )
+        features[first + 3] = replace(features[first + 3], history_days=19)
+    population = tuple(features)
+    candidates = (
+        None if candidate_mode == "population" else () if candidate_mode == "empty"
+        else tuple(population[index] for index in (0, 1, 2, 3, 100, 105, 208, 210, 314))
+    )
+    request = replace(
+        _request(population, _selection_policy()),
+        candidate_features=candidates,
+        execution_gate_reasons={population[100].quote.code: "input_quality_pending"},
+        model_input_eligible_codes=frozenset(
+            feature.quote.code for feature in population if feature is not population[208]
+        ),
+    )
+    calls = []
+    original = scored_selection.ApplyBoardPolicy
+
+    def apply_policy(section, strategy, policy):
+        calls.append((section.board, len(section.features)))
+        return original(section, strategy, policy)
+
+    monkeypatch.setattr(scored_selection, "ApplyBoardPolicy", apply_policy)
+
+    selection = SelectScored(request)
+
+    canonical = CanonicalJsonBytes(selection)
+    output = tmp_path / "selection.json"
+    output.write_bytes(canonical)
+    record_property("selection_sha256", hashlib.sha256(canonical).hexdigest())
+    record_property("selection_path", str(output))
+    record_property("discarded_policy_rows", sum(count for _board, count in calls))
+    assert len(selection.evaluations) == 315
+    assert set(selection.population_versions) == {Board.MAIN, Board.CHINEXT, Board.STAR}
+    assert all(count >= 100 for _board, count in calls)
+    assert len(calls) == (3 if candidate_mode == "population" else 0)
 
 
 def test_tomorrow_selection_keeps_filter_tristate_and_bounds_each_board(
