@@ -20,6 +20,7 @@ from scripts.download.history.qfq_sqlite import ClassifyQfqDiagnosticError
 from tests.helpers.qfq import QFQ_CONFIGURATION, qfq_window
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+from trader.infra.sqlite_publication import SqlitePublicationError
 
 
 def _seed(path, *, complete=True):
@@ -132,6 +133,47 @@ def test_audit_locates_latest_absent_prices_without_claiming_confirmed_suspensio
 
 def test_busy_reason_is_stable():
     assert ClassifyQfqDiagnosticError(sqlite3.OperationalError("database is locked")) == "qfq_pair_database_busy"
+
+
+@pytest.mark.parametrize("reason", (
+    "sqlite_publication_file_missing",
+    "sqlite_publication_checksum_mismatch",
+    "sqlite_publication_schema_invalid",
+))
+def test_publication_failure_keeps_its_controlled_reason(reason):
+    assert ClassifyQfqDiagnosticError(SqlitePublicationError(reason)) == reason
+
+
+@pytest.mark.parametrize("failure", (
+    SqlitePublicationError("sqlite_publication_file_missing /private/key?token=secret"),
+    SqlitePublicationError("sqlite_publication_" + "a" * 65),
+    RuntimeError("sqlite_publication_file_missing"),
+))
+def test_publication_reason_does_not_expose_uncontrolled_messages(failure):
+    assert ClassifyQfqDiagnosticError(failure) == "qfq_diagnostic_failed"
+
+
+def test_missing_receipt_is_reported_without_resealing_database(tmp_path, monkeypatch, capsys):
+    import sys
+    from scripts.download.history import qfq_sqlite
+
+    path = tmp_path / "daily_window.sqlite3"
+    _seed(path)
+    receipt = path.parent / f"{path.name}.sha256"
+    receipt.unlink()
+    before = hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
+    monkeypatch.setattr(sys, "argv", [
+        "qfq_sqlite", "--database", str(path),
+        "--runtime-config", str(PROJECT_ROOT / "config/runtime.json"),
+    ])
+
+    assert qfq_sqlite.Main() == 1
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "failed"
+    assert report["error"] == "sqlite_publication_file_missing"
+    assert not receipt.exists()
+    assert before == (hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns)
 
 
 def test_valid_pair_does_not_hide_current_price_issues(tmp_path):

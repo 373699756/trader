@@ -5,6 +5,7 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import argparse
+import re
 import sqlite3
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.download_failure_diagnostics import ReadDownloadFailures
 from trader.download.infra.download_settings import LoadDownloadFailureConfiguration
 from trader.infra.sqlite_codec import DecodeDate
+from trader.infra.sqlite_publication import SqlitePublicationError
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
     SqliteConnectionOptions,
@@ -137,6 +139,8 @@ def ClassifyQfqDiagnosticError(exc: BaseException) -> str:
         return "qfq_database_unavailable"
     if isinstance(exc, sqlite3.DatabaseError):
         return "qfq_database_invalid"
+    if isinstance(exc, SqlitePublicationError) and re.fullmatch(r"sqlite_publication_[a-z_]{1,64}", str(exc)):
+        return str(exc)
     return "qfq_diagnostic_failed"
 
 
