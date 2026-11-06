@@ -233,6 +233,66 @@ def test_unqueued_wave_releases_round_admission(monkeypatch, offer) -> None:
     runtime._dependencies.rounds.finish(runtime._dependencies.round_profile, following.sequence)
 
 
+@pytest.mark.parametrize("rejected_offer", (LatestWinsOffer.COALESCED, LatestWinsOffer.STALE, LatestWinsOffer.REJECTED))
+def test_unqueued_wave_preserves_deferred_tasks_before_another_auxiliary_admission(monkeypatch, rejected_offer):
+    runtime = _round_cleanup_runtime()
+    submitted = []
+    offers = iter((LatestWinsOffer.ACCEPTED, rejected_offer, LatestWinsOffer.ACCEPTED))
+    monkeypatch.setattr(runtime._score_lane, "offer", lambda task: submitted.append(task) or next(offers))
+    lease = runtime._session.capture()
+    auxiliary = ScheduledPipelineTask(PipelineTask.INTRADAY_TAIL, NOW, MarketPhase.BEFORE_CLOSE, session=lease)
+    scheduled = replace(auxiliary, task=PipelineTask.SCORE)
+    profile = runtime._dependencies.round_profile
+    rounds = runtime._dependencies.rounds
+    assert runtime._submit_round_tasks((auxiliary,), scheduled)
+    first = submitted[-1]
+    assert not runtime._submit_round_tasks((replace(auxiliary, task=PipelineTask.FULL_MARKET),), scheduled)
+    rounds.finish(profile, first.round_sequence)
+    assert not runtime._submit_round_tasks((auxiliary,), scheduled)
+    assert {task.task for task in submitted[-1].round_tasks} == {PipelineTask.FULL_MARKET, PipelineTask.INTRADAY_TAIL}
+    assert runtime._submit_round_tasks((auxiliary,), scheduled)
+    following = submitted[-1]
+    try:
+        assert {task.task for task in following.round_tasks} == {PipelineTask.FULL_MARKET, PipelineTask.INTRADAY_TAIL}
+    finally:
+        rounds.finish(profile, following.round_sequence)
+        rounds.withdraw(profile)
+
+
+@pytest.mark.parametrize("rotate_session", (False, True))
+def test_deferred_round_tasks_use_the_scheduler_session_without_crossing_rotation(monkeypatch, rotate_session):
+    runtime = _round_cleanup_runtime()
+    submitted = []
+    monkeypatch.setattr(runtime, "_submit_scoring", lambda task: submitted.append(task) or True)
+    lease = runtime._session.capture()
+    auxiliary = ScheduledPipelineTask(PipelineTask.INTRADAY_TAIL, NOW, MarketPhase.BEFORE_CLOSE)
+    scheduled = replace(auxiliary, task=PipelineTask.SCORE, session=lease)
+    assert runtime._submit_round_tasks((auxiliary,), scheduled)
+    first = submitted[-1]
+    market = replace(auxiliary, task=PipelineTask.FULL_MARKET)
+    assert not runtime._submit_round_tasks((market,), scheduled)
+    profile = runtime._dependencies.round_profile
+    rounds = runtime._dependencies.rounds
+    rounds.finish(profile, first.round_sequence)
+    if rotate_session:
+        runtime._dependencies.clock.current -= timedelta(seconds=1)
+    lease = runtime._session.capture()
+    current = replace(scheduled, scheduled_at=runtime._dependencies.clock.now(), session=lease)
+    auxiliary = replace(auxiliary, scheduled_at=current.scheduled_at)
+    assert runtime._submit_round_tasks((auxiliary,), current)
+    following = submitted[-1]
+    try:
+        assert {task.task for task in following.round_tasks} == (
+            {PipelineTask.INTRADAY_TAIL} if rotate_session
+            else {PipelineTask.FULL_MARKET, PipelineTask.INTRADAY_TAIL}
+        )
+        assert all(task.session == lease for task in following.round_tasks)
+        assert following.round_deadline_monotonic - following.round_started_monotonic == 120.0
+    finally:
+        rounds.finish(profile, following.round_sequence)
+        rounds.withdraw(profile)
+
+
 def test_stopping_queued_wave_releases_round_without_releasing_running_work() -> None:
     runtime = _round_cleanup_runtime()
     entered = threading.Event()

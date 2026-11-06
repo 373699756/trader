@@ -41,6 +41,7 @@ from trader.recommendation.infra.market_data.published_history_cache import Publ
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs, RoundInputs
+from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
 
 
 def test_profile_candidate_features_share_one_quote_cut_without_hot_database_connections(monkeypatch):
@@ -78,6 +79,88 @@ def test_profile_candidate_features_share_one_quote_cut_without_hot_database_con
     assert gateway.requests == [("600001", "600002", "600003")]
     assert tuple(tuple(feature.quote.code for feature in group) for group in features) == requested
     assert features[1][0].quote == features[2][0].quote
+
+
+@pytest.mark.parametrize("stop_at", ("raw", "cross_section", "snapshot"))
+def test_cancelled_market_factor_build_preserves_last_published_cache(monkeypatch, stop_at):
+    from trader.recommendation.infra.normalization import features as feature_module
+
+    quotes = (_quote(code="600001"), _quote(code="600002"))
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+    service = _service(StaticGateway(quotes), StaticHistoryClient(), builder)
+    previous = service.fetch_market_feature_batch(NOW, force=True)
+    published = service.quotes.market_features()
+    remaining = [10.0]
+    inputs = RoundInputs(("v2",), lambda: remaining[0])
+    observed = []
+
+    if stop_at == "raw":
+        original_raw = builder._raw_features
+
+        def expire_after_raw(quote, bars, history_summary=None):
+            observed.append(quote.code)
+            result = original_raw(quote, bars, history_summary)
+            remaining[0] = 0.0
+            return result
+
+        monkeypatch.setattr(builder, "_raw_features", expire_after_raw)
+    elif stop_at == "cross_section":
+        original_cross_section = feature_module.BuildCrossSectionFeatures
+
+        def expire_after_cross_section(*args, **kwargs):
+            result = original_cross_section(*args, **kwargs)
+            remaining[0] = 0.0
+            return result
+
+        monkeypatch.setattr(feature_module, "BuildCrossSectionFeatures", expire_after_cross_section)
+    else:
+        original_news = feature_module.DeriveNewsSignals
+
+        def expire_during_snapshot(*args, **kwargs):
+            observed.append("snapshot")
+            result = original_news(*args, **kwargs)
+            remaining[0] = 0.0
+            return result
+
+        monkeypatch.setattr(feature_module, "DeriveNewsSignals", expire_during_snapshot)
+
+    with pytest.raises(MarketDataDeadlineExceededError, match="market_feature_calculation_cancelled"):
+        service.fetch_market_feature_batch(
+            NOW,
+            force=True,
+            deadline=NOW + timedelta(seconds=120),
+            round_inputs=ProfileRoundInputs("v2", inputs),
+        )
+
+    assert inputs.cancelled()
+    assert service.quotes.market_features() is published
+    assert service.quotes.market_features() == previous.features
+    if stop_at == "raw":
+        assert observed == ["600001"]
+    elif stop_at == "snapshot":
+        assert observed == ["snapshot"]
+
+
+def test_market_factor_budget_preserves_complete_features_without_cancellation():
+    quotes = (_quote(code="600001"), _quote(code="600002"))
+    services = tuple(
+        _service(
+            StaticGateway(quotes),
+            StaticHistoryClient(),
+            FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        )
+        for _ in range(2)
+    )
+    expected = services[0].fetch_market_feature_batch(NOW, force=True)
+    inputs = RoundInputs(("v2",), lambda: 120.0)
+    actual = services[1].fetch_market_feature_batch(
+        NOW,
+        force=True,
+        deadline=NOW + timedelta(seconds=120),
+        round_inputs=ProfileRoundInputs("v2", inputs),
+    )
+    assert actual.features == expected.features
+    assert services[1].quotes.market_features() == services[0].quotes.market_features()
 
 
 def test_current_model_industry_enriches_features_and_replaces_display_sector() -> None:

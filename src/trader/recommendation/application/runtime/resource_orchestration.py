@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.infra.shutdown import ObserveShutdownStep, ShutdownDeadline, ShutdownReport, ShutdownStep
 
 
 class SupervisorResource(Protocol):
@@ -167,22 +167,30 @@ def StopApplicationResources(
     auxiliary_runtimes = resources.auxiliary_runtimes
     market_cache = resources.market_cache
     steps: list[ShutdownStep] = []
-    for runtime in auxiliary_runtimes:
-        runtime.stop(wait=False, deadline=deadline)
+    for index, runtime in enumerate(auxiliary_runtimes):
+        with ObserveShutdownStep(deadline, f"resources:auxiliary_close:{index}"):
+            runtime.stop(wait=False, deadline=deadline)
     if resources.owns_shared_resources:
-        source_lanes.stop(wait=False, deadline=deadline)
-    supervisor_report = supervisor.stop(deadline)
+        with ObserveShutdownStep(deadline, "resources:source_lanes_close"):
+            source_lanes.stop(wait=False, deadline=deadline)
+    with ObserveShutdownStep(deadline, "resources:supervisor"):
+        supervisor_report = supervisor.stop(deadline)
     steps.extend(supervisor_report.steps)
     if resources.owns_shared_resources:
-        steps.extend(source_lanes.stop(wait=True, deadline=deadline))
-        steps.append(data_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
-        steps.append(quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
-        steps.append(market_quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
-        steps.append(minute_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
-    for runtime in auxiliary_runtimes:
-        steps.append(runtime.stop(wait=True, deadline=deadline))
+        with ObserveShutdownStep(deadline, "resources:source_lanes"):
+            steps.extend(source_lanes.stop(wait=True, deadline=deadline))
+        for name, pool in (
+            ("data_pool", data_pool), ("quote_pool", quote_pool),
+            ("market_quote_pool", market_quote_pool), ("minute_pool", minute_pool),
+        ):
+            with ObserveShutdownStep(deadline, f"resources:{name}"):
+                steps.append(pool.stop(wait=True, cancel_futures=True, deadline=deadline))
+    for index, runtime in enumerate(auxiliary_runtimes):
+        with ObserveShutdownStep(deadline, f"resources:auxiliary_wait:{index}"):
+            steps.append(runtime.stop(wait=True, deadline=deadline))
     if resources.owns_shared_resources:
-        steps.append(market_cache.stop(wait=True, deadline=deadline))
+        with ObserveShutdownStep(deadline, "resources:market_cache"):
+            steps.append(market_cache.stop(wait=True, deadline=deadline))
     return ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
 
 

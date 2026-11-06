@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Generic, Protocol, TypeVar
 
 from trader.infra.settings import RuntimeSettings
-from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.infra.shutdown import ObserveShutdownStep, ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 
@@ -53,7 +53,8 @@ class ProfiledApplicationSystem(Generic[ApplicationT]):
         steps: list[ShutdownStep] = []
         forced = False
         for system in reversed(self.systems):
-            report = system.stop(deadline=shared)
+            with ObserveShutdownStep(shared, f"profile:{system.profile_id}"):
+                report = system.stop(deadline=shared)
             forced = forced or report.forced
             steps.extend(replace(step, name=f"{system.profile_id}:{step.name}") for step in report.steps)
         return ShutdownReport.from_steps(shared, steps, forced=forced or shared.expired)

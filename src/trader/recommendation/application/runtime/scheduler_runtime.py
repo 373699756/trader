@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from datetime import time as wall_time
 from typing import Literal
 
-from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.infra.shutdown import ObserveShutdownStep, ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
     FreezeCommitted,
     FreezeObservation,
@@ -336,7 +336,7 @@ class SchedulerRuntime:
     ) -> bool:
         rounds = self._dependencies.rounds
         profile = self._dependencies.round_profile
-        admission = rounds.enter(profile, tasks)
+        admission = rounds.enter(profile, tuple(replace(task, session=scheduled.session) for task in tasks))
         if admission is None:
             return False
         round_deadline = ShanghaiNow(self._dependencies.clock.now()) + timedelta(
@@ -351,7 +351,7 @@ class SchedulerRuntime:
             round_deadline=round_deadline,
         )):
             return True
-        rounds.finish(profile, admission.sequence)
+        rounds.release_unqueued(profile, admission.sequence)
         return False
 
     def _submit_preview(self, observed_at: datetime) -> float:
@@ -730,30 +730,40 @@ class SchedulerRuntime:
         self,
         deadline: ShutdownDeadline,
     ) -> ShutdownReport:
-        with self._lock:
+        with ObserveShutdownStep(deadline, "runtime:state"), self._lock:
             if self._stopped:
                 return self._shutdown_report or ShutdownReport.from_steps(deadline, ())
             self._running = False
             self._stopped = True
-        self._dependencies.rounds.withdraw(self._dependencies.round_profile)
-        self._research.stop(wait=False, deadline=deadline)
-        self._dependencies.observer.close()
-        for task_lane in self._task_lanes.values():
-            task_lane.close()
-        self._score_lane.close()
-        for strategy_lane in self._lanes.values():
-            strategy_lane.close()
-        for hybrid_lane in self._hybrid_lanes.values():
-            hybrid_lane.close()
-        steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
-        steps.extend(lane.stop(deadline=deadline) for lane in self._task_lanes.values())
-        steps.append(self._score_lane.stop(deadline=deadline))
-        steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
-        steps.extend(
-            self._hybrid_lanes[strategy].stop(deadline=deadline) for strategy in (Strategy.TOMORROW, Strategy.D25)
-        )
-        steps.append(self._dependencies.observer.stop(deadline=deadline))
-        steps.append(self._research.stop(wait=True, deadline=deadline))
+        with ObserveShutdownStep(deadline, "runtime:rounds"):
+            self._dependencies.rounds.withdraw(self._dependencies.round_profile)
+        with ObserveShutdownStep(deadline, "runtime:research_close"):
+            self._research.stop(wait=False, deadline=deadline)
+        with ObserveShutdownStep(deadline, "runtime:lanes_close"):
+            self._dependencies.observer.close()
+            for task_lane in self._task_lanes.values():
+                task_lane.close()
+            self._score_lane.close()
+            for strategy_lane in self._lanes.values():
+                strategy_lane.close()
+            for hybrid_lane in self._hybrid_lanes.values():
+                hybrid_lane.close()
+        with ObserveShutdownStep(deadline, "runtime:control"):
+            steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
+        with ObserveShutdownStep(deadline, "runtime:task_lanes"):
+            steps.extend(lane.stop(deadline=deadline) for lane in self._task_lanes.values())
+        with ObserveShutdownStep(deadline, "runtime:score_wave"):
+            steps.append(self._score_lane.stop(deadline=deadline))
+        for strategy in Strategy:
+            with ObserveShutdownStep(deadline, f"runtime:local:{strategy.value}"):
+                steps.append(self._lanes[strategy].stop(deadline=deadline))
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
+            with ObserveShutdownStep(deadline, f"runtime:hybrid:{strategy.value}"):
+                steps.append(self._hybrid_lanes[strategy].stop(deadline=deadline))
+        with ObserveShutdownStep(deadline, "runtime:observer"):
+            steps.append(self._dependencies.observer.stop(deadline=deadline))
+        with ObserveShutdownStep(deadline, "runtime:research"):
+            steps.append(self._research.stop(wait=True, deadline=deadline))
         report = ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
         with self._lock:
             self._shutdown_report = report

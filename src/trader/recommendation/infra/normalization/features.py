@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
@@ -96,6 +96,7 @@ class FeatureBuildOptions(TypedDict, total=False):
     intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None
     history_summaries: Mapping[str, HistoryContext] | None
     preview_context: PreviewContext | None
+    check_budget: Callable[[], None] | None
 
 
 class _FeatureGroupOptions(FeatureBuildOptions):
@@ -326,12 +327,17 @@ class FeatureBuilder:
         observed_at: datetime,
         **options: Unpack[FeatureBuildOptions],
     ) -> tuple[FeatureSnapshot, ...]:
+        check_budget = options.get("check_budget")
+        if check_budget is not None:
+            check_budget()
         RequireQfqHistory(histories)
         grouped: dict[str, list[MarketQuote]] = defaultdict(list)
         for quote in quotes:
             grouped[quote.data_version].append(quote)
         built: dict[str, FeatureSnapshot] = {}
         for data_version, group_quotes in grouped.items():
+            if check_budget is not None:
+                check_budget()
             for snapshot in self._build_group(
                 tuple(group_quotes),
                 histories,
@@ -343,8 +349,11 @@ class FeatureBuilder:
                 intraday_minutes=options.get("intraday_minutes"),
                 history_summaries=options.get("history_summaries"),
                 preview_context=options.get("preview_context"),
+                check_budget=check_budget,
             ):
                 built[snapshot.quote.code] = snapshot
+        if check_budget is not None:
+            check_budget()
         return tuple(built[quote.code] for quote in quotes)
 
     def _build_group(
@@ -360,14 +369,18 @@ class FeatureBuilder:
         research_observations = options.get("research_observations")
         intraday_minutes = options.get("intraday_minutes")
         history_summaries = options.get("history_summaries")
-        raw = {
-            quote.code: self._raw_features(
+        check_budget = options.get("check_budget")
+        raw: dict[str, dict[str, float | None]] = {}
+        for quote in quotes:
+            if check_budget is not None:
+                check_budget()
+            raw[quote.code] = self._raw_features(
                 quote,
                 histories.get(quote.code, ()),
                 (history_summaries or {}).get(quote.code),
             )
-            for quote in quotes
-        }
+        if check_budget is not None:
+            check_budget()
         cross_sections = BuildCrossSectionFeatures(
             quotes,
             raw,
@@ -375,9 +388,13 @@ class FeatureBuilder:
             CrossSectionReferences(cross_section_reference or {}, cross_section_normalization_reference or {}),
             cache=self._cache,
         )
+        if check_budget is not None:
+            check_budget()
 
         snapshots: list[FeatureSnapshot] = []
         for quote in quotes:
+            if check_budget is not None:
+                check_budget()
             values = raw[quote.code]
             research_observation = (research_observations or {}).get(quote.code)
             candidate_evidence = tuple(research_observation.evidence if research_observation is not None else ())[:15]
@@ -454,6 +471,8 @@ class FeatureBuilder:
                     preview_context=options.get("preview_context"),
                 )
             )
+        if check_budget is not None:
+            check_budget()
         result = tuple(snapshots)
         return self.with_intraday(result, intraday_minutes, observed_at) if intraday_minutes is not None else result
 

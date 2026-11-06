@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
+import sqlite3
 from dataclasses import replace
 from unittest.mock import Mock
 
@@ -195,7 +196,9 @@ def test_long_quotes_bypass_shared_cache_for_each_realtime_refresh() -> None:
 
 def test_final_refresh_bypasses_fresh_cache_but_remains_single_flight() -> None:
     runtime = LoadRuntimeSettings(Path(__file__).parents[4] / "config" / "runtime.json")
-    final_at = AFTERNOON - timedelta(milliseconds=100)
+    # This checks sharing a final refresh; scheduling pressure must not turn it
+    # into an incidental 100 ms deadline-expiration test.
+    final_at = AFTERNOON - timedelta(seconds=2)
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -385,6 +388,76 @@ def test_company_preload_failure_reaches_http_as_a_finite_error_code(failure_typ
     assert "last_error" not in source
     assert "private-company-payload" not in response.get_data(as_text=True)
     assert "_UnlistedCompanyFailure" not in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("stage", ("before", "visit", "after"))
+@pytest.mark.parametrize("chained", (False, True))
+def test_company_preload_logs_only_the_failed_stage_and_exception_categories(stage, chained, caplog) -> None:
+    class Reader:
+        def __init__(self):
+            self.versions = 0
+            self.visits = 0
+
+        def fail(self):
+            if chained:
+                try:
+                    raise sqlite3.OperationalError("private-company-payload /private/company.sqlite3")
+                except sqlite3.OperationalError as exc:
+                    raise RuntimeError("private-company-payload") from exc
+            raise RuntimeError("private-company-payload")
+
+        def publication_version(self):
+            self.versions += 1
+            if stage == "before" or (stage == "after" and self.versions == 2):
+                self.fail()
+            return "publication"
+
+        def visit(self, codes, consume, *, cancel_requested=None):
+            self.visits += 1
+            if stage == "visit":
+                self.fail()
+
+    reader = Reader()
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        company_evidence_reader=reader,
+    )
+    status = service.research.status()
+    assert status.entries == 0
+    assert status.last_error == "company_snapshot:RuntimeError"
+    warnings = [record for record in caplog.records if record.name.endswith("published_company_research")]
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == (
+        f"company preload read failed stage={stage} error_type=RuntimeError "
+        f"cause_type={'OperationalError' if chained else 'none'}"
+    )
+    assert "private-company-payload" not in caplog.text
+    assert "/private/company.sqlite3" not in caplog.text
+    expected_versions = 2 if stage == "after" else 1
+    expected_visits = 0 if stage == "before" else 1
+    assert (reader.versions, reader.visits) == (expected_versions, expected_visits)
+    service.research.initialize(("600001",), cancelled=lambda: False)
+    assert (reader.versions, reader.visits) == (expected_versions, expected_visits)
+
+
+def test_company_preload_cancellation_is_not_logged_as_a_read_failure(caplog) -> None:
+    class Reader:
+        def publication_version(self):
+            return "publication"
+
+        def visit(self, codes, consume, *, cancel_requested=None):
+            raise InterruptedError("private-company-payload")
+
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        company_evidence_reader=Reader(),
+    )
+    assert service.research.status().last_error == "company_preload_deadline"
+    assert not [record for record in caplog.records if record.name.endswith("published_company_research")]
 
 
 @pytest.mark.parametrize(("reason", "expected"), (

@@ -20,6 +20,7 @@ from werkzeug.serving import BaseWSGIServer, make_server
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.shutdown import (
+    PendingShutdownSteps,
     ShutdownDeadline,
     ShutdownReport,
     ShutdownSignalController,
@@ -287,7 +288,7 @@ def _stop_system(system: _StoppableSystem, deadline: ShutdownDeadline) -> Shutdo
         timed_out=not finished,
         detail=detail,
     )
-    return ShutdownReport.from_steps(deadline, (step,))
+    return ShutdownReport.from_steps(deadline, (step, *PendingShutdownSteps(deadline)))
 
 
 def _log_shutdown_report(report: ShutdownReport) -> None:

@@ -79,6 +79,8 @@ def _parser() -> argparse.ArgumentParser:
         help="wall-clock delay between samples (default: 5)",
     )
     parser.add_argument("--timeout-seconds", type=float, default=3.0, help="timeout per HTTP request")
+    parser.add_argument("--complete-rounds", type=int, default=0, help="explicit SSE/atomic API eight-head observation")
+    parser.add_argument("--observation-seconds", type=float, help="complete-round observation budget, at most 900 seconds")
     parser.add_argument(
         "--consecutive-zero-threshold",
         type=int,
@@ -1393,6 +1395,11 @@ def _validate_args(args: argparse.Namespace) -> tuple[str, tuple[str, ...]]:
     if not 1 <= args.consecutive_zero_threshold <= args.samples:
         raise ValueError("--consecutive-zero-threshold must be between 1 and --samples")
     strategies = tuple(dict.fromkeys(args.strategies or _STRATEGIES))
+    if args.complete_rounds:
+        if args.strategies or args.observation_seconds is None:
+            raise ValueError("complete-round observation requires both strategies and an observation budget")
+    elif args.observation_seconds is not None:
+        raise ValueError("--observation-seconds requires --complete-rounds")
     return _normalize_base_url(args.base_url), strategies
 
 
@@ -1411,6 +1418,29 @@ def Main() -> int:
     args = parser.parse_args()
     try:
         base_url, strategies = _validate_args(args)
+        if args.complete_rounds:
+            from trader.bootstrap import OpenExternalHttp
+            from scripts.recommendation.web.complete_round_observation import ObservationFetchError, ObserveCompleteRounds
+
+            def fetch_mapping(url: str, timeout_seconds: float) -> Mapping[str, object]:
+                try:
+                    return _fetch_mapping(url, timeout_seconds)
+                except FetchError as exc:
+                    raise ObservationFetchError(exc.error_code) from exc
+
+            with OpenExternalHttp() as transport:
+                report = ObserveCompleteRounds(
+                    base_url,
+                    required_rounds=args.complete_rounds,
+                    observation_seconds=args.observation_seconds,
+                    interval_seconds=args.interval_seconds,
+                    timeout_seconds=args.timeout_seconds,
+                    scoring_profile=args.profile,
+                    fetch_mapping=fetch_mapping,
+                    transport=transport,
+                )
+            emit_report(report)
+            return 0 if report.get("status") == "passed" else 1
         samples = collect_samples(
             base_url,
             strategies=strategies,

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, TypeVar
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -34,6 +35,27 @@ from trader.recommendation.domain.market.research import (
 )
 from trader.recommendation.domain.scoring.company import BuildCompanyScoringContext, CompanyScoringCalendar, CompanyScoringPolicy
 from trader.recommendation.infra.market_data.research_load_status import ResearchComponentCoverage, ResearchLoaderStatus
+
+_LOGGER = logging.getLogger(__name__)
+_ReadValue = TypeVar("_ReadValue")
+
+
+def _observe_snapshot_read(
+    stage: Literal["before", "visit", "after"], read: Callable[[], _ReadValue]
+) -> _ReadValue:
+    try:
+        return read()
+    except InterruptedError:
+        raise
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        cause = exc.__cause__
+        _LOGGER.warning(
+            "company preload read failed stage=%s error_type=%s cause_type=%s",
+            stage,
+            type(exc).__name__,
+            type(cause).__name__ if cause is not None else "none",
+        )
+        raise
 
 
 class CompanyEvidenceReadPort(Protocol):
@@ -118,7 +140,7 @@ class PublishedCompanyResearch:
                 return
             try:
                 before, rows = self._capture_publication(requested, observed_at, cancelled, deadline)
-                after = self._reader.publication_version()
+                after = _observe_snapshot_read("after", self._reader.publication_version)
             except InterruptedError:
                 self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
                 return
@@ -137,8 +159,8 @@ class PublishedCompanyResearch:
     def _capture_publication(
         self, requested: tuple[str, ...], observed_at: datetime, cancelled: Callable[[], bool], deadline: float
     ) -> tuple[str, dict[str, ResearchObservation]]:
-        before = self._reader.publication_version()
-        calendar = CompanyScoringCalendar(self._open_dates())
+        before = _observe_snapshot_read("before", self._reader.publication_version)
+        calendar = _observe_snapshot_read("before", lambda: CompanyScoringCalendar(self._open_dates()))
         rows: dict[str, ResearchObservation] = {}
 
         def capture(snapshot: CompanyFacts) -> None:
@@ -147,7 +169,12 @@ class PublishedCompanyResearch:
             if snapshot.published_at <= observed_at:
                 rows[snapshot.code] = _observation(snapshot, observed_at, before, calendar, self._company_policy)
 
-        self._reader.visit(requested, capture, cancel_requested=lambda: cancelled() or self._monotonic() >= deadline)
+        _observe_snapshot_read(
+            "visit",
+            lambda: self._reader.visit(
+                requested, capture, cancel_requested=lambda: cancelled() or self._monotonic() >= deadline
+            ),
+        )
         return before, rows
 
     def _adopt_projection(

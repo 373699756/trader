@@ -8,7 +8,7 @@ from typing import Generic, TypeVar
 from trader.infra.cache import BoundedLruCache
 from trader.infra.isolated_http import IsolatedHttpExecutor
 from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettings
-from trader.infra.shutdown import ShutdownDeadline, ShutdownReport
+from trader.infra.shutdown import ObserveShutdownStep, ShutdownDeadline, ShutdownReport
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
@@ -121,7 +121,8 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
             return StopApplicationResources(self._application_resources(), deadline=shared)
         finally:
             if self.owns_shared_resources:
-                self.budget.close()
+                with ObserveShutdownStep(shared, "resources:deepseek_budget"):
+                    self.budget.close()
 
 
 __all__ = ["ApplicationSystem", "RuntimeWorkerResources"]

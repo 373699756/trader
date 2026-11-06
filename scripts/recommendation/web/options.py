@@ -31,3 +31,5 @@ class WebOptions:
     browser_strategy: WebStrategy = "tomorrow"
     simulated_start: datetime = DEFAULT_SIMULATED_START
     consecutive_zero_threshold: int = 3
+    web_complete_rounds: int = 0
+    web_observation_seconds: float | None = None

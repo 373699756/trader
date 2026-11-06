@@ -28,6 +28,80 @@ def test_web_default_keeps_the_workers_all_strategy_selection() -> None:
     options = ParseWebOptions(BuildWebParser("web").parse_args([]))
     command, = BuildWebCommands(options, python_executable="/python3")
     assert options.strategies == () and "--strategy" not in command.argv
+    assert options.web_complete_rounds == 0 and options.web_observation_seconds is None
+    assert "--complete-rounds" not in command.argv and "--observation-seconds" not in command.argv
+
+
+def _complete_round_arguments() -> list[str]:
+    return [
+        "--web-complete-rounds", "5",
+        "--web-observation-seconds", "900",
+        "--web-interval-seconds", "15",
+        "--web-timeout-seconds", "4",
+        "--command-timeout-seconds", "918",
+        "--scoring-profile", "v2",
+    ]
+
+
+def test_complete_round_controls_reach_only_the_existing_health_worker() -> None:
+    options = ParseWebOptions(BuildWebParser("web").parse_args(_complete_round_arguments()))
+    command, = BuildWebCommands(options, python_executable="/python3")
+
+    assert options.web_complete_rounds == 5 and options.web_observation_seconds == 900
+    assert options.web_interval_seconds == 15 and options.web_timeout_seconds == 4
+    assert options.scoring_profile == "v2" and not options.strategies
+    assert command.name == "web_health:v2" and command.timeout_seconds == 918
+    assert "scripts.recommendation.web.web_health" in command.argv
+    for key, value in (
+        ("--complete-rounds", "5"), ("--observation-seconds", "900.0"),
+        ("--interval-seconds", "15.0"), ("--timeout-seconds", "4.0"), ("--profile", "v2"),
+    ):
+        assert command.argv[command.argv.index(key) + 1] == value
+
+
+@pytest.mark.parametrize("arguments,reason", (
+    (["--web-complete-rounds", "-1"], "requires 1..20"),
+    (["--web-complete-rounds", "21"], "requires 1..20"),
+    (["--web-observation-seconds", "0"], "requires 1..20"),
+    (["--web-observation-seconds", "-1"], "requires 1..20"),
+    (["--web-observation-seconds", "901"], "requires 1..20"),
+    (["--web-observation-seconds", "nan"], "requires 1..20"),
+    (["--web-observation-seconds", "inf"], "requires 1..20"),
+    (["--web-interval-seconds", "14.999"], "at least 15"),
+    (["--command-timeout-seconds", "917.9"], "leave HTTP and cleanup time"),
+    (["--strategy", "tomorrow"], "requires both short strategies"),
+))
+def test_complete_round_controls_reject_invalid_budgets_and_partial_strategy_selection(arguments, reason) -> None:
+    with pytest.raises(ValueError, match=reason):
+        ParseWebOptions(BuildWebParser("web").parse_args([*_complete_round_arguments(), *arguments]))
+
+
+@pytest.mark.parametrize("arguments", (
+    ["--web-complete-rounds", "5", "--web-interval-seconds", "15"],
+    ["--web-observation-seconds", "900"],
+    ["--web-complete-rounds", "0", "--web-observation-seconds", "900"],
+))
+def test_complete_round_mode_requires_an_explicit_goal_and_observation_bound(arguments) -> None:
+    with pytest.raises(ValueError, match="requires"):
+        ParseWebOptions(BuildWebParser("web").parse_args(arguments))
+
+
+@pytest.mark.parametrize("rounds", (1, 20))
+def test_complete_round_goal_accepts_only_the_declared_inclusive_bounds(rounds) -> None:
+    options = ParseWebOptions(BuildWebParser("web").parse_args([
+        *_complete_round_arguments(), "--web-complete-rounds", str(rounds),
+    ]))
+    assert options.web_complete_rounds == rounds
+
+
+@pytest.mark.parametrize("action", ("browser", "browser-live", "company-ledger"))
+@pytest.mark.parametrize("arguments", (
+    ["--web-complete-rounds", "5"], ["--web-observation-seconds", "900"],
+))
+def test_complete_round_parameters_are_not_accepted_by_other_web_actions(action, arguments) -> None:
+    with pytest.raises(SystemExit) as error:
+        BuildWebParser(action).parse_args(arguments)
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("samples,expected", ((1, 1), (2, 2), (3, 3), (6, 3)))

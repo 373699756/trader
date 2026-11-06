@@ -15,6 +15,7 @@ from trader.recommendation.application.ports.eligibility import IssuerEligibilit
 from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.application.ports.market_data import (
     FullMarketFeatureBatch,
+    MarketDataDeadlineExceededError,
     MarketDataUnavailableError,
     MarketSnapshotMetadata,
 )
@@ -175,6 +176,12 @@ class MarketFeatureService:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("market observation time must be timezone aware")
         observed_at = observed_at.astimezone(SHANGHAI)
+
+        def check_budget() -> None:
+            if round_inputs is not None and round_inputs.inputs.cancelled():
+                raise MarketDataDeadlineExceededError("market_feature_calculation_cancelled")
+
+        check_budget()
         self.history.require_projection()
         reference_epoch = self.reference_version()
         with self._eligibility_lock:
@@ -211,6 +218,7 @@ class MarketFeatureService:
                     observed_at,
                     research_observations=research,
                     action_restrictions=cached_action_restrictions,
+                    check_budget=check_budget if round_inputs is not None else None,
                 )
                 if research
                 else tuple(feature for feature in cached if feature.quote.code in current_codes)
@@ -281,13 +289,16 @@ class MarketFeatureService:
                 observed_at,
                 research_observations=research,
                 action_restrictions=action_restrictions,
+                check_budget=check_budget if round_inputs is not None else None,
             ),
             observed_at,
         )
         self.quotes.gateway.record_local_latency("feature_build", self._elapsed_ms(feature_started))
         self.runner.ensure_before_deadline(deadline)
+        check_budget()
         self.history.update_coverage(history_codes, tuple(quote.data_version for quote in quotes))
         with self._eligibility_lock:
+            check_budget()
             if self.reference_version() != reference_epoch:
                 raise MarketDataUnavailableError("reference_changed_during_market_refresh")
             published = self.quotes.publish_market_features(features, reference_epoch=reference_epoch)
