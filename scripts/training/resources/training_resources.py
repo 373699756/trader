@@ -15,7 +15,7 @@ import numpy as np
 from threadpoolctl import threadpool_info
 
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
-from trader.infra.settings.training import LoadTrainingResourceSettings
+from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.disk_probe import DiskProbe
 from trader.training.infra.cpu_admission import AvailableTrainingCpus, TrainingCpuBudget

@@ -29,7 +29,7 @@ from tests.helpers.recommendation.publication.freeze_queries import (
     SHANGHAI,
     TRADE_DATE,
     _Clock,
-    _Repository,
+    _FreezeRecords,
     _freeze,
     _item,
 )
@@ -63,7 +63,7 @@ def test_queries_expose_one_shape_for_scored_and_long_current_views() -> None:
     )
     assert index.publish(scored, expected_version=None).accepted
     assert index.publish(long, expected_version=None).accepted
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock())
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock())
 
     today = queries.current(Strategy.TOMORROW)
     long_view = queries.current(Strategy.LONG)
@@ -108,7 +108,7 @@ def test_current_uses_separate_classified_industry_without_changing_frozen_histo
             }
 
     sources = FreezeQuerySources(industry_classifications=Classifications())
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock(), sources)
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock(), sources)
     current = queries.current(Strategy.TOMORROW)
 
     assert current.items[0].industry == ""
@@ -118,7 +118,7 @@ def test_current_uses_separate_classified_industry_without_changing_frozen_histo
 
     populated = UnifiedFreezeIndex()
     assert populated.publish(_freeze(), expected_version=None).accepted
-    unchanged = UnifiedFreezeQueries(populated, UnifiedFreezeDraftIndex(), _Repository(), _Clock(), sources).current(
+    unchanged = UnifiedFreezeQueries(populated, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock(), sources).current(
         Strategy.TOMORROW
     )
     assert unchanged.items[0].industry == "银行"
@@ -126,7 +126,7 @@ def test_current_uses_separate_classified_industry_without_changing_frozen_histo
 
     record = CommittedFreezeRecord(freeze, NOW.replace(hour=11), "scheduled")
     history = UnifiedFreezeQueries(
-        UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _Repository(record), _Clock(), sources
+        UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _FreezeRecords(record), _Clock(), sources
     ).history(Strategy.TOMORROW, TRADE_DATE)
     assert history.items[0].classified_industry is None
 
@@ -138,7 +138,7 @@ def test_queries_read_only_formal_history_and_long_has_no_history() -> None:
         datetime(2026, 8, 8, 11, 20, tzinfo=SHANGHAI),
         "scheduled",
     )
-    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _Repository(record), _Clock())
+    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _FreezeRecords(record), _Clock())
 
     history = queries.history(Strategy.TOMORROW, date(2026, 8, 8))
     long_history = queries.history(Strategy.LONG, date(2026, 8, 8))
@@ -173,7 +173,7 @@ def test_history_uses_only_newer_today_cached_quote_and_updates_projection() -> 
 
     cached = CachedQuotes()
     queries = UnifiedFreezeQueries(
-        UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _Repository(record), _Clock(), FreezeQuerySources(cached)
+        UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _FreezeRecords(record), _Clock(), FreezeQuerySources(cached)
     )
     before = queries.history(Strategy.TOMORROW, record.trade_date)
     cached.quote = MarketQuote(
@@ -239,7 +239,7 @@ def test_current_overlay_replaces_every_quote_field_without_changing_freeze_iden
     overlay = FreezeOverlay(scored.strategy, scored.trade_date, scored.version, NOW, (overlay_quote,), sequence=1)
     assert index.publish_overlay(overlay, expected_version=None).accepted
 
-    view = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock()).current(Strategy.TOMORROW)
+    view = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock()).current(Strategy.TOMORROW)
 
     assert view.freeze_version == scored.version
     assert view.items[0].price == 10.5
@@ -259,7 +259,7 @@ def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons
     scored = replace(_freeze(), population_count=82, rejected_count=81)
     assert index.publish(scored, expected_version=None).accepted
 
-    view = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock()).current(Strategy.TOMORROW)
+    view = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock()).current(Strategy.TOMORROW)
 
     assert view.coverage.candidate_count == 82
     assert view.coverage.evaluated_count == 1
@@ -301,7 +301,7 @@ def test_formal_projection_does_not_promote_unselected_research_rows() -> None:
         datetime(2026, 8, 8, 14, 50, tzinfo=SHANGHAI),
         "scheduled",
     )
-    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _Repository(record), _Clock())
+    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _FreezeRecords(record), _Clock())
 
     history = queries.history(Strategy.TOMORROW, trade_date)
 
@@ -333,7 +333,7 @@ def test_frozen_history_exposes_the_persisted_pipeline_without_runtime_status() 
         ),
     )
     record = CommittedFreezeRecord(freeze, datetime(2026, 8, 8, 11, 20, tzinfo=SHANGHAI), "scheduled")
-    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _Repository(record), _Clock())
+    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _FreezeRecords(record), _Clock())
 
     history = queries.history(Strategy.TOMORROW, date(2026, 8, 8))
 
@@ -354,7 +354,7 @@ def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:
     assert tuple(item.code for item in freeze.items) == ("600001", "600002", "600003", "600004")
     assert index.publish(freeze, expected_version=None).accepted
 
-    view = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock()).current(Strategy.TOMORROW)
+    view = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock()).current(Strategy.TOMORROW)
 
     assert [(item.code, item.rank, item.final_score) for item in view.items] == [
         ("600002", 1, 86.0),
@@ -387,7 +387,7 @@ def test_top_scores_preserve_fixed_seat_rank() -> None:
     assert index.publish(parent, expected_version=None).accepted
     assert index.publish(freeze, expected_version=parent.version).accepted
 
-    view = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock()).current(Strategy.TOMORROW)
+    view = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock()).current(Strategy.TOMORROW)
 
     assert [item.code for item in view.top_scores] == ["600001", "600002", "600003"]
 
@@ -403,7 +403,7 @@ def test_not_ready_current_exposes_observation_draft_without_formal_items() -> N
     )
     assert drafts.publish(draft).accepted
 
-    view = UnifiedFreezeQueries(UnifiedFreezeIndex(), drafts, _Repository(), _Clock()).current(Strategy.TOMORROW)
+    view = UnifiedFreezeQueries(UnifiedFreezeIndex(), drafts, _FreezeRecords(), _Clock()).current(Strategy.TOMORROW)
 
     assert view.status == "not_ready"
     assert view.items == ()
@@ -448,7 +448,7 @@ def test_observation_draft_visibility_follows_close_boundary(
         def now(self) -> datetime:
             return now
 
-    view = UnifiedFreezeQueries(UnifiedFreezeIndex(), drafts, _Repository(), _BoundaryClock()).current(strategy)
+    view = UnifiedFreezeQueries(UnifiedFreezeIndex(), drafts, _FreezeRecords(), _BoundaryClock()).current(strategy)
 
     assert view.status == "not_ready"
     assert view.items == ()

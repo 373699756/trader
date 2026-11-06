@@ -25,9 +25,7 @@ from trader.training.infra.sample_index import (
 from trader.training.infra.sample_index import (
     TrainingSampleMatrix as V3TrainingSampleMatrix,
 )
-from trader.training.infra.sample_index import (
-    TrainingSplitName as V3TrainingSplitName,
-)
+from trader.training.domain.sample_coverage import TrainingSplitName as V3TrainingSplitName
 
 
 class SQLiteV3TrainingSampleIndex(SQLiteTrainingSampleIndex):

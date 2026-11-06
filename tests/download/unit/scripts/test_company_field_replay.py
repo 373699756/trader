@@ -10,7 +10,7 @@ import pytest
 
 from scripts.download.company import company_field_replay as replay
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.shared.configuration import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceIndexFixture
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceIndexFixture
 from trader.download.domain.company_evidence import CompanyListing, DisclosurePage, DisclosurePartition
 from trader.download.domain.company_field_plan import BuildCompanyFieldResults
 from trader.download.domain.company_field_results import CompanyFieldConclusion

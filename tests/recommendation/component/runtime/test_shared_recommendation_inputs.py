@@ -33,7 +33,7 @@ from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
-from tests.helpers.shared.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
+from tests.helpers.recommendation.company_research import PublishedCompanyResearchFixture as PublishedCompanyResearch
 from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection

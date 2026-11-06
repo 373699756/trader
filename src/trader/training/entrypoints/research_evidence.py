@@ -7,67 +7,20 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 import argparse
 import json
 import math
-from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from trader.infra.http_contracts import HttpError, HttpTimeout
 
-if TYPE_CHECKING:
-    from trader.training.application.capability_completion import CapabilityExecution
-    from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
-    from trader.training.application.selection_execution import SelectionResearchExecution
-    from trader.training.domain.evaluation.historical_industry_facts import HistoricalIndustryDatasetReport
-    from trader.training.domain.evaluation.point_in_time_data_qualification import PointInTimeDataQualificationReport
-
-    ResearchEvidenceResult = (
-        CapabilityExecution
-        | CrossStrategyConclusion
-        | HistoricalIndustryDatasetReport
-        | PointInTimeDataQualificationReport
-        | SelectionResearchExecution
-    )
-
-
-@dataclass(frozen=True)
-class CapabilityCommand:
-    runtime_dir: Path
-    artifact_dir: Path
-    code: str
-    anchor_date: date
-    timeout_seconds: float
-
-
-@dataclass(frozen=True)
-class QualificationCommand:
-    history_root: Path
-    code: str
-    anchor_date: date
-    timeout_seconds: float
-
-
-@dataclass(frozen=True)
-class IndustryAuditCommand:
-    history_root: Path
-    required_sample_codes: int
-    tushare_access_points: int
-
-
-@dataclass(frozen=True)
-class HoldoutCommand:
-    parent_artifact_dir: Path
-    output_dir: Path
-
-
-@dataclass(frozen=True)
-class SelectionCommand:
-    evidence_dir: Path
-
-
-ResearchEvidenceCommand = (
-    CapabilityCommand | QualificationCommand | IndustryAuditCommand | HoldoutCommand | SelectionCommand
+from trader.training.application.research_commands import (
+    CapabilityCommand,
+    HoldoutCommand,
+    IndustryAuditCommand,
+    QualificationCommand,
+    ResearchEvidenceCommand,
+    SelectionCommand,
 )
+
 COMMAND_SCHEMAS = {
     "research-h1-capability": ("h1_capability_execution", "probe_failed"),
     "research-data-qualification": ("point_in_time_data_qualification", "probe_failed"),
@@ -108,6 +61,7 @@ def AddResearchEvidenceParsers(subparsers: argparse._SubParsersAction) -> None:
             parser.add_argument("--artifact-dir", type=Path, required=True)
         elif name == "research-terminal-holdout":
             parser.add_argument("--parent-artifact-dir", type=Path, required=True)
+            parser.add_argument("--evidence-dir", type=Path, required=True, help="sealed terminal inputs and durable opening record")
             parser.add_argument("--output-dir", type=Path, required=True)
         elif name == "research-selection":
             parser.add_argument(
@@ -121,20 +75,20 @@ def AddResearchEvidenceParsers(subparsers: argparse._SubParsersAction) -> None:
             parser.add_argument("--include-details", action="store_true")
 
 
-def ExternalPath(value: Path, *, repository_root: Path, option: str) -> Path:
+def ExternalPath(value: Path, *, project_root: Path, option: str) -> Path:
     path = value.expanduser()
     if not path.is_absolute():
         raise ValueError(f"{option} must be an absolute repository-external path")
     resolved = path.resolve()
-    if resolved == repository_root or repository_root in resolved.parents:
+    if resolved == project_root or project_root in resolved.parents:
         raise ValueError(f"{option} must be outside the repository")
     return resolved
 
 
-def ParseEvidenceCommand(args: argparse.Namespace, *, repository_root: Path) -> ResearchEvidenceCommand:
+def ParseEvidenceCommand(args: argparse.Namespace, *, project_root: Path) -> ResearchEvidenceCommand:
     if args.command == "research-selection":
         return SelectionCommand(
-            ExternalPath(args.evidence_dir, repository_root=repository_root, option="--evidence-dir")
+            ExternalPath(args.evidence_dir, project_root=project_root, option="--evidence-dir")
         )
     if args.command in {"research-h1-capability", "research-data-qualification"}:
         from trader.training.domain.evaluation.h1_point_in_time import H1_SOURCE_CUTOFF
@@ -146,7 +100,7 @@ def ParseEvidenceCommand(args: argparse.Namespace, *, repository_root: Path) -> 
     if args.command == "research-h1-capability":
         return CapabilityCommand(
             args.h1_runtime_dir.expanduser().resolve(),
-            ExternalPath(args.artifact_dir, repository_root=repository_root, option="--artifact-dir"),
+            ExternalPath(args.artifact_dir, project_root=project_root, option="--artifact-dir"),
             args.code,
             args.historical_anchor_date,
             _timeout(args.timeout_seconds),
@@ -165,11 +119,12 @@ def ParseEvidenceCommand(args: argparse.Namespace, *, repository_root: Path) -> 
             args.history_root.expanduser().resolve(), args.required_sample_codes, args.tushare_access_points
         )
     if args.command == "research-terminal-holdout":
-        parent = ExternalPath(args.parent_artifact_dir, repository_root=repository_root, option="--parent-artifact-dir")
-        output = ExternalPath(args.output_dir, repository_root=repository_root, option="--output-dir")
-        if parent == output or parent in output.parents or output in parent.parents:
-            raise ValueError("terminal parent and output directories must be separate")
-        return HoldoutCommand(parent, output)
+        parent = ExternalPath(args.parent_artifact_dir, project_root=project_root, option="--parent-artifact-dir")
+        evidence = ExternalPath(args.evidence_dir, project_root=project_root, option="--evidence-dir")
+        output = ExternalPath(args.output_dir, project_root=project_root, option="--output-dir")
+        if any(_overlap(first, second) for first, second in ((parent, output), (parent, evidence), (evidence, output))):
+            raise ValueError("terminal parent, evidence and output directories must be separate")
+        return HoldoutCommand(parent, evidence, output)
     raise ValueError("unknown research evidence command")
 
 
@@ -179,7 +134,7 @@ def _timeout(value: float) -> float:
     return value
 
 
-def RunResearchEvidence(args: argparse.Namespace, *, repository_root: Path, sqlite_policy: SqliteIoPolicy) -> int:
+def RunResearchEvidence(args: argparse.Namespace, *, project_root: Path, config_dir: Path, sqlite_policy: SqliteIoPolicy) -> int:
 
     from trader.bootstrap import ExecuteResearchEvidence
     from trader.training.entrypoints.research_evidence_projection import ProjectEvidenceResult
@@ -187,13 +142,13 @@ def RunResearchEvidence(args: argparse.Namespace, *, repository_root: Path, sqli
     output: Path | None = None
     try:
         if args.output != "-":
-            output = ExternalPath(Path(args.output), repository_root=repository_root, option="--output")
+            output = ExternalPath(Path(args.output), project_root=project_root, option="--output")
         include_details = args.command == "research-industry-audit" and args.include_details
         if include_details and output is None:
             raise ValueError("--include-details requires an external --output path")
-        command = ParseEvidenceCommand(args, repository_root=repository_root)
+        command = ParseEvidenceCommand(args, project_root=project_root)
         _validate_output_separation(command, output)
-        report = ExecuteResearchEvidence(command, sqlite_policy=sqlite_policy)
+        report = ExecuteResearchEvidence(command, config_dir=config_dir, sqlite_policy=sqlite_policy)
         payload, exit_code = ProjectEvidenceResult(report, include_details=include_details)
         if args.command == "research-selection" and output is not None:
             from trader.training.infra.research.selection_reports import PublishSelectionReport
@@ -224,7 +179,7 @@ def _validate_output_separation(command: ResearchEvidenceCommand, summary: Path 
         if _overlap(command.runtime_dir, command.artifact_dir):
             raise ValueError("H1 input and artifact directories must be separate")
     elif isinstance(command, HoldoutCommand):
-        roots = (command.parent_artifact_dir, command.output_dir)
+        roots = (command.parent_artifact_dir, command.evidence_dir, command.output_dir)
     elif isinstance(command, SelectionCommand):
         roots = (command.evidence_dir,)
     else:
@@ -247,7 +202,10 @@ def _write(payload: dict[str, object], output: Path | None) -> None:
 
 
 def _error_code(exc: BaseException, command: str) -> str:
+    from trader.training.application.terminal_holdout_execution import TerminalHoldoutAlreadyOpenedError
 
+    if isinstance(exc, TerminalHoldoutAlreadyOpenedError):
+        return "terminal_holdout_already_opened"
     if isinstance(exc, HttpTimeout):
         return "source_timeout"
     if isinstance(exc, HttpError):

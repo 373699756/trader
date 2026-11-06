@@ -187,7 +187,7 @@ def _sample_evidence(source: Path) -> dict[str, object]:
 
 
 def _parameters(path: Path, *, archived: bool = False) -> tuple[int, TcnFittingParameters]:
-    from trader.infra.settings.training import ReadTrainingConfiguration
+    from trader.training.infra.resource_settings import ReadTrainingConfiguration
 
     if archived:
         # An explicitly supplied frozen comparison may predate the resource schema.
@@ -515,7 +515,7 @@ def Main() -> int:
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
-    from trader.infra.settings.training import LoadTrainingResourceSettings
+    from trader.training.infra.resource_settings import LoadTrainingResourceSettings
     work = args.work_root.resolve()
     project = TOOL_ROOT
     if args.largest_only and (args.quality_only or args.reference_config is not None or args.prepare_only):

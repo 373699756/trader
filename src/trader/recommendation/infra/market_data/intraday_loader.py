@@ -28,11 +28,11 @@ from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, M
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.market_cache_identity import (
     MinuteContentVersion,
-    _add_action_restriction,
-    _minute_version,
-    _source_batch_identity,
+    AddActionRestriction,
+    BuildMinuteVersion,
+    BuildSourceBatchIdentity,
 )
-from trader.recommendation.infra.market_data.market_feature_cache_entries import _IntradayEntry
+from trader.recommendation.infra.market_data.market_feature_cache_entries import IntradayCacheEntry
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.provider_ports import IntradaySource
 
@@ -67,7 +67,7 @@ class _IntradayLoadRequest:
 class _IntradayLoadState:
     request: _IntradayLoadRequest
     result: dict[str, tuple[MinuteBar, ...]]
-    previous: dict[str, _IntradayEntry]
+    previous: dict[str, IntradayCacheEntry]
 
 
 class IntradayLoaderOptions(TypedDict):
@@ -98,7 +98,7 @@ class IntradayLoader:
         self._capacity = max(1, options["capacity"])
         self._monotonic = options["monotonic"]
         self._lock = threading.Lock()
-        self._entries: dict[str, _IntradayEntry] = {}
+        self._entries: dict[str, IntradayCacheEntry] = {}
         self._success_count = 0
         self._error_count = 0
         self._last_error = ""
@@ -168,9 +168,9 @@ class IntradayLoader:
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
         source_lanes = self._runner.source_lanes
         assert source_lanes is not None
-        identity = _source_batch_identity("intraday_minutes", request.codes, request.observed_at)
+        identity = BuildSourceBatchIdentity("intraday_minutes", request.codes, request.observed_at)
         if request.preview_context is not None:
-            identity = _source_batch_identity(
+            identity = BuildSourceBatchIdentity(
                 "intraday_minutes",
                 request.codes,
                 request.observed_at,
@@ -199,7 +199,7 @@ class IntradayLoader:
             return self._retain_after_batch_failure(request)
         for code, restrictions in lane_restrictions.items():
             for restriction in restrictions:
-                _add_action_restriction(request.action_restrictions, code, restriction)
+                AddActionRestriction(request.action_restrictions, code, restriction)
         return lane_result
 
     def _retain_after_batch_failure(
@@ -231,7 +231,7 @@ class IntradayLoader:
                     continue
                 identity = self._intraday_cache_identity(code, request.observed_at)
                 if not cache.is_actionable(identity, max(bar.source_time for bar in bars)):
-                    _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
+                    AddActionRestriction(request.action_restrictions, code, "intraday_data_degraded")
         return fallback
 
     def _load_local(
@@ -252,7 +252,7 @@ class IntradayLoader:
                 if code not in result and entry is not None and entry.expires_at > now:
                     result[code] = entry.bars
                     if entry.degraded:
-                        _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
+                        AddActionRestriction(request.action_restrictions, code, "intraday_data_degraded")
                     self._mark_intraday_actionability(request, code, entry.bars)
         missing = [code for code in request.codes if code not in result]
         if self._client is None:
@@ -278,7 +278,7 @@ class IntradayLoader:
             if lookup is not None and lookup.value is not None and (lookup.state == "fresh" or lookup.retry_suppressed):
                 result[code] = cast(tuple[MinuteBar, ...], lookup.value)
                 if lookup.state == "degraded":
-                    _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
+                    AddActionRestriction(request.action_restrictions, code, "intraday_data_degraded")
         return result
 
     def _fetch_missing_intraday(
@@ -346,7 +346,7 @@ class IntradayLoader:
         if bars or old_entry is None:
             with self._lock:
                 expires_in = min(15.0, ttl) if used_fallback else ttl
-                self._entries[code] = _IntradayEntry(
+                self._entries[code] = IntradayCacheEntry(
                     bars,
                     self._monotonic() + expires_in,
                     degraded=state.request.preview_context is not None and used_fallback,
@@ -383,7 +383,7 @@ class IntradayLoader:
     def _resolve_intraday_result(
         self,
         future: Future[tuple[MinuteBar, ...]],
-        old_entry: _IntradayEntry | None,
+        old_entry: IntradayCacheEntry | None,
     ) -> tuple[tuple[MinuteBar, ...], float, bool]:
         ttl = self._ttl_seconds
         used_fallback = False
@@ -398,7 +398,7 @@ class IntradayLoader:
                 self._last_error = str(exc)[:240]
         else:
             bars, used_fallback = self._record_intraday_success(bars, old_entry)
-        if bars and old_entry is not None and _minute_version(bars) < _minute_version(old_entry.bars):
+        if bars and old_entry is not None and BuildMinuteVersion(bars) < BuildMinuteVersion(old_entry.bars):
             bars = old_entry.bars
             used_fallback = True
             ttl = min(15.0, ttl)
@@ -410,7 +410,7 @@ class IntradayLoader:
     def _record_intraday_success(
         self,
         bars: tuple[MinuteBar, ...],
-        old_entry: _IntradayEntry | None,
+        old_entry: IntradayCacheEntry | None,
     ) -> tuple[tuple[MinuteBar, ...], bool]:
         with self._lock:
             if bars:
@@ -432,7 +432,7 @@ class IntradayLoader:
         cache = self._runner.cache
         if request.preview_context is not None:
             if used_fallback:
-                _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
+                AddActionRestriction(request.action_restrictions, code, "intraday_data_degraded")
             return
         if cache is None:
             return
@@ -451,7 +451,7 @@ class IntradayLoader:
         if used_fallback:
             cache.put_negative(identity, error_code="intraday_refresh_failed")
         if not cache.is_actionable(identity, source_time):
-            _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
+            AddActionRestriction(request.action_restrictions, code, "intraday_data_degraded")
 
     def _consume_intraday_timeouts(
         self,
@@ -466,7 +466,7 @@ class IntradayLoader:
                 self._error_count += 1
                 self._last_error = "intraday_batch_deadline"
                 if code not in state.previous:
-                    self._entries[code] = _IntradayEntry(
+                    self._entries[code] = IntradayCacheEntry(
                         (),
                         self._monotonic() + min(15.0, self._ttl_seconds),
                     )
@@ -475,12 +475,12 @@ class IntradayLoader:
         self,
         request: _IntradayLoadRequest,
         code: str,
-        old_entry: _IntradayEntry | None,
+        old_entry: IntradayCacheEntry | None,
     ) -> None:
         cache = self._runner.cache
         if request.preview_context is not None:
             if old_entry is not None and old_entry.bars:
-                _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
+                AddActionRestriction(request.action_restrictions, code, "intraday_data_degraded")
                 with self._lock:
                     if self._entries.get(code) is old_entry:
                         self._entries[code] = replace(old_entry, degraded=True)
@@ -512,7 +512,7 @@ class IntradayLoader:
             return
         identity = self._intraday_cache_identity(code, request.observed_at)
         if not cache.is_actionable(identity, max(bar.source_time for bar in bars)):
-            _add_action_restriction(request.action_restrictions, code, "intraday_data_degraded")
+            AddActionRestriction(request.action_restrictions, code, "intraday_data_degraded")
 
     def _finalize_intraday_status(self, state: _IntradayLoadState) -> None:
         with self._lock:
@@ -590,7 +590,7 @@ class IntradayLoader:
                 if lookup is not None and lookup.value is not None:
                     result[code] = cast(tuple[MinuteBar, ...], lookup.value)
                     if lookup.state == "degraded":
-                        _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
+                        AddActionRestriction(action_restrictions, code, "intraday_data_degraded")
         with self._lock:
             for code in codes:
                 if code in result:
@@ -605,18 +605,18 @@ class IntradayLoader:
     def _mark_retained_intraday_actionability(
         self,
         code: str,
-        entry: _IntradayEntry,
+        entry: IntradayCacheEntry,
         observed_at: datetime,
         action_restrictions: dict[str, set[str]] | None,
     ) -> None:
         if entry.degraded:
-            _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
+            AddActionRestriction(action_restrictions, code, "intraday_data_degraded")
         cache = self._runner.cache
         if cache is None or not entry.bars or self._preview_context is not None:
             return
         identity = self._intraday_cache_identity(code, observed_at)
         if not cache.is_actionable(identity, max(bar.source_time for bar in entry.bars)):
-            _add_action_restriction(action_restrictions, code, "intraday_data_degraded")
+            AddActionRestriction(action_restrictions, code, "intraday_data_degraded")
 
     def status(self) -> IntradayLoaderStatus:
         with self._lock:
@@ -633,7 +633,7 @@ class IntradayLoader:
                 data_versions=self._data_versions,
             )
 
-    def entries(self) -> Mapping[str, _IntradayEntry]:
+    def entries(self) -> Mapping[str, IntradayCacheEntry]:
         with self._lock:
             return dict(self._entries)
 

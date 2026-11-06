@@ -17,7 +17,11 @@ from threading import RLock
 from trader.infra.process_lock import ProcessLock
 from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.domain.download_failure import DownloadFailureContext
-from trader.download.infra.history_sync_failure import HistoryFailureDetail
+from trader.download.infra.history_sync_failure import (
+    BuildHistoryFailureEvidence,
+    HistoryFailureEvidence,
+    HistoryRemoteFailureError,
+)
 
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
@@ -107,6 +111,11 @@ class _AttemptResult:
 @dataclass(frozen=True)
 class _Ready:
     failure_reason: str | None = None
+    failure_evidence: HistoryFailureEvidence | None = None
+
+    def __post_init__(self) -> None:
+        if (self.failure_reason is None) != (self.failure_evidence is None):
+            raise ValueError("supplier_failure_evidence_required")
 
 
 @dataclass(frozen=True)
@@ -115,7 +124,11 @@ class _Response:
     download: BaoStockCodeDownload | None = None
     failure_reason: str | None = None
     restart_session: bool = False
-    failure_detail: str = ""
+    failure_evidence: HistoryFailureEvidence | None = None
+
+    def __post_init__(self) -> None:
+        if (self.failure_reason is None) != (self.failure_evidence is None):
+            raise ValueError("supplier_failure_evidence_required")
 
 
 class _RateLimitedSdk:
@@ -278,6 +291,7 @@ class BaoStockHistorySupplier:
         failure = "supplier_process_failed"
         max_attempts = policy.retries + 1
         initial_stage, initial_item = _command_progress(command)
+        last_failure: BaseException | None = None
         for attempt_number in range(1, max_attempts + 1):
             if self._monotonic() >= self._request_deadline:
                 raise RuntimeError("supplier_price_total_timeout")
@@ -297,6 +311,11 @@ class BaoStockHistorySupplier:
                     raise RuntimeError("supplier_price_total_timeout")
                 self._publish(state.stage, "completed", attempt, state.current_item, self._elapsed(state))
                 return result.response
+            last_failure = result.failure
+            if last_failure is None and result.response is not None and result.response.failure_evidence is not None:
+                last_failure = HistoryRemoteFailureError(failure, result.response.failure_evidence)
+            if last_failure is None:
+                last_failure = RuntimeError(failure)
             if self._failures is not None:
                 self._failures(DownloadFailureContext(
                     state.stage, code=command.security.code if isinstance(command, _FetchCode) else "",
@@ -304,10 +323,9 @@ class BaoStockHistorySupplier:
                     elapsed_seconds=self._elapsed(state), timeout_seconds=(
                         self._context_policy.timeout_seconds if state.stage == "supplier_login" else policy.timeout_seconds
                     ),
-                    detail=result.response.failure_detail if result.response is not None else "",
                     window_start=command.dates[0] if isinstance(command, _FetchCode) else None,
                     window_end=command.dates[-1] if isinstance(command, _FetchCode) else None,
-                ), result.failure or RuntimeError(failure))
+                ), last_failure)
             self._publish_failure(
                 state.stage,
                 attempt,
@@ -322,7 +340,7 @@ class BaoStockHistorySupplier:
             if attempt.number < attempt.total:
                 next_attempt = _Attempt(attempt.number + 1, attempt.total)
                 self._publish(state.stage, "retrying", next_attempt, state.current_item, 0.0)
-        raise RuntimeError(failure)
+        raise RuntimeError(failure) from last_failure
 
     def _request_once(
         self,
@@ -440,9 +458,14 @@ class BaoStockHistorySupplier:
                 self._publish("supplier_login", "waiting", attempt, None, now - started_at)
                 next_heartbeat = now + self._heartbeat_interval_seconds
         response = parent.recv()
-        if not isinstance(response, _Ready) or response.failure_reason is not None:
+        if not isinstance(response, _Ready):
             self.close()
-            raise RuntimeError(response.failure_reason if isinstance(response, _Ready) else "supplier_protocol_invalid")
+            raise RuntimeError("supplier_protocol_invalid")
+        if response.failure_reason is not None:
+            self.close()
+            if response.failure_evidence is None:
+                raise RuntimeError("supplier_protocol_invalid")
+            raise HistoryRemoteFailureError(response.failure_reason, response.failure_evidence)
         self._publish(
             "supplier_login",
             "completed",
@@ -547,18 +570,21 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                     )
                     connection.send(_Response(download=download))
                 else:
-                    connection.send(_Response(failure_reason="supplier_protocol_invalid"))
+                    failure = RuntimeError("supplier_protocol_invalid")
+                    connection.send(_Response(
+                        failure_reason="supplier_protocol_invalid", failure_evidence=BuildHistoryFailureEvidence(failure),
+                    ))
             except Exception as exc:
                 failure_reason = _failure_code(exc)
                 connection.send(
                     _Response(
                         failure_reason=failure_reason,
                         restart_session=failure_reason == "supplier_query_session_failed",
-                        failure_detail=HistoryFailureDetail(exc),
+                        failure_evidence=BuildHistoryFailureEvidence(exc),
                     )
                 )
     except Exception as exc:
-        connection.send(_Ready(_failure_code(exc)))
+        connection.send(_Ready(_failure_code(exc), BuildHistoryFailureEvidence(exc)))
     finally:
         if sdk is not None:
             LogoutBaostock(sdk)
@@ -578,7 +604,7 @@ def _failure_code(exc: BaseException) -> str:
     value = str(exc).strip()
     if isinstance(exc, ValueError) and value == "BaoStock code download facts do not match its daily batch":
         return "supplier_daily_facts_mismatch"
-    return value if value and len(value) <= 64 and value.replace("_", "").isalnum() else "supplier_failed"
+    return value if value and value.isascii() and len(value) <= 64 and value.replace("_", "").isalnum() else "supplier_failed"
 
 
 def _command_progress(

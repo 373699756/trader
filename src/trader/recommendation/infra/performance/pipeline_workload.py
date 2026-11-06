@@ -24,7 +24,7 @@ from lightgbm import Booster
 from trader.infra.cache import BoundedLruCache
 from trader.infra.cache_contracts import CacheIdentity, CachePolicy, CacheStats
 from trader.infra.serialization.canonical import ContentHash
-from trader.infra.settings import StrategySettings
+from trader.recommendation.infra.settings.models import StrategySettings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanningContext
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import ExecuteCandidatePipeline
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock

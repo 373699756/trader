@@ -206,6 +206,23 @@ def test_repack_build_is_resumable_and_preserves_revision_replay(tmp_path: Path)
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=3)[0]) == 10.0
 
 
+@pytest.mark.parametrize("database", ("catalog.sqlite3", "prices_2026.sqlite3"))
+def test_repack_refuses_changed_publication_receipts_before_moving_the_source(tmp_path: Path, database: str) -> None:
+    source, target, _original = _history(tmp_path)
+    coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture())
+    coordinator.build()
+    before = {name: (source / name).read_bytes() for name in (
+        "catalog.sqlite3", "catalog.sqlite3.sha256", "prices_2026.sqlite3", "prices_2026.sqlite3.sha256",
+    )}
+    receipt = target / f"{database}.sha256"
+    receipt.write_text("invalid fixture receipt", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        coordinator.activate()
+    assert {name: (source / name).read_bytes() for name in before} == before
+    assert receipt.read_text(encoding="utf-8") == "invalid fixture receipt"
+    assert not source.with_name("history-before-repack").exists()
+
+
 @pytest.mark.parametrize("failure_stage", ("partition_replaced:prices_2026.sqlite3", "build_completed"))
 def test_repack_build_recovers_outputs_written_before_their_state_commit(tmp_path: Path, failure_stage: str) -> None:
     source, target, _original = _history(tmp_path)
@@ -273,7 +290,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
 
     expected = object()
     monkeypatch.setattr(
-        "trader.training.infra.engine._run_locked",
+        "trader.training.infra.engine._run_profile_training",
         lambda *_args, **_kwargs: SimpleNamespace(heads=(expected,)),
     )
 
@@ -313,7 +330,7 @@ def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monke
         captured.append(tuple(item.strategy for item in request.contracts))
         return SimpleNamespace(heads=())
 
-    monkeypatch.setattr("trader.training.infra.engine._run_locked", locked)
+    monkeypatch.setattr("trader.training.infra.engine._run_profile_training", locked)
     result = RunRepackV3Training(
         source,
         tmp_path / "data/training/models",

@@ -19,15 +19,15 @@ from trader.infra.signal_cancellation import ManualCancellation
 
 
 def RunDownload(
-    repository_root: Path, config_path: Path, *, quiet_success: bool = False, allow_price_gaps: bool = False, sqlite_policy: SqliteIoPolicy
+    project_root: Path, config_path: Path, *, quiet_success: bool = False, allow_price_gaps: bool = False, sqlite_policy: SqliteIoPolicy
 ) -> int:
     """Run zero-argument initial or incremental archive maintenance."""
 
     from trader.bootstrap import ExecuteHistoryDownload
 
     runtime = LoadRuntimeSettings(config_path)
-    configuration = LoadHistorySyncConfiguration(repository_root, runtime.data_paths)
-    qfq_configuration = LoadQfqWindowConfiguration(repository_root)
+    configuration = LoadHistorySyncConfiguration(project_root, runtime.data_paths)
+    qfq_configuration = LoadQfqWindowConfiguration(project_root)
     progress = StderrHistorySyncProgress()
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         try:
@@ -60,9 +60,9 @@ def RunDownload(
     return 0 if ready else 1
 
 
-def BuildHistorySyncConfiguration(repository_root: Path, config_path: Path) -> HistorySyncConfiguration:
+def BuildHistorySyncConfiguration(project_root: Path, config_path: Path) -> HistorySyncConfiguration:
     runtime = LoadRuntimeSettings(config_path)
-    return LoadHistorySyncConfiguration(repository_root, runtime.data_paths)
+    return LoadHistorySyncConfiguration(project_root, runtime.data_paths)
 
 
 def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:

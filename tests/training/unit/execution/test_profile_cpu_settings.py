@@ -10,7 +10,7 @@ from threading import Barrier
 
 import pytest
 
-from trader.infra.settings.training import LoadTrainingResourceSettings
+from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 from trader.training.application.resources import TrainingProfileThreads
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 

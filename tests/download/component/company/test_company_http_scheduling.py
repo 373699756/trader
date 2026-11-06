@@ -6,7 +6,8 @@ from dataclasses import replace
 import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.shared.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture
+from tests.helpers.download.configuration import DownloadFailureConfigurationFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader import bootstrap
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.infra.company_http import CompanyRequestPacer
@@ -63,6 +64,7 @@ def test_directory_does_not_consume_the_download_host_budget_and_all_clients_clo
         return bootstrap._sync_company_evidence(
             DataPaths(tmp_path), None, request, sqlite_policy=SqlitePolicyFixture(),
             failure_configuration=DownloadFailureConfigurationFixture(),
+            shutdown_timeout_seconds=3.0,
         )
 
     if fail:

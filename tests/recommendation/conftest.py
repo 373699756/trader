@@ -1,6 +1,7 @@
 import pytest
 
 from trader.infra.workers import BoundedExecutor
+from tests.helpers.shared.worker_cleanup import StopFixtureWorkers
 
 
 @pytest.fixture
@@ -10,4 +11,4 @@ def market_worker_pool():
     try:
         yield pool
     finally:
-        pool.stop(cancel_futures=True)
+        StopFixtureWorkers(pool)

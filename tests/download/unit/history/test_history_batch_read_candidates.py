@@ -10,7 +10,7 @@ from tests.helpers.download.history_fixtures import RunHistoryFixture
 from tests.helpers.download.history.infra.history_sync import NOW, FakeSupplier, _configuration, _download
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_direct_prices import HistoryDirectPrices, HistoryPriceResult
-from trader.download.infra.history_download_index import HistoryDownloadTask
+from trader.download.domain.history_download import HistoryDownloadTask
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 

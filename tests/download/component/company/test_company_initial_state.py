@@ -9,12 +9,8 @@ from tests.helpers.download.company import company_evidence as fixtures
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import CompanyListing, Disclosure, DisclosurePage, DisclosurePartition
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
-from tests.helpers.shared.configuration import (
-    CompanyEvidenceRequestFixture as CompanyEvidenceRequest,
-    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
-    CompanyDocumentFilesFixture as CompanyDocumentFiles,
-    SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader,
-)
+from tests.helpers.download.configuration import CompanyEvidenceRequestFixture as CompanyEvidenceRequest
+from tests.helpers.download.company_resources import SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex, CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.entrypoints.sync_projection import ProjectSyncResult

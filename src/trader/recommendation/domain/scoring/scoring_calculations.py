@@ -48,7 +48,7 @@ _NORMALIZED_FIELDS: Mapping[str, tuple[str, bool]] = {
 }
 
 
-def _normalize_features(
+def NormalizeScoringFeatures(
     features: Sequence[FeatureSnapshot],
     reference_values: Mapping[str, Sequence[float]],
     data_version: str,
@@ -90,7 +90,7 @@ def _normalize_features(
     return tuple(normalized), stats
 
 
-def _distributions(
+def BuildScoringDistributions(
     features: Sequence[FeatureSnapshot],
 ) -> dict[str, tuple[float, ...]]:
     result: dict[str, tuple[float, ...]] = {}
@@ -157,16 +157,6 @@ def _band_or_none(
     )
 
 
-def SupportedWeight(
-    strategy: Strategy,
-    values: Mapping[str, float | None],
-    weights: Mapping[str, float],
-    *,
-    phase: str | None = None,
-) -> float:
-    return _supported_weight(strategy, values, weights, phase=phase)
-
-
 def ReliabilityFields(
     strategy: Strategy,
     weights: Mapping[str, float],
@@ -181,7 +171,7 @@ def ReliabilityFields(
     return tuple(sorted(fields))
 
 
-def _supported_weight(
+def SupportedWeight(
     strategy: Strategy,
     values: Mapping[str, float | None],
     weights: Mapping[str, float],
@@ -204,7 +194,7 @@ def _supported_weight(
     return min(1.0, max(0.0, reliability))
 
 
-def _base_reliability(values: Mapping[str, float | None]) -> float:
+def CalculateBaseReliability(values: Mapping[str, float | None]) -> float:
     fields = tuple(
         name
         for component_fields in _LOCAL_COMPONENT_INPUTS.values()
@@ -217,7 +207,7 @@ def _base_reliability(values: Mapping[str, float | None]) -> float:
 
 
 @dataclass(frozen=True)
-class _PopulationVersionIdentity:
+class PopulationVersionIdentity:
     board: Board
     trade_date: str
     phase: str
@@ -230,8 +220,8 @@ class _PopulationVersionIdentity:
     reference_hash: str
 
 
-def _population_version(
-    identity: _PopulationVersionIdentity,
+def BuildPopulationVersion(
+    identity: PopulationVersionIdentity,
 ) -> str:
     coordinates = (
         identity.board.value,
@@ -248,7 +238,7 @@ def _population_version(
     return f"population:{hashlib.sha256(repr(coordinates).encode()).hexdigest()}"
 
 
-def _liquidity_bucket(value: float | None, p50: float | None, p80: float | None) -> str:
+def ClassifyLiquidityBucket(value: float | None, p50: float | None, p80: float | None) -> str:
     if value is None or not math.isfinite(value) or value <= 0.0 or p50 is None or p80 is None:
         return "unknown"
     if value < p50:
@@ -258,7 +248,7 @@ def _liquidity_bucket(value: float | None, p50: float | None, p80: float | None)
     return "high_capacity"
 
 
-def _quantile(values: Sequence[float], probability: float) -> float | None:
+def CalculateScoringQuantile(values: Sequence[float], probability: float) -> float | None:
     finite = sorted(float(value) for value in values if math.isfinite(float(value)))
     if not finite:
         return None
@@ -274,7 +264,7 @@ def _finite_value(value: float | None) -> bool:
     return value is not None and math.isfinite(float(value))
 
 
-def _value_or_missing(value: float | None) -> bool:
+def IsValueMissing(value: float | None) -> bool:
     return not _finite_value(value)
 
 
@@ -282,7 +272,7 @@ def _positive_finite(value: float | None) -> bool:
     return value is not None and math.isfinite(value) and value > 0.0
 
 
-def _default_competition_group(item: FeatureSnapshot) -> tuple[str, str, str]:
+def BuildDefaultCompetitionGroup(item: FeatureSnapshot) -> tuple[str, str, str]:
     group = item.quote.industry.strip() or "unknown"
     return group, "coarse_industry_fallback", "industry:fallback"
 
@@ -297,4 +287,18 @@ def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values)
 
 
-__all__ = ["MAX_FALLBACK_SESSIONS", "MIN_BOARD_SAMPLE", "ReliabilityFields", "SupportedWeight"]
+__all__ = [
+    "MAX_FALLBACK_SESSIONS",
+    "MIN_BOARD_SAMPLE",
+    "ReliabilityFields",
+    "SupportedWeight",
+    "NormalizeScoringFeatures",
+    "BuildScoringDistributions",
+    "CalculateBaseReliability",
+    "PopulationVersionIdentity",
+    "BuildPopulationVersion",
+    "ClassifyLiquidityBucket",
+    "CalculateScoringQuantile",
+    "IsValueMissing",
+    "BuildDefaultCompetitionGroup",
+]

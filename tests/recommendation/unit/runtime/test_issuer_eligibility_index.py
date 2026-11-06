@@ -9,7 +9,7 @@ import pytest
 
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 
-from tests.helpers.shared.configuration import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
+from tests.helpers.download.company_resources import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
 
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 

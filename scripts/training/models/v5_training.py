@@ -35,7 +35,8 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_reference_index import ReadBoundHistoryReference
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
-from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.bootstrap import ExecuteHistorySync
+from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.disk_probe import DiskProbe
@@ -152,12 +153,12 @@ def _probe(source: Path, work: Path, *, sample_settings: TrainingSampleSettings,
     context = replace(context, reference_id=subset.identity)
     export_started = time.monotonic()
     with ThreadPoolExecutor(max_workers=1) as workers:
-        exported = RunHistorySync(
+        exported = ExecuteHistorySync(
             configuration,
             _FrozenSubsetSupplier(source, state.snapshot, context, sqlite_policy=sqlite_policy),
-            worker_pool=workers,
-            disk_kind=DiskProbe().inspect(configuration.history_root).kind,
-            clock=lambda: datetime.combine(state.snapshot.data_cutoff, daytime(20, 30), ZoneInfo("Asia/Shanghai")), sqlite_policy=sqlite_policy,
+            clock=lambda: datetime.combine(state.snapshot.data_cutoff, daytime(20, 30), ZoneInfo("Asia/Shanghai")),
+            sqlite_policy=sqlite_policy,
+            resources=HistorySyncResources(worker_pool=workers, disk_kind=DiskProbe().inspect(configuration.history_root).kind),
         )
     if exported.snapshot_hash is None:
         raise ValueError("V5 isolated source export did not publish")
@@ -223,7 +224,7 @@ def Main() -> int:
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
-    from trader.infra.settings.training import LoadTrainingResourceSettings
+    from trader.training.infra.resource_settings import LoadTrainingResourceSettings
     runtime = LoadRuntimeSettings(args.runtime_config)
     sqlite_policy = BuildSqlitePolicy(runtime)
     sample_settings = LoadTrainingResourceSettings(runtime.project_root, runtime.disk_medium or "unknown").samples

@@ -481,13 +481,45 @@ V5 同时报共同覆盖与完整总体，不能通过缩窄样本、降低行�
 
 ### 15.5 独立验收与一次终端留出
 
-按交易日滚动验证，同日同分区，边界至少隔离5个交易日并核对标签成熟；隔离期与统计区块不是同一个参数。调参、校准、独立确认、终端留出分别隔离，多个候选比较须考虑区块依赖和统计校正。
+以下逐项承接现行[评分设计第12节](../c_评分设计.md#12-收益验证与变更门禁)的收益门与统计口径，不新增阈值，也不表示已执行或通过。新稿不自动替代现行运行合同；后面的实现核对只说明当前消费者及尚未接通的边界。
 
-在20bp、50bp完整往返成本下评价成本后收益，报告相对基线配对增量及置信区间；100bp只作压力。回撤、严重亏损、换手、覆盖、不可交易率、容量、滑点和延迟退出一起报告。固定完整方案后，至少200个未见交易日的终端留出只开启一次，失败不继续在留出调参。
+| 验收项目 | 固定要求与数值出处 |
+| --- | --- |
+| 点时及日期隔离 | 按交易日滚动验证，同日同分区；训练、早停、校准、确认和终端留出不重叠，边界至少隔离5个交易日并核对标签成熟。日线、行业、分钟和事件须证明当时可见；前置资格不足保持`historical_data_insufficient`，零读取后续收益。见现行12.2第1–4项 |
+| 区块、重复数与显著性 | 有限参数族确认使用移动区块：Tomorrow默认5日，D25默认且至少10日；10000次bootstrap、Holm 0.05校正及95%置信区间。隔离期与统计区块不同；其它已注册研究保留自身区块设置，新研究先固定依赖处理、敏感性检查、参数族和停止条件，不能看结果后换参数。见现行12.2第5项 |
+| 成本与收益准入 | 每个持有期只扣一次完整买卖成本，20bp主评价、50bp稳健性；两场景相对同日同策略合格可交易总体等权基准的净收益置信下界都须>0，并报告相对固定对照的配对增量，收益排序须改善。100bp只报告压力，保留原选择、不重排、不恢复veto或丢弃转亏样本。见现行12.1、12.2第6项及12.4 |
+| 风险、换手与容量 | 严重亏损、回撤、换手和容量不得劣化，同时报告覆盖、不可交易率、滑点及延迟退出压力；不得用缺标签或删去不可交易样本制造改善。见现行12.1第2、5项及12.2第6项 |
+| 严重亏损单位 | `MAE=min(0,min(low/entry_price−1))`，`MAE/ATR20=MAE/(ATR20_at_entry/entry_price)`；两者均≤0。Tomorrow的MAE/ATR20≤−1.5倍、D25≤−2.5倍为严重亏损，不是收益−1.5%/−2.5%。盘中不使用进场前低价，15:00当日区间只有锚点；ATR20缺失不伪造风险标签。见现行12.1第3–5项 |
+| 召回与覆盖门 | 全体及逐板有效覆盖≥95%；Oracle Top20召回的95%置信下界≥95%，Top50下界≥90%。oracle须精确求解同一人口、成本、席位与板限，可保留现金，不用事后收益贪心排序冒充上界。见现行12.4 |
+| 完整报告 | 报Rank IC、NDCG@6、Q1–Q5单调性、Top10/20/50及Top6净超额、胜率、回撤、严重亏损、换手、容量、不可交易率和分年/市场状态表现；亏损概率另报Brier/ECE，预测区间报覆盖率，模型/窗口分歧、OOD及缺失不确定性分桶核验。见现行12.2第8项及12.4 |
+| 一次留出与授权 | 开发及独立确认完成、完整选择链和全部身份固定后，至少200个未见交易日只原子开启一次；重复开启返回`terminal_holdout_already_opened`，失败不返回留出调参。历史通过仍为`production_authority=false`，前瞻Shadow与人工生产授权独立，不自动调参、启用或回退。见现行12.2第7、9项 |
 
-具体收益数值门槛和统计参数须从现行评分合同第12节逐项核对到新文档，未核对前不得自行另定或声称通过。D25机会标签、固定六槽贡献、入选均值和真实资金收益分开；没有重叠持仓、占用与退出规则不年化为资金收益。
+D25机会标签、固定六槽贡献、入选均值和真实资金收益分别报告。六槽指标以选中净超额之和除以6，未用槽贡献0，父日期等权；入选均值另列入选数和空仓日。没有重叠持仓、资金占用、现金基准与退出规则，不把机会标签或六槽指标年化为资金收益。旧独立复核的每板最多3、每行业最多2与生产每板最多4、无行业限额属于不同研究身份，不能互代通过证据；当前完整总体研究身份为`eleven_layer_full_population`。见现行12.1及12.4。
 
-D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术平均；只补已成熟且缺失的结算，已保存结果不因后来价格修订改写。raw用于交易可行性事实，qfq用于可比收益；盘中raw锚点按推荐日同源raw/qfq关系换算，不能直接和另一口径的退出价相除。缺交易日、停牌、不可退出和基准缺失分别记录。未建模的风险概率保持“未建模”，不拿总体严重亏损频率冒充个股概率。
+研究进场锚点为D日15:00，价格有限且为正，须有当时生效资格与交易状态；该锚点不证明实际可成交。Tomorrow退出为T+1前复权收盘；D25包含T+2、T+3、T+4、T+5四个期限，逐期计算`exit_price/entry_price−1−benchmark_return−round_trip_cost`再取四项算术平均，不能取未来最高价。只补已成熟且缺失的结算，已保存结果不因后来价格修订改写。raw用于交易可行性事实，qfq用于可比收益；盘中raw锚点按推荐日同源raw/qfq关系换算，不能直接和另一口径的退出价相除。退出不可卖仍保留可信收盘估值，无有效收盘才沿用前有效价，并另报延迟退出压力。缺交易日、停牌、不可退出和基准缺失分别记录。未建模的风险概率保持“未建模”，不拿总体严重亏损频率冒充个股概率。收益及退出口径见现行12.1，结算原件保护另见本篇第12章。
+
+#### 当前配置及实际消费者
+
+`config/research.json`由`training/infra/research_settings.py::LoadResearchSettings`解析为domain的不可变`ResearchSettings`，与成本场景组成`ResearchExecutionPlan`。`bootstrap.ExecuteResearchEvidence`把同一计划注入完整总体选择与终端留出用例；下列校验都发生在收益行读取前，不表示已运行真实研究：
+
+| 配置叶字段 | 当前值与约束 | 当前消费边界 |
+| --- | --- | --- |
+| `terminal_holdout_sessions` | `200`，整数且≥200，不接受bool | 选择计划的未开留出分区及终端输入元数据都须达到该值；纯评价的200日安全下限保留 |
+| `embargo_sessions.tomorrow/d25` | 均为`5`，整数且≥5，不接受bool | 按策略校验选择计划两个分区边界的隔离日数，证据不足拒绝读取收益 |
+| `fit_date_candidates[].dates` | V2为`[750,1000,1250]`、V3为`[500,750,1000]`；按profile具名，日期数为递增、去重正整数 | 选择计划训练日期数必须属于对应档位候选；只验已封存输入，不自动启动网格或生产训练 |
+| `ablation_arms` | 固定顺序`rule_only/rule_model_gate/industry_model_utility/pooled_model_utility` | 与完整总体四臂合同一致，并参与实际执行所核配置摘要 |
+| `deepseek_comparison_arms` | 固定`local_only/structured_facts_veto` | 参与不可变计划身份，不启动DeepSeek请求；增量研究仍按本章暂缓 |
+
+`research-status`公开计划摘要和实际设置；选择证据的`configuration_hash/cost_reference_hash`须匹配该计划。成本20/50/100bp由`config/cost.json`经`training/infra/research_settings.py::LoadEvaluationCostScenarios`解析并注入；在线成本仍由荐股持有。统计区块、重复数、Holm与置信区间不在`research.json`中，仍遵守各研究身份的纯计算合同。
+
+实现核对如下，均只说明已有能力及适用研究身份，不签真实收益通过：
+
+- `domain/evaluation/historical_candidate_confirmation.py`的`CandidateConfirmationPlan`默认10000次、Holm alpha 0.05，按策略默认5/10日区块且拒绝D25小于10日；同时核20/50bp绝对收益与配对增量的正下界。该计划允许显式传入其它合法alpha和重复数，执行时仍须与预登记及上述门核对，不能仅以“对象可构造”签合同一致。
+- `domain/evaluation/selection_experiment.py`固定完整总体研究的5/10日区块、10000次、六席及每板最多4，但当前只接受V2/V3的校准/确认分区；`selection_statistics.py`在20/50bp上按预登记族做Holm 0.05。共用`paired_statistics.py::PairedMovingBlockStatistics`以2.5%和97.5%分位构成95%区间。它们不是四档八头自动执行与统一验收入口；召回归因报告的计数也不等于上述95%置信下界已取得。
+- `domain/evaluation/terminal_holdout.py`已有200日、正收益/配对增量及bootstrap下界、排序、严重亏损、回撤、容量等门；但换手仍允许相对旧对照增加至`0.05`，与本节“不得劣化”不同，不能据该旧门直接签新要求通过。`selection_experiment.py`按策略核MAE/ATR20的−1.5/−2.5标签；终端评价消费已提供的风险标签，不能据其运行反推原始点时风险证据完整。
+- `application/terminal_holdout_execution.py`先核父候选资格，再核计划、两策略父摘要、候选摘要及交易日预算；合法行由`TerminalHoldoutInputFiles`解码为不可变类型。`research-terminal-holdout`显式指定彼此分离的`--parent-artifact-dir/--evidence-dir/--output-dir`；父目录只接受当前`terminal_parents.json`，不再把H1资料能力状态冒充候选就绪。证据目录的`plan.json`绑定计划与两头行文件摘要、日期和行数，收益位于`tomorrow.jsonl/d25.jsonl`。开启记录`terminal_opened.json`追加在固定父目录，独占发布及同步完成后才读收益；换输出或收益目录不能再次开启，同一父目录内失败也不撤销记录。报告仍可按原内容幂等发布，不能重算留出。仅具备当前元数据不代表真实点时证据合格；本批不读取真实留出、不改配置或旧报告。
+
+当前父投影必须显式包含完整`date_split`，就绪父不接受null；训练、早停、校准、确认、两段隔离及终端日期须通过原日期合同，隔离和日数另核当前配置。收益元数据日期必须精确等于父计划的未见终端日期，不能以任意200日替代。元数据和JSONL统一经普通文件描述符及长度／行数边界读取，特殊文件及链接拒绝；这些输入校验和一次开启仍须由真实合格研究资料取证，fixture不代表收益门通过。
 
 ### 15.6 前瞻观察与生产切换
 
@@ -650,7 +682,7 @@ D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术�
 
 #### cost.json
 
-来源：`config/cost.json`。`infra/scoring/cost_settings.LoadExecutionCostPolicy/LoadEvaluationCostScenarios` → 在线成本与离线成本场景。基础小数收益/倍数非负；评估场景当前合同固定20/50/100bp；在线0.002为20bp，不是0.002个百分点。
+来源：`config/cost.json`。`recommendation/infra/scoring/cost_settings.LoadExecutionCostPolicy`持有在线成本；`training/infra/research_settings.LoadEvaluationCostScenarios`持有离线成本场景。基础小数收益/倍数非负；评估场景当前合同固定20/50/100bp；在线0.002为20bp，不是0.002个百分点。
 
 | 字段路径 | 中文作用 | 当前值 |
 | --- | --- | --- |
@@ -1069,7 +1101,7 @@ D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术�
 | `FeatureBuilder`的quote_factor_inputs | 股票/观察日、辅助权重policy hash、schema；并复核真实_QuoteFactorInputs及FactorHistory等值 | 价/高低/涨幅/量/额/振幅/限幅事实、历史修订或policy变则重算；仅接收时间/模型长窗列变不重算共同基础量。并发coalesce返回后再次核实事实，不能借latest槽消费别人新输入 |
 | `BuildCrossSectionFeatures` | 全总体代码/顺序、行业/涨速/涨幅/来源日期、所有实际历史基础量、data_version | 成员、实际值/缺失集合或版本变化失效；接收时间/模型专用值不影响算术身份。定向请求投影完整reference，不重算小样本分母；受market_cross_section容量/组预算约束 |
 | 板内cross-section | board、merge_epoch、交易日、phase、data/schema版本、reference_hash；population_version绑定回退日/年龄 | 不同板、阶段、总体、窗口/批次隔离；固定参照可对不同请求子集投影。当前有效样本不足100才考虑≤5交易日旧参照，过龄为stale，不能当当前齐备 |
-| `SharedModelFeatureCache` | `_ModelRowContract`与每个代码的typed row identity；矩阵按FeatureFactRevision和ExposureContract复用 | horizon/列合同/真实行业/流动性/输入/总体改变失效。只共享相同计算的行/矩阵，不共享不同模型预测；LRU默认1份，真实驻留/峰值仍由D测量 |
+| `SharedModelFeatureCache` | `_ModelRowContract`与每个代码的typed row identity；矩阵按FeatureFactRevision和ExposureContract复用 | horizon/列合同/真实行业/流动性/输入/总体改变失效。只共享相同计算的行/矩阵，不共享不同模型预测；LRU默认1份，真实驻留/峰值由C内部唯一性能后台测量 |
 | 各头ModelScoringService | 模型实例身份、阶段依赖修订、变换输入；预测/成本参考/缺失集合都相同才复用最终batch | 各档各头独立状态。成本参考键含profile/strategy/model/population、成本参数、代码/板/Amihud及merge_epoch，最多留1份；小请求使用原完整参考，V5必需输入先核验 |
 | 分钟内容身份 | `MinuteContentVersion`含排序后的来源时间/source/close/volume内容 | 真实分钟或来源时间改变失效；仅received_time改变不使内容变新；原年龄不刷新。跨档Future等待者取消只结束自己的等待（340） |
 | 正式freeze只读缓存 | 库路径摘要、strategy、日期与规范记录身份 | committed字节不可变；新增commit先丢弃日期目录scope；quarantine不伪造原记录。Long无此缓存路径；查询不得创建缺失库 |

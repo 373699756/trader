@@ -3,7 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[4]
 
 
-def test_industry_audit_is_separate_from_daily_archive_and_has_no_automatic_authority() -> None:
+def test_industry_audit_is_separate_from_daily_evidence_and_has_no_automatic_authority() -> None:
     domain = ROOT / "src/trader/training/domain/evaluation/historical_industry_facts.py"
     adapter = ROOT / "src/trader/training/infra/research/historical_industry_evidence.py"
     script = ROOT / "src/trader/training/entrypoints/research_evidence.py"

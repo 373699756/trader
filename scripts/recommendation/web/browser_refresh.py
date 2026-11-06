@@ -24,6 +24,7 @@ from typing import Any, Literal, Protocol
 from werkzeug.serving import WSGIRequestHandler, make_server
 
 from scripts.core.reporting import emit_report
+from scripts.recommendation.web.browser_session import ChromeSession
 
 PROJECT_ROOT = TOOL_ROOT
 
@@ -827,9 +828,9 @@ def _live_browser_session() -> Iterator[tuple[str, _LiveBrowser]]:
     """Prefer the existing Chrome path; own a bounded Firefox session when Chrome is absent."""
     binary = shutil.which("google-chrome") or shutil.which("chromium")
     if binary is not None:
-        from tests.helpers.recommendation.desktop_dashboard import _ChromeSession
+        from trader.bootstrap import OpenExternalHttp
 
-        chrome = _ChromeSession(binary, _free_port())
+        chrome = ChromeSession(binary, _free_port(), open_http=OpenExternalHttp)
         try:
             yield "chrome", chrome
         finally:

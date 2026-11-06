@@ -15,11 +15,9 @@ from scripts.recommendation.long.long_watchlist import financial_admission
 from scripts.recommendation.long.long_watchlist import historical_exclusions
 from scripts.core.catalog import SelectionArguments
 from trader.download.domain.company_evidence import CompanyFinancial, StructuredCompanyPage, StructuredCompanyQuery
-from tests.helpers.shared.configuration import (
-    CompanyDocumentFilesFixture as CompanyDocumentFiles,
-    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
-)
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex
+from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityReason
 from trader.recommendation.domain.market.research import FinancialReport

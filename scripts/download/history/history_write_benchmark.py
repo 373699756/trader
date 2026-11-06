@@ -43,7 +43,8 @@ from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
-from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.bootstrap import ExecuteHistorySync
+from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.history_write_tuning import (
     HistoryWriteTuning,
 )
@@ -257,13 +258,13 @@ def _measure_case(
     stage_times = _StageTimes()
     publication = HistoryPublicationMeasurement() if publication_profile else None
     with DatabaseMeasurement(config.history_root) as measurement, publication if publication is not None else nullcontext():
-        result = RunHistorySync(
+        result = ExecuteHistorySync(
             config,
             supplier,
             clock=_clock(now),
-            write_tuning=tuning,
             progress=stage_times,
-            disk_kind=disk_kind or DiskProbe().inspect(config.history_root).kind, sqlite_policy=sqlite_policy,
+            sqlite_policy=sqlite_policy,
+            resources=HistorySyncResources(write_tuning=tuning, disk_kind=disk_kind or DiskProbe().inspect(config.history_root).kind),
         )
     sync_seconds = time.monotonic() - started
     rows = 0
@@ -324,14 +325,14 @@ def MeasureHistoryWrites(
         interrupted = _StageTimes(cancel_after=max(1, size // 2))
         now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
         supplier.publish_reference(config.reference_root / "company_st.sqlite3", now.date(), config.sessions)
-        seeded = RunHistorySync(
+        seeded = ExecuteHistorySync(
             resume_config,
             supplier,
             clock=_clock(now),
             cancel_requested=lambda: interrupted.cancelled,
-            write_tuning=HistoryWriteTuning(1, sessions, max_codes=1, max_cells=sessions),
             progress=interrupted,
-            disk_kind=disk_kind or DiskProbe().inspect(resume_config.history_root).kind, sqlite_policy=sqlite_policy,
+            sqlite_policy=sqlite_policy,
+            resources=HistorySyncResources(write_tuning=HistoryWriteTuning(1, sessions, max_codes=1, max_cells=sessions), disk_kind=disk_kind or DiskProbe().inspect(resume_config.history_root).kind),
         )
         if seeded.state != "cancelled":
             raise RuntimeError("history_write_resume_seed_failed")

@@ -3,7 +3,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from trader.download.application.company_exclusions import PublishCompanyExclusions
-from tests.helpers.shared.configuration import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
+from tests.helpers.download.company_resources import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
 from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 

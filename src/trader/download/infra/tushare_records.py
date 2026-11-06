@@ -118,7 +118,7 @@ def BuildTushareSdk(
     return _TushareSdkClientAdapter(pro_api(token, timeout=timeout_seconds), token, timeout_seconds, session_factory)
 
 
-def _records(value: object) -> list[Mapping[str, object]]:
+def ReadTushareRecords(value: object) -> list[Mapping[str, object]]:
     if hasattr(value, "to_dict"):
         raw = value.to_dict(orient="records")
     else:
@@ -128,7 +128,7 @@ def _records(value: object) -> list[Mapping[str, object]]:
     return [row for row in raw if isinstance(row, Mapping)]
 
 
-def _security_master_observation(
+def BuildTushareSecurityMasterObservation(
     row: Mapping[str, object],
     observed_at: datetime,
     received_at: datetime,
@@ -168,7 +168,7 @@ def _security_master_observation(
     )
 
 
-def _calendar_observation(
+def BuildTushareCalendarObservation(
     row: Mapping[str, object],
     observed_at: datetime,
     received_at: datetime,
@@ -197,7 +197,7 @@ def _calendar_observation(
     )
 
 
-def _generic_observation(
+def BuildTushareObservation(
     dataset: str,
     row: Mapping[str, object],
     observed_at: datetime,
@@ -236,7 +236,7 @@ def _observation(
     )
 
 
-def _failed_observation(
+def BuildFailedTushareObservation(
     dataset: str,
     observed_at: datetime,
     received_at: datetime,
@@ -260,11 +260,11 @@ def _failed_observation(
     )
 
 
-def _data_version(dataset: str, observed_at: datetime, received_at: datetime) -> str:
+def BuildTushareDataVersion(dataset: str, observed_at: datetime, received_at: datetime) -> str:
     return f"tushare-{dataset}:{observed_at.isoformat()}:{received_at.isoformat()}"
 
 
-def _error_code(exc: Exception) -> str:
+def ClassifyTushareError(exc: Exception) -> str:
     if isinstance(exc, (_TushareApiError, ModuleNotFoundError)):
         return f"provider_error_{exc.provider_code}" if isinstance(exc, _TushareApiError) else "sdk_not_installed"
     if isinstance(exc, PermissionError):
@@ -292,12 +292,12 @@ def _code_from_row(row: Mapping[str, object]) -> str | None:
     return value if len(value) == 6 and value.isdigit() else None
 
 
-def _ts_code(code: str) -> str:
+def FormatTushareCode(code: str) -> str:
     return f"{code}.SH" if code.startswith(("600", "601", "603", "605", "688", "689")) else f"{code}.SZ"
 
 
 def _exchange_for_code(code: str) -> str:
-    return "SSE" if _ts_code(code).endswith(".SH") else "SZSE"
+    return "SSE" if FormatTushareCode(code).endswith(".SH") else "SZSE"
 
 
 def _board_from_market(market: str, code: str) -> str:
@@ -336,7 +336,7 @@ def _truthy(value: object) -> bool:
     return value is True or value == 1 or str(value).strip() == "1"
 
 
-def _calendar_ranges(start_date: date, end_date: date) -> tuple[tuple[date, date], ...]:
+def BuildTushareCalendarRanges(start_date: date, end_date: date) -> tuple[tuple[date, date], ...]:
     ranges: list[tuple[date, date]] = []
     cursor = start_date
     while cursor <= end_date:
@@ -348,7 +348,7 @@ def _calendar_ranges(start_date: date, end_date: date) -> tuple[tuple[date, date
     return tuple(ranges)
 
 
-def _percentile(values: Sequence[float], quantile: float) -> float | None:
+def CalculateTushareLatencyPercentile(values: Sequence[float], quantile: float) -> float | None:
     if not values:
         return None
     ordered = sorted(values)
@@ -356,7 +356,7 @@ def _percentile(values: Sequence[float], quantile: float) -> float | None:
     return round(ordered[index], 2)
 
 
-def _require_aware(value: datetime) -> None:
+def RequireTushareAwareTime(value: datetime) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("Tushare observed_at must be timezone-aware")
 
@@ -364,15 +364,15 @@ def _require_aware(value: datetime) -> None:
 __all__ = [
     "BuildTushareSdk",
     "TushareSdk",
-    "_calendar_observation",
-    "_calendar_ranges",
-    "_data_version",
-    "_error_code",
-    "_failed_observation",
-    "_generic_observation",
-    "_percentile",
-    "_records",
-    "_require_aware",
-    "_security_master_observation",
-    "_ts_code",
+    "BuildTushareCalendarObservation",
+    "BuildTushareCalendarRanges",
+    "BuildTushareDataVersion",
+    "ClassifyTushareError",
+    "BuildFailedTushareObservation",
+    "BuildTushareObservation",
+    "CalculateTushareLatencyPercentile",
+    "ReadTushareRecords",
+    "RequireTushareAwareTime",
+    "BuildTushareSecurityMasterObservation",
+    "FormatTushareCode",
 ]

@@ -40,7 +40,7 @@ class _Freezes:
         return None
 
 
-def _repository(tmp_path: Path, record: CommittedFreezeRecord | None = None):
+def _index(tmp_path: Path, record: CommittedFreezeRecord | None = None):
     return SQLiteOutcomeEvidenceIndex(tmp_path, _Freezes(record), sqlite_policy=SqlitePolicyFixture())
 
 
@@ -94,9 +94,9 @@ def test_pending_targets_are_derived_only_from_selected_formal_freezes(tmp_path:
         NOW,
         "scheduled",
     )
-    repository = _repository(tmp_path, formal)
+    index = _index(tmp_path, formal)
 
-    targets = repository.pending_outcome_targets(limit=10)
+    targets = index.pending_outcome_targets(limit=10)
 
     assert len(targets) == 1
     assert targets[0].snapshot_id == formal.version
@@ -112,9 +112,9 @@ def test_pending_target_does_not_fabricate_zero_atr_when_downside_is_unavailable
         NOW,
         "scheduled",
     )
-    repository = _repository(tmp_path, formal)
+    index = _index(tmp_path, formal)
 
-    targets = repository.pending_outcome_targets(limit=10)
+    targets = index.pending_outcome_targets(limit=10)
 
     assert len(targets) == 1
     assert targets[0].atr20_pct is None
@@ -156,19 +156,19 @@ def test_recommend_and_watch_outcomes_are_counted_separately_from_avoided_leader
         selection_diagnostics=None,
     )
     formal = CommittedFreezeRecord(FormalScoredFreeze(current), NOW, "scheduled")
-    repository = _repository(tmp_path, formal)
+    index = _index(tmp_path, formal)
 
-    assert {target.stock_code for target in repository.pending_outcome_targets(limit=10)} == {
+    assert {target.stock_code for target in index.pending_outcome_targets(limit=10)} == {
         "600002",
         "600003",
     }
-    repository.save_recommendation_outcomes(
+    index.save_recommendation_outcomes(
         (
             _outcome(snapshot_id=formal.version, stock_code="600002", net_excess_return_pct=1.2),
             _outcome(snapshot_id=formal.version, stock_code="600003", net_excess_return_pct=-0.4),
         )
     )
-    summaries = repository.summaries(Strategy.TOMORROW)
+    summaries = index.summaries(Strategy.TOMORROW)
     assert [(item.tier, item.sample_count, item.complete_count, item.positive_count) for item in summaries] == [
         ("recommend", 1, 1, 1),
         ("watch", 1, 1, 0),
@@ -177,22 +177,22 @@ def test_recommend_and_watch_outcomes_are_counted_separately_from_avoided_leader
 
 
 def test_benchmark_and_outcome_retries_ignore_observation_time_but_reject_business_conflicts(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
+    index = _index(tmp_path)
     benchmark = BenchmarkReturn("2026-07-21", 0.6)
-    repository.record_benchmark_return(benchmark, observed_at=NOW)
-    repository.record_benchmark_return(benchmark, observed_at=NOW + timedelta(minutes=10))
-    repository.save_recommendation_outcomes((_outcome(),))
-    repository.save_recommendation_outcomes((_outcome(settled_at=NOW + timedelta(minutes=10)),))
+    index.record_benchmark_return(benchmark, observed_at=NOW)
+    index.record_benchmark_return(benchmark, observed_at=NOW + timedelta(minutes=10))
+    index.save_recommendation_outcomes((_outcome(),))
+    index.save_recommendation_outcomes((_outcome(settled_at=NOW + timedelta(minutes=10)),))
 
-    assert repository.benchmark_returns_after("2026-07-20", limit=1) == (benchmark,)
+    assert index.benchmark_returns_after("2026-07-20", limit=1) == (benchmark,)
     with pytest.raises(OutcomeEvidenceConflictError, match="benchmark return"):
-        repository.record_benchmark_return(BenchmarkReturn("2026-07-21", 0.7), observed_at=NOW)
+        index.record_benchmark_return(BenchmarkReturn("2026-07-21", 0.7), observed_at=NOW)
     with pytest.raises(OutcomeEvidenceConflictError, match="recommendation outcome"):
-        repository.save_recommendation_outcomes((_outcome(net_excess_return_pct=1.3),))
+        index.save_recommendation_outcomes((_outcome(net_excess_return_pct=1.3),))
 
 
 def test_retryable_outcome_cannot_occupy_immutable_horizon(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
+    index = _index(tmp_path)
     benchmark_missing = replace(
         _outcome(),
         status="benchmark_missing",
@@ -204,15 +204,15 @@ def test_retryable_outcome_cannot_occupy_immutable_horizon(tmp_path: Path) -> No
 
     for retryable in (benchmark_missing, horizon_not_due):
         with pytest.raises(ValueError, match="retryable recommendation outcomes"):
-            repository.save_recommendation_outcomes((retryable,))
+            index.save_recommendation_outcomes((retryable,))
 
     assert not (tmp_path / "outcomes.sqlite3").exists()
 
 
 def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    repository.initialize()
-    repository.save_recommendation_outcomes((_outcome(),))
+    index = _index(tmp_path)
+    index.initialize()
+    index.save_recommendation_outcomes((_outcome(),))
 
     database = tmp_path / "outcomes.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
@@ -238,7 +238,7 @@ def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
 
 
 def test_complete_return_without_atr_risk_label_remains_durable_and_counted(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
+    index = _index(tmp_path)
     outcome = replace(
         _outcome(),
         atr20_pct=None,
@@ -247,7 +247,7 @@ def test_complete_return_without_atr_risk_label_remains_durable_and_counted(tmp_
         quality_reason="atr20_unavailable",
     )
 
-    repository.save_recommendation_outcomes((outcome,))
+    index.save_recommendation_outcomes((outcome,))
 
     database = tmp_path / "outcomes.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
@@ -271,25 +271,25 @@ def test_outcome_status_inspection_is_read_only_for_missing_database(tmp_path: P
 
 
 def test_benchmark_read_rejects_tampered_columns(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    repository.record_benchmark_return(BenchmarkReturn("2026-07-21", 0.6), observed_at=NOW)
+    index = _index(tmp_path)
+    index.record_benchmark_return(BenchmarkReturn("2026-07-21", 0.6), observed_at=NOW)
     database = tmp_path / "outcomes.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
         connection.run("UPDATE benchmark_returns SET return_pct = 9.9")
 
     with pytest.raises(OutcomeEvidenceConflictError, match="benchmark return"):
-        repository.benchmark_returns_after("2026-07-20", limit=1)
+        index.benchmark_returns_after("2026-07-20", limit=1)
 
 
 def test_daily_benchmark_read_does_not_create_database_and_reuses_durable_evidence(tmp_path):
-    evidence = _repository(tmp_path)
+    evidence = _index(tmp_path)
     database = tmp_path / "outcomes.sqlite3"
     assert evidence.benchmark_return("2026-07-21") is None
     assert not database.exists()
     benchmark = BenchmarkReturn("2026-07-21", 0.6)
     evidence.record_benchmark_return(benchmark, observed_at=NOW)
     before = database.read_bytes()
-    restarted = _repository(tmp_path)
+    restarted = _index(tmp_path)
     assert restarted.benchmark_return("2026-07-21") == benchmark
     assert restarted.benchmark_return("2026-07-22") is None
     assert database.read_bytes() == before
@@ -309,7 +309,7 @@ def test_daily_benchmark_read_does_not_create_database_and_reuses_durable_eviden
     ),
 )
 def test_daily_benchmark_read_rejects_corruption_without_rewriting(tmp_path, mutation):
-    evidence = _repository(tmp_path)
+    evidence = _index(tmp_path)
     evidence.record_benchmark_return(BenchmarkReturn("2026-07-21", 0.6), observed_at=NOW)
     database = tmp_path / "outcomes.sqlite3"
     with SqliteSession(database) as connection, SqliteTransaction(connection):
@@ -330,8 +330,8 @@ def test_legacy_d25_outcomes_resume_with_only_t4_pending(tmp_path: Path) -> None
         NOW,
         "scheduled",
     )
-    repository = _repository(tmp_path, formal)
-    repository.save_recommendation_outcomes(
+    index = _index(tmp_path, formal)
+    index.save_recommendation_outcomes(
         tuple(
             _outcome(
                 snapshot_id=formal.version,
@@ -343,12 +343,12 @@ def test_legacy_d25_outcomes_resume_with_only_t4_pending(tmp_path: Path) -> None
         )
     )
 
-    targets = repository.pending_outcome_targets(limit=10)
+    targets = index.pending_outcome_targets(limit=10)
 
     assert len(targets) == 1
     assert targets[0].pending_horizons == (4,)
 
-    repository.save_recommendation_outcomes(
+    index.save_recommendation_outcomes(
         (
             _outcome(
                 snapshot_id=formal.version,
@@ -359,4 +359,4 @@ def test_legacy_d25_outcomes_resume_with_only_t4_pending(tmp_path: Path) -> None
         )
     )
 
-    assert repository.pending_outcome_targets(limit=10) == ()
+    assert index.pending_outcome_targets(limit=10) == ()

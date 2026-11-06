@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from tests.helpers.recommendation.publication.freeze_queries import NOW, _freeze, _Repository
+from tests.helpers.recommendation.publication.freeze_queries import NOW, _freeze, _FreezeRecords
 from trader.http_api.response.freeze_projection import SerializeFreezeView
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
@@ -69,7 +69,7 @@ def test_formal_history_response_does_not_acquire_preview_fields():
         def now(self) -> datetime:
             return NOW.replace(day=16, hour=17)
 
-    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _Repository(record), Clock())
+    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), _FreezeRecords(record), Clock())
     payload = SerializeFreezeView(queries.history(Strategy.TOMORROW, NOW.date()))
 
     assert payload["frozen"] is True

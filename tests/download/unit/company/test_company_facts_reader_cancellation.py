@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.helpers.shared.configuration import SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
+from tests.helpers.download.company_resources import SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.infra import company_facts_reader

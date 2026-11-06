@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.shared.configuration import CompanyEventPolicyFixture
+from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_evidence import (

@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from trader.bootstrap import BuildProfiledSystem
-from trader.infra.settings import ConfigurationError, LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.settings import ConfigurationError, LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 
 ROOT = Path(__file__).resolve().parents[3]
 

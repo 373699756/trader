@@ -86,10 +86,10 @@ def test_sample_index_serves_both_heads_from_one_stable_database(tmp_path: Path)
     early_day = split.early_stopping_dates[0]
     calibration_day = split.calibration_dates[0]
     validation_day = split.confirmation_dates[0]
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as repository, ExitStack() as resources:
-        assert tuple(repository._connection.run("PRAGMA cache_size").fetchone()) == (-32768,)
-        assert repository.industry_counts(TOMORROW_HEAD_CONTRACT) == ()
-        repository.add_final(
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index, ExitStack() as resources:
+        assert tuple(index._connection.run("PRAGMA cache_size").fetchone()) == (-32768,)
+        assert index.industry_counts(TOMORROW_HEAD_CONTRACT) == ()
+        index.add_final(
             (
                 _sample("600002", training_day),
                 _sample("600001", training_day),
@@ -99,22 +99,22 @@ def test_sample_index_serves_both_heads_from_one_stable_database(tmp_path: Path)
                 _sample("600006", training_day, "软件", targets=(0.02, None, None, None, None, None)),
             )
         )
-        assert repository.industry_counts(TOMORROW_HEAD_CONTRACT) == ()
-        repository.prepare_for_model_fitting(split)
-        repository.require_split(split)
+        assert index.industry_counts(TOMORROW_HEAD_CONTRACT) == ()
+        index.prepare_for_model_fitting(split)
+        index.require_split(split)
         with pytest.raises(RuntimeError, match="identity is inconsistent"):
-            repository.require_split(BuildTrainingDateSplit(dates, parent_manifest_hash="b" * 64))
+            index.require_split(BuildTrainingDateSplit(dates, parent_manifest_hash="b" * 64))
         with pytest.raises(RuntimeError, match="already prepared"):
-            repository.prepare_for_model_fitting(split)
+            index.prepare_for_model_fitting(split)
 
         statements = []
-        repository._connection.observe_statements(statements.append)
-        tomorrow = next(item for item in repository.industry_counts(TOMORROW_HEAD_CONTRACT) if item.industry == "银行")
-        d25 = next(item for item in repository.industry_counts(D25_HEAD_CONTRACT) if item.industry == "银行")
-        repository._connection.observe_statements(None)
+        index._connection.observe_statements(statements.append)
+        tomorrow = next(item for item in index.industry_counts(TOMORROW_HEAD_CONTRACT) if item.industry == "银行")
+        d25 = next(item for item in index.industry_counts(D25_HEAD_CONTRACT) if item.industry == "银行")
+        index._connection.observe_statements(None)
         assert len(statements) == 1 and "FROM sample_statistics samples" in statements[0]
-        tomorrow_data = resources.enter_context(repository.industry_data(tomorrow, TOMORROW_HEAD_CONTRACT))
-        d25_data = resources.enter_context(repository.industry_data(d25, D25_HEAD_CONTRACT))
+        tomorrow_data = resources.enter_context(index.industry_data(tomorrow, TOMORROW_HEAD_CONTRACT))
+        d25_data = resources.enter_context(index.industry_data(d25, D25_HEAD_CONTRACT))
 
         assert tomorrow.training == d25.training == 2
         assert (tomorrow.early_stopping, tomorrow.calibration, tomorrow.validation) == (1, 1, 1)
@@ -123,29 +123,29 @@ def test_sample_index_serves_both_heads_from_one_stable_database(tmp_path: Path)
         assert tomorrow_data.training.labels.tolist() == [0.02, 0.02]
         assert d25_data.training.labels.tolist() == [0.045, 0.045]
         assert np.all(tomorrow_data.training.features == 0.1)
-        assert repository.split_count("training", TOMORROW_HEAD_CONTRACT) == 3
-        assert repository.split_count("training", D25_HEAD_CONTRACT) == 2
-        assert repository.split_distinct_date_count("training", TOMORROW_HEAD_CONTRACT) == 1
-        assert repository.split_distinct_date_count("validation", TOMORROW_HEAD_CONTRACT) == 1
-        metrics = {item.target: item for item in repository.validation_target_metrics()}
+        assert index.split_count("training", TOMORROW_HEAD_CONTRACT) == 3
+        assert index.split_count("training", D25_HEAD_CONTRACT) == 2
+        assert index.split_distinct_date_count("training", TOMORROW_HEAD_CONTRACT) == 1
+        assert index.split_distinct_date_count("validation", TOMORROW_HEAD_CONTRACT) == 1
+        metrics = {item.target: item for item in index.validation_target_metrics()}
         assert metrics["target_t1"].count == 1
         assert metrics["target_d25_aggregate"].mean == pytest.approx(0.045)
 
 
 def test_sample_index_has_only_the_shared_tables_and_one_build_transaction(tmp_path: Path) -> None:
     start = date(2025, 1, 1)
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as repository:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index:
         for offset in range(10):
             day = start + timedelta(days=offset)
-            repository.add_final(_sample(f"{code:06d}", day) for code in range(100))
+            index.add_final(_sample(f"{code:06d}", day) for code in range(100))
 
         tables = {
             str(row[0])
-            for row in repository._connection.run("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            for row in index._connection.run("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         }
         assert tables == {"sample_contract", "sample_split_dates", "samples", "sample_statistics", "sample_day_diagnostics"}
-        assert repository._connection.in_transaction is True
-        assert repository.count() == 1_000
+        assert index._connection.in_transaction is True
+        assert index.count() == 1_000
 
 
 @pytest.mark.parametrize("contract,target_position", ((TOMORROW_HEAD_CONTRACT, 0), (D25_HEAD_CONTRACT, 5)))
@@ -165,11 +165,11 @@ def test_industry_matrices_preserve_order_and_split_boundaries_across_read_batch
         )
         for number, day in enumerate(sample_dates)
     ) + (_sample("650000", split.model_fit_dates[0], targets=(0.9, None, None, None, None, None)),)
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as repository, ExitStack() as resources:
-        repository.add_final(reversed(samples))
-        repository.prepare_for_model_fitting(split)
-        counts = repository.industry_counts(contract)[0]
-        data = resources.enter_context(repository.industry_data(counts, contract))
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index, ExitStack() as resources:
+        index.add_final(reversed(samples))
+        index.prepare_for_model_fitting(split)
+        counts = index.industry_counts(contract)[0]
+        data = resources.enter_context(index.industry_data(counts, contract))
         for selected_dates, matrix in (
             (split.model_fit_dates, data.training),
             (split.early_stopping_dates, data.early_stopping),
@@ -191,26 +191,26 @@ def test_industry_matrices_preserve_order_and_split_boundaries_across_read_batch
         assert data.calibration_dates == (split.calibration_dates[0],) * 2 + (split.calibration_dates[1],) * 3
         for delta in (-1, 1):
             with pytest.raises(RuntimeError, match="split count changed"):
-                with repository.industry_data(replace(counts, training=counts.training + delta), contract):
+                with index.industry_data(replace(counts, training=counts.training + delta), contract):
                     pass
 
 
 def test_validation_statistics_use_one_scan_and_include_validation_only_industries(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as repository:
-        repository.add_final(
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index:
+        index.add_final(
             (
                 _sample("600001", split.model_fit_dates[0]),
                 _sample("600002", split.confirmation_dates[0], targets=(0.02, None, None, None, None, None)),
                 _sample("600003", split.confirmation_dates[0], "软件", targets=(0.04, 0.03, None, None, None, 0.045)),
             )
         )
-        repository.prepare_for_model_fitting(split)
+        index.prepare_for_model_fitting(split)
         statements: list[str] = []
-        repository._connection.observe_statements(statements.append)
-        metrics = {item.target: item for item in repository.validation_target_metrics()}
-        repository._connection.observe_statements(None)
+        index._connection.observe_statements(statements.append)
+        metrics = {item.target: item for item in index.validation_target_metrics()}
+        index._connection.observe_statements(None)
 
         assert len(statements) == 1
         assert metrics["target_t1"].count == 2
@@ -221,17 +221,17 @@ def test_validation_statistics_use_one_scan_and_include_validation_only_industri
         assert metrics["target_t3"].count == 0
         assert metrics["target_t3"].mean is None
         assert metrics["target_t3"].standard_deviation is None
-        counts = repository.industry_counts(TOMORROW_HEAD_CONTRACT)
+        counts = index.industry_counts(TOMORROW_HEAD_CONTRACT)
         software = next(item for item in counts if item.industry == "软件")
         assert (software.training, software.validation) == (0, 1)
-        assert sum(item.validation for item in counts) == repository.split_count("validation", TOMORROW_HEAD_CONTRACT)
+        assert sum(item.validation for item in counts) == index.split_count("validation", TOMORROW_HEAD_CONTRACT)
 
 
 def test_sample_index_rolls_back_the_whole_workspace_build_on_failure(tmp_path: Path) -> None:
     path = tmp_path / "samples.sqlite3"
     with pytest.raises(RuntimeError, match="forced"):
-        with SQLiteV3TrainingSampleIndex(path, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as repository:
-            repository.add_final((_sample("600001", date(2025, 1, 1)),))
+        with SQLiteV3TrainingSampleIndex(path, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index:
+            index.add_final((_sample("600001", date(2025, 1, 1)),))
             raise RuntimeError("forced")
 
     with SqliteSession(path) as connection, SqliteTransaction(connection):

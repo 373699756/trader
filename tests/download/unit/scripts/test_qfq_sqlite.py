@@ -4,7 +4,8 @@ from tests.helpers.shared.tool_cli import BuildToolCommands, ParseBusinessOption
 
 from scripts.core.catalog import SelectionArguments
 
-from tests.helpers.shared.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture, PROJECT_ROOT
+from tests.helpers.download.configuration import DownloadFailureConfigurationFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture, PROJECT_ROOT
 from functools import partial
 import shutil
 

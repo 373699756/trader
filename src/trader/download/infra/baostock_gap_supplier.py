@@ -20,9 +20,9 @@ from trader.download.infra.baostock_gateway import (
     _DAILY_FIELDS,
     BaoStockSdkPort,
     QfqSourceWindows,
-    _daily_side,
-    _is_st,
-    _result_rows,
+    ParseBaoStockDailySide,
+    ParseBaoStockStFlag,
+    ReadBaoStockResultRows,
 )
 from trader.download.infra.baostock_session import (
     BaoStockSessionSdkPort,
@@ -337,7 +337,7 @@ def _fetch_request(
     unavailable: list[BaoStockGapUnavailable] = []
     observed: set[date] = set()
     for query_code, query_dates in windows:
-        rows = _result_rows(
+        rows = ReadBaoStockResultRows(
             source.query_history_k_data_plus(
                 query_code,
                 fields,
@@ -368,7 +368,7 @@ def _fetch_request(
             if request.family != "is_st" and row.get("adjustflag") != adjustflag:
                 raise ValueError("BaoStock gap response adjustment is invalid")
             payload = (
-                {"code": request.code, "trade_date": day.isoformat(), "is_st": _is_st(row.get("isST"))}
+                {"code": request.code, "trade_date": day.isoformat(), "is_st": ParseBaoStockStFlag(row.get("isST"))}
                 if request.family == "is_st"
                 else _side_payload(request.code, day, request.family, row)
             )
@@ -392,7 +392,7 @@ def _side_payload(
     row: dict[str, str],
 ) -> dict[str, object]:
     adjustment: BaoStockAdjustment = "unadjusted" if family == "daily_raw" else "qfq"
-    side = _daily_side(code, day, adjustment, row)
+    side = ParseBaoStockDailySide(code, day, adjustment, row)
     return {
         "code": code,
         "trade_date": day.isoformat(),

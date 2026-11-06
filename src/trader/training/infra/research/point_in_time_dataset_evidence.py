@@ -182,7 +182,7 @@ def _encode_manifest(manifest: PointInTimeDatasetManifest) -> dict[str, object]:
         "calendar_hash": manifest.calendar_hash,
         "security_master_hash": manifest.security_master_hash,
         "selection_policy_hash": manifest.selection_policy_hash,
-        "date_split": _encode_date_split(manifest.date_split),
+        "date_split": EncodePointInTimeDateSplit(manifest.date_split),
         "date_split_hash": manifest.date_split_hash,
         "partitions": [_encode_partition(item) for item in manifest.partitions],
         "total_rows": manifest.total_rows,
@@ -223,7 +223,7 @@ def _decode_manifest(raw: dict[str, object]) -> PointInTimeDatasetManifest:
         calendar_hash=_string(raw["calendar_hash"]),
         security_master_hash=_string(raw["security_master_hash"]),
         selection_policy_hash=_string(raw["selection_policy_hash"]),
-        date_split=_decode_date_split(date_split),
+        date_split=DecodePointInTimeDateSplit(date_split),
         date_split_hash=_string(raw["date_split_hash"]),
         partitions=tuple(_decode_partition(cast(dict[str, object], item)) for item in partitions),
         total_rows=_int(raw["total_rows"]),
@@ -243,7 +243,7 @@ def _encode_partition(item: PointInTimePartitionManifest) -> dict[str, object]:
     }
 
 
-def _encode_date_split(item: PointInTimeDateSplit) -> dict[str, object]:
+def EncodePointInTimeDateSplit(item: PointInTimeDateSplit) -> dict[str, object]:
     return {
         "training_dates": _encode_dates(item.training_dates),
         "early_stopping_dates": _encode_dates(item.early_stopping_dates),
@@ -258,7 +258,7 @@ def _encode_date_split(item: PointInTimeDateSplit) -> dict[str, object]:
     }
 
 
-def _decode_date_split(raw: dict[str, object]) -> PointInTimeDateSplit:
+def DecodePointInTimeDateSplit(raw: dict[str, object]) -> PointInTimeDateSplit:
     expected = {
         "training_dates",
         "early_stopping_dates",
@@ -741,6 +741,8 @@ def _optional_floats(value: object) -> tuple[float | None, ...]:
 
 
 __all__ = [
+    "EncodePointInTimeDateSplit",
+    "DecodePointInTimeDateSplit",
     "PointInTimeDatasetEvidenceConflictError",
     "PointInTimeDatasetEvidenceIndex",
 ]

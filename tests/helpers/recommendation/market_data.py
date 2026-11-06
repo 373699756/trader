@@ -21,7 +21,7 @@ from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.infra import tushare_records as tushare_records_module
 from trader.download.infra.exchange_security_master import ExchangeSecurityMasterClient
-from tests.helpers.shared.configuration import TushareClientFixture as TushareClient
+from tests.helpers.download.market_client import TushareClientFixture as TushareClient
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.history import (
     BuildHistoryContext,
@@ -32,7 +32,8 @@ from trader.infra.market_data.history.history import (
 )
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ReferenceSourceHealth
-from trader.infra.settings import ConfigurationError, LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.settings import ConfigurationError, LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.workers import BoundedExecutor, InjectedExecutor
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
@@ -67,7 +68,7 @@ from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import (
-    _history_population_codes,
+    SelectHistoryPopulationCodes,
     _history_preload_codes,
 )
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
@@ -79,7 +80,7 @@ from trader.recommendation.infra.market_data.market_task_runner import MarketTas
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient
-from tests.helpers.shared.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
+from tests.helpers.recommendation.company_research import PublishedCompanyResearchFixture as PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import CompletedModelInput
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS

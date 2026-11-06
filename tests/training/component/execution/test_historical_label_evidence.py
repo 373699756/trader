@@ -21,19 +21,19 @@ def _batch():
     return PreregisterHistoricalLabels(metadata)
 
 
-def test_historical_label_artifact_archive_round_trips_idempotently(tmp_path) -> None:
+def test_historical_label_artifact_evidence_round_trips_idempotently(tmp_path) -> None:
     batch = _batch()
-    archive = HistoricalLabelEvidenceIndex(tmp_path)
+    evidence = HistoricalLabelEvidenceIndex(tmp_path)
 
-    assert archive.write(batch).content_hash == batch.content_hash
-    assert archive.write(batch).content_hash == batch.content_hash
-    assert archive.verify().content_hash == batch.content_hash
+    assert evidence.write(batch).content_hash == batch.content_hash
+    assert evidence.write(batch).content_hash == batch.content_hash
+    assert evidence.verify().content_hash == batch.content_hash
 
 
-def test_historical_label_artifact_archive_rejects_conflicts_and_tampering(tmp_path) -> None:
+def test_historical_label_artifact_evidence_rejects_conflicts_and_tampering(tmp_path) -> None:
     batch = _batch()
-    archive = HistoricalLabelEvidenceIndex(tmp_path)
-    archive.write(batch)
+    evidence = HistoricalLabelEvidenceIndex(tmp_path)
+    evidence.write(batch)
     dates = tuple(date(2022, 1, 1) + timedelta(days=index) for index in range(1_000))
 
     conflicting = PreregisterHistoricalLabels(
@@ -43,10 +43,10 @@ def test_historical_label_artifact_archive_rejects_conflicts_and_tampering(tmp_p
         )
     )
     with pytest.raises(HistoricalLabelEvidenceConflictError, match="identity conflict"):
-        archive.write(conflicting)
+        evidence.write(conflicting)
 
     payload = json.loads((tmp_path / "historical_label_preregistration.json").read_text(encoding="utf-8"))
     payload["unexpected"] = True
     (tmp_path / "historical_label_preregistration.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HistoricalLabelEvidenceConflictError):
-        archive.verify()
+        evidence.verify()

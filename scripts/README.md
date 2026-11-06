@@ -2,7 +2,7 @@
 
 全部工具的唯一公开入口是 `scripts/tools.py`。先运行 `--list` 查找业务、模块和动作；运行时必须同时明确 `--business`、`--module`、`--action`。无参数不执行动作，旧`--check`、`--profile`及live/full/sources/runtime组合与别名已删除。内部文件只提供函数，不提供独立命令或兼容转发。
 
-当前catalog有57项公开动作：保留原49项功能，另统一资源生成、迁移build/rollback、历史分区四种维护动作和公司真实同步计量。检查与写入能力都由所属业务持有，清单不代表已获准实际执行。
+当前catalog有58项公开动作：保留原49项功能，另统一资源生成、迁移build/rollback、历史分区四种维护动作、公司真实同步计量和关闭时轴观测。检查与写入能力都由所属业务持有，清单不代表已获准实际执行。
 
 ```bash
 .venv/bin/python3 scripts/tools.py --list
@@ -29,7 +29,7 @@
 
 业务目录直接位于`scripts/`下，按recommendation、download、training、infra、engineering归属。`core/catalog.py`是选择关系的唯一可执行来源；`core`只持有中立选择、执行、报告和公共类型，不导入业务参数或默认值。各业务的`cli.py`解析和校验输入，`options.py`持有不可变业务类型，`commands.py`构造明确选中的命令；没有包含全部业务字段的全局Options对象。未选worker不导入，根帮助和清单不加载产品、下载或训练实现。
 
-JSON输出为两空格缩进、中文直显，schema为`trader-tools`。顶层selection保存business/module/action，逐项报告passed、degraded、failed、timed_out、cancelled、skipped、empty；超时和取消不能算通过。工程debt只记录退出码及输出字节数；显式transform/skills另保留受限的工具报告文本，供审阅命名清单、预览或评测比较，不转发行情与供应商原文。原生动作的`-- --help`或`-- -h`直接显示参数帮助，不运行业务。单个子进程默认180秒，公共超时上限沿业务校验；原生工程参数路径前使用`--`。捕获输出合计上限20 MiB；普通诊断超时或取消后，POSIX先发送SIGINT并最多留5秒让worker的finally回收其自行创建的session，再强制清理自有进程组并wait；这段回收时间另计，正常完成也回收自有进程组。Windows清理直接子进程，不宣称通过后代清理验收。
+JSON输出为两空格缩进、中文直显，schema为`trader-tools`。顶层selection保存business/module/action，逐项报告passed、degraded、failed、timed_out、cancelled、skipped、empty；超时和取消不能算通过。工程debt只记录退出码及输出字节数；显式transform/skills另保留受限的工具报告文本，供审阅命名清单、预览或评测比较，不转发行情与供应商原文。原生动作的`-- --help`或`-- -h`直接显示参数帮助，不运行业务。单个子进程默认180秒，公共超时上限沿业务校验；原生工程参数路径前使用`--`。捕获输出合计上限20 MiB；脚本与公告文档解析共用`infra.process_family.ProcessFamily`。POSIX在leader仍可等待、PID未回收时保留组身份；超时或取消先发SIGINT并最多留5秒让worker的finally回收session，再强制清理自有进程组并wait，正常完成同样清理后代。缺少WNOWAIT等能力会明确拒绝，不按旧PID发信号；Windows共用Job Object及启动门。平台代码与模拟验证不代表Windows实机已验收。
 
 默认公共报告写标准输出，`--report`只接受`-`或显式仓库外绝对路径的新文件；现有文件、目录和链接均拒绝，最终写入也独占创建，避免覆盖配置、输入或旧报告。`--report-format`选择auto/json/text；auto在市场因子检查输出到终端时使用text，保存报告时使用json。业务原有`--output`保留工件含义，不是公共报告别名。公共报告必须与原生工件文件、skills输出目录及维护source/target/backup目录分离；相同路径及任一方向的祖先关系都在执行前拒绝。检查不写活动数据；样本、布局比较和修复演练只使用显式外部副本或既有隔离fixture。网络检查输出聚合计数、阶段耗时、失败类别及来源年龄，不输出行情、证券清单、密钥或供应商原文。磁盘profile是只读盘点，unknown不能当作SSD/HDD性能证据；两种介质分别记录，工具整理的启动耗时也不能充当硬盘吞吐结论。
 
@@ -63,7 +63,7 @@ isolated比较可读取明确指定的旧checkout；只在隔离演练内处理�
 
 公司coverage原生用途已公开为具名业务参数：`--company-pacing-audit`比较真实PDF/目录的共享与分源限速，`--company-material-keys <源键...>`核对1至6个唯一材料键。两者与既有审计模式互斥；pacing模式必须提供`--company-replay-directory`仓库外绝对目录，材料事实由显式`--company-evidence-database`或所选runtime正式facts路径提供，不用空数据回退。`--company-audit-budget-seconds`范围30至10800秒，子进程deadline至少多留30秒回收，例如预算120秒时配置`--command-timeout-seconds 150`。公司I/O候选及其新增消费者由B独立交付，不纳入本批候选或功能验收。
 
-公司`--company-database-audit`在本次期限回调已触发且SQLite报告`interrupted`时，输出`failed`和`company_database_audit_budget_exhausted`，保留`complete=false`及质量未验证标记，原生与公共入口均非0退出，不继续压实。仅时间已过或其它SQL错误不改判为此预算类别；该报告不代表全库审计完成，预算与dbstat检查均不因此放宽或跳过。
+公司`--company-database-audit`在本次期限回调已触发，并由SQLite报告`interrupted`或本机库存循环抛出专用预算异常时，输出`failed`和`company_database_audit_budget_exhausted`，保留`complete=false`及质量未验证标记，原生与公共入口均非0退出，不继续压实。仅时间已过、其它SQL错误或来源／文件／网络普通TimeoutError不改判为此预算类别；该报告不代表全库审计完成，预算与dbstat检查均不因此放宽或跳过。
 
 字段格式升级模式及`--company-field-migration-audit`参数已删除。程序不兼容或转换旧下载数据库；结构不匹配时删除相关下载资料后重新下载，诊断不自动清库，也不将模型、正式冻结记录或请求预算当作可重下资料。
 
@@ -72,6 +72,12 @@ isolated比较可读取明确指定的旧checkout；只在隔离演练内处理�
 公司sources的普通与字段模式均检查全市场来源，不按证券清单过滤；另以`--field-sources-only`选择字段观测，`--field-source-rows`限定样本，`--field-source-schema`和`--field-source-identities`仅在字段模式明确选择。`--annual-income-period`查询单个年末期间，必须配合单个`--codes`，不能与字段模式混用；其它模式拒绝codes。每种模式都消费所选`--runtime-config`并报告`runtime_configuration_sha256`，身份摘要不表示字段质量、覆盖或生产采用已合格。
 
 Web health支持可重复的`--strategy tomorrow|d25`，连续空结果阈值`--consecutive-zero-threshold`须在样本数以内，默认min(3,样本数)。浏览器动作另支持`--strategy`与带时区ISO时间`--simulated-start`；Long admission的`--strategy`表示策略JSON路径，`--workers`范围1至8。这些参数只属于各自选中的动作，不能跨动作隐式生效。
+
+`recommendation/web/shutdown`在前台观测显式`--pid`、`--birth-ticks`及已有普通文件`--shutdown-log`，默认只读；只有显式`--send-sigterm`才通过pidfd向该身份发送一次SIGTERM。每次启动都须重新核对当前boot及进程出生身份，不能跨重启复用旧参数。等待默认40秒、最多60秒，30秒退出门不变；超时只结束观测，不强杀目标。报告区分发送、Python处理器、业务返回和pidfd退出观测时间，缺失或冲突不签完整时轴；pidfd就绪不是精确内核退出时间，也不提供目标退出码，`runtime_shutdown_acceptance`保持false。当前解释器或内核缺少pidfd能力时明确报告unsupported，不自动换解释器或退回PID信号。
+
+```bash
+.venv/bin/python3 scripts/tools.py --business recommendation --module web --action shutdown -- --help
+```
 
 `download/company/live-sync`是前台真实同步计量，会调用现有同步owner，并通过原生`--measurement-output`写外部计量工件；它与普通只读coverage分开选择，沿用真实同步的授权、配置和发布边界。该工件必须与公共`--report`分开。以下帮助不启动真实同步：
 
@@ -222,10 +228,12 @@ assets/consistency只读核对，assets/generate显式重建打包JS资源；公
 | `recommendation/pipeline/options.py` | Immutable inputs owned by the recommendation/pipeline diagnostic adapter. | 业务参数/类型/命令；所选动作持有副作用 | `recommendation/pipeline/cli.py`、`recommendation/pipeline/commands.py`、`recommendation/web/options.py`、`helpers/shared/tool_cli.py` |
 | `recommendation/web/__init__.py` | Repository tool package. | 包初始化；导入不执行动作 | 所属包导入 |
 | `recommendation/web/browser_refresh.py` | Measure production scheduler-to-SSE-to-Firefox DOM refresh intervals with deterministic quotes. | 显式只读Web/浏览器；临时资源受限 | `recommendation/web/commands.py`、`core/catalog.py`、`tooling/unit/scripts/test_diagnose_runtime.py`、`recommendation/unit/scripts/test_desktop_dashboard.py` |
+| `recommendation/web/browser_session.py` | Own bounded Chrome DevTools commands and the injected browser process family. | 显式HTTP工厂与ProcessFamily；无独立命令，不依赖tests | `recommendation/web/browser_refresh.py`、`tests/helpers/recommendation/desktop_dashboard.py`、`recommendation/unit/scripts/test_browser_session.py` |
 | `recommendation/web/cli.py` | Parse only the selected recommendation/web action and validate its inputs. | 业务参数/类型/命令；所选动作持有副作用 | `recommendation/unit/scripts/test_tools_recommendation_options.py`、`core/cli.py按catalog动态选择` |
 | `recommendation/web/commands.py` | Build only the selected recommendation/web invocation. | 业务参数/类型/命令；所选动作持有副作用 | `recommendation/unit/scripts/test_tools_recommendation_options.py`、`core/cli.py及tests/helpers/shared/tool_cli.py按catalog动态选择` |
 | `recommendation/web/company_ledger_browser.py` | Render the production score column and drawer in isolated desktop Chrome. | 显式只读Web/浏览器；临时资源受限 | `recommendation/web/commands.py`、`core/catalog.py`、`recommendation/unit/scripts/test_company_ledger_tool.py` |
 | `recommendation/web/options.py` | Immutable inputs owned by the recommendation/web diagnostic adapter. | 业务参数/类型/命令；所选动作持有副作用 | `recommendation/web/cli.py`、`recommendation/web/commands.py`、`helpers/shared/tool_cli.py` |
+| `recommendation/web/shutdown.py` | Observe signal, handler, business return and pidfd exit for one explicit process identity. | 默认只读；显式send-sigterm才发一次信号，不强杀目标 | `core/catalog.py`、`recommendation/unit/scripts/test_shutdown_observation.py` |
 | `recommendation/web/web_health.py` | Sample live 统一 Web APIs and detect recommendation-funnel state anomalies. | 显式只读Web/浏览器；临时资源受限 | `recommendation/web/commands.py`、`core/catalog.py`、`recommendation/unit/scripts/test_tools_recommendation_options.py`、`recommendation/unit/scripts/test_web_health.py` |
 | `recommendation/web/web_health_contract.py` | Typed parsing boundary for sanitized 统一 Web-health samples. | 显式只读Web/浏览器；临时资源受限 | `recommendation/web/web_health.py` |
 | `tools.py` | Repository tools: select exactly one business/module/action. | 仅选择；执行边界由所选动作负责 | `training/samples/training_samples.py`、`training/jobs/training_performance.py`、`engineering/quality/cli.py`、`download/history/download_performance.py`、`infra/database/database_baseline.py`、`infra/database/database_layout_comparison.py`、`core/cli.py`、`core/catalog.py`、`system/contract/test_current_product_contract.py`、`tooling/unit/scripts/test_diagnose_runtime.py`、`tooling/unit/scripts/test_check_entrypoint.py`、`download/unit/scripts/test_training_samples.py`、`Makefile`、`README.md`、`run.sh`、`run.ps1` |

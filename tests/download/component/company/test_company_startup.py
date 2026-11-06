@@ -12,7 +12,7 @@ from trader.download.domain.company_evidence import CompanyRatio
 
 from trader.recommendation.domain.market.research import DeriveCorporateRiskFeatures, ResearchComponentsFromObservation
 
-from tests.helpers.shared.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
+from tests.helpers.recommendation.company_research import PublishedCompanyResearchFixture as PublishedCompanyResearch
 
 from trader.infra.settings.models import CompanyPreloadSettings
 

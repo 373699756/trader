@@ -10,7 +10,8 @@ from zoneinfo import ZoneInfo
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
-from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.bootstrap import ExecuteHistorySync
+from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 
 
@@ -48,8 +49,22 @@ class _PublishedSupplier:
 
 
 def RunHistoryFixture(configuration, supplier, **options):
-    return RunHistorySync(
+    resources = HistorySyncResources(
+        worker_pool=options.pop("worker_pool", None),
+        writer_pool=options.pop("writer_pool", None),
+        write_tuning=options.pop("write_tuning", None),
+        disk_kind=options.pop("disk_kind", "unknown"),
+        repair_only=options.pop("repair_only", False),
+        price_review_budget=options.pop("price_review_budget", None),
+        batched_price_reads=options.pop("batched_price_reads", False),
+        exact_month_ranges=options.pop("exact_month_ranges", False),
+        fingerprint_before_statistics=options.pop("fingerprint_before_statistics", False),
+        reuse_catalog_fingerprint=options.pop("reuse_catalog_fingerprint", False),
+    )
+    return ExecuteHistorySync(
         configuration,
         _PublishedSupplier(supplier, configuration.reference_root / "company_st.sqlite3"),
-        **options, sqlite_policy=SqlitePolicyFixture(),
+        **options,
+        resources=resources,
+        sqlite_policy=SqlitePolicyFixture(),
     )

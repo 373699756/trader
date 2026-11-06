@@ -28,7 +28,7 @@ def test_small_job_capacity_keeps_one_stream_and_every_selected_profile_complete
     budget = TrainingCpuBudget(cpus, settings=TrainingResourceSettingsFixture().cpu)
     day = date(2026, 1, 5)
     source = tuple(HistoryTrainingRow(f"{index:06d}", day, "main", "bank", None) for index in range(1200))
-    scans, active, maximum = [], 0, 0
+    scans, running, maximum = [], 0, 0
     lock = Lock()
 
     def read(dates):
@@ -36,18 +36,18 @@ def test_small_job_capacity_keeps_one_stream_and_every_selected_profile_complete
         yield from source
 
     def fit(rows):
-        nonlocal active, maximum
+        nonlocal running, maximum
         received = tuple(rows)
         with budget.reserve(4, lambda: None) as threads:
             with lock:
-                active += threads
-                maximum = max(active, maximum)
+                running += threads
+                maximum = max(running, maximum)
             try:
                 assert received == source
                 return len(received)
             finally:
                 with lock:
-                    active -= threads
+                    running -= threads
 
     with ThreadPoolExecutor(max_workers=len(profiles)) as executor:
         result = RunSelectedTrainingTasks(

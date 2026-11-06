@@ -5,19 +5,24 @@ from __future__ import annotations
 from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import Executor, Future, wait
 from contextlib import AbstractContextManager, closing, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from itertools import islice
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event
-from typing import Generic, TypeVar
+from typing import Generic, Protocol, TypeVar
 
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.training.application.learned_rank_training import V1TrainingResult
+from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.resources import TrainingExecutionObserver, TrainingExecutionTiming, TrainingFanoutSettings
+from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
+from trader.training.application.training_diagnostics import BuildTrainingOperationIssue, TrainingOperationIssue
 
 ResultT = TypeVar("ResultT")
+SelectedProfileResult = TrainingRunResult | V1TrainingResult
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,7 @@ class SelectedTrainingOutcome(Generic[ResultT]):
     result: ResultT | None
     failure: str | None = None
     cancelled: bool = False
+    delivery_issues: tuple[TrainingOperationIssue, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,76 @@ class SelectedTrainingRun(Generic[ResultT]):
     history_scan_passes: int
     history_rows_read: int
     timing: TrainingExecutionTiming | None = field(default=None, kw_only=True)
+
+
+class SelectedTrainingPreparationError(RuntimeError):
+    """One profile's input boundary failed without stopping other selected profiles."""
+
+
+class SelectedTrainingSessionPort(Protocol[ResultT]):
+    def prepare_task(
+        self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort,
+    ) -> SelectedTrainingTask[ResultT]: ...
+
+    def read_rows(self, dates: frozenset[date]) -> AbstractContextManager[Iterator[HistoryTrainingRow]]: ...
+
+    def native_runtime(
+        self, tasks: tuple[SelectedTrainingTask[ResultT], ...],
+    ) -> AbstractContextManager[tuple[SelectedTrainingTask[ResultT], ...]]: ...
+
+    def completed(self, run: SelectedTrainingRun[ResultT]) -> SelectedTrainingRun[ResultT]: ...
+
+
+class SelectedTrainingPort(Protocol[ResultT]):
+    @property
+    def profiles(self) -> tuple[ScoringProfileId, ...]: ...
+
+    @property
+    def progresses(self) -> tuple[TomorrowTrainingProgressPort, ...]: ...
+
+    @property
+    def cancelled(self) -> Callable[[], bool]: ...
+
+    @property
+    def settings(self) -> TrainingFanoutSettings: ...
+
+    @property
+    def observer(self) -> TrainingExecutionObserver: ...
+
+    @property
+    def on_outcome(self) -> Callable[[SelectedTrainingOutcome[ResultT]], None] | None: ...
+
+    def open(self) -> AbstractContextManager[SelectedTrainingSessionPort[ResultT]]: ...
+
+
+def TrainSelectedProfiles(operations: SelectedTrainingPort[ResultT], executor: Executor) -> SelectedTrainingRun[ResultT]:
+    """Prepare every selected profile and own the one-scan fan-out execution order."""
+    if not operations.profiles or len(set(operations.profiles)) != len(operations.profiles):
+        raise ValueError("training_requires_unique_selected_profiles")
+    with operations.open() as session:
+        tasks = []
+        for profile, progress in zip(operations.profiles, operations.progresses, strict=True):
+            try:
+                task = session.prepare_task(profile, progress)
+            except SelectedTrainingPreparationError as exc:
+                reason = str(exc)
+
+                def failed(_rows: Iterator[HistoryTrainingRow], reason: str = reason) -> ResultT:
+                    raise ValueError(reason)
+
+                task = SelectedTrainingTask(profile, frozenset(), failed)
+            tasks.append(task)
+        with session.native_runtime(tuple(tasks)) as prepared:
+            run = RunSelectedTrainingTasks(
+                prepared,
+                session.read_rows,
+                executor,
+                operations.cancelled,
+                settings=operations.settings,
+                on_outcome=operations.on_outcome,
+                observer=operations.observer,
+            )
+        return session.completed(run)
 
 
 class _TrainingQueue(Queue[tuple[HistoryTrainingRow, ...] | None]):
@@ -146,7 +222,12 @@ class _TrainingFanout(Generic[ResultT]):
             reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
             outcome = SelectedTrainingOutcome(task.profile, None, reason or type(exc).__name__)
         if self.on_outcome is not None:
-            self.on_outcome(outcome)
+            try:
+                self.on_outcome(outcome)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                outcome = replace(
+                    outcome, delivery_issues=(BuildTrainingOperationIssue("outcome_notification", exc),),
+                )
         return outcome
 
     def _send(self, index: int, batch: tuple[HistoryTrainingRow, ...] | None) -> None:
@@ -220,3 +301,17 @@ class _TrainingFanout(Generic[ResultT]):
                         queue.get_nowait()
                     except Empty:
                         break
+
+
+__all__ = [
+    "RunSelectedTrainingTasks",
+    "SelectedProfileResult",
+    "SelectedTrainingOutcome",
+    "SelectedTrainingPort",
+    "SelectedTrainingPreparationError",
+    "SelectedTrainingRun",
+    "SelectedTrainingSessionPort",
+    "SelectedTrainingTask",
+    "TrainingLocations",
+    "TrainSelectedProfiles",
+]

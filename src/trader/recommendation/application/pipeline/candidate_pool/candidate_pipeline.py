@@ -12,9 +12,9 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     SCORED_STRATEGIES,
     CandidatePlanningContext,
     CandidatePlanSet,
-    _history_required_sessions,
-    _maximum_age_seconds,
-    _model_eligible_codes,
+    RequiredCandidateHistorySessions,
+    MaximumCandidateQuoteAgeSeconds,
+    FindModelEligibleCodes,
 )
 from trader.recommendation.application.pipeline.dynamic_filter.dynamic_hard_filter import QualifyCandidateInputs
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
@@ -73,17 +73,17 @@ def ExecuteCandidatePipeline(
             context.policy,
             ScoredSelectionOptions(
                 evaluated_at=context.evaluated_at,
-                max_age_seconds=_maximum_age_seconds(strategy),
+                max_age_seconds=MaximumCandidateQuoteAgeSeconds(strategy),
                 population_evaluated_at=context.evaluated_at,
-                population_max_age_seconds=_maximum_age_seconds(strategy),
+                population_max_age_seconds=MaximumCandidateQuoteAgeSeconds(strategy),
                 population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
                 phase="candidate_discovery",
                 strategy=strategy,
-                minimum_history_sessions=_history_required_sessions(
+                minimum_history_sessions=RequiredCandidateHistorySessions(
                     context.model_scoring if context.apply_model_eligibility else None,
                     strategy,
                 ),
-                model_input_eligible_codes=_model_eligible_codes(
+                model_input_eligible_codes=FindModelEligibleCodes(
                     context.model_scoring if context.apply_model_eligibility else None,
                     strategy,
                     source.records,

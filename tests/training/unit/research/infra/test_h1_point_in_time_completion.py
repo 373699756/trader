@@ -24,18 +24,18 @@ def _completion(tmp_path):
             H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 8000000, 500, 0.1),
         )
     )
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path / "archive", sqlite_policy=SqlitePolicyFixture())
+    evidence = SQLiteH1PointInTimeSnapshot(tmp_path / "archive", sqlite_policy=SqlitePolicyFixture())
     return CompleteH1Research(
         capability=capability,
-        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
+        metadata=tuple(evidence.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )
 
 
 def test_completion_index_seals_every_terminal_hash_and_rejects_tampering(tmp_path) -> None:
     completion = _completion(tmp_path)
-    archive = H1ResearchCompletionEvidenceFiles(tmp_path / "artifacts")
+    evidence = H1ResearchCompletionEvidenceFiles(tmp_path / "artifacts")
 
-    index = archive.write(completion)
+    index = evidence.write(completion)
 
     assert index.completion_hash == completion.content_hash
     assert index.label_batch_hash == completion.labels.content_hash
@@ -43,8 +43,8 @@ def test_completion_index_seals_every_terminal_hash_and_rejects_tampering(tmp_pa
         (item.strategy, item.content_hash) for item in completion.residual_ledgers
     )
     assert index.daily_close_selection_hash == completion.daily_close_selection.content_hash
-    assert archive.write(completion) == index
+    assert evidence.write(completion) == index
     path = tmp_path / "artifacts" / "h1_research_terminal.json"
     path.write_text(path.read_text().replace(completion.daily_close_selection.content_hash, "0" * 64), encoding="utf-8")
     with pytest.raises(H1ResearchCompletionEvidenceConflictError, match="schema or hash"):
-        archive.verify()
+        evidence.verify()

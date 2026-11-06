@@ -434,7 +434,7 @@ def BuildFeatureDataset(
     *,
     feature_names: tuple[str, ...],
     feature_units: tuple[str, ...],
-    source_archive_hash: str,
+    source_history_hash: str,
     filter_spec_hash: str,
 ) -> FeatureDataset:
     """Admit only hard-filter-passing samples with complete point-in-time evidence."""
@@ -469,7 +469,7 @@ def BuildFeatureDataset(
     if not admitted:
         raise ValueError("daily-close source contains no hard-filter eligible samples")
     manifest = DatasetManifest(
-        source_archive_hash=source_archive_hash,
+        source_archive_hash=source_history_hash,
         filter_spec_hash=filter_spec_hash,
         trading_dates=trading_dates,
         feature_names=feature_names,

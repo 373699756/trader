@@ -13,7 +13,7 @@ import pytest
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.infra.settings import LoadRuntimeSettings
-from trader.infra.settings.training import LoadTrainingResourceSettings
+from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 from trader.training.application.resources import TrainingFanoutSettings
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingTask
 from trader.training.infra.cpu_admission import TrainingCpuBudget

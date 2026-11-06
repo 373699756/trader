@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import inspect
 import ipaddress
 import json
 import logging
 import os
 import sys
 import threading
-from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol, cast
@@ -19,6 +17,7 @@ from flask import Flask
 from werkzeug.serving import BaseWSGIServer, make_server
 
 from trader.infra.process_lock import ProcessLock, ProcessLockError
+from trader.infra.linux_process import ReadLinuxProcessIdentity
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.shutdown import (
     ObserveShutdownStep,
@@ -37,7 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class _StoppableSystem(Protocol):
-    def stop(self) -> object: ...
+    def stop(self, *, deadline: ShutdownDeadline) -> ShutdownReport: ...
 
 
 class _RuntimeSystem(_StoppableSystem, Protocol):
@@ -273,17 +272,16 @@ def _stop_web(
 
 def _stop_system(system: _StoppableSystem, deadline: ShutdownDeadline) -> ShutdownReport:
     completed = threading.Event()
-    result: list[object] = []
+    result: list[ShutdownReport] = []
     errors: list[BaseException] = []
 
     def stop() -> None:
         try:
             with ObserveShutdownStep(deadline, "application:stopper"):
-                stop_method = cast(Callable[..., object], system.stop)
-                if "deadline" in inspect.signature(stop_method).parameters:
-                    result.append(stop_method(deadline=deadline))
-                else:
-                    result.append(stop_method())
+                report = system.stop(deadline=deadline)
+                if not isinstance(report, ShutdownReport):
+                    raise TypeError("system_stop_report_required")
+                result.append(report)
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -293,7 +291,7 @@ def _stop_system(system: _StoppableSystem, deadline: ShutdownDeadline) -> Shutdo
     stopper.start()
     with ObserveShutdownStep(deadline, "application:wait"):
         finished = completed.wait(deadline.remaining_seconds())
-    if finished and result and isinstance(result[0], ShutdownReport):
+    if finished and result:
         return result[0]
     detail = ""
     if errors:
@@ -302,7 +300,7 @@ def _stop_system(system: _StoppableSystem, deadline: ShutdownDeadline) -> Shutdo
         detail = "system shutdown exceeded process deadline"
     step = ShutdownStep(
         name="application",
-        completed=finished and not errors,
+        completed=finished and bool(result) and not errors,
         timed_out=not finished,
         detail=detail,
     )
@@ -336,6 +334,7 @@ def _start_shutdown_diagnostics(deadline: ShutdownDeadline) -> None:
             frames.clear()
             frame = None
             _LOGGER.warning("shutdown progress: %s", json.dumps({
+                "process_identity": _shutdown_process_identity(),
                 "started_at_monotonic": deadline.started_at_monotonic,
                 "elapsed_seconds": deadline.elapsed_seconds,
                 "timeline": [asdict(span) for span in spans],
@@ -353,11 +352,25 @@ def _queue_shutdown_report(report: ShutdownReport, deadline: ShutdownDeadline) -
 
     def project() -> None:
         _LOGGER.warning("shutdown completed: %s", json.dumps({
+            "process_identity": _shutdown_process_identity(),
             "started_at_monotonic": deadline.started_at_monotonic,
             "report": asdict(report), "timeline": [asdict(span) for span in timeline],
         }, ensure_ascii=False, sort_keys=True))
 
     threading.Thread(target=project, name="trader-shutdown-report", daemon=True).start()
+
+
+def _shutdown_process_identity() -> dict[str, object] | None:
+    if sys.platform != "linux":
+        return None
+    try:
+        identity = ReadLinuxProcessIdentity(os.getpid())
+    except (OSError, ValueError):
+        # Diagnostics cannot hold up shutdown; unavailable identity is never guessed.
+        return None
+    return None if identity is None else {
+        "pid": identity.pid, "birth_ticks": identity.birth_ticks, "boot_id": identity.boot_id,
+    }
 
 
 def _absolute_config_path(raw_path: str) -> Path:

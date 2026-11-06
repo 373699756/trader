@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from trader.infra.settings import ConfigurationError, LoadStrategySettings
+from trader.infra.settings import ConfigurationError
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 
 ROOT = Path(__file__).resolve().parents[4]
 

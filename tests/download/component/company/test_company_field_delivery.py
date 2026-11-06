@@ -7,11 +7,7 @@ from datetime import timedelta
 import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.shared.configuration import (
-    CompanyDocumentFilesFixture,
-    SQLiteCompanyEvidenceReaderFixture,
-    SQLiteCompanyFactsIndexFixture,
-)
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
 from trader.download.domain.company_events import CompanySubject
 from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition

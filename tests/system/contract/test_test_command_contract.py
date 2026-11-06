@@ -37,7 +37,7 @@ def test_makefile_is_the_single_test_command_source() -> None:
         "test-recommendation": "tests/recommendation tests/http_api tests/web",
         "test-recommendation-runtime": 'tests/recommendation tests/infra -m "slow_runtime"',
         "test-recommendation-suppliers": 'tests/recommendation tests/infra -m "slow_supplier"',
-        "test-static-contracts": 'tests/system/contract -m "slow_static"',
+        "test-static-contracts": "tests/system/contract",
         "test-unit": 'tests -m "unit"',
         "test-component": 'tests -m "component"',
         "test-contract": 'tests -m "contract"',
@@ -54,6 +54,17 @@ def test_makefile_is_the_single_test_command_source() -> None:
     for arguments in expected_targets.values():
         assert f"pytest -q -n 4 --dist loadgroup {arguments}" in result.stdout
     assert "--run-format-tools" not in result.stdout
+
+
+def test_static_contract_target_keeps_architecture_and_io_gates_selected() -> None:
+    recipe = MAKEFILE.read_text(encoding="utf-8").partition("test-static-contracts:\n")[2].split("\n\n", 1)[0]
+    assert "tests/system/contract" in recipe
+    assert " -m " not in recipe
+    for name in (
+        "test_architecture.py", "test_business_boundaries.py",
+        "test_external_io_boundary.py", "test_reusable_diagnostics_contract.py",
+    ):
+        assert (ROOT / "tests/system/contract" / name).is_file()
 
 
 @pytest.mark.parametrize(("workers", "distribution"), (("1", "load"), ("2", "loadgroup")))
@@ -184,7 +195,7 @@ def test_explicit_format_tool_authorization_preserves_the_selected_items() -> No
     assert config.stash.get(test_configuration._FORMAT_TOOLS_DESELECTED, set()) == set()
 
 
-def test_release_target_builds_then_verifies_the_wheel_outside_the_repository() -> None:
+def test_release_target_builds_then_verifies_the_wheel_outside_the_project() -> None:
     result = subprocess.run(
         ["make", "-n", "test-release"],
         cwd=ROOT,

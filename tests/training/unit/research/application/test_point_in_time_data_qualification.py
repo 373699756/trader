@@ -32,8 +32,8 @@ def _industry_report():
     return BuildHistoricalIndustryDatasetReport("a" * 64, (source,), MergeHistoricalIndustryFacts(()))
 
 
-def test_current_archive_and_free_source_evidence_project_explicit_three_gate_blockers() -> None:
-    archive = HistorySnapshotStatus(
+def test_current_evidence_and_free_source_evidence_project_explicit_three_gate_blockers() -> None:
+    evidence = HistorySnapshotStatus(
         state="invalid",
         snapshot_hash="a" * 64,
         data_cutoff=date(2026, 9, 10),
@@ -50,7 +50,7 @@ def test_current_archive_and_free_source_evidence_project_explicit_three_gate_bl
         )
     )
 
-    report = AssemblePointInTimeDataQualification(archive, sources, _industry_report())
+    report = AssemblePointInTimeDataQualification(evidence, sources, _industry_report())
 
     assert report.state == "historical_data_insufficient"
     assert report.daily_archive.completed_codes == 0
@@ -60,8 +60,8 @@ def test_current_archive_and_free_source_evidence_project_explicit_three_gate_bl
     assert "minute_raw_qfq_pair_unavailable" in report.minute_sources[0].failure_reasons
 
 
-def test_daily_archive_count_mismatch_is_reported_instead_of_becoming_an_invalid_report() -> None:
-    archive = HistorySnapshotStatus(
+def test_daily_evidence_count_mismatch_is_reported_instead_of_becoming_an_invalid_report() -> None:
+    evidence = HistorySnapshotStatus(
         state="published",
         snapshot_hash="a" * 64,
         data_cutoff=date(2026, 9, 10),
@@ -75,7 +75,7 @@ def test_daily_archive_count_mismatch_is_reported_instead_of_becoming_an_invalid
         (H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 1, 1, 1.0),)
     )
 
-    report = AssemblePointInTimeDataQualification(archive, sources, _industry_report())
+    report = AssemblePointInTimeDataQualification(evidence, sources, _industry_report())
 
     assert report.daily_archive.state == "historical_data_insufficient"
     assert "daily_archive_sessions_below_2000" in report.daily_archive.failure_reasons

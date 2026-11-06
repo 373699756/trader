@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 import pytest
 
@@ -12,6 +13,7 @@ from trader.infra.workers import (
     SubmitOrReject,
     SubmitWithBackpressure,
     WorkerResourceRejectedError,
+    WorkerScope,
 )
 
 
@@ -492,6 +494,54 @@ def test_full_injected_queue_rejects_without_running_on_caller() -> None:
     finally:
         release.set()
         executor.stop()
+
+
+def test_worker_scope_releases_started_workers_when_a_later_start_fails(monkeypatch) -> None:
+    first = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="scope-first")
+    second = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="scope-second")
+
+    def fail_start():
+        raise RuntimeError("fixture_start_failed")
+
+    monkeypatch.setattr(second, "start", fail_start)
+    with pytest.raises(RuntimeError, match="fixture_start_failed"):
+        with WorkerScope((first, second), timeout_seconds=1):
+            pytest.fail("failed startup cannot enter the scope")
+    assert not first.is_running() and not second.is_running()
+
+
+@pytest.mark.parametrize("failure", ["report", "exception"])
+def test_worker_scope_uses_one_deadline_and_finishes_all_cleanup_before_failure(monkeypatch, failure) -> None:
+    pools = tuple(BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix=f"scope-{index}") for index in range(2))
+    deadlines = []
+    for index, pool in enumerate(pools):
+        stop = pool.stop
+
+        def observe_stop(*, wait, cancel_futures, deadline, stop=stop, index=index):
+            deadlines.append(deadline)
+            report = stop(wait=wait, cancel_futures=cancel_futures, deadline=deadline)
+            if index == 1:
+                if failure == "exception":
+                    raise RuntimeError("fixture_stop_failed")
+                return replace(report, completed=False)
+            return report
+
+        monkeypatch.setattr(pool, "stop", observe_stop)
+    with pytest.raises(RuntimeError, match="fixture_stop_failed|worker_scope_shutdown_incomplete"):
+        with WorkerScope(pools, timeout_seconds=1):
+            assert all(pool.is_running() for pool in pools)
+    assert len(deadlines) == 2 and deadlines[0] is deadlines[1]
+    assert all(not pool.is_running() for pool in pools)
+
+
+def test_a_closed_worker_scope_cannot_start_resources() -> None:
+    pool = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="scope-closed")
+    scope = WorkerScope((pool,), timeout_seconds=1)
+    scope.close()
+    with pytest.raises(RuntimeError, match="worker_scope_already_entered"):
+        with scope:
+            pytest.fail("a closed scope cannot start workers")
+    assert not pool.is_running()
 
 
 pytestmark = [pytest.mark.slow_runtime]

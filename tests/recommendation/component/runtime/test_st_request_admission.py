@@ -32,10 +32,10 @@ def _mixed_reference():
 
 def _industry(code):
     return SourceObservation(
-        source="baostock_industry", subject_key=code, observed_at=NOW, source_time=NOW, received_at=NOW,
+        source="cninfo_industry", subject_key=code, observed_at=NOW, source_time=NOW, received_at=NOW,
         effective_at=NOW, data_version="industry-fixture",
         fields={
-            "model_industry": "J66", "model_industry_classification": "证监会行业分类",
+            "model_industry": "capco:J66", "model_industry_classification": "中国上市公司协会上市公司行业分类标准",
             "model_industry_effective_date": NOW.date().isoformat(), "model_industry_source": "fixture",
             "model_industry_data_version": "industry-fixture",
         },
@@ -210,7 +210,7 @@ def test_expired_st_reference_blocks_new_directed_requests(monkeypatch):
 def test_company_startup_uses_the_static_cut_before_any_history_initialization(monkeypatch):
     from tests.helpers.recommendation.market.candidate_history_tail import HistoryInput
     from tests.helpers.recommendation.publication.shared_history_projection import _cache
-    from tests.helpers.shared.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
+    from tests.helpers.recommendation.company_research import PublishedCompanyResearchFixture as PublishedCompanyResearch
 
     reference = _mixed_reference()
     class History(HistoryInput):

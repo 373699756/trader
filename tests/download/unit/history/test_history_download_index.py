@@ -10,12 +10,8 @@ import sys
 import pytest
 
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_download_index import (
-    HistoryDownloadBatch,
-    HistoryDownloadCompletion,
-    HistoryDownloadIndex,
-    HistoryDownloadTask,
-)
+from trader.download.domain.history_download import HistoryDownloadBatch, HistoryDownloadCompletion, HistoryDownloadTask
+from trader.download.infra.history_download_index import HistoryDownloadIndex
 
 
 def test_nonpositive_qfq_gap_is_deferred_for_20_market_sessions_and_kept_unresolved(tmp_path):

@@ -31,16 +31,15 @@ from trader.recommendation.domain.scoring.scoring_calculations import (
     MAX_FALLBACK_SESSIONS,
     MIN_BOARD_SAMPLE,
     SupportedWeight,
-    _base_reliability,
-    _default_competition_group,
-    _distributions,
-    _liquidity_bucket,
-    _normalize_features,
-    _population_version,
-    _PopulationVersionIdentity,
-    _quantile,
-    _supported_weight,
-    _value_or_missing,
+    CalculateBaseReliability,
+    BuildDefaultCompetitionGroup,
+    BuildScoringDistributions,
+    ClassifyLiquidityBucket,
+    NormalizeScoringFeatures,
+    BuildPopulationVersion,
+    PopulationVersionIdentity,
+    CalculateScoringQuantile,
+    IsValueMissing,
 )
 
 BOARD_SCHEMA_VERSION = "board_cross_section_score_first"
@@ -113,14 +112,14 @@ def BuildBoardCrossSection(request: BoardCrossSectionRequest) -> BoardCrossSecti
             key=lambda item: item.quote.code,
         )
     )
-    current_distributions = _distributions(ordered)
+    current_distributions = BuildScoringDistributions(ordered)
     current_sample = sum(
         item.optional_value("amount_median_20d") is not None and item.value("amount_median_20d") > 0.0
         for item in ordered
     )
     basis = _population_basis(request, current_distributions, current_sample)
     population = _build_population(request, basis, current_sample, len(ordered))
-    normalized, normalization = _normalize_features(
+    normalized, normalization = NormalizeScoringFeatures(
         ordered,
         basis.reference_values,
         population.population_version,
@@ -192,7 +191,7 @@ def _build_population(
     current_sample: int,
     total_count: int,
 ) -> BoardPopulation:
-    identity = _PopulationVersionIdentity(
+    identity = PopulationVersionIdentity(
         board=request.board,
         trade_date=request.trade_date,
         phase=request.phase,
@@ -206,7 +205,7 @@ def _build_population(
             repr(tuple((name, tuple(values)) for name, values in sorted(basis.reference_values.items()))).encode()
         ).hexdigest(),
     )
-    population_version = _population_version(identity)
+    population_version = BuildPopulationVersion(identity)
     return BoardPopulation(
         trade_date=request.trade_date,
         phase=request.phase,
@@ -216,8 +215,8 @@ def _build_population(
         population_version=population_version,
         sample_size=current_sample,
         missing_count=max(0, total_count - current_sample),
-        liquidity_p50=_quantile(basis.population_source.get("amount_median_20d", ()), 0.50),
-        liquidity_p80=_quantile(basis.population_source.get("amount_median_20d", ()), 0.80),
+        liquidity_p50=CalculateScoringQuantile(basis.population_source.get("amount_median_20d", ()), 0.50),
+        liquidity_p80=CalculateScoringQuantile(basis.population_source.get("amount_median_20d", ()), 0.80),
         fallback_trade_date=basis.fallback_date,
         fallback_age_sessions=basis.fallback_age,
         status=basis.status,
@@ -232,14 +231,14 @@ def _enrich_features(
     enriched: list[FeatureSnapshot] = []
     for item in normalized:
         values = dict(item.values)
-        reliability = _base_reliability(values)
+        reliability = CalculateBaseReliability(values)
         if population.status in {"stale", "insufficient"}:
             reliability = min(reliability, 0.84)
         group_id, group_source, group_version = (request.competition_groups or {}).get(
             item.quote.code,
-            _default_competition_group(item),
+            BuildDefaultCompetitionGroup(item),
         )
-        missing_fields = tuple(sorted(name for name in values if _value_or_missing(values.get(name))))
+        missing_fields = tuple(sorted(name for name in values if IsValueMissing(values.get(name))))
         missing_reasons = {
             name: (
                 "board cross-section sample is insufficient"
@@ -260,7 +259,7 @@ def _enrich_features(
                 competition_group_id=group_id,
                 competition_group_source=group_source,
                 competition_group_version=group_version,
-                liquidity_bucket=_liquidity_bucket(
+                liquidity_bucket=ClassifyLiquidityBucket(
                     item.optional_value("amount_median_20d"),
                     population.liquidity_p50,
                     population.liquidity_p80,
@@ -280,7 +279,7 @@ def ApplyBoardPolicy(
         raise ValueError("board policy does not match cross-section")
     result: list[FeatureSnapshot] = []
     for item in cross_section.features:
-        supported = _supported_weight(
+        supported = SupportedWeight(
             strategy,
             item.values,
             policy.local_weights,
@@ -317,7 +316,7 @@ def ProjectBoardPolicy(
             key=lambda item: item.quote.code,
         )
     )
-    normalized, _normalization = _normalize_features(
+    normalized, _normalization = NormalizeScoringFeatures(
         ordered,
         cross_section.reference_values,
         cross_section.population.population_version,

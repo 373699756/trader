@@ -15,7 +15,8 @@ from scripts.core.reporting import emit_report
 
 PROJECT_ROOT = TOOL_ROOT
 
-from trader.bootstrap import FetchExternalHttp  # noqa: E402
+from trader.bootstrap import OpenExternalHttp  # noqa: E402
+from trader.infra.http_transport import HttpRequestScope  # noqa: E402
 from trader.download.infra.exchange_security_master import (  # noqa: E402
     ExchangeSecurityMasterClient,
     FetchSseListings,
@@ -67,8 +68,8 @@ def Main() -> int:
         parser.error("timeout and minimum rows must be positive")
     observed_at = datetime.now(_SHANGHAI)
     client = ExchangeSecurityMasterClient(
-        sse_fetcher=partial(FetchSseListings, get=FetchExternalHttp),
-        szse_fetcher=partial(FetchSzseListings, get=FetchExternalHttp),
+        sse_fetcher=partial(FetchSseListings, get=HttpRequestScope(OpenExternalHttp).get),
+        szse_fetcher=partial(FetchSzseListings, get=HttpRequestScope(OpenExternalHttp).get),
         timeout_seconds=args.timeout_seconds,
         minimum_rows=args.minimum_rows,
         wall_clock=lambda: datetime.now(_SHANGHAI),

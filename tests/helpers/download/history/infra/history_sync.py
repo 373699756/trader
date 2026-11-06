@@ -23,7 +23,7 @@ from trader.download.domain.history_sync import (
 )
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_control_index import HistoryControlIndex
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 

@@ -23,26 +23,25 @@ from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EX
 from trader.infra.sqlite_codec import EncodeDate
 from trader.training.application.tomorrow_training import ProductionTrainingWindow, TomorrowTrainingProgress, TomorrowTrainingWindow
 from trader.training.domain.final_fit import BuildFinalFitDatePlan
+from trader.training.domain.profile_training import BuildProfileTrainingPlan, ProfileTrainingHead, ProfileTrainingSource
 from trader.training.domain.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan, TrainingSampleDatePartitions
 from trader.training.infra.engine import (
     ProfileTrainingRequest,
     RunProfileTraining,
-    _cleanup_abandoned_workspaces,
-    _mature_label_cutoff,
     _training_contract_hash,
 )
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.bundle_codec import TrainedLightGBMModelSnapshot, TrainedRidgeModelSnapshot
+from trader.training.infra.model_bundles.profile_publication import ClearProfileStaging
 from trader.training.infra.model_evaluation import CalibrationResult, CalibrationUnavailableError, PredictionMetrics
 from trader.training.infra.model_fitting import FitIndustryModels, RidgeFittingParameters
 from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v2.training import RunV2Training as _run_v2_training
 from trader.training.infra.profile.v3.contracts import (
-    D25_HEAD_CONTRACT,
     HEAD_CONTRACTS,
     TOMORROW_HEAD_CONTRACT,
     V3_TRAINING_PROFILE,
@@ -434,11 +433,21 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
 
 
 def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_path: Path) -> None:
-    snapshot = _cadence_history(tmp_path / "history").snapshot
-
-    assert _mature_label_cutoff(snapshot, TOMORROW_HEAD_CONTRACT) == snapshot.calendar.open_dates[-2]
-    assert _mature_label_cutoff(snapshot, D25_HEAD_CONTRACT) == snapshot.calendar.open_dates[-6]
+    history = _cadence_history(tmp_path / "history")
+    snapshot = history.snapshot
     settings = LoadProfileTrainingSettings(PROJECT_ROOT, "v3")
+    plan = BuildProfileTrainingPlan(ProfileTrainingSource(
+        "v3", "ridge", snapshot.calendar.open_dates, snapshot.source_cutoff, snapshot.snapshot_hash,
+        snapshot.input_scope, len(snapshot.training_codes), snapshot.universe_count,
+        settings.fit_dates, V3_TRAINING_PROFILE.history_sessions, settings.fitting.minimum_industry_training_rows,
+        tuple(ProfileTrainingHead(
+            head.strategy, head.maturity_sessions, _training_contract_hash(V3_TRAINING_PROFILE, head, settings),
+        ) for head in HEAD_CONTRACTS),
+        history.describe_frozen_daily_input(),
+    ))
+    assert tuple(head.label_cutoff for head in plan.heads) == (
+        snapshot.calendar.open_dates[-2], snapshot.calendar.open_dates[-6],
+    )
     hashes = {_training_contract_hash(V3_TRAINING_PROFILE, contract, settings) for contract in HEAD_CONTRACTS}
     assert len(hashes) == 2
     assert _training_contract_hash(V3_TRAINING_PROFILE, TOMORROW_HEAD_CONTRACT, settings) == _training_contract_hash(
@@ -471,7 +480,8 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
     assert [head.status for head in result.heads] == ["engineering_ready", "engineering_ready"]
 
 
-def test_second_head_refit_failure_blocks_the_pair_and_preserves_published_models(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("unknown_staging", (False, True))
+def test_second_head_refit_failure_blocks_the_pair_and_preserves_published_models(tmp_path, monkeypatch, unknown_staging) -> None:
     history = _cadence_history(tmp_path / "history")
     _patch_history(monkeypatch, history)
     models = tmp_path / "train"
@@ -492,10 +502,18 @@ def test_second_head_refit_failure_blocks_the_pair_and_preserves_published_model
         ),
     )
     refitted = []
+    protected = {}
 
     def refit(samples, contract, plan, diagnostic, *args, **kwargs):
         refitted.append(contract.strategy)
         if contract.strategy is Strategy.D25:
+            if unknown_staging:
+                staging = next((models / "v3").glob(".bundle-staging.*"))
+                (staging / "operator.txt").write_bytes(b"keep this during failure cleanup")
+                protected.update({
+                    path: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes())
+                    for path in (models / "v3").rglob("*") if path.is_file()
+                })
             raise ValueError("final_fit_fixture_second_head_failed")
         return _refitted_models(samples, contract, plan, diagnostic, *args, **kwargs)
 
@@ -514,6 +532,13 @@ def test_second_head_refit_failure_blocks_the_pair_and_preserves_published_model
     assert all(head.failure_reasons == ("profile_training_failed",) for head in result.heads)
     assert all(path.read_bytes() == content for path, content in original.items())
     assert (tmp_path / "samples" / "v3" / "complete.json").is_file()
+    if unknown_staging:
+        assert {
+            path: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes())
+            for path in (models / "v3").rglob("*") if path.is_file()
+        } == protected
+    else:
+        assert not tuple((models / "v3").glob(".bundle-staging.*"))
 
 
 def test_training_reports_both_heads_when_the_shared_scan_fails(
@@ -581,19 +606,19 @@ def test_training_respects_the_history_repack_fence(tmp_path: Path, monkeypatch:
 
 
 def test_training_cleanup_removes_only_owned_abandoned_workspaces(tmp_path: Path) -> None:
-    abandoned = tmp_path / ".training-sample-workspace.abandoned"
-    staging = tmp_path / ".bundle-staging.abandoned"
+    staging = tmp_path / ".bundle-staging.abcdefgh"
     preserved = tmp_path / "tomorrow" / "model.json"
-    abandoned.mkdir()
     staging.mkdir(parents=True)
-    preserved.parent.mkdir(parents=True)
-    preserved.touch()
+    (staging / "model.json").write_text("partial staging", encoding="utf-8")
+    for head in ("tomorrow", "d25"):
+        (tmp_path / head).mkdir()
+        for name in ("model.json", "metadata.json"):
+            (tmp_path / head / name).write_text("published", encoding="utf-8")
 
-    _cleanup_abandoned_workspaces(tmp_path)
+    ClearProfileStaging(tmp_path)
 
-    assert not abandoned.exists()
     assert not staging.exists()
-    assert preserved.is_file()
+    assert preserved.read_text(encoding="utf-8") == "published"
 
 
 def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path: Path) -> None:

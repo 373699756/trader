@@ -18,7 +18,7 @@ from trader.training.domain.evaluation.terminal_holdout import TerminalHoldoutRe
 from trader.training.entrypoints.selection_projection import ProjectSelectionValidation
 
 if TYPE_CHECKING:
-    from trader.training.entrypoints.research_evidence import ResearchEvidenceResult
+    from trader.training.application.research_commands import ResearchEvidenceResult
 
 
 def ProjectEvidenceResult(

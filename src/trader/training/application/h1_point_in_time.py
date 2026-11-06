@@ -72,7 +72,7 @@ class H1PointInTimeDownloadService:
         self,
         universe: PointInTimeUniverseProvider,
         history: H1PointInTimeProvider,
-        archive: H1PointInTimeSnapshotPort,
+        snapshots: H1PointInTimeSnapshotPort,
         executor: WorkerExecutor,
         *,
         workers: int = 5,
@@ -81,7 +81,7 @@ class H1PointInTimeDownloadService:
             raise ValueError("H1 workers must be in [1, 5]")
         self._universe = universe
         self._history = history
-        self._archive = archive
+        self._snapshots = snapshots
         self._executor = executor
         self._workers = workers
 
@@ -91,7 +91,7 @@ class H1PointInTimeDownloadService:
         *,
         progress: Callable[[int, int, str], None] | None = None,
     ) -> H1PointInTimeDownloadResult:
-        securities = self._archive.registered_universe(spec.strategy)
+        securities = self._snapshots.registered_universe(spec.strategy)
         if not securities:
             securities = tuple(
                 sorted(
@@ -103,8 +103,8 @@ class H1PointInTimeDownloadService:
                     key=lambda item: item.code,
                 )
             )
-            self._archive.register_universe(spec, securities)
-        completed = self._archive.completed_codes(spec.strategy)
+            self._snapshots.register_universe(spec, securities)
+        completed = self._snapshots.completed_codes(spec.strategy)
         pending = tuple(item for item in securities if item.code not in completed)
         downloaded, failed = self._download_all(spec, pending, progress)
         return H1PointInTimeDownloadResult(
@@ -162,9 +162,9 @@ class H1PointInTimeDownloadService:
         try:
             records = future.result()
             _validate_records(records, spec, code)
-            self._archive.save_records(spec, code, records)
+            self._snapshots.save_records(spec, code, records)
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
-            self._archive.record_failure(spec, code, _error_code(exc))
+            self._snapshots.record_failure(spec, code, _error_code(exc))
             return False
         return True
 

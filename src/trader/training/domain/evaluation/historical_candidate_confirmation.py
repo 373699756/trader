@@ -16,7 +16,7 @@ from trader.training.domain.evaluation.paired_statistics import (
     PreregisteredBootstrapResult,
     PreregisteredHolmFreeze,
 )
-from trader.training.domain.evaluation.preregistered_rule_candidate import PreregisteredRuleCandidateFamily
+from trader.training.domain.evaluation.preregistered_rule_candidate import PreregisteredRuleCandidateFamily, RuleCandidateHash
 
 ConfirmationStatus = Literal["historical_candidate_ready", "historical_rejected", "historical_data_insufficient"]
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -131,7 +131,7 @@ class HistoricalCandidateConfirmationReport:
         if self.production_authority or self.terminal_holdout_status != "terminal_holdout_not_opened":
             raise ValueError("confirmation report cannot open a terminal holdout or authorize production")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", _hash(self))
+        object.__setattr__(self, "content_hash", RuleCandidateHash(self))
 
 
 def _validate_confirmation_report_identity(report: HistoricalCandidateConfirmationReport) -> None:
@@ -583,12 +583,6 @@ def InheritCandidateConfirmation(
 
 def _mean(values: tuple[float, ...]) -> float:
     return math.fsum(values) / len(values)
-
-
-def _hash(value: object) -> str:
-    from trader.training.domain.evaluation.preregistered_rule_candidate import _hash as candidate_hash
-
-    return candidate_hash(value)
 
 
 __all__ = [

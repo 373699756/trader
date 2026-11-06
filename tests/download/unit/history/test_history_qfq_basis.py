@@ -8,7 +8,8 @@ import pytest
 
 from tests.helpers.download.history.infra.history_sync import FakeSupplier
 from tests.helpers.download.history_fixtures import RunHistoryFixture
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture, SqlitePolicyFixture
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 from trader.download.infra.history_control_index import HistoryControlIndex

@@ -146,7 +146,7 @@ class BaoStockRowGateway:
             start_date=lookback.isoformat(),
             end_date=spec.source_cutoff.isoformat(),
         )
-        rows = _result_rows(result, "calendar_query_failed")
+        rows = ReadBaoStockResultRows(result, "calendar_query_failed")
         dates = tuple(
             date.fromisoformat(row["calendar_date"])
             for row in rows
@@ -157,7 +157,7 @@ class BaoStockRowGateway:
         return BaoStockCalendar(tuple(sorted(set(dates)))[-spec.sessions :])
 
     def fetch_universe(self, spec: BaoStockDailySpec) -> tuple[BaoStockSecurity, ...]:
-        rows = _result_rows(self._sdk.query_stock_basic(), "security_query_failed")
+        rows = ReadBaoStockResultRows(self._sdk.query_stock_basic(), "security_query_failed")
         securities: list[BaoStockSecurity] = []
         for row in rows:
             if row.get("type") != "1":
@@ -309,7 +309,7 @@ class BaoStockRowGateway:
             frequency="d",
             adjustflag="3",
         )
-        rows = _result_rows(result, "unadjusted_daily_fact_query_failed")
+        rows = ReadBaoStockResultRows(result, "unadjusted_daily_fact_query_failed")
         facts: list[BaoStockDailyFact] = []
         for row in rows:
             trade_date = _date(row.get("date"), "BaoStock daily fact date is missing")
@@ -319,7 +319,7 @@ class BaoStockRowGateway:
                 or row.get("tradestatus") not in {"0", "1"}
             ):
                 raise ValueError("BaoStock daily training fact row is invalid")
-            facts.append(BaoStockDailyFact(security.code, trade_date, _is_st(row.get("isST"))))
+            facts.append(BaoStockDailyFact(security.code, trade_date, ParseBaoStockStFlag(row.get("isST"))))
         ordered = tuple(sorted(facts, key=lambda item: item.trade_date))
         if tuple(item.trade_date for item in ordered) != expected:
             raise ValueError("BaoStock daily training facts are incomplete")
@@ -358,7 +358,7 @@ class BaoStockRowGateway:
             frequency="d",
             adjustflag=query.adjustflag,
         )
-        rows = _result_rows(result, f"{query.adjustment}_daily_query_failed")
+        rows = ReadBaoStockResultRows(result, f"{query.adjustment}_daily_query_failed")
         sides: list[BaoStockDailySide] = []
         facts: list[BaoStockDailyFact] = []
         null_rows = future_rows = 0
@@ -383,9 +383,9 @@ class BaoStockRowGateway:
                     continue
                 if row.get("adjustflag") != query.adjustflag:
                     raise ValueError("BaoStock daily row adjustment is invalid")
-                side = _daily_side(security.code, trade_date, query.adjustment, row)
+                side = ParseBaoStockDailySide(security.code, trade_date, query.adjustment, row)
                 if query.adjustment == "unadjusted":
-                    facts.append(BaoStockDailyFact(security.code, trade_date, _is_st(row.get("isST"))))
+                    facts.append(BaoStockDailyFact(security.code, trade_date, ParseBaoStockStFlag(row.get("isST"))))
             except (TypeError, ValueError):
                 null_rows += 1
                 continue
@@ -505,7 +505,7 @@ def _scaled_qfq(raw: BaoStockDailySide, factor: Decimal) -> BaoStockDailySide:
     )
 
 
-def _result_rows(result: BaoStockRowResult, error_code: str) -> tuple[dict[str, str], ...]:
+def ReadBaoStockResultRows(result: BaoStockRowResult, error_code: str) -> tuple[dict[str, str], ...]:
     if result.error_code != "0":
         raise RuntimeError(_supplier_failure_code(result.error_code, error_code))
     fields = tuple(result.fields)
@@ -539,7 +539,7 @@ def _supplier_failure_code(vendor_code: str, fallback: str) -> str:
     return fallback
 
 
-def _daily_side(
+def ParseBaoStockDailySide(
     code: str,
     trade_date: date,
     adjustment: BaoStockAdjustment,
@@ -571,7 +571,7 @@ def _trading_status(value: str | None) -> BaoStockTradingStatus:
     raise ValueError("BaoStock trading status is invalid")
 
 
-def _is_st(value: str | None) -> bool:
+def ParseBaoStockStFlag(value: str | None) -> bool:
     if value == "1":
         return True
     if value == "0":
@@ -615,4 +615,7 @@ __all__ = [
     "BaoStockSdkPort",
     "QfqSourceWindows",
     "RepairableQfqCodes",
+    "ReadBaoStockResultRows",
+    "ParseBaoStockDailySide",
+    "ParseBaoStockStFlag",
 ]

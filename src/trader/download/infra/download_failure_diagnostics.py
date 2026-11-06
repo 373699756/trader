@@ -10,7 +10,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext, DownloadFailureRecord
-from trader.download.infra.history_sync_failure import HistoryFailureDetail
+from trader.download.infra.history_sync_failure import HistoryFailureCauses, HistoryFailureDetail, HistoryRemoteFailureError
 from trader.infra.http_contracts import HttpCancelled, HttpStatusError
 from trader.infra.sqlite_connection import SqliteConnection
 
@@ -50,6 +50,9 @@ class DownloadFailureDiagnostics:
         current: BaseException | None = exc
         while current is not None and id(current) not in seen and len(reasons) < 4:
             seen.add(id(current))
+            if isinstance(current, HistoryRemoteFailureError):
+                reasons.extend(HistoryFailureCauses(current.evidence)[:4 - len(reasons)])
+                break
             reason = _reason(current)
             if isinstance(current, OSError) and current.errno is not None:
                 reason += f":errno_{current.errno}"

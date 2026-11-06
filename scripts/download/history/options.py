@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Literal
 
 from scripts.core.paths import PROJECT_ROOT
-
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 

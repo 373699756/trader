@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.bootstrap import CreateCompanyEligibilityReader, FetchExternalHttp, OpenExternalHttp
+from trader.bootstrap import CreateCompanyEligibilityReader, OpenExternalHttp
+from trader.infra.http_transport import HttpRequestScope
 from trader.download.infra.exchange_security_master import (
     ExchangeSecurityMasterClient,
     FetchSseListings,
@@ -29,7 +30,8 @@ from trader.download.infra.exchange_security_master import (
 )
 from trader.infra.http_contracts import HttpError
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
     BuildCandidatePlans,
@@ -908,8 +910,8 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
     industry_capability: IndustryCapability | None = None
     comparison_references = base_references
     client = ExchangeSecurityMasterClient(
-        sse_fetcher=partial(FetchSseListings, get=FetchExternalHttp),
-        szse_fetcher=partial(FetchSzseListings, get=FetchExternalHttp),
+        sse_fetcher=partial(FetchSseListings, get=HttpRequestScope(OpenExternalHttp).get),
+        szse_fetcher=partial(FetchSzseListings, get=HttpRequestScope(OpenExternalHttp).get),
         timeout_seconds=15.0,
         minimum_rows=4000,
         wall_clock=_now,

@@ -22,7 +22,7 @@ from trader.training.application.selected_training import SelectedTrainingRun, T
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.memory_admission import TrainingMemoryBudget
-from trader.training.infra.selected_training import SelectedTrainingRequest
+from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
 
 ROOT = Path(__file__).resolve().parents[4]
 _ENVIRONMENT = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
@@ -99,7 +99,9 @@ def test_selected_enables_only_the_requested_winners(tmp_path, monkeypatch, comp
     received = []
     outcome = SelectedTrainingRun((), 0, 0)
 
-    def train(current, executor, *, sqlite_policy):
+    def train(operations, executor):
+        current = operations.request
+        sqlite_policy = operations.sqlite_policy
         assert executor is pool and sqlite_policy is policy
         received.append(current)
         return outcome
@@ -111,7 +113,7 @@ def test_selected_enables_only_the_requested_winners(tmp_path, monkeypatch, comp
         "selected", "baseline", components=components,
     ) as experiment:
         assert candidates.training_configuration.LoadTrainingResourceSettings is loader
-        assert candidates.training_entrypoint.TrainSelectedProfiles(request, pool, sqlite_policy=policy) is outcome
+        assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy), pool) is outcome
         assert received[-1].execution_options == expected
         assert received[-1].fanout_settings == request.fanout_settings
         assert received[-1].cpu_budget is request.cpu_budget
@@ -162,7 +164,8 @@ def test_fanout_changes_one_configured_dimension_and_observes_actual_requests(
     received = []
     outcome = SelectedTrainingRun((), 0, 0)
 
-    def train(request, _executor, *, sqlite_policy):
+    def train(operations, _executor):
+        request = operations.request
         received.append(request)
         return outcome
 
@@ -186,7 +189,7 @@ def test_fanout_changes_one_configured_dimension_and_observes_actual_requests(
             )
         assert resources.memory == baseline.memory and resources.samples == baseline.samples
         request = _request(tmp_path, resources)
-        assert candidates.training_entrypoint.TrainSelectedProfiles(request, pool, sqlite_policy=SqlitePolicyFixture()) is outcome
+        assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()), pool) is outcome
         assert received[-1].execution_options == TrainingExecutionOptions()
         report = candidates.ProjectTrainingExecutionExperiment(experiment)
         assert report["execution"] == "baseline" and report["components"] == ()

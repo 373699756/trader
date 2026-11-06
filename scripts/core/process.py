@@ -9,6 +9,7 @@ import time
 from collections.abc import Mapping
 
 from scripts.core.paths import PROJECT_ROOT
+from trader.infra.process_family import ProcessFamily
 
 
 class DiagnosticOutputLimitError(ValueError):
@@ -21,14 +22,11 @@ def RunBoundedCommand(
     """Bound execution/output; allow five extra seconds for owned worker cleanup on POSIX."""
     limit = 20 * 1024 * 1024
     started = time.monotonic()
-    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors, subprocess.Popen(
-        argv,
-        cwd=PROJECT_ROOT,
-        stdout=output,
-        stderr=errors,
-        env=environment,
-        start_new_session=os.name == "posix",
-    ) as process:
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        process = ProcessFamily(
+            argv, cwd=PROJECT_ROOT, stdout=output, stderr=errors, environment=environment,
+            graceful_signal=signal.SIGINT, grace_seconds=5.0, reap_seconds=5.0,
+        )
         try:
             while process.poll() is None:
                 if time.monotonic() - started >= timeout:
@@ -40,19 +38,9 @@ def RunBoundedCommand(
                 raise DiagnosticOutputLimitError("diagnostic_output_limit")
             output.seek(0)
             errors.seek(0)
-            return subprocess.CompletedProcess(argv, process.returncode, output.read(limit).decode("utf-8"), errors.read(limit).decode("utf-8"))
+            result = process.returncode
+            if result is None:
+                raise RuntimeError("diagnostic_process_exit_unavailable")
+            return subprocess.CompletedProcess(argv, result, output.read(limit).decode("utf-8"), errors.read(limit).decode("utf-8"))
         finally:
-            try:
-                if os.name == "posix":
-                    if process.poll() is None:
-                        os.killpg(process.pid, signal.SIGINT)
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            pass
-                    os.killpg(process.pid, signal.SIGKILL)
-                elif process.poll() is None:
-                    process.kill()
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=5)
+            process.close()

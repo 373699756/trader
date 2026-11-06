@@ -161,11 +161,11 @@ class TomorrowHistoricalScreeningService:
     def execute(self, spec: TomorrowHistoricalSpec) -> TomorrowHistoricalExecution:
         if spec != TOMORROW_HISTORICAL_SPEC:
             raise ValueError("Tomorrow historical screening requires the frozen historical spec")
-        archive = self._evidence.inspect(spec.source_research_identity)
+        history_status = self._evidence.inspect(spec.source_research_identity)
         manifest = self._evidence.manifest(HISTORICAL_SCREENING_SPEC)
-        coverage = archive.completed_codes / archive.universe_count if archive.universe_count else 0.0
+        coverage = history_status.completed_codes / history_status.universe_count if history_status.universe_count else 0.0
         source_valid = (
-            archive.spec_hash == spec.source_spec_hash
+            history_status.spec_hash == spec.source_spec_hash
             and manifest.spec_hash == spec.source_spec_hash
             and coverage >= spec.minimum_archive_coverage
             and all(item.bar_count >= 66 for item in manifest.histories)

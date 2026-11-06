@@ -16,6 +16,7 @@ from trader.training.infra.research.h1_point_in_time_capability import H1Capabil
 from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionEvidenceFiles
 from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 from trader.training.infra.research.historical_label_evidence import HistoricalLabelEvidenceIndex
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 
 def main(argv):
@@ -33,14 +34,27 @@ def _seal_h1_research_parent(root):
         ),
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
-    archive = SQLiteH1PointInTimeSnapshot(root / "archive", sqlite_policy=SqlitePolicyFixture())
+    evidence = SQLiteH1PointInTimeSnapshot(root / "archive", sqlite_policy=SqlitePolicyFixture())
     completion = CompleteH1Research(
         capability=capability,
-        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25")),
+        metadata=tuple(evidence.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25")),
     )
     H1CapabilityEvidenceIndex(root).write(capability)
     HistoricalLabelEvidenceIndex(root).write(completion.labels)
     H1ResearchCompletionEvidenceFiles(root).write(completion)
+    parents = {
+        status.strategy: {
+            "candidate_status": "historical_data_insufficient",
+            "parent_hash": capability.content_hash,
+            "candidate_hash": completion.daily_close_selection.content_hash,
+            "failure_reasons": list(status.failure_reasons or ("historical_data_insufficient",)),
+            "date_split": None,
+        }
+        for status in capability.strategies
+    }
+    (root / "terminal_parents.json").write_text(
+        json.dumps({**parents, "content_hash": CanonicalResearchHash(parents)}), encoding="utf-8"
+    )
 
 
 def test_point_in_time_script_seals_two_parent_insufficient_reports_and_conclusion(tmp_path, capsys) -> None:
@@ -48,7 +62,7 @@ def test_point_in_time_script_seals_two_parent_insufficient_reports_and_conclusi
     output = tmp_path / "output"
     _seal_h1_research_parent(parent)
 
-    result = main(["--parent-artifact-dir", str(parent), "--output-dir", str(output), "--output", "-"])
+    result = main(["--parent-artifact-dir", str(parent), "--evidence-dir", str(tmp_path / "terminal-inputs"), "--output-dir", str(output), "--output", "-"])
 
     payload = json.loads(capsys.readouterr().out)
     assert result == 1
@@ -61,7 +75,7 @@ def test_point_in_time_script_seals_two_parent_insufficient_reports_and_conclusi
     assert (output / "d25" / "report.json").is_file()
     assert (output / "cross_strategy" / "report.json").is_file()
 
-    second = main(["--parent-artifact-dir", str(parent), "--output-dir", str(output), "--output", "-"])
+    second = main(["--parent-artifact-dir", str(parent), "--evidence-dir", str(tmp_path / "terminal-inputs"), "--output-dir", str(output), "--output", "-"])
     second_payload = json.loads(capsys.readouterr().out)
     assert second == 1
     assert second_payload["conclusion_hash"] == payload["conclusion_hash"]

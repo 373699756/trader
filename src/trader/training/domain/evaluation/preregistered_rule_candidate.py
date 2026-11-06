@@ -37,7 +37,7 @@ class PreregisteredRuleCandidate:
     def __post_init__(self) -> None:
         _validate_candidate_change(self)
         _validate_candidate_risk(self)
-        object.__setattr__(self, "content_hash", _hash(self))
+        object.__setattr__(self, "content_hash", RuleCandidateHash(self))
 
 
 def _validate_candidate_change(candidate: PreregisteredRuleCandidate) -> None:
@@ -162,7 +162,7 @@ class PreregisteredRuleCandidateFamily:
             raise ValueError("locked research family cannot authorize production")
         if self.production_authority:
             raise ValueError("preregistered rule candidate family cannot authorize production")
-        object.__setattr__(self, "content_hash", _hash(self))
+        object.__setattr__(self, "content_hash", RuleCandidateHash(self))
 
 
 @dataclass(frozen=True)
@@ -185,7 +185,7 @@ class RuleCandidateEvaluationReport:
             raise ValueError("rejected preregistered rule family cannot select a candidate")
         if self.production_authority or self.schema_version != "rule_candidate_evaluation_report":
             raise ValueError("preregistered rule candidate report cannot authorize production")
-        object.__setattr__(self, "content_hash", _hash(self))
+        object.__setattr__(self, "content_hash", RuleCandidateHash(self))
 
 
 def PreregisterRuleCandidates(
@@ -444,7 +444,7 @@ def _positive_concentration(rows: tuple[FilterAblationRow, ...]) -> tuple[float,
     return stock_shares[0], math.fsum(stock_shares[:5]), max(date_shares)
 
 
-def _hash(value: object) -> str:
+def RuleCandidateHash(value: object) -> str:
     return CanonicalDigest(value)
 
 
@@ -458,4 +458,5 @@ __all__ = [
     "EvaluateRuleCandidate",
     "EvaluateRuleCandidateFamily",
     "PreregisterRuleCandidates",
+    "RuleCandidateHash",
 ]

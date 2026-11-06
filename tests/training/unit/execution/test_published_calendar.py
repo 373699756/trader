@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from scripts.training.samples.training_read_comparison import PrepareTrainingHistory
-from tests.helpers.shared.configuration import SqlitePolicyFixture, TcnFittingParametersFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.configuration import TcnFittingParametersFixture
 from tests.helpers.training.execution.selected_profiles import ROOT, _Progress
 from tests.helpers.training.profiles.v1.learned_rank_training import _settings
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
@@ -18,10 +19,11 @@ from trader.infra.settings import LoadRuntimeSettings
 from trader.training.application.selected_training import TrainingLocations
 from trader.training.infra import selected_training
 from trader.training.infra.cpu_admission import TrainingCpuBudget
-from trader.training.infra.engine import TrainingRunResult
+from trader.training.application.profile_training import TrainingRunResult
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.memory_admission import TrainingMemoryBudget
-from trader.training.infra.selected_training import SelectedTrainingRequest, TrainSelectedProfiles
+from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
+from trader.training.application.selected_training import TrainSelectedProfiles
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 
@@ -61,7 +63,7 @@ def test_four_profiles_publish_and_reuse_the_real_history_calendar(tmp_path: Pat
         memory_capacity_bytes=memory_capacity,
     )
     with ThreadPoolExecutor(max_workers=4) as executor:
-        initial = TrainSelectedProfiles(request, executor, sqlite_policy=policy)
+        initial = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy), executor)
         assert initial.history_scan_passes == 1
         for outcome in initial.outcomes:
             assert outcome.failure is None, (outcome.profile, outcome.failure)
@@ -80,7 +82,7 @@ def test_four_profiles_publish_and_reuse_the_real_history_calendar(tmp_path: Pat
                 assert inputs["calendar_hash"] == source.snapshot.calendar.content_hash
                 assert inputs["training_input_hash"] == published.content_hash
                 assert inputs["source_identity_hash"] == published.source_identity_hash
-        repeated = TrainSelectedProfiles(request, executor, sqlite_policy=policy)
+        repeated = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy), executor)
 
     assert repeated.history_scan_passes == repeated.history_rows_read == 0
     assert all(

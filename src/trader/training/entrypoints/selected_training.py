@@ -7,6 +7,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 import json
 import logging
 import time
+from collections.abc import Callable
 from concurrent.futures import CancelledError
 from contextlib import ExitStack
 from datetime import datetime
@@ -19,15 +20,16 @@ from trader.infra.signal_cancellation import ManualCancellation
 from trader.infra.workers import ManagedWorkerExecutor, WorkerFutureExecutor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingFanoutSettings, TrainingMemoryAdmission, TrainingSampleSettings
-from trader.training.application.selected_training import SelectedTrainingOutcome, TrainingLocations
+from trader.training.application.selected_training import SelectedProfileResult, SelectedTrainingOutcome, SelectedTrainingPort, TrainSelectedProfiles, TrainingLocations
 from trader.training.entrypoints.profile_training import (
     CancellableTrainingProgress,
     ProjectLearnedRankTrainingResult,
     ProjectProfileTrainingResult,
+    ProjectTrainingOperationIssues,
 )
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 from trader.training.entrypoints.training_timing_projection import ProjectTrainingExecutionTiming
-from trader.training.infra.engine import TrainingRunResult
+from trader.training.application.profile_training import TrainingRunResult
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
@@ -36,9 +38,7 @@ from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.selected_training import (
-    SelectedProfileResult,
     SelectedTrainingRequest,
-    TrainSelectedProfiles,
 )
 
 
@@ -52,6 +52,7 @@ def RunSelectedTraining(
     fanout_settings: TrainingFanoutSettings,
     sample_settings: TrainingSampleSettings,
     paths: TrainingLocations, sqlite_policy: SqliteIoPolicy,
+    prepare_training: Callable[[SelectedTrainingRequest], SelectedTrainingPort[SelectedProfileResult]],
     memory_capacity_bytes: int | None = None,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
@@ -66,6 +67,7 @@ def RunSelectedTraining(
             fanout_settings=fanout_settings,
             sample_settings=sample_settings,
             sqlite_policy=sqlite_policy,
+            prepare_training=prepare_training,
             memory_capacity_bytes=memory_capacity_bytes,
         )
 
@@ -78,6 +80,7 @@ def _run_selected_training(
     paths: TrainingLocations,
     cancelled: Event, *, cpu_budget: TrainingCpuBudget, fanout_settings: TrainingFanoutSettings,
     sample_settings: TrainingSampleSettings, sqlite_policy: SqliteIoPolicy,
+    prepare_training: Callable[[SelectedTrainingRequest], SelectedTrainingPort[SelectedProfileResult]],
     memory_capacity_bytes: int | None = None,
 ) -> int:
     started = time.monotonic()
@@ -85,6 +88,10 @@ def _run_selected_training(
     logging.getLogger(__name__).warning(
         "训练CPU预算 | 可用CPU %s | 拟合总线程 %s | 原生库基线线程 %s | 档位 %s",
         cpu_budget.available_cpus, cpu_budget.capacity, cpu_budget.native_threads, ",".join(profiles),
+    )
+    logging.getLogger(__name__).warning(
+        "训练资源配置 | 拟合内存 %s字节 | 扫描批次 %s行 | 每档队列 %s批",
+        memory_capacity_bytes, fanout_settings.batch_rows, fanout_settings.queue_batches,
     )
     try:
         measurements = TrainingExecutionMeasurements(profiles, time.monotonic)
@@ -111,16 +118,16 @@ def _run_selected_training(
                     )
                     output.publish_result(result.status, "; ".join(dict.fromkeys(reasons)) or None)
 
+            selection = SelectedTrainingRequest(
+                runtime, profiles, progresses, cancelled.is_set, memory_admission, paths, report_outcome,
+                cpu_budget=cpu_budget,
+                fanout_settings=fanout_settings,
+                sample_settings=sample_settings,
+                measurements=measurements,
+                memory_capacity_bytes=memory_capacity_bytes,
+            )
             run = TrainSelectedProfiles(
-                SelectedTrainingRequest(
-                    runtime, profiles, progresses, cancelled.is_set, memory_admission, paths, report_outcome,
-                    cpu_budget=cpu_budget,
-                    fanout_settings=fanout_settings,
-                    sample_settings=sample_settings,
-                    measurements=measurements,
-                    memory_capacity_bytes=memory_capacity_bytes,
-                ),
-                WorkerFutureExecutor(executor), sqlite_policy=sqlite_policy,
+                prepare_training(selection), WorkerFutureExecutor(executor),
             )
         codes: list[int] = []
         for outcome in run.outcomes:
@@ -152,6 +159,7 @@ def _run_selected_training(
                     "status": "cancelled" if outcome.cancelled else "failed",
                     "failure": outcome.failure,
                 }
+            payload["delivery_issues"] = ProjectTrainingOperationIssues(outcome.delivery_issues)
             payload["stage_seconds"] = dict(outputs[profiles.index(outcome.profile)].stage_durations)
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             codes.append(
@@ -196,8 +204,15 @@ def _run_selected_training(
                     "elapsed_seconds": round(time.monotonic() - started, 3),
                     "timing": ProjectTrainingExecutionTiming(run.timing) if run.timing is not None else None,
                     "results": [
-                        {"profile": profile, "exit_code": value}
-                        for profile, value in zip(profiles, codes, strict=True)
+                        {
+                            "profile": outcome.profile,
+                            "exit_code": value,
+                            "post_commit_issues": ProjectTrainingOperationIssues(
+                                outcome.result.post_commit_issues if outcome.result is not None else (),
+                            ),
+                            "delivery_issues": ProjectTrainingOperationIssues(outcome.delivery_issues),
+                        }
+                        for outcome, value in zip(run.outcomes, codes, strict=True)
                     ],
                     "not_started": [],
                 }, indent=2, ensure_ascii=False

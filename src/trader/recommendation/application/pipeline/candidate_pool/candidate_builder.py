@@ -93,18 +93,18 @@ def BuildCandidatePlans(
             context.policy,
             ScoredSelectionOptions(
                 evaluated_at=context.evaluated_at,
-                max_age_seconds=_maximum_age_seconds(strategy),
+                max_age_seconds=MaximumCandidateQuoteAgeSeconds(strategy),
                 population_evaluated_at=population_at,
-                population_max_age_seconds=_maximum_age_seconds(strategy),
+                population_max_age_seconds=MaximumCandidateQuoteAgeSeconds(strategy),
                 population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
                 phase="candidate_discovery",
                 candidate_features=candidates,
                 strategy=strategy,
-                minimum_history_sessions=_history_required_sessions(
+                minimum_history_sessions=RequiredCandidateHistorySessions(
                     context.model_scoring if context.apply_model_eligibility else None,
                     strategy,
                 ),
-                model_input_eligible_codes=_model_eligible_codes(
+                model_input_eligible_codes=FindModelEligibleCodes(
                     context.model_scoring if context.apply_model_eligibility else None,
                     strategy,
                     candidates if candidates is not None else features,
@@ -121,16 +121,16 @@ def BuildCandidatePlans(
     return CandidatePlanSet(plans, population_at)
 
 
-def _maximum_age_seconds(strategy: Strategy) -> float:
+def MaximumCandidateQuoteAgeSeconds(strategy: Strategy) -> float:
     del strategy
     return 30.0
 
 
-def _history_required_sessions(model_scoring: ModelScoringPort | None, strategy: Strategy) -> int:
+def RequiredCandidateHistorySessions(model_scoring: ModelScoringPort | None, strategy: Strategy) -> int:
     return model_scoring.history_required_sessions(strategy) if model_scoring is not None else 20
 
 
-def _model_eligible_codes(
+def FindModelEligibleCodes(
     model_scoring: ModelScoringPort | None,
     strategy: Strategy,
     features: Sequence[FeatureSnapshot],
@@ -173,4 +173,7 @@ __all__ = [
     "SCORED_STRATEGIES",
     "BuildCandidatePlans",
     "RefreshQualifiedInputs",
+    "MaximumCandidateQuoteAgeSeconds",
+    "RequiredCandidateHistorySessions",
+    "FindModelEligibleCodes",
 ]

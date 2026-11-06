@@ -31,7 +31,8 @@ from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_reference_index import ReadBoundHistoryReference
 from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow
-from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.bootstrap import ExecuteHistorySync
+from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
@@ -120,12 +121,12 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float, 
             SQLiteReferenceIndex(config.reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy).publish(subset, subset.st_evidence)
             context = replace(context, reference_id=subset.identity)
             started = time.monotonic()
-            result = RunHistorySync(
+            result = ExecuteHistorySync(
                 config,
                 _ComparisonSupplier(context, baseline, prices, tencent_first),
-                worker_pool=pool,
-                disk_kind=DiskProbe().inspect(config.history_root).kind,
-                clock=lambda: datetime.combine(dates[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai")), sqlite_policy=sqlite_policy,
+                clock=lambda: datetime.combine(dates[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai")),
+                sqlite_policy=sqlite_policy,
+                resources=HistorySyncResources(worker_pool=pool, disk_kind=DiskProbe().inspect(config.history_root).kind),
             )
             results.append(
                 {

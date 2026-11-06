@@ -37,6 +37,10 @@ from trader.infra.http_contracts import HttpRequest, HttpResponse
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 
+class _CompanyDatabaseAuditBudgetExceeded(TimeoutError):
+    """The local audit deadline expired between SQL statements."""
+
+
 class _Capture:
     def __init__(self) -> None:
         self.total: int | None = None
@@ -221,10 +225,10 @@ def AuditCompanyDatabase(
             path, now=now, deadline=deadline, cancel_requested=cancel_requested,
             facts_path=facts_path, sqlite_policy=sqlite_policy,
         )
-    except sqlite3.OperationalError as exc:
+    except (sqlite3.OperationalError, _CompanyDatabaseAuditBudgetExceeded) as exc:
         # Python 3.10 has no sqlite_errorcode. The exact SQLite interruption
         # message alone is insufficient: our own deadline callback must cancel.
-        if str(exc) != "interrupted" or not deadline_cancelled:
+        if not deadline_cancelled or isinstance(exc, sqlite3.OperationalError) and str(exc) != "interrupted":
             raise
         return {
             "schema_version": "company-resume",
@@ -303,8 +307,8 @@ def _audit_company_database(
             "JOIN disclosure_codes c ON c.disclosure_id=d.id LEFT JOIN document_tasks t ON t.source=d.source "
             "AND t.source_key=d.source_key AND t.record_hash=d.record_hash GROUP BY d.id ORDER BY d.id"
         ):
-            if time.monotonic() >= deadline:
-                raise TimeoutError("company_failure_inventory_timeout")
+            if cancel_requested():
+                raise _CompanyDatabaseAuditBudgetExceeded("company_database_audit_budget_exhausted")
             item = DecodeCompanyDisclosure(row)
             directory = raw.directory(item)
             codes = tuple(code[0] for code in connection.run(

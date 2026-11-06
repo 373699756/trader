@@ -35,7 +35,7 @@ from trader.training.infra.profile.v5.training import RunV5Training
 
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
-from tests.helpers.shared.configuration import TcnFittingParametersFixture
+from tests.helpers.training.configuration import TcnFittingParametersFixture
 
 from tests.helpers.training.profiles.v5.v5_training import (
     ROOT,

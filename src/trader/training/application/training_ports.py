@@ -2,25 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Protocol, TypeVar
-
-from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
 
 _ResultT = TypeVar("_ResultT", covariant=True)
 _QueryT = TypeVar("_QueryT", contravariant=True)
-
-
-class TrainingRunnerPort(Protocol[_ResultT]):
-    """Profile-specific runner supplied by infrastructure."""
-
-    def __call__(
-        self,
-        history_root: Path,
-        train_root: Path,
-        *,
-        progress: TomorrowTrainingProgressPort | None = None,
-    ) -> _ResultT: ...
 
 
 class TrainingDuePort(Protocol[_QueryT, _ResultT]):
@@ -29,4 +14,4 @@ class TrainingDuePort(Protocol[_QueryT, _ResultT]):
     def __call__(self, query: _QueryT) -> _ResultT: ...
 
 
-__all__ = ["TrainingDuePort", "TrainingRunnerPort"]
+__all__ = ["TrainingDuePort"]

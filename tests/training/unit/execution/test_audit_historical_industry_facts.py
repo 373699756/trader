@@ -93,7 +93,7 @@ def test_main_rejects_detailed_stdout_without_running_audit(capsys, monkeypatch)
 def test_main_writes_detailed_report_only_to_an_external_path(tmp_path, monkeypatch) -> None:
     report = _report()
     target = tmp_path / "industry-report.json"
-    monkeypatch.setattr(bootstrap, "ExecuteResearchEvidence", lambda _cmd: report)
+    monkeypatch.setattr(bootstrap, "ExecuteResearchEvidence", lambda _cmd, **_options: report)
 
     result = main(["--include-details", "--output", str(target)])
 

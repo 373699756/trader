@@ -74,11 +74,11 @@ def _report(artifact: TomorrowHistoricalModelSnapshot) -> TomorrowHistoricalRepo
 def test_p2_report_and_model_are_idempotent_tamper_evident_and_inspectable(tmp_path) -> None:  # noqa: ANN001
     artifact = _artifact()
     report = _report(artifact)
-    archive = TomorrowHistoricalEvidenceIndex(tmp_path)
+    evidence = TomorrowHistoricalEvidenceIndex(tmp_path)
 
-    assert archive.seal(report, artifact) == report.content_hash
-    assert archive.seal(report, artifact) == report.content_hash
-    assert archive.inspect() == {
+    assert evidence.seal(report, artifact) == report.content_hash
+    assert evidence.seal(report, artifact) == report.content_hash
+    assert evidence.inspect() == {
         "report_hash": report.content_hash,
         "status": "historical_rejected",
         "candidate_id": TOMORROW_HISTORICAL_CANDIDATE_ID,
@@ -92,10 +92,10 @@ def test_p2_report_and_model_are_idempotent_tamper_evident_and_inspectable(tmp_p
     payload["status"] = "historical_passed"
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(TomorrowHistoricalEvidenceConflictError, match="hash"):
-        archive.inspect()
+        evidence.inspect()
 
 
-def test_p2_archive_rejects_a_report_bound_to_another_model(tmp_path) -> None:  # noqa: ANN001
+def test_p2_evidence_rejects_a_report_bound_to_another_model(tmp_path) -> None:  # noqa: ANN001
     artifact = _artifact()
     report = _report(artifact)
 
@@ -106,15 +106,15 @@ def test_p2_archive_rejects_a_report_bound_to_another_model(tmp_path) -> None:  
         )
 
 
-def test_p2_archive_rejects_a_tampered_bound_model_on_direct_report_replay(tmp_path) -> None:  # noqa: ANN001
+def test_p2_evidence_rejects_a_tampered_bound_model_on_direct_report_replay(tmp_path) -> None:  # noqa: ANN001
     artifact = _artifact()
     report = _report(artifact)
-    archive = TomorrowHistoricalEvidenceIndex(tmp_path)
-    archive.seal(report, artifact)
+    evidence = TomorrowHistoricalEvidenceIndex(tmp_path)
+    evidence.seal(report, artifact)
     path = tmp_path / TOMORROW_HISTORICAL_SPEC.research_identity / "model-artifact.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["lightgbm_model"] = "tampered"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(TomorrowHistoricalEvidenceConflictError, match="hash"):
-        archive.read_report_payload()
+        evidence.read_report_payload()

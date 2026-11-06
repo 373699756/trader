@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from tests.helpers.shared.web_contract import NOW, _app, _freeze, _Repository
+from tests.helpers.shared.web_contract import NOW, _app, _freeze, _FreezeRecords
 from trader.http_api.route_services import UnifiedWebServices
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
@@ -57,7 +57,7 @@ def test_preview_get_sse_and_refresh_share_context_without_losing_algorithm_iden
         def now(self) -> datetime:
             return generated_at + timedelta(days=1)
 
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), Clock())
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), Clock())
     preview_status = {
         "status": "running",
         "run_mode": "preview",
@@ -140,7 +140,7 @@ def test_nontrading_long_http_keeps_close_change_when_short_models_are_blocked()
         def now(self):
             return observed
 
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), Clock())
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), Clock())
     client = CreateApp(
         services=UnifiedWebServices(
             queries,

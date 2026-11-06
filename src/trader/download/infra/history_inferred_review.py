@@ -41,10 +41,6 @@ class HistoryInferredReviewTask:
     inferred_dates: tuple[date, ...]
 
 
-class HistoryInferredReviewDeferred(RuntimeError):
-    """An auxiliary unpublished batch retains durable facts for the next command."""
-
-
 def IsHistoryReviewBusy(exc: sqlite3.OperationalError) -> bool:
     """Treat only SQLite's documented lock outcomes as an auxiliary deferral."""
     return str(exc) in {"database is locked", "database table is locked", "database schema is locked"}
@@ -244,7 +240,6 @@ class HistoryInferredReviewIndex:
 __all__ = [
     "HISTORY_INFERRED_REVIEW_SQL",
     "HistoryInferredReviewIndex",
-    "HistoryInferredReviewDeferred",
     "HistoryInferredReviewTask",
     "IsHistoryReviewBusy",
     "RecordHistoryInferredSuspensions",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from tests.helpers.shared.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture
+from tests.helpers.download.configuration import DownloadFailureConfigurationFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
 from functools import partial
 
 import json

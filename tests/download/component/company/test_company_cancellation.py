@@ -8,11 +8,8 @@ from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_sources import Session
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
-from tests.helpers.shared.configuration import (
-    CompanyDocumentFilesFixture as CompanyDocumentFiles,
-    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
-)
-from tests.helpers.shared.configuration import EastmoneyCompanySourceFixture as EastmoneyCompanySource
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex
+from tests.helpers.download.company_resources import EastmoneyCompanySourceFixture as EastmoneyCompanySource
 from trader.infra.http_contracts import HttpCancelled
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 

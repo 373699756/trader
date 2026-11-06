@@ -155,7 +155,7 @@ def Main() -> int:
     parser.add_argument("--wide-sample-source", type=Path)
     args = parser.parse_args()
     from trader.bootstrap import BuildSqlitePolicy
-    from trader.infra.settings.training import LoadTrainingResourceSettings
+    from trader.training.infra.resource_settings import LoadTrainingResourceSettings
     runtime = LoadRuntimeSettings(args.config)
     sqlite_policy = BuildSqlitePolicy(runtime)
     sample_settings = LoadTrainingResourceSettings(runtime.project_root, runtime.disk_medium or "unknown").samples

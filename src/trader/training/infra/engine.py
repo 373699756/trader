@@ -4,19 +4,25 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.training.application.resources import TrainingSampleSettings
+from trader.training.application.profile_training import (
+    HeadTrainingResult, InspectProfileReuse, PreparedTrainingHead, PreparedTrainingSamples, ProfileFittingPort,
+    ProfileTrainingOperationError, PublishedTrainingHead, TrainProfile, TrainingRunResult, TrainingStatus,
+)
+from trader.training.domain.profile_training import (
+    BuildProfileDiagnosticPlan, PlannedTrainingHead, ProfileTrainingHead, ProfileTrainingPlan, ProfileTrainingSource,
+)
 
 import json
 import os
-import shutil
 import sqlite3
 import tempfile
 from collections.abc import Iterator
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import date
 from importlib.metadata import version
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Protocol, cast
 
 from lightgbm.basic import LightGBMError
 
@@ -44,9 +50,8 @@ from trader.training.application.tomorrow_training import (
 )
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT, FinalFitDatePlan
 from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
-from trader.training.domain.tomorrow_training_input import EvaluateTomorrowTrainingInput, FrozenDailyInputDescriptor
+from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescriptor
 from trader.training.domain.production_diagnostic_dates import (
-    BuildProductionDiagnosticDatePlan,
     PRODUCTION_DIAGNOSTIC_CONTRACT,
     ProductionDiagnosticDatePlan,
 )
@@ -57,7 +62,7 @@ from trader.training.infra.history.history_training_input import (
 )
 from trader.training.infra.implementation_identity import TrainingImplementationIdentity
 from trader.training.infra.execution_options import TrainingExecutionOptions
-from trader.training.infra.fitting_resources import ReserveTrainingFittingResources
+from trader.training.infra.fitting_resources import ReserveTrainingFittingResources, TrainingFittingReservation
 from trader.training.infra.model_bundles.bundle_snapshot import (
     MakeBundleStagingDirectory,
 )
@@ -69,6 +74,7 @@ from trader.training.infra.model_bundles.documents import (
     BuildTargetMetricDocument,
 )
 from trader.training.infra.model_bundles.profile_publication import (
+    ClearProfileStaging,
     InspectPublishedProfileBundles,
     PublishProfileBundles,
     RecoverProfileBundles,
@@ -86,16 +92,13 @@ from trader.training.infra.sample_builder import (
 )
 from trader.training.infra.sample_cache import PruneEmptySampleDirectories, SampleCacheBytes, TrainingSampleCache
 from trader.training.infra.sample_index import (
-    SampleCoverage,
+    FinalFitIndustryCounts,
     SQLiteTrainingSampleIndex,
     TargetMetric,
 )
 from trader.training.infra.sample_schema import TrainingFeatureNames
 from trader.training.infra.sample_sequences import SEQUENCE_FORMAT, SampleSequenceLayout
 from trader.training.infra.training_settings import ProfileTrainingSettings
-
-TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
-
 
 class _TrainingInputSnapshot(TrainingHistorySource, Protocol):
     snapshot: HistoryTrainingInputSnapshot
@@ -111,46 +114,6 @@ class _TrainingInputSnapshot(TrainingHistorySource, Protocol):
     def published_snapshot(self) -> HistorySnapshot: ...
 
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor: ...
-
-
-@dataclass(frozen=True)
-class HeadTrainingResult:
-    strategy: Strategy
-    status: TrainingStatus
-    training_input_scope: Literal["unavailable", "complete_manifest"]
-    run_id: str | None
-    training_input_hash: str
-    training_input_codes: int
-    training_universe_codes: int
-    report_hash: str
-    model_hash: str
-    industry_count: int
-    training_rows: int
-    validation_rows: int
-    failure_reasons: tuple[str, ...]
-    label_cutoff: date | None = None
-    sample_database_peak_bytes: int = 0
-    coverage: tuple[SampleCoverage, ...] = ()
-    final_fit: FinalFitDatePlan | None = None
-    diagnostic_plan: ProductionDiagnosticDatePlan | None = None
-
-
-@dataclass(frozen=True)
-class TrainingRunResult:
-    run_id: str | None
-    training_input_hash: str
-    sample_database_peak_bytes: int
-    heads: tuple[HeadTrainingResult, ...]
-    reused: bool = False
-
-    @property
-    def status(self) -> TrainingStatus:
-        statuses = tuple(item.status for item in self.heads)
-        if "blocked" in statuses:
-            return "blocked"
-        if "rejected" in statuses:
-            return "rejected"
-        return "engineering_ready" if statuses else "blocked"
 
 
 @dataclass(frozen=True)
@@ -279,7 +242,7 @@ def _run_training(request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPol
             except HistoryPartitionRepackFenceError:
                 if request.expected_history_snapshot_hash != history.snapshot.snapshot_hash:
                     raise
-            return _run_locked(history, request, sqlite_policy=sqlite_policy)
+            return _run_profile_training(history, request, sqlite_policy=sqlite_policy)
     except HistoryMaintenanceAlreadyRunningError:
         heads = tuple(
             _blocked_from_snapshot(item, history.snapshot, "history_maintenance_running") for item in request.contracts
@@ -300,7 +263,7 @@ def FitSelectedProfile(
     aligned_rows: Iterator[HistoryTrainingRow], *, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingRunResult:
     """Caller owns history/profile locks; connections belong exclusively to this worker."""
-    return _run_locked(history, request, prepared_cache=cache, aligned_rows=aligned_rows, sqlite_policy=sqlite_policy)
+    return _run_profile_training(history, request, prepared_cache=cache, aligned_rows=aligned_rows, sqlite_policy=sqlite_policy)
 
 
 def InspectSelectedProfile(
@@ -316,223 +279,203 @@ def InspectSelectedProfile(
     if split is None:
         raise ValueError(reason)
     cache = _sample_cache_for(history.snapshot, split, request, sqlite_policy=sqlite_policy)
-    reused = _reuse_profile(history.snapshot, request)
+    reused = _reuse_profile(history, request)
     dates = frozenset() if reused is not None or cache.inspect() else _production_window(history.snapshot, split).readable_dates
     return request, cache, dates, reused
 
 
-def _run_locked(
+def _run_profile_training(
     history: _TrainingInputSnapshot,
     request: ProfileTrainingRequest,
     *,
     prepared_cache: TrainingSampleCache | None = None,
-    aligned_rows: Iterator[HistoryTrainingRow] | None = None, sqlite_policy: SqliteIoPolicy,
+    aligned_rows: Iterator[HistoryTrainingRow] | None = None,
+    sqlite_policy: SqliteIoPolicy,
 ) -> TrainingRunResult:
-    history, target_matches = _reopen_expected_snapshot(history, request.expected_history_snapshot_hash, sqlite_policy=sqlite_policy)
-    if not target_matches:
-        heads = tuple(
-            _blocked_from_snapshot(item, history.snapshot, "history_archive_repack_target_mismatch")
-            for item in request.contracts
-        )
-        return TrainingRunResult(None, history.snapshot.snapshot_hash, 0, heads)
-    snapshot = history.snapshot
-    split, preparation_failure = _prepare_locked_split(snapshot, request.profile, request.settings)
-    if split is None:
-        heads = tuple(_blocked_from_snapshot(item, snapshot, preparation_failure) for item in request.contracts)
-        return TrainingRunResult(None, snapshot.snapshot_hash, 0, heads)
-    plans, completed = _build_head_plans(snapshot, request)
-    if not plans:
-        ordered = tuple(replace(item, diagnostic_plan=split) for item in _ordered_results(request.contracts, completed))
-        return TrainingRunResult(None, snapshot.snapshot_hash, 0, ordered)
-    preflight_result = _preflight_failure_result(history, snapshot, plans, request.contracts, completed)
-    if preflight_result is not None:
-        return replace(preflight_result, heads=tuple(replace(item, diagnostic_plan=split) for item in preflight_result.heads))
-    _publish(request.progress, TomorrowTrainingProgress("training_preparation", "completed", 1, 1))
-    run_id = ContentHash(
-        (
-            request.profile.profile_id,
-            snapshot.snapshot_hash,
-            split.content_hash,
-            tuple((item.contract.strategy.value, item.training_contract_hash) for item in plans),
-        )
+    return TrainProfile(
+        _ProfileTrainingAdapter(history, request, sqlite_policy, prepared_cache, aligned_rows),
+        progress=request.progress,
     )
-    peak_bytes = 0
-    cache: TrainingSampleCache | None = None
-    coverage: tuple[SampleCoverage, ...] = ()
-    profile_published = False
-    try:
-        training_window = _require_industry_coverage(
-            history,
-            split,
-            request.profile.algorithm,
-            request.settings.fitting.minimum_industry_training_rows,
-        )
-        request.train_root.mkdir(parents=True, exist_ok=True)
-        _cleanup_abandoned_workspaces(request.train_root)
-        cache = prepared_cache or _sample_cache_for(snapshot, split, request, sqlite_policy=sqlite_policy)
-        _publish(request.progress, TomorrowTrainingProgress("sample_cache", "started", 0, 1))
-        with cache.open(inspected=prepared_cache is not None) as samples:
-            _publish(request.progress, TomorrowTrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
-            metrics = _prepare_samples(
-                TrainingSampleBuildRequest(
-                    history, snapshot.training_codes, training_window, samples, request.profile, request.progress
-                ),
-                cache,
-                aligned_rows=aligned_rows,
-                observer=request.execution_observer,
-            )
-            # This eligibility gate must run even without optional resource ports.
-            # Both heads must cover every requested mature day before any fitter runs.
-            final_counts = tuple(
-                (contract, samples.final_fit_counts(contract, _final_fit_plan(snapshot, request.settings, contract)))
-                for contract in request.contracts
-            )
-            expected_dates = tuple(
-                len(days)
-                for days in (
-                    split.fitting_dates,
-                    split.early_stopping_dates,
-                    split.calibration_dates,
-                    split.validation_dates,
-                    (),
-                )
-            )
-            coverage = tuple(
-                replace(item, expected_dates=expected)
-                for contract in request.contracts
-                for item, expected in zip(samples.coverage(contract), expected_dates, strict=True)
-            )
-            peak_bytes = samples.database_size_bytes
-            if any(item.effective_dates != item.expected_dates for item in coverage):
-                raise ValueError("profile_training_effective_dates_insufficient")
-        with (
-            SQLiteTrainingSampleIndex(
-                cache.path,
-                cache.feature_names,
-                prepared_split_hash=split.content_hash,
-                sequence_layout=cache.sequence_layout, sqlite_policy=sqlite_policy,
-                sample_settings=request.sample_settings,
-                execution_options=request.execution_options,
-            ) as samples,
-            ExitStack() as fitting_resources,
-        ):
-            requested_threads = request.settings.fitting.compute_threads if isinstance(request.settings.fitting, TcnFittingParameters) else request.compute_threads
-            def memory_requirement() -> int:
-                counts = tuple(item for contract in request.contracts for item in samples.industry_counts(contract))
-                matrix_bytes = max(
-                    (
-                        (item.training + item.early_stopping + item.calibration) * (cache.feature_count + 1) * 8
-                        for item in counts
-                    ),
-                    default=0,
-                )
-                final_matrix_bytes = max(
-                    (item.rows * (len(contract.feature_positions) + 1) * 8
-                     for contract, counts in final_counts for item in counts),
-                    default=0,
-                )
-                matrix_bytes = max(matrix_bytes, final_matrix_bytes)
-                estimate = (
-                    512 * 1024**2 + final_matrix_bytes * 2 if request.profile.algorithm == "tcn"
-                    else 256 * 1024**2 + matrix_bytes * 4
-                )
-                if request.execution_options.shared_validation:
-                    estimate += (512 if request.profile.algorithm == "tcn" else 256) * 1024**2
-                if request.execution_options.shared_matrix_memory:
-                    capacity = request.memory_capacity_bytes or 0
-                    extra = min(samples.shared_matrix_memory_bytes(), max(0, capacity - estimate))
-                    samples.configure_shared_matrix_budget(extra)
-                    estimate += extra
-                return estimate
 
-            reservation = fitting_resources.enter_context(ReserveTrainingFittingResources(
-                request.cpu_admission,
-                request.memory_admission,
-                requested_threads,
-                memory_requirement,
-                lambda: _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1)),
-                memory_first=request.execution_options.memory_first,
-            ))
-            compute_threads = reservation.compute_threads
-            prepared: list[tuple[Strategy, Path]] = []
-            fitted_heads = FitIndustryModels(samples, split, tuple(plan.contract for plan in plans), request.settings.fitting, progress=request.progress, compute_threads=compute_threads)
-            for plan, fitted in zip(plans, fitted_heads, strict=True):
-                final_fit_plan = _final_fit_plan(snapshot, request.settings, plan.contract)
-                refitted = RefitIndustryModels(
-                    samples, plan.contract, final_fit_plan, fitted, request.settings.fitting,
-                    compute_threads=compute_threads, progress=request.progress,
-                )
-                result, staging = _fit_and_prepare_head(
-                    _HeadFitRequest(
-                        plan,
-                        request.profile,
-                        request.settings,
-                        snapshot,
-                        split,
-                        metrics,
-                        request.train_root,
-                        run_id,
-                        request.progress,
-                        peak_bytes,
-                        final_fit_plan,
-                    ),
-                    fitted,
-                    refitted,
-                )
-                completed.append(result)
-                if staging is not None:
-                    prepared.append((plan.contract.strategy, staging))
-                    fitting_resources.callback(shutil.rmtree, staging, ignore_errors=True)
-            if len(prepared) == len(request.profile.heads) and all(
-                item.status == "engineering_ready" for item in completed
-            ):
-                try:
-                    _publish(request.progress, TomorrowTrainingProgress("artifact_publish", "started", 0, 1))
-                    if request.execution_options.release_cpu_before_publish:
-                        reservation.release_cpu()
-                    PublishProfileBundles(request.train_root, request.profile, tuple(prepared))
-                    profile_published = True
-                    _publish(request.progress, TomorrowTrainingProgress("artifact_publish", "completed", 1, 1))
-                except InterruptedError:
-                    raise
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                    completed = [
-                        replace(item, status="blocked", model_hash="", failure_reasons=(_reason(exc),))
-                        for item in completed
-                    ]
-            else:
-                completed = [
-                    replace(item, status="blocked", model_hash="", failure_reasons=("profile_pair_incomplete",))
-                    if item.status == "engineering_ready"
-                    else item
-                    for item in completed
-                ]
-        if all(item.status != "blocked" for item in completed):
-            cache.clear()
-            PruneEmptySampleDirectories(request.sample_root, request.sample_root.parent)
-    except InterruptedError:
+
+@contextmanager
+def _training_errors() -> Iterator[None]:
+    try:
+        yield
+    except (InterruptedError, ProfileTrainingOperationError):
         raise
     except (HistoryTrainingInputError, LightGBMError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-        peak_bytes = max(peak_bytes, SampleCacheBytes(cache))
-        reason = _reason(exc)
-        if not profile_published:
-            completed = [
-                replace(item, status="blocked", model_hash="", failure_reasons=(reason,))
-                if item.status == "engineering_ready" else item
-                for item in completed
-            ]
-        for plan in plans:
-            if not any(item.strategy is plan.contract.strategy for item in completed):
-                completed.append(
-                    replace(
-                        _blocked_from_snapshot(plan.contract, snapshot, reason),
-                        run_id=run_id,
-                        label_cutoff=plan.label_cutoff,
-                        coverage=tuple(item for item in coverage if item.target == plan.contract.target_column),
-                    )
+        raise ProfileTrainingOperationError(_reason(exc)) from exc
+
+
+@dataclass
+class _ProfileTrainingAdapter:
+    history: _TrainingInputSnapshot
+    request: ProfileTrainingRequest
+    sqlite_policy: SqliteIoPolicy
+    cache: TrainingSampleCache | None
+    aligned_rows: Iterator[HistoryTrainingRow] | None
+    metrics: tuple[TargetMetric, ...] = ()
+    final_counts: tuple[tuple[TrainedHeadContract, tuple[FinalFitIndustryCounts, ...]], ...] = ()
+
+    def read_source(self) -> ProfileTrainingSource:
+        with _training_errors():
+            self.history, target_matches = _reopen_expected_snapshot(
+                self.history, self.request.expected_history_snapshot_hash, sqlite_policy=self.sqlite_policy,
+            )
+            return _read_profile_source(self.history, self.request, target_matches=target_matches)
+
+    def has_industry_window(
+        self, readable_dates: frozenset[date], anchors: frozenset[date] | None = None,
+    ) -> bool:
+        with _training_errors():
+            if anchors is None:
+                return self.history.has_industry_window(readable_dates, 1)
+            return self.history.has_industry_window(readable_dates, 1, anchor_dates=anchors)
+
+    def industry_sample_upper_bounds(
+        self, readable_dates: frozenset[date], anchors: frozenset[date],
+    ) -> tuple[tuple[str, int], ...]:
+        with _training_errors():
+            return self.history.industry_sample_upper_bounds(readable_dates, 1, anchors)
+
+    def prepare_samples(
+        self, plan: ProfileTrainingPlan, window: ProductionTrainingWindow,
+    ) -> PreparedTrainingSamples:
+        with _training_errors():
+            request, snapshot = self.request, self.history.snapshot
+            request.train_root.mkdir(parents=True, exist_ok=True)
+            ClearProfileStaging(request.train_root)
+            inspected = self.cache is not None
+            if self.cache is None:
+                self.cache = _sample_cache_for(snapshot, plan.split, request, sqlite_policy=self.sqlite_policy)
+            cache = self.cache
+            _publish(request.progress, TomorrowTrainingProgress("sample_cache", "started", 0, 1))
+            with cache.open(inspected=inspected) as samples:
+                _publish(request.progress, TomorrowTrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
+                self.metrics = _prepare_samples(
+                    TrainingSampleBuildRequest(
+                        self.history, snapshot.training_codes, window, samples, request.profile, request.progress,
+                    ),
+                    cache, aligned_rows=self.aligned_rows, observer=request.execution_observer,
                 )
-    ordered = tuple(replace(item, diagnostic_plan=split) for item in _ordered_results(request.contracts, completed))
-    return TrainingRunResult(run_id, snapshot.snapshot_hash, peak_bytes, ordered)
+                self.final_counts = tuple(
+                    (contract, samples.final_fit_counts(contract, head.final_fit))
+                    for contract, head in zip(request.contracts, plan.heads, strict=True)
+                )
+                coverage = tuple(item for contract in request.contracts for item in samples.coverage(contract))
+                return PreparedTrainingSamples(coverage, samples.database_size_bytes)
+
+    def _require_cache(self) -> TrainingSampleCache:
+        if self.cache is None:
+            raise RuntimeError("profile_training_samples_not_prepared")
+        return self.cache
+
+    def _memory_requirement(self, samples: SQLiteTrainingSampleIndex) -> int:
+        request, cache = self.request, self._require_cache()
+        counts = tuple(item for contract in request.contracts for item in samples.industry_counts(contract))
+        matrix_bytes = max((
+            (item.training + item.early_stopping + item.calibration) * (cache.feature_count + 1) * 8
+            for item in counts
+        ), default=0)
+        final_matrix_bytes = max((
+            item.rows * (len(contract.feature_positions) + 1) * 8
+            for contract, counts in self.final_counts for item in counts
+        ), default=0)
+        matrix_bytes = max(matrix_bytes, final_matrix_bytes)
+        estimate = (
+            512 * 1024**2 + final_matrix_bytes * 2 if request.profile.algorithm == "tcn"
+            else 256 * 1024**2 + matrix_bytes * 4
+        )
+        if request.execution_options.shared_validation:
+            estimate += (512 if request.profile.algorithm == "tcn" else 256) * 1024**2
+        if request.execution_options.shared_matrix_memory:
+            capacity = request.memory_capacity_bytes or 0
+            extra = min(samples.shared_matrix_memory_bytes(), max(0, capacity - estimate))
+            samples.configure_shared_matrix_budget(extra)
+            estimate += extra
+        return estimate
+
+    @contextmanager
+    def fitting(self, plan: ProfileTrainingPlan) -> Iterator[ProfileFittingPort]:
+        with _training_errors():
+            request, cache = self.request, self._require_cache()
+            with (
+                SQLiteTrainingSampleIndex(
+                    cache.path, cache.feature_names, prepared_split_hash=plan.split.content_hash,
+                    sequence_layout=cache.sequence_layout, sqlite_policy=self.sqlite_policy,
+                    sample_settings=request.sample_settings, execution_options=request.execution_options,
+                ) as samples,
+                ExitStack() as resources,
+            ):
+                requested_threads = (
+                    request.settings.fitting.compute_threads
+                    if isinstance(request.settings.fitting, TcnFittingParameters) else request.compute_threads
+                )
+                reservation = resources.enter_context(ReserveTrainingFittingResources(
+                    request.cpu_admission, request.memory_admission, requested_threads,
+                    lambda: self._memory_requirement(samples),
+                    lambda: _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1)),
+                    memory_first=request.execution_options.memory_first,
+                ))
+                yield _ProfileFittingAdapter(self, plan, samples, resources, reservation)
+
+    def clear_samples(self) -> None:
+        with _training_errors():
+            self._require_cache().clear()
+            PruneEmptySampleDirectories(self.request.sample_root, self.request.sample_root.parent)
+
+    def sample_peak_bytes(self) -> int:
+        return SampleCacheBytes(self.cache)
+
+
+@dataclass
+class _ProfileFittingAdapter:
+    owner: _ProfileTrainingAdapter
+    plan: ProfileTrainingPlan
+    samples: SQLiteTrainingSampleIndex
+    resources: ExitStack
+    reservation: TrainingFittingReservation
+    fitted: tuple[IndustryFitResult, ...] = ()
+    staged: list[tuple[Strategy, Path]] = field(default_factory=list)
+
+    def fit_diagnostics(self) -> None:
+        with _training_errors():
+            request = self.owner.request
+            self.fitted = FitIndustryModels(
+                self.samples, self.plan.split, request.contracts, request.settings.fitting,
+                progress=request.progress, compute_threads=self.reservation.compute_threads,
+            )
+
+    def prepare_head(self, head: PlannedTrainingHead) -> PreparedTrainingHead:
+        with _training_errors():
+            request, snapshot = self.owner.request, self.owner.history.snapshot
+            position = next(index for index, contract in enumerate(request.contracts) if contract.strategy is head.strategy)
+            contract, fitted = request.contracts[position], self.fitted[position]
+            refitted = RefitIndustryModels(
+                self.samples, contract, head.final_fit, fitted, request.settings.fitting,
+                compute_threads=self.reservation.compute_threads, progress=request.progress,
+            )
+            result, staging = _fit_and_prepare_head(
+                _HeadFitRequest(
+                    _HeadPlan(contract, head.label_cutoff, head.training_contract_hash),
+                    request.profile, request.settings, snapshot, self.plan.split, self.owner.metrics,
+                    request.train_root, self.plan.run_id, request.progress, self.owner.sample_peak_bytes(), head.final_fit,
+                ),
+                fitted, refitted,
+            )
+            if staging is not None:
+                if not self.staged:
+                    self.resources.callback(ClearProfileStaging, request.train_root)
+                self.staged.append((head.strategy, staging))
+            return PreparedTrainingHead(result, staging is not None)
+
+    def publish_pair(self) -> None:
+        with _training_errors():
+            request = self.owner.request
+            if request.execution_options.release_cpu_before_publish:
+                self.reservation.release_cpu()
+            PublishProfileBundles(request.train_root, request.profile, tuple(self.staged))
 
 
 def _sample_cache_for(
@@ -604,30 +547,6 @@ def _prepare_samples(
     return metrics
 
 
-def _require_industry_coverage(
-    history: _TrainingInputSnapshot,
-    split: ProductionDiagnosticDatePlan,
-    algorithm: Literal["lightgbm", "ridge", "tcn"],
-    minimum_training_rows: int,
-) -> ProductionTrainingWindow:
-    window = _production_window(history.snapshot, split)
-    # Calendar continuity is checked by the aligner; these are signal-fact bounds.
-    if not history.has_industry_window(window.readable_dates, 1):
-        raise ValueError("history_industry_coverage_insufficient")
-    for anchors in (
-        split.fitting_dates,
-        *((split.early_stopping_dates,) if algorithm in {"lightgbm", "tcn"} else ()),
-        split.calibration_dates,
-        split.validation_dates,
-    ):
-        if not history.has_industry_window(window.readable_dates, 1, anchor_dates=frozenset(anchors)):
-            raise ValueError("history_industry_split_coverage_insufficient")
-    bounds = history.industry_sample_upper_bounds(window.readable_dates, 1, frozenset(split.fitting_dates))
-    if not any(count >= minimum_training_rows for _, count in bounds):
-        raise ValueError("history_industry_training_rows_insufficient")
-    return window
-
-
 def _production_window(snapshot: HistoryTrainingInputSnapshot, split: ProductionDiagnosticDatePlan) -> ProductionTrainingWindow:
     return ProductionTrainingWindow(
         split, tuple(day for day in snapshot.calendar.open_dates if day <= snapshot.source_cutoff),
@@ -659,64 +578,16 @@ def _prepare_locked_split(
     settings: ProfileTrainingSettings,
 ) -> tuple[ProductionDiagnosticDatePlan | None, str]:
     try:
-        split = BuildProductionDiagnosticDatePlan(
+        split = BuildProfileDiagnosticPlan(
             snapshot.calendar.open_dates,
             source_cutoff=snapshot.source_cutoff,
             fit_sessions=settings.fit_dates,
-            early_stopping_sessions=20 if profile.algorithm in {"lightgbm", "tcn"} else 0,
             history_sessions=profile.history_sessions,
-            history_excludes_signal=profile.algorithm == "tcn",
+            algorithm=profile.algorithm,
         )
     except ValueError as exc:
         return None, _reason(exc)
     return split, ""
-
-
-def _build_head_plans(
-    snapshot: HistoryTrainingInputSnapshot,
-    request: ProfileTrainingRequest,
-) -> tuple[list[_HeadPlan], list[HeadTrainingResult]]:
-    plans: list[_HeadPlan] = []
-    completed: list[HeadTrainingResult] = []
-    for contract in request.contracts:
-        label_cutoff = _mature_label_cutoff(snapshot, contract)
-        contract_hash = _training_contract_hash(
-            request.profile, contract, request.settings, compute_threads=request.compute_threads,
-        )
-        if label_cutoff is None:
-            completed.append(_blocked_from_snapshot(contract, snapshot, "history_training_data_incomplete"))
-        else:
-            plans.append(_HeadPlan(contract, label_cutoff, contract_hash))
-    return plans, completed
-
-
-def _preflight_failure_result(
-    history: _TrainingInputSnapshot,
-    snapshot: HistoryTrainingInputSnapshot,
-    plans: list[_HeadPlan],
-    contracts: tuple[TrainedHeadContract, ...],
-    completed: list[HeadTrainingResult],
-) -> TrainingRunResult | None:
-    failures = EvaluateTomorrowTrainingInput(
-        history.describe_frozen_daily_input(),
-        expected_manifest_hash=snapshot.snapshot_hash,
-        expected_source_cutoff=snapshot.source_cutoff,
-    ).failure_reasons
-    if not failures:
-        return None
-    completed.extend(
-        replace(
-            _blocked_from_snapshot(plan.contract, snapshot, failures[0]),
-            label_cutoff=plan.label_cutoff,
-        )
-        for plan in plans
-    )
-    return TrainingRunResult(
-        None,
-        snapshot.snapshot_hash,
-        0,
-        _ordered_results(contracts, completed),
-    )
 
 
 def _fit_and_prepare_head(
@@ -818,11 +689,11 @@ def _fit_and_prepare_head(
         return result, staging
     except InterruptedError:
         if staging is not None:
-            shutil.rmtree(staging, ignore_errors=True)
+            ClearProfileStaging(request.train_root)
         raise
     except (LightGBMError, OSError, TypeError, ValueError, RuntimeError, sqlite3.Error) as exc:
         if staging is not None:
-            shutil.rmtree(staging, ignore_errors=True)
+            ClearProfileStaging(request.train_root)
         return replace(
             _blocked_from_snapshot(contract, snapshot, _reason(exc)),
             run_id=request.run_id,
@@ -965,30 +836,34 @@ def _common_document(context: _TrainingRunContext) -> dict[str, object]:
     }
 
 
-def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrainingRequest) -> TrainingRunResult | None:
+def _read_profile_source(
+    history: _TrainingInputSnapshot, request: ProfileTrainingRequest, *, target_matches: bool = True,
+) -> ProfileTrainingSource:
+    snapshot = history.snapshot
+    return ProfileTrainingSource(
+        request.profile.profile_id, request.profile.algorithm, snapshot.calendar.open_dates,
+        snapshot.source_cutoff, snapshot.snapshot_hash, snapshot.input_scope,
+        len(snapshot.training_codes), snapshot.universe_count, request.settings.fit_dates,
+        request.profile.history_sessions, request.settings.fitting.minimum_industry_training_rows,
+        tuple(ProfileTrainingHead(
+            contract.strategy, contract.maturity_sessions,
+            _training_contract_hash(request.profile, contract, request.settings, compute_threads=request.compute_threads),
+        ) for contract in request.contracts),
+        history.describe_frozen_daily_input(), target_matches,
+    )
+
+
+def _reuse_profile(history: _TrainingInputSnapshot, request: ProfileTrainingRequest) -> TrainingRunResult | None:
     RecoverProfileBundles(request.train_root, request.profile)
     try:
         bundles = InspectPublishedProfileBundles(request.train_root, request.profile)
     except (OSError, ValueError, RuntimeError):
         return None
-    diagnostic_plan, _failure = _prepare_locked_split(snapshot, request.profile, request.settings)
-    if diagnostic_plan is None:
-        return None
-    heads: list[HeadTrainingResult] = []
+    heads: list[PublishedTrainingHead] = []
     for bundle, contract in zip(bundles, request.contracts, strict=True):
-        if (
-            bundle.training_input_hash != snapshot.snapshot_hash
-            or bundle.label_cutoff != _mature_label_cutoff(snapshot, contract)
-            or bundle.training_contract_hash != _training_contract_hash(
-                request.profile, contract, request.settings, compute_threads=request.compute_threads,
-            )
-            or bundle.model.final_fit != _final_fit_plan(snapshot, request.settings, contract)
-            or bundle.model.diagnostic_plan != diagnostic_plan
-        ):
-            return None
         model = bundle.model
         heads.append(
-            HeadTrainingResult(
+            PublishedTrainingHead(HeadTrainingResult(
                 contract.strategy,
                 "engineering_ready",
                 "complete_manifest",
@@ -1005,9 +880,9 @@ def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrain
                 bundle.label_cutoff,
                 final_fit=model.final_fit,
                 diagnostic_plan=model.diagnostic_plan,
-            )
+            ), bundle.training_contract_hash)
         )
-    return TrainingRunResult(bundles[0].training_run_hash, snapshot.snapshot_hash, 0, tuple(heads), reused=True)
+    return InspectProfileReuse(_read_profile_source(history, request), tuple(heads))
 
 
 def _training_contract_hash(
@@ -1089,18 +964,6 @@ def _head_split_hash(split: ProductionDiagnosticDatePlan, contract: TrainedHeadC
     )
 
 
-def _mature_label_cutoff(
-    snapshot: HistoryTrainingInputSnapshot,
-    contract: TrainedHeadContract,
-) -> date | None:
-    dates = snapshot.calendar.open_dates
-    positions = {day: position for position, day in enumerate(dates)}
-    position = positions.get(snapshot.source_cutoff)
-    if position is None or position < contract.maturity_sessions:
-        return None
-    return dates[position - contract.maturity_sessions]
-
-
 def _base_result(
     contract: TrainedHeadContract,
     status: TrainingStatus,
@@ -1133,23 +996,6 @@ def _blocked_from_snapshot(
 
 def _unavailable_result(contract: TrainedHeadContract, reason: str) -> HeadTrainingResult:
     return HeadTrainingResult(contract.strategy, "blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (reason,))
-
-
-def _ordered_results(
-    contracts: tuple[TrainedHeadContract, ...],
-    results: list[HeadTrainingResult],
-) -> tuple[HeadTrainingResult, ...]:
-    by_strategy = {item.strategy: item for item in results}
-    return tuple(by_strategy[item.strategy] for item in contracts)
-
-
-def _cleanup_abandoned_workspaces(train_root: Path) -> None:
-    for candidate in train_root.glob(".training-sample-workspace.*"):
-        if candidate.is_dir() and not candidate.is_symlink():
-            shutil.rmtree(candidate)
-    for candidate in train_root.glob(".bundle-staging.*"):
-        if candidate.is_dir() and not candidate.is_symlink():
-            shutil.rmtree(candidate)
 
 
 def _publish(progress: TomorrowTrainingProgressPort | None, update: TomorrowTrainingProgress) -> None:
@@ -1207,10 +1053,7 @@ def _reason(exc: BaseException) -> str:
 __all__ = [
     "FitSelectedProfile",
     "InspectSelectedProfile",
-    "HeadTrainingResult",
     "ProfileTrainingRequest",
-    "TrainingRunResult",
-    "TrainingStatus",
     "RunProfileTraining",
     "RunRepackProfileTraining",
 ]

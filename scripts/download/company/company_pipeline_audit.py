@@ -58,7 +58,7 @@ from trader.download.infra.company_http import CompanyRequestPacer
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.settings.parser import InferProjectRoot
 from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.http_contracts import (

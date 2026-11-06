@@ -26,7 +26,30 @@ from trader.infra.http_contracts import (
     HttpResponse,
     HttpResponseTooLarge,
     HttpTimeout,
+    HttpTransport,
 )
+
+
+class HttpRequestScope:
+    """Own one request's transport lifetime through an explicitly injected factory."""
+
+    def __init__(self, open_transport: Callable[[], HttpTransport]) -> None:
+        self._open_transport = open_transport
+
+    def get(
+        self,
+        url: str,
+        *,
+        timeout: float,
+        params: Mapping[str, HttpParameter] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> HttpResponse:
+        with self._open_transport() as transport:
+            return transport.get(url, timeout=timeout, params=params, headers=headers, max_response_bytes=32 * 1024 * 1024)
+
+    def post(self, url: str, *, headers: Mapping[str, str], json: object, timeout: float) -> HttpResponse:
+        with self._open_transport() as transport:
+            return transport.post(url, headers=headers, json=json, timeout=timeout)
 
 
 class RequestsHttpTransport:
@@ -55,7 +78,8 @@ class RequestsHttpTransport:
         self._identity_content_encodings = frozenset(identity_content_encodings)
         self._lock = threading.Lock()
         self._session: requests.Session | None = None
-        self._closed = False
+        self._close_requested = threading.Event()
+        self._closed = threading.Event()
 
     def __enter__(self) -> RequestsHttpTransport:
         return self
@@ -64,11 +88,27 @@ class RequestsHttpTransport:
         self.close()
 
     def close(self) -> None:
-        with self._lock:
-            self._closed = True
-            if self._session is not None:
+        self._close_requested.set()
+        if self._closed.is_set():
+            return
+        if not self._lock.acquire(blocking=False):
+            raise HttpTimeout("http_transport_close_pending")
+        try:
+            self._close_session()
+        finally:
+            self._lock.release()
+
+    def is_closed(self) -> bool:
+        return self._closed.is_set()
+
+    def _close_session(self) -> None:
+        if self._session is not None:
+            try:
                 self._session.close()
-                self._session = None
+            except (OSError, requests.RequestException) as exc:
+                raise HttpError("http_transport_close_failed") from exc
+            self._session = None
+        self._closed.set()
 
     def get(
         self,
@@ -137,12 +177,9 @@ class RequestsHttpTransport:
             else started + request.timeout_seconds
         )
         self._check(request, deadline)
-        if not self._lock.acquire(timeout=max(0.0, deadline - self._monotonic())):
-            raise HttpTimeout("http_connection_wait_timeout")
+        self._acquire_connection(request, deadline)
         try:
             self._check(request, deadline)
-            if self._closed:
-                raise HttpError("http_transport_closed")
             if self._execute_request is not None:
                 return self._injected_attempt(request, started, deadline)
             if self._session is None:
@@ -150,14 +187,32 @@ class RequestsHttpTransport:
                 self._session.trust_env = False
             return self._attempt(request, started, deadline)
         finally:
-            self._lock.release()
+            try:
+                if self._close_requested.is_set():
+                    self._close_session()
+            finally:
+                self._lock.release()
+
+    def _acquire_connection(self, request: HttpRequest, deadline: float) -> None:
+        while True:
+            self._check_cancelled(request)
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise HttpTimeout("http_connection_wait_timeout")
+            if self._lock.acquire(timeout=min(remaining, 0.05)):
+                return
 
     def _injected_attempt(self, request: HttpRequest, started: float, deadline: float) -> HttpResponse:
         assert self._execute_request is not None
         response: HttpResponse | None = None
         failure = ""
+        cancel_requested = request.cancel_requested
+
+        def cancelled() -> bool:
+            return self._close_requested.is_set() or (cancel_requested is not None and cancel_requested())
+
         try:
-            response = self._execute_request(replace(request, deadline=deadline))
+            response = self._execute_request(replace(request, deadline=deadline, cancel_requested=cancelled))
             self._check(request, deadline)
             if len(response.content) > request.max_response_bytes:
                 raise HttpResponseTooLarge("http_response_too_large")
@@ -265,10 +320,18 @@ class RequestsHttpTransport:
                 )
 
     def _check(self, request: HttpRequest, deadline: float) -> None:
-        if request.cancel_requested is not None and request.cancel_requested():
-            raise HttpCancelled("http_cancelled")
+        self._check_cancelled(request)
         if self._monotonic() >= deadline:
             raise HttpTimeout("http_deadline_exceeded")
 
+    def _check_cancelled(self, request: HttpRequest) -> None:
+        if self._close_requested.is_set():
+            raise HttpCancelled("http_transport_closed")
+        if request.cancel_requested is not None and request.cancel_requested():
+            raise HttpCancelled("http_cancelled")
 
-__all__ = ["RequestsHttpTransport"]
+
+__all__ = [
+    "HttpRequestScope",
+    "RequestsHttpTransport",
+]

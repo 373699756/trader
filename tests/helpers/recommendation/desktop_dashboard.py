@@ -7,7 +7,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -17,12 +16,12 @@ from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-import websocket
 from werkzeug.serving import make_server
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from scripts.recommendation.web.browser_session import ChromeSession  # noqa: E402
 from trader.bootstrap import OpenExternalHttp  # noqa: E402
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices  # noqa: E402
 from trader.infra.http_contracts import HttpRequest, HttpStatusError  # noqa: E402
@@ -259,7 +258,7 @@ def _run(
     server_thread = threading.Thread(target=server.serve_forever, name="browser-fixture", daemon=True)
     server_thread.start()
     driver: subprocess.Popen[str] | None = None
-    chrome: _ChromeSession | None = None
+    chrome: ChromeSession | None = None
     session_id: str | None = None
     try:
         if chrome_binary is None and driver_binary is not None and shutil.which("firefox") is not None:
@@ -283,7 +282,7 @@ def _run(
                 },
             )
             session_id = str(created["value"]["sessionId"])
-            base: str | _ChromeSession = f"http://127.0.0.1:{driver_port}/session/{session_id}"
+            base: str | ChromeSession = f"http://127.0.0.1:{driver_port}/session/{session_id}"
             browser_name = "firefox-headless"
         else:
             selected_chrome = (
@@ -293,7 +292,7 @@ def _run(
             )
             if selected_chrome is None:
                 raise RuntimeError("Firefox/geckodriver or Google Chrome is required for the desktop gate")
-            chrome = _ChromeSession(selected_chrome, driver_port)
+            chrome = ChromeSession(selected_chrome, driver_port, open_http=OpenExternalHttp)
             base = chrome
             browser_name = "chrome-headless"
         _navigate(base, f"http://127.0.0.1:{app_port}/")
@@ -446,15 +445,17 @@ def _run(
             except subprocess.TimeoutExpired:
                 driver.kill()
                 driver.wait(timeout=5)
-        if chrome is not None:
-            chrome.close()
-        server.shutdown()
-        server.server_close()
+        try:
+            if chrome is not None:
+                chrome.close()
+        finally:
+            server.shutdown()
+            server.server_close()
         server_thread.join(timeout=5)
 
 
 def _preview_acceptance(
-    base: str | _ChromeSession,
+    base: str | ChromeSession,
     fixture: _PreviewBrowserFixtures,
     output_dir: Path,
     browser_name: str,
@@ -564,7 +565,7 @@ def _preview_acceptance(
     }
 
 
-def _filter_counts(base: str | _ChromeSession, browser_name: str) -> dict[str, object]:
+def _filter_counts(base: str | ChromeSession, browser_name: str) -> dict[str, object]:
     results = []
     for width, height in VIEWPORTS:
         _set_viewport(base, width, height)
@@ -599,7 +600,7 @@ def _filter_counts(base: str | _ChromeSession, browser_name: str) -> dict[str, o
     }
 
 
-def _six_seat_snapshot(base: str | _ChromeSession) -> dict[str, object]:
+def _six_seat_snapshot(base: str | ChromeSession) -> dict[str, object]:
     result = _execute(
         base,
         """
@@ -632,7 +633,7 @@ def _six_seat_snapshot(base: str | _ChromeSession) -> dict[str, object]:
     return result
 
 
-def _observation_copyability(base: str | _ChromeSession) -> dict[str, object]:
+def _observation_copyability(base: str | ChromeSession) -> dict[str, object]:
     result = _execute(
         base,
         """
@@ -687,7 +688,7 @@ def _observation_copyability(base: str | _ChromeSession) -> dict[str, object]:
     return result
 
 
-def _close_chain(base: str | _ChromeSession, output_dir: Path) -> dict[str, object]:
+def _close_chain(base: str | ChromeSession, output_dir: Path) -> dict[str, object]:
     result = _execute(
         base,
         """
@@ -1085,7 +1086,7 @@ def _observation_item(code: str, *, rank: int, final_score: float) -> FreezeItem
     )
 
 
-def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: int) -> dict[str, object]:
+def _viewport(base: str | ChromeSession, output_dir: Path, width: int, height: int) -> dict[str, object]:
     _set_viewport(base, width, height)
     time.sleep(0.2)
     result = _execute(
@@ -1133,8 +1134,8 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
     return {"requested": [width, height], "screenshot": screenshot_name, **result}
 
 
-def _set_viewport(base: str | _ChromeSession, width: int, height: int) -> None:
-    if isinstance(base, _ChromeSession):
+def _set_viewport(base: str | ChromeSession, width: int, height: int) -> None:
+    if isinstance(base, ChromeSession):
         base.set_viewport(width, height)
         return
     _request_json(
@@ -1182,154 +1183,24 @@ def _viewport_passed(result: dict[str, object]) -> bool:
     )
 
 
-def _navigate(base: str | _ChromeSession, url: str) -> None:
-    if isinstance(base, _ChromeSession):
+def _navigate(base: str | ChromeSession, url: str) -> None:
+    if isinstance(base, ChromeSession):
         base.navigate(url)
         return
     _request_json(f"{base}/url", method="POST", payload={"url": url})
 
 
-def _screenshot(base: str | _ChromeSession) -> object:
-    if isinstance(base, _ChromeSession):
+def _screenshot(base: str | ChromeSession) -> object:
+    if isinstance(base, ChromeSession):
         return base.screenshot()
     return _request_json(f"{base}/screenshot")["value"]
 
 
-def _execute(base: str | _ChromeSession, script: str) -> object:
-    if isinstance(base, _ChromeSession):
+def _execute(base: str | ChromeSession, script: str) -> object:
+    if isinstance(base, ChromeSession):
         return base.execute(script)
     response = _request_json(f"{base}/execute/sync", method="POST", payload={"script": script, "args": []})
     return response.get("value")
-
-
-class _ChromeSession:
-    def __init__(self, binary: str, port: int) -> None:
-        self._next_id = 0
-        self._profile = tempfile.TemporaryDirectory(prefix="trader-desktop-chrome-")
-        self._process = subprocess.Popen(
-            [
-                binary,
-                "--headless=new",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-background-networking",
-                "--disable-component-extensions-with-background-pages",
-                "--disable-default-apps",
-                "--disable-extensions",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--remote-allow-origins=*",
-                f"--remote-debugging-port={port}",
-                f"--user-data-dir={self._profile.name}",
-                "about:blank",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        try:
-            debugger_url = self._wait_debugger_url(port)
-            self._socket = websocket.create_connection(debugger_url, timeout=15)
-            self._command("Runtime.enable")
-            self._command("Page.enable")
-        except Exception:
-            self.close()
-            raise
-
-    def _wait_debugger_url(self, port: int) -> str:
-        deadline = time.monotonic() + 45
-        while time.monotonic() < deadline:
-            if self._process.poll() is not None:
-                error = self._process.stderr.read() if self._process.stderr is not None else ""
-                raise RuntimeError(f"Chrome exited before readiness: {error[:300]}")
-            try:
-                with OpenExternalHttp() as transport:
-                    response = transport.get(
-                        f"http://127.0.0.1:{port}/json/list", timeout=1, max_response_bytes=1024 * 1024
-                    )
-                    response.raise_for_status()
-                    targets = response.json()
-                if isinstance(targets, list):
-                    page = next((target for target in targets if target.get("type") == "page"), None)
-                    debugger_url = page.get("webSocketDebuggerUrl") if isinstance(page, dict) else None
-                    if isinstance(debugger_url, str):
-                        return debugger_url
-            except (OSError, json.JSONDecodeError):
-                pass
-            time.sleep(0.05)
-        raise RuntimeError("Chrome DevTools endpoint did not become ready")
-
-    def _command(self, method: str, params: dict[str, object] | None = None) -> dict[str, Any]:
-        self._next_id += 1
-        command_id = self._next_id
-        self._socket.send(json.dumps({"id": command_id, "method": method, "params": params or {}}))
-        while True:
-            response = json.loads(self._socket.recv())
-            if not isinstance(response, dict) or response.get("id") != command_id:
-                continue
-            if "error" in response:
-                raise RuntimeError(f"Chrome DevTools command failed: {response['error']}")
-            result = response.get("result", {})
-            return result if isinstance(result, dict) else {}
-
-    def navigate(self, url: str) -> None:
-        self._command("Page.navigate", {"url": url})
-
-    def execute(self, script: str) -> object:
-        response = self._command(
-            "Runtime.evaluate",
-            {
-                "expression": f"(function(){{{script}}})()",
-                "awaitPromise": True,
-                "returnByValue": True,
-            },
-        )
-        if response.get("exceptionDetails"):
-            raise RuntimeError(f"Chrome JavaScript evaluation failed: {response['exceptionDetails']}")
-        result = response.get("result", {})
-        return result.get("value") if isinstance(result, dict) else None
-
-    def set_viewport(self, width: int, height: int) -> None:
-        self._command(
-            "Emulation.setDeviceMetricsOverride",
-            {"width": width, "height": height, "deviceScaleFactor": 1, "mobile": False},
-        )
-
-    def screenshot(self) -> object:
-        return self._command("Page.captureScreenshot", {"format": "png", "fromSurface": True}).get("data")
-
-    def close(self) -> None:
-        socket = getattr(self, "_socket", None)
-        if socket is not None:
-            socket.close()
-        process = getattr(self, "_process", None)
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        profile = getattr(self, "_profile", None)
-        if profile is not None:
-            _cleanup_browser_profile(profile)
-
-
-def _cleanup_browser_profile(
-    profile: tempfile.TemporaryDirectory[str],
-    *,
-    attempts: int = 20,
-    delay_seconds: float = 0.05,
-) -> None:
-    for attempt in range(attempts):
-        try:
-            profile.cleanup()
-            return
-        except OSError:
-            if attempt + 1 == attempts:
-                raise
-            time.sleep(delay_seconds)
 
 
 def _integer(value: object) -> int:

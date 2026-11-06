@@ -11,6 +11,7 @@ from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.training.domain.evaluation.baseline import PopulationSpearman
+from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDateSplit
 from trader.training.domain.evaluation.paired_statistics import (
     PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
@@ -258,6 +259,11 @@ class TerminalHoldoutParentState:
     candidate_hash: str = "1" * 64
     failure_reasons: tuple[str, ...] = ()
     already_opened: bool = False
+    date_split: PointInTimeDateSplit | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.candidate_status in {"historical_candidate_ready", "historical_daily_close_proxy_validated"}
 
 
 def EvaluateTerminalHoldout(evaluation: TerminalHoldoutEvaluation) -> TerminalHoldoutReport:

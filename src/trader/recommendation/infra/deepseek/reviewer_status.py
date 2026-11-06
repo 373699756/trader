@@ -14,7 +14,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
 from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekHttpResult
 from trader.recommendation.infra.deepseek.reviewer_context import ReviewerContext
-from trader.recommendation.infra.deepseek.reviewer_selection import _physical_call_acceptance
+from trader.recommendation.infra.deepseek.reviewer_selection import BuildPhysicalCallAcceptance
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
 
@@ -115,7 +115,7 @@ class ReviewerStatusTracker:
                         "misses": cache.misses,
                     },
                     "budget": budget,
-                    "physical_call_acceptance": _physical_call_acceptance(
+                    "physical_call_acceptance": BuildPhysicalCallAcceptance(
                         enabled=self._settings.enabled,
                         configured=bool(self._settings.api_key),
                         candidate_count=candidate_count,

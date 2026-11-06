@@ -47,17 +47,17 @@ def test_lightgbm_shadow_trainer_is_shallow_deterministic_and_hashable(objective
 def test_shadow_report_artifact_is_idempotent_and_tamper_evident(tmp_path) -> None:
     days = tuple(day for index in range(66) for day in (_labeled_day(index, "tomorrow"), _labeled_day(index, "d25")))
     report = TomorrowShadowModelEvaluator((_RecordingTrainer("linear"), _RecordingTrainer("lightgbm"))).build(days)
-    archive = ShadowModelReportIndex(tmp_path)
+    evidence = ShadowModelReportIndex(tmp_path)
 
-    assert archive.seal(report) == report.content_hash
-    assert archive.seal(report) == report.content_hash
+    assert evidence.seal(report) == report.content_hash
+    assert evidence.seal(report) == report.content_hash
     later_days = tuple(
         day for index in range(67) for day in (_labeled_day(index, "tomorrow"), _labeled_day(index, "d25"))
     )
     later_report = TomorrowShadowModelEvaluator((_RecordingTrainer("linear"), _RecordingTrainer("lightgbm"))).build(
         later_days
     )
-    assert archive.seal(later_report) == later_report.content_hash
+    assert evidence.seal(later_report) == later_report.content_hash
     assert len(tuple(tmp_path.glob("**/shadow-report.json"))) == 2
     window = f"{report.training_window_start.isoformat()}_{report.training_window_end.isoformat()}"
     artifact = tmp_path / report.spec_hash / window / "shadow-report.json"
@@ -66,4 +66,4 @@ def test_shadow_report_artifact_is_idempotent_and_tamper_evident(tmp_path) -> No
     )
 
     with pytest.raises(ShadowModelReportConflictError, match="hash or schema"):
-        archive.seal(report)
+        evidence.seal(report)

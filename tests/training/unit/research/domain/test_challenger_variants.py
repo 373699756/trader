@@ -9,14 +9,14 @@ from trader.training.domain.evaluation.challengers import (
     AssessContinuousEntry,
     AssessHeatWeakStructure,
     BuildChallengerParameterManifest,
-    ChallengerRegistry,
+    ListChallengers,
     ContinuousEntryInputs,
     HeatWeakStructureInputs,
 )
 
 
-def test_challenger_registry_has_five_independent_immutable_variants() -> None:
-    variants = ChallengerRegistry()
+def test_challenger_index_has_five_independent_immutable_variants() -> None:
+    variants = ListChallengers()
 
     assert tuple(item.variant_id for item in variants) == (
         "continuous_entry",

@@ -111,7 +111,7 @@ def pytest_terminal_summary(terminalreporter: TerminalReporter, config: pytest.C
 
 @pytest.fixture
 def recommendation_policy() -> RecommendationPolicy:
-    from tests.helpers.shared.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
+    from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
     from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
     from trader.recommendation.domain.evidence.review import RiskRule
     from trader.recommendation.domain.publication.models import Strategy

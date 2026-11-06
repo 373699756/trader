@@ -10,7 +10,7 @@ from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.budget_file import BudgetStateFile
 from trader.infra.process_lock import ProcessLock
 from trader.recommendation.infra.deepseek.health_gate import _half_open_allowed
-from trader.recommendation.infra.deepseek.reviewer_selection import _ReservationTracker
+from trader.recommendation.infra.deepseek.reviewer_selection import ReviewReservationTracker
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -35,7 +35,7 @@ def test_continuous_review_keeps_existing_budget_buckets_until_close(tmp_path, h
     assert _half_open_allowed(at)
     close = at.replace(hour=15, minute=0)
     assert not _half_open_allowed(close)
-    tracker = _ReservationTracker(
+    tracker = ReviewReservationTracker(
         budget=ledger,
         strategy=Strategy.TOMORROW,
         phase="before_close",

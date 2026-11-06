@@ -24,13 +24,13 @@ _T = TypeVar("_T")
 _HISTORY_PRELOAD_PER_BOARD_LIMIT = 120
 
 
-def _reference_epoch(versions: Mapping[str, str]) -> str:
+def BuildReferenceEpoch(versions: Mapping[str, str]) -> str:
     """Return the single immutable identity for the active static reference set."""
 
     return f"reference:{tuple(sorted(versions.items()))!r}"
 
 
-def _source_batch_identity(
+def BuildSourceBatchIdentity(
     dataset: str,
     subjects: Sequence[str],
     observed_at: datetime,
@@ -83,7 +83,7 @@ def _history_preload_codes(quotes: Sequence[MarketQuote], limit: int) -> tuple[s
     return tuple(selected)
 
 
-def _history_population_codes(quotes: Sequence[MarketQuote]) -> tuple[str, ...]:
+def SelectHistoryPopulationCodes(quotes: Sequence[MarketQuote]) -> tuple[str, ...]:
     """Return the complete supported population for compact history preparation.
 
     Candidate ranking limits are intentionally not applied here.  The bounded
@@ -123,11 +123,11 @@ def _history_board(code: str) -> str:
     return "unsupported"
 
 
-def _normalize_codes(codes: Sequence[str]) -> tuple[str, ...]:
+def NormalizeMarketCodes(codes: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))
 
 
-def _add_action_restriction(
+def AddActionRestriction(
     restrictions: dict[str, set[str]] | None,
     code: str,
     reason: str,
@@ -136,7 +136,7 @@ def _add_action_restriction(
         restrictions.setdefault(code, set()).add(reason)
 
 
-def _quote_version(quote: MarketQuote) -> tuple[datetime, datetime, int, str, str]:
+def BuildQuoteVersion(quote: MarketQuote) -> tuple[datetime, datetime, int, str, str]:
     source = SourceName(quote.source)
     return (
         quote.source_time,
@@ -147,7 +147,7 @@ def _quote_version(quote: MarketQuote) -> tuple[datetime, datetime, int, str, st
     )
 
 
-def _quote_age_summary(quotes: Sequence[MarketQuote], measured_at: datetime) -> Mapping[str, object]:
+def SummarizeQuoteAges(quotes: Sequence[MarketQuote], measured_at: datetime) -> Mapping[str, object]:
     if not quotes:
         return {
             "sample_count": 0,
@@ -166,7 +166,7 @@ def _quote_age_summary(quotes: Sequence[MarketQuote], measured_at: datetime) -> 
     }
 
 
-def _minute_version(bars: Sequence[MinuteBar]) -> tuple[float, float]:
+def BuildMinuteVersion(bars: Sequence[MinuteBar]) -> tuple[float, float]:
     return max(
         ((bar.source_time.timestamp(), bar.received_time.timestamp()) for bar in bars),
         default=(float("-inf"), float("-inf")),
@@ -242,3 +242,17 @@ def _optional_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+__all__ = [
+    "BuildReferenceEpoch",
+    "BuildSourceBatchIdentity",
+    "SelectHistoryPopulationCodes",
+    "NormalizeMarketCodes",
+    "AddActionRestriction",
+    "BuildQuoteVersion",
+    "SummarizeQuoteAges",
+    "BuildMinuteVersion",
+    "MinuteContentVersion",
+    "AsDatetime",
+]

@@ -26,7 +26,7 @@ def test_candidate_planning_contract_is_synchronized_across_authoritative_docume
 def test_runtime_has_no_generic_candidate_weight_owner() -> None:
     runtime = _read("src/trader/recommendation/application/pipeline/data_source/source_router.py")
     config = _read("config/strategy.json")
-    settings = _read("src/trader/infra/settings/models.py")
+    settings = _read("src/trader/recommendation/infra/settings/models.py")
     performance = _read("src/trader/entrypoints/performance.py")
 
     assert "_CANDIDATE_WEIGHTS" not in runtime

@@ -584,11 +584,13 @@ def test_history_application_package_exposes_split_use_cases_and_ports() -> None
 def test_training_application_package_is_profile_owned_and_infrastructure_free() -> None:
     package = TRAINING_APPLICATION
     assert {
-        "profile_training_primary.py",
-        "profile_training_secondary.py",
+        "profile_training.py",
+        "selected_training.py",
         "training_due.py",
         "training_ports.py",
     } <= {path.name for path in package.glob("*.py")}
+    assert not (package / "profile_training_primary.py").exists()
+    assert not (package / "profile_training_secondary.py").exists()
     violations = [
         f"{path.relative_to(package)}: {imported}"
         for path in package.rglob("*.py")
@@ -608,7 +610,10 @@ def test_entrypoints_route_download_and_joint_training_through_current_owners() 
     assert "ExecuteHistoryDownload" in download_commands
     assert "DownloadHistoryUseCase" in (PROJECT_ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
     selected = (PROJECT_ROOT / "src/trader/training/infra/selected_training.py").read_text(encoding="utf-8")
-    assert "RunSelectedTrainingTasks" in selected
+    application = (TRAINING_APPLICATION / "selected_training.py").read_text(encoding="utf-8")
+    assert "RunSelectedTrainingTasks" in application
+    assert "def TrainSelectedProfiles(" in application
+    assert "def TrainSelectedProfiles(" not in selected
     assert "InspectSelectedProfile" in selected
     assert "TrainV2UseCase" not in commands
     assert "TrainV3UseCase" not in commands

@@ -79,7 +79,7 @@ def test_script_assembles_sanitized_fail_closed_report_without_downloading(tmp_p
     assert payload["minute_sources"][0]["supports_1500"] is False
 
 
-def test_script_rejects_repository_output_path_without_writing(capsys) -> None:
+def test_script_rejects_project_output_path_without_writing(capsys) -> None:
     target = PROJECT_ROOT / "inside.json"
 
     result = cli_main(

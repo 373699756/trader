@@ -8,7 +8,6 @@ from dataclasses import field
 import logging
 import time
 from collections.abc import Callable, Generator, Iterator
-from concurrent.futures import Executor
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
 from datetime import date
@@ -20,27 +19,25 @@ from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.settings import RuntimeSettings
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.application.resources import TrainingFanoutSettings, TrainingMemoryAdmission, TrainingSampleSettings
+from trader.training.application.learned_rank_training import V1TrainingResult
+from trader.training.application.resources import TrainingExecutionObserver, TrainingFanoutSettings, TrainingMemoryAdmission, TrainingSampleSettings
 from trader.training.application.selected_training import (
-    RunSelectedTrainingTasks,
+    SelectedProfileResult,
     SelectedTrainingOutcome,
+    SelectedTrainingPreparationError,
     SelectedTrainingRun,
+    SelectedTrainingSessionPort,
     SelectedTrainingTask,
     TrainingLocations,
 )
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
-from trader.training.domain.v1.learned_rank import BuildLearnedRankDateSplit
-from trader.training.infra.engine import (
-    FitSelectedProfile,
-    InspectSelectedProfile,
-    ProfileTrainingRequest,
-    TrainingRunResult,
-)
+from trader.training.domain.v1.training_plan import BuildLearnedRankReadDates
+from trader.training.infra.engine import FitSelectedProfile, InspectSelectedProfile, ProfileTrainingRequest
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
-from trader.training.infra.profile.v1.training import InspectV1Training, RunV1Training, V1TrainingResult
+from trader.training.infra.profile.v1.training import InspectV1Training, RunV1Training
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
@@ -49,19 +46,12 @@ from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
 
-SelectedProfileResult = TrainingRunResult | V1TrainingResult
-
-
 def _run_v1(execute: Callable[..., V1TrainingResult], rows: Iterator[HistoryTrainingRow]) -> V1TrainingResult:
     return execute(aligned_rows=rows)
 
 
 def _reused(result: SelectedProfileResult, _rows: Iterator[HistoryTrainingRow]) -> SelectedProfileResult:
     return result
-
-
-def _failed(reason: str, _rows: Iterator[HistoryTrainingRow]) -> SelectedProfileResult:
-    raise ValueError(reason)
 
 
 def _run_with_native_limits(
@@ -93,63 +83,98 @@ class SelectedTrainingRequest:
     memory_capacity_bytes: int | None = field(default=None, kw_only=True)
 
 
-def TrainSelectedProfiles(
-    request: SelectedTrainingRequest, executor: Executor, *, sqlite_policy: SqliteIoPolicy
-) -> SelectedTrainingRun[SelectedProfileResult]:
-    paths = request.paths
-    measurements = (
-        request.measurements
-        if request.measurements is not None
-        else TrainingExecutionMeasurements(request.profiles, time.monotonic)
-    )
-    with ExitStack() as scope:
-        scope.enter_context(HistoryMaintenanceLock(paths.history.with_name(".history.lock")))
-        for profile in request.profiles:
-            scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
-        RequireHistoryRepackIdle(paths.history)
-        history = SQLiteHistoryTrainingInputSnapshot.open(paths.history, sqlite_policy=sqlite_policy)
-        factory = _TrainingTaskFactory(
-            request,
-            history,
-            scope,
-            measurements,
-            sqlite_policy=sqlite_policy,
+@dataclass(frozen=True)
+class SelectedTrainingAdapter:
+    request: SelectedTrainingRequest
+    sqlite_policy: SqliteIoPolicy = field(kw_only=True)
+    _measurements: TrainingExecutionMeasurements = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "_measurements",
+            self.request.measurements if self.request.measurements is not None
+            else TrainingExecutionMeasurements(self.request.profiles, time.monotonic),
         )
-        tasks = tuple(
-            factory.prepare(profile, progress)
-            for profile, progress in zip(request.profiles, request.progresses, strict=True)
-        )
-        physical_rows = 0
 
-        def source_rows(dates: frozenset[date]) -> Generator[HistoryTrainingRow, None, None]:
-            nonlocal physical_rows
-            with closing(history.iter_training_rows(dates)) as rows:
-                for row in rows:
-                    physical_rows += 1
-                    yield row
+    @property
+    def profiles(self) -> tuple[ScoringProfileId, ...]:
+        return self.request.profiles
 
-        @contextmanager
-        def read_rows(dates: frozenset[date]) -> Iterator[Iterator[HistoryTrainingRow]]:
-            readable = AlignmentReadDates(history.snapshot.calendar.open_dates, dates)
-            with closing(source_rows(readable)) as source, closing(AlignTrainingRows(
-                source, tuple(sorted(readable)), history.snapshot.listing_intervals
-            )) as rows:
-                yield rows
+    @property
+    def progresses(self) -> tuple[TomorrowTrainingProgressPort, ...]:
+        return self.request.progresses
 
-        with request.cpu_budget.native_runtime() as controller:
-            tasks = tuple(replace(task, execute=partial(
-                _run_with_native_limits, task.execute, controller, request.cpu_budget.native_threads
-            )) for task in tasks)
-            run = RunSelectedTrainingTasks(
-                tasks,
-                read_rows,
-                executor,
-                request.cancelled,
-                settings=request.fanout_settings,
-                on_outcome=request.on_outcome,
-                observer=measurements,
+    @property
+    def cancelled(self) -> Callable[[], bool]:
+        return self.request.cancelled
+
+    @property
+    def settings(self) -> TrainingFanoutSettings:
+        return self.request.fanout_settings
+
+    @property
+    def observer(self) -> TrainingExecutionObserver:
+        return self._measurements
+
+    @property
+    def on_outcome(self) -> Callable[[SelectedTrainingOutcome[SelectedProfileResult]], None] | None:
+        return self.request.on_outcome
+
+    @contextmanager
+    def open(self) -> Iterator[SelectedTrainingSessionPort[SelectedProfileResult]]:
+        request, paths = self.request, self.request.paths
+        with ExitStack() as scope:
+            scope.enter_context(HistoryMaintenanceLock(paths.history.with_name(".history.lock")))
+            for profile in request.profiles:
+                scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
+            RequireHistoryRepackIdle(paths.history)
+            history = SQLiteHistoryTrainingInputSnapshot.open(paths.history, sqlite_policy=self.sqlite_policy)
+            factory = _TrainingTaskFactory(
+                request, history, scope, self._measurements, sqlite_policy=self.sqlite_policy,
             )
-        return replace(run, history_rows_read=physical_rows, timing=measurements.snapshot())
+            yield _SelectedTrainingSession(request, history, factory, self._measurements)
+
+
+@dataclass
+class _SelectedTrainingSession:
+    request: SelectedTrainingRequest
+    history: SQLiteHistoryTrainingInputSnapshot
+    factory: _TrainingTaskFactory
+    measurements: TrainingExecutionMeasurements
+    physical_rows: int = 0
+
+    def prepare_task(
+        self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort,
+    ) -> SelectedTrainingTask[SelectedProfileResult]:
+        return self.factory.prepare(profile, progress)
+
+    @contextmanager
+    def read_rows(self, dates: frozenset[date]) -> Iterator[Iterator[HistoryTrainingRow]]:
+        readable = AlignmentReadDates(self.history.snapshot.calendar.open_dates, dates)
+        with closing(self._source_rows(readable)) as source, closing(AlignTrainingRows(
+            source, tuple(sorted(readable)), self.history.snapshot.listing_intervals,
+        )) as rows:
+            yield rows
+
+    def _source_rows(self, dates: frozenset[date]) -> Generator[HistoryTrainingRow, None, None]:
+        with closing(self.history.iter_training_rows(dates)) as rows:
+            for row in rows:
+                self.physical_rows += 1
+                yield row
+
+    @contextmanager
+    def native_runtime(
+        self, tasks: tuple[SelectedTrainingTask[SelectedProfileResult], ...],
+    ) -> Iterator[tuple[SelectedTrainingTask[SelectedProfileResult], ...]]:
+        with self.request.cpu_budget.native_runtime() as controller:
+            yield tuple(replace(task, execute=partial(
+                _run_with_native_limits, task.execute, controller, self.request.cpu_budget.native_threads,
+            )) for task in tasks)
+
+    def completed(
+        self, run: SelectedTrainingRun[SelectedProfileResult],
+    ) -> SelectedTrainingRun[SelectedProfileResult]:
+        return replace(run, history_rows_read=self.physical_rows, timing=self.measurements.snapshot())
 
 
 @dataclass(frozen=True)
@@ -170,7 +195,7 @@ class _TrainingTaskFactory:
             raise
         except (OSError, RuntimeError, ValueError, ImportError) as exc:
             reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-            return SelectedTrainingTask(profile, frozenset(), partial(_failed, reason or type(exc).__name__))
+            raise SelectedTrainingPreparationError(reason or type(exc).__name__) from exc
 
     def _v1(self, progress: TomorrowTrainingProgressPort) -> SelectedTrainingTask[SelectedProfileResult]:
         selection = self.selection
@@ -183,10 +208,9 @@ class _TrainingTaskFactory:
         )
         if reused is not None:
             return SelectedTrainingTask("v1", frozenset(), partial(_reused, reused))
-        diagnostic_calendar = tuple(day for day in calendar if day <= self.history.snapshot.source_cutoff)
-        splits = tuple(BuildLearnedRankDateSplit(diagnostic_calendar, settings, maturity_sessions=h) for h in (1, 5))
-        first = min(calendar.index(day) for split in splits for day in split.sample_dates) - settings.history_sessions
-        dates = AlignmentReadDates(calendar, frozenset(diagnostic_calendar[first:]))
+        dates = AlignmentReadDates(calendar, BuildLearnedRankReadDates(
+            calendar, self.history.snapshot.source_cutoff, settings,
+        ))
         execute = partial(
             RunV1Training,
             lambda: self.history,

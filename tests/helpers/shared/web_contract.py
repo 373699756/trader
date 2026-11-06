@@ -33,7 +33,7 @@ class _Clock:
         return NOW
 
 
-class _Repository:
+class _FreezeRecords:
     def load(self, strategy: Strategy, trade_date: date):
         return None
 
@@ -69,7 +69,7 @@ def _app():
         ),
     )
     assert index.publish(long_projection, expected_version=None).accepted
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock())
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock())
     stream = UnifiedFreezeEventStream()
     services = UnifiedWebServices(
         queries,
@@ -222,7 +222,7 @@ def _app():
                 },
                 "measured_at": NOW.isoformat(),
                 "sources": {
-                    "baostock_industry": {
+                    "cninfo_industry": {
                         "enabled": True,
                         "planned_count": 2,
                         "success_count": 1,

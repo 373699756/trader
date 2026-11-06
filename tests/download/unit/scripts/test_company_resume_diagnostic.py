@@ -28,10 +28,7 @@ from scripts.download.company.company_resume import _saved_pages
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_sources import NOW
 from trader.download.domain.company_evidence import CompanyDocumentFailure, DisclosurePage, DisclosureQuery
-from tests.helpers.shared.configuration import (
-    CompanyDocumentFilesFixture as CompanyDocumentFiles,
-    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
-)
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 

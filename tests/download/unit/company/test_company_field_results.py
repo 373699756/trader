@@ -200,7 +200,7 @@ def test_read_order_is_stable_across_issuers_and_input_order(connection):
     assert ReadCompanyFieldResults(connection, ("600002", "600001")) == (*_complete((first,)), *_complete((second,), "600002"))
 
 
-def test_reader_rejects_incomplete_evidence_for_a_stored_verified_claim(connection):
+def test_reader_rejects_incomplete_evidence_for_a_persisted_verified_claim(connection):
     with SqliteTransaction(connection, immediate=True):
         WriteCompanyFieldResults(connection, "600001", _complete((_conclusion(),)))
         connection.run("DELETE FROM company_field_evidence")

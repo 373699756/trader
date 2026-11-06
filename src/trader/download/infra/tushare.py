@@ -17,24 +17,24 @@ if TYPE_CHECKING:
 
 from trader.download.infra.tushare_records import (
     TushareSdk,
-    _calendar_observation,
-    _calendar_ranges,
-    _data_version,
-    _error_code,
-    _failed_observation,
-    _generic_observation,
-    _percentile,
-    _records,
-    _require_aware,
-    _security_master_observation,
-    _ts_code,
+    BuildTushareCalendarObservation,
+    BuildTushareCalendarRanges,
+    BuildTushareDataVersion,
+    ClassifyTushareError,
+    BuildFailedTushareObservation,
+    BuildTushareObservation,
+    CalculateTushareLatencyPercentile,
+    ReadTushareRecords,
+    RequireTushareAwareTime,
+    BuildTushareSecurityMasterObservation,
+    FormatTushareCode,
 )
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 
 
 class _SdkFactory(Protocol):
-    def __call__(self, token: str, timeout_seconds: float) -> TushareSdk: ...
+    def __call__(self, token: str, timeout_seconds: float, /) -> TushareSdk: ...
 
 
 class _SourceStoppedError(RuntimeError):
@@ -148,7 +148,7 @@ class TushareClient:
                     "list_status": "L",
                     "fields": "ts_code,symbol,name,area,industry,market,exchange,list_status,list_date,delist_date",
                 },
-                _security_master_observation,
+                BuildTushareSecurityMasterObservation,
             )
         )
 
@@ -162,7 +162,7 @@ class TushareClient:
             return self._insufficient_points("trading_calendar", observed_at)
         if end_date < start_date:
             raise ValueError("Tushare calendar end_date cannot precede start_date")
-        ranges = _calendar_ranges(start_date, end_date)
+        ranges = BuildTushareCalendarRanges(start_date, end_date)
         observations: list[SourceObservation] = []
         for range_start, range_end in ranges:
             chunk = self._fetch_records(
@@ -176,7 +176,7 @@ class TushareClient:
                         "end_date": range_end.strftime("%Y%m%d"),
                         "fields": "exchange,cal_date,is_open,pretrade_date",
                     },
-                    _calendar_observation,
+                    BuildTushareCalendarObservation,
                 )
             )
             observations.extend(chunk)
@@ -200,7 +200,7 @@ class TushareClient:
                 normalized,
                 observed_at,
                 lambda client, code: client.daily(
-                    ts_code=_ts_code(code),
+                    ts_code=FormatTushareCode(code),
                     start_date=start_date.strftime("%Y%m%d"),
                     end_date=end_date.strftime("%Y%m%d"),
                     fields="ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
@@ -248,8 +248,8 @@ class TushareClient:
                 circuit_open=self._open_until > self._monotonic(),
                 timeout_count=self._timeout_count,
                 last_latency_ms=round(self._last_latency_ms, 2),
-                p50_latency_ms=_percentile(self._latencies_ms, 0.50),
-                p95_latency_ms=_percentile(self._latencies_ms, 0.95),
+                p50_latency_ms=CalculateTushareLatencyPercentile(self._latencies_ms, 0.50),
+                p95_latency_ms=CalculateTushareLatencyPercentile(self._latencies_ms, 0.95),
                 degraded_reason=self._degraded_reason or None,
                 timeout_seconds=self._timeout_seconds,
                 data_age_seconds=(
@@ -276,7 +276,7 @@ class TushareClient:
             if not self._reserve_api_attempt():
                 self._record_local_rate_limit(started)
                 return (
-                    _failed_observation(
+                    BuildFailedTushareObservation(
                         dataset,
                         observed_at,
                         max(observed_at, self._wall_clock()),
@@ -295,11 +295,11 @@ class TushareClient:
                     end_date=arguments["end_date"],
                     fields=arguments["fields"],
                 )
-            records = _records(response)
+            records = ReadTushareRecords(response)
             if self._cancel_requested():
                 raise _SourceStoppedError
             received_at = max(observed_at, self._wall_clock())
-            data_version = _data_version(dataset, observed_at, received_at)
+            data_version = BuildTushareDataVersion(dataset, observed_at, received_at)
             observations = tuple(
                 observation
                 for row in records
@@ -307,11 +307,11 @@ class TushareClient:
             )
         except _SourceStoppedError:
             self._record_stopped(started)
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "stopped"),)
+            return (BuildFailedTushareObservation(dataset, observed_at, max(observed_at, self._wall_clock()), "stopped"),)
         except Exception as exc:
-            error_code = _error_code(exc)
+            error_code = ClassifyTushareError(exc)
             self._record_error(started, error_code)
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), error_code),)
+            return (BuildFailedTushareObservation(dataset, observed_at, max(observed_at, self._wall_clock()), error_code),)
         if observations:
             self._record_success(started, received_at)
             return observations
@@ -341,7 +341,7 @@ class TushareClient:
         dataset: str,
         observed_at: datetime,
     ) -> tuple[float | None, tuple[SourceObservation, ...] | None]:
-        _require_aware(observed_at)
+        RequireTushareAwareTime(observed_at)
         started = self._begin()
         error = ""
         if started is None:
@@ -353,14 +353,14 @@ class TushareClient:
             self._record_error(started, "missing_token")
             error = "missing_token"
         failure = (
-            (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), error),) if error else None
+            (BuildFailedTushareObservation(dataset, observed_at, max(observed_at, self._wall_clock()), error),) if error else None
         )
         return started, failure
 
     def _insufficient_points(self, dataset: str, observed_at: datetime) -> tuple[SourceObservation, ...]:
-        _require_aware(observed_at)
+        RequireTushareAwareTime(observed_at)
         return (
-            _failed_observation(
+            BuildFailedTushareObservation(
                 dataset,
                 observed_at,
                 max(observed_at, self._wall_clock()),
@@ -377,7 +377,7 @@ class TushareClient:
         *,
         empty_is_error: bool = False,
     ) -> tuple[SourceObservation, ...]:
-        _require_aware(observed_at)
+        RequireTushareAwareTime(observed_at)
         normalized = tuple(dict.fromkeys(code for code in codes if len(code) == 6 and code.isdigit()))
         if not normalized:
             return ()
@@ -394,17 +394,17 @@ class TushareClient:
                 empty_is_error=empty_is_error,
             )
             received_at = max(observed_at, self._wall_clock())
-            version = _data_version(dataset, observed_at, received_at)
+            version = BuildTushareDataVersion(dataset, observed_at, received_at)
             observations = tuple(
-                _generic_observation(dataset, row, observed_at, received_at, version) for row in records.rows
+                BuildTushareObservation(dataset, row, observed_at, received_at, version) for row in records.rows
             )
         except _SourceStoppedError:
             self._record_stopped(started)
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), "stopped"),)
+            return (BuildFailedTushareObservation(dataset, observed_at, max(observed_at, self._wall_clock()), "stopped"),)
         except Exception as exc:
-            error_code = _error_code(exc)
+            error_code = ClassifyTushareError(exc)
             self._record_error(started, error_code)
-            return (_failed_observation(dataset, observed_at, max(observed_at, self._wall_clock()), error_code),)
+            return (BuildFailedTushareObservation(dataset, observed_at, max(observed_at, self._wall_clock()), error_code),)
         if records.failure_codes and not observations:
             if records.failure_codes[0] == "local_rate_limit":
                 self._record_local_rate_limit(started)
@@ -436,7 +436,7 @@ class TushareClient:
             if not self._reserve_api_attempt():
                 failure_codes.append("local_rate_limit")
                 failures.extend(
-                    _failed_observation(
+                    BuildFailedTushareObservation(
                         dataset,
                         observed_at,
                         max(observed_at, self._wall_clock()),
@@ -447,11 +447,11 @@ class TushareClient:
                 )
                 break
             try:
-                fetched = _records(fetcher(client, code))
+                fetched = ReadTushareRecords(fetcher(client, code))
                 if not fetched and empty_is_error:
                     failure_codes.append("no_data")
                     failures.append(
-                        _failed_observation(
+                        BuildFailedTushareObservation(
                             dataset,
                             observed_at,
                             max(observed_at, self._wall_clock()),
@@ -462,10 +462,10 @@ class TushareClient:
                 else:
                     rows.extend(fetched)
             except Exception as exc:
-                error_code = _error_code(exc)
+                error_code = ClassifyTushareError(exc)
                 failure_codes.append(error_code)
                 failures.append(
-                    _failed_observation(
+                    BuildFailedTushareObservation(
                         dataset,
                         observed_at,
                         max(observed_at, self._wall_clock()),
@@ -533,7 +533,7 @@ class TushareClient:
             return True
 
     def _refresh_quota_window_locked(self, measured_at: datetime) -> None:
-        _require_aware(measured_at)
+        RequireTushareAwareTime(measured_at)
         current_day = measured_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
         if current_day != self._api_attempt_day:
             self._api_attempt_day = current_day

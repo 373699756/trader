@@ -56,7 +56,7 @@ class _History:
 
 
 @dataclass
-class _Archive:
+class _HistoryEvidence:
     complete: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
@@ -82,21 +82,21 @@ class _Archive:
 
 def test_history_download_is_bounded_resumable_and_does_not_persist_exception_text(training_worker_pool) -> None:
     history = _History()
-    archive = _Archive(complete=frozenset({"600001"}))
+    evidence = _HistoryEvidence(complete=frozenset({"600001"}))
     progress: list[tuple[int, int, str]] = []
-    service = HistoricalDownloadService(_Universe(), history, archive, training_worker_pool, workers=2)
+    service = HistoricalDownloadService(_Universe(), history, evidence, training_worker_pool, workers=2)
 
     result = service.execute(
         HISTORICAL_SCREENING_SPEC, progress=lambda done, total, code: progress.append((done, total, code))
     )
 
-    assert archive.universe == (
+    assert evidence.universe == (
         HistoricalSecurity("300001", "chinext", "乙", False, False),
         HistoricalSecurity("600001", "main", "甲", False, False),
     )
     assert history.calls == [("300001", 640)]
-    assert archive.saved == {}
-    assert archive.failures == {"300001": "timeout"}
+    assert evidence.saved == {}
+    assert evidence.failures == {"300001": "timeout"}
     assert result.universe_count == 2
     assert result.previously_completed == 1
     assert result.downloaded == 0
@@ -125,17 +125,17 @@ def test_history_download_rejects_non_qfq_or_dates_after_the_fixed_cutoff(traini
                 ),
             )
 
-    archive = _Archive()
-    service = HistoricalDownloadService(_Universe(), InvalidHistory(), archive, training_worker_pool, workers=1)
+    evidence = _HistoryEvidence()
+    service = HistoricalDownloadService(_Universe(), InvalidHistory(), evidence, training_worker_pool, workers=1)
 
     result = service.execute(HISTORICAL_SCREENING_SPEC)
 
     assert result.failed == 2
-    assert set(archive.failures.values()) == {"invalid_history"}
+    assert set(evidence.failures.values()) == {"invalid_history"}
 
 
 def test_history_download_does_not_mark_short_history_as_complete(training_worker_pool) -> None:
-    archive = _Archive()
+    evidence = _HistoryEvidence()
 
     class ShortHistory:
         @staticmethod
@@ -143,28 +143,28 @@ def test_history_download_does_not_mark_short_history_as_complete(training_worke
             del days
             return (_bar(code),)
 
-    result = HistoricalDownloadService(_Universe(), ShortHistory(), archive, training_worker_pool, workers=1).execute(
+    result = HistoricalDownloadService(_Universe(), ShortHistory(), evidence, training_worker_pool, workers=1).execute(
         HISTORICAL_SCREENING_SPEC
     )
 
     assert result.downloaded == 0
     assert result.failed == 2
-    assert archive.saved == {}
-    assert set(archive.failures.values()) == {"invalid_history"}
+    assert evidence.saved == {}
+    assert set(evidence.failures.values()) == {"invalid_history"}
 
 
 def test_history_download_reuses_the_frozen_universe_on_resume(training_worker_pool) -> None:
-    archive = _Archive()
-    archive.universe = (HistoricalSecurity("600001", "main", "冻结名称", False, False),)
+    evidence = _HistoryEvidence()
+    evidence.universe = (HistoricalSecurity("600001", "main", "冻结名称", False, False),)
 
     class ChangingUniverse:
         @staticmethod
         def fetch():
             raise AssertionError("frozen universe must not be fetched again")
 
-    service = HistoricalDownloadService(ChangingUniverse(), _History(), archive, training_worker_pool, workers=1)
+    service = HistoricalDownloadService(ChangingUniverse(), _History(), evidence, training_worker_pool, workers=1)
 
     result = service.execute(HISTORICAL_SCREENING_SPEC)
 
     assert result.downloaded == 1
-    assert set(archive.saved) == {"600001"}
+    assert set(evidence.saved) == {"600001"}

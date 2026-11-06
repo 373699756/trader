@@ -624,7 +624,7 @@ def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(
     monkeypatch.setattr(
         research_commands.TomorrowResearchEvidenceIndex,
         "load_graph",
-        lambda _repository: (_ for _ in ()).throw(TomorrowResearchEvidenceIndexError("graph invalid")),
+        lambda _project: (_ for _ in ()).throw(TomorrowResearchEvidenceIndexError("graph invalid")),
     )
 
     result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config).data_paths.research("v2"), sqlite_policy=SqlitePolicyFixture())

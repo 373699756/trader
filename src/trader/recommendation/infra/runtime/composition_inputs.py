@@ -6,7 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettings
+from trader.recommendation.infra.settings.models import LongWatchlist, StrategySettings
+from trader.infra.settings import RuntimeSettings
 from trader.recommendation.application.long_runtime import LongRuntime
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream

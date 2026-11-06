@@ -15,6 +15,7 @@ from trader.training.domain.evaluation.selection_experiment import (
     PairedSelectionSpecification,
 )
 from trader.training.domain.evaluation.selection_statistics import EvaluateSelectionStatistics, SelectionInference
+from trader.training.domain.evaluation.research_plan import ResearchExecutionPlan
 
 
 @dataclass(frozen=True)
@@ -29,8 +30,9 @@ class SelectionResearchPlanPort(SelectionExperimentEvidencePort, Protocol):
     def load_plan(self) -> tuple[PairedSelectionSpecification, SelectionExperimentPrerequisite]: ...
 
 
-def ExecuteSelectionResearch(evidence: SelectionResearchPlanPort) -> SelectionResearchExecution:
+def ExecuteSelectionResearch(evidence: SelectionResearchPlanPort, plan: ResearchExecutionPlan) -> SelectionResearchExecution:
     specification, prerequisite = evidence.load_plan()
+    plan.validate_selection(specification)
     report = PairedSelectionExperimentBuilder(evidence).build(specification, prerequisite)
     return SelectionResearchExecution(
         specification, prerequisite.content_hash, report, EvaluateSelectionStatistics(specification, report)

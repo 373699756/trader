@@ -7,7 +7,8 @@ from typing import Generic, TypeVar
 
 from trader.infra.cache import BoundedLruCache
 from trader.infra.isolated_http import IsolatedHttpExecutor
-from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettings
+from trader.recommendation.infra.settings.models import LongWatchlist, StrategySettings
+from trader.infra.settings import RuntimeSettings
 from trader.infra.shutdown import ObserveShutdownStep, ShutdownDeadline, ShutdownReport
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime

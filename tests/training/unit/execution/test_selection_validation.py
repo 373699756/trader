@@ -12,9 +12,10 @@ import pytest
 from trader import bootstrap
 from trader.entrypoints.cli import Main
 from trader.training.application.selection_execution import ExecuteSelectionResearch
-from trader.training.entrypoints.research_evidence import SelectionCommand
+from trader.training.application.research_commands import SelectionCommand
 from trader.training.entrypoints.selection_projection import ProjectSelectionValidation
 from trader.training.infra.research.selection_evidence import SelectionEvidenceReader
+from trader.training.infra.research_settings import LoadResearchPlan
 from trader.training.infra.research.selection_reports import PublishSelectionReport
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -42,11 +43,11 @@ def _evidence(root: Path, *, days: int = 1, strategy: str = "tomorrow") -> dict:
         "research_dates": dates,
         "predefined_exit_identity": "first_target_or_t5",
         "partition": "confirmation",
-        "configuration_hash": "1" * 64,
-        "cost_reference_hash": "2" * 64,
+        "configuration_hash": LoadResearchPlan(PROJECT_ROOT / "config").configuration_hash,
+        "cost_reference_hash": LoadResearchPlan(PROJECT_ROOT / "config").cost_reference_hash,
         "bootstrap_master_seed": 20261022,
         "date_split": {
-            "training_dates": ["2025-01-02"],
+            "training_dates": _dates("2020-01-02", 1000),
             "early_stopping_dates": ["2025-02-03"],
             "calibration_dates": ["2025-03-03"],
             "development_confirmation_embargo_dates": _dates("2025-04-01", 5),
@@ -163,7 +164,7 @@ def test_prerequisite_failure_reads_no_outcomes_even_if_the_row_file_is_missing(
     )
     (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     (root / "rows.jsonl").unlink()
-    execution = ExecuteSelectionResearch(SelectionEvidenceReader(root))
+    execution = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
     assert execution.report.status == "historical_data_insufficient"
     assert "minute_events_not_qualified" in execution.report.failure_reasons
     assert execution.inference == ()
@@ -194,11 +195,14 @@ def test_input_conflicts_never_produce_new_target_results(tmp_path, case):
     (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     if case == "old_capacity":
         with pytest.raises(ValueError, match="unknown keys"):
-            ExecuteSelectionResearch(SelectionEvidenceReader(root))
+            ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
     else:
         if case in {"profile", "cost_reference"}:
             (root / "rows.jsonl").unlink()
-        execution = ExecuteSelectionResearch(SelectionEvidenceReader(root))
+            with pytest.raises(ValueError, match="configured research plan"):
+                ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+            return
+        execution = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
         assert execution.report.status == "historical_data_insufficient"
         assert execution.report.results == ()
 
@@ -206,7 +210,7 @@ def test_input_conflicts_never_produce_new_target_results(tmp_path, case):
 def test_report_replay_is_idempotent_and_conflicting_content_does_not_overwrite(tmp_path):
     root = tmp_path / "evidence"
     _evidence(root)
-    payload = ProjectSelectionValidation(bootstrap.ExecuteResearchEvidence(SelectionCommand(root), sqlite_policy=SqlitePolicyFixture()))
+    payload = ProjectSelectionValidation(bootstrap.ExecuteResearchEvidence(SelectionCommand(root), config_dir=PROJECT_ROOT / "config", sqlite_policy=SqlitePolicyFixture()))
     path = tmp_path / "validation.json"
     PublishSelectionReport(path, payload)
     original = path.read_bytes()
@@ -219,8 +223,8 @@ def test_report_replay_is_idempotent_and_conflicting_content_does_not_overwrite(
 def test_preregistered_bootstrap_and_complete_holm_family_are_deterministic(tmp_path):
     root = tmp_path / "evidence"
     _evidence(root, days=5)
-    first = ExecuteSelectionResearch(SelectionEvidenceReader(root))
-    second = ExecuteSelectionResearch(SelectionEvidenceReader(root))
+    first = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+    second = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
     assert first == second
     assert len(first.inference) == 16
     assert all(item.statistics.valid and item.statistics.repetitions == 10_000 for item in first.inference)
@@ -252,7 +256,7 @@ def test_cli_rejects_input_output_overlap_without_writing_evidence(tmp_path, cap
 def test_d25_reports_four_costed_horizons_and_a_distinct_ten_day_bootstrap(tmp_path):
     root = tmp_path / "evidence"
     _evidence(root, strategy="d25")
-    report = ProjectSelectionValidation(ExecuteSelectionResearch(SelectionEvidenceReader(root)))
+    report = ProjectSelectionValidation(ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config")))
     assert report["statistics_plan"]["block_days"] == 10
     assert report["selection_contract"]["production_target"] == "mean_t2_t5"
     aggregate = next(result for result in report["results"] if result["target"] == "mean_t2_t5")

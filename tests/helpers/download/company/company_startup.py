@@ -4,7 +4,7 @@ import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
-from tests.helpers.shared.configuration import CompanyEventPolicyFixture as CompanyEventPolicy
+from tests.helpers.download.configuration import CompanyEventPolicyFixture as CompanyEventPolicy
 from trader.download.domain.company_evidence import (
     CompanyDocument,
     CompanyEvidenceInput,
@@ -13,7 +13,7 @@ from trader.download.domain.company_evidence import (
     Disclosure,
 )
 from trader.download.domain.company_facts import CompileCompanyFacts
-from tests.helpers.shared.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
+from tests.helpers.recommendation.company_research import PublishedCompanyResearchFixture as PublishedCompanyResearch
 
 _AT = datetime(2026, 9, 30, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 

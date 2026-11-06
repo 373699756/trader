@@ -407,7 +407,7 @@ def _sqlite_adapter_cases(
     reader_options: _CompanyPolicyOptions = {}
     if checkout == TOOL_ROOT:
         from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-        from trader.infra.settings import LoadStrategySettings
+        from trader.recommendation.infra.settings.loading import LoadStrategySettings
 
         company_configuration = LoadCompanySyncConfiguration(checkout)
         event_policy = LoadStrategySettings(checkout / "config/strategy.json").company_scoring.events
@@ -550,7 +550,7 @@ def _worker(checkout: Path, layout: str, size: int, *, sqlite_policy: SqliteIoPo
     from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
     from trader.download.infra.history_control_index import HistoryControlIndex
     from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
-    from trader.download.infra.history_sync_runner import RunHistorySync
+    from trader.bootstrap import ExecuteHistorySync
     from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
     from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
     from trader.recommendation.infra.market_data.published_history_bars import QfqBars
@@ -629,7 +629,12 @@ def _worker(checkout: Path, layout: str, size: int, *, sqlite_policy: SqliteIoPo
                 )
                 if layout == "annual":
                     supplier.publish_reference(config.reference_root / "company_st.sqlite3", at.date(), config.sessions)
-                result = RunHistorySync(config, supplier, clock=lambda: at, **sqlite_arguments)
+                result = ExecuteHistorySync(
+                    config,
+                    supplier,
+                    clock=lambda: at,
+                    **sqlite_arguments,
+                )
                 if result.state not in ("completed", "already_current") or result.unresolved_price_cells:
                     raise RuntimeError(f"fixture synchronization failed: {result.state}/{result.reason}")
                 return result

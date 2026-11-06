@@ -24,7 +24,8 @@ from trader.download.domain.history_price_qualification import QualifyPriceOverl
 from trader.download.domain.history_sync import HistorySyncProgress
 
 
-from trader.download.infra import history_sync_runner as history_sync_module
+from trader.download.application.download_history import DownloadHistoryUseCase
+from trader.download.infra import history_sync_io as history_sync_module
 
 from trader.download.infra.history_control_index import HistoryControlIndex
 
@@ -40,7 +41,7 @@ from trader.infra.sqlite_codec import EncodeDate
 
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteSession, SqliteTransaction
 
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 
 from tests.helpers.download.history.infra.history_sync import (
     FakeSupplier,
@@ -672,17 +673,17 @@ def test_cross_day_resume_merges_unfinished_and_new_dates_with_durable_reuse(
     supplier.dates = days
     supplier.calls.clear()
     targets.clear()
-    original_download = history_sync_module._HistorySync._download
+    original_download = DownloadHistoryUseCase._download
     if interrupt_after_advance:
         def stop_before_download(*args):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(history_sync_module._HistorySync, "_download", stop_before_download)
+        monkeypatch.setattr(DownloadHistoryUseCase, "_download", stop_before_download)
         assert RunHistoryFixture(config, supplier, clock=lambda: NOW).state == "cancelled"
         advanced = index.pending(old.sequence if old else 0)
         assert advanced is not None and advanced.sequence == pending.sequence and advanced.cutoff == days[-1]
         assert not supplier.calls
-        monkeypatch.setattr(history_sync_module._HistorySync, "_download", original_download)
+        monkeypatch.setattr(DownloadHistoryUseCase, "_download", original_download)
         targets.clear()
     original_publish = history_sync_module.PublishHistorySnapshot
     original_seal = history_sync_module.HistoryDirectPrices.publishable_partitions

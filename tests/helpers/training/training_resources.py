@@ -4,7 +4,7 @@ from functools import lru_cache
 from dataclasses import replace
 from pathlib import Path
 
-from trader.infra.settings.training import LoadTrainingResourceSettings
+from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 from trader.training.application.resources import TrainingResourceSettings, TrainingSampleSettings
 
 

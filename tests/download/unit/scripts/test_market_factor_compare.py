@@ -33,7 +33,8 @@ from scripts.download.market.market_factor_inputs import ReadReferences
 from scripts.download.market.market_factor_text import RenderMarketFactorText
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote, ModelIndustryReference

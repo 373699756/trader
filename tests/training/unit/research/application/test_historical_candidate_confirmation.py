@@ -26,10 +26,10 @@ def _h1_research_completion(tmp_path):
         ),
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    evidence = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
     return CompleteH1Research(
         capability=capability,
-        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
+        metadata=tuple(evidence.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )
 
 

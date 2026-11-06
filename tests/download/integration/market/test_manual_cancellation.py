@@ -16,7 +16,7 @@ import pytest
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.process_lock import ProcessLock
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction

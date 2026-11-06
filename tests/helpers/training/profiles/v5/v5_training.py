@@ -51,7 +51,7 @@ def _history(root: Path) -> SimpleNamespace:
         for position, day in enumerate(dates):
             if day in allowed:
                 for stock, code in enumerate(codes):
-                    yield HistoryTrainingRow(code, day, "main", "bank", _point(day, position, stock), "complete")
+                    yield HistoryTrainingRow(code, day, "main", "capco:J66货币金融服务", _point(day, position, stock), "complete")
 
     return SimpleNamespace(
         snapshot=snapshot,
@@ -60,6 +60,6 @@ def _history(root: Path) -> SimpleNamespace:
         describe_frozen_daily_input=lambda: descriptor,
         training_row_upper_bound=lambda allowed: len(allowed) * len(codes),
         has_industry_window=lambda *_args, **_kwargs: True,
-        industry_sample_upper_bounds=lambda *_args: (("bank", 100000),),
+        industry_sample_upper_bounds=lambda *_args: (("capco:J66货币金融服务", 100000),),
         iter_training_rows=rows,
     )

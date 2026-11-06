@@ -20,6 +20,28 @@ SELECTIONS = tuple(group for count in range(1, 5) for group in combinations(SCOR
 DAY = date(2026, 1, 5)
 
 
+def test_outcome_observer_failure_preserves_the_worker_result_and_reports_delivery_issue():
+    result = object()
+
+    def failed_observer(_outcome):
+        raise BrokenPipeError("private observer detail")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        run = RunSelectedTrainingTasks(
+            (SelectedTrainingTask("v3", frozenset(), lambda _rows: result),),
+            lambda _dates: pytest.fail("no history should be read"),
+            executor, lambda: False,
+            settings=TrainingResourceSettingsFixture().fanout,
+            on_outcome=failed_observer,
+        )
+
+    outcome = run.outcomes[0]
+    assert outcome.result is result and outcome.failure is None and not outcome.cancelled
+    assert outcome.delivery_issues[0].stage == "outcome_notification"
+    assert outcome.delivery_issues[0].error_type == "BrokenPipeError"
+    assert "private" not in str(outcome.delivery_issues)
+
+
 @pytest.mark.parametrize("profiles", SELECTIONS)
 def test_one_scan_and_all_selected_workers_can_fit_concurrently(profiles):
     scans = []
@@ -282,11 +304,12 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
     from trader.bootstrap import ExecuteSelectedTraining
     from trader.infra.settings import LoadRuntimeSettings
     from trader.training.application.selected_training import SelectedTrainingOutcome, SelectedTrainingRun
-    from trader.training.infra.profile.v1.training import V1TrainingResult
+    from trader.training.application.learned_rank_training import V1TrainingResult
 
     executors = []
 
-    def train(request, executor, *, sqlite_policy):
+    def train(operations, executor):
+        request = operations.request
         executors.append(executor._workers)
         assert executor._workers.status().workers == 2
         future = executor.submit(
@@ -336,11 +359,12 @@ def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, cap
     from trader.bootstrap import ExecuteSelectedTraining
     from trader.infra.settings import LoadRuntimeSettings
     from trader.training.application.selected_training import SelectedTrainingOutcome, SelectedTrainingRun
-    from trader.training.infra.profile.v1.training import V1TrainingResult
+    from trader.training.application.learned_rank_training import V1TrainingResult
 
     requests = []
 
-    def train(request, executor, *, sqlite_policy):
+    def train(operations, executor):
+        request = operations.request
         requests.append(request)
         result = V1TrainingResult("engineering_ready", "fixture", "a" * 64, 0, reused=reused)
         return SelectedTrainingRun((SelectedTrainingOutcome("v1", result),), scans, rows)
@@ -384,7 +408,8 @@ def test_composed_cancellation_restores_signal_handler_and_stops_executor(tmp_pa
     previous = signal.getsignal(signal.SIGTERM)
     workers = []
 
-    def train(request, executor, *, sqlite_policy):
+    def train(operations, executor):
+        request = operations.request
         workers.append(executor._workers)
         signal.raise_signal(signal.SIGTERM)
         assert request.cancelled()

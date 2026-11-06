@@ -13,7 +13,8 @@ from tests.helpers.recommendation.runtime.performance_fixtures import _budgets, 
 from tests.helpers.recommendation.scoring.performance_models import _workload
 from trader.entrypoints import performance
 from trader.infra.cache import BoundedLruCache
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.performance.cpu_trace import PerformanceCpuTrace
 from trader.recommendation.infra.performance.fixtures import BuildPerformanceFixtures

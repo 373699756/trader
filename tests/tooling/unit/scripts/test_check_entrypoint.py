@@ -321,7 +321,7 @@ def test_current_harness_can_run_from_an_older_checkout(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("option", ("--history-root", "--train-root", "--sample-root", "--output"))
-def test_memory_check_rejects_repository_paths_before_configuring_resources(tmp_path, monkeypatch, option) -> None:
+def test_memory_check_rejects_project_paths_before_configuring_resources(tmp_path, monkeypatch, option) -> None:
     from scripts.training.resources import memory
 
     def configured():

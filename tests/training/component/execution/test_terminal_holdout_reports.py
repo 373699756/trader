@@ -58,45 +58,45 @@ def _report():
     )
 
 
-def test_terminal_holdout_artifact_archive_is_idempotent_and_detects_tampering(tmp_path) -> None:
+def test_terminal_holdout_artifact_evidence_is_idempotent_and_detects_tampering(tmp_path) -> None:
     report = _report()
-    archive = TerminalHoldoutReportIndex(tmp_path, strategy="tomorrow")
+    evidence = TerminalHoldoutReportIndex(tmp_path, strategy="tomorrow")
 
-    assert archive.write(report).content_hash == report.content_hash
-    assert archive.write(replace(report)).content_hash == report.content_hash
+    assert evidence.write(report).content_hash == report.content_hash
+    assert evidence.write(replace(report)).content_hash == report.content_hash
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     payload["candidate_hash"] = "c" * 64
     (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(TerminalHoldoutReportConflictError):
-        archive.verify()
+        evidence.verify()
 
 
-def test_terminal_holdout_artifact_archive_rejects_different_content(tmp_path) -> None:
+def test_terminal_holdout_artifact_evidence_rejects_different_content(tmp_path) -> None:
     report = _report()
-    archive = TerminalHoldoutReportIndex(tmp_path, strategy="tomorrow")
-    archive.write(report)
+    evidence = TerminalHoldoutReportIndex(tmp_path, strategy="tomorrow")
+    evidence.write(report)
 
     conflicting = replace(report, candidate_hash="c" * 64)
     with pytest.raises(TerminalHoldoutReportConflictError, match="identity conflict"):
-        archive.write(conflicting)
+        evidence.write(conflicting)
 
 
-def test_terminal_holdout_artifact_archive_rejects_strategy_and_schema_mismatch(tmp_path) -> None:
+def test_terminal_holdout_artifact_evidence_rejects_strategy_and_schema_mismatch(tmp_path) -> None:
     report = _report()
-    archive = TerminalHoldoutReportIndex(tmp_path, strategy="d25")
+    evidence = TerminalHoldoutReportIndex(tmp_path, strategy="d25")
     with pytest.raises(TerminalHoldoutReportConflictError, match="strategy mismatch"):
-        archive.write(report)
+        evidence.write(report)
 
-    archive = TerminalHoldoutReportIndex(tmp_path, strategy="tomorrow")
-    archive.write(report)
+    evidence = TerminalHoldoutReportIndex(tmp_path, strategy="tomorrow")
+    evidence.write(report)
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     payload["unexpected"] = True
     (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(TerminalHoldoutReportConflictError):
-        archive.verify()
+        evidence.verify()
 
 
-def test_cross_strategy_conclusion_artifact_archive_round_trips_and_detects_conflicts(tmp_path) -> None:
+def test_cross_strategy_conclusion_artifact_evidence_round_trips_and_detects_conflicts(tmp_path) -> None:
     tomorrow = _report()
     d25 = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
@@ -110,16 +110,16 @@ def test_cross_strategy_conclusion_artifact_archive_round_trips_and_detects_conf
         )
     )
     conclusion = CrossStrategyConclusionService().execute(tomorrow, d25)
-    archive = CrossStrategyConclusionReportIndex(tmp_path)
-    assert archive.write(conclusion).content_hash == conclusion.content_hash
-    assert archive.write(replace(conclusion)).content_hash == conclusion.content_hash
+    evidence = CrossStrategyConclusionReportIndex(tmp_path)
+    assert evidence.write(conclusion).content_hash == conclusion.content_hash
+    assert evidence.write(replace(conclusion)).content_hash == conclusion.content_hash
 
     conflicting = replace(conclusion, status="historical_rejected")
     with pytest.raises(TerminalHoldoutReportConflictError, match="identity conflict"):
-        archive.write(conflicting)
+        evidence.write(conflicting)
 
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     payload["unexpected"] = True
     (tmp_path / "report.json").write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(TerminalHoldoutReportConflictError):
-        archive.verify()
+        evidence.verify()

@@ -60,13 +60,13 @@ def _outcome() -> TomorrowHistoricalRiskValidationOutcome:
 
 
 def test_historical_risk_model_and_report_are_bound_idempotent_artifacts(tmp_path) -> None:  # noqa: ANN001
-    archive = TomorrowHistoricalRiskEvidenceIndex(tmp_path)
+    evidence = TomorrowHistoricalRiskEvidenceIndex(tmp_path)
     outcome = _outcome()
     assert outcome.model_artifact is not None
 
-    assert archive.seal(outcome) == outcome.report.content_hash
-    assert archive.seal(outcome) == outcome.report.content_hash
-    assert archive.inspect() == {
+    assert evidence.seal(outcome) == outcome.report.content_hash
+    assert evidence.seal(outcome) == outcome.report.content_hash
+    assert evidence.inspect() == {
         "status": "historical_validated",
         "report_hash": outcome.report.content_hash,
         "model_artifact_hash": outcome.model_artifact.content_hash,
@@ -78,8 +78,8 @@ def test_historical_risk_model_and_report_are_bound_idempotent_artifacts(tmp_pat
 
 
 def test_historical_risk_artifact_tampering_fails_closed(tmp_path) -> None:  # noqa: ANN001
-    archive = TomorrowHistoricalRiskEvidenceIndex(tmp_path)
-    archive.seal(_outcome())
+    evidence = TomorrowHistoricalRiskEvidenceIndex(tmp_path)
+    evidence.seal(_outcome())
     model_path = (
         tmp_path / "experiments" / TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.research_identity / "model-artifact.json"
     )
@@ -88,4 +88,4 @@ def test_historical_risk_artifact_tampering_fails_closed(tmp_path) -> None:  # n
     model_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(TomorrowHistoricalRiskEvidenceConflictError, match="invalid"):
-        archive.inspect()
+        evidence.inspect()

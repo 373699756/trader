@@ -127,7 +127,7 @@ class HistoricalDownloadService:
         self,
         universe: HistoricalUniverseProvider,
         history: HistoricalPriceProvider,
-        archive: HistoricalScreeningSnapshotPort,
+        snapshots: HistoricalScreeningSnapshotPort,
         executor: WorkerExecutor,
         *,
         workers: int,
@@ -136,7 +136,7 @@ class HistoricalDownloadService:
             raise ValueError("historical screening workers must be in [1, 5]")
         self._universe = universe
         self._history = history
-        self._archive = archive
+        self._snapshots = snapshots
         self._executor = executor
         self._workers = workers
 
@@ -146,7 +146,7 @@ class HistoricalDownloadService:
         *,
         progress: ProgressCallback | None = None,
     ) -> HistoricalDownloadResult:
-        securities = self._archive.registered_universe(spec.research_identity)
+        securities = self._snapshots.registered_universe(spec.research_identity)
         if not securities:
             securities = tuple(
                 sorted(
@@ -158,8 +158,8 @@ class HistoricalDownloadService:
                     key=lambda item: item.code,
                 )
             )
-            self._archive.register_universe(spec, securities)
-        completed = self._archive.completed_codes(spec.research_identity)
+            self._snapshots.register_universe(spec, securities)
+        completed = self._snapshots.completed_codes(spec.research_identity)
         pending = tuple(item for item in securities if item.code not in completed)
         downloaded, failed = self._download_all(spec, pending, progress)
         return HistoricalDownloadResult(
@@ -217,9 +217,9 @@ class HistoricalDownloadService:
                 minimum=spec.minimum_history_sessions + spec.label_horizon_sessions,
                 maximum=spec.download_sessions,
             )
-            self._archive.save_history(spec, code, bars)
+            self._snapshots.save_history(spec, code, bars)
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
-            self._archive.record_failure(spec, code, _error_code(exc))
+            self._snapshots.record_failure(spec, code, _error_code(exc))
             return False
         return True
 

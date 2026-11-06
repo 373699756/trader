@@ -18,13 +18,8 @@ from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 from trader.infra.workers import BoundedExecutor
 
-from tests.helpers.shared.configuration import (
-    CompanyEventPolicyFixture as CompanyEventPolicy,
-    CompanyEvidenceRequestFixture as CompanyEvidenceRequest,
-    CompanyDocumentFilesFixture as CompanyDocumentFiles,
-    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
-    SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader,
-)
+from tests.helpers.download.configuration import CompanyEventPolicyFixture as CompanyEventPolicy, CompanyEvidenceRequestFixture as CompanyEvidenceRequest
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader
 
 from tests.helpers.download.company.company_pipeline import (
     NOW,

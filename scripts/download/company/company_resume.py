@@ -53,7 +53,7 @@ from trader.download.infra.company_structured_source import EastmoneyCompanySour
 from trader.download.infra.company_fact_inputs import CompanyCoverageComplete
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_contracts import HttpTransport
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 _ROOT = TOOL_ROOT

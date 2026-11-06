@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
-import re
 from contextlib import nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
+from trader.download.domain.history_download import HistoryDownloadTask, HistoryDownloadCompletion, HistoryDownloadBatch
 from trader.download.domain.history_maintenance import HistoryPriceGapReason, HistoryPriceGapSummary
 from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PriceRepairAttempts
 from trader.download.infra.history_inferred_review import HISTORY_INFERRED_REVIEW_SQL, RecordHistoryInferredSuspensions
@@ -23,73 +23,6 @@ from trader.infra.sqlite_connection import (
 )
 
 _QFQ_UNUSABLE_RECHECK_SESSIONS = 20
-
-
-@dataclass(frozen=True)
-class HistoryDownloadTask:
-    code: str
-    dates: tuple[date, ...]
-    tencent_done: bool = False
-    attempts: int = 0
-    failure: str | None = None
-
-    def __post_init__(self) -> None:
-        if (
-            re.fullmatch(r"[0-9]{6}", self.code) is None
-            or self.dates != tuple(sorted(set(self.dates)))
-            or any(type(day) is not date for day in self.dates)
-            or type(self.tencent_done) is not bool
-            or type(self.attempts) is not int
-            or not 0 <= self.attempts <= 3
-            or (self.failure is not None and re.fullmatch(r"[a-z0-9_]{1,64}", self.failure) is None)
-        ):
-            raise ValueError("history_download_task_invalid")
-
-
-@dataclass(frozen=True)
-class HistoryDownloadCompletion:
-    task: HistoryDownloadTask
-    missing: tuple[date, ...]
-    failure: str | None
-    unusable_qfq_dates: tuple[date, ...] = ()
-    inferred_suspended_dates: tuple[date, ...] = ()
-    reviewed_dates: tuple[date, ...] = ()
-
-    def __post_init__(self) -> None:
-        if (
-            self.missing != tuple(sorted(set(self.missing)))
-            or not set(self.missing).issubset(self.task.dates)
-            or (self.failure is not None and re.fullmatch(r"[a-z0-9_]{1,64}", self.failure) is None)
-            or self.unusable_qfq_dates != tuple(sorted(set(self.unusable_qfq_dates)))
-            or not set(self.unusable_qfq_dates).issubset(self.missing)
-            or self.inferred_suspended_dates != tuple(sorted(set(self.inferred_suspended_dates)))
-            or not set(self.inferred_suspended_dates).issubset(self.task.dates)
-            or self.reviewed_dates != tuple(sorted(set(self.reviewed_dates)))
-            or not set(self.reviewed_dates).issubset(self.task.dates)
-            or (self.failure is not None and bool(self.reviewed_dates))
-        ):
-            raise ValueError("history_download_completion_invalid")
-
-
-@dataclass(frozen=True)
-class HistoryDownloadBatch:
-    sequence: int
-    source_hash: str
-    calendar_hash: str
-    universe_hash: str
-    cutoff: date
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.sequence) is not int
-            or self.sequence < 1
-            or type(self.cutoff) is not date
-            or any(
-                re.fullmatch(r"[0-9a-f]{64}", digest) is None
-                for digest in (self.source_hash, self.calendar_hash, self.universe_hash)
-            )
-        ):
-            raise ValueError("history_download_batch_invalid")
 
 
 HISTORY_DOWNLOAD_SCHEMA = SqliteSchema(
@@ -422,8 +355,5 @@ class HistoryDownloadIndex:
 
 __all__ = [
     "HISTORY_DOWNLOAD_SCHEMA",
-    "HistoryDownloadBatch",
-    "HistoryDownloadCompletion",
     "HistoryDownloadIndex",
-    "HistoryDownloadTask",
 ]

@@ -1190,7 +1190,7 @@ def test_runtime_restart_splits_persistent_zero_window() -> None:
     assert not any(finding.code.endswith("persistently_zero") for finding in findings)
 
 
-def test_history_archive_error_growth_is_reported_with_counter_delta() -> None:
+def test_history_evidence_error_growth_is_reported_with_counter_delta() -> None:
     samples = (
         _sample(1, warmup=(100, 75, 20, 5), event_sequence=10),
         _sample(2, warmup=(105, 75, 25, 5), event_sequence=11),

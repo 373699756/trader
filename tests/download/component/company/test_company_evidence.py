@@ -30,7 +30,9 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 
-from tests.helpers.shared.configuration import CompanyEventPolicyFixture as CompanyEventPolicy, CompanyDocumentFilesFixture as CompanyDocumentFiles, CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource, PublishedCompanyResearchFixture as PublishedCompanyResearch, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader, SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
+from tests.helpers.download.configuration import CompanyEventPolicyFixture as CompanyEventPolicy
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader, SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
+from tests.helpers.recommendation.company_research import PublishedCompanyResearchFixture as PublishedCompanyResearch
 
 from tests.helpers.download.company.company_evidence import (
     NOW,

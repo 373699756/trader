@@ -3,7 +3,7 @@
 from dataclasses import replace
 from datetime import date, timedelta
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.shared.configuration import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents
 from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition
 from trader.download.domain.company_events import CompanyEventStatus, CompanyPositiveStatus, CompanyReviewReason, CompanyRiskEvent, CompanyRiskType, CompanySeverityBasis, CompanySubject, ReductionPlan, RepurchasePurpose

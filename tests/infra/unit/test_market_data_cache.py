@@ -338,7 +338,7 @@ def test_cache_single_flight_capacity_check_uses_scope_counters() -> None:
     assert cache.coalesce(_identity("600001"), lambda: "loaded") == "loaded"
 
 
-def test_cache_single_flight_coalesces_physical_load_and_cleans_registry() -> None:
+def test_cache_single_flight_coalesces_physical_load_and_cleans_index() -> None:
     cache = BoundedLruCache(_policy())
     identity = _identity("600001")
     started = threading.Event()
@@ -367,7 +367,7 @@ def test_cache_single_flight_coalesces_physical_load_and_cleans_registry() -> No
     assert cache.inflight_count == 0
 
 
-def test_cache_stop_clears_inflight_registry_and_releases_waiters() -> None:
+def test_cache_stop_clears_inflight_index_and_releases_waiters() -> None:
     cache = BoundedLruCache(_policy())
     identity = _identity("600001")
     started = threading.Event()

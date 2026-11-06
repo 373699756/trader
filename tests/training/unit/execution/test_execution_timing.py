@@ -99,9 +99,9 @@ def test_sample_phase_preserves_wall_cpu_counts_and_partial_failures(failure):
     measured = TrainingExecutionMeasurements(("v1", "v5"), wall, thread_time=cpu)
     outcome = pytest.raises(type(failure)) if failure is not None else nullcontext()
     with outcome, measured.sample_build("v1"):
-        active = measured.snapshot().profiles[0].sample_build
-        assert active.count == active.inflight_count == 1
-        assert active.wall_seconds is active.thread_cpu_seconds is None
+        running = measured.snapshot().profiles[0].sample_build
+        assert running.count == running.inflight_count == 1
+        assert running.wall_seconds is running.thread_cpu_seconds is None
         wall.advance(7)
         cpu.advance(2)
         if failure is not None:
@@ -525,9 +525,12 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
     from trader.infra.workers import BoundedExecutor
     from trader.training.application.selected_training import SelectedTrainingOutcome, SelectedTrainingRun, TrainingLocations
     from trader.training.entrypoints.selected_training import RunSelectedTraining
-    from trader.training.infra.profile.v1.training import V1TrainingResult
+    from trader.training.infra.selected_training import SelectedTrainingAdapter
+    from trader.training.application.learned_rank_training import V1TrainingResult
 
-    def train(request, _executor, *, sqlite_policy):
+    def train(operations, _executor):
+        request = operations.request
+        sqlite_policy = operations.sqlite_policy
         assert sqlite_policy == SqlitePolicyFixture()
         measured = request.measurements
         with (
@@ -552,6 +555,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
         cpu_budget=cpu_budget,
         paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
         sqlite_policy=SqlitePolicyFixture(),
+        prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
         sample_settings=TrainingSampleSettingsFixture(),
     ) == expected_exit

@@ -15,14 +15,13 @@ from unittest.mock import patch
 
 from scripts.training.resources import execution_selection as selection
 from trader.infra.disk_types import DiskKind
-from trader.infra.settings import training as training_configuration
-from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.training.infra import resource_settings as training_configuration
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingProfileThreads, TrainingResourceSettings
-from trader.training.application.selected_training import SelectedTrainingRun
+from trader.training.application.selected_training import SelectedProfileResult, SelectedTrainingPort, SelectedTrainingRun
 from trader.training.entrypoints import selected_training as training_entrypoint
 from trader.training.infra.execution_options import TrainingExecutionOptions
-from trader.training.infra.selected_training import SelectedProfileResult, SelectedTrainingRequest
+from trader.training.infra.selected_training import SelectedTrainingAdapter, SelectedTrainingRequest
 
 _ENVIRONMENT = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
 
@@ -138,11 +137,13 @@ def UseTrainingExecutionCandidate(
         return replace(resources, cpu=cpu_settings, fanout=fanout_settings)
 
     def train(
-        request: SelectedTrainingRequest, executor: Executor, *, sqlite_policy: SqliteIoPolicy,
+        operations: SelectedTrainingPort[SelectedProfileResult], executor: Executor,
     ) -> SelectedTrainingRun[SelectedProfileResult]:
-        request = replace(request, execution_options=experiment.options)
+        if not isinstance(operations, SelectedTrainingAdapter):
+            raise ValueError("training_execution_candidate_requires_file_adapter")
+        request = replace(operations.request, execution_options=experiment.options)
         experiment.observe(request)
-        return original_train(request, executor, sqlite_policy=sqlite_policy)
+        return original_train(replace(operations, request=request), executor)
 
     environment = tuple((name, os.environ.get(name)) for name in _ENVIRONMENT)
     try:

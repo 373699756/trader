@@ -19,11 +19,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
-from tests.helpers.shared.configuration import (
-    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
-    CompanyDocumentFilesFixture as CompanyDocumentFiles,
-    SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader,
-)
+from tests.helpers.download.company_resources import SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex, CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader
 
 NOW = fixtures.NOW
 
@@ -117,7 +113,7 @@ def test_latest_structured_data_precedes_one_local_batch_then_directory_discover
 @pytest.mark.parametrize("fill_missing", (False, True))
 def test_structured_first_local_recovery_resumes_after_cancellation(tmp_path, phase, fill_missing):
     from trader.download.application.company_evidence import SyncCompanyEvidence
-    from tests.helpers.shared.configuration import CompanyEvidenceRequestFixture
+    from tests.helpers.download.configuration import CompanyEvidenceRequestFixture
 
     index, raw, items = _local_backlog(tmp_path, 2)
     cancelled = False
@@ -490,7 +486,8 @@ def test_company_noop_publish_keeps_identity_and_closes_wal_before_sealing(tmp_p
 @pytest.mark.parametrize("number", (3, 4))
 def test_company_reader_and_writer_reject_old_columns_without_migration(tmp_path, number):
     import sqlite3
-    from tests.helpers.shared.configuration import CompanyEventPolicyFixture, SqlitePolicyFixture
+    from tests.helpers.download.configuration import CompanyEventPolicyFixture
+    from tests.helpers.shared.configuration import SqlitePolicyFixture
     from trader.download.infra.company_facts_protocol import CompanyExtractionHash, EncodeCompanyTime
     from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
     from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
@@ -527,7 +524,8 @@ def test_company_reader_and_writer_reject_old_columns_without_migration(tmp_path
 
 
 def test_company_generation_tracks_sources_and_receipts_with_identical_facts(tmp_path):
-    from tests.helpers.shared.configuration import CompanyEventPolicyFixture, SqlitePolicyFixture
+    from tests.helpers.download.configuration import CompanyEventPolicyFixture
+    from tests.helpers.shared.configuration import SqlitePolicyFixture
     from trader.download.infra.company_facts_index import (
         CompanyInputReceipt, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex,
     )
@@ -566,7 +564,8 @@ def test_company_generation_tracks_sources_and_receipts_with_identical_facts(tmp
 
 @pytest.mark.parametrize("leftover", ("empty_file", "rolled_back_schema"))
 def test_company_first_initialization_recovers_only_empty_leftover(tmp_path, leftover):
-    from tests.helpers.shared.configuration import CompanyEventPolicyFixture, SqlitePolicyFixture
+    from tests.helpers.download.configuration import CompanyEventPolicyFixture
+    from tests.helpers.shared.configuration import SqlitePolicyFixture
     from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 
     path = tmp_path / "facts.sqlite3"

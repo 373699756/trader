@@ -171,7 +171,7 @@ def test_final_fit_matrix_releases_mappings_on_success_failure_and_cancel(tmp_pa
                 pytest.fail("a changed count must be rejected before matrix allocation")
 
 
-def test_final_fit_tcn_batches_reconstruct_the_existing_sequence_storage(tmp_path: Path) -> None:
+def test_final_fit_tcn_batches_reconstruct_the_existing_sequence_persistence(tmp_path: Path) -> None:
     calendar = _calendar()
     split = BuildTrainingDateSplit(calendar, parent_manifest_hash="a" * 64)
     contract = V5_TRAINING_PROFILE.heads[0]

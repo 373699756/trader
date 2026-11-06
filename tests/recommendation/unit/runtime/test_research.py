@@ -6,7 +6,7 @@ import pytest
 
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents
 from trader.download.domain.company_events import CompanyRiskType
-from tests.helpers.shared.configuration import CompanyEventPolicyFixture as CompanyEventPolicy
+from tests.helpers.download.configuration import CompanyEventPolicyFixture as CompanyEventPolicy
 from trader.download.domain.company_evidence import CompanyDocument, Disclosure
 from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,

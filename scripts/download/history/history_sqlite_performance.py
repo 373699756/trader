@@ -40,7 +40,8 @@ from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceRead
 from trader.download.infra.current_industry_publication import CurrentIndustryCache
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.cache import BoundedLruCache
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_codec import DecodeDate
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction

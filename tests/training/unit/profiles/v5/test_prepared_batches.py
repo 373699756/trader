@@ -11,7 +11,8 @@ from weakref import ref
 import numpy as np
 import pytest
 
-from tests.helpers.shared.configuration import SqlitePolicyFixture, TcnFittingParametersFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.configuration import TcnFittingParametersFixture
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.execution_options import TrainingExecutionOptions

@@ -18,7 +18,8 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
@@ -34,7 +35,7 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.recommendation.infra.market_data.published_history_bars import QfqBars
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
@@ -170,7 +171,7 @@ def LoadFactorInputs(
     )
     return FactorInputs(
         profile=profile,
-        policy=_recommendation_policy(strategy),
+        policy=BuildRecommendationPolicy(strategy),
         builder=builder,
         models=models,
         model_heads=model_heads,

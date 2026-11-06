@@ -6,7 +6,6 @@ import hashlib
 import html
 import os
 import re
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -32,7 +31,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.infra.company_document_ocr import CompanyOcrEngine
 from trader.download.infra.company_document_parser import CompanyTextCapability
-from trader.download.infra.company_document_process import DocumentProcessFamily
+from trader.download.infra.company_document_process import CaptureDocumentTool
 from trader.download.infra.company_raw_files import CompanyLocalDocument, CompanyRawFiles
 from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
 from trader.download.infra.company_http import CheckCompanyResponse, CompanyRequestPacer
@@ -436,49 +435,39 @@ class CninfoMarketDisclosureSource:
             )
         self._check_cancelled()
         parse_deadline = self._monotonic() + self._document_parse_timeout
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "trader.download.infra.company_document_parser",
-                "--directory",
-                directory,
-                "--input",
-                str(payload),
-                "--max-bytes",
-                str(limits.max_bytes),
-                "--max-pages",
-                str(limits.max_pages),
-                "--max-text-characters",
-                str(limits.max_text_characters),
-                "--pdftotext",
-                self._text_capability.pdftotext or "pdftotext",
-                "--pdfinfo",
-                self._text_capability.pdfinfo or "pdfinfo",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            start_new_session=os.name == "posix",
-        )
-        family: DocumentProcessFamily | None = None
-        try:
-            family = DocumentProcessFamily(process)
-            while True:
-                self._check_cancelled()
-                remaining = parse_deadline - self._monotonic()
-                if remaining <= 0:
-                    raise CompanyDocumentFailure("disclosure_document_parse_timeout", payload_hash=payload_hash)
-                try:
-                    output, _ = process.communicate(timeout=min(0.1, remaining))
-                    break
-                except subprocess.TimeoutExpired:
-                    # communicate retains partial writes and reads after a timeout.
-                    continue
+
+        def check() -> None:
             self._check_cancelled()
-        finally:
-            _close_parser(process, family)
-        if process.returncode:
+            if self._monotonic() >= parse_deadline:
+                raise CompanyDocumentFailure("disclosure_document_parse_timeout", payload_hash=payload_hash)
+
+        try:
+            returncode, output = CaptureDocumentTool(
+                (
+                    sys.executable,
+                    "-m",
+                    "trader.download.infra.company_document_parser",
+                    "--directory",
+                    directory,
+                    "--input",
+                    str(payload),
+                    "--max-bytes",
+                    str(limits.max_bytes),
+                    "--max-pages",
+                    str(limits.max_pages),
+                    "--max-text-characters",
+                    str(limits.max_text_characters),
+                    "--pdftotext",
+                    self._text_capability.pdftotext or "pdftotext",
+                    "--pdfinfo",
+                    self._text_capability.pdfinfo or "pdfinfo",
+                ),
+                maximum_bytes=4 * limits.max_text_characters,
+                check=check,
+            )
+        except OverflowError as exc:
+            raise CompanyDocumentFailure("disclosure_document_text_limit", payload_hash=payload_hash) from exc
+        if returncode:
             reason = {
                 3: "encrypted",
                 4: "page_limit",
@@ -488,23 +477,9 @@ class CninfoMarketDisclosureSource:
                 8: "short_text",
             }
             raise CompanyDocumentFailure(
-                f"disclosure_document_{reason.get(process.returncode, 'unreadable')}", payload_hash=payload_hash
+                f"disclosure_document_{reason.get(returncode, 'unreadable')}", payload_hash=payload_hash
             )
         return output.decode("utf-8")
-
-
-def _close_parser(process: subprocess.Popen[bytes], family: DocumentProcessFamily | None) -> None:
-    try:
-        if family is not None:
-            family.close()
-        elif process.poll() is None:
-            process.kill()
-            process.wait(timeout=2)
-    finally:
-        if process.stdin is not None:
-            process.stdin.close()
-        if process.stdout is not None:
-            process.stdout.close()
 
 
 def _plate(code: str) -> str:

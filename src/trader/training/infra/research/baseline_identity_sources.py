@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from trader.infra.serialization.canonical import FileSha256
-from trader.infra.settings import LoadStrategySettings, RuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
+from trader.infra.settings import RuntimeSettings
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.training.application.baseline_identity_audit import BaselineIdentityEvidence
@@ -32,13 +33,13 @@ def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineId
     strategy_doc_path = runtime.project_root / "docs/1_评分逻辑.md"
     v2 = LoadScoringProfile("v2", training_root=runtime.data_paths.models).heads[Strategy.TOMORROW].predictor
     v3 = LoadScoringProfile("v3", training_root=runtime.data_paths.models).heads[Strategy.TOMORROW].predictor
-    historical_archive = TomorrowHistoricalEvidenceIndex(
+    historical_evidence = TomorrowHistoricalEvidenceIndex(
         runtime.data_paths.research(strategy.scoring_profile) / "experiments"
     )
     historical_source = runtime.data_paths.research(strategy.scoring_profile) / "experiments"
     historical_conflict = False
     try:
-        historical_report = historical_archive.read_report_payload()
+        historical_report = historical_evidence.read_report_payload()
     except TomorrowHistoricalEvidenceConflictError:
         historical_report = None
         historical_conflict = True

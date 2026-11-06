@@ -39,6 +39,14 @@ _READ_ONLY_MODULES = frozenset(
         "trader.recommendation.application.pipeline.freeze_publish.event_stream",
     }
 )
+_RESOURCE_CREATION_OWNERS = {
+    "trader.infra.workers.BoundedExecutor": frozenset({"trader.bootstrap"}),
+    "concurrent.futures.ThreadPoolExecutor": frozenset({"trader.infra.workers"}),
+    "concurrent.futures.ProcessPoolExecutor": frozenset(),
+    "trader.infra.http_transport.RequestsHttpTransport": frozenset({"trader.bootstrap"}),
+    "trader.infra.isolated_http.IsolatedHttpExecutor": frozenset({"trader.bootstrap"}),
+    "trader.infra.clock.shanghai.ShanghaiClock": frozenset({"trader.bootstrap"}),
+}
 
 
 @dataclass(frozen=True)
@@ -139,6 +147,80 @@ def SourceImportTargets(path: Path, root: Path) -> frozenset[str]:
     return frozenset(target for imported in SourceImports(path, root) for target in imported.targets)
 
 
+class _ResourceCallVisitor(ast.NodeVisitor):
+    def __init__(self, module: str, *, is_package: bool) -> None:
+        self._module = module
+        self._package = module if is_package else module.rpartition(".")[0]
+        self._bindings: dict[str, str] = {}
+        self.violations: list[str] = []
+
+    def _qualified(self, node: ast.expr) -> str:
+        if isinstance(node, ast.Name):
+            return self._bindings.get(node.id, "")
+        if isinstance(node, ast.Attribute):
+            owner = self._qualified(node.value)
+            return f"{owner}.{node.attr}" if owner else ""
+        return ""
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self._bindings[alias.asname or alias.name.split(".")[0]] = alias.name if alias.asname else alias.name.split(".")[0]
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        imported = ParseSourceImports(ast.unparse(node), self._module, is_package=self._module == self._package)
+        for alias, dependency in zip(node.names, imported, strict=True):
+            if alias.name != "*":
+                self._bindings[alias.asname or alias.name] = dependency.targets[-1]
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        qualified = self._qualified(node.value)
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self._bindings[target.id] = qualified
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for expression in (*node.decorator_list, *node.args.defaults, *(value for value in node.args.kw_defaults if value is not None)):
+            self.visit(expression)
+        previous = self._bindings
+        self._bindings = dict(previous)
+        for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+            self._bindings.pop(argument.arg, None)
+        for variadic in (node.args.vararg, node.args.kwarg):
+            if variadic is not None:
+                self._bindings.pop(variadic.arg, None)
+        for statement in node.body:
+            self.visit(statement)
+        self._bindings = previous
+        self._bindings.pop(node.name, None)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in (*node.decorator_list, *node.bases, *(keyword.value for keyword in node.keywords)):
+            self.visit(expression)
+        previous = self._bindings
+        self._bindings = dict(previous)
+        for statement in node.body:
+            self.visit(statement)
+        self._bindings = previous
+        self._bindings.pop(node.name, None)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        target = self._qualified(node.func)
+        allowed = _RESOURCE_CREATION_OWNERS.get(target)
+        if allowed is not None and self._module not in allowed:
+            self.violations.append(f"{node.lineno}: resource {target} created outside its composition owner")
+        self.generic_visit(node)
+
+
+def ResourceCreationViolations(source: str, module: str, *, is_package: bool = False) -> tuple[str, ...]:
+    """Resolve imported constructor bindings, including aliases and module attributes."""
+    visitor = _ResourceCallVisitor(module, is_package=is_package)
+    visitor.visit(ast.parse(source))
+    return tuple(visitor.violations)
+
+
 def BusinessSourceFiles(root: Path, layer: str) -> tuple[Path, ...]:
     files: list[Path] = []
     for business in sorted(_BUSINESSES):
@@ -192,7 +274,9 @@ def _forbidden_target(module: str, imported: SourceImport, target: str) -> bool:
             if imported.module == "trader.infra.sqlite_observation":
                 return imported.member not in _SHARED_APPLICATION_SYMBOLS[imported.module]
             return imported.module not in _SHARED_APPLICATION_MODULES
-    if business in _BUSINESSES and layer == "infra" or business == "infra":
+    if business == "infra":
+        return target_owner in delivery or target_owner in _BUSINESSES
+    if business in _BUSINESSES and layer == "infra":
         return target_owner in delivery or target_owner in _BUSINESSES and target_layer == "entrypoints"
     if business in {"http_api", "web"}:
         if target_owner in {"infra", "bootstrap", "entrypoints", "download", "training"}:
@@ -317,6 +401,7 @@ __all__ = [
     "ImportCycles",
     "LayerImportViolations",
     "ParseSourceImports",
+    "ResourceCreationViolations",
     "SourceBoundaryViolations",
     "SourceImport",
     "SourceImportGraph",

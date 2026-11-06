@@ -3,6 +3,7 @@
 import gzip
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -39,6 +40,38 @@ def test_injected_attempt_inherits_absolute_deadline_and_reports_observation():
     assert observations[0].response_bytes == 2
     with pytest.raises(HttpError, match="closed"):
         transport.get("https://example.invalid", timeout=5)
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+@pytest.mark.parametrize("fail", [False, True])
+def test_request_scope_releases_only_its_injected_transport_on_success_and_failure(method, fail):
+    opened = []
+
+    def execute(request):
+        if fail:
+            raise HttpTimeout("fixture_request_timeout")
+        return HttpResponse(200, b"fixture")
+
+    def open_transport():
+        transport = driver.RequestsHttpTransport(execute_request=execute)
+        opened.append(transport)
+        return transport
+
+    scope = driver.HttpRequestScope(open_transport)
+
+    def request():
+        if method == "get":
+            return scope.get("https://example.invalid", timeout=2)
+        return scope.post("https://example.invalid", headers={}, json={"fixture": True}, timeout=2)
+
+    if fail:
+        with pytest.raises(HttpTimeout):
+            request()
+    else:
+        assert request().content == b"fixture"
+    assert len(opened) == 1
+    with pytest.raises(HttpError, match="closed"):
+        opened[0].get("https://example.invalid", timeout=2)
 
 
 class _Raw:
@@ -102,6 +135,93 @@ def test_lazy_creation_reuse_close_and_no_environment_proxy_or_hidden_retry(monk
     assert all(call[1]["allow_redirects"] is False for call in session.calls)
     with pytest.raises(HttpError, match="closed"):
         transport.get("https://example.invalid/", timeout=1)
+
+
+@pytest.mark.parametrize("backend", ("injected", "session"))
+def test_close_reports_pending_without_waiting_and_inflight_owner_closes_after_release(monkeypatch, backend):
+    entered, release, waiter_started = threading.Event(), threading.Event(), threading.Event()
+    injected, observations, closed = [], [], []
+
+    def block():
+        entered.set()
+        assert release.wait(timeout=5)
+
+    def execute(request):
+        injected.append(request)
+        block()
+        assert request.cancel_requested()
+        return HttpResponse(200, b"fixture")
+
+    raw = _Raw([b"fixture"], on_read=block)
+    session = _Session(raw)
+
+    def close_session():
+        closed.append(session)
+        session.closed = True
+
+    monkeypatch.setattr(session, "close", close_session)
+    monkeypatch.setattr(driver.requests, "Session", lambda: session)
+    transport = driver.RequestsHttpTransport(
+        execute_request=execute if backend == "injected" else None, observe=observations.append,
+    )
+
+    def waiting_cancelled():
+        waiter_started.set()
+        return False
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        running = executor.submit(transport.get, "https://example.invalid/", timeout=120)
+        try:
+            assert entered.wait(timeout=1)
+            waiting = executor.submit(
+                transport.get, "https://example.invalid/waiter", timeout=120, cancel_requested=waiting_cancelled,
+            )
+            assert waiter_started.wait(timeout=1)
+            closing = executor.submit(transport.close)
+            with pytest.raises(HttpTimeout, match="http_transport_close_pending"):
+                closing.result(timeout=1)
+            assert not transport.is_closed() and not session.closed
+            with pytest.raises(HttpCancelled, match="http_transport_closed"):
+                waiting.result(timeout=1)
+            with pytest.raises(HttpError, match="http_transport_closed"):
+                transport.get("https://example.invalid/new", timeout=120)
+        finally:
+            release.set()
+        with pytest.raises(HttpCancelled, match="http_transport_closed"):
+            running.result(timeout=1)
+    assert transport.is_closed()
+    assert observations[0].failure == "HttpCancelled"
+    assert len(injected) == (1 if backend == "injected" else 0)
+    assert len(session.calls) == (1 if backend == "session" else 0)
+    assert closed == ([session] if backend == "session" else [])
+    if backend == "session":
+        assert raw.closed
+    transport.close()
+    assert closed == ([session] if backend == "session" else [])
+
+
+def test_session_close_failure_is_observable_and_can_be_retried_without_reopening_requests(monkeypatch):
+    session = _Session(_Raw([b"fixture"]))
+    closed = []
+
+    def close_session():
+        closed.append(session)
+        if len(closed) == 1:
+            raise OSError("controlled close failure")
+        session.closed = True
+
+    monkeypatch.setattr(session, "close", close_session)
+    monkeypatch.setattr(driver.requests, "Session", lambda: session)
+    transport = driver.RequestsHttpTransport()
+    transport.get("https://example.invalid/", timeout=1)
+    with pytest.raises(HttpError, match="http_transport_close_failed") as caught:
+        transport.close()
+    assert isinstance(caught.value.__cause__, OSError)
+    assert not transport.is_closed() and not session.closed
+    with pytest.raises(HttpError, match="http_transport_closed"):
+        transport.get("https://example.invalid/new", timeout=1)
+    transport.close()
+    assert transport.is_closed() and session.closed and len(closed) == 2
 
 
 def test_streaming_response_is_delivered_to_sink_without_accumulated_body(monkeypatch):
@@ -205,7 +325,6 @@ def test_explicit_identity_encoding_keeps_the_total_deadline(monkeypatch):
     with driver.RequestsHttpTransport(identity_content_encodings=("normal",), monotonic=lambda: clock[0]) as transport, pytest.raises(HttpTimeout):
         transport.get("https://example.invalid/", timeout=1)
     assert raw.closed and session.closed and len(session.calls) == 1
-
 
 
 def test_json_honors_the_supplier_response_charset():

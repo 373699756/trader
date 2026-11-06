@@ -50,7 +50,7 @@ class _MarketData:
         }
 
 
-class _Repository:
+class _OutcomeIndex:
     def __init__(self) -> None:
         self.saved = ()
         self.benchmark = ()
@@ -84,95 +84,95 @@ class _Repository:
         self.saved = tuple(outcomes)
 
 
-def _service(market_data: _MarketData, repository: _Repository, *, elapsed: int = 1):
+def _service(market_data: _MarketData, index: _OutcomeIndex, *, elapsed: int = 1):
     return OutcomeSettlementService(
         market_data,
-        repository,
-        repository,
+        index,
+        index,
         session_distance=lambda _start, _end: elapsed,
     )
 
 
 def test_after_close_settlement_records_benchmark_and_due_outcome(application_feature_factory) -> None:
-    repository = _Repository()
+    index = _OutcomeIndex()
     feature = application_feature_factory("600001", NOW)
     peer = application_feature_factory("600002", NOW)
     market_data = _MarketData()
 
-    result = _service(market_data, repository).settle(
+    result = _service(market_data, index).settle(
         NOW,
         (feature, replace(peer, quote=replace(peer.quote, pct_change=1.0))),
     )
 
     assert result.target_count == 1
     assert result.completed_count == 1
-    assert repository.benchmark == (BenchmarkReturn("2026-07-21", 2.0), NOW)
-    assert len(repository.saved) == 1
-    assert repository.saved[0].net_excess_return_pct == pytest.approx(1.3)
+    assert index.benchmark == (BenchmarkReturn("2026-07-21", 2.0), NOW)
+    assert len(index.saved) == 1
+    assert index.saved[0].net_excess_return_pct == pytest.approx(1.3)
 
 
 def test_settlement_skips_horizons_that_are_not_due(application_feature_factory) -> None:
-    repository = _Repository()
+    index = _OutcomeIndex()
     market_data = _MarketData()
 
-    result = _service(market_data, repository, elapsed=0).settle(
+    result = _service(market_data, index, elapsed=0).settle(
         NOW,
         (application_feature_factory("600001", NOW),),
     )
 
     assert result.completed_count == 0
-    assert repository.saved == ()
+    assert index.saved == ()
 
 
 def test_settlement_keeps_due_stock_outcome_retryable_when_benchmark_is_unavailable(
     application_feature_factory,
 ) -> None:
-    repository = _Repository()
-    repository.benchmark_returns_after = lambda _date, *, limit: ()
+    index = _OutcomeIndex()
+    index.benchmark_returns_after = lambda _date, *, limit: ()
     stale = application_feature_factory(
         "600001",
         datetime(2026, 7, 21, 14, 59, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
 
-    result = _service(_MarketData(), repository).settle(NOW, (stale,))
+    result = _service(_MarketData(), index).settle(NOW, (stale,))
 
     assert result.benchmark_recorded is False
     assert result.outcome_count == 1
     assert result.retryable_count == 1
-    assert repository.saved == ()
+    assert index.saved == ()
 
 
 def test_equal_weight_benchmark_requires_every_market_return(application_feature_factory) -> None:
-    repository = _Repository()
+    index = _OutcomeIndex()
     first = application_feature_factory("600001", NOW)
     second = application_feature_factory("600002", NOW)
     incomplete = replace(second, quote=replace(second.quote, pct_change=None))
 
-    result = _service(_MarketData(), repository).settle(NOW, (first, incomplete))
+    result = _service(_MarketData(), index).settle(NOW, (first, incomplete))
 
     assert result.benchmark_recorded is False
-    assert repository.benchmark == ()
+    assert index.benchmark == ()
 
 
 def test_settlement_preserves_complete_return_when_atr_risk_label_is_unavailable(
     application_feature_factory,
 ) -> None:
-    class _InvalidAtrRepository(_Repository):
+    class _InvalidAtrOutcomeIndex(_OutcomeIndex):
         def pending_outcome_targets(self, *, limit):
             return tuple(replace(target, atr20_pct=0.0) for target in super().pending_outcome_targets(limit=limit))
 
-    repository = _InvalidAtrRepository()
+    index = _InvalidAtrOutcomeIndex()
     market_data = _MarketData()
 
-    result = _service(market_data, repository).settle(
+    result = _service(market_data, index).settle(
         NOW,
         (application_feature_factory("600001", NOW),),
     )
 
     assert result.completed_count == 1
     assert result.retryable_count == 0
-    assert len(repository.saved) == 1
-    outcome = repository.saved[0]
+    assert len(index.saved) == 1
+    outcome = index.saved[0]
     assert outcome.status == "complete"
     assert outcome.net_excess_return_pct == pytest.approx(1.3)
     assert outcome.mae_pct == pytest.approx(-4.0)
@@ -186,17 +186,17 @@ def test_settlement_preserves_complete_return_when_atr_risk_label_is_unavailable
 def test_adapter_fetches_fresh_close_market_before_settlement(application_feature_factory) -> None:
     feature = application_feature_factory("600001", NOW)
     market_data = _MarketData((feature,))
-    repository = _Repository()
-    adapter = OutcomeSettlementAdapter(market_data, _service(market_data, repository))
+    index = _OutcomeIndex()
+    adapter = OutcomeSettlementAdapter(market_data, _service(market_data, index))
 
     adapter.settle(NOW)
 
     assert market_data.fetch_calls == [(NOW, True)]
-    assert repository.benchmark == (BenchmarkReturn("2026-07-21", 3.0), NOW)
+    assert index.benchmark == (BenchmarkReturn("2026-07-21", 3.0), NOW)
 
 
 def test_adapter_reuses_recorded_benchmark_without_fetching_changed_market(application_feature_factory):
-    evidence = _Repository()
+    evidence = _OutcomeIndex()
     evidence.benchmark = (BenchmarkReturn("2026-07-21", 0.5), NOW)
     market = _MarketData((application_feature_factory("600002", NOW),))
     original = evidence.benchmark
@@ -219,7 +219,7 @@ def test_adapter_reuses_recorded_benchmark_without_fetching_changed_market(appli
 )
 @pytest.mark.parametrize("boundary", ("fetch", "history", "benchmark"))
 def test_adapter_translates_failures_and_preserves_cause_and_evidence(monkeypatch, failure, expected, boundary):
-    evidence = _Repository()
+    evidence = _OutcomeIndex()
     market = _MarketData()
 
     def fail(*args, **kwargs):
@@ -250,23 +250,23 @@ def test_adapter_rejects_incomplete_settlement_without_poisoning_immutable_evide
         datetime(2026, 7, 21, 14, 59, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     market_data = _MarketData((stale,))
-    repository = _Repository()
-    repository.benchmark_returns_after = lambda _date, *, limit: ()
-    adapter = OutcomeSettlementAdapter(market_data, _service(market_data, repository))
+    index = _OutcomeIndex()
+    index.benchmark_returns_after = lambda _date, *, limit: ()
+    adapter = OutcomeSettlementAdapter(market_data, _service(market_data, index))
 
     with pytest.raises(SettlementUnavailableError, match="settlement_outcomes_incomplete"):
         adapter.settle(NOW)
 
-    assert repository.saved == ()
+    assert index.saved == ()
     market_data.features = (application_feature_factory("600001", NOW),)
-    repository.benchmark_returns_after = lambda _date, *, limit: (BenchmarkReturn("2026-07-21", 0.5),)
+    index.benchmark_returns_after = lambda _date, *, limit: (BenchmarkReturn("2026-07-21", 0.5),)
     adapter.settle(NOW)
-    assert len(repository.saved) == 1
-    assert repository.saved[0].status == "complete"
+    assert len(index.saved) == 1
+    assert index.saved[0].status == "complete"
 
 
 def test_d25_settlement_includes_t4_but_only_evaluates_pending_horizons(application_feature_factory) -> None:
-    class _D25Repository(_Repository):
+    class _D25OutcomeIndex(_OutcomeIndex):
         def pending_outcome_targets(self, *, limit):
             assert limit == 500
             return (
@@ -287,13 +287,13 @@ def test_d25_settlement_includes_t4_but_only_evaluates_pending_horizons(applicat
             assert limit == 4
             return tuple(BenchmarkReturn(f"2026-07-{20 + offset:02d}", 0.0) for offset in range(1, 5))
 
-    repository = _D25Repository()
+    index = _D25OutcomeIndex()
     bars = tuple(_bar(f"2026-07-{20 + offset:02d}", 10.0, 10.5, 9.8, 10.0 + offset / 10) for offset in range(5))
     market_data = _MarketData(bars=bars)
     service = OutcomeSettlementService(
         market_data,
-        repository,
-        repository,
+        index,
+        index,
         session_distance=lambda start, end: int(end[-2:]) - int(start[-2:]),
     )
 
@@ -303,4 +303,4 @@ def test_d25_settlement_includes_t4_but_only_evaluates_pending_horizons(applicat
     )
 
     assert result.outcome_count == 1
-    assert tuple(item.horizon for item in repository.saved) == (4,)
+    assert tuple(item.horizon for item in index.saved) == (4,)

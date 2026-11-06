@@ -38,8 +38,8 @@ from trader.recommendation.domain.evidence.pipeline import SourceHealthState
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import (
-    _history_population_codes,
-    _normalize_codes,
+    SelectHistoryPopulationCodes,
+    NormalizeMarketCodes,
 )
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
@@ -265,7 +265,7 @@ class MarketFeatureService:
             quote for quote in quotes if quote.code in current_codes and not QuoteStReasons(quote)
         )
         assembly_started = self._monotonic()
-        history_codes = _history_population_codes(quotes)
+        history_codes = SelectHistoryPopulationCodes(quotes)
         action_restrictions: dict[str, set[str]] = {}
         histories = self.history.load(
             history_codes,
@@ -498,7 +498,7 @@ class MarketFeatureService:
         deadline: datetime | None = None,
         preview_context: PreviewContext | None = None,
     ) -> Sequence[FeatureSnapshot]:
-        normalized = _normalize_codes(codes)
+        normalized = NormalizeMarketCodes(codes)
         if not normalized:
             return ()
         quotes = tuple(
@@ -638,7 +638,7 @@ class MarketFeatureService:
         return tuple(code for code in normalized if code not in observed_st)
 
     def _admitted_codes(self, codes: Sequence[str], observed_at: datetime) -> tuple[str, ...]:
-        normalized = _normalize_codes(codes)
+        normalized = NormalizeMarketCodes(codes)
         _, qualified, stages, _ = self._static_pipeline.observe(observed_at)
         if stages[0].source_health.state is not SourceHealthState.READY:
             return ()
@@ -686,12 +686,12 @@ class MarketFeatureService:
         self._record_eligibility(facts)
 
     def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]:
-        normalized = _normalize_codes(codes)
+        normalized = NormalizeMarketCodes(codes)
         return self.quotes.current_quotes(normalized)
 
     def cached_quotes(self, codes: Sequence[str]) -> Mapping[str, MarketQuote]:
         """Return the newest cached full quote without performing external I/O."""
-        normalized = _normalize_codes(codes)
+        normalized = NormalizeMarketCodes(codes)
         market = {feature.quote.code: feature.quote for feature in self.quotes.market_features()}
         candidates = self.quotes.candidate_entries()
         result: dict[str, MarketQuote] = {}
@@ -709,7 +709,7 @@ class MarketFeatureService:
         codes: Sequence[str],
         observed_at: datetime,
     ) -> Mapping[str, tuple[OutcomeBar, ...]]:
-        return self.history.read_outcome_bars(_normalize_codes(codes), observed_at)
+        return self.history.read_outcome_bars(NormalizeMarketCodes(codes), observed_at)
 
     def health(self) -> JsonObject:
         return self.health_reporter.health()

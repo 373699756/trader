@@ -22,7 +22,7 @@ from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewRequestBudget
 from trader.download.domain.history_sync import HistorySyncProgressStage
-from trader.download.infra.history_download_index import HistoryDownloadTask
+from trader.download.domain.history_download import HistoryDownloadTask
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPricePartitionError, HistoryPriceWriteSession
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.infra.sqlite_publication import PublishSqliteFile

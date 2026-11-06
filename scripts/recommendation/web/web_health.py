@@ -748,8 +748,8 @@ def _regression_findings(samples: Sequence[WebSample], strategies: tuple[str, ..
         previous_status = previous.status
         current_status = current.status
         if previous_status is not None and current_status is not None:
-            before = previous_status.history_archive.error_count
-            after = current_status.history_archive.error_count
+            before = previous_status.history_health.error_count
+            after = current_status.history_health.error_count
             if before is not None and after is not None and after > before:
                 findings.append(
                     _finding(
@@ -1220,18 +1220,18 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
             ),
             "history_archive": (
                 {
-                    "state": status.history_archive.state,
-                    "snapshot_hash": status.history_archive.snapshot_hash,
-                    "data_cutoff": status.history_archive.data_cutoff,
-                    "universe_rows": status.history_archive.universe_rows,
-                    "covered_rows": status.history_archive.covered_rows,
-                    "coverage_ratio": status.history_archive.coverage_ratio,
-                    "error_count": status.history_archive.error_count,
-                    "maintenance_state": status.history_archive.maintenance_state,
-                    "maintenance_reason": status.history_archive.maintenance_reason,
-                    "maintenance_stage": status.history_archive.maintenance_stage,
-                    "maintenance_completed_units": status.history_archive.maintenance_completed_units,
-                    "maintenance_total_units": status.history_archive.maintenance_total_units,
+                    "state": status.history_health.state,
+                    "snapshot_hash": status.history_health.snapshot_hash,
+                    "data_cutoff": status.history_health.data_cutoff,
+                    "universe_rows": status.history_health.universe_rows,
+                    "covered_rows": status.history_health.covered_rows,
+                    "coverage_ratio": status.history_health.coverage_ratio,
+                    "error_count": status.history_health.error_count,
+                    "maintenance_state": status.history_health.maintenance_state,
+                    "maintenance_reason": status.history_health.maintenance_reason,
+                    "maintenance_stage": status.history_health.maintenance_stage,
+                    "maintenance_completed_units": status.history_health.maintenance_completed_units,
+                    "maintenance_total_units": status.history_health.maintenance_total_units,
                 }
                 if status is not None
                 else None

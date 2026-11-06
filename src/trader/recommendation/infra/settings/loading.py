@@ -10,24 +10,17 @@ from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 
-from trader.infra.settings.company import ParseCompanyScoringPolicy
-from trader.infra.settings.factor_validation import _parse_factor_definition, _strategy_contract_identity
-from trader.infra.settings.models import (
-    ApiSettings,
-    DeepSeekSettings,
-    FactorDefinition,
+from trader.recommendation.infra.settings.company import ParseCompanyScoringPolicy
+from trader.recommendation.infra.settings.factor_validation import ParseFactorDefinition, StrategyContractIdentity
+from trader.recommendation.infra.settings.models import (
     FusionSettings,
     HardFilterSettings,
     LongWatchGroup,
     LongWatchGroupSection,
     LongWatchItem,
     LongWatchlist,
-    MarketDataSettings,
-    PipelineSettings,
     RiskRuleSettings,
-    RuntimeSettings,
     SelectionSettings,
-    ServerSettings,
     StrategySettings,
 )
 from trader.infra.settings.parser import (
@@ -61,8 +54,7 @@ from trader.infra.settings.parser import (
     Text as _text,
 )
 from trader.infra.settings.parser import TripleNestedNumberMapping as _triple_nested_number_mapping
-from trader.infra.settings.runtime_loader import LoadRuntimeSettings
-from trader.infra.settings.strategy_validation import _validate_strategy_settings
+from trader.recommendation.infra.settings.strategy_validation import ValidateStrategySettings
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
     FeatureComponentWeightPolicy,
@@ -202,11 +194,11 @@ def LoadStrategySettings(
     long_research = _parse_long_research_policy(_mapping(raw, "long_research"))
     factor_index_raw = _mapping(raw, "factor_index")
     factor_index = {
-        str(factor_id): _parse_factor_definition(str(factor_id), definition)
+        str(factor_id): ParseFactorDefinition(str(factor_id), definition)
         for factor_id, definition in factor_index_raw.items()
     }
     settings = StrategySettings(
-        strategy_version=_strategy_contract_identity(raw),
+        strategy_version=StrategyContractIdentity(raw),
         scoring_profile=ParseScoringProfile(effective_profile),
         fusion=FusionSettings(
             version="local_score_structured_review",
@@ -249,7 +241,7 @@ def LoadStrategySettings(
         factor_contract=dict(_mapping(raw, "factor_contract")),
         factor_index=factor_index,
     )
-    _validate_strategy_settings(settings)
+    ValidateStrategySettings(settings)
     return settings
 
 
@@ -627,23 +619,6 @@ def _threshold_tuple(
 
 
 __all__ = [
-    "ApiSettings",
-    "ConfigurationError",
-    "DeepSeekSettings",
-    "FusionSettings",
-    "FactorDefinition",
-    "HardFilterSettings",
-    "LongWatchGroup",
-    "LongWatchItem",
-    "LongWatchlist",
-    "MarketDataSettings",
-    "PipelineSettings",
-    "RiskRuleSettings",
-    "RuntimeSettings",
-    "SelectionSettings",
-    "ServerSettings",
-    "StrategySettings",
     "LoadLongWatchlist",
-    "LoadRuntimeSettings",
     "LoadStrategySettings",
 ]

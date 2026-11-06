@@ -9,7 +9,7 @@ import pytest
 from tests.helpers.download.history.baostock_gateway import _Result
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySyncProgress
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.infra.baostock_gateway import BaoStockRowResult
 from trader.download.infra.baostock_sync_supplier import (
     BaoStockHistorySupplier,
@@ -44,16 +44,16 @@ def test_supplier_serializes_callers_and_rejects_another_vendor_owner(tmp_path, 
     from trader.infra.process_lock import ProcessLock, ProcessLockError
 
     supplier = BaoStockHistorySupplier(HistorySyncConfiguration(tmp_path / "history", tmp_path / "reference"))
-    active = 0
+    running = 0
     maximum = 0
     barrier = Barrier(2)
 
     def request(_command):
-        nonlocal active, maximum
-        active += 1
-        maximum = max(maximum, active)
+        nonlocal running, maximum
+        running += 1
+        maximum = max(maximum, running)
         sleep(0.02)
-        active -= 1
+        running -= 1
         return None
 
     monkeypatch.setattr(supplier, "_serial_request", request)
@@ -423,9 +423,13 @@ def test_price_failure_restarts_only_an_unhealthy_supplier_session(
     closes = 0
 
     def fail(_command, state, _attempt, _timeout_seconds):
+        from trader.download.infra.history_sync_failure import BuildHistoryFailureEvidence
+
+        reason = "supplier_query_session_failed" if restart_session else "qfq_daily_query_failed"
         response = supplier_module._Response(
-            failure_reason="supplier_query_session_failed" if restart_session else "qfq_daily_query_failed",
+            failure_reason=reason,
             restart_session=restart_session,
+            failure_evidence=BuildHistoryFailureEvidence(RuntimeError(reason)),
         )
         return supplier_module._AttemptResult(response, state, response.failure_reason)
 

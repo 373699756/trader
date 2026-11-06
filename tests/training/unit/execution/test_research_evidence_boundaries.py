@@ -155,7 +155,7 @@ def test_cli_rejects_invalid_boundaries_before_evidence_io(tmp_path, monkeypatch
         argv = ["--h1-runtime-dir", str(tmp_path / "input"), "--artifact-dir", str(tmp_path / "input" / "artifacts")]
     elif case == "holdout_overlap":
         command = "research-terminal-holdout"
-        argv = ["--parent-artifact-dir", str(tmp_path / "input"), "--output-dir", str(tmp_path / "input")]
+        argv = ["--parent-artifact-dir", str(tmp_path / "input"), "--evidence-dir", str(tmp_path / "terminal-inputs"), "--output-dir", str(tmp_path / "input")]
     else:
         command = "research-data-qualification"
         argv += ["--code", "private-input"] if case == "bad_code" else ["--timeout-seconds", "nan"]
@@ -169,7 +169,7 @@ def test_cli_rejects_invalid_boundaries_before_evidence_io(tmp_path, monkeypatch
 def test_report_write_failure_returns_bounded_stdout_without_retry(tmp_path, monkeypatch, capsys):
     from trader.training.entrypoints import research_evidence_projection
 
-    monkeypatch.setattr(bootstrap, "ExecuteResearchEvidence", lambda _c: object())
+    monkeypatch.setattr(bootstrap, "ExecuteResearchEvidence", lambda _c, **_options: object())
     monkeypatch.setattr(
         research_evidence_projection, "ProjectEvidenceResult", lambda *_a, **_kw: ({"status": "qualified"}, 0)
     )

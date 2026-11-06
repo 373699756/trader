@@ -1,7 +1,8 @@
 from __future__ import annotations
 from datetime import datetime, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
-from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, PipelineStageSnapshot, PipelineStageStatus, RecommendationPipelineStatus, SourceHealth, SourceHealthState, StageState
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, PipelineStageKey, PipelineStageSnapshot, PipelineStageStatus, RecommendationPipelineStatus, SourceHealth, SourceHealthState, StageState
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.freeze_identity import FreezeItem, FreezeQuote, ScoredFreeze
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
@@ -12,7 +13,7 @@ NOW = datetime(2026, 8, 11, 14, 40, tzinfo=SHANGHAI)
 
 
 def pipeline() -> RecommendationPipelineStatus:
-    keys = (
+    keys: tuple[PipelineStageKey, ...] = (
         "local_data",
         "static_filter",
         "dynamic_market",
@@ -35,7 +36,7 @@ def freeze(
     strategy: Strategy = Strategy.TOMORROW,
     *,
     sequence: int = 1,
-    stage: str = "local",
+    stage: Literal["local", "hybrid"] = "local",
     parent_version: str | None = None,
     score: float = 88.0,
 ) -> ScoredFreeze:

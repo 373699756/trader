@@ -55,7 +55,7 @@ def test_healthy_requests_reuse_process_and_transport_but_timeout_replaces_worke
     assert {process.pid for process in multiprocessing.active_children()} == before
 
 
-def test_capacity_wait_uses_request_deadline_and_stop_reaps_active_worker(tmp_path):
+def test_capacity_wait_uses_request_deadline_and_stop_reaps_running_worker(tmp_path):
     before = {process.pid for process in multiprocessing.active_children()}
     marker = tmp_path / "entered"
     executor = IsolatedHttpExecutor(worker_count=1, transport_factory=_BlockedTransport)

@@ -31,11 +31,11 @@ from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
 from trader.recommendation.infra.market_data.gateway_runtime import (
-    _before_deadline,
-    _cache_error_code,
-    _elapsed,
-    _SourceFetch,
-    _strip_source,
+    IsBeforeDeadline,
+    ClassifyMarketCacheError,
+    ElapsedMilliseconds,
+    MarketSourceFetch,
+    StripSourcePrefix,
 )
 from trader.recommendation.infra.market_data.provider_ports import (
     FullMarketFetcher,
@@ -153,7 +153,7 @@ class MarketSourceCoordinator:
         force: bool,
         deadline: datetime | None,
         cancelled: Callable[[], bool] | None = None,
-    ) -> tuple[_SourceFetch, ...]:
+    ) -> tuple[MarketSourceFetch, ...]:
         cancellation = {"tencent_market": CancellationEvent(cancelled), "sina": CancellationEvent(cancelled)}
         fetchers = {
             "tencent_market": self._full_market_fetcher("tencent_market", deadline, cancellation["tencent_market"]),
@@ -165,20 +165,20 @@ class MarketSourceCoordinator:
     def _fetch_primary_then_backup(
         self,
         context: _MarketRouteContext,
-    ) -> tuple[_SourceFetch, ...]:
+    ) -> tuple[MarketSourceFetch, ...]:
         primary_deadline = self._wall_clock() + timedelta(seconds=self._primary_timeout_seconds)
         if context.deadline is not None:
             primary_deadline = min(primary_deadline, context.deadline)
         primary = self._route_source("tencent_market", context, deadline=primary_deadline)
         if primary.status == "success":
-            return (primary, _SourceFetch("sina", "skipped", error="backup_not_needed", skipped=True))
+            return (primary, MarketSourceFetch("sina", "skipped", error="backup_not_needed", skipped=True))
         if self._remaining_seconds(context.deadline) == 0.0 or context.cancellation["sina"].is_set():
-            return (primary, _SourceFetch("sina", "skipped", error="deadline", skipped=True))
+            return (primary, MarketSourceFetch("sina", "skipped", error="deadline", skipped=True))
         return (primary, self._route_source("sina", context))
 
     def _route_source(
         self, source: str, context: _MarketRouteContext, *, deadline: datetime | None = None
-    ) -> _SourceFetch:
+    ) -> MarketSourceFetch:
         deadline = deadline or context.deadline
         if self._source_lanes is None:
             return self._market_source_result(source, context, deadline)
@@ -190,19 +190,19 @@ class MarketSourceCoordinator:
             if not future.cancel():
                 wait((future,))
             self._telemetry.record_deadline(source)
-            return _SourceFetch(source, "failed", error="deadline")
+            return MarketSourceFetch(source, "failed", error="deadline")
         except SourceRequestSupersededError:
             self._telemetry.record_superseded(source)
-            return _SourceFetch(source, "skipped", error="superseded", skipped=True)
+            return MarketSourceFetch(source, "skipped", error="superseded", skipped=True)
         except Exception as exc:
-            return _SourceFetch(source, "failed", error=_cache_error_code(exc))
+            return MarketSourceFetch(source, "failed", error=ClassifyMarketCacheError(exc))
 
     def _submit_market_source(
         self,
         source: str,
         context: _MarketRouteContext,
         deadline: datetime | None,
-    ) -> Future[_SourceFetch]:
+    ) -> Future[MarketSourceFetch]:
         assert self._source_lanes is not None
         request = {"universe": "ashare", "fields": ["realtime_quote"]}
         identity = self.lane_identity(
@@ -248,7 +248,7 @@ class MarketSourceCoordinator:
         source: str,
         context: _MarketRouteContext,
         deadline: datetime | None,
-    ) -> _SourceFetch:
+    ) -> MarketSourceFetch:
         started = self._monotonic()
         try:
             observations = self.fetch_source_observations(
@@ -266,22 +266,22 @@ class MarketSourceCoordinator:
                 )
             )
         except MarketDataNoDataError as exc:
-            return _SourceFetch(
+            return MarketSourceFetch(
                 source,
                 "no_data",
-                error=_strip_source(source, str(exc)),
-                duration_ms=_elapsed(started, self._monotonic()),
+                error=StripSourcePrefix(source, str(exc)),
+                duration_ms=ElapsedMilliseconds(started, self._monotonic()),
             )
         except Exception as exc:
-            error = _strip_source(source, str(exc))
-            return _SourceFetch(
+            error = StripSourcePrefix(source, str(exc))
+            return MarketSourceFetch(
                 source,
                 "skipped" if error == "circuit_open" else "failed",
                 error=error,
                 skipped=error == "circuit_open",
-                duration_ms=_elapsed(started, self._monotonic()),
+                duration_ms=ElapsedMilliseconds(started, self._monotonic()),
             )
-        return _SourceFetch(source, "success", observations, duration_ms=_elapsed(started, self._monotonic()))
+        return MarketSourceFetch(source, "success", observations, duration_ms=ElapsedMilliseconds(started, self._monotonic()))
 
     def fetch_source_observations(
         self,
@@ -292,7 +292,7 @@ class MarketSourceCoordinator:
         if request.cancellation is not None and request.cancellation.is_set():
             raise MarketDataFailedError(source, "cancelled")
         self._telemetry.record_planned(source)
-        if not _before_deadline(self._wall_clock(), request.deadline):
+        if not IsBeforeDeadline(self._wall_clock(), request.deadline):
             if request.cancellation is None or not request.cancellation.is_set():
                 self._telemetry.record_deadline(source)
             raise MarketDataFailedError(source, "late")
@@ -322,10 +322,10 @@ class MarketSourceCoordinator:
             if (
                 self._cache is not None
                 and not request.bypass_cache
-                and _before_deadline(self._wall_clock(), request.deadline)
+                and IsBeforeDeadline(self._wall_clock(), request.deadline)
                 and (request.cancellation is None or not request.cancellation.is_set())
             ):
-                self._cache.put_negative(identity, error_code=_cache_error_code(exc))
+                self._cache.put_negative(identity, error_code=ClassifyMarketCacheError(exc))
             raise
 
     def _load_source_observations(
@@ -340,7 +340,7 @@ class MarketSourceCoordinator:
         observations = tuple(ObservationFromQuote(quote, source=source, observed_at=completed_at) for quote in quotes)
         self._telemetry.record_local_latency(
             "normalization",
-            _elapsed(normalization_started, self._monotonic()),
+            ElapsedMilliseconds(normalization_started, self._monotonic()),
         )
         if request.deadline is not None and completed_at >= request.deadline:
             if request.cancellation is None or not request.cancellation.is_set():
@@ -423,7 +423,7 @@ class MarketSourceCoordinator:
                 )
                 self._telemetry.record_local_latency(
                     "normalization",
-                    _elapsed(normalization_started, self._monotonic()),
+                    ElapsedMilliseconds(normalization_started, self._monotonic()),
                 )
                 cache.put(
                     identity,
@@ -438,8 +438,8 @@ class MarketSourceCoordinator:
             try:
                 cache.coalesce(identity, load)
             except Exception as exc:
-                if _before_deadline(self._wall_clock(), request.deadline):
-                    cache.put_negative(identity, error_code=_cache_error_code(exc))
+                if IsBeforeDeadline(self._wall_clock(), request.deadline):
+                    cache.put_negative(identity, error_code=ClassifyMarketCacheError(exc))
                 return
 
         if self._source_lanes is not None:

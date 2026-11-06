@@ -45,6 +45,7 @@ from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.price_columns import PRICE_COLUMNS
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_publication import PublishSqliteFile, SqlitePublicationError, VerifySqliteFile
 
 RepackProgress = Callable[[int, int, str], None]
 FaultInjector = Callable[[str], None]
@@ -191,6 +192,7 @@ class HistoryPartitionRepackCoordinator:
             target_control = layout.target_root / _CONTROL_NAME
             shutil.copyfile(layout.source_root / _CONTROL_NAME, target_control)
             _fsync_file(target_control)
+            PublishSqliteFile(target_control, sqlite_policy=self._sqlite_policy)
             _fsync_directory(layout.target_root)
             # Physical compaction changes no logical snapshot or reference identity.
             state = replace(state, target_snapshot_hash=context.current_snapshot.content_hash, completed=True)
@@ -316,6 +318,10 @@ def RequireHistoryRepackIdle(history_root: Path) -> None:
 
 def _verify_candidate(root: Path, state: HistoryPartitionRepackBuildState, *, target: bool, sqlite_policy: SqliteIoPolicy) -> None:
     _require_clean_source(root)
+    try:
+        VerifySqliteFile(root / _CONTROL_NAME, sqlite_policy=sqlite_policy)
+    except SqlitePublicationError as exc:
+        raise HistoryPartitionRepackError("history repack control publication is invalid") from exc
     reference_base = Path(state.source_root)
     _require_stable_snapshot(root, state.source_snapshot_hash, reference_base, sqlite_policy=sqlite_policy)
     current_snapshot = (
@@ -326,8 +332,12 @@ def _verify_candidate(root: Path, state: HistoryPartitionRepackBuildState, *, ta
     _clear_empty_partition_sidecars(
         {root / _CONTROL_NAME, *(root / item.relative_path for item in current_snapshot.partitions)}
     )
-    expected = {_CONTROL_NAME, *(item.relative_path for item in state.partitions)}
-    if not root.is_dir() or root.is_symlink() or {path.name for path in root.iterdir()} != expected:
+    databases = {_CONTROL_NAME, *(item.relative_path for item in state.partitions)}
+    expected = databases | {f"{name}.sha256" for name in databases}
+    if (
+        not root.is_dir() or root.is_symlink() or {path.name for path in root.iterdir()} != expected
+        or any(path.is_symlink() or not path.is_file() for path in root.iterdir())
+    ):
         raise HistoryPartitionRepackError("repack directory has missing or unexpected files")
     for item in state.partitions:
         path = root / item.relative_path
@@ -365,7 +375,7 @@ def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequire
         current_snapshot,
         files,
         CanonicalDigest(files),
-        sum(item.size_bytes for item in files if item.relative_path != _CONTROL_NAME),
+        sum(item.size_bytes for item in files if item.relative_path != _CONTROL_NAME and item.relative_path.endswith(".sqlite3")),
         len(universe.securities),
         len(calendar.open_dates),
     )
@@ -374,7 +384,8 @@ def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequire
 def _source_files(
     root: Path, current_snapshot: HistorySnapshot
 ) -> tuple[HistoryPartitionRepackSourceFileIdentity, ...]:
-    paths = tuple(sorted({_CONTROL_NAME, *(item.relative_path for item in current_snapshot.partitions)}))
+    databases = {_CONTROL_NAME, *(item.relative_path for item in current_snapshot.partitions)}
+    paths = tuple(sorted(databases | {f"{name}.sha256" for name in databases}))
     values: list[HistoryPartitionRepackSourceFileIdentity] = []
     for relative in paths:
         path = root / relative
@@ -481,8 +492,10 @@ def _repack_partition(
             raise HistoryPartitionRepackError("history repack target foreign key check failed")
     target_sha = _sha256_file(pending)
     target_reference = reference
+    PublishSqliteFile(pending, sqlite_policy=sqlite_policy)
     HistoryPricePartition.verify(pending, target_reference, sqlite_policy=sqlite_policy)
     os.replace(pending, destination)
+    os.replace(Path(f"{pending}.sha256"), Path(f"{destination}.sha256"))
     _fsync_directory(destination.parent)
     return HistoryPartitionRepackPartitionEvidence(
         reference.relative_path,

@@ -239,7 +239,7 @@ def test_long_close_refresh_is_independent_of_short_model_preparation(applicatio
         assert long_runtime.stop(wait=True, deadline=ShutdownDeadline.start(3.0)).completed
 
 
-def test_saturday_after_close_runs_one_preview_without_freeze_settlement_or_archive() -> None:
+def test_saturday_after_close_runs_one_preview_without_freeze_settlement_or_evidence() -> None:
     data = PreviewData()
     clock = FixedClock(STARTED_AT.replace(hour=16))
     scope = RecommendationRunScope(

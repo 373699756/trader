@@ -24,7 +24,8 @@ from trader.recommendation.domain.scoring.company import (
     CompanyAdjustments,
     ScoreLedgerInput,
 )
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 
 from scripts.core.reporting import emit_report
 

@@ -21,7 +21,7 @@ from trader.infra.http_contracts import HttpResponse, HttpTimeout
 from trader.infra.http_transport import RequestsHttpTransport
 
 
-def test_failed_pdf_probe_compares_deadlines_without_active_writes(tmp_path, monkeypatch):
+def test_failed_pdf_probe_compares_deadlines_without_running_writes(tmp_path, monkeypatch):
     index = fixtures._index(tmp_path)
     index.prepare_publication(("600001",), fixtures.NOW)
     partition = index.partitions(("sse",), fixtures.NOW)[0]
@@ -62,7 +62,7 @@ def test_probe_without_failed_documents_does_not_contact_source(tmp_path, monkey
 
 
 @pytest.mark.parametrize("password_required", (False, True))
-def test_encrypted_probe_checks_identical_pdf_and_password_requirement_without_active_writes(tmp_path, monkeypatch, password_required):
+def test_encrypted_probe_checks_identical_pdf_and_password_requirement_without_running_writes(tmp_path, monkeypatch, password_required):
     index = fixtures._index(tmp_path)
     item = replace(fixtures._disclosure(title="收到立案告知书"), url="https://static.cninfo.com.cn/finalpage/fixture.PDF")
     index.commit_page(index.partitions(("sse",), fixtures.NOW)[0], DisclosurePage((item,), 1, False), fixtures.NOW)

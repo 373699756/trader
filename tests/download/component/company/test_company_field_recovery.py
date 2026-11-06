@@ -6,7 +6,7 @@ import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
 
-from tests.helpers.shared.configuration import CompanyDocumentFilesFixture, SQLiteCompanyFactsIndexFixture
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyFactsIndexFixture
 
 
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition

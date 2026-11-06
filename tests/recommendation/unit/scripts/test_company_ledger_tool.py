@@ -14,7 +14,7 @@ import pytest
 
 from scripts.core.catalog import SelectionArguments
 from scripts.recommendation.web import company_ledger_browser
-from tests.helpers.shared.configuration import CompanyScoringPolicyFixture
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture
 from tests.helpers.shared.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
 
 

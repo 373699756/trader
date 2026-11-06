@@ -2,7 +2,14 @@
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
+import json
+import re
 from pathlib import Path
+from trader.infra.regular_file import ReadRegularFile
+
+from trader.infra.settings.parser import RequireExactKeys, RequireMapping, Text
+from trader.training.application.terminal_holdout_execution import TerminalHoldoutAlreadyOpenedError
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 from trader.training.application.capability_completion import CapabilityPublication
 from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
@@ -16,6 +23,7 @@ from trader.training.infra.research.h1_point_in_time_capability import H1Capabil
 from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionEvidenceFiles
 from trader.training.infra.research.historical_industry_evidence import AuditPublishedHistoricalIndustryFacts
 from trader.training.infra.research.historical_label_evidence import HistoricalLabelEvidenceIndex
+from trader.training.infra.research.point_in_time_dataset_evidence import DecodePointInTimeDateSplit
 from trader.training.infra.research.tomorrow_point_in_time_holdout_reports import (
     TomorrowPointInTimeHoldoutReportIndex,
 )
@@ -46,34 +54,52 @@ class CapabilityEvidencePublisher:
 
 
 class TerminalHoldoutParentsReader:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, opening_path: Path) -> None:
         self._root = root
+        self._opening_path = opening_path
 
     def read(self) -> tuple[TerminalHoldoutParentState, TerminalHoldoutParentState]:
-        capability = H1CapabilityEvidenceIndex(self._root).verify()
-        labels = HistoricalLabelEvidenceIndex(self._root).verify()
-        index = H1ResearchCompletionEvidenceFiles(self._root).verify()
-        if index.capability_hash != capability.content_hash:
-            raise ValueError("Terminal holdout parent capability hash does not match terminal index")
-        if index.label_batch_hash != labels.content_hash:
-            raise ValueError("Terminal holdout parent label hash does not match terminal index")
-        residual_hash = next(value for strategy, value in index.residual_terminal_hashes if strategy == "d25")
-        states = tuple(
-            TerminalHoldoutParentState(
-                candidate_status=status.state,
-                parent_hash=capability.content_hash,
-                candidate_hash=index.daily_close_selection_hash if status.strategy == "tomorrow" else residual_hash,
-                failure_reasons=tuple((*status.failure_reasons, *capability.probe_failures)),
+        if self._opening_path.exists() or self._opening_path.is_symlink():
+            raise TerminalHoldoutAlreadyOpenedError("terminal_holdout_already_opened")
+        path = self._root / "terminal_parents.json"
+        encoded = ReadRegularFile(path, maximum_bytes=256 * 1024)
+        raw: object = json.loads(encoded)
+        if not isinstance(raw, dict):
+            raise ValueError("terminal parent metadata must be an object")
+        RequireExactKeys(raw, {"tomorrow", "d25", "content_hash"}, "terminal_parents")
+        identity = raw.pop("content_hash")
+        if not isinstance(identity, str) or CanonicalResearchHash(raw) != identity:
+            raise ValueError("terminal parent metadata digest mismatch")
+        states = []
+        for strategy in ("tomorrow", "d25"):
+            item = RequireMapping(raw, strategy)
+            RequireExactKeys(
+                item, {"candidate_status", "parent_hash", "candidate_hash", "failure_reasons", "date_split"},
+                "terminal_parent",
             )
-            for status in capability.strategies
-        )
-        tomorrow = next(
-            state for state, status in zip(states, capability.strategies, strict=True) if status.strategy == "tomorrow"
-        )
-        d25 = next(
-            state for state, status in zip(states, capability.strategies, strict=True) if status.strategy == "d25"
-        )
-        return tomorrow, d25
+            status = Text(item, "candidate_status")
+            reasons = item["failure_reasons"]
+            if (
+                status not in {"historical_candidate_ready", "historical_daily_close_proxy_validated",
+                               "historical_data_insufficient", "historical_rejected"}
+                or not isinstance(reasons, list) or len(reasons) > 64
+                or any(not isinstance(value, str) or re.fullmatch(r"[a-z0-9_]{1,96}", value) is None for value in reasons)
+                or (status in {"historical_candidate_ready", "historical_daily_close_proxy_validated"}) == bool(reasons)
+            ):
+                raise ValueError("terminal parent prerequisite state is invalid")
+            parent_hash, candidate_hash = Text(item, "parent_hash"), Text(item, "candidate_hash")
+            if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in (parent_hash, candidate_hash)):
+                raise ValueError("terminal parent identities are invalid")
+            split = (
+                None if item["date_split"] is None
+                else DecodePointInTimeDateSplit(dict(RequireMapping(item, "date_split")))
+            )
+            if status in {"historical_candidate_ready", "historical_daily_close_proxy_validated"} and split is None:
+                raise ValueError("ready terminal parent requires its sealed date split")
+            states.append(TerminalHoldoutParentState(
+                status, parent_hash, candidate_hash, tuple(reasons), date_split=split,
+            ))
+        return states[0], states[1]
 
 
 class TerminalConclusionPublisher:

@@ -57,7 +57,7 @@ class TestModelCapabilities:
 # ---------------------------------------------------------------------------
 
 
-class TestModelCapabilitiesRegistry:
+class TestModelCapabilitiesIndex:
     def test_known_supplier_models(self) -> None:
         assert Capabilities("deepseek-v4-flash").requires_reasoning_roundtrip is False
         assert Capabilities("deepseek-v4-pro").requires_reasoning_roundtrip is True

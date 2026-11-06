@@ -94,7 +94,7 @@ def test_json_codec_round_trips_manifest_feature_dataset_and_validation_report()
         ),
         feature_names=("qfq_return_1d",),
         feature_units=("ratio",),
-        source_archive_hash="a" * 64,
+        source_history_hash="a" * 64,
         filter_spec_hash="b" * 64,
     )
     report = ValidationReport(

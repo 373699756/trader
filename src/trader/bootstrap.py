@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
-import logging
 import time
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from contextlib import ExitStack, suppress
 from dataclasses import replace
 from datetime import datetime
@@ -21,6 +20,7 @@ from flask import Flask
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.application.download_history import DownloadHistoryUseCase
+from trader.download.application.history_ports import HistorySyncDependencies
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
 from trader.download.application.progress_message import ProgressField, ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -28,7 +28,7 @@ from trader.download.application.sync_data import SyncData, SyncResult, SyncTarg
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain import company_evidence, company_events
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort, HistoryTwoStageSupplier
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowConfiguration
 from trader.download.entrypoints import company_evidence_progress
@@ -61,7 +61,9 @@ from trader.download.infra.exchange_security_universe import LoadCurrentAShareUn
 from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
-from trader.download.infra.history_sync_gateway import HistorySyncGateway
+from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_download_index import HistoryDownloadIndex
+from trader.download.infra.history_sync_io import HistorySyncIo, HistorySyncResources
 from trader.download.domain.price_review import PriceReviewBudget
 from trader.download.infra.tencent_request_budget import TencentRequestBudget
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
@@ -80,21 +82,21 @@ from trader.infra.cache import BoundedLruCache
 from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.clock.utc import UtcNow as _utc_now
-from trader.infra.http_contracts import HttpAttempt, HttpParameter, HttpRequest, HttpResponse, HttpTransport
-from trader.infra.http_transport import RequestsHttpTransport
+from trader.infra.http_contracts import HttpAttempt, HttpRequest, HttpResponse, HttpTransport
+from trader.infra.http_transport import HttpRequestScope, RequestsHttpTransport
 from trader.infra.initialization import InitializeIfAvailable as _initialize_if_available
 from trader.infra.isolated_call import RunIsolatedCall
 from trader.infra.isolated_http import IsolatedHttpExecutor
 from trader.infra.process_lock import ProcessLock
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.serialization.canonical import ContentHash
-from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.disk_probe import DiskProbe
 from trader.infra.disk_runtime import ConfigureDisk
 from trader.infra.disk_types import DiskMedium
-from trader.infra.workers import BoundedExecutor
+from trader.infra.workers import BoundedExecutor, InjectedExecutor, WorkerScope
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
@@ -123,7 +125,7 @@ from trader.recommendation.application.runtime.recommendation_round import Recom
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
-from trader.recommendation.domain.market.eligibility import SelectQuotePopulation
+from trader.recommendation.application.quote_population import ReadQuotePopulation
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
@@ -175,7 +177,7 @@ from trader.training.infra.training_settings import LoadRuntimeTrainingSettings,
 from trader.web import CreateApp
 
 if TYPE_CHECKING:
-    from trader.training.entrypoints.research_evidence import ResearchEvidenceCommand, ResearchEvidenceResult
+    from trader.training.application.research_commands import ResearchEvidenceCommand, ResearchEvidenceResult
 
 
 def OpenExternalHttp(
@@ -187,22 +189,6 @@ def OpenExternalHttp(
     return RequestsHttpTransport(
         observe=observe, inspect_response=inspect_response, identity_content_encodings=identity_content_encodings,
     )
-
-
-def FetchExternalHttp(
-    url: str,
-    *,
-    timeout: float,
-    params: Mapping[str, HttpParameter] | None = None,
-    headers: Mapping[str, str] | None = None,
-) -> HttpResponse:
-    with OpenExternalHttp() as transport:
-        return transport.get(url, timeout=timeout, params=params, headers=headers, max_response_bytes=32 * 1024 * 1024)
-
-
-def _post_external_http(url: str, *, headers: Mapping[str, str], json: object, timeout: float) -> HttpResponse:
-    with OpenExternalHttp() as transport:
-        return transport.post(url, headers=headers, json=json, timeout=timeout)
 
 
 def BuildIndustrySource(
@@ -324,6 +310,7 @@ def ExecuteSync(
             ),
             cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
             failure_configuration=failure_configuration,
+            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
         ),
         cancelled=cancel_requested,
     ).execute(target)
@@ -343,6 +330,7 @@ def _sync_company_evidence(
     *,
     cancel_requested: Callable[[], bool] | None = None, sqlite_policy: SqliteIoPolicy,
     failure_configuration: DownloadFailureConfiguration,
+    shutdown_timeout_seconds: float,
 ) -> company_evidence.CompanyEvidenceSyncResult:
     with ExitStack() as resources:
         resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
@@ -401,14 +389,9 @@ def _sync_company_evidence(
         workers = BoundedExecutor(
             worker_count=configuration.document_workers, queue_capacity=0, thread_name_prefix="company-document"
         )
-        workers.start()
-        resources.callback(workers.stop, wait=True, cancel_futures=True)
         text_workers = BoundedExecutor(worker_count=configuration.text_workers, queue_capacity=0, thread_name_prefix="company-text")
         ocr_workers = BoundedExecutor(worker_count=configuration.ocr_workers, queue_capacity=0, thread_name_prefix="company-ocr")
-        text_workers.start()
-        resources.callback(text_workers.stop, wait=True, cancel_futures=True)
-        ocr_workers.start()
-        resources.callback(ocr_workers.stop, wait=True, cancel_futures=True)
+        resources.enter_context(WorkerScope((workers, text_workers, ocr_workers), timeout_seconds=shutdown_timeout_seconds))
         index = SQLiteCompanyEvidenceIndex(
             paths.company_collection,
             raw_files=raw_files,
@@ -462,12 +445,10 @@ def _prepare_reference(
     if cancel_requested():
         raise RuntimeError("reference_preparation_cancelled")
     universe = LoadCurrentAShareUniverse(
-        partial(FetchSseListings, get=FetchExternalHttp), partial(FetchSzseListings, get=FetchExternalHttp), 15.0
+        partial(FetchSseListings, get=HttpRequestScope(OpenExternalHttp).get), partial(FetchSzseListings, get=HttpRequestScope(OpenExternalHttp).get), 15.0
     )
     workers = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="risk-st-check")
-    workers.start()
-    resources = ExitStack()
-    try:
+    with ExitStack() as resources, WorkerScope((workers,), timeout_seconds=shutdown_timeout_seconds):
         sessions = TencentSessionPool(tuple(resources.enter_context(OpenExternalHttp()) for _ in range(8)))
         publication = SQLiteReferenceIndex(reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy)
         source = HistoryStNameSource(
@@ -493,15 +474,6 @@ def _prepare_reference(
             cancel_requested,
         )
         return PrepareReference(universe, observed_at, dependencies, report=report)
-    finally:
-        stopped = workers.stop(
-            wait=True,
-            cancel_futures=True,
-            deadline=ShutdownDeadline.start(shutdown_timeout_seconds),
-        )
-        resources.close()
-        if not stopped.completed:
-            raise RuntimeError("history ST worker shutdown exceeded configured deadline")
 
 
 def ExecuteSelectedTraining(
@@ -513,7 +485,7 @@ def ExecuteSelectedTraining(
 ) -> int:
     """Compose offline training resources, also used by isolated diagnostics."""
     from trader.training.entrypoints.commands import ConfigureTrainingResources
-    from trader.infra.settings.training import LoadTrainingResourceSettings
+    from trader.training.infra.resource_settings import LoadTrainingResourceSettings
     from trader.training.infra.cpu_admission import AvailableTrainingCpus, TrainingCpuBudget
 
     scoring_profiles = ParseProfileSelection(",".join(scoring_profiles))
@@ -524,6 +496,7 @@ def ExecuteSelectedTraining(
 
     from trader.training.application.selected_training import TrainingLocations
     from trader.training.entrypoints.selected_training import RunSelectedTraining
+    from trader.training.infra.selected_training import SelectedTrainingAdapter
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
 
     if history_root is not None or training_root is not None:
@@ -534,13 +507,7 @@ def ExecuteSelectedTraining(
         training_root / "samples" if training_root else runtime.data_paths.samples,
     )
     memory_budget = TrainingMemoryBudget(FittingMemoryCapacity(resources.memory))
-    logging.getLogger(__name__).warning(
-        "训练资源配置 | 策略 %s | 拟合内存 %s字节 | 扫描批次 %s行 | 每档队列 %s批",
-        "hdd" if medium == "unknown" else medium,
-        memory_budget.capacity_bytes,
-        resources.fanout.batch_rows,
-        resources.fanout.queue_batches,
-    )
+    sqlite_policy = BuildSqlitePolicy(runtime)
     return RunSelectedTraining(
         runtime,
         scoring_profiles,
@@ -551,7 +518,8 @@ def ExecuteSelectedTraining(
         cpu_budget=cpu_budget,
         fanout_settings=resources.fanout,
         sample_settings=resources.samples,
-        paths=paths, sqlite_policy=BuildSqlitePolicy(runtime),
+        paths=paths, sqlite_policy=sqlite_policy,
+        prepare_training=partial(SelectedTrainingAdapter, sqlite_policy=sqlite_policy),
         memory_capacity_bytes=memory_budget.capacity_bytes,
     )
 
@@ -571,6 +539,36 @@ def ExecuteHistoryAutomationRemoval() -> tuple[Path, ...]:
     )
     plan = automation.PlanHistoryAutomationRemoval(platform, Path.home(), os.getuid() if os.name != "nt" else 0)
     return automation.RemoveHistoryAutomation(plan, run=automation.RunHistoryRemovalCommand)
+
+
+def ExecuteHistorySync(
+    configuration: HistorySyncConfiguration,
+    supplier: HistoryTwoStageSupplier,
+    *,
+    sqlite_policy: SqliteIoPolicy,
+    resources: HistorySyncResources | None = None,
+    clock: Callable[[], datetime] | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
+    progress: HistorySyncProgressPort | None = None,
+) -> HistoryMaintenanceStatus:
+    if resources is None:
+        resources = HistorySyncResources()
+    observed_at = ShanghaiClock(clock or _utc_now).now()
+    cancel = cancel_requested or (lambda: False)
+    control = HistoryControlIndex(
+        configuration.history_root / "catalog.sqlite3",
+        reference_path=configuration.reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy,
+    )
+    tasks = HistoryDownloadIndex(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
+    io = HistorySyncIo(
+        configuration, supplier, cancel, progress,
+        resources.worker_pool or InjectedExecutor(None), resources.writer_pool or InjectedExecutor(None),
+        control, tasks, resources, sqlite_policy=sqlite_policy,
+    )
+    return DownloadHistoryUseCase(
+        configuration, supplier, observed_at, cancel, progress,
+        HistorySyncDependencies(io, control, tasks, io), resources.repair_only, resources.price_review_budget,
+    ).execute()
 
 
 def ExecuteHistoryDownload(
@@ -598,11 +596,8 @@ def ExecuteHistoryDownload(
     history_pool = BoundedExecutor(
         worker_count=configuration.history_workers, queue_capacity=0, thread_name_prefix="history-download"
     )
-    history_pool.start()
     history_writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="history-writer")
-    http_resources = ExitStack()
-    try:
-        history_writer.start()
+    with ExitStack() as http_resources, WorkerScope((history_pool, history_writer), timeout_seconds=shutdown_timeout_seconds):
         with BaoStockHistorySupplier(configuration, progress=progress, cancel_requested=cancel_requested,
                                      vendor_lock=ProcessLock(configuration.reference_root / "baostock.lock", label="BaoStock"),
                                      price_policy=BaoStockRequestPolicy(
@@ -622,10 +617,7 @@ def ExecuteHistoryDownload(
                     retries=qfq_configuration.source_retries,
                 ),
             )
-            return DownloadHistoryUseCase(HistorySyncGateway(
-                history_pool, history_writer, disk_kind, repair_only, sqlite_policy=sqlite_policy,
-                price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(configuration.price_review),
-            )).execute(
+            return ExecuteHistorySync(
                 configuration,
                 HistorySupplierRouter(
                     baseline,
@@ -640,14 +632,12 @@ def ExecuteHistoryDownload(
                 clock=clock,
                 progress=progress,
                 cancel_requested=cancel_requested,
+                sqlite_policy=sqlite_policy,
+                resources=HistorySyncResources(
+                    history_pool, history_writer, disk_kind=disk_kind, repair_only=repair_only,
+                    price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(configuration.price_review),
+                ),
             )
-    finally:
-        deadline = ShutdownDeadline.start(shutdown_timeout_seconds)
-        writer_stopped = history_writer.stop(wait=True, cancel_futures=True, deadline=deadline)
-        stopped = history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
-        http_resources.close()
-        if not stopped.completed or not writer_stopped.completed:
-            raise RuntimeError("history worker shutdown exceeded configured deadline")
 
 
 def ExecuteQfqDownload(
@@ -757,9 +747,10 @@ def ExecuteQfqDownload(
             StopQfqWorkers(QfqShutdown(qfq_writer, qfq_pool, report, failures), shutdown_timeout_seconds, started)
 
 
-def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, sqlite_policy: SqliteIoPolicy) -> ResearchEvidenceResult:
+def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Path, sqlite_policy: SqliteIoPolicy) -> ResearchEvidenceResult:
     """Lazily assemble one offline research use case; never build the server runtime."""
-    from trader.training.entrypoints import research_evidence
+    from trader.training.application import research_commands
+    from trader.training.infra.research_settings import LoadResearchPlan
     from trader.training.infra.research.command_evidence import (
         CapabilityEvidencePublisher,
         HistoricalIndustryEvidenceReader,
@@ -767,22 +758,25 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, sqlite_policy: 
         TerminalHoldoutParentsReader,
     )
 
-    if isinstance(command, research_evidence.SelectionCommand):
+    if isinstance(command, research_commands.SelectionCommand):
         from trader.training.application.selection_execution import ExecuteSelectionResearch
         from trader.training.infra.research.selection_evidence import SelectionEvidenceReader
 
-        return ExecuteSelectionResearch(SelectionEvidenceReader(command.evidence_dir))
-    if isinstance(command, research_evidence.IndustryAuditCommand):
+        return ExecuteSelectionResearch(SelectionEvidenceReader(command.evidence_dir), LoadResearchPlan(config_dir))
+    if isinstance(command, research_commands.IndustryAuditCommand):
         from trader.training.application.historical_industry_audit import AuditHistoricalIndustry
 
         return AuditHistoricalIndustry(HistoricalIndustryEvidenceReader(command.history_root, sqlite_policy=sqlite_policy)).execute(
             required_sample_codes=command.required_sample_codes, tushare_access_points=command.tushare_access_points
         )
-    if isinstance(command, research_evidence.HoldoutCommand):
+    if isinstance(command, research_commands.HoldoutCommand):
         from trader.training.application.terminal_holdout_execution import ExecuteTerminalHoldout
+        from trader.training.infra.research.terminal_holdout_inputs import TerminalHoldoutInputFiles
 
         return ExecuteTerminalHoldout(
-            TerminalHoldoutParentsReader(command.parent_artifact_dir), TerminalConclusionPublisher(command.output_dir)
+            TerminalHoldoutParentsReader(command.parent_artifact_dir, command.parent_artifact_dir / "terminal_opened.json"),
+            TerminalHoldoutInputFiles(command.evidence_dir, command.parent_artifact_dir / "terminal_opened.json"),
+            TerminalConclusionPublisher(command.output_dir), LoadResearchPlan(config_dir),
         ).execute()
 
     from trader.download.infra.history_source_capability import FreeHistorySourceCapability
@@ -794,7 +788,7 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, sqlite_policy: 
         probe = FreeSourceH1CapabilityProbe(
             FreeHistorySourceCapability(transport), timeout_seconds=command.timeout_seconds
         )
-        if isinstance(command, research_evidence.CapabilityCommand):
+        if isinstance(command, research_commands.CapabilityCommand):
             from trader.training.application.capability_completion import CompleteCapabilityEvidence
             from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 
@@ -803,7 +797,7 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, sqlite_policy: 
                 SQLiteH1PointInTimeSnapshot(command.runtime_dir, sqlite_policy=sqlite_policy),
                 CapabilityEvidencePublisher(command.artifact_dir),
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
-        if isinstance(command, research_evidence.QualificationCommand):
+        if isinstance(command, research_commands.QualificationCommand):
             from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
             from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
 
@@ -928,9 +922,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             seen_capacity=6000,
         )
     )
-    review_client = DeepSeekHttpClient(post=_post_external_http)
+    review_client = DeepSeekHttpClient(post=HttpRequestScope(OpenExternalHttp).post)
     reviewer = DeepSeekReviewer.from_context(context, persistence.budget, review_client, review_cache)
-    policy = policy_settings._recommendation_policy(context.strategy)
+    policy = policy_settings.BuildRecommendationPolicy(context.strategy)
     model_publications = PublishedTrainingState(
         paths.history,
         paths.models,
@@ -1293,13 +1287,9 @@ def _build_market_data(
             worker_pool=workers.quote_pool,
         )
 
-        def official_quote_codes() -> tuple[str, ...]:
-            return SelectQuotePopulation(
-                references.static_reference().reference,
-                eligibility.exclusions(now()),
-                references.historical_st_eligibility(),
-            )
-
+        quote_population = ReadQuotePopulation(
+            references.static_reference, eligibility.exclusions, references.historical_st_eligibility, now,
+        )
         tencent_market_client = TencentClient(
             session_factory=open_recommendation_http,
             timeout_seconds=settings.market_data.candidate_timeout_seconds,
@@ -1308,7 +1298,7 @@ def _build_market_data(
             worker_pool=workers.market_quote_pool,
         )
         tencent_market = TencentFullMarketSource(
-            tencent_market_client, official_quote_codes, request_attempts=settings.market_data.full_market_quote_attempts
+            tencent_market_client, quote_population.execute, request_attempts=settings.market_data.full_market_quote_attempts
         )
         gateway = MarketDataGateway(
             tencent_market,
@@ -1499,8 +1489,8 @@ def _build_publication(
             ),
             config_version=context.effective_config_version,
             watchlist_version=context.watchlist.watchlist_version,
-            items=policy_settings._long_item_definitions(context.watchlist),
-            groups=policy_settings._long_group_definitions(context.watchlist),
+            items=policy_settings.BuildLongItemDefinitions(context.watchlist),
+            groups=policy_settings.BuildLongGroupDefinitions(context.watchlist),
         ),
         freeze_queries,
         freeze_events,

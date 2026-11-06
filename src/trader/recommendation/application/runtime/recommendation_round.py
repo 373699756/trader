@@ -66,7 +66,7 @@ class RecommendationRounds:
         self._profiles: list[str] = []
         self._prepare_publication: dict[str, Callable[[], None]] = {}
         self._sequence = 0
-        self._active: RoundAdmission | None = None
+        self._current_admission: RoundAdmission | None = None
         self._deferred_tasks: dict[PipelineTask, ScheduledPipelineTask] = {}
         self._pending: set[str] = set()
         self._collecting: set[str] = set()
@@ -89,7 +89,7 @@ class RecommendationRounds:
 
     def register(self, profile: str, prepare_publication: Callable[[], None] | None = None) -> None:
         with self._condition:
-            if self._active is not None or profile in self._profiles:
+            if self._current_admission is not None or profile in self._profiles:
                 raise ValueError("recommendation round profile registration is invalid")
             self._profiles.append(profile)
             if prepare_publication is not None:
@@ -101,9 +101,9 @@ class RecommendationRounds:
                 return None
             self._expire_locked()
             self._close_finished_locked()
-            if self._active is not None:
+            if self._current_admission is not None:
                 self._remember_deferred_tasks_locked(tasks)
-            if self._active is None:
+            if self._current_admission is None:
                 if not tasks:
                     return None
                 for prepare in self._prepare_publication.values():
@@ -111,7 +111,7 @@ class RecommendationRounds:
                 tasks = self._take_deferred_tasks_locked(tasks)
                 self._sequence += 1
                 started = self._monotonic()
-                self._active = RoundAdmission(
+                self._current_admission = RoundAdmission(
                     self._sequence,
                     tasks,
                     started,
@@ -134,10 +134,10 @@ class RecommendationRounds:
             self._collecting.add(profile)
             self._preparing.add(profile)
             self._running.add(profile)
-            return self._active
+            return self._current_admission
 
     def _remember_deferred_tasks_locked(self, tasks: tuple[ScheduledPipelineTask, ...]) -> None:
-        admission = self._active
+        admission = self._current_admission
         if admission is None:
             return
         for task in tasks:
@@ -168,17 +168,17 @@ class RecommendationRounds:
 
     def observe(self, sequence: int) -> AbstractContextManager[None]:
         with self._condition:
-            if self._active is None or self._active.sequence != sequence:
+            if self._current_admission is None or self._current_admission.sequence != sequence:
                 raise ValueError("round_observation_identity_missing")
             return self._observation.bind()
 
     def status(self) -> RecommendationRoundStatus | None:
         with self._condition:
             # Observing status must not expire work or mutate scheduler state.
-            return self._snapshot_locked() if self._active is not None else self._last_status
+            return self._snapshot_locked() if self._current_admission is not None else self._last_status
 
     def _snapshot_locked(self, *, finished: bool = False) -> RecommendationRoundStatus:
-        admission = self._active
+        admission = self._current_admission
         if admission is None:
             raise RuntimeError("round_status_identity_missing")
         now = self._monotonic()
@@ -194,25 +194,25 @@ class RecommendationRounds:
         with self._condition:
             if sequence is None:
                 return None
-            if self._active is None or self._active.sequence != sequence or self._inputs is None:
+            if self._current_admission is None or self._current_admission.sequence != sequence or self._inputs is None:
                 raise ValueError("round_input_identity_missing")
             return ProfileRoundInputs(profile, self._inputs)
 
     def cancelled(self, sequence: int) -> bool:
         with self._condition:
             self._expire_locked()
-            return self._active is None or self._active.sequence != sequence or self._cancelled
+            return self._current_admission is None or self._current_admission.sequence != sequence or self._cancelled
 
     def remaining_seconds(self, sequence: int) -> float:
         with self._condition:
-            if self._active is None or self._active.sequence != sequence or self._cancelled:
+            if self._current_admission is None or self._current_admission.sequence != sequence or self._cancelled:
                 return 0.0
-            return max(0.0, self._active.deadline_monotonic - self._monotonic())
+            return max(0.0, self._current_admission.deadline_monotonic - self._monotonic())
 
     def defer(self, sequence: int) -> bool:
         """Cancel a pending-input attempt so every admitted preview can retry."""
         with self._condition:
-            if self._active is None or self._active.sequence != sequence:
+            if self._current_admission is None or self._current_admission.sequence != sequence:
                 return False
             if self._inputs_pending:
                 return True
@@ -224,7 +224,7 @@ class RecommendationRounds:
 
     def inputs_pending(self, sequence: int) -> bool:
         with self._condition:
-            return self._active is not None and self._active.sequence == sequence and self._inputs_pending
+            return self._current_admission is not None and self._current_admission.sequence == sequence and self._inputs_pending
 
     def prepared(self, profile: str, sequence: int) -> bool:
         return self._wait_for_collection(profile, sequence, self._preparing)
@@ -299,7 +299,7 @@ class RecommendationRounds:
 
     def finish(self, profile: str, sequence: int) -> None:
         with self._condition:
-            if self._active is None or self._active.sequence != sequence:
+            if self._current_admission is None or self._current_admission.sequence != sequence:
                 return
             if self._remaining_locked() <= 0.0:
                 self._cancel_locked("timeout")
@@ -314,8 +314,8 @@ class RecommendationRounds:
     def release_unqueued(self, profile: str, sequence: int) -> None:
         """Return an unqueued admission's tasks before releasing its round slot."""
         with self._condition:
-            if self._active is not None and self._active.sequence == sequence and profile in self._running:
-                for task in self._active.tasks:
+            if self._current_admission is not None and self._current_admission.sequence == sequence and profile in self._running:
+                for task in self._current_admission.tasks:
                     self._retain_deferred_task_locked(task)
             self.finish(profile, sequence)
 
@@ -334,15 +334,15 @@ class RecommendationRounds:
 
     def _matches_locked(self, sequence: int) -> bool:
         self._expire_locked()
-        return self._active is not None and self._active.sequence == sequence and not self._cancelled
+        return self._current_admission is not None and self._current_admission.sequence == sequence and not self._cancelled
 
     def _remaining_locked(self) -> float:
-        if self._active is None:
+        if self._current_admission is None:
             return 0.0
-        return max(0.0, self._active.deadline_monotonic - self._monotonic())
+        return max(0.0, self._current_admission.deadline_monotonic - self._monotonic())
 
     def _expire_locked(self) -> None:
-        if self._active is not None and self._remaining_locked() <= 0.0:
+        if self._current_admission is not None and self._remaining_locked() <= 0.0:
             self._cancel_locked("timeout")
             self._close_finished_locked()
 
@@ -356,9 +356,9 @@ class RecommendationRounds:
 
     def _close_finished_locked(self) -> None:
         if not self._pending and not self._running and self._observation.snapshot().worker_inflight == 0:
-            if self._active is not None:
+            if self._current_admission is not None:
                 self._last_status = self._snapshot_locked(finished=True)
-            self._active = None
+            self._current_admission = None
             self._inputs = None
             self._collecting.clear()
             self._preparing.clear()

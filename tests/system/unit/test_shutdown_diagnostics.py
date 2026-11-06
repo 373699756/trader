@@ -113,6 +113,34 @@ def test_completed_shutdown_keeps_the_original_report_without_diagnostic_steps()
     assert server_entrypoint._stop_system(System(), deadline) is expected
 
 
+def test_shutdown_requires_the_shared_deadline_and_a_real_resource_report():
+    deadline = ShutdownDeadline.start(1)
+    received = []
+
+    class InvalidSystem:
+        def stop(self, *, deadline):
+            received.append(deadline)
+            return None
+
+    report = server_entrypoint._stop_system(InvalidSystem(), deadline)
+    assert received == [deadline]
+    assert not report.completed
+    assert report.steps[0].detail == "system shutdown failed:TypeError"
+
+
+def test_shutdown_rejects_a_consumer_without_the_deadline_contract():
+    called = []
+
+    class InvalidSystem:
+        def stop(self):
+            called.append(True)
+
+    report = server_entrypoint._stop_system(InvalidSystem(), ShutdownDeadline.start(1))
+    assert called == []
+    assert not report.completed
+    assert report.steps[0].detail == "system shutdown failed:TypeError"
+
+
 def test_pending_shutdown_steps_share_the_deadline_and_release_after_errors():
     deadline = ShutdownDeadline.start(1)
     entered, release = threading.Event(), threading.Event()

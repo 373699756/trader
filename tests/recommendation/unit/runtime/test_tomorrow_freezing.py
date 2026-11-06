@@ -16,7 +16,7 @@ import pytest
 
 from tests.helpers.recommendation.publication.freeze_identity import freeze
 
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 

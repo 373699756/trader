@@ -13,7 +13,8 @@ import pytest
 from scripts.core.contracts import DiagnosticResult
 from scripts.core.projections import BuildReport
 from scripts.download.history.history_publication_audit import AuditHistoryPublication
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture, SqlitePolicyFixture
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.download.history_fixtures import RunHistoryFixture
 from tests.helpers.download.history.infra.history_sync import FakeSupplier, NOW
 from trader.download.infra.history_control_index import HistoryControlIndex

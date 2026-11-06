@@ -79,16 +79,16 @@ class HistoricalBarBacktestService:
         self._minimum_split_days = minimum_split_days
 
     def execute(self, spec: HistoricalScreeningSpec) -> HistoricalBarBacktestReport:
-        archive = self._evidence.inspect(spec.research_identity)
-        archive_manifest = self._evidence.manifest(spec)
+        history_status = self._evidence.inspect(spec.research_identity)
+        history_manifest = self._evidence.manifest(spec)
         days = tuple(self._evidence.screening_days(spec))
         training = _metrics(tuple(item for item in days if spec.training_start <= item.trade_date <= spec.training_end))
         validation = _metrics(
             tuple(item for item in days if spec.validation_start <= item.trade_date <= spec.validation_end)
         )
-        coverage_ratio = archive.completed_codes / archive.universe_count if archive.universe_count else 0.0
+        coverage_ratio = history_status.completed_codes / history_status.universe_count if history_status.universe_count else 0.0
         ready = (
-            archive.spec_hash == spec.content_hash
+            history_status.spec_hash == spec.content_hash
             and coverage_ratio >= 0.95
             and training.trade_dates >= self._minimum_split_days
             and validation.trade_dates >= self._minimum_split_days
@@ -98,8 +98,8 @@ class HistoricalBarBacktestService:
             research_identity=spec.research_identity,
             research_spec_hash=spec.content_hash,
             status="screened" if ready else "insufficient_coverage",
-            archive=archive,
-            archive_manifest=archive_manifest,
+            archive=history_status,
+            archive_manifest=history_manifest,
             training=training,
             validation=validation,
             screening_version="ohlcv_cross_section",

@@ -14,7 +14,8 @@ from pathlib import Path
 
 from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
 from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
-from trader.infra.settings import LoadStrategySettings, RuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
+from trader.infra.settings import RuntimeSettings
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.infra.persistence.freeze_trace_index import SQLiteFreezeTraceIndex
 from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
@@ -117,12 +118,9 @@ def RunResearchCommand(
 ) -> int:
     profile = options.profile or LoadStrategySettings(runtime.strategy_config_path).scoring_profile
     research_root = runtime.data_paths.research(profile)
-    if command.startswith("research-"):
-        from trader.recommendation.infra.scoring.cost_settings import LoadEvaluationCostScenarios
-        from trader.training.infra.research_settings import LoadResearchSettings
+    from trader.training.infra.research_settings import LoadResearchPlan
 
-        LoadResearchSettings(config_path.parent)
-        LoadEvaluationCostScenarios(config_path.parent)
+    plan = LoadResearchPlan(config_path.parent)
     if command == "research-status":
         from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
         from trader.training.domain.evaluation.selection_experiment import SELECTION_RESEARCH_IDENTITY
@@ -152,6 +150,13 @@ def RunResearchCommand(
             json.dumps(
                 {
                     "schema_version": "research_readiness",
+                    "research_plan": {
+                        "content_hash": plan.content_hash,
+                        "configuration_hash": plan.configuration_hash,
+                        "cost_reference_hash": plan.cost_reference_hash,
+                        "settings": asdict(plan.settings),
+                        "cost_scenarios": [asdict(scenario) for scenario in plan.cost_scenarios],
+                    },
                     "production_authority": False,
                     "validation_mode": "historical_only",
                     "blockers": ["target_selection_external_validation_required"],

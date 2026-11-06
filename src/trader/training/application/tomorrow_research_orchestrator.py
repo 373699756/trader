@@ -21,7 +21,7 @@ from trader.training.domain.evaluation.research_identity import CanonicalResearc
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
-class TomorrowResearchOrchestrationRepository(Protocol):
+class TomorrowResearchOrchestrationPort(Protocol):
     def load_graph(self) -> TomorrowResearchEvidenceGraph: ...
 
     def load_handoff(self, stage: TomorrowResearchStage) -> TomorrowResearchStageHandoff | None: ...
@@ -100,17 +100,17 @@ class TomorrowResearchAdvanceResult:
 class TomorrowResearchOrchestrator:
     def __init__(
         self,
-        repository: TomorrowResearchOrchestrationRepository,
+        evidence: TomorrowResearchOrchestrationPort,
         prerequisite: TomorrowResearchPrerequisiteInspector,
         progress: TomorrowResearchProgressPort | None = None,
     ) -> None:
-        self._repository = repository
+        self._evidence = evidence
         self._prerequisite = prerequisite
         self._progress = progress
 
     def advance(self) -> TomorrowResearchAdvanceResult:
         prerequisite = self._prerequisite.inspect()
-        state = _AdvanceState(self._repository.load_graph(), prerequisite, [])
+        state = _AdvanceState(self._evidence.load_graph(), prerequisite, [])
         while True:
             stage = NextResearchStage(state.graph)
             if stage is None:
@@ -119,7 +119,7 @@ class TomorrowResearchOrchestrator:
             if prerequisite.status == "blocked":
                 self._update(stage, "blocked")
                 return self._result("blocked", state, stage, prerequisite.blockers)
-            handoff = self._repository.load_handoff(stage)
+            handoff = self._evidence.load_handoff(stage)
             if handoff is None:
                 self._update(stage, "blocked")
                 blocked_status: Literal["advanced", "blocked"] = "advanced" if state.completed else "blocked"
@@ -129,7 +129,7 @@ class TomorrowResearchOrchestrator:
                 self._update(stage, "blocked")
                 return self._result("artifact_conflict", state, stage, (f"{stage}_parent_graph_mismatch",))
             self._update(stage, "sealing")
-            state.graph = self._repository.commit(state.graph.content_hash, handoff)
+            state.graph = self._evidence.commit(state.graph.content_hash, handoff)
             state.completed.append(stage)
             self._update(stage, "completed")
             if handoff.outcome in {"historical_data_insufficient", "historical_rejected"}:
@@ -164,7 +164,7 @@ class TomorrowResearchOrchestrator:
 
 __all__ = [
     "TomorrowResearchAdvanceResult",
-    "TomorrowResearchOrchestrationRepository",
+    "TomorrowResearchOrchestrationPort",
     "TomorrowResearchOrchestrator",
     "TomorrowResearchPrerequisiteStatus",
     "TomorrowResearchPrerequisiteInspector",

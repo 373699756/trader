@@ -14,12 +14,8 @@ import numpy as np
 
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.profile.v5.settings import TcnComputeDtype
-from trader.training.infra.sample_index import (
-    SQLiteTrainingSampleIndex,
-    TrainingIndustryCounts,
-    TrainingSampleMatrix,
-    TrainingSplitName,
-)
+from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingIndustryCounts, TrainingSampleMatrix
+from trader.training.domain.sample_coverage import TrainingSplitName
 
 if TYPE_CHECKING:
     import torch

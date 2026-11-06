@@ -15,7 +15,8 @@ from scripts.download.company.commands import BuildCommands
 from scripts.infra.database.database_layout_comparison import _annual_history_configuration
 from scripts.infra.database.database_workspace import DatabaseProbeLocation
 from scripts.training.samples import training_read_comparison, training_samples
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture, SqlitePolicyFixture
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.infra.settings import LoadRuntimeSettings
 
 

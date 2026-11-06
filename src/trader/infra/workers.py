@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import threading
 import time
+import math
 from collections.abc import Callable
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
 from functools import partial
 from typing import ParamSpec, Protocol, TypeVar, cast
+from types import TracebackType
 
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.infra.sqlite_observation import CurrentSqliteObservation
@@ -46,6 +48,65 @@ class ManagedWorkerExecutor(WorkerExecutor, Protocol):
 
 class WorkerResourceRejectedError(RuntimeError):
     """An injected execution resource cannot accept new work."""
+
+
+class WorkerScope:
+    """Start injected workers and stop them under one bounded exit deadline.
+
+    Construction remains in the composition root. A scope owns only workers it
+    successfully started, including cleanup after a later start fails.
+    """
+
+    def __init__(self, workers: tuple[ManagedWorkerExecutor, ...], *, timeout_seconds: float) -> None:
+        if not workers or type(timeout_seconds) not in {int, float} or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("worker_scope_options_invalid")
+        if len({id(worker) for worker in workers}) != len(workers):
+            raise ValueError("worker_scope_duplicate_owner")
+        self._workers = workers
+        self._timeout_seconds = timeout_seconds
+        self._started: list[ManagedWorkerExecutor] = []
+        self._entered = False
+        self._closed = False
+
+    def __enter__(self) -> WorkerScope:
+        if self._entered or self._closed:
+            raise RuntimeError("worker_scope_already_entered")
+        self._entered = True
+        try:
+            for worker in self._workers:
+                if not worker.start():
+                    raise WorkerResourceRejectedError("worker_scope_requires_unstarted_workers")
+                self._started.append(worker)
+        except BaseException:
+            self.close()
+            raise
+        return self
+
+    def __exit__(
+        self, exception_type: type[BaseException] | None, exception: BaseException | None, traceback: TracebackType | None
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        deadline = ShutdownDeadline.start(self._timeout_seconds)
+        failure: BaseException | None = None
+        incomplete: list[str] = []
+        for worker in reversed(self._started):
+            try:
+                report = worker.stop(wait=True, cancel_futures=True, deadline=deadline)
+                if not report.completed:
+                    incomplete.append(report.name)
+            except BaseException as exc:
+                # Cleanup every owned worker before re-raising the first failure.
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise failure
+        if incomplete:
+            raise RuntimeError("worker_scope_shutdown_incomplete:" + ",".join(incomplete))
 
 
 class WorkerFutureExecutor(Executor):
@@ -395,6 +456,7 @@ __all__ = [
     "ManagedWorkerExecutor",
     "WorkerExecutor",
     "WorkerResourceRejectedError",
+    "WorkerScope",
     "WorkerFutureExecutor",
     "InjectedExecutor",
     "SubmitOrReject",

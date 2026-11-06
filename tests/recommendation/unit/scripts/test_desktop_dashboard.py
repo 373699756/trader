@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from runpy import run_path
 from itertools import count
 import json
 import os
@@ -12,8 +11,7 @@ import time
 
 import pytest
 
-_RUNNER = Path(__file__).resolve().parents[4] / "tests/helpers/recommendation/desktop_dashboard.py"
-_cleanup_browser_profile = run_path(str(_RUNNER))["_cleanup_browser_profile"]
+from scripts.recommendation.web.browser_session import _cleanup_browser_profile
 
 
 class _FlakyProfile:
@@ -39,7 +37,6 @@ def test_chrome_profile_cleanup_retries_a_bounded_filesystem_race() -> None:
 @pytest.mark.parametrize("state", ("ready", "not_ready", "wrong_view", "long_quote_missing", "codes_mismatch"))
 def test_live_probe_checks_every_enabled_view_and_rejects_unready_empty_results(monkeypatch, state, engine):
     from scripts.recommendation.web import browser_refresh
-    from tests.helpers.recommendation import desktop_dashboard as run_desktop_dashboard
 
     monkeypatch.setenv("MOZ_CRASHREPORTER_DISABLE", "user-value")
     class Chrome:
@@ -47,7 +44,7 @@ def test_live_probe_checks_every_enabled_view_and_rejects_unready_empty_results(
         profile = "v1"
         strategy = "tomorrow"
 
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
             pass
 
         def set_viewport(self, *args):
@@ -76,7 +73,7 @@ def test_live_probe_checks_every_enabled_view_and_rejects_unready_empty_results(
             Chrome.closed = True
 
     clock = count()
-    monkeypatch.setattr(run_desktop_dashboard, "_ChromeSession", Chrome)
+    monkeypatch.setattr(browser_refresh, "ChromeSession", Chrome)
     monkeypatch.setattr(browser_refresh, "_FirefoxBrowser", Chrome)
     monkeypatch.setattr(browser_refresh.shutil, "which", lambda name: name if (
         name == "google-chrome" and engine == "chrome" or name in {"firefox", "geckodriver"} and engine == "firefox"

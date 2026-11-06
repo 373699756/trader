@@ -25,7 +25,8 @@ from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_price_repair import HistoryPriceRepair
 from trader.download.infra.history_reference_index import ReadBoundHistoryReference
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.bootstrap import ExecuteHistorySync
+from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.process_lock import ProcessLock
@@ -97,7 +98,12 @@ def _audit(root: Path, work_root: Path | None = None, *, sqlite_policy: SqliteIo
             supplier = _AuditSupplier(context, windows, baseline)
             resumed = (configuration.history_root / "catalog.sqlite3").exists()
             if not resumed:
-                exported = RunHistorySync(configuration, supplier, clock=lambda: observed, sqlite_policy=sqlite_policy)
+                exported = ExecuteHistorySync(
+                    configuration,
+                    supplier,
+                    clock=lambda: observed,
+                    sqlite_policy=sqlite_policy,
+                )
                 if exported.state != "completed":
                     raise RuntimeError(exported.reason or "audit_export_failed")
             before = HistoryControlIndex(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_published_state()
@@ -111,7 +117,13 @@ def _audit(root: Path, work_root: Path | None = None, *, sqlite_policy: SqliteIo
                 else:
                     connection.run("UPDATE download_tasks SET tencent_done=1")
             supplier.seed = False
-            repaired = RunHistorySync(configuration, supplier, clock=lambda: observed, repair_only=True, sqlite_policy=sqlite_policy)
+            repaired = ExecuteHistorySync(
+                configuration,
+                supplier,
+                clock=lambda: observed,
+                sqlite_policy=sqlite_policy,
+                resources=HistorySyncResources(repair_only=True),
+            )
             old = HistoryDirectPrices(configuration.history_root, before.snapshot.sequence, before.snapshot, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=sqlite_policy)
             unchanged = all(tuple(ProjectHistoryCell(cell) for cell in old.read(window.code, tuple(cell.trade_date for cell in window.cells))) == window.cells for window in windows)
             remaining = HistoryDownloadIndex(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy).gaps_by_code()

@@ -8,7 +8,7 @@ from trader.recommendation.application.pipeline.policy import RecommendationPoli
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import FusionPolicy
-from tests.helpers.shared.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
 
 
 def test_selection_policy_default_competition_limits_are_isolated_and_immutable() -> None:

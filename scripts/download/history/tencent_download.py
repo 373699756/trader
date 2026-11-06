@@ -20,7 +20,8 @@ from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
-from trader.bootstrap import FetchExternalHttp, OpenExternalHttp
+from trader.bootstrap import OpenExternalHttp
+from trader.infra.http_transport import HttpRequestScope
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
@@ -218,8 +219,8 @@ def Main() -> int:
                 session_pool.borrow,
                 partial(
                     LoadCurrentAShareUniverse,
-                    partial(FetchSseListings, get=FetchExternalHttp),
-                    partial(FetchSzseListings, get=FetchExternalHttp),
+                    partial(FetchSseListings, get=HttpRequestScope(OpenExternalHttp).get),
+                    partial(FetchSzseListings, get=HttpRequestScope(OpenExternalHttp).get),
                     args.timeout_seconds,
                 ),
                 lambda: False,

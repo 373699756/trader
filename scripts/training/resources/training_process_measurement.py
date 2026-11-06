@@ -12,17 +12,7 @@ from stat import S_ISDIR
 from threading import Event, Thread
 from types import TracebackType
 
-
-@dataclass(frozen=True)
-class TrainingThreadSnapshot:
-    native_id: int
-    birth_ticks: int
-    state: str
-    comm: str
-    user_cpu_ticks: int
-    system_cpu_ticks: int
-    minor_page_faults: int
-    major_page_faults: int
+from trader.infra.linux_process import LinuxTaskStat, ParseLinuxTaskStat
 
 
 @dataclass(frozen=True)
@@ -50,7 +40,7 @@ class TrainingProcessSnapshot:
     swap_bytes: int | None
     reported_threads: int
     io: TrainingProcessIoSnapshot
-    threads: tuple[TrainingThreadSnapshot, ...]
+    threads: tuple[LinuxTaskStat, ...]
     vanished_thread_ids: tuple[int, ...]
     clock_ticks_per_second: int
     started_monotonic: float
@@ -173,7 +163,7 @@ def ProjectTrainingProcessSnapshot(snapshot: TrainingProcessSnapshot) -> dict[st
     }
 
 
-def _project_target_thread(thread: TrainingThreadSnapshot, clock_ticks: int) -> dict[str, object]:
+def _project_target_thread(thread: LinuxTaskStat, clock_ticks: int) -> dict[str, object]:
     return {
         "native_id": thread.native_id,
         "birth_ticks": thread.birth_ticks,
@@ -195,36 +185,15 @@ def _read_proc_bytes(path: Path) -> bytes:
     return contents
 
 
-def _read_target_stat(root: Path) -> TrainingThreadSnapshot | None:
+def _read_target_stat(root: Path) -> LinuxTaskStat | None:
     try:
-        return _parse_target_stat(_read_proc_bytes(root / "stat"))
+        contents = _read_proc_bytes(root / "stat")
     except (FileNotFoundError, ProcessLookupError):
         return None
-
-
-def _parse_target_stat(contents: bytes) -> TrainingThreadSnapshot:
     try:
-        prefix, separator, tail = contents.rpartition(b")")
-        pid_text, opening, comm = prefix.partition(b"(")
-        fields = tail.split()
-        if not separator or not opening or len(fields) < 20 or len(fields[0]) != 1:
-            raise ValueError("stat_shape_invalid")
-        values = tuple(int(value) for value in (pid_text, fields[7], fields[9], fields[11], fields[12], fields[19]))
-        if values[0] <= 0 or any(value < 0 for value in values[1:]):
-            raise ValueError("stat_counter_invalid")
-        state = fields[0].decode("ascii")
-    except (IndexError, UnicodeError, ValueError) as exc:
+        return ParseLinuxTaskStat(contents)
+    except ValueError as exc:
         raise ValueError("training_process_snapshot_stat_invalid") from exc
-    return TrainingThreadSnapshot(
-        native_id=values[0],
-        birth_ticks=values[5],
-        state=state,
-        comm=comm.decode("utf-8", errors="replace"),
-        user_cpu_ticks=values[3],
-        system_cpu_ticks=values[4],
-        minor_page_faults=values[1],
-        major_page_faults=values[2],
-    )
 
 
 def _read_proc_fields(path: Path) -> dict[str, str]:
@@ -267,7 +236,7 @@ def _read_target_io(path: Path) -> TrainingProcessIoSnapshot:
     )
 
 
-def _read_target_threads(root: Path) -> tuple[tuple[TrainingThreadSnapshot, ...], tuple[int, ...]]:
+def _read_target_threads(root: Path) -> tuple[tuple[LinuxTaskStat, ...], tuple[int, ...]]:
     identifiers = []
     for path in root.iterdir():
         if path.name.isascii() and path.name.isdecimal():
@@ -423,7 +392,6 @@ __all__ = [
     "TrainingProcessMeasurement",
     "TrainingProcessSnapshot",
     "TrainingProcessIoSnapshot",
-    "TrainingThreadSnapshot",
     "ReadTrainingProcessSnapshot",
     "ProjectTrainingProcessSnapshot",
 ]

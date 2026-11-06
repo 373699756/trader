@@ -20,7 +20,7 @@ from trader.training.application.selected_training import SelectedTrainingRun, T
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.memory_admission import TrainingMemoryBudget
-from trader.training.infra.selected_training import SelectedTrainingRequest
+from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
 
 ROOT = Path(__file__).resolve().parents[4]
 _ENVIRONMENT = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
@@ -50,7 +50,9 @@ def test_cpu_selection_and_cancelled_scope_restore_functions_and_environment(tmp
     outcome = SelectedTrainingRun((), 0, 0)
     requests = []
 
-    def train(request, executor, *, sqlite_policy):
+    def train(operations, executor):
+        request = operations.request
+        sqlite_policy = operations.sqlite_policy
         assert executor is pool and sqlite_policy is policy
         requests.append(request)
         return outcome
@@ -74,7 +76,7 @@ def test_cpu_selection_and_cancelled_scope_restore_functions_and_environment(tmp
                 assert (current.memory, current.fanout, current.samples) == (resources.memory, resources.fanout, resources.samples)
                 assert (candidates.training_configuration.LoadTrainingResourceSettings is loader) is (cpu == "baseline")
                 request = _request(tmp_path, current)
-                assert candidates.training_entrypoint.TrainSelectedProfiles(request, pool, sqlite_policy=policy) is outcome
+                assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy), pool) is outcome
                 assert requests[-1] is not request
                 assert request.execution_options == TrainingExecutionOptions()
                 assert requests[-1].execution_options == TrainingExecutionOptions(True, True, True, True, True)
@@ -113,13 +115,14 @@ def test_only_explicit_execution_candidate_options_are_injected(tmp_path, monkey
     requests = []
     outcome = SelectedTrainingRun((), 0, 0)
 
-    def train(selected, _executor, *, sqlite_policy):
+    def train(operations, _executor):
+        selected = operations.request
         requests.append(selected)
         return outcome
 
     monkeypatch.setattr(candidates.training_entrypoint, "TrainSelectedProfiles", train)
     with ThreadPoolExecutor(max_workers=1) as pool, candidates.UseTrainingExecutionCandidate(execution, "baseline") as experiment:
-        assert candidates.training_entrypoint.TrainSelectedProfiles(request, pool, sqlite_policy=SqlitePolicyFixture()) is outcome
+        assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()), pool) is outcome
         assert requests[-1].execution_options == expected
         assert request.execution_options == TrainingExecutionOptions()
         if execution == "baseline":

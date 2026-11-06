@@ -1,7 +1,7 @@
 import hashlib
 from dataclasses import replace
 
-from tests.helpers.recommendation.publication.freeze_queries import _Repository
+from tests.helpers.recommendation.publication.freeze_queries import _FreezeRecords
 from tests.helpers.recommendation.runtime.recommendation_boundaries import _features, _runtime_policy
 from tests.helpers.recommendation.publication.tomorrow_projection import _native_input
 from tests.helpers.recommendation.publication.freeze_identity import NOW, freeze
@@ -42,7 +42,7 @@ def test_scoring_publication_get_and_sse_do_not_compute_content_hash(monkeypatch
     current = projection.local
     index = UnifiedFreezeIndex()
     assert index.publish(current, expected_version=None).accepted
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock(current.observed_at))
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock(current.observed_at))
     view = queries.current(Strategy.TOMORROW)
     patch = SerializeEvent(UnifiedFreezeEventStream().publish_committed(BuildFreezeCommitted(current)))
     assert view.freeze_version == current.version
@@ -74,11 +74,11 @@ def test_formal_projection_changes_etag_without_a_content_digest(monkeypatch):
     current = freeze()
     index = UnifiedFreezeIndex()
     assert index.publish(current, expected_version=None).accepted
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock(current.observed_at))
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock(current.observed_at))
     live = queries.current(current.strategy)
     record = CommittedFreezeRecord(FormalScoredFreeze(current), NOW.replace(hour=15, minute=0), "scheduled")
     assert index.restore_formal(record)
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(record), _Clock(record.committed_at))
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(record), _Clock(record.committed_at))
     formal = queries.current(current.strategy)
     assert formal.frozen
     assert formal.etag != live.etag

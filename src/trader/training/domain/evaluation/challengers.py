@@ -135,7 +135,7 @@ _PARAMETER_MANIFEST = ChallengerParameterManifest(
 )
 
 
-def ChallengerRegistry() -> tuple[ChallengerSpecification, ...]:
+def ListChallengers() -> tuple[ChallengerSpecification, ...]:
     """Return the fixed immutable five-variant family in manifest order."""
 
     return _CHALLENGERS
@@ -369,5 +369,5 @@ __all__ = [
     "AssessContinuousEntry",
     "AssessHeatWeakStructure",
     "BuildChallengerParameterManifest",
-    "ChallengerRegistry",
+    "ListChallengers",
 ]

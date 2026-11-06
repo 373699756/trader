@@ -57,39 +57,39 @@ def _development_handoff(
     )
 
 
-def test_repository_seals_handoff_idempotently_and_recovers_one_stage_commit(tmp_path) -> None:
-    repository = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
+def test_project_seals_handoff_idempotently_and_recovers_one_stage_commit(tmp_path) -> None:
+    index = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
     handoff = _handoff()
 
-    repository.seal_handoff(handoff)
+    index.seal_handoff(handoff)
     sealed = json.loads((tmp_path / ".handoffs" / "resource_probe.json").read_text(encoding="utf-8"))
     assert "owner" not in sealed["artifacts"][0]
-    repository.seal_handoff(handoff)
-    graph = repository.commit(repository.load_graph().content_hash, handoff)
+    index.seal_handoff(handoff)
+    graph = index.commit(index.load_graph().content_hash, handoff)
 
-    assert repository.load_graph() == graph
-    assert repository.load_handoff("resource_probe") is None
+    assert index.load_graph() == graph
+    assert index.load_handoff("resource_probe") is None
     assert len(graph.artifacts) == 1
-    assert repository.current_run_id() is not None
-    assert (tmp_path / repository.current_run_id() / ".report-checkpoint.json").is_file()
-    assert not (tmp_path / repository.current_run_id() / "report.json").exists()
+    assert index.current_run_id() is not None
+    assert (tmp_path / index.current_run_id() / ".report-checkpoint.json").is_file()
+    assert not (tmp_path / index.current_run_id() / "report.json").exists()
 
 
-def test_repository_rejects_different_content_for_the_same_handoff_identity_and_tampering(tmp_path) -> None:
-    repository = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
-    repository.seal_handoff(_handoff())
+def test_project_rejects_different_content_for_the_same_handoff_identity_and_tampering(tmp_path) -> None:
+    index = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
+    index.seal_handoff(_handoff())
     path = tmp_path / ".handoffs" / "resource_probe.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["parent_graph_hash"] = "f" * 64
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(TomorrowResearchEvidenceIndexError, match="invalid"):
-        repository.load_handoff("resource_probe")
+        index.load_handoff("resource_probe")
 
 
-def test_repository_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_path) -> None:
-    repository = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
-    repository.seal_handoff(_handoff())
+def test_project_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_path) -> None:
+    index = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
+    index.seal_handoff(_handoff())
     path = tmp_path / ".handoffs" / "resource_probe.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload.pop("content_hash")
@@ -102,11 +102,11 @@ def test_repository_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_pat
     path.write_text(ResearchJson(payload), encoding="utf-8")
 
     with pytest.raises(TomorrowResearchEvidenceIndexError, match="invalid"):
-        repository.load_handoff("resource_probe")
+        index.load_handoff("resource_probe")
 
 
 def test_single_invocation_continues_all_available_stages_and_seals_terminal_documents(tmp_path) -> None:
-    repository = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
+    index = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
     resource_probe = _handoff()
     graph = TomorrowResearchEvidenceGraph(resource_probe.artifacts)
     evidence_bytes = b"PAR1fixturePAR1"
@@ -167,10 +167,10 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
         outcome="historical_validated",
     )
     for handoff in (resource_probe, development, confirmation, proxy, point_in_time):
-        repository.seal_handoff(handoff)
-    repository.seal_evidence_partition(evidence, evidence_source)
+        index.seal_handoff(handoff)
+    index.seal_evidence_partition(evidence, evidence_source)
 
-    result = TomorrowResearchOrchestrator(repository, _ReadyPrerequisite()).advance()
+    result = TomorrowResearchOrchestrator(index, _ReadyPrerequisite()).advance()
 
     assert result.status == "advanced"
     assert result.completed_stages == (
@@ -198,8 +198,8 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
         artifacts=(TomorrowResearchEvidenceRef("resource_probe_report", "resource_probe", "5" * 64),),
         resource_probe=TomorrowResearchResourceProbe(100, 120, 2, 900, 39.0, 7.0),
     )
-    repository.seal_handoff(next_probe)
-    next_result = TomorrowResearchOrchestrator(repository, _ReadyPrerequisite()).advance()
+    index.seal_handoff(next_probe)
+    next_result = TomorrowResearchOrchestrator(index, _ReadyPrerequisite()).advance()
 
     assert next_result.run_id is not None and next_result.run_id != result.run_id
     assert next_result.completed_stages == ("resource_probe",)
@@ -207,12 +207,12 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     assert (run_root / "report.json").is_file()
 
 
-def test_repository_stops_before_committing_when_host_disk_is_below_30gb(tmp_path) -> None:
-    repository = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 29.999)
+def test_project_stops_before_committing_when_host_disk_is_below_30gb(tmp_path) -> None:
+    index = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 29.999)
     handoff = _handoff()
-    repository.seal_handoff(handoff)
+    index.seal_handoff(handoff)
 
     with pytest.raises(TomorrowResearchEvidenceIndexError, match="below 30GB"):
-        repository.commit(repository.load_graph().content_hash, handoff)
+        index.commit(index.load_graph().content_hash, handoff)
 
-    assert repository.current_run_id() is None
+    assert index.current_run_id() is None

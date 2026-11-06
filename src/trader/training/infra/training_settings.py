@@ -14,7 +14,7 @@ from trader.infra.settings.parser import (
     RequireExactKeys,
     RequireMapping,
 )
-from trader.infra.settings.training import ReadTrainingConfiguration
+from trader.training.infra.resource_settings import ReadTrainingConfiguration
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.model_fitting import (

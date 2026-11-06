@@ -4,6 +4,26 @@
 
 ## 1. 待完成任务
 
+### 工程审查全面修复（353，2026-11-07，paused，检查点待接续）
+
+用户已明确暂停工程修复，并要求立即提交、记录当前状态以便后续继续；本次保存代码检查点，不标记10项验收完成，接续清单见4.8。此前“不需要提交”的要求由本次明确提交授权替代；保留用户16个模型文件删除，不纳入本次提交。不执行活动资料清理、数据库重建、真实留出读取、生产切换、格式脚本或性能作业。
+
+### 本次重启接续（2026-11-06，已恢复，未提交）
+
+- **恢复与Git状态**：用户重启后已明确继续，本轮先收口281正确性切片；沿用重启前“不需要提交”的要求，不暂存、不commit/push。HEAD及本地同名上游引用均为`ae57e242`，分支`Afuture`；4个新文件与用户16个模型文件删除均已核对保留，不恢复、不纳入业务提交。旧PID和单调时钟起点不能跨重启复用；本轮继续不授权删除、活动重建或切换。
+- **332/P46：实现及定向验证完成，尚未交付**。本地改动为`scripts/download/company/company_query_audit.py`、`tests/download/unit/scripts/test_company_database_budget.py`及`scripts/README.md`说明。真实库存循环达到同一本地期限时抛私有预算异常，复用原failed JSON；SQLite判据及外部TimeoutError/cause保护保持。修前1项失败，修后13项通过，2文件Ruff、单源码mypy和diff通过；未访问活动公司库、放宽预算或跳过查询。
+- **281关闭时轴诊断：completed（本切片，未提交）；整阶段仍in_progress**。修改`scripts/core/catalog.py`、`scripts/training/resources/training_process_measurement.py`、`src/trader/entrypoints/server.py`及`scripts/README.md`关闭动作说明；4个新文件为`src/trader/infra/linux_process.py`、`scripts/recommendation/web/shutdown.py`、`tests/system/unit/test_shutdown_observation.py`、`tests/recommendation/unit/scripts/test_shutdown_observation.py`。仅走现有tools.py的`recommendation/web/shutdown`动作，默认只读，显式`--send-sigterm`才向经当前boot/PID/birth复核的pidfd发一次信号；CLI不接收预期boot，调用者必须重新取身份，不宣称自动拒绝跨重启旧参数。不改30秒门、不强杀目标，stat解析及训练／服务消费者已切换至唯一infra owner，旧类型／解析函数活动引用归零。
+- **281本轮补修与验证**：独立Review发现并已修复FIFO日志在检查前阻塞、处理器早于本次发信号仍可通过、测试fixture回收PID后再killpg三项；两项新增回归覆盖真实FIFO公开入口拒绝和逆序时轴，完整diff及复审无新增发现。原四文件最终69 passed（4.39秒），报告`/tmp/trader-a281-shutdown-reboot-final-20261106.xml`；7文件Ruff E/F/B/UP（忽略E501）及diff通过。5模块mypy首轮因包名重复停止，显式包根但未声明src的轮次报2项Any返回；最终按实际src布局使用`MYPYPATH=src .venv/bin/python3 -m mypy --explicit-package-bases`显式选择下述5模块，全部通过，未改源码或加豁免掩盖调用问题。实际pidfd集成使用系统`python3`（3.10.12）的受控自有子进程；当前`.venv/bin/python3`（3.11.15）缺pidfd API，明确unsupported，不自动换解释器。无FFI、硬编码syscall号或兼容转发；未运行格式或全仓门禁，不代签真实服务30秒退出。
+- **321/341文档差集：completed（本切片，未提交）**。新b统一C内部唯一性能后台、当前HDD及SSD异机保留，补shutdown参数／身份／unsupported／30秒验收边界；新c第15.5节从现行评分第12节逐项迁入收益、风险、覆盖、5/10日区块、10000次bootstrap、Holm 0.05、95%区间及至少200日一次留出，并核research.json逐叶约束及真实消费者。保留配置多项只解析、终端执行仍传空行、旧换手允许增加0.05与不得劣化不同等实现差距；未改参数、运行研究或读取留出。完整diff交叉Review及两文件`git diff --check`通过；Mermaid未改，不运行测试、格式或渲染脚本。
+- **281跨档冻结恢复验证：completed（本切片，未提交）；整阶段仍in_progress**。新增`tests/recommendation/integration/publication/test_profile_freeze_recovery.py`：四档独立SQLite，before/after_commit三位置硬退出，spawn新解释器恢复；逐头核已提交scheduled身份／原始record_bytes不变、缺头not_ready、迟到八头整体拒绝，仅缺头生成close_fallback，换配置／候选／official_close重试不覆写。SQLite策略由父进程原fixture读当前配置后以不可变类型传入，不重复导入整个测试配置模块；没有新增恢复owner或产品逻辑改动。
+- **281恢复验证证据**：相关4个旧文件66项通过；首轮6项因执行中调整spawn签名而父子代码混用，无效轮保留在`/tmp/trader-a281-profile-recovery-20261106.xml`。固定树后2通过／4项15秒夹具等待超时，报告`/tmp/trader-a281-profile-recovery-final-20261106.xml`；仅把包括解释器启动及FULL写入的夹具等待改60秒后，最终6项全部通过（62.02秒，`/tmp/trader-a281-profile-recovery-fixed-20261106.xml`），产品30秒门和SQLite预算未改。新增测试Ruff E/F/B/UP（忽略E501）、完整diff独立Review及diff检查通过。mypy首轮退出143未完成；最终以显式src包根检查新增测试，60秒后退出124，已报告未修改的`tests/helpers/recommendation/publication/freeze_identity.py:30/:47`两项既有Literal类型不符，未获得完整结果，不签类型通过，该差集沿4.6保留。本切片仅新增测试与文档，未改变产品公开类型；上述仅为真实SQLite与自有子进程的冻结owner集成证据，不代签bootstrap／真实服务／断电或HDD性能，不切换活动资料、不commit/push。
+- **资料与来源现场**：21:52只读观察原用户sync进程425416及子进程已消失、项目data写锁未见、data为空；没有最终退出回执，不能推断同步成功或清理原因。本轮未停止用户同步或启动新writer/等待器/训练。21:43有界免费来源探针仅各取1行：回购HttpTimeout；股东/合同可解码但分别缺点时/官方同案依据，正式采用和质量标志均false，未写公司事实。行业替换仍仅4.7计划，不实施切换；原C27失败及SSD异机进度保留。
+- **重启后资料准入**：本轮只读复核data仍为空，仓库所在`sda6`的ROTA=1，继续按本机HDD；仓库文件系统可用约77GiB，/tmp约7.5GiB。当前工具的进程／锁视图仅覆盖自身隔离空间，未据此宣称宿主机无writer；没有合法历史／参考／公司发布或八头模型，344/347及依赖这些输入的4.5实测暂不具备条件，不以空数据启动训练或新writer。
+- **持久证据与源码备份**：已将`trader-company-inventory-timeout-before-20261106.xml`、`trader-company-inventory-timeout-final-20261106.xml`、`trader-a281-shutdown-observation-final.xml`、`trader-company-source-contract-20261106-01.json`从/tmp复制到仓库外`/home/cp/linux/trader-checkpoints/reboot-20261106-215743/evidence/`，重启后优先读这些原件，不补造结果；同目录`worktree/`只作本轮11个代码／测试／文档文件的原字节备份，不是第二台账，不含模型或运行数据。本轮自有fixture、pytest和mypy均已结束，无待回收子树。
+- **下一步**：281诊断／本次恢复切片及321/341本批文档差集已闭合，不重复施工；P46保持已验证本地改动，本轮不重复执行其旧门禁或提交。合法资料恢复后重新核宿主机writer、锁及发布身份，再沿281真实服务退出、344/347四档八头与4.5唯一后台接续，V5仍10轮，不恢复30轮、重跑已闭合C39切片或改写SSD进度。类型／回归债务及其它恢复差集仍按4.6由原owner核查；共享工作区行业来源实现由B接续，不纳入281范围。
+
+281校验的5模块为`src/trader/infra/linux_process.py`、`src/trader/entrypoints/server.py`、`scripts/core/catalog.py`、`scripts/training/resources/training_process_measurement.py`、`scripts/recommendation/web/shutdown.py`；Ruff另加两个新测试。最终69项pytest文件为`tests/system/unit/test_shutdown_diagnostics.py`、`tests/system/unit/test_shutdown_observation.py`、`tests/recommendation/unit/scripts/test_shutdown_observation.py`、`tests/training/unit/scripts/test_training_process_measurement.py`，使用`.venv/bin/python3 -m pytest -o addopts='' --strict-markers -q`显式选择这4文件，不跑格式或无关脚本。
+
 | 原阶段 | 负责人／状态 | 还要完成什么 | 下一步与关闭条件 |
 | --- | --- | --- | --- |
 | 281 | A／in_progress | 本机真实供数及新服务采用；连续5轮新鲜交付、正常15:00冻结、30秒实际退出、完整资源与恢复验收 | 先核新历史、公司事实和八头工件，再按4.2取证；旧收盘API、fallback及局部测试不代签 |
@@ -20,7 +40,7 @@
 
 - 本机按用户确认的HDD接续；另一台SSD的样本、报告、失败和待验原样保留。旧机器的PID、空间、队列、时钟起点及`running`文件不能当作本机状态。
 - 351已闭合不兼容参考库的明确报错与重下提示。用户反馈清空data后可以正常运行；新输入仍须正常reader重新核验。开工已有16个受跟踪模型文件删除，保留用户状态，不恢复、提交或推定已有新工件。
-- 本次只精简文档，不启动同步、训练、服务、数据切换或性能作业，不改变各原任务已有授权／暂停边界。A/B/C可并行做各自正确性工作，不以某条线待验阻塞全部施工。
+- 本次恢复281正确性切片及定向门禁，不启动同步、训练、真实服务、数据切换或性能作业；资料欠缺不改写其它任务的授权边界。A/B/C可并行做各自正确性工作，不以某条线待验阻塞全部施工。
 
 ## 2. 怎样看这些文档
 
@@ -167,7 +187,7 @@ P编号是问题索引，不是新阶段，也不表示全部未实施。实际�
 3. 完成免费回购、增减持、合同来源到唯一采集→正式事实链；来源观察不当正式接入。逐项核发行人／子公司、同案、计划／实际、累计／本期、分母、币种、税口径、年度与披露／修订时点。
 4. 逐字段真实原文→规范值→隔离正式库读回，并用独立留出分别报告正确／漏提／误提／未知及适用分母。旧SSD封存原文在HDD缺失的，用合成fixture补功能只能签fixture，不重建冒充原文。既有文字/PDF/OCR优先复用，缺原件只按允许一年范围定向补必要材料。
 5. 按已有具体授权取得同步完整终态、稳定只读审计、正式消费者采用及失败恢复。HDD旧作业10:16:47仍未全量完成，全部准备／失败／切换成本计入首次8小时，不以重启单段、ETA或空队列签完成。
-6. 292按同一合法发布身份做全历史内容与必要短窗配对审计，核352后真实复权一致性及新输入；重I/O窗口与C协调。4b04145c仅修SQLite审计预算中断的明确JSON分类，稳定全库审计尚未通过，不将超时改判资料损坏或通过。
+6. 292按同一合法发布身份做全历史内容与必要短窗配对审计，核352后真实复权一致性及新输入；重I/O窗口与C协调。审计已区分SQLite中断及本地Python库存遍历的预算失败，保留其它异常因果；稳定全库审计尚未通过，不将超时改判资料损坏或通过。
 
 ### 4.4 任务C：输入、正常训练及工件交接（344、347）
 
@@ -226,6 +246,36 @@ history发布专项继续沿本节原P09/P45/P65及327/349：先补本机可比�
 - **官方全表候选**：既有`download/history/industry`工具只在显式仓库外目录保存中上协结构化公告、PDF原件、SHA、回执及原生分类／页码；最新2026H1股票代码排序全表实解析5521行／160页。该候选不写生产行业／历史；公共入口真实冷下载曾失败，独立取得原件与解析通过不冒充公共入口完整冷／热验收。2018Q3/Q4旧解析只属撤销方案的样本证据，不作为目标标准。
 - **验证**：适配器47项、授权头5项、PDF20项、官方来源／缓存／CLI36项、当前／预备／展示65项、退旧SDK39项、模型消费120项、V1合同及准入7项、原件保护43项及篡改2项、HTTP31项与localhost单跑1项分别通过；多轮有重叠，不加总。最终提交切片在HEAD隔离副本重建：适配器／授权头／HTTP83项、原件／历史候选45项、当前／预备／SDK46项、推荐消费160项、V1七项、历史复用readiness一项，以及CLI／ST先行／market诊断／Web健康定向均通过；分组Ruff及组合根等受影响源码mypy通过，独立Review无已知行业发现。SDK／router／参考组合96项通过、一个旧reference_binding校验断言失败；独立ae57e242基线复现缺失／篡改binding及旧WAL共三个相同校验断言失败，相关测试保持原样，不签该组通过。未运行格式、全仓、活动同步／训练／服务或负载性能。
 - **未完成项及原owner**：B继续最新目录与JR/T 0020—2024的完整一致性、全市场／原163缺股、2000日历史公开时点及区间封存核验；响应没有可靠披露时点或JR/T修订号，不能据名称签全部映射。A/C消费者及性能沿原职责，C按4.5本机HDD实测；缺证据保持训练未就绪。接口代码交付不关闭292其他历史内容、raw/qfq、恢复与性能欠项。
+
+### 4.8 工程审查全面修复（353）
+
+- **负责人／状态**：A协调各边界实施代理，`paused`（用户明确暂停，2026-11-07）；基线`ae57e242`及开工已有工作树。保存时B已独立提交并推送`6a8b3a97`，本批在该HEAD上保存自身剩余差集，不重写或回退B提交。
+- **交付边界**：只维护本原记录；保留评分／冻结／预算／10轮及原资料保护合同。本次按用户最新授权提交当前检查点，10项均不提前标记completed；用户16个模型删除继续留在工作树，不纳入提交。此前281关闭诊断／恢复用例、P46本地预算异常与321/341文档差集随本次工作树保存，其历史证据保留原阶段归属，不据检查点签收真实采用或性能。
+
+| 审查项 | 实施范围与完成条件 | 状态 |
+| --- | --- | --- |
+| 1 训练清理／发布保护 | 清理、正常替换及恢复统一核工作区／旧根所有权；未知对象整体保留；合法模型发布及恢复回归 | in_progress |
+| 2 进程族身份 | 唯一跨业务技术primitive供scripts和公告解析；清理前持有真实组身份，退出leader后不误杀／不漏回收后代，保留平台能力边界 | in_progress |
+| 3 真实用例分层 | history与四档训练计划、结果和状态机归application/domain，I/O归注入端口；全部入口／诊断消费者切换并删转发壳 | in_progress |
+| 4 业务合同依赖 | 特征schema由荐股domain持有，行业事实由download持有；公共infra及下载解析不依赖荐股具体实现，全部消费者切换 | in_progress |
+| 5 关闭强合同 | stop必须接受共享deadline并返回ShutdownReport；删除反射及宽泛返回兜底，切换所有真实和测试消费者 | in_progress |
+| 6 测试框架 | fixture有界清理并核结果，配置按业务有类型注入，移除三业务聚合导入及宽泛构造转发，全部消费者切换 | in_progress |
+| 7 门禁有效性 | 静态目标实际覆盖所声明合同；资源构造别名／属性及组合根反例受检；不触发未授权格式／改名脚本 | in_progress |
+| 8 研究执行合同 | 唯一不可变计划接入真实配置消费者与合法输入端口，读取收益前持久化一次开启、重复拒绝及幂等结果发布；仅隔离fixture验证，不读取真实留出 | in_progress |
+| 9 供应商失败证据 | BaoStock Ready／Response统一有界安全失败证据，登录原因链及errno跨IPC保留，不转发供应商原载荷 | in_progress |
+| 10 命名与实际边界 | 统一现有审计词表／实际消费者，修复列举禁用职责词及跨模块私有调用，原子更新导入／导出／测试且不留别名 | in_progress |
+
+- **验证**：开工只读确认当前分支／本地上游同为`ae57e242`；各切片实现完成后集中运行最小充分功能、Ruff及必要mypy，测试基础设施完成后按授权边界运行完整功能回归。运行中的测试树保持冻结，失败与未运行如实记录；真实业务／平台／性能验收不得以fixture代签。
+- **已实施、待集中验证**：1统一受管目录预检，未知文件／链接整体保护；2脚本与PDF/OCR共用`ProcessFamily`，保留POSIX leader至最终发信号后才回收；4业务配置及schema归各业务，旧路径删除；5共享deadline及真实ShutdownReport强合同；6业务typed fixture及有界清理；7静态目标完整覆盖与资源别名反例；9 Ready/Response共用四层有界脱敏失败证据；10具名类、跨模块函数及禁用自定义符号原子切换。已发布canonical摘要中的8个具名固定字段保留，许可只绑定实际声明节点，不泛化为局部／整文件豁免。
+- **资源切片门禁**：显式选择`test_process_family.py/test_fixture_resources.py/test_shutdown_diagnostics.py/test_server_entrypoint.py`，27项全部通过（5.37秒），报告`/tmp/trader-353-resource-contracts-20261106.xml`；只涉及自有进程／临时fixture，不代表Windows实机或真实服务退出已验收。root配置／研究源码Ruff首轮2项未使用导入已修，重验待统一记录。
+- **补充IO门禁（2026-11-07）**：worker/HTTP/普通文件/fixture四文件沙箱内75项通过、1项回环socket创建被沙箱EPERM拒绝；经工具授权原范围沙箱外重验76项全部通过（2.36秒），报告`/tmp/trader-353-io-lifecycle-host-20261107.xml`。5个技术源码workers/http_transport/regular_file/process_family/linux_process的mypy首轮仅O_BINARY平台stub问题，改为窄Windows协议后重验全部通过；未用忽略或缺省值掩盖平台缺能力。
+- **复核补强**：标准/V1应用层核完整唯一coverage及真实计划日期，不接受空／漏／重条目绕过拟合前门；留出核完整封存date_split、精确终端日期及普通文件FD，并给重复开启专属CLI错误码；历史current-review批次/序号/预算决策归app。66个具有实际产品／脚本消费者的私有顶层符号已公开并切消费者，另收口真实Chrome会话由脚本反向依赖测试的owner。物理重整回归发现缺当前SQLite发布凭据，已补pending/目标catalog封存、db及receipt采用、原件凭据guard与未知文件保护，仍待相关回归；不改变旧snapshot或启用性能候选。
+- **源码收口状态**：history（含current-review）及V1/V2/V3/V5真实用例、typed ports/results和消费者已迁移；旧gateway/runner/空转训练wrapper删除。标准/V1在提交双头后先记录已提交结果，完成通知／样本或scope清理失败保留ready与真实heads，另公开`post_commit_issues`；selected结果交付失败保留原结果并公开`delivery_issues`。真实Chrome会话已归脚本owner，进程族共用ProcessFamily，取消不进入HTTP就绪重试。以上最终切片仍待接续功能回归，不代表研究质量或真实资料通过。
+- **完整类型／静态证据**：全产品源码、新typed helpers及ChromeSession共734文件mypy通过；实际命令为`MYPYPATH=src .venv/bin/python3 -m mypy --explicit-package-bases src/trader`加本批11个helper/script路径。全源导入边界检查无违规、无超过1500行源码。424个受影响Python文件Ruff E/F/B/UP（忽略E501）首轮5项：E402注解、重复SupportedWeight导入、两处未使用导入及zip严格配对，均已手工修复；最终结果以本次提交前重验为准，未运行格式工具。
+- **检查点门禁**：按新HEAD`6a8b3a97`重核本次394个文件，排除16个既有模型删除；其中380个现存Python文件Ruff E/F/B/UP（忽略E501）全部通过，完整差集`git diff --check`通过。运行中的下载子集及全源只读扫描均已结束，不留本批新验证作业继续后台推进；暂停状态不等于工程验收完成。
+- **全量回归未通过／已停止**：首次2-worker完整功能回归排除performance、默认排除format_tools，约20%时观察到失败后中止，退出143且未形成XML，不计通过，也不能用旧lastfailed缓存冒充本轮明细。随后下载子集在用户暂停时结束：559 passed、1 collection error、KeyboardInterrupt，退出2；报告`/tmp/trader-353-download-first-20261107.xml`。明确未修项为`tests/download/unit/scripts/test_market_factor_compare.py:43`仍导入已删除的`_recommendation_policy`，应切当前`BuildRecommendationPolicy`并复查全部真实消费者。本次暂停后不继续改业务或重启测试。
+- **恢复顺序**：①先修上述旧私有导入及本轮全量未完整收集的失败；②集中验证新post-commit／coverage纯用例、历史current-review、workspace与repack、IPC和Chrome mock用例；③完成V1／标准头及四档selected真实隔离fixture回归（旧4个setup error的行业fixture已切当前capco身份，尚未签重跑通过）；④重验mypy/Ruff与完整功能集，继续排除performance及未授权format_tools。所有改动和失败继续沿353本记录，不开替代阶段；Windows／真实Chrome／真实服务／收益与性能欠项仍独立保留。
+
 ## 5. 已交付切片与历史证据
 
 ### 5.1 已交付索引
@@ -254,7 +304,7 @@ history发布专项继续沿本节原P09/P45/P65及327/349：先补本机可比�
 | 335 | history资格退出断点隔离、重新加入与恢复派发 |
 | 334 | 双头发布硬退出、唯一旧组恢复及新组保护 |
 | 333 | V1临时样本与标准缓存的硬退出残留恢复 |
-| 332 | 3e8d9f88公司字段结论／正式凭证／材料保护；2b03bef9证券隔离与日期／用途；9d02f782计划比例／人民币合同额；4b04145c审计预算分类。真实全字段未关闭 |
+| 332 | 3e8d9f88公司字段结论／正式凭证／材料保护；2b03bef9证券隔离与日期／用途；9d02f782计划比例／人民币合同额；4b04145c SQLite预算分类。本轮B/P46库存超时切片completed：本地专用异常复用原failed报告，外部TimeoutError及cause保留，13项定向、2文件Ruff、单源码mypy及diff通过（`/tmp/trader-company-inventory-timeout-final-20261106.xml`）。全字段／免费源／终态仍未闭合 |
 | 331 | history跨日续传与新增日合并到同一未发布序号 |
 | 330 | 首次／样本重拟合／全工件复用三负载诊断，完整性能另验 |
 | 329 | 公司按字段与证据先行的交付规划，实施沿332 |

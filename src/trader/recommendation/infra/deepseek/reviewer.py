@@ -31,16 +31,16 @@ from trader.recommendation.infra.deepseek.completion_client_contract import Deep
 from trader.recommendation.infra.deepseek.reviewer_context import ReviewerContext
 from trader.recommendation.infra.deepseek.reviewer_requests import ReviewerRequestExecutor
 from trader.recommendation.infra.deepseek.reviewer_selection import (
-    _aggregate_batch_status,
-    _annotate_review,
-    _automatic_emergency_reason,
-    _has_callable_features,
-    _in_deadline_timezone,
-    _ReservationTracker,
-    _review_priority,
-    _terminal_review,
-    _thinking_mode,
-    _unique_candidates,
+    AggregateReviewBatchStatus,
+    AnnotateReview,
+    FindAutomaticEmergencyReason,
+    HasCallableReviewFeatures,
+    ToReviewDeadlineTimezone,
+    ReviewReservationTracker,
+    CalculateReviewPriority,
+    BuildTerminalReview,
+    SelectReviewThinkingMode,
+    ValidateUniqueReviewCandidates,
 )
 from trader.recommendation.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.recommendation.infra.deepseek.schema import (
@@ -251,9 +251,9 @@ class DeepSeekReviewer:
         budget_bucket = options.get("budget_bucket")
         emergency_reason = options.get("emergency_reason", "")
         contexts = options.get("contexts")
-        now = _in_deadline_timezone(self._now(), deadline)
+        now = ToReviewDeadlineTimezone(self._now(), deadline)
         monotonic_deadline = self._monotonic() + max(0.0, (deadline - now).total_seconds())
-        unique_candidates = _unique_candidates(candidates)
+        unique_candidates = ValidateUniqueReviewCandidates(candidates)
         if strategy is Strategy.LONG:
             self._status.start(strategy, phase, 0)
             return {}
@@ -286,7 +286,7 @@ class DeepSeekReviewer:
             )
         except Exception as exc:
             error = f"internal_{exc.__class__.__name__}"
-            completed_at = _in_deadline_timezone(self._now(), deadline)
+            completed_at = ToReviewDeadlineTimezone(self._now(), deadline)
             self._budget.fail_running_batch(batch_id, completed_at=completed_at, error=error)
             self._status.record_internal_failure(error)
             raise
@@ -314,7 +314,7 @@ class DeepSeekReviewer:
             emergency_reason,
             batch_id,
             contexts,
-            _thinking_mode(self._client, self._settings.model),
+            SelectReviewThinkingMode(self._client, self._settings.model),
             self._settings.model,
             options["monotonic_deadline"],
         )
@@ -330,12 +330,12 @@ class DeepSeekReviewer:
             cache_hits = sum(review.cache_reused for review in results.values())
             self._budget.set_batch_cache_hits(batch_id, cache_hits)
             self._status.set_cache_hits(cache_hits)
-            batch_status = _aggregate_batch_status(slice_statuses, cache_hits=cache_hits)
+            batch_status = AggregateReviewBatchStatus(slice_statuses, cache_hits=cache_hits)
             self._status.finish_batch(
                 BudgetBatchCompletion(
                     batch_id,
                     batch_status,
-                    _in_deadline_timezone(self._now(), deadline),
+                    ToReviewDeadlineTimezone(self._now(), deadline),
                     results,
                     physical_attempts,
                     last_error,
@@ -401,7 +401,7 @@ class DeepSeekReviewer:
         missing: list[tuple[int, int, FeatureSnapshot]] = []
         waiting: list[FeatureSnapshot] = []
         for index, candidate in enumerate(execution.candidates):
-            if not _has_callable_features(candidate):
+            if not HasCallableReviewFeatures(candidate):
                 self._set_terminal(
                     results,
                     (candidate,),
@@ -422,7 +422,7 @@ class DeepSeekReviewer:
                 self._release_raw_claim(raw_key, execution)
                 continue
             was_seen = self._cache.has_seen(candidate.quote.code, candidate.quote.source_time.date().isoformat())
-            priority = _review_priority(
+            priority = CalculateReviewPriority(
                 candidate, was_seen=was_seen, context=execution.contexts.get(candidate.quote.code)
             )
             missing.append((priority, index, candidate))
@@ -436,7 +436,7 @@ class DeepSeekReviewer:
         execution: _ReviewExecution,
         results: dict[str, DeepSeekReview],
     ) -> bool:
-        now = _in_deadline_timezone(self._now(), execution.deadline)
+        now = ToReviewDeadlineTimezone(self._now(), execution.deadline)
         if now >= execution.deadline or self._monotonic() >= execution.monotonic_deadline:
             return False
         raw_review = self._cache.get_bound_raw(raw_key, candidate, bound_at=now)
@@ -463,7 +463,7 @@ class DeepSeekReviewer:
     ) -> None:
         for candidate in waiting:
             raw_key = self._raw_cache_key(candidate, execution)
-            now = _in_deadline_timezone(self._now(), execution.deadline)
+            now = ToReviewDeadlineTimezone(self._now(), execution.deadline)
             remaining = min(
                 (execution.deadline - now).total_seconds(), execution.monotonic_deadline - self._monotonic()
             )
@@ -471,7 +471,7 @@ class DeepSeekReviewer:
                 self._cache.wait_raw(raw_key, remaining)
             if self._restore_cached_review(candidate, raw_key, execution, results):
                 continue
-            completed = _in_deadline_timezone(self._now(), execution.deadline)
+            completed = ToReviewDeadlineTimezone(self._now(), execution.deadline)
             late = completed >= execution.deadline or self._monotonic() >= execution.monotonic_deadline
             self._set_terminal(
                 results,
@@ -490,7 +490,7 @@ class DeepSeekReviewer:
         missing: Sequence[FeatureSnapshot],
         results: dict[str, DeepSeekReview],
     ) -> tuple[list[str], int, str]:
-        tracker = _ReservationTracker(
+        tracker = ReviewReservationTracker(
             budget=self._budget,
             strategy=execution.strategy,
             phase=execution.phase,
@@ -512,7 +512,7 @@ class DeepSeekReviewer:
         for start in range(0, len(missing), self._settings.batch_size):
             candidate_batch = missing[start : start + self._settings.batch_size]
             tracker.candidate_count = len(candidate_batch)
-            tracker.emergency_reason = execution.emergency_reason or _automatic_emergency_reason(
+            tracker.emergency_reason = execution.emergency_reason or FindAutomaticEmergencyReason(
                 candidate_batch,
                 execution.phase,
             )
@@ -526,10 +526,10 @@ class DeepSeekReviewer:
         self,
         execution: _ReviewExecution,
         candidates: Sequence[FeatureSnapshot],
-        tracker: _ReservationTracker,
+        tracker: ReviewReservationTracker,
         results: dict[str, DeepSeekReview],
     ) -> tuple[str, int, str]:
-        completed_at = _in_deadline_timezone(self._now(), execution.deadline)
+        completed_at = ToReviewDeadlineTimezone(self._now(), execution.deadline)
         if completed_at >= execution.deadline or self._monotonic() >= execution.monotonic_deadline:
             self._set_terminal(
                 results,
@@ -540,7 +540,7 @@ class DeepSeekReviewer:
             return "skipped", 0, "deadline_reached"
         parsed, response, parse_error = self._requests.request_and_parse(candidates, tracker)
         self._status.record_attempt_status(response)
-        completed_at = _in_deadline_timezone(self._now(), execution.deadline)
+        completed_at = ToReviewDeadlineTimezone(self._now(), execution.deadline)
         if parsed is None:
             error = (
                 tracker.failure_reason or parse_error or response.error
@@ -617,7 +617,7 @@ class DeepSeekReviewer:
         state: _TerminalState,
     ) -> None:
         for candidate in candidates:
-            terminal = _terminal_review(candidate, state.outcome, state.completed_at, state.error)
+            terminal = BuildTerminalReview(candidate, state.outcome, state.completed_at, state.error)
             results[candidate.quote.code] = self._annotate_primary(terminal, candidate, execution)
             self._release_raw_claim(self._raw_cache_key(candidate, execution), execution)
 
@@ -635,7 +635,7 @@ class DeepSeekReviewer:
         *,
         response: DeepSeekHttpResult | None = None,
     ) -> DeepSeekReview:
-        return _annotate_review(
+        return AnnotateReview(
             review,
             candidate=candidate,
             review_stage="primary",

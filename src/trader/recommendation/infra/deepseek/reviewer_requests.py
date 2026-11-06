@@ -15,10 +15,10 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekHttpResult
 from trader.recommendation.infra.deepseek.reviewer_context import ReviewerContext
 from trader.recommendation.infra.deepseek.reviewer_selection import (
-    _combine_results,
-    _in_deadline_timezone,
-    _ReservationTracker,
-    _usage_integer,
+    CombineDeepSeekResults,
+    ToReviewDeadlineTimezone,
+    ReviewReservationTracker,
+    ReadUsageInteger,
 )
 from trader.recommendation.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.recommendation.infra.deepseek.schema import (
@@ -49,7 +49,7 @@ class ReviewerRequestExecutor:
     def request_and_parse(
         self,
         candidates: Sequence[FeatureSnapshot],
-        tracker: _ReservationTracker,
+        tracker: ReviewReservationTracker,
     ) -> tuple[dict[str, DeepSeekReview] | None, DeepSeekHttpResult, str]:
         first_offset = len(tracker.reservation_ids)
         response = self._client.complete(
@@ -63,7 +63,7 @@ class ReviewerRequestExecutor:
             maximum_attempts=1,
         )
         self._finish_attempts(tracker.reservation_ids[first_offset:], response)
-        completed_at = _in_deadline_timezone(self._now(), tracker.deadline)
+        completed_at = ToReviewDeadlineTimezone(self._now(), tracker.deadline)
         parsed, error = _parse_primary_response(response, candidates, completed_at)
         if (
             parsed is not None
@@ -85,11 +85,11 @@ class ReviewerRequestExecutor:
             maximum_attempts=1,
         )
         self._finish_attempts(tracker.reservation_ids[repair_offset:], repaired)
-        combined = _combine_results(response, repaired)
+        combined = CombineDeepSeekResults(response, repaired)
         parsed, repair_error = _parse_primary_response(
             repaired,
             candidates,
-            _in_deadline_timezone(self._now(), tracker.deadline),
+            ToReviewDeadlineTimezone(self._now(), tracker.deadline),
         )
         return parsed, combined, repair_error or error
 
@@ -110,8 +110,8 @@ class ReviewerRequestExecutor:
                 actual_model=response.actual_model if has_response_metadata else None,
                 system_fingerprint=response.system_fingerprint if has_response_metadata else None,
                 finish_reason=response.finish_reason if has_response_metadata else None,
-                prompt_tokens=_usage_integer(response.usage, "prompt_tokens") if has_response_metadata else 0,
-                completion_tokens=_usage_integer(response.usage, "completion_tokens") if has_response_metadata else 0,
+                prompt_tokens=ReadUsageInteger(response.usage, "prompt_tokens") if has_response_metadata else 0,
+                completion_tokens=ReadUsageInteger(response.usage, "completion_tokens") if has_response_metadata else 0,
                 prompt_cache_hit_tokens=response.prompt_cache_hit_tokens if has_response_metadata else 0,
                 prompt_cache_miss_tokens=response.prompt_cache_miss_tokens if has_response_metadata else 0,
             )

@@ -16,7 +16,7 @@ from tests.helpers.download.history.history_supplier_router import Baseline, Pri
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.download.infra.history_control_index import HistoryControlIndex
@@ -278,7 +278,7 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
         tuple(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(snapshot, dates, {"600001"}))
 
 
-def test_pinned_history_reuses_verified_catalog_and_rejects_reference_changes_in_wal(tmp_path, monkeypatch):
+def test_pinned_history_reuses_verified_catalog_and_rejects_unpublished_reference_changes_in_wal(tmp_path, monkeypatch):
     import trader.download.infra.published_history_snapshot as publication
 
     dates = (date(2026, 9, 8), date(2026, 9, 9))
@@ -308,11 +308,15 @@ def test_pinned_history_reuses_verified_catalog_and_rejects_reference_changes_in
     with pytest.raises(RuntimeError, match="history_preload_cancelled"):
         reader.read_range(manifest, ("600001",), dates[0], dates[-1], check=cancelled)
     assert len(loads) == 1
+    receipt = tmp_path / "catalog.sqlite3.sha256"
+    original_receipt = receipt.read_bytes()
     with SqliteSession(tmp_path / "catalog.sqlite3") as writer:
         with SqliteTransaction(writer):
             writer.run("UPDATE reference_binding SET publication_id='missing'")
-        with pytest.raises(PublishedHistoryReadError, match="history_reference_unavailable"):
+        with pytest.raises(PublishedHistoryReadError, match="history_control_invalid") as rejected:
             reader.read_range(manifest, ("600001",), dates[0], dates[-1])
+        assert str(rejected.value.__cause__.__cause__) == "sqlite_publication_checksum_mismatch"
+        assert receipt.read_bytes() == original_receipt
     assert len(loads) == 2
 
 

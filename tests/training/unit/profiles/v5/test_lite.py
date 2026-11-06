@@ -18,7 +18,7 @@ from trader.training.infra.profile.v5.configuration import (
 )
 from trader.training.infra.profile.v5.settings import TcnArchitecture
 from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork
-from tests.helpers.shared.configuration import TcnFittingParametersFixture
+from tests.helpers.training.configuration import TcnFittingParametersFixture
 
 
 def TcnFittingParameters(minimum_industry_training_rows=5000, **changes):

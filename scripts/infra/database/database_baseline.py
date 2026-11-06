@@ -44,14 +44,16 @@ from trader.download.infra.download_settings import (
     LoadHistorySyncConfiguration,
     LoadQfqWindowConfiguration,
 )
-from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.bootstrap import ExecuteHistorySync
+from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.disk_types import DiskKind
 from trader.infra.sqlite_connection import SqliteConnection
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
@@ -166,7 +168,13 @@ class _SyncFixture:
         )
         return self._measure(
             "history",
-            lambda: RunHistorySync(configuration, self.supplier, clock=lambda: _NOW, disk_kind=self.disk_kind, sqlite_policy=self._sqlite_policy),
+            lambda: ExecuteHistorySync(
+                configuration,
+                self.supplier,
+                clock=lambda: _NOW,
+                sqlite_policy=self._sqlite_policy,
+                resources=HistorySyncResources(disk_kind=self.disk_kind),
+            ),
         )
 
     def market(self, reference: PreparedReference) -> QfqUpdateResult:

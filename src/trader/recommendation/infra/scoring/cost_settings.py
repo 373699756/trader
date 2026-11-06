@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from trader.infra.settings.parser import Number, ReadJsonObject, RequireExactKeys
-from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy, ExecutionCostScenario
+from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 
 
 def LoadExecutionCostPolicy(config_dir: Path) -> ExecutionCostPolicy:
@@ -21,18 +21,4 @@ def LoadExecutionCostPolicy(config_dir: Path) -> ExecutionCostPolicy:
     )
 
 
-def LoadEvaluationCostScenarios(config_dir: Path) -> tuple[ExecutionCostScenario, ...]:
-    document = ReadJsonObject(config_dir / "cost.json")
-    RequireExactKeys(
-        document,
-        {"online_round_trip_base_rate", "online_liquidity_rank_multiplier", "evaluation_round_trip_bps"},
-        "cost",
-    )
-    raw = document.get("evaluation_round_trip_bps")
-    bps_values = (20, 50, 100)
-    if raw != list(bps_values):
-        raise ValueError("cost.evaluation_round_trip_bps must preserve the pre-registered 20/50/100bp scenarios")
-    return tuple(ExecutionCostScenario(f"cost_{bps}bp", bps / 10_000) for bps in bps_values)
-
-
-__all__ = ["LoadEvaluationCostScenarios", "LoadExecutionCostPolicy"]
+__all__ = ["LoadExecutionCostPolicy"]

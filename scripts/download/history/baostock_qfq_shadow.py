@@ -42,14 +42,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_shadow_report(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
-    archive = LoadPublishedHistorySnapshot(root, sqlite_policy=sqlite_policy)
-    cutoff = archive.snapshot.data_cutoff
-    sessions = tuple(day for day in archive.calendar.open_dates if day <= cutoff)
+    history = LoadPublishedHistorySnapshot(root, sqlite_policy=sqlite_policy)
+    cutoff = history.snapshot.data_cutoff
+    sessions = tuple(day for day in history.calendar.open_dates if day <= cutoff)
     if not sessions:
         raise HistorySnapshotInspectionError("history_snapshot_calendar_empty")
     target_sessions = sessions[-_V2_SESSIONS:]
     target_start = target_sessions[0]
-    universe = archive.universe.securities
+    universe = history.universe.securities
     facts: dict[str, _CodeFacts] = {}
     for security in universe:
         expected = {
@@ -59,8 +59,8 @@ def build_shadow_report(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[st
         }
         facts[security.code] = _CodeFacts(expected, set(), set(), set())
 
-    reader = HistorySnapshotReader(archive.root, sqlite_policy=sqlite_policy)
-    for code, trade_date, raw_present, qfq_present in reader.iter_shadow_facts(target_start, cutoff, archive.snapshot):
+    reader = HistorySnapshotReader(history.root, sqlite_policy=sqlite_policy)
+    for code, trade_date, raw_present, qfq_present in reader.iter_shadow_facts(target_start, cutoff, history.snapshot):
         fact = facts.get(code)
         if fact is None:
             continue
@@ -100,10 +100,10 @@ def build_shadow_report(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[st
         "production_eligible": False,
         "production_eligibility_reason": "no_verified_adjustment_factor_or_corporate_action_source",
         "published_snapshot": {
-            "sequence": archive.snapshot.sequence,
-            "content_hash": archive.snapshot.content_hash,
+            "sequence": history.snapshot.sequence,
+            "content_hash": history.snapshot.content_hash,
             "data_cutoff": cutoff.isoformat(),
-            "label_cutoff": archive.snapshot.label_cutoff.isoformat(),
+            "label_cutoff": history.snapshot.label_cutoff.isoformat(),
             "universe_count": len(universe),
         },
         "target_window": {

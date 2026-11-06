@@ -14,10 +14,7 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 
-from tests.helpers.shared.configuration import (
-    CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource,
-    EastmoneyCompanySourceFixture as EastmoneyCompanySource,
-)
+from tests.helpers.download.company_resources import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource, EastmoneyCompanySourceFixture as EastmoneyCompanySource
 
 from trader.infra.http_contracts import HttpResponse, HttpResponseTooLarge
 

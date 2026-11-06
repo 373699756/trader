@@ -29,39 +29,39 @@ def _batch(tmp_path, *, failure: str = "eastmoney_historical_minute_probe_failed
         ),
         probe_failures=(failure,),
     )
-    archive = SQLiteH1PointInTimeSnapshot(tmp_path / "archive", sqlite_policy=SqlitePolicyFixture())
+    evidence = SQLiteH1PointInTimeSnapshot(tmp_path / "archive", sqlite_policy=SqlitePolicyFixture())
     completion = CompleteH1Research(
         capability=capability,
-        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
+        metadata=tuple(evidence.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )
     return SealHistoricalConfirmationTerminalBatch(completion)
 
 
-def test_historical_confirmation_archive_is_idempotent_and_hash_bound(tmp_path) -> None:
+def test_historical_confirmation_evidence_is_idempotent_and_hash_bound(tmp_path) -> None:
     batch = _batch(tmp_path)
-    archive = HistoricalConfirmationReportPublication(tmp_path / "artifacts")
+    evidence = HistoricalConfirmationReportPublication(tmp_path / "artifacts")
 
-    index = archive.write(batch)
+    index = evidence.write(batch)
 
     assert index.completion_hash == batch.parent_completion_hash
     assert index.strategy_terminal_hashes == tuple((item.strategy, item.content_hash) for item in batch.strategies)
     assert batch.schema_version == "historical_confirmation_terminal_batch"
     assert {item.schema_version for item in batch.strategies} == {"historical_confirmation_strategy_terminal"}
-    assert archive.write(batch) == index
+    assert evidence.write(batch) == index
 
     path = tmp_path / "artifacts" / "historical_confirmation_terminal.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["daily_close_selection_hash"] = "0" * 64
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HistoricalConfirmationReportConflictError, match="schema or hash"):
-        archive.verify()
+        evidence.verify()
 
 
-def test_historical_confirmation_archive_rejects_different_batch(tmp_path) -> None:
+def test_historical_confirmation_evidence_rejects_different_batch(tmp_path) -> None:
     first = _batch(tmp_path / "first")
     second = _batch(tmp_path / "second", failure="historical_minute_probe_failed_again")
-    archive = HistoricalConfirmationReportPublication(tmp_path / "artifacts")
-    archive.write(first)
+    evidence = HistoricalConfirmationReportPublication(tmp_path / "artifacts")
+    evidence.write(first)
 
     with pytest.raises(HistoricalConfirmationReportConflictError, match="identity conflict"):
-        archive.write(second)
+        evidence.write(second)

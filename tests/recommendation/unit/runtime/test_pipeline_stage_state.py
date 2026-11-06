@@ -9,7 +9,7 @@ import pytest
 
 from tests.helpers.recommendation.pipeline_helpers import observed_input_stages, observed_market_batch
 from tests.helpers.recommendation.publication.tomorrow_projection import _verified_feature
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanningContext
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
     AssembleCandidateInputs,
@@ -24,14 +24,14 @@ from trader.recommendation.application.pipeline.stage_output import PipelineStag
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, SourceHealth, SourceHealthState, StageState
 from trader.recommendation.domain.market.static import StaticIssuer
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 
 AS_OF = datetime(2026, 9, 23, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 ROOT = Path(__file__).resolve().parents[4]
 
 
 def _policy():
-    return _recommendation_policy(LoadStrategySettings(ROOT / "config" / "strategy.json"))
+    return BuildRecommendationPolicy(LoadStrategySettings(ROOT / "config" / "strategy.json"))
 
 
 def test_zero_input_stages_are_not_ready_instead_of_completed() -> None:

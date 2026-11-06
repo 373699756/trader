@@ -23,7 +23,7 @@ from tests.helpers.download.company.company_sources import NOW, Session
 
 from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyDocumentLimits, Disclosure
 
-from tests.helpers.shared.configuration import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource
+from tests.helpers.download.company_resources import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource
 
 from trader.download.infra.company_document_parser import DetectCompanyText
 
@@ -153,7 +153,7 @@ def test_blocked_parser_is_cancelled_or_times_out_and_is_reaped(monkeypatch, can
             timer.start()
         return child
 
-    monkeypatch.setattr("trader.download.infra.company_disclosure_source.subprocess.Popen", start)
+    monkeypatch.setattr("trader.infra.process_family.subprocess.Popen", start)
     source = CninfoMarketDisclosureSource(
         Session({}),
         monotonic=time.monotonic,

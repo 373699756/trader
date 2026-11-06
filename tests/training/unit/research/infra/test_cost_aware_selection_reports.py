@@ -12,10 +12,10 @@ from trader.training.infra.research.cost_aware_selection_reports import (
 
 def test_cost_aware_selection_artifact_is_idempotent_and_tamper_evident(tmp_path) -> None:
     report = TomorrowCostAwareSelectionEvaluator().build(_shadow_report())
-    archive = CostAwareSelectionReportIndex(tmp_path)
+    evidence = CostAwareSelectionReportIndex(tmp_path)
 
-    assert archive.seal(report) == report.content_hash
-    assert archive.seal(report) == report.content_hash
+    assert evidence.seal(report) == report.content_hash
+    assert evidence.seal(report) == report.content_hash
     artifact = tmp_path / report.selection_spec_hash / report.parent_report_hash / "selection-report.json"
     artifact.write_text(
         artifact.read_text(encoding="utf-8").replace('"top_k":6', '"top_k":5'),
@@ -23,4 +23,4 @@ def test_cost_aware_selection_artifact_is_idempotent_and_tamper_evident(tmp_path
     )
 
     with pytest.raises(CostAwareSelectionReportConflictError, match="tampered"):
-        archive.seal(report)
+        evidence.seal(report)

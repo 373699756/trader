@@ -27,7 +27,7 @@ from trader.recommendation.domain.market.tail import MinuteBar
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
-from trader.recommendation.infra.market_data.market_cache_identity import _quote_version
+from trader.recommendation.infra.market_data.market_cache_identity import BuildQuoteVersion
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.normalization.features import StandardizedFeatureBuilder
@@ -119,7 +119,7 @@ class QuoteCache:
                 full_market = self._market_quotes_by_code.get(code)
                 available = tuple(quote for quote in (targeted, full_market) if quote is not None)
                 if available:
-                    result.append(max(available, key=_quote_version))
+                    result.append(max(available, key=BuildQuoteVersion))
             return tuple(result)
 
     def build_candidate_features(
@@ -311,8 +311,8 @@ class QuoteCache:
                     for item in (self._candidate_quotes.get(quote.code), self._market_quotes_by_code.get(quote.code))
                     if item is not None
                 )
-                current = max(available, key=_quote_version) if available else None
-                if current is not None and _quote_version(quote) < _quote_version(current):
+                current = max(available, key=BuildQuoteVersion) if available else None
+                if current is not None and BuildQuoteVersion(quote) < BuildQuoteVersion(current):
                     self._out_of_order_count += 1
                     continue
                 self._candidate_quotes[quote.code] = quote
@@ -322,7 +322,7 @@ class QuoteCache:
             if excess > 0:
                 for code in sorted(
                     self._candidate_quotes,
-                    key=lambda item: (_quote_version(self._candidate_quotes[item]), item),
+                    key=lambda item: (BuildQuoteVersion(self._candidate_quotes[item]), item),
                 )[:excess]:
                     self._candidate_quotes.pop(code, None)
 
@@ -330,7 +330,7 @@ class QuoteCache:
         resolved = {quote.code: quote for quote in self.candidate_snapshot(codes)}
         for quote in self.gateway.current_quotes(codes):
             current = resolved.get(quote.code)
-            if current is None or _quote_version(quote) > _quote_version(current):
+            if current is None or BuildQuoteVersion(quote) > BuildQuoteVersion(current):
                 resolved[quote.code] = quote
         projected: dict[str, LiveQuote] = {}
         for code in codes:

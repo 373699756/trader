@@ -35,11 +35,8 @@ from trader.download.domain.history_sync import (
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.domain.price_review import PriceReviewBudget, PriceReviewBudgetExhausted
 from trader.download.infra.history_direct_prices import HistoryDirectPrices, HistoryPriceContext, HistoryPriceResult
-from trader.download.infra.history_download_index import (
-    HistoryDownloadCompletion,
-    HistoryDownloadIndex,
-    HistoryDownloadTask,
-)
+from trader.download.domain.history_download import HistoryDownloadCompletion, HistoryDownloadTask
+from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_prices import HistoryPricePartitionError
 from trader.download.infra.history_price_repair import HistoryPriceRepair
 from trader.download.infra.history_inferred_review import (

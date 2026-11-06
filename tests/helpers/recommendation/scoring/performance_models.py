@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import replace
 from tests.helpers.recommendation.runtime.performance_fixtures import _budgets, _history_sessions, _profile
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.recommendation.application.ports.loaded_profile import ModelPrediction
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.infra.performance.fixtures import BuildPerformanceFixtures

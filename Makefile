@@ -72,7 +72,7 @@ test-recommendation-suppliers:
 	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests/recommendation tests/infra -m "slow_supplier"
 
 test-static-contracts:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests/system/contract -m "slow_static"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests/system/contract
 
 test-full:
 	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests

@@ -3,30 +3,21 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 
 from trader.download.domain.history_control import (
     HistoryCalendarIdentity,
     HistoryControlState,
     HistorySnapshot,
     HistorySourceIdentity,
-    HistorySyncCheckpoint,
     HistoryUniverseIdentity,
 )
-from trader.download.domain.history_reference import HistoryReferenceSnapshot
+from trader.download.domain.history_download import HistoryPublication
 from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
 )
 
 _REFERENCE_SOURCE_CONTRACT = re.compile(r"history_ref_[0-9a-f]{64}_([0-9a-f]{16})")
-
-
-@dataclass(frozen=True)
-class HistoryPublication:
-    snapshot: HistorySnapshot
-    checkpoint: HistorySyncCheckpoint
-    reference: HistoryReferenceSnapshot
 
 
 def PublishHistorySnapshot(control: HistoryControlIndex, publication: HistoryPublication) -> None:
@@ -76,4 +67,4 @@ def IsReferenceOnlyChange(
     )
 
 
-__all__ = ["HistoryPublication", "IsReferenceOnlyChange", "PublishHistorySnapshot"]
+__all__ = ["IsReferenceOnlyChange", "PublishHistorySnapshot"]

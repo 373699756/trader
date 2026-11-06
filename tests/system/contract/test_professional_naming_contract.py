@@ -7,6 +7,9 @@ from pathlib import Path
 
 from scripts.engineering.quality.naming import Symbols
 from scripts.engineering.quality.naming import Words
+from scripts.engineering.quality.naming import BANNED_WORDS
+from scripts.engineering.quality.naming import IsFixedContentField
+from scripts.engineering.quality.files import SourceFile
 from tests.helpers.shared.python_source import source_text, source_tree
 
 import pytest
@@ -54,7 +57,7 @@ FORBIDDEN_SOURCE_PATHS = (
     "infra/settings/runtime.py",
 )
 
-FORBIDDEN_REPOSITORY_PATHS = ("scripts/runtime_diagnostics/common.py",)
+FORBIDDEN_PROJECT_PATHS = ("scripts/runtime_diagnostics/common.py",)
 
 FORBIDDEN_NAMING_PATHS = (
     "scripts/repack_baostock_history.py",
@@ -162,7 +165,7 @@ def _project_python_paths() -> tuple[Path, ...]:
 
 def test_source_paths_use_stable_business_responsibilities() -> None:
     assert [relative for relative in FORBIDDEN_SOURCE_PATHS if (SOURCE / relative).exists()] == []
-    assert [relative for relative in FORBIDDEN_REPOSITORY_PATHS if (ROOT / relative).exists()] == []
+    assert [relative for relative in FORBIDDEN_PROJECT_PATHS if (ROOT / relative).exists()] == []
     assert [relative for relative in FORBIDDEN_NAMING_PATHS if (ROOT / relative).exists()] == []
 
 
@@ -249,10 +252,11 @@ def test_shared_application_contract_names_are_unique() -> None:
 
 def test_project_owned_python_names_follow_responsibility_rules() -> None:
     violations: list[str] = []
-    forbidden = {"store", "stores", "stored", "storage"}
+    forbidden = BANNED_WORDS
     for path in _project_python_paths():
+        source = SourceFile(path.relative_to(ROOT).as_posix(), source_text(path).encode("utf-8"))
         for symbol in Symbols(source_text(path)):
-            if set(Words(symbol.name)) & forbidden:
+            if set(Words(symbol.name)) & forbidden and not IsFixedContentField(source, symbol):
                 violations.append(f"{path.relative_to(ROOT).as_posix()}:{symbol.line}:{symbol.name}")
         for part in path.relative_to(ROOT).with_suffix("").parts:
             if set(Words(part)) & forbidden:
@@ -265,7 +269,7 @@ def test_project_owned_python_names_follow_responsibility_rules() -> None:
 
 def test_migrated_data_plane_names_describe_persistence_roles() -> None:
     violations: list[str] = []
-    forbidden = {"store", "stored", "repository", "archive", "registry"}
+    forbidden = BANNED_WORDS
     for relative in MIGRATED_DATA_PLANE_PATHS:
         path = SOURCE / relative
         tree = source_tree(path)

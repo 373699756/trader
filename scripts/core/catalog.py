@@ -34,6 +34,7 @@ TOOLS = (
     ToolDefinition('disk', 'infra', 'disk', 'profile', None, 'scripts.infra.disk', 'subprocess', None, reporter='scripts.infra.disk.reporting'),
     ToolDefinition('snapshot', 'recommendation', 'pipeline', 'snapshot', None, 'scripts.recommendation.pipeline', 'subprocess', None, reporter='scripts.recommendation.pipeline.reporting', local_readiness=True, effects=('read_current_data', 'isolated_replay')),
     ToolDefinition('web', 'recommendation', 'web', 'health', None, 'scripts.recommendation.web', 'subprocess', None, reporter='scripts.recommendation.web.reporting', effects=('local_http_requests',)),
+    ToolDefinition('shutdown', 'recommendation', 'web', 'shutdown', None, None, 'foreground', 'scripts.recommendation.web.shutdown', effects=('read_explicit_process_and_shutdown_log', 'sigterm_only_with_explicit_send_sigterm')),
     ToolDefinition('history', 'download', 'history', 'sources', None, 'scripts.download.history', 'subprocess', None, reporter='scripts.download.history.reporting', effects=('network',)),
     ToolDefinition('security-master', 'download', 'market', 'security-master', None, 'scripts.download.market', 'subprocess', None, reporter='scripts.download.market.reporting', effects=('network',)),
     ToolDefinition('tencent', 'download', 'market', 'quotes', None, 'scripts.download.market', 'subprocess', None, reporter='scripts.download.market.reporting', effects=('network',)),

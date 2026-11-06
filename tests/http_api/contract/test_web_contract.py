@@ -23,7 +23,7 @@ from tests.helpers.shared.web_contract import (
     NOW,
     PIPELINE_STAGE_KEYS,
     _Clock,
-    _Repository,
+    _FreezeRecords,
     _app,
     _freeze,
 )
@@ -104,7 +104,7 @@ def test_company_evidence_links_are_bounded_read_only_and_explicitly_projected()
     queries = UnifiedFreezeQueries(
         UnifiedFreezeIndex(),
         UnifiedFreezeDraftIndex(),
-        _Repository(),
+        _FreezeRecords(),
         _Clock(),
         sources=FreezeQuerySources(company_documents=Links()),
     )
@@ -193,7 +193,7 @@ def test_v1_lane_keeps_rank_scale_and_execution_identity_in_get_and_sse(producti
     )
     index = UnifiedFreezeIndex()
     assert index.publish(freeze, expected_version=None).accepted
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock())
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock())
     stream = UnifiedFreezeEventStream()
     stream.publish_committed(BuildFreezeCommitted(freeze))
     status = {
@@ -307,7 +307,7 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
         ),
     )
     assert drafts.publish(draft).accepted
-    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), drafts, _Repository(), _Clock())
+    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), drafts, _FreezeRecords(), _Clock())
     app = CreateApp(
         services=UnifiedWebServices(
             queries,
@@ -466,7 +466,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
             "tushare_required": False,
         },
         "sources": {
-            "baostock_industry": {
+            "cninfo_industry": {
                 "data_age_seconds": 45.0,
                 "enabled": True,
                 "error_count": 1,

@@ -25,8 +25,9 @@ PROJECT_ROOT = TOOL_ROOT
 
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader  # noqa: E402
 from trader.download.infra.reference_index import SQLiteReferenceIndex  # noqa: E402
-from trader.infra.settings.loading import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings  # noqa: E402
-from trader.infra.settings.models import CompanyPreloadSettings
+from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings  # noqa: E402
+from trader.infra.settings.runtime_loader import LoadRuntimeSettings  # noqa: E402
+from trader.infra.settings.models import CompanyPreloadSettings  # noqa: E402
 from trader.infra.sqlite_connection import SqliteConnectionOptions  # noqa: E402
 from trader.recommendation.domain.market.eligibility import (  # noqa: E402
     IsPermanentExclusionReason,

@@ -17,7 +17,7 @@ class _Clock:
         return NOW
 
 
-class _Repository:
+class _FreezeRecords:
     def __init__(self, record: CommittedFreezeRecord | None = None) -> None:
         self.record = record
 

@@ -21,7 +21,6 @@ SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
 # Reviewed for stage 203 against pushed d8866ea7; equal totals cannot move debt to another owner.
 EXPECTED_DEBT = frozenset(
     {
-        ("PLR0913", "download/application/download_history.py", "DownloadHistory"),
         ("C901", "download/application/sync_data.py", "SyncData.execute"),
         ("PLR0911", "download/application/sync_data.py", "SyncData.execute"),
         ("C901", "download/application/update_qfq.py", "UpdateQfqWindows._download_rolling"),
@@ -80,9 +79,6 @@ EXPECTED_DEBT = frozenset(
         ("C901", "recommendation/domain/market/refresh.py", "ResearchRefreshResult.__post_init__"),
         ("PLR0913", "recommendation/infra/market_data/published_history_cache.py", "PublishedHistoryCache.__init__"),
         ("C901", "recommendation/domain/outcomes/models.py", "RecommendationOutcome.__post_init__"),
-        ("C901", "training/infra/engine.py", "_run_locked"),
-        ("PLR0912", "training/infra/engine.py", "_run_locked"),
-        ("PLR0915", "training/infra/engine.py", "_run_locked"),
         ("C901", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
         ("PLR0912", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
         ("PLR0913", "training/infra/profile/v3/training.py", "RunRepackTomorrowTraining"),

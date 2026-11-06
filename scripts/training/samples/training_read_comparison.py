@@ -24,7 +24,7 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_snapshot_inspection import LoadPublishedHistorySnapshot
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
-from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.bootstrap import ExecuteHistorySync
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_publication import PublishSqliteFile
 from trader.training.infra.history.aligned_training_rows import AlignTrainingRows
@@ -43,7 +43,12 @@ def PrepareTrainingHistory(root: Path, *, size: int, sessions: int, sqlite_polic
     )
     supplier.publish_reference(config.reference_root / "company_st.sqlite3", days[-1], sessions)
     now = datetime.combine(days[-1], datetime.min.time(), ZoneInfo("Asia/Shanghai")).replace(hour=20, minute=30)
-    status = RunHistorySync(config, supplier, clock=lambda: now, sqlite_policy=sqlite_policy)
+    status = ExecuteHistorySync(
+        config,
+        supplier,
+        clock=lambda: now,
+        sqlite_policy=sqlite_policy,
+    )
     if status.state != "completed":
         raise RuntimeError(f"training_probe_history_incomplete:{status.reason}")
     history = LoadPublishedHistorySnapshot(config.history_root, sqlite_policy=sqlite_policy)

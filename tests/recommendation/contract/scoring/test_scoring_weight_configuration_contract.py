@@ -32,7 +32,7 @@ def _is_weight_literal(node: ast.expr) -> bool:
 
 
 def test_production_weight_numbers_have_no_validator_copy() -> None:
-    validation = _read("src/trader/infra/settings/strategy_validation.py")
+    validation = _read("src/trader/recommendation/infra/settings/strategy_validation.py")
 
     assert "_FIXED_DIMENSION_WEIGHTS" not in validation
     assert "_FIXED_BOARD_CANDIDATE_WEIGHTS" not in validation

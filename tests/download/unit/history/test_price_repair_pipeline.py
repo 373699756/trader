@@ -12,7 +12,7 @@ from tests.helpers.download.history_fixtures import RunHistoryFixture
 from tests.helpers.download.history.infra.history_sync import FakeSupplier, _download
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
@@ -417,7 +417,7 @@ def test_market_conflicting_raw_preserves_previous_pair_and_completion_is_not_cl
 
 
 def test_explicit_history_repair_does_not_publish_unfinished_initial_download(tmp_path):
-    from trader.download.infra.history_download_index import HistoryDownloadBatch, HistoryDownloadTask
+    from trader.download.domain.history_download import HistoryDownloadBatch, HistoryDownloadTask
 
     days = (date(2026, 1, 2), date(2026, 1, 5))
     config = _config(tmp_path, days)

@@ -27,7 +27,7 @@ from trader.training.domain.evaluation.challengers import (
     AssessContinuousEntry,
     AssessHeatWeakStructure,
     BuildChallengerParameterManifest,
-    ChallengerRegistry,
+    ListChallengers,
     ChallengerSpecification,
     ContinuousEntryInputs,
     HeatWeakStructureInputs,
@@ -55,7 +55,7 @@ class ChallengerReplayer:
         baseline_by_date = {item.trade_date: item for item in baseline.days}
         variants = tuple(
             self._replay_variant(specification, extraction.days, baseline_by_date, parameter_hash)
-            for specification in ChallengerRegistry()
+            for specification in ListChallengers()
         )
         return ChallengerReport(
             "replayed" if extraction.status == "extracted" and len(extraction.days) == 40 else "exploratory",

@@ -96,6 +96,8 @@ class HistoryPartitionRepackBuildState:
     def __post_init__(self) -> None:
         paths = tuple(item.relative_path for item in self.partitions)
         source_paths = tuple(item.relative_path for item in self.source_files)
+        databases = tuple(name for name in source_paths if name.endswith(".sqlite3"))
+        expected_sources = set(databases) | {f"{name}.sha256" for name in databases}
         if (
             not self.source_root
             or not self.target_root
@@ -103,7 +105,14 @@ class HistoryPartitionRepackBuildState:
             or not IsSha256Text(self.source_file_identity_hash)
             or self.source_sequence < 1
             or source_paths != tuple(sorted(set(source_paths)))
-            or len(source_paths) != self.expected_partition_count + 1
+            or len(databases) != self.expected_partition_count + 1
+            or "catalog.sqlite3" not in databases
+            or any(
+                len(PurePosixPath(name).parts) != 1 or name != "catalog.sqlite3" and not name.startswith("prices_")
+                for name in databases
+            )
+            or set(source_paths) != expected_sources
+            or not set(paths).issubset(set(databases) - {"catalog.sqlite3"})
             or self.source_bytes < 1
             or self.security_count < 1
             or self.trading_day_count < 1

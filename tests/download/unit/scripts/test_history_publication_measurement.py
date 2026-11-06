@@ -20,7 +20,7 @@ from scripts.download.history.history_write_benchmark import MeasureHistoryWrite
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_prices import HistoryPricePartition
-from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.bootstrap import ExecuteHistorySync
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_publication import SqlitePublicationError
 
@@ -35,7 +35,12 @@ def _published_fixture(directory: Path) -> Path:
     )
     supplier.publish_reference(config.reference_root / "company_st.sqlite3", days[-1], len(days))
     observed = datetime.combine(days[-1], time(20, 30), ZoneInfo("Asia/Shanghai"))
-    result = RunHistorySync(config, supplier, clock=lambda: observed, sqlite_policy=policy)
+    result = ExecuteHistorySync(
+        config,
+        supplier,
+        clock=lambda: observed,
+        sqlite_policy=policy,
+    )
     assert result.state == "completed"
     return config.history_root
 

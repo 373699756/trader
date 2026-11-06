@@ -126,7 +126,7 @@ def test_conflicting_budget_identity_stops_instead_of_resetting(tmp_path):
     assert target.read_bytes() == before
 
 
-def test_existing_target_and_repository_paths_are_rejected(tmp_path):
+def test_existing_target_and_project_paths_are_rejected(tmp_path):
     source = _source(tmp_path)
     target = tmp_path / "candidate"
     target.mkdir()

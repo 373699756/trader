@@ -16,11 +16,11 @@ from trader.training.infra.research.factor_diagnostic_reports import (
 def test_factor_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
     extraction, baseline, dimensions = _evidence()
     report = NativeFactorDiagnosticEvaluator().evaluate(extraction, baseline, dimensions)
-    archive = JsonFactorDiagnosticReportIndex(tmp_path)
+    evidence = JsonFactorDiagnosticReportIndex(tmp_path)
 
-    assert archive.write(report) == report
-    assert archive.write(report) == report
-    assert archive.verify() == report
+    assert evidence.write(report) == report
+    assert evidence.write(report) == report
+    assert evidence.verify() == report
     payload = json.loads((tmp_path / "score-factor-diagnostic-report.json").read_text(encoding="utf-8"))
     assert payload["schema_version"] == "score_factor_diagnostic_report"
     assert payload["production_authority"] is False
@@ -30,20 +30,20 @@ def test_factor_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
 def test_factor_report_rejects_tampering_and_same_identity_conflicts(tmp_path) -> None:
     extraction, baseline, dimensions = _evidence()
     report = NativeFactorDiagnosticEvaluator().evaluate(extraction, baseline, dimensions)
-    archive = JsonFactorDiagnosticReportIndex(tmp_path)
-    archive.write(report)
+    evidence = JsonFactorDiagnosticReportIndex(tmp_path)
+    evidence.write(report)
 
     path = tmp_path / "score-factor-diagnostic-report.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["production_authority"] = True
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(FactorDiagnosticReportConflictError, match="hash or schema"):
-        archive.verify()
+        evidence.verify()
 
     path.unlink()
-    archive.write(report)
+    evidence.write(report)
     changed_record = replace(dimensions.records[0], market_cap=9999.0)
     changed_dimensions = replace(dimensions, records=(changed_record, *dimensions.records[1:]))
     conflicting = NativeFactorDiagnosticEvaluator().evaluate(extraction, baseline, changed_dimensions)
     with pytest.raises(FactorDiagnosticReportConflictError, match="identity conflict"):
-        archive.write(conflicting)
+        evidence.write(conflicting)

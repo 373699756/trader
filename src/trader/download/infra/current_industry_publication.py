@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError
-from trader.recommendation.domain.market.models import ModelIndustryReference
+from trader.download.domain.current_industry import CurrentIndustryReference
 from trader.download.infra.cninfo_industry import (
     CninfoIndustryChange,
     CninfoIndustryClient,
@@ -278,7 +278,7 @@ def _query_observations(query: IndustryQuery, *, as_of: datetime) -> tuple[Sourc
         ):
             raise ValueError("current_industry_row_invalid")
         industry = "capco:" + native_code + native_name
-        reference = ModelIndustryReference(industry, _STANDARD, changed_on, _SOURCE, version)
+        reference = CurrentIndustryReference(industry, _STANDARD, changed_on, _SOURCE, version)
         fields: dict[str, JsonScalar] = {
             "model_industry": reference.industry_id, "model_industry_classification": reference.classification,
             "model_industry_effective_date": reference.effective_date.isoformat(), "model_industry_source": reference.source,

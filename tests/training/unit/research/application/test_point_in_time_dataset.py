@@ -35,7 +35,7 @@ from trader.training.infra.research.point_in_time_dataset_evidence import (
     PointInTimeDatasetEvidenceConflictError,
     PointInTimeDatasetEvidenceIndex,
 )
-from tests.helpers.shared.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
 
 HASHES = tuple(character * 64 for character in "abcdef0123456789")
 
@@ -392,16 +392,16 @@ def test_close_anchor_outcomes_do_not_require_a_post_entry_intraday_window(appli
     )
 
 
-def test_artifact_archive_round_trips_idempotently_and_rejects_tampering(
+def test_artifact_evidence_round_trips_idempotently_and_rejects_tampering(
     tmp_path,
     application_feature_factory,
 ) -> None:
     report = PointInTimeDatasetBuilder(_Source(application_feature_factory)).build(_request(_qualification()))
-    archive = PointInTimeDatasetEvidenceIndex(tmp_path)
+    evidence = PointInTimeDatasetEvidenceIndex(tmp_path)
 
-    assert archive.write(report).content_hash == report.content_hash
-    assert archive.write(report).content_hash == report.content_hash
-    assert archive.verify().content_hash == report.content_hash
+    assert evidence.write(report).content_hash == report.content_hash
+    assert evidence.write(report).content_hash == report.content_hash
+    assert evidence.verify().content_hash == report.content_hash
 
     original_request = _request(_qualification())
     conflicting_request = replace(
@@ -411,11 +411,11 @@ def test_artifact_archive_round_trips_idempotently_and_rejects_tampering(
     assert conflicting_request.selection_policy_hash != original_request.selection_policy_hash
     conflicting = PointInTimeDatasetBuilder(_Source(application_feature_factory)).build(conflicting_request)
     with pytest.raises(PointInTimeDatasetEvidenceConflictError, match="identity conflict"):
-        archive.write(conflicting)
+        evidence.write(conflicting)
 
     path = tmp_path / "point-in-time-dataset.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["production_authority"] = True
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(PointInTimeDatasetEvidenceConflictError):
-        archive.verify()
+        evidence.verify()

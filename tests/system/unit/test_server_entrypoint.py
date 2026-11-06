@@ -8,6 +8,7 @@ from flask import Flask
 
 from trader.entrypoints import server as server_entrypoint
 from trader.infra.settings import RuntimeSettings
+from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 
 
 class _Controller:
@@ -34,8 +35,8 @@ class _System:
     def start(self) -> bool:
         return True
 
-    def stop(self) -> None:
-        pass
+    def stop(self, *, deadline: ShutdownDeadline) -> ShutdownReport:
+        return ShutdownReport.from_steps(deadline, (ShutdownStep("fixture", True, False),))
 
 
 @pytest.mark.parametrize(

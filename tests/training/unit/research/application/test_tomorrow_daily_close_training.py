@@ -61,7 +61,7 @@ def test_dataset_rejects_incomplete_or_failed_hard_filter_samples_and_records_co
         source,
         feature_names=_FEATURES,
         feature_units=_UNITS,
-        source_archive_hash=_HASH_A,
+        source_history_hash=_HASH_A,
         filter_spec_hash=_HASH_B,
     )
 
@@ -81,7 +81,7 @@ def test_manifest_keeps_a_complete_trading_day_when_its_whole_population_is_reje
         (_sample(first, 1), _sample(second, 2, evidence_complete=False)),
         feature_names=_FEATURES,
         feature_units=_UNITS,
-        source_archive_hash=_HASH_A,
+        source_history_hash=_HASH_A,
         filter_spec_hash=_HASH_B,
     )
 
@@ -95,7 +95,7 @@ def test_fold_training_rows_exclude_labels_not_mature_before_validation_start() 
         tuple(_sample(day, index) for index, day in enumerate(days)),
         feature_names=_FEATURES,
         feature_units=_UNITS,
-        source_archive_hash=_HASH_A,
+        source_history_hash=_HASH_A,
         filter_spec_hash=_HASH_B,
     )
     split = SplitCompleteTradingDates(days)

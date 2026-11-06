@@ -92,7 +92,7 @@ def test_failed_publication_preparation_preserves_previously_deferred_tasks():
         rounds.finish("v1", following.sequence)
 
 
-def test_unqueued_release_preserves_the_latest_tasks_and_requires_the_active_profile_admission():
+def test_unqueued_release_preserves_the_latest_tasks_and_requires_the_running_profile_admission():
     rounds = RecommendationRounds()
     rounds.register("v1")
     market = _tasks()[0]

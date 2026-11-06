@@ -60,7 +60,7 @@ class _PhysicalCallOptions(TypedDict):
 
 
 @dataclass
-class _ReservationTracker:
+class ReviewReservationTracker:
     budget: DeepSeekBudgetLedger
     strategy: Strategy
     phase: str
@@ -80,13 +80,13 @@ class _ReservationTracker:
     monotonic: Callable[[], float] = time.monotonic
 
     def remaining_seconds(self) -> float:
-        remaining = (self.deadline - _in_deadline_timezone(self.now(), self.deadline)).total_seconds()
+        remaining = (self.deadline - ToReviewDeadlineTimezone(self.now(), self.deadline)).total_seconds()
         if self.monotonic_deadline is not None:
             remaining = min(remaining, self.monotonic_deadline - self.monotonic())
         return max(0.0, remaining)
 
     def reserve(self) -> bool:
-        requested_at = _in_deadline_timezone(self.now(), self.deadline)
+        requested_at = ToReviewDeadlineTimezone(self.now(), self.deadline)
         reservation_deadline = self.reservation_deadline or self.deadline
         if requested_at >= reservation_deadline or self.remaining_seconds() <= 0.0:
             self.failure_reason = "deadline_reached"
@@ -128,7 +128,7 @@ class _ReservationTracker:
         return reservation.allowed
 
 
-def _terminal_review(
+def BuildTerminalReview(
     candidate: FeatureSnapshot,
     outcome: ReviewOutcome,
     completed_at: datetime,
@@ -144,7 +144,7 @@ def _terminal_review(
     )
 
 
-def _annotate_review(
+def AnnotateReview(
     review: DeepSeekReview,
     **options: Unpack[_AnnotateOptions],
 ) -> DeepSeekReview:
@@ -172,7 +172,7 @@ def _annotate_review(
     )
 
 
-def _thinking_mode(client: DeepSeekCompletionClient, model: str) -> str:
+def SelectReviewThinkingMode(client: DeepSeekCompletionClient, model: str) -> str:
     try:
         capabilities = client.capabilities(model)
         return "reasoning" if capabilities.requires_reasoning_roundtrip else "standard"
@@ -180,7 +180,7 @@ def _thinking_mode(client: DeepSeekCompletionClient, model: str) -> str:
         return "standard"
 
 
-def _unique_candidates(candidates: Sequence[FeatureSnapshot]) -> tuple[FeatureSnapshot, ...]:
+def ValidateUniqueReviewCandidates(candidates: Sequence[FeatureSnapshot]) -> tuple[FeatureSnapshot, ...]:
     unique: dict[str, FeatureSnapshot] = {}
     for candidate in candidates:
         code = candidate.quote.code
@@ -190,13 +190,13 @@ def _unique_candidates(candidates: Sequence[FeatureSnapshot]) -> tuple[FeatureSn
     return tuple(unique.values())
 
 
-def _has_callable_features(candidate: FeatureSnapshot) -> bool:
+def HasCallableReviewFeatures(candidate: FeatureSnapshot) -> bool:
     if candidate.quote.price is None or candidate.quote.price <= 0 or not math.isfinite(candidate.quote.price):
         return False
     return any(raw is not None and math.isfinite(float(raw)) for raw in candidate.values.values())
 
 
-def _automatic_emergency_reason(candidates: Sequence[FeatureSnapshot], phase: str) -> str:
+def FindAutomaticEmergencyReason(candidates: Sequence[FeatureSnapshot], phase: str) -> str:
     if any(_is_new_high_risk(fact) for candidate in candidates for fact in candidate.external_risk_facts):
         return "new_high_risk"
     if phase == "final_review":
@@ -204,7 +204,7 @@ def _automatic_emergency_reason(candidates: Sequence[FeatureSnapshot], phase: st
     return ""
 
 
-def _review_priority(
+def CalculateReviewPriority(
     candidate: FeatureSnapshot,
     *,
     was_seen: bool,
@@ -233,7 +233,7 @@ def _is_new_high_risk(fact: RiskFact) -> bool:
     return fact.severity == "high" and fact.confidence >= 0.7
 
 
-def _aggregate_batch_status(statuses: Sequence[str], *, cache_hits: int) -> str:
+def AggregateReviewBatchStatus(statuses: Sequence[str], *, cache_hits: int) -> str:
     if not statuses:
         return "skipped"
     if all(status == "success" for status in statuses):
@@ -245,7 +245,7 @@ def _aggregate_batch_status(statuses: Sequence[str], *, cache_hits: int) -> str:
     return "skipped"
 
 
-def _combine_results(first: DeepSeekHttpResult, second: DeepSeekHttpResult) -> DeepSeekHttpResult:
+def CombineDeepSeekResults(first: DeepSeekHttpResult, second: DeepSeekHttpResult) -> DeepSeekHttpResult:
     return DeepSeekHttpResult(
         content=second.content,
         status_code=second.status_code,
@@ -263,14 +263,14 @@ def _combine_results(first: DeepSeekHttpResult, second: DeepSeekHttpResult) -> D
     )
 
 
-def _usage_integer(usage: Mapping[str, object], key: str) -> int:
+def ReadUsageInteger(usage: Mapping[str, object], key: str) -> int:
     value = usage.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
     return max(0, int(value))
 
 
-def _in_deadline_timezone(value: datetime, deadline: datetime) -> datetime:
+def ToReviewDeadlineTimezone(value: datetime, deadline: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("reviewer clock must return timezone-aware datetimes")
     if deadline.tzinfo is None:
@@ -278,7 +278,7 @@ def _in_deadline_timezone(value: datetime, deadline: datetime) -> datetime:
     return value.astimezone(deadline.tzinfo)
 
 
-def _physical_call_acceptance(
+def BuildPhysicalCallAcceptance(
     **options: Unpack[_PhysicalCallOptions],
 ) -> Mapping[str, object]:
     enabled = options["enabled"]
@@ -325,3 +325,20 @@ def _physical_call_acceptance(
         "physical_attempts_last_batch": physical_attempts,
         "zero_call_reason": reason,
     }
+
+
+__all__ = [
+    "ReviewReservationTracker",
+    "BuildTerminalReview",
+    "AnnotateReview",
+    "SelectReviewThinkingMode",
+    "ValidateUniqueReviewCandidates",
+    "HasCallableReviewFeatures",
+    "FindAutomaticEmergencyReason",
+    "CalculateReviewPriority",
+    "AggregateReviewBatchStatus",
+    "CombineDeepSeekResults",
+    "ReadUsageInteger",
+    "ToReviewDeadlineTimezone",
+    "BuildPhysicalCallAcceptance",
+]

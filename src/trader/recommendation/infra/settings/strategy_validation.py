@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from trader.infra.settings.factor_validation import (
-    _validate_feature_schema_contract,
-    _validate_long_research_factor_contract,
-    _validate_tomorrow_tail_factor_contract,
-    _validate_weight_sum,
+from trader.recommendation.infra.settings.factor_validation import (
+    ValidateFeatureSchemaContract,
+    ValidateLongResearchFactorContract,
+    ValidateTomorrowTailFactorContract,
+    ValidateWeightSum,
 )
-from trader.infra.settings.models import FactorDefinition, RiskRuleSettings, StrategySettings
+from trader.recommendation.infra.settings.models import FactorDefinition, RiskRuleSettings, StrategySettings
 from trader.infra.settings.parser import (
     ConfigurationError,
 )
@@ -18,7 +18,7 @@ from trader.recommendation.domain.market.factors import PRODUCTION_FACTOR_IDS
 from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES, DeepseekRiskRuleCode
 
 
-def _validate_strategy_settings(settings: StrategySettings) -> None:
+def ValidateStrategySettings(settings: StrategySettings) -> None:
     _validate_filter_fusion_selection(settings)
     _validate_signal_policies(settings)
     _validate_strategy_weights(settings)
@@ -136,7 +136,7 @@ def _validate_dimension_weights(settings: StrategySettings, required_strategies:
         "risk_quality",
     }
     for strategy, weights in settings.dimension_weights.items():
-        _validate_weight_sum(f"dimension_weights.{strategy}", weights)
+        ValidateWeightSum(f"dimension_weights.{strategy}", weights)
         if set(weights) != required_dimensions:
             raise ConfigurationError(f"dimension_weights.{strategy} must define the five review dimensions")
 
@@ -157,9 +157,9 @@ def _validate_risk_rules_contract(settings: StrategySettings) -> None:
         missing = sorted(PRODUCTION_FACTOR_IDS - registered)
         extra = sorted(registered - PRODUCTION_FACTOR_IDS)
         raise ConfigurationError(f"factor_index mismatch: missing={missing}, extra={extra}")
-    _validate_tomorrow_tail_factor_contract(settings)
-    _validate_long_research_factor_contract(settings)
-    _validate_feature_schema_contract(settings)
+    ValidateTomorrowTailFactorContract(settings)
+    ValidateLongResearchFactorContract(settings)
+    ValidateFeatureSchemaContract(settings)
     required_risk_codes = {
         "near_limit_crowding",
         "price_volume_divergence",
@@ -317,7 +317,7 @@ def _validate_board_weights(settings: StrategySettings) -> None:
         if set(local_boards) != boards:
             raise ConfigurationError(f"board weights for {strategy} must define all three boards")
         for board in boards:
-            _validate_weight_sum(f"board_local_strategy_weights.{strategy}.{board}", local_boards[board])
+            ValidateWeightSum(f"board_local_strategy_weights.{strategy}.{board}", local_boards[board])
             if set(local_boards[board]) != local_components[strategy]:
                 raise ConfigurationError(f"board local components for {strategy}.{board} are invalid")
 
@@ -361,4 +361,4 @@ def _validate_component_weight_family(
             weights = components[component]
             if set(weights) != expected_fields:
                 raise ConfigurationError(f"{name}.{strategy}.{component} has invalid fields")
-            _validate_weight_sum(f"{name}.{strategy}.{component}", weights)
+            ValidateWeightSum(f"{name}.{strategy}.{component}", weights)

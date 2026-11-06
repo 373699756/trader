@@ -931,14 +931,14 @@ class _DocumentRun:
                 ("ocr", ocr_queue, dependencies.ocr_executor, self.configuration.ocr_workers),
                 ("text", text_queue, dependencies.text_executor, self.configuration.text_workers),
             ):
-                active = sum(value[1] == stage for value in pending_documents.values())
-                while ready and active < capacity and not _cancelled(dependencies):
+                inflight = sum(value[1] == stage for value in pending_documents.values())
+                while ready and inflight < capacity and not _cancelled(dependencies):
                     task = ready.popleft()
                     if not index.document_required(task.disclosure):
                         continue
                     index.document_stage(task.disclosure, "analyzing")
                     pending_documents[self._submit(self.sources[0], task, stage, executor)] = (-1, stage, task)
-                    active += 1
+                    inflight += 1
                     self._attempt(task.disclosure)
             while queue and available and not self.stopped and not capacity_blocked and not _cancelled(dependencies):
                 slot = available.popleft()

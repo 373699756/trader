@@ -23,7 +23,8 @@ from trader.bootstrap import BuildPerformanceExecutor
 from trader.http_api.route_services import UnifiedWebServices
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.serialization.canonical_codec import CanonicalDigest
-from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
+from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.settings.models import PerformanceBudgetSettings
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import WorkerFutureExecutor
@@ -89,7 +90,7 @@ from trader.recommendation.infra.performance.pipeline_workload import (
 from trader.recommendation.infra.performance.process_memory import ReadPerformanceMemory
 from trader.recommendation.infra.performance.raw_factor_reuse import RAW_FACTOR_REUSE_CANDIDATE
 from trader.recommendation.infra.performance.candidate_selection import SCORING_CANDIDATES
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
 from trader.training.infra.training_settings import LoadRuntimeTrainingSettings
@@ -499,7 +500,7 @@ def _prepare_profiles(
         fixture_seconds += time.perf_counter() - started
         workloads.append(
             PerformanceProfileWorkload(
-                loaded, _recommendation_policy(strategy), features, settings.config_version, cost_policy
+                loaded, BuildRecommendationPolicy(strategy), features, settings.config_version, cost_policy
             )
         )
         profiles.append(

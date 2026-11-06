@@ -27,11 +27,9 @@ from tests.helpers.recommendation.market_data import (
 from tests.helpers.recommendation.market.candidate_history_tail import HistoryInput
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from tests.helpers.download.history.history_supplier_router import _current_universe
-from tests.helpers.shared.configuration import (
-    CompanyEventPolicyFixture as CompanyEventPolicy,
-    HardFilterPolicyFixture,
-    SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex,
-)
+from tests.helpers.download.configuration import CompanyEventPolicyFixture as CompanyEventPolicy
+from tests.helpers.recommendation.configuration import HardFilterPolicyFixture
+from tests.helpers.download.company_resources import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.recommendation.application.pipeline.static_market import static_pipeline
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache

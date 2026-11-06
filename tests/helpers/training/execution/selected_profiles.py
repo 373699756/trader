@@ -17,9 +17,10 @@ from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.application.resources import TrainingProfileThreads
 from trader.training.infra.execution_options import TrainingExecutionOptions
-from trader.training.infra.selected_training import SelectedTrainingRequest, TrainSelectedProfiles
+from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
+from trader.training.application.selected_training import TrainSelectedProfiles
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
-from tests.helpers.shared.configuration import TcnFittingParametersFixture
+from tests.helpers.training.configuration import TcnFittingParametersFixture
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -134,7 +135,7 @@ def four_profile_seed(request: pytest.FixtureRequest, tmp_path_factory: pytest.T
     with pytest.MonkeyPatch.context() as patches:
         selection = BuildFourProfileRequest(directory, execution_case, patches, scans, tcn_threads)
         with ThreadPoolExecutor(max_workers=4) as executor:
-            result = TrainSelectedProfiles(selection, executor, sqlite_policy=SqlitePolicyFixture())
+            result = TrainSelectedProfiles(SelectedTrainingAdapter(selection, sqlite_policy=SqlitePolicyFixture()), executor)
         assert len(scans) == result.history_scan_passes == 1
         assert tuple(item.profile for item in result.outcomes) == selection.profiles
         assert all(item.failure is None and item.result.status == "engineering_ready" for item in result.outcomes), result

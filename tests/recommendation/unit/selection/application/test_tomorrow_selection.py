@@ -38,7 +38,7 @@ from trader.recommendation.domain.scoring.company import (
     CompanyFinancialScores,
 )
 
-from tests.helpers.shared.configuration import CompanyScoringPolicyFixture as CompanyScoringPolicy
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture as CompanyScoringPolicy
 
 from tests.helpers.recommendation.selection.application.tomorrow_selection import (
     NOW,

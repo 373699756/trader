@@ -62,7 +62,7 @@ def test_h1_adapter_freezes_six_features_before_attaching_next_day_labels() -> N
         samples,
         feature_names=batch.feature_names,
         feature_units=batch.feature_units,
-        source_archive_hash=batch.source_archive_hash,
+        source_history_hash=batch.source_archive_hash,
         filter_spec_hash=_HASH,
     )
 
@@ -115,7 +115,7 @@ def test_incomplete_point_in_time_filter_evidence_never_enters_training_dataset(
         samples,
         feature_names=batch.feature_names,
         feature_units=batch.feature_units,
-        source_archive_hash=batch.source_archive_hash,
+        source_history_hash=batch.source_archive_hash,
         filter_spec_hash=_HASH,
     )
 

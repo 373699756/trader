@@ -66,14 +66,14 @@ class IsolatedHttpExecutor:
         self._transport_factory = transport_factory
         self._condition = threading.Condition()
         self._idle: list[_Worker] = []
-        self._active = 0
+        self._inflight = 0
         self._running = False
 
     def start(self) -> bool:
         with self._condition:
             if self._running:
                 return False
-            if self._active or self._idle:
+            if self._inflight or self._idle:
                 raise RuntimeError("http_workers_still_stopping")
             self._running = True
             return True
@@ -88,8 +88,8 @@ class IsolatedHttpExecutor:
         with self._condition:
             while True:
                 self._check(request, deadline)
-                if self._active < self._capacity:
-                    self._active += 1
+                if self._inflight < self._capacity:
+                    self._inflight += 1
                     return self._idle.pop() if self._idle else None
                 self._condition.wait(min(0.05, max(0.0, deadline - time.monotonic())))
 
@@ -142,7 +142,7 @@ class IsolatedHttpExecutor:
             if worker is not None:
                 worker.dispose()
             with self._condition:
-                self._active -= 1
+                self._inflight -= 1
                 self._condition.notify_all()
 
     def stop(self, *, wait: bool = True, deadline: ShutdownDeadline | None = None) -> ShutdownStep:
@@ -151,15 +151,15 @@ class IsolatedHttpExecutor:
             self._running = False
             self._condition.notify_all()
             if wait:
-                while self._active and not shared.expired:
+                while self._inflight and not shared.expired:
                     self._condition.wait(min(0.05, shared.remaining_seconds()))
                 for worker in self._idle:
                     worker.dispose()
                 self._idle.clear()
-            active = self._active
-            completed = active == 0 and not self._idle
+            inflight = self._inflight
+            completed = inflight == 0 and not self._idle
         return ShutdownStep("isolated_http", completed, bool(not completed and shared.expired),
-                            detail=f"active={active}")
+                            detail=f"active={inflight}")
 
 
 __all__ = ["IsolatedHttpExecutor"]

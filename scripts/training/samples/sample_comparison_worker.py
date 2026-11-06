@@ -49,7 +49,7 @@ def SampleArgumentsForCheckout(checkout: Path, *, medium: DiskKind) -> TrainingS
         raise ValueError("sample_comparison_resource_schema_invalid")
     if "samples" not in machine:
         return {}  # Explicit pre-sample-policy historical checkout; current APIs reject missing injection.
-    from trader.infra.settings.training import LoadTrainingResourceSettings
+    from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 
     return {"sample_settings": LoadTrainingResourceSettings(checkout, medium).samples}
 
@@ -370,7 +370,7 @@ def MeasureSamples(
 
     from trader.recommendation.domain.publication.models import Strategy
     from trader.training.domain.training_dates import BuildTrainingDateSplit
-    from trader.training.infra.profile.v1.samples import LearnedRankSampleIndex, _Candidate, _PendingDay
+    from trader.training.infra.profile.v1.samples import LearnedRankSampleIndex, LearnedRankCandidate, LearnedRankPendingDay
     from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
     from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
     from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
@@ -457,8 +457,8 @@ def MeasureSamples(
         rank_index = LearnedRankSampleIndex(path, **sqlite_arguments, **sample_arguments)
         resources.callback(rank_index.close)
         for number, day in enumerate(selected):
-            pending = _PendingDay(day, number, {
-                f"{600000 + stock}": _Candidate(
+            pending = LearnedRankPendingDay(day, number, {
+                f"{600000 + stock}": LearnedRankCandidate(
                     f"{600000 + stock}", "fixture",
                     tuple(-0.0 if i == 0 else (number + stock + i) / 1000 for i in range(10)),
                     10.0, [None if (stock + number + i) % 37 == 0 else (stock - i) / 10000 for i in range(5)],

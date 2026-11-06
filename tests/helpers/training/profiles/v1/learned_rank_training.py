@@ -11,7 +11,7 @@ from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.domain.market.v1.features import LearnedRankDailyPoint
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
-from tests.helpers.shared.configuration import V1TrainingSettingsFixture
+from tests.helpers.training.configuration import V1TrainingSettingsFixture
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.profile.v1.training import RunV1Training
 

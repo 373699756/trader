@@ -38,6 +38,7 @@ from trader.training.application.tomorrow_training import TomorrowTrainingProgre
 from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.v1.learned_rank import IsLearnedRankIndustryIdentity, LearnedRankDateSplit
+from trader.training.domain.v1.training_plan import LearnedRankPartitionCoverage, LearnedRankSampleCounts
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.sample_schema import SampleFeatureHash
@@ -70,19 +71,6 @@ class LearnedRankInputPort(Protocol):
 def CheckV1Cancellation(cancel_requested: Callable[[], bool] | None) -> None:
     if cancel_requested is not None and cancel_requested():
         raise InterruptedError("learned_rank_training_cancelled")
-
-
-@dataclass(frozen=True)
-class LearnedRankSampleCounts:
-    source_rows: int
-    samples: int
-    missing_prices: int
-    missing_industry: int
-    short_window: int
-    missing_t1: int
-    missing_d25: int
-    suspended_sessions: int = 0
-    estimated_sessions: int = 0
 
 
 @dataclass(frozen=True)
@@ -130,17 +118,8 @@ def _empty_output(rows: int, directory: Path, resources: ExitStack) -> _MatrixOu
     return _MatrixOutput(arrays[0], arrays[1])
 
 
-@dataclass(frozen=True)
-class LearnedRankPartitionCoverage:
-    strategy: Strategy
-    partition: Literal["fitting", "early_stopping", "calibration", "validation", "final_fitting"]
-    expected_dates: int
-    effective_dates: int
-    rows: int
-
-
 @dataclass
-class _Candidate:
+class LearnedRankCandidate:
     code: str
     industry: str
     features: tuple[float, ...]
@@ -149,10 +128,10 @@ class _Candidate:
 
 
 @dataclass
-class _PendingDay:
+class LearnedRankPendingDay:
     trade_date: date
     position: int
-    candidates: dict[str, _Candidate] = field(default_factory=dict)
+    candidates: dict[str, LearnedRankCandidate] = field(default_factory=dict)
 
 
 @dataclass
@@ -201,7 +180,7 @@ class LearnedRankSampleIndex:
     def close(self) -> None:
         self._connection.close()
 
-    def add_day(self, pending: _PendingDay) -> tuple[int, int, int]:
+    def add_day(self, pending: LearnedRankPendingDay) -> tuple[int, int, int]:
         candidates = tuple(pending.candidates.values())
         benchmarks = tuple(ObservedTrainingBenchmark(item.future[index] for item in candidates) for index in range(5))
         converted = missing_t1 = missing_d25 = 0
@@ -396,7 +375,7 @@ def BuildLearnedRankSamples(
     readable = AlignmentReadDates(calendar, readable)
     total = source.training_row_upper_bound(readable)
     rolling: dict[str, _RollingCode] = {}
-    pending: deque[_PendingDay] = deque()
+    pending: deque[LearnedRankPendingDay] = deque()
     current: date | None = None
     source_rows = converted = missing_prices = missing_industry = short_window = missing_t1 = missing_d25 = 0
     suspended_sessions = estimated_sessions = 0
@@ -431,7 +410,7 @@ def BuildLearnedRankSamples(
                 missing_d25 += absent_d25
             current = row.trade_date
             if row.trade_date in selected:
-                pending.append(_PendingDay(row.trade_date, position))
+                pending.append(LearnedRankPendingDay(row.trade_date, position))
         state = rolling.setdefault(row.code, _RollingCode(deque(maxlen=history_sessions)))
         if state.last_position != position - 1:
             state.points.clear()
@@ -461,7 +440,7 @@ def BuildLearnedRankSamples(
             elif (features := CalculateLearnedRankFeatures(tuple(state.points))) is None:
                 short_window += 1
             else:
-                pending[-1].candidates[row.code] = _Candidate(row.code, row.industry, features, point.close_price)
+                pending[-1].candidates[row.code] = LearnedRankCandidate(row.code, row.industry, features, point.close_price)
         state.points.append(point)
         state.last_position = position
     while pending:
@@ -503,7 +482,7 @@ __all__ = [
     "LearnedRankMatrix",
     "LearnedRankMatrixRequest",
     "LearnedRankInputPort",
-    "LearnedRankPartitionCoverage",
-    "LearnedRankSampleCounts",
     "LearnedRankSampleIndex",
+    "LearnedRankCandidate",
+    "LearnedRankPendingDay",
 ]

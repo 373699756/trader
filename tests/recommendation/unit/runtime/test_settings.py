@@ -14,8 +14,10 @@ import trader.infra.settings.runtime_loader as runtime_loader
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadDownloadFailureConfiguration, LoadQfqWindowConfiguration
 from trader.infra.settings import (
     ConfigurationError,
-    LoadLongWatchlist,
     LoadRuntimeSettings,
+)
+from trader.recommendation.infra.settings.loading import (
+    LoadLongWatchlist,
     LoadStrategySettings,
 )
 from trader.recommendation.domain.market.models import Board
@@ -23,8 +25,8 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.scoring import (
     ScoreBoardStrategy,
 )
-from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.domain.market.feature_schema import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 RUNTIME_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
@@ -1099,7 +1101,7 @@ def test_adjustable_selection_gate_reaches_policy_and_changes_identity(tmp_path)
 
     assert changed.selection.observation_margin == 5
     assert changed.strategy_version != baseline.strategy_version
-    assert _recommendation_policy(changed).selection.observation_margin == 5
+    assert BuildRecommendationPolicy(changed).selection.observation_margin == 5
 
 
 def test_competition_group_limits_reject_fractional_values(tmp_path) -> None:
@@ -1224,8 +1226,8 @@ def test_component_weight_configuration_reaches_domain_and_changes_strategy_iden
     values["low_volatility_score"] = 80.0
     values["low_drawdown_score"] = 60.0
     feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN), values=values)
-    source_policy = _recommendation_policy(source).board_policy(Strategy.TOMORROW, Board.MAIN)
-    changed_policy = _recommendation_policy(changed).board_policy(Strategy.TOMORROW, Board.MAIN)
+    source_policy = BuildRecommendationPolicy(source).board_policy(Strategy.TOMORROW, Board.MAIN)
+    changed_policy = BuildRecommendationPolicy(changed).board_policy(Strategy.TOMORROW, Board.MAIN)
 
     assert source_policy is not None
     assert changed_policy is not None
@@ -1240,7 +1242,7 @@ def test_configured_candidate_and_local_weights_preserve_two_strategy_golden_vec
     application_feature_factory,
 ) -> None:
     settings = LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json")
-    policy = _recommendation_policy(settings)
+    policy = BuildRecommendationPolicy(settings)
     observed_at = datetime(2026, 9, 10, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
     source = application_feature_factory("600001", observed_at)
     feature = replace(

@@ -9,11 +9,7 @@ from tests.helpers.download.company import company_evidence as fixtures
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
-from tests.helpers.shared.configuration import (
-    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
-    CompanyDocumentFilesFixture as CompanyDocumentFiles,
-    SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader,
-)
+from tests.helpers.download.company_resources import SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex, CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader
 
 NOW = fixtures.NOW
 _CASE = "本公司收到证监会立案告知书〔2026〕调查1号，决定立案。"

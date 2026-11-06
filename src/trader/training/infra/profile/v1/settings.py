@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from trader.infra.settings.parser import Integer, Number, ProfileMapping, RequireExactKeys
-from trader.infra.settings.training import ReadTrainingConfiguration
+from trader.training.infra.resource_settings import ReadTrainingConfiguration
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 
 

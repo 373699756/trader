@@ -7,8 +7,9 @@ from collections.abc import Callable
 from trader.infra.serialization.canonical import CanonicalValue, ContentHash
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
-from trader.training.infra.engine import TrainingRunResult
-from trader.training.infra.profile.v1.training import V1TrainingResult
+from trader.training.application.profile_training import TrainingRunResult
+from trader.training.application.learned_rank_training import V1TrainingResult
+from trader.training.application.training_diagnostics import TrainingOperationIssue
 
 
 class CancellableTrainingProgress:
@@ -30,6 +31,7 @@ def ProjectProfileTrainingResult(profile: ScoringProfileId, result: TrainingRunR
         "run_id": result.run_id,
         "training_input_hash": result.training_input_hash,
         "reused": result.reused,
+        "post_commit_issues": ProjectTrainingOperationIssues(result.post_commit_issues),
         "heads": [
             {
                 "strategy": head.strategy.value,
@@ -92,6 +94,7 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
         "training_input_hash": result.training_input_hash,
         "sample_database_peak_bytes": result.sample_database_peak_bytes,
         "failure_reasons": list(result.failure_reasons),
+        "post_commit_issues": ProjectTrainingOperationIssues(result.post_commit_issues),
         "sample_counts": CanonicalValue(result.sample_counts),
         "coverage": [
             {
@@ -139,4 +142,14 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
     }
 
 
-__all__ = ["ProjectProfileTrainingResult", "ProjectLearnedRankTrainingResult", "CancellableTrainingProgress"]
+def ProjectTrainingOperationIssues(issues: tuple[TrainingOperationIssue, ...]) -> list[dict[str, object]]:
+    return [
+        {"stage": issue.stage, "error_type": issue.error_type, "cause_type": issue.cause_type}
+        for issue in issues
+    ]
+
+
+__all__ = [
+    "ProjectProfileTrainingResult", "ProjectLearnedRankTrainingResult", "ProjectTrainingOperationIssues",
+    "CancellableTrainingProgress",
+]

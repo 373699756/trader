@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from tests.helpers.shared.web_contract import _app, _Clock, _freeze, _Repository
+from tests.helpers.shared.web_contract import _app, _Clock, _freeze, _FreezeRecords
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
@@ -36,7 +36,7 @@ def test_v5_get_and_sse_expose_model_rank_without_reinterpreting_v2() -> None:
     )
     index = UnifiedFreezeIndex()
     assert index.publish(ranked, expected_version=None).accepted
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _Repository(), _Clock())
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock())
     stream = UnifiedFreezeEventStream()
     stream.publish_committed(BuildFreezeCommitted(ranked))
     status = {

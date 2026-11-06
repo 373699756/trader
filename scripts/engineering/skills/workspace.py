@@ -17,7 +17,7 @@ from pathlib import Path
 from scripts.engineering.skills.contracts import EvaluationCase
 
 SKILL_NAMES = ("python-engineering-guide",)
-REPOSITORY_ROOT = TOOL_ROOT
+PROJECT_ROOT = TOOL_ROOT
 
 _AGENTS = """# Isolated Trader skill fixture
 
@@ -66,7 +66,7 @@ def ExternalPath(path: Path) -> Path:
     if any(parent.is_symlink() for parent in (path, *path.parents)):
         raise ValueError("symlink destinations are not allowed")
     resolved = path.resolve()
-    if resolved == REPOSITORY_ROOT or REPOSITORY_ROOT in resolved.parents:
+    if resolved == PROJECT_ROOT or PROJECT_ROOT in resolved.parents:
         raise ValueError("output directory must be outside the repository")
     return resolved
 

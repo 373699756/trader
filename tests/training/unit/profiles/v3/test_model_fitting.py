@@ -41,12 +41,12 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 
     feature_count = max(contract.feature_positions) + 1
     cache = TrainingSampleCache(tmp_path, contract.model_id, profile.heads[0].feature_manifest.names, split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
-    with cache.open() as repository, ExitStack() as resources:
+    with cache.open() as index, ExitStack() as resources:
         for day_position, day in enumerate(usable_dates):
-            repository.add_final(_samples_for_day(day, day_position, feature_count))
-        repository.prepare_for_model_fitting(split)
-        counts = repository.industry_counts(contract)[0]
-        data = resources.enter_context(repository.industry_data(counts, contract))
+            index.add_final(_samples_for_day(day, day_position, feature_count))
+        index.prepare_for_model_fitting(split)
+        counts = index.industry_counts(contract)[0]
+        data = resources.enter_context(index.industry_data(counts, contract))
         means = data.training.features.mean(axis=0)
         deviations = data.training.features.std(axis=0)
         scales = np.where(deviations > 1e-12, deviations, 1.0)
@@ -62,14 +62,14 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 
-        first, = FitIndustryModels(repository, split, (contract,), settings.fitting, compute_threads=compute_threads)
-        cache.seal(repository)
+        first, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads)
+        cache.seal(index)
 
-    with cache.open() as repository, ExitStack() as resources:
+    with cache.open() as index, ExitStack() as resources:
         assert cache.reused
-        second, = FitIndustryModels(repository, split, (contract,), settings.fitting, compute_threads=compute_threads)
+        second, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads)
         if profile.algorithm == "ridge":
-            paired = FitIndustryModels(repository, split, HEAD_CONTRACTS, settings.fitting, compute_threads=compute_threads)
+            paired = FitIndustryModels(index, split, HEAD_CONTRACTS, settings.fitting, compute_threads=compute_threads)
             assert paired[HEAD_CONTRACTS.index(contract)] == first
 
     assert TOMORROW_TRAINING_COMPUTE_THREADS == 2

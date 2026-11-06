@@ -11,6 +11,7 @@ from tests.helpers.training.profiles.v1.learned_rank_training import _History, _
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
 from trader.infra.settings import RuntimeSettings
+from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.selected_training import TrainingLocations
 from trader.training.infra import engine
 from trader.training.infra import selected_training
@@ -126,7 +127,7 @@ def test_selected_factory_injects_the_same_job_observer_into_both_builder_owners
         sample_settings=TrainingSampleSettingsFixture(),
     )
     received = []
-    result = v1_training.V1TrainingResult("failed", "fixture", "a" * 64, 0)
+    result = V1TrainingResult("failed", "fixture", "a" * 64, 0)
 
     def run_v1(*_args, **kwargs):
         received.append(kwargs["execution_observer"])

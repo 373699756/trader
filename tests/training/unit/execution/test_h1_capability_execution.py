@@ -43,14 +43,14 @@ def test_request_params_preserve_supported_supplier_shapes() -> None:
         EncodeHttpParameters("https://example.invalid/", {"invalid": object()})
 
 
-def test_script_seals_sanitized_insufficient_terminal_chain_outside_repository(tmp_path, capsys, monkeypatch) -> None:
-    archive = tmp_path / "archive"
+def test_script_seals_sanitized_insufficient_terminal_chain_outside_project(tmp_path, capsys, monkeypatch) -> None:
+    evidence = tmp_path / "archive"
     artifacts = tmp_path / "artifacts"
 
     result = main(
         [
             "--h1-runtime-dir",
-            str(archive),
+            str(evidence),
             "--artifact-dir",
             str(artifacts),
             "--historical-anchor-date",

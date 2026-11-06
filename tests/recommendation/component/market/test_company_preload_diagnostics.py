@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from tests.helpers.recommendation.market_data import NOW
-from tests.helpers.shared.configuration import PublishedCompanyResearchFixture
+from tests.helpers.recommendation.company_research import PublishedCompanyResearchFixture
 from trader.infra.settings.models import CompanyPreloadSettings
 
 

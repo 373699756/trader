@@ -241,7 +241,7 @@ def test_migration_rollback_does_not_load_sqlite_configuration(monkeypatch, tmp_
     assert not tuple(tmp_path.iterdir())
 
 
-def test_migration_paths_still_reject_repository_and_relative_inputs(tmp_path: Path) -> None:
+def test_migration_paths_still_reject_project_and_relative_inputs(tmp_path: Path) -> None:
     from scripts.engineering.migration import operations
 
     with pytest.raises(operations.MigrationError, match="outside_repository"):

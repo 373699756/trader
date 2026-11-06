@@ -10,7 +10,7 @@ from scripts.engineering.quality import debt as quality
 
 
 @pytest.fixture
-def gate_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def gate_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     scripts = tmp_path / "scripts"
     source = tmp_path / "src" / "trader"
     scripts.mkdir()
@@ -37,22 +37,22 @@ def gate_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def test_real_ruff_gate_accepts_baseline_without_repository_writes(gate_repository: Path) -> None:
+def test_real_ruff_gate_accepts_baseline_without_project_writes(gate_project: Path) -> None:
     before = {
-        path.relative_to(gate_repository): path.read_bytes() for path in gate_repository.rglob("*") if path.is_file()
+        path.relative_to(gate_project): path.read_bytes() for path in gate_project.rglob("*") if path.is_file()
     }
 
     assert quality.Main() == 0
 
     after = {
-        path.relative_to(gate_repository): path.read_bytes() for path in gate_repository.rglob("*") if path.is_file()
+        path.relative_to(gate_project): path.read_bytes() for path in gate_project.rglob("*") if path.is_file()
     }
     assert after == before
 
 
 @pytest.mark.parametrize("relocation", ("file", "class", "function"))
-def test_same_count_debt_relocation_fails_public_gate(gate_repository: Path, relocation: str) -> None:
-    source = gate_repository / "src" / "trader" / "core.py"
+def test_same_count_debt_relocation_fails_public_gate(gate_project: Path, relocation: str) -> None:
+    source = gate_project / "src" / "trader" / "core.py"
     if relocation == "file":
         source.rename(source.with_name("moved.py"))
     else:
@@ -63,8 +63,8 @@ def test_same_count_debt_relocation_fails_public_gate(gate_repository: Path, rel
 
 
 @pytest.mark.parametrize("fault", ("empty_field", "missing_row", "duplicate_row", "unknown_script", "missing_section"))
-def test_incomplete_inventory_fails_public_gate(gate_repository: Path, fault: str) -> None:
-    readme = gate_repository / "scripts" / "README.md"
+def test_incomplete_inventory_fails_public_gate(gate_project: Path, fault: str) -> None:
+    readme = gate_project / "scripts" / "README.md"
     text = readme.read_text(encoding="utf-8")
     if fault == "unknown_script":
         (readme.parent / "extra.py").write_text("", encoding="utf-8")
@@ -83,7 +83,7 @@ def test_incomplete_inventory_fails_public_gate(gate_repository: Path, fault: st
 
 @pytest.mark.parametrize("stdout", ("", "{}", "[null]", '[{"code":"C901"}]', "[]"))
 def test_invalid_ruff_output_is_not_accepted(
-    gate_repository: Path, monkeypatch: pytest.MonkeyPatch, stdout: str
+    gate_project: Path, monkeypatch: pytest.MonkeyPatch, stdout: str
 ) -> None:
     monkeypatch.setattr(
         quality.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess((), 1, stdout, "")
@@ -94,11 +94,11 @@ def test_invalid_ruff_output_is_not_accepted(
 
 @pytest.mark.parametrize("failed_call", (1, 2))
 def test_each_ruff_timeout_fails_closed_without_forwarding_raw_output(
-    gate_repository: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failed_call: int
+    gate_project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failed_call: int
 ) -> None:
     calls = 0
     diagnostics = json.dumps(
-        [{"code": "PLR0913", "filename": str(gate_repository / "src/trader/core.py"), "location": {"row": 2}}]
+        [{"code": "PLR0913", "filename": str(gate_project / "src/trader/core.py"), "location": {"row": 2}}]
     )
 
     def run(command: tuple[str, ...], **options: object) -> subprocess.CompletedProcess[str]:

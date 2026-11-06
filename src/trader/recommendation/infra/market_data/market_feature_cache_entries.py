@@ -1,4 +1,4 @@
-"""Private cache entry models for the market feature service."""
+"""Cache entry models owned by the market feature service."""
 
 from __future__ import annotations
 
@@ -17,7 +17,10 @@ class _HistoryEntry:
 
 
 @dataclass(frozen=True)
-class _IntradayEntry:
+class IntradayCacheEntry:
     bars: tuple[MinuteBar, ...]
     expires_at: float
     degraded: bool = False
+
+
+__all__ = ["IntradayCacheEntry"]

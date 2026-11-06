@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.shared.configuration import CninfoMarketDisclosureSourceFixture
+from tests.helpers.download.company_resources import CninfoMarketDisclosureSourceFixture
 from tests.helpers.download.company.company_document_parser import _pdf
 from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentFailure, DisclosurePage
 from trader.download.infra.company_raw_files import CompanyRawFiles

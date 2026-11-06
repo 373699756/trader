@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 from tests.helpers.recommendation.publication.tomorrow_projection import EVALUATED_AT, _verified_feature
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
     CandidateFilteringPort,
     CandidateFilteringService,

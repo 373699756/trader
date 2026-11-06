@@ -14,7 +14,7 @@ from trader.recommendation.application.ports.market_data import MarketSnapshotMe
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
-from trader.recommendation.infra.market_data.market_cache_identity import _quote_age_summary, _reference_epoch
+from trader.recommendation.infra.market_data.market_cache_identity import SummarizeQuoteAges, BuildReferenceEpoch
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
@@ -72,7 +72,7 @@ class MarketDataHealth:
         research = self._research.status()
         intraday = self._intraday.status()
         gateway_status = self._quotes.gateway.health()
-        reference_epoch = _reference_epoch(self._references.versions())
+        reference_epoch = BuildReferenceEpoch(self._references.versions())
         reference_publication = self._references.status()
         gateway_health = _gateway_health_payload(gateway_status, reference_epoch=reference_epoch)
         sources = {
@@ -248,10 +248,10 @@ class MarketDataHealth:
                     "research_out_of_order_count": research.out_of_order_count,
                     "history_out_of_order_count": history.out_of_order_count,
                     "intraday_out_of_order_count": intraday.out_of_order_count,
-                    "market_quote_age": _quote_age_summary(
+                    "market_quote_age": SummarizeQuoteAges(
                         tuple(feature.quote for feature in market_quotes), measured_at
                     ),
-                    "candidate_quote_age": _quote_age_summary(candidate_quotes, measured_at),
+                    "candidate_quote_age": SummarizeQuoteAges(candidate_quotes, measured_at),
                     "measured_at": measured_at.isoformat(),
                 },
             )
@@ -265,7 +265,7 @@ class MarketDataHealth:
         return MarketSnapshotMetadata(
             merge_epoch=snapshot.merge_epoch,
             market_epoch=snapshot.merge_epoch,
-            reference_epoch=_reference_epoch(self._references.versions()),
+            reference_epoch=BuildReferenceEpoch(self._references.versions()),
             source_versions=snapshot.source_versions,
             field_sources={
                 code: dict(sources)

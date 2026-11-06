@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.settings.models import FactorDefinition, StrategySettings
+from trader.recommendation.infra.settings.models import FactorDefinition, StrategySettings
 from trader.infra.settings.parser import (
     Boolean as _boolean,
 )
@@ -31,10 +31,10 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     Text as _text,
 )
-from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
+from trader.recommendation.domain.market.feature_schema import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
 
 
-def _validate_feature_schema_contract(settings: StrategySettings) -> None:
+def ValidateFeatureSchemaContract(settings: StrategySettings) -> None:
     _validate_factor_definition(
         settings.factor_index["volume_to_5d_average"],
         {
@@ -73,7 +73,7 @@ def _validate_feature_schema_contract(settings: StrategySettings) -> None:
             )
 
 
-def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:
+def ValidateTomorrowTailFactorContract(settings: StrategySettings) -> None:
     _validate_tail_factor_definition(
         settings.factor_index["tail_return_30m_pct"],
         raw_inputs=("unadjusted_completed_minute_close",),
@@ -116,7 +116,7 @@ def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:
     )
 
 
-def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
+def ValidateLongResearchFactorContract(settings: StrategySettings) -> None:
     score_common = {
         "strategies": ("long",),
         "unit": "score_0_100",
@@ -330,7 +330,7 @@ def _validate_tail_factor_definition(
             )
 
 
-def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
+def ParseFactorDefinition(factor_id: str, raw: object) -> FactorDefinition:
     if not isinstance(raw, dict):
         raise ConfigurationError(f"factor_index.{factor_id} must be an object")
     _require_exact_keys(
@@ -403,7 +403,7 @@ def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
     )
 
 
-def _strategy_contract_identity(raw: Mapping[str, object]) -> str:
+def StrategyContractIdentity(raw: Mapping[str, object]) -> str:
     canonical = dict(raw)
     try:
         payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -412,7 +412,7 @@ def _strategy_contract_identity(raw: Mapping[str, object]) -> str:
     return f"strategy_sha256_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:20]}"
 
 
-def _validate_weight_sum(name: str, weights: Mapping[str, float]) -> None:
+def ValidateWeightSum(name: str, weights: Mapping[str, float]) -> None:
     if not weights or abs(sum(weights.values()) - 1.0) > 1e-9:
         raise ConfigurationError(f"{name} must sum to 1.0")
     if any(weight < 0.0 or weight > 1.0 for weight in weights.values()):

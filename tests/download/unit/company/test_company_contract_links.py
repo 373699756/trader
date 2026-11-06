@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.helpers.shared.configuration import CompanyDocumentFilesFixture, CompanyEventPolicyFixture
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture
+from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate, ResolveCompanyLinks
 from trader.download.domain.company_events import CompanyReviewReason
 from trader.download.domain.company_evidence import CompanyDocument, Disclosure

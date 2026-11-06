@@ -7,11 +7,7 @@ import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_field_recovery import NOW, _facts, _legacy_reduction
-from tests.helpers.shared.configuration import (
-    CompanyDocumentFilesFixture,
-    SQLiteCompanyEvidenceReaderFixture,
-    SQLiteCompanyFactsIndexFixture,
-)
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery

@@ -7,10 +7,29 @@ import builtins
 import keyword
 import re
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from scripts.engineering.quality.files import SourceFile
 
 BANNED_WORDS = frozenset({"store", "stores", "stored", "storage", "repository", "archive", "registry", "active"})
+FIXED_CONTENT_FIELDS = MappingProxyType({
+    ("src/trader/training/domain/evaluation/point_in_time_data_qualification.py", "PointInTimeDataQualificationReport", "daily_archive"):
+        "Published qualification identity recursively includes this annotated canonical field.",
+    ("src/trader/training/domain/evaluation/point_in_time_dataset.py", "PointInTimeDatasetManifest", "daily_archive_manifest_hash"):
+        "Published dataset manifest identity includes this annotated canonical source digest field.",
+    ("src/trader/training/domain/evaluation/tomorrow_historical.py", "TomorrowHistoricalSpec", "minimum_archive_coverage"):
+        "Frozen research specification and all parent identities include this annotated canonical threshold field.",
+    ("src/trader/training/application/tomorrow_daily_close_h1.py", "TomorrowDailyCloseH1FeatureBatch", "source_archive_hash"):
+        "Published H1 feature-batch identity recursively includes this annotated canonical source digest field.",
+    ("src/trader/training/application/tomorrow_daily_close_training.py", "DatasetManifest", "source_archive_hash"):
+        "Published daily-close dataset codec and identity include this annotated canonical source digest field.",
+    ("src/trader/training/application/tomorrow_historical_report.py", "TomorrowHistoricalGateMetrics", "archive_coverage"):
+        "Published historical report identity recursively includes this annotated canonical coverage field.",
+    ("src/trader/training/application/historical_backtest.py", "HistoricalBarBacktestReport", "archive"):
+        "Published backtest report identity recursively includes this annotated canonical snapshot field.",
+    ("src/trader/training/application/historical_backtest.py", "HistoricalBarBacktestReport", "archive_manifest"):
+        "Published backtest report identity recursively includes this annotated canonical manifest field.",
+})
 VAGUE_NAMES = frozenset({"data", "obj", "tmp", "manager"})
 BUILTIN_NAMES = frozenset(dir(builtins))
 
@@ -35,6 +54,22 @@ class Symbol:
     kind: str
     line: int
     column: int
+
+
+def IsFixedContentField(source: SourceFile, symbol: Symbol) -> bool:
+    """Recognize only the declared annotated field of an existing content contract."""
+    key = (source.path, symbol.scope, symbol.name)
+    if symbol.kind != "attribute" or key not in FIXED_CONTENT_FIELDS:
+        return False
+    for node in ast.parse(source.text).body:
+        if isinstance(node, ast.ClassDef) and node.name == symbol.scope:
+            return any(
+                isinstance(member, ast.AnnAssign) and isinstance(member.target, ast.Name)
+                and member.target.id == symbol.name and member.target.lineno == symbol.line
+                and member.target.col_offset == symbol.column
+                for member in node.body
+            )
+    return False
 
 
 def Words(name: str) -> tuple[str, ...]:
@@ -157,6 +192,8 @@ def Audit(source: SourceFile) -> tuple[NamingFinding, ...]:
             )
     for symbol in symbols:
         for rule, severity, message in NameIssues(symbol.name, symbol.kind):
+            if rule == "NAME002" and IsFixedContentField(source, symbol):
+                continue
             # Pytest owns discovery names; third-party overrides remain explicit review findings.
             if rule == "NAME008" and source.path.startswith("tests/") and symbol.name.startswith("test_"):
                 continue

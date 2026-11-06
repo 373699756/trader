@@ -75,11 +75,11 @@ def test_capability_artifact_is_immutable_and_tamper_evident(tmp_path) -> None:
     report = FreeSourceH1CapabilityProbe(FreeHistorySourceCapability(_Session()), timeout_seconds=3.0).run(
         code="600519", historical_anchor_date=date(2022, 1, 4)
     )
-    archive = H1CapabilityEvidenceIndex(tmp_path)
+    evidence = H1CapabilityEvidenceIndex(tmp_path)
 
-    assert archive.write(report) == report
-    assert archive.write(report) == report
+    assert evidence.write(report) == report
+    assert evidence.write(report) == report
     path = tmp_path / "h1_capability_audit.json"
     path.write_text(path.read_text().replace("tencent_qfq_daily", "tampered_source"), encoding="utf-8")
     with pytest.raises(H1CapabilityEvidenceConflictError, match="schema or hash"):
-        archive.verify()
+        evidence.verify()

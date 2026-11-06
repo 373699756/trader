@@ -13,7 +13,7 @@ from trader.recommendation.domain.market.models import (
 )
 
 
-def _ma_position(price: float | None, ma20: float | None, ma60: float | None) -> float | None:
+def CalculateMaPosition(price: float | None, ma20: float | None, ma60: float | None) -> float | None:
     if not _all_finite(price, ma20) or price is None or ma20 is None:
         return None
     if ma60 is None:
@@ -27,13 +27,13 @@ def _ma_position(price: float | None, ma20: float | None, ma60: float | None) ->
     return 15.0
 
 
-def _slope_score(ma5: float | None, ma20: float | None) -> float | None:
+def CalculateSlopeScore(ma5: float | None, ma20: float | None) -> float | None:
     if not _all_finite(ma5, ma20) or ma5 is None or ma20 is None or ma20 <= 0:
         return None
     return Clamp(50.0 + (ma5 / ma20 - 1.0) * 1000.0)
 
 
-def _breakout_score(price: float | None, high: float | None) -> float | None:
+def CalculateBreakoutScore(price: float | None, high: float | None) -> float | None:
     if not _all_finite(price) or price is None or high is None:
         return None
     if high <= 0:
@@ -41,7 +41,7 @@ def _breakout_score(price: float | None, high: float | None) -> float | None:
     return Clamp((price / high - 0.90) * 1000.0)
 
 
-def _price_volume_confirmation(
+def CalculatePriceVolumeConfirmation(
     return_5d: float | None,
     amount: float | None,
     median: float | None,
@@ -61,20 +61,20 @@ def _price_volume_confirmation(
     return Clamp(50.0 + direction * volume_signal / 2.0)
 
 
-def _close_location(price: float | None, high: float | None, low: float | None) -> float | None:
+def CalculateCloseLocation(price: float | None, high: float | None, low: float | None) -> float | None:
     if not _all_finite(price, high, low) or price is None or high is None or low is None or high <= low:
         return None
     return Clamp((price - low) / (high - low) * 100.0)
 
 
-def _ma_deviation_inverse(price: float | None, ma20: float | None) -> float | None:
+def CalculateMaDeviationInverse(price: float | None, ma20: float | None) -> float | None:
     if not _all_finite(price, ma20) or price is None or ma20 is None or ma20 <= 0:
         return None
     deviation = abs(price / ma20 - 1.0) * 100.0
     return Clamp(100.0 - deviation * 10.0)
 
 
-def _optional_band_score(
+def CalculateOptionalBandScore(
     value: float | None, lower: float, optimal_low: float, optimal_high: float, upper: float
 ) -> float | None:
     return BandScore(value, lower, optimal_low, optimal_high, upper) if _all_finite(value) else None
@@ -84,7 +84,7 @@ def _all_finite(*values: float | None) -> bool:
     return all(value is not None and math.isfinite(value) for value in values)
 
 
-def _missing_quote_fields(quote: MarketQuote) -> tuple[str, ...]:
+def FindMissingQuoteFields(quote: MarketQuote) -> tuple[str, ...]:
     return tuple(
         name
         for name in (
@@ -107,7 +107,7 @@ def _missing_quote_fields(quote: MarketQuote) -> tuple[str, ...]:
     )
 
 
-def _structured_evidence(
+def BuildStructuredEvidence(
     quote: MarketQuote,
     values: Mapping[str, float | None],
     observed_at: datetime,
@@ -126,3 +126,16 @@ def _structured_evidence(
         received_at=observed_at,
         data_version=quote.data_version,
     )
+
+
+__all__ = [
+    "CalculateMaPosition",
+    "CalculateSlopeScore",
+    "CalculateBreakoutScore",
+    "CalculatePriceVolumeConfirmation",
+    "CalculateCloseLocation",
+    "CalculateMaDeviationInverse",
+    "CalculateOptionalBandScore",
+    "FindMissingQuoteFields",
+    "BuildStructuredEvidence",
+]

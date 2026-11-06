@@ -29,7 +29,7 @@ from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 
 
-from tests.helpers.shared.configuration import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
+from tests.helpers.download.company_resources import SQLiteCompanyFactsIndexFixture as SQLiteCompanyFactsIndex
 
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 

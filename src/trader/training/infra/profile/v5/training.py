@@ -6,7 +6,8 @@ from trader.training.application.resources import TrainingSampleSettings
 from pathlib import Path
 
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
-from trader.training.infra.engine import ProfileTrainingRequest, RunProfileTraining, TrainingRunResult
+from trader.training.infra.engine import ProfileTrainingRequest, RunProfileTraining
+from trader.training.application.profile_training import TrainingRunResult
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.training_settings import ProfileTrainingSettings
 

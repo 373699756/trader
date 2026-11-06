@@ -15,14 +15,14 @@ from trader.training.infra.research.historical_partitions import (
 
 def test_polars_partition_and_top_manifest_are_immutable_and_verifiable(tmp_path) -> None:
     extraction = HistoricalExtractor(_Port(), _Evaluator()).extract()
-    archive = PolarsHistoricalPartitionSnapshot(tmp_path)
+    evidence = PolarsHistoricalPartitionSnapshot(tmp_path)
 
-    first = archive.write_extraction(extraction)
-    second = archive.write_extraction(extraction)
+    first = evidence.write_extraction(extraction)
+    second = evidence.write_extraction(extraction)
 
     assert first == second
-    assert archive.verify_extraction()["extraction_hash"] == extraction.content_hash
-    assert archive.verify_day(TRADE_DATE).day_hash == extraction.days[0].content_hash
+    assert evidence.verify_extraction()["extraction_hash"] == extraction.content_hash
+    assert evidence.verify_day(TRADE_DATE).day_hash == extraction.days[0].content_hash
     manifest = json.loads((tmp_path / "2026-08-10" / "manifest.json").read_text(encoding="utf-8"))
     assert len(manifest["content_hash"]) == 64
     assert {item["path"] for item in manifest["files"]} >= {
@@ -39,22 +39,22 @@ def test_polars_partition_and_top_manifest_are_immutable_and_verifiable(tmp_path
 
     conflicting = HistoricalExtractor(_Port(), _Evaluator(61.0)).extract()
     with pytest.raises(HistoricalPartitionConflictError):
-        archive.write_extraction(conflicting)
+        evidence.write_extraction(conflicting)
 
 
 def test_partition_verification_rejects_tampered_file_and_top_manifest(tmp_path) -> None:
     extraction = HistoricalExtractor(_Port(), _Evaluator()).extract()
-    archive = PolarsHistoricalPartitionSnapshot(tmp_path)
-    archive.write_extraction(extraction)
+    evidence = PolarsHistoricalPartitionSnapshot(tmp_path)
+    evidence.write_extraction(extraction)
 
     parquet = tmp_path / "2026-08-10" / "candidates.parquet"
     parquet.write_bytes(parquet.read_bytes() + b"tampered")
     with pytest.raises(HistoricalPartitionConflictError, match="file verification"):
-        archive.verify_day(TRADE_DATE)
+        evidence.verify_day(TRADE_DATE)
 
     manifest_path = tmp_path / "extraction-manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     payload["status"] = "extracted"
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(HistoricalPartitionConflictError, match="hash mismatch"):
-        archive.verify_extraction()
+        evidence.verify_extraction()

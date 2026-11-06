@@ -7,7 +7,8 @@ from functools import partial
 
 import pytest
 
-from tests.helpers.shared.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture
+from tests.helpers.download.configuration import DownloadFailureConfigurationFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.download.qfq import QFQ_CONFIGURATION, QFQ_TENCENT_OPTIONS
 from tests.helpers.download.history.tencent_history_supplier import _Http, DAY, SECURITY
 from tests.helpers.download.history.infra.history_sync import NOW
@@ -102,7 +103,7 @@ def test_diagnostic_write_failure_is_visible_and_does_not_replace_original_error
 def test_market_reference_preparation_failure_is_recorded_before_workers_start(tmp_path, monkeypatch):
     from trader import bootstrap
     from trader.infra.settings.data_paths import DataPaths
-    from tests.helpers.shared.configuration import HistorySyncConfigurationFixture
+    from tests.helpers.download.configuration import HistorySyncConfigurationFixture
 
     paths = DataPaths(tmp_path)
     def prepare(*_args, **_kwargs):

@@ -47,7 +47,7 @@ from trader.recommendation.domain.scoring.company import (
     ScoreLedgerInput,
 )
 
-from tests.helpers.shared.configuration import CompanyScoringPolicyFixture as CompanyScoringPolicy
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture as CompanyScoringPolicy
 
 from trader.recommendation.infra.persistence import freeze_records as freeze_records_module
 

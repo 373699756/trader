@@ -6,7 +6,7 @@ from datetime import timedelta
 import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.shared.configuration import SQLiteCompanyEvidenceReaderFixture
+from tests.helpers.download.company_resources import SQLiteCompanyEvidenceReaderFixture
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction

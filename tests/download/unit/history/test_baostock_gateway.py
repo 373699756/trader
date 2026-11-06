@@ -6,7 +6,7 @@ import pytest
 
 from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
 
-from trader.download.infra.baostock_gateway import BaoStockRowGateway, QfqSourceWindows, _result_rows
+from trader.download.infra.baostock_gateway import BaoStockRowGateway, QfqSourceWindows, ReadBaoStockResultRows
 
 from trader.download.infra.baostock_session import LoginBaostock, RateLimitedBaoStockSdk
 
@@ -389,7 +389,7 @@ def test_gateway_does_not_treat_a_blacklisted_followup_page_as_complete() -> Non
     result = _PagedBlacklistResult(("value",), (("first-page",),))
 
     with pytest.raises(RuntimeError, match="supplier_query_failed_blacklisted"):
-        _result_rows(result, "unadjusted_daily_query_failed")
+        ReadBaoStockResultRows(result, "unadjusted_daily_query_failed")
 
 
 @pytest.mark.parametrize("vendor_code", ("10001001", "10002001", "10002008"))
@@ -398,4 +398,4 @@ def test_gateway_marks_login_and_transport_query_errors_as_session_failures(vend
     result.error_code = vendor_code
 
     with pytest.raises(RuntimeError, match="supplier_query_session_failed"):
-        _result_rows(result, "qfq_daily_query_failed")
+        ReadBaoStockResultRows(result, "qfq_daily_query_failed")

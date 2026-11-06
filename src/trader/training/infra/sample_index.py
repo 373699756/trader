@@ -13,7 +13,7 @@ from datetime import date
 from itertools import groupby
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal, cast
+from typing import cast
 
 import numpy as np
 
@@ -29,13 +29,13 @@ from trader.infra.sqlite_connection import (
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan, TrainingSampleDatePartitions
 from trader.training.domain.training_dates import TrainingDateSplit
+from trader.training.domain.sample_coverage import SampleCoverage, SampleDateGap, TrainingSplitName
 from trader.training.application.resources import TrainingSampleSettings
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.sample_sequences import SampleSequenceLayout, SampleSequenceReader, SampleSequenceWriter
 from trader.training.infra.sample_schema import SAMPLE_TARGET_COLUMNS, SampleFeatureHash, TrainingSampleSchema
 
-TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation", "holdout"]
 _BASELINE_EXECUTION_OPTIONS = TrainingExecutionOptions()
 
 
@@ -134,25 +134,6 @@ class TargetMetric:
     count: int
     mean: float | None
     standard_deviation: float | None
-
-
-@dataclass(frozen=True)
-class SampleDateGap:
-    trade_date: date
-    sample_rows: int
-    candidates: int
-    missing_future_returns: tuple[int, ...]
-
-
-@dataclass(frozen=True)
-class SampleCoverage:
-    target: str
-    partition: TrainingSplitName
-    expected_dates: int
-    effective_dates: int
-    sample_rows: int
-    target_rows: int
-    missing: tuple[SampleDateGap, ...]
 
 
 class SQLiteTrainingSampleIndex:
@@ -962,5 +943,4 @@ __all__ = [
     "TrainingSample",
     "TrainingSampleMatrix",
     "TrainingSampleBatch",
-    "TrainingSplitName",
 ]

@@ -13,7 +13,7 @@ from tests.helpers.recommendation.pipeline_helpers import observed_input_stages,
 from tests.helpers.recommendation.review_helpers import review
 
 
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
@@ -60,7 +60,7 @@ from trader.recommendation.infra.persistence.freeze_record_codec import (
     CommittedRecordFromBytes,
 )
 
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 
 from trader.training.application.research_audit import BuildCommittedResearchAudit
 
@@ -82,7 +82,7 @@ from tests.helpers.recommendation.publication.tomorrow_projection import (
 def test_model_eligibility_reuses_known_boards_but_preserves_freshness_and_board_correction(
     application_feature_factory,
 ):
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     feature = _verified_feature(application_feature_factory("600000", EVALUATED_AT - timedelta(seconds=10)))
     feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN))
     assert _model_eligible_features((feature,), policy, evaluated_at=EVALUATED_AT, max_age_seconds=30)[0] is feature
@@ -94,7 +94,7 @@ def test_model_eligibility_reuses_known_boards_but_preserves_freshness_and_board
 
 
 def test_quality_batch_membership_is_linear_and_checks_complete_values(application_feature_factory, monkeypatch):
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     features = tuple(
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(40)
@@ -123,7 +123,7 @@ def test_fourteenth_stage_cannot_select_beyond_the_global_score_six(application_
         def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
             return tuple(ModelPrediction(item.code, 1.0 if item.code == "600006" else -0.10) for item in inputs)
 
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     policy = replace(policy, selection=replace(policy.selection, thresholds={"tomorrow": 0.0, "d25": 0.0}))
     features = tuple(
         _with_model_features(
@@ -155,7 +155,7 @@ def test_fourteenth_stage_cannot_select_beyond_the_global_score_six(application_
 def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     application_feature_factory,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     features = tuple(
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(100)
@@ -246,7 +246,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
 def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendation_pools(
     application_feature_factory,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     features = tuple(
         _with_model_features(
             _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10))),
@@ -298,7 +298,7 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
 def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
     application_feature_factory,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     accepted = _with_model_features(
         _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10))),
         1,
@@ -323,7 +323,7 @@ def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(
 
 
 def test_cost_reference_uses_full_model_eligible_board_before_candidate_limits(application_feature_factory) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     features = tuple(
         _with_model_features(
             _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10))),
@@ -361,7 +361,7 @@ def test_cost_reference_uses_full_model_eligible_board_before_candidate_limits(a
 def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(
     application_feature_factory,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     feature = _with_model_features(
         _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10))),
         1,
@@ -398,7 +398,7 @@ def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(
 def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement(
     application_feature_factory,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     eligible = _with_model_features(
         _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10))),
         1,
@@ -431,7 +431,7 @@ def test_tomorrow_model_excludes_only_candidate_below_its_61_session_requirement
 def test_tomorrow_model_history_coverage_requires_the_loaded_profile_fields(
     application_feature_factory,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     eligible = _with_model_features(
         _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10))),
         1,
@@ -484,7 +484,7 @@ def test_configured_action_floors_reach_freeze_projection(
     offset: float,
     expected: str,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     strategy = native_type.strategy
     threshold = policy.selection.thresholds[strategy.value]
     score = round(threshold + offset, 2)
@@ -522,7 +522,7 @@ def test_close_fallback_never_consumes_a_model_head_or_its_61_day_requirement(
     application_feature_factory,
     native_type: type[ScoredNativeInput],
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     feature = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10)))
     predictor = _RecordingProductionPredictor()
     native_input = _native_input((feature,), native_type)
@@ -543,7 +543,7 @@ def test_close_fallback_never_consumes_a_model_head_or_its_61_day_requirement(
 def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
     application_feature_factory,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     features = tuple(
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(100)
@@ -599,7 +599,7 @@ def test_native_projection_scores_fresh_candidates_against_their_coherent_older_
     application_feature_factory,
     native_type: type[ScoredNativeInput],
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     market_at = EVALUATED_AT - timedelta(seconds=90)
     candidate_at = EVALUATED_AT - timedelta(seconds=5)
     market_features = tuple(
@@ -648,7 +648,7 @@ def test_native_projection_scores_fresh_candidates_against_their_coherent_older_
 def test_native_projection_does_not_treat_stale_candidate_quotes_as_fresh_population_quotes(
     application_feature_factory,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     market_at = EVALUATED_AT - timedelta(seconds=90)
     market_features = tuple(
         _verified_feature(application_feature_factory(f"600{index:03d}", market_at)) for index in range(100)
@@ -689,7 +689,7 @@ def test_native_projection_classifies_an_invalid_candidate_quote_as_transient(
     value,
     reason,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     source = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10)))
     invalid = replace(source, quote=replace(source.quote, **{field: value}))
 
@@ -715,7 +715,7 @@ def test_business_rejection_takes_precedence_over_the_same_stocks_missing_input(
     strategy,
     separate_invalid,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     source = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10)))
     suspended = replace(source, quote=replace(source.quote, is_suspended=True, price=None))
     other = replace(source, quote=replace(source.quote, code="600002", price=None))
@@ -737,7 +737,7 @@ def test_business_rejection_takes_precedence_over_the_same_stocks_missing_input(
 
 @pytest.mark.parametrize("strategy", (TomorrowNativeInput, D25NativeInput))
 def test_stale_and_invalid_input_has_one_refresh_pending_terminal_state(application_feature_factory, strategy) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     source = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(minutes=1)))
     invalid = replace(source, quote=replace(source.quote, price=None))
 
@@ -753,7 +753,7 @@ def test_stale_and_invalid_input_has_one_refresh_pending_terminal_state(applicat
 def test_supply_status_rejects_selection_without_immutable_stage_facts(
     application_feature_factory,
 ) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     source = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10)))
     projection = BuildScoredLocal(_native_input((source,)), policy, sequence=1)
     projection = replace(projection, selection=replace(projection.selection, stage_counts=None))
@@ -763,7 +763,7 @@ def test_supply_status_rejects_selection_without_immutable_stage_facts(
 
 
 def test_review_completed_after_1448_cannot_create_hybrid(application_feature_factory) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     features = tuple(
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(100)
@@ -785,7 +785,7 @@ def test_review_completed_after_1448_cannot_create_hybrid(application_feature_fa
 
 
 def test_review_completed_at_1448_cannot_create_hybrid(application_feature_factory) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     features = tuple(
         _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
         for index in range(100)

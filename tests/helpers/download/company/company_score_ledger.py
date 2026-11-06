@@ -8,7 +8,8 @@ from trader.download.domain.company_evidence import CompanyDocument, CompanyFina
 from trader.download.domain.company_facts import CompanyFacts
 from trader.recommendation.domain.publication.score_ledger import ScoreAdjustmentItem
 from trader.recommendation.domain.scoring.company import AssessCompanyAdjustments, BuildCompanyScoringContext, CompanyScoringCalendar, CompanyAdjustments, CompanyFinancialScores
-from tests.helpers.shared.configuration import CompanyEventPolicyFixture, CompanyScoringPolicyFixture
+from tests.helpers.download.configuration import CompanyEventPolicyFixture
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture
 
 AT = datetime(2026, 10, 27, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
 

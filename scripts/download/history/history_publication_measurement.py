@@ -18,7 +18,7 @@ from typing import Literal, ParamSpec, Protocol, TypeVar
 from unittest.mock import patch
 
 from trader.download.domain.history_control import HistorySnapshotPartition
-from trader.download.infra import history_control_index, history_direct_prices, history_prices, history_sync_runner
+from trader.download.infra import history_control_index, history_direct_prices, history_prices, history_sync_io
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_prices import HistoryPricePartition
@@ -201,7 +201,7 @@ class HistoryPublicationMeasurement:
         try:
             self._stack.enter_context(patch.object(history_prices, "PrepareSqliteFilePublication", measured_prepare))
             self._stack.enter_context(patch.object(history_prices, "PublishPreparedSqliteFile", measured_finalize))
-            for module in (history_control_index, history_direct_prices, history_prices, history_sync_runner):
+            for module in (history_control_index, history_direct_prices, history_prices, history_sync_io):
                 self._stack.enter_context(patch.object(module, "PublishSqliteFile", measured_publish))
             for owner, name, replacement in (
                 (HistoryPricePartition, "seal_months", measured_seal),

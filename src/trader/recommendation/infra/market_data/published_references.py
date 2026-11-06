@@ -14,7 +14,7 @@ from trader.recommendation.application.ports.static_reference import StaticRefer
 from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot
 from trader.recommendation.domain.market.models import Board, ModelIndustryReference
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
-from trader.recommendation.infra.market_data.market_cache_identity import _reference_epoch
+from trader.recommendation.infra.market_data.market_cache_identity import BuildReferenceEpoch
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,7 @@ class PublishedReferences:
     def static_reference(self) -> StaticReferenceRead:
         with self._lock:
             return StaticReferenceRead(
-                self._static, _reference_epoch(self.versions()), self._failure is not None, self._max_age
+                self._static, BuildReferenceEpoch(self.versions()), self._failure is not None, self._max_age
             )
 
     def security_observations(self) -> tuple[SourceObservation, ...]:

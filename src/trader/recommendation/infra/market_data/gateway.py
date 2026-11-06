@@ -43,17 +43,17 @@ from trader.recommendation.infra.market_data.gateway_health import (
     SecurityMasterHealthStatus,
 )
 from trader.recommendation.infra.market_data.gateway_runtime import (
-    _cache_error_code,
-    _CircuitState,
-    _elapsed,
-    _market_route_error_message,
-    _market_route_outcome,
-    _observation_version,
-    _percentile,
-    _preserve_newer_quotes,
-    _reference_replaces,
-    _SingleFlight,
-    _source_degraded_reasons,
+    ClassifyMarketCacheError,
+    MarketCircuitState,
+    ElapsedMilliseconds,
+    DescribeMarketRouteError,
+    BuildMarketRouteOutcome,
+    BuildObservationVersion,
+    CalculateMarketLatencyPercentile,
+    PreserveNewerQuotes,
+    ShouldReplaceReference,
+    MarketCollectionSingleFlight,
+    BuildSourceDegradedReasons,
 )
 from trader.recommendation.infra.market_data.provider_ports import (
     CandidateQuoteSource,
@@ -164,14 +164,14 @@ class MarketDataGateway:
         self._monotonic = options.get("monotonic", time.monotonic)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
         self._latency = options.get("latency") or LatencyWaterfall(monotonic=self._monotonic)
-        self._market_flight: _SingleFlight[Sequence[MarketQuote]] = _SingleFlight()
+        self._market_flight: MarketCollectionSingleFlight[Sequence[MarketQuote]] = MarketCollectionSingleFlight()
         self._candidate_fetch_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._states = {
-            "tencent_market": _CircuitState(),
-            "sina": _CircuitState(),
-            "tencent": _CircuitState(),
-            "tencent_long": _CircuitState(),
+            "tencent_market": MarketCircuitState(),
+            "sina": MarketCircuitState(),
+            "tencent": MarketCircuitState(),
+            "tencent_long": MarketCircuitState(),
         }
         self._recovery_probes = dict(options.get("recovery_probes", {}))
         self._latest_by_code: dict[str, MarketQuote] = {}
@@ -281,7 +281,7 @@ class MarketDataGateway:
         )
         _require_current_round(cancelled)
         successes = tuple(result for result in results if result.status == "success")
-        outcome = _market_route_outcome(results)
+        outcome = BuildMarketRouteOutcome(results)
         completed_at = max(observed_at, self._wall_clock())
         if deadline is not None and completed_at >= deadline:
             with self._state_lock:
@@ -295,13 +295,13 @@ class MarketDataGateway:
                     self._latest_snapshot = _with_snapshot_degradation(
                         self._latest_snapshot,
                         {
-                            *_source_degraded_reasons(results),
+                            *BuildSourceDegradedReasons(results),
                             "all_sources_failed:last_valid_snapshot",
                         },
                     )
             if cached:
                 return cached
-            raise MarketDataUnavailableError("market data unavailable: " + _market_route_error_message(results))
+            raise MarketDataUnavailableError("market data unavailable: " + DescribeMarketRouteError(results))
         observations = tuple(observation for result in successes for observation in result.observations)
         if self._preview_context is not None and not any(
             self._preview_context.accepts_quote(observation.source_time, completed_at)
@@ -330,15 +330,15 @@ class MarketDataGateway:
                 max_age_seconds=max_observation_age_seconds, preview_context=self._preview_context
             ),
         )
-        self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
-        snapshot = _with_snapshot_degradation(snapshot, _source_degraded_reasons(results))
+        self.record_local_latency("merge", ElapsedMilliseconds(merge_started, self._monotonic()))
+        snapshot = _with_snapshot_degradation(snapshot, BuildSourceDegradedReasons(results))
         commit_started = self._monotonic()
         # Serialize the local commit with targeted overlays. Retrying the whole
         # columnar projection on every overlay can starve full-market publication.
         with self._state_lock:
             latest = self._latest_snapshot
             _require_current_round(cancelled)
-            commit_snapshot = _preserve_newer_quotes(
+            commit_snapshot = PreserveNewerQuotes(
                 snapshot, latest, merge_epoch=self._versions.advance("market_commit")
             )
             commit_snapshot, columnar = _try_columnar_snapshot(
@@ -359,7 +359,7 @@ class MarketDataGateway:
             self._conflict_count += len(commit_snapshot.conflicts)
             self.record_local_latency(
                 "canonical_commit",
-                _elapsed(commit_started, self._monotonic()),
+                ElapsedMilliseconds(commit_started, self._monotonic()),
             )
             return tuple(self._latest_by_code.values())
 
@@ -512,7 +512,7 @@ class MarketDataGateway:
         except Exception as exc:
             _require_current_round(request.cancelled)
             return self._retain_targeted_quotes(
-                codes, f"tencent:{_cache_error_code(exc)}", request.cancelled, isolated=isolated,
+                codes, f"tencent:{ClassifyMarketCacheError(exc)}", request.cancelled, isolated=isolated,
             )
         completed_at = max(requested_at, self._wall_clock())
         _require_current_round(request.cancelled)
@@ -554,7 +554,7 @@ class MarketDataGateway:
             quotes=tuple(quote for quote in snapshot.quotes if quote.code in refreshed_codes),
             field_sources={code: fields for code, fields in snapshot.field_sources.items() if code in refreshed_codes},
         )
-        self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
+        self.record_local_latency("merge", ElapsedMilliseconds(merge_started, self._monotonic()))
         with self._state_lock:
             _require_current_round(request.cancelled)
             if deadline is not None and self._wall_clock() >= deadline:
@@ -671,7 +671,7 @@ class MarketDataGateway:
         self._conflict_count += len(snapshot.conflicts)
         self.record_local_latency(
             "targeted_overlay_commit",
-            _elapsed(commit_started, self._monotonic()),
+            ElapsedMilliseconds(commit_started, self._monotonic()),
         )
         return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
 
@@ -772,7 +772,7 @@ class MarketDataGateway:
         if current is None:
             merged = incoming
         else:
-            incoming_wins = _reference_replaces(current, incoming)
+            incoming_wins = ShouldReplaceReference(current, incoming)
             winner, supplement = (incoming, current) if incoming_wins else (current, incoming)
             fields = dict(supplement.fields)
             fields.update(winner.fields)
@@ -843,7 +843,7 @@ class MarketDataGateway:
             by_source = self._latest_observations.setdefault(observation.subject_key, {})
             source = observation.source.strip().lower()
             current = by_source.get(source)
-            if current is None or _observation_version(observation) >= _observation_version(current):
+            if current is None or BuildObservationVersion(observation) >= BuildObservationVersion(current):
                 by_source[source] = observation
 
     def canonical_snapshot(self) -> CanonicalMarketSnapshot | None:
@@ -905,8 +905,8 @@ class MarketDataGateway:
                         consecutive_failures=state.failures,
                         circuit_open=state.open_until > now,
                         last_latency_ms=round(state.last_latency_ms, 2),
-                        p50_latency_ms=_percentile(state.latencies_ms, 0.50),
-                        p95_latency_ms=_percentile(state.latencies_ms, 0.95),
+                        p50_latency_ms=CalculateMarketLatencyPercentile(state.latencies_ms, 0.50),
+                        p95_latency_ms=CalculateMarketLatencyPercentile(state.latencies_ms, 0.95),
                         last_error=state.last_error,
                         data_age_seconds=(
                             max(0.0, (measured_at - state.last_source_time).total_seconds())
@@ -944,16 +944,16 @@ class MarketDataGateway:
             quotes = tuple(fetcher())
         except MarketDataNoDataError as exc:
             _require_current_round(cancellation.is_set if cancellation is not None else None)
-            self.record_local_latency("external_source", _elapsed(started, self._monotonic()))
+            self.record_local_latency("external_source", ElapsedMilliseconds(started, self._monotonic()))
             self._record(source, False, started, str(exc))
             raise
         except Exception as exc:
             _require_current_round(cancellation.is_set if cancellation is not None else None)
-            self.record_local_latency("external_source", _elapsed(started, self._monotonic()))
+            self.record_local_latency("external_source", ElapsedMilliseconds(started, self._monotonic()))
             self._record(source, False, started, str(exc))
             raise MarketDataFailedError(source, str(exc)) from exc
         _require_current_round(cancellation.is_set if cancellation is not None else None)
-        self.record_local_latency("external_source", _elapsed(started, self._monotonic()))
+        self.record_local_latency("external_source", ElapsedMilliseconds(started, self._monotonic()))
         if len(quotes) < minimum_rows:
             error = MarketDataNoDataError(f"{source}: only {len(quotes)} market rows")
             self._record(source, False, started, str(error))

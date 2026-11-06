@@ -124,7 +124,7 @@ def test_v1_training_dispatch_preserves_its_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from tests.helpers.shared.cold_start import _empty_config
-    from trader.training.infra.profile.v1.training import V1TrainingResult
+    from trader.training.application.learned_rank_training import V1TrainingResult
 
     config = _empty_config(tmp_path)
     calls = []
@@ -222,7 +222,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
         return status
 
-    monkeypatch.setattr("trader.download.infra.history_sync_runner.RunHistorySync", synchronize)
+    monkeypatch.setattr("trader.bootstrap.ExecuteHistorySync", synchronize)
     from tests.helpers.shared.reference_fixtures import PreparedFixture
     from tests.helpers.download.history.infra.history_sync import NOW
 

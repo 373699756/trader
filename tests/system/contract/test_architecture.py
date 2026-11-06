@@ -16,9 +16,11 @@ from tests.helpers.shared.module_boundaries import (
     ImportCycles,
     LayerImportViolations,
     ParseSourceImports,
+    ResourceCreationViolations,
     SourceBoundaryViolations,
     SourceImportGraph,
     SourceImports,
+    SourceModuleName,
     SourceImportTargets,
 )
 from tests.helpers.shared.python_source import source_text, source_tree
@@ -153,21 +155,14 @@ def test_shared_technical_primitives_have_one_infra_owner() -> None:
 
 
 def test_execution_resources_are_created_only_by_the_composition_root() -> None:
-    allowed = {
-        Path("bootstrap.py"): {"BoundedExecutor"},
-        Path("infra/workers.py"): {"ThreadPoolExecutor"},
-    }
     violations: list[str] = []
     for path in SOURCE_ROOT.rglob("*.py"):
         relative = path.relative_to(SOURCE_ROOT)
-        for node in ast.walk(source_tree(path)):
-            if not isinstance(node, ast.Call):
-                continue
-            name = node.func.id if isinstance(node.func, ast.Name) else ""
-            if name in {"BoundedExecutor", "ThreadPoolExecutor", "ProcessPoolExecutor"} and name not in allowed.get(
-                relative, set()
-            ):
-                violations.append(f"{relative}:{node.lineno}:{name}")
+        violations.extend(
+            f"{relative}:{issue}" for issue in ResourceCreationViolations(
+                source_text(path), SourceModuleName(path, SOURCE_ROOT), is_package=path.name == "__init__.py",
+            )
+        )
     assert violations == []
 
 
@@ -342,7 +337,47 @@ def test_domain_has_no_external_io_or_clock_reads() -> None:
 
 
 def test_bootstrap_is_the_only_composition_root() -> None:
-    assert not (SOURCE_ROOT / "infra/container.py").exists()
+    test_execution_resources_are_created_only_by_the_composition_root()
+    definitions = []
+    for path in SOURCE_ROOT.rglob("*.py"):
+        for node in source_tree(path).body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in {"BuildSystem", "BuildProfiledSystem"}:
+                definitions.append((node.name, path.relative_to(SOURCE_ROOT)))
+    assert sorted(definitions) == [("BuildProfiledSystem", Path("bootstrap.py")), ("BuildSystem", Path("bootstrap.py"))]
+
+
+@pytest.mark.parametrize("source", (
+    "from trader.infra.workers import BoundedExecutor as Executor\nExecutor()",
+    "import trader.infra.workers as workers\nworkers.BoundedExecutor()",
+    "import concurrent.futures\nconcurrent.futures.ThreadPoolExecutor()",
+    "from concurrent import futures as pool\npool.ProcessPoolExecutor()",
+    "from trader.infra.workers import BoundedExecutor\nFactory = BoundedExecutor\nFactory()",
+    "from trader.infra.http_transport import RequestsHttpTransport as Client\nClient()",
+    "from trader.infra.isolated_http import IsolatedHttpExecutor as HttpPool\nHttpPool()",
+    "from trader.infra.clock import shanghai as clock\nclock.ShanghaiClock()",
+))
+def test_resource_creation_gate_rejects_aliased_and_attribute_constructors(source) -> None:
+    assert ResourceCreationViolations(source, "trader.recommendation.infra.second_root")
+
+
+def test_resource_creation_gate_keeps_injection_and_same_named_values_legal() -> None:
+    assert ResourceCreationViolations(
+        "from trader.infra.workers import BoundedExecutor as Executor\nExecutor()", "trader.bootstrap",
+    ) == ()
+    assert ResourceCreationViolations(
+        "from concurrent import futures\nfutures.ThreadPoolExecutor()", "trader.infra.workers",
+    ) == ()
+    assert ResourceCreationViolations(
+        "def use(Executor):\n    return Executor()", "trader.training.infra.consumer",
+    ) == ()
+
+
+@pytest.mark.parametrize("business", ("download", "training", "recommendation"))
+@pytest.mark.parametrize("layer", ("domain", "application", "infra"))
+def test_shared_infra_cannot_import_business_values_or_implementations(business, layer) -> None:
+    module = "trader.infra.example"
+    source = f"from trader.{business}.{layer}.example import Value"
+    assert LayerImportViolations(module, ParseSourceImports(source, module))
 
 
 def test_application_runtime_modules_are_reachable_from_bootstrap() -> None:
@@ -537,12 +572,13 @@ def test_history_month_values_and_sqlite_codec_keep_serialization_at_the_infra_b
 def test_history_sync_progress_stays_typed_until_the_entrypoint_projection() -> None:
     contract = source_text(SOURCE_ROOT / "download/domain/history_sync.py")
     supplier = source_text(SOURCE_ROOT / "download/infra/baostock_sync_supplier.py")
-    runtime = source_text(SOURCE_ROOT / "download/infra/history_sync_runner.py")
+    runtime = source_text(SOURCE_ROOT / "download/application/download_history.py")
+    storage = source_text(SOURCE_ROOT / "download/infra/history_sync_io.py")
     projection = source_text(SOURCE_ROOT / "download/entrypoints/history_sync_progress.py")
 
     assert "class HistorySyncProgress:" in contract
     assert "class HistorySyncProgressPort(Protocol):" in contract
-    assert all("import json" not in source for source in (contract, supplier, runtime))
+    assert all("import json" not in source for source in (contract, supplier, runtime, storage))
     assert "import json" not in projection
     assert "def publish_result(" in projection
     assert "总进度" in projection
@@ -568,6 +604,8 @@ def test_download_business_has_one_owner_and_no_legacy_history_paths() -> None:
         "history_prices.py",
     )
     assert not any((SOURCE_ROOT / "infra" / "research" / name).exists() for name in retired)
+    assert not (download / "infra" / "history_sync_runner.py").exists()
+    assert not (download / "infra" / "history_sync_gateway.py").exists()
 
 
 def test_production_composition_injects_the_single_cadence_planner() -> None:

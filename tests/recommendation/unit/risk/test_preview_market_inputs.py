@@ -25,7 +25,7 @@ from tests.helpers.recommendation.market_data import (
     _tail_minute_bars,
 )
 from tests.helpers.recommendation.market.candidate_history_tail import CALENDAR, NOW, HistoryInput, _cell
-from tests.helpers.shared.configuration import HardFilterPolicyFixture
+from tests.helpers.recommendation.configuration import HardFilterPolicyFixture
 from tests.helpers.recommendation.scoring_helpers import profile_for
 from tests.helpers.recommendation.scoring.tomorrow_production_model import _model_feature
 from tests.helpers.recommendation.selection.v5_model_filtering import _SequencePredictor

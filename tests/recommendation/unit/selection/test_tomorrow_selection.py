@@ -15,7 +15,7 @@ from trader.recommendation.domain.selection.scored_selection import (
     ScoredSelectionRequest,
     SelectScored,
 )
-from tests.helpers.shared.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
 
 import hashlib
 import pytest

@@ -13,7 +13,8 @@ import numpy as np
 import pytest
 
 from scripts.training.models import v5_lite
-from tests.helpers.shared.configuration import SqlitePolicyFixture, TcnFittingParametersFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.configuration import TcnFittingParametersFixture
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache

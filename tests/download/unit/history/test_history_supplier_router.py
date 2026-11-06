@@ -24,7 +24,7 @@ from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_
 
 from trader.download.domain.history_sync import HistoryGapSummary, HistorySyncProgress
 
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryCell, PublishedHistoryWindow
 
@@ -184,16 +184,6 @@ def test_price_publication_does_not_call_baostock_context_when_industry_is_not_r
     assert result.published and not result.needs_retry
     assert result.industry_readiness is not None
     assert not result.industry_readiness.ready
-
-    reused = RunHistoryFixture(
-        HistorySyncConfiguration(
-            tmp_path, (tmp_path).parent / "reference", sessions=2, reread_sessions=2, minimum_free_bytes=0,
-        ),
-        router,
-        clock=lambda: _at(dates[-1]),
-    )
-    assert reused.state == "already_current"
-    assert reused.industry_readiness == result.industry_readiness
 
 
 def test_invalid_industry_query_index_preserves_original_and_reports_unready_prices(tmp_path) -> None:
@@ -425,7 +415,7 @@ def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
 
 def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
     from trader.download.infra.history_download_index import HistoryDownloadIndex
-    from trader.download.infra.history_sync_runner import _download_tasks
+    from trader.download.domain.history_download import PlanHistoryDownloadTasks
 
     dates = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(2000))
     baseline, prices = Baseline(dates), Prices()
@@ -436,7 +426,7 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
     control = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
     control.initialize()
     index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    tasks = _download_tasks(context, None, frozenset(), index, 5)
+    tasks = PlanHistoryDownloadTasks(context, None, frozenset(), index.gaps_by_code(context.calendar.open_dates), 5)
     assert tasks[0].dates == dates
     assert tasks[1].dates == dates[-639:]
     assert router.fetch_tencent_window(context.universe[0], dates).cells

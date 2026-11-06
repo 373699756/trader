@@ -48,7 +48,7 @@ def Main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from scripts.core.paths import ExternalPath
     from trader.infra.settings import LoadRuntimeSettings
-    from trader.infra.settings.training import LoadTrainingResourceSettings
+    from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 
     runtime = LoadRuntimeSettings(TOOL_ROOT / "config/runtime.json")
     sample_settings = LoadTrainingResourceSettings(runtime.project_root, runtime.disk_medium or "unknown").samples

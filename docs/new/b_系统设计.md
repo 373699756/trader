@@ -44,6 +44,10 @@ domain 不读配置、时间、网络、文件或数据库。application 依赖�
 | 执行器 | 有界任务、背压、停止、等待和在途统计 | 隐式跨业务编排 |
 | 配置解析 | 一次解析为类型对象并注入 | 每层自行读配置、复制默认值 |
 
+顶层`infra/settings`只持有运行配置与技术解析。荐股策略、Long清单、因子和风险配置由`recommendation/infra/settings`持有，训练资源由`training/infra/resource_settings`解析；旧业务配置路径删除，消费者直接使用各owner。特征schema归`recommendation/domain/market/feature_schema`，配置校验不依赖特征构建实现；下载当前行业准入使用自身domain合同，不构造荐股模型对象。
+
+`HttpRequestScope`仅接收显式HTTP工厂，管理单次请求的打开和关闭；`WorkerScope`仅管理root注入的执行器，部分启动失败和正常退出均以同一截止回收已启动资源。资源构造仍由`bootstrap.py`持有。HTTP关闭先取消并拒绝新请求，锁忙显式报告pending，在途调用的finally负责最终关闭；请求关闭与完成关闭分开观察，避免执行器已超时后又无期限等待HTTP锁。
+
 ## 3. 启动、运行和退出
 
 ```mermaid
@@ -62,7 +66,7 @@ flowchart TD
 
 资源表必须列创建者、使用者、停止动作、等待上限和状态。连接、进程、线程、文件映射、队列及 OCR 子进程均不能只“发出取消”却不回收。超时轮次彻底退出前不得开始下一轮；清理耗时独立记录，不能悄悄算作正常120秒内成功。
 
-荐股执行资源已由`config/scheduler.json.pipeline.executors`启动解析并交`bootstrap._build_worker_context`创建。默认并发保持原值，运行配置身份记录有效参数；模型特征/训练manifest不因改变线程数而更换。`CreateApp`和系统组合不启动这些资源。以下是A本阶段核对的实际生命周期；下载/训练/OCR资源仍由各自owner验收，实测CPU/RSS/I/O归D。
+荐股执行资源已由`config/scheduler.json.pipeline.executors`启动解析并交`bootstrap._build_worker_context`创建。默认并发保持原值，运行配置身份记录有效参数；模型特征/训练manifest不因改变线程数而更换。`CreateApp`和系统组合不启动这些资源。以下是A本阶段核对的实际生命周期；下载/训练/OCR资源仍由各自owner验收，实测CPU/RSS/I/O由g第4.5节的CodexC内部唯一后台承接。
 
 | 资源 | 创建/启动与唯一owner | 停止、等待与状态 |
 | --- | --- | --- |
@@ -157,7 +161,7 @@ flowchart TD
 | WAL/checkpoint | 在提交边界控制集中写入成本 | 比较 checkpoint 频率和写放大 | WAL 大小、关闭成本、故障恢复 |
 | 样本布局 | 顺序读取、连续数组候选 | 批读与映射读取候选 | 首次生成、复用、增量和清理总成本 |
 
-现状：`runtime.json.disk_medium` 是全局选择；`sqlite.json.sqlite_policy.hdd/ssd` 各有连接超时、读窗、驱动批次和 checkpoint，当前两组数值相同。2026-11-05用户确认当前PC为SSD，HDD在另一台PC；两机分别验证记录，不将本机虚拟磁盘的`ROTA`当作宿主机介质证明。配置选择、用户确认和只读disk自动检测分别记录于g，不能相互替代。`download.history.write_batches` 已有介质差异，不表示所有模块都已调优。
+现状：`runtime.json.disk_medium` 是全局选择；`sqlite.json.sqlite_policy.hdd/ssd` 各有连接超时、读窗、驱动批次和 checkpoint，当前两组数值相同。用户已在2026-11-05明确换到HDD PC，本批只接续本机HDD；另一台SSD的样本、报告、失败和待验原样保留，两机分别验证记录，不将虚拟磁盘的`ROTA`当作宿主机介质证明。配置选择、用户确认和只读disk自动检测分别记录于g，不能相互替代。`download.history.write_batches` 已有介质差异，不表示所有模块都已调优。
 
 组合根`BuildSqlitePolicy`选择唯一不可变策略，显式配置优先，自动检测unknown使用HDD保守策略。下载、训练及荐股持久化adapter把同一个策略传到公共SQLite边界；只读HTTP/Web不自行选介质或打开业务数据库。`connection_timeout_seconds`进入连接超时，`read_window_rows`限制底层取行窗口，`transaction_batch_rows`限制一次驱动批量提交的行数，`checkpoint_mode`由显式checkpoint操作消费。驱动分批仍处于调用者原有事务内，不按每个小批次分别COMMIT。
 
@@ -212,7 +216,7 @@ flowchart TD
 | --- | --- | --- | --- | --- | --- |
 | `runtime_dir` | 运行状态目录 | 路径 | `.runtime/trader` | 组合根建立运行资源 | 启动读取；不得提交运行数据 |
 | `data_dir` | 业务数据根目录 | 路径 | `data` | 各业务构造自己的数据路径 | 启动读取；不是自动删除范围 |
-| `disk_medium` | 选择存储策略 | `hdd/ssd` | 本轮SSD PC工作区为`ssd`；HDD PC另记 | 给实际读写 adapter 注入策略 | 启动读取；配置值不是物理介质证明 |
+| `disk_medium` | 选择存储策略 | `hdd/ssd` | 本轮HDD PC工作区为`hdd`；另一台SSD进度保留 | 给实际读写 adapter 注入策略 | 启动读取；配置值不是物理介质证明 |
 | `strategy_config` | 业务配置入口 | 文件名 | `strategy.json` | 统一配置解析 | 启动一次读取 |
 | `long_watchlist` | Long 名单文件 | 文件名 | `long_watchlist.json` | Long 只读名单 | 不影响短线模型身份 |
 
@@ -231,7 +235,7 @@ flowchart TD
 
 ### 7.3 完整配置清点与身份边界
 
-本节与c第16章合起来覆盖`config/`顶层20个JSON文件。数组按元素结构或具名选择器列举，避免把每个Long名单成员、每个风险规则的相同结构复制成另一套配置。`config/performance_fixture/manifest.json`是性能夹具的子目录清单，不是第21个运行配置入口，归D保留验收。
+本节与c第16章合起来覆盖`config/`顶层20个JSON文件。数组按元素结构或具名选择器列举，避免把每个Long名单成员、每个风险规则的相同结构复制成另一套配置。`config/performance_fixture/manifest.json`是性能夹具的子目录清单，不是第21个运行配置入口，归CodexC内部唯一后台沿g第4.5节保留验收。
 
 解析是输入边界，最终消费者决定参数是否实际起作用。`runtime_loader._configuration_identity`包含合并runtime配置，但排除`sqlite_policy`和`pipeline.history_preload`；`factor_validation._strategy_contract_identity`包含完整strategy合并配置（包括描述性因子字段和关闭的公司奖励参数）。组合根再合并runtime、strategy和cost身份。改因子文义会形成新的运行配置身份，不重写旧冻结记录，也不改模型工件特征manifest身份。
 
@@ -367,7 +371,7 @@ flowchart TD
 
 #### performance.json
 
-来源：`config/performance.json`。`runtime_loader`/`market_policy.ParsePerformanceBudgets` → 性能诊断与门禁比较。行数/轮数/字节/延迟为非负或正数，百分比为有限数值；它们是验收预算，不是自动调度或收益参数。进入runtime身份；`database.hdd.evidence_status=validated`是旧配置标签，不签本轮D或当前PC已通过。
+来源：`config/performance.json`。`runtime_loader`/`market_policy.ParsePerformanceBudgets` → 性能诊断与门禁比较。行数/轮数/字节/延迟为非负或正数，百分比为有限数值；它们是验收预算，不是自动调度或收益参数。进入runtime身份；`database.hdd.evidence_status=validated`是旧配置标签，不签本轮CodexC后台或当前PC已通过。
 
 | 字段路径 | 中文作用 | 当前值 | 类型/单位 |
 | --- | --- | --- | --- |
@@ -591,13 +595,18 @@ flowchart TD
 --business recommendation --module pipeline --action latency
 --business recommendation --module assets   --action consistency
 --business recommendation --module web      --action company-ledger
+--business recommendation --module web      --action shutdown
 --business download       --module company  --action coverage
 --business training       --module resources --action memory
 --business infra          --module disk     --action profile
 --business engineering    --module packaging --action install
 ```
 
-`business`选择业务，`module`选择业务内部功能，`action`选择具体动作。选择关系唯一声明在`core/catalog.py`，当前57项，包括原49项功能及资源generate、迁移build/rollback、重排build/activate/rollback/finalize和公司live-sync前台同步计量。公司coverage另以互斥具名参数公开pacing及材料键审计，沿用所属业务的事实输入、外部目录及回收预算围栏；公司I/O候选由B独立交付，不纳入本批候选或功能验收。根帮助只展示中立公共选项；选中动作的帮助只导入其参数模块，展示该动作输入、上限和副作用。原profile分派、`--check`及live/full/sources/runtime别名删除，无参数拒绝执行；内部worker仅由同一入口在隔离子进程调用，不保留旧独立入口或转发模块。普通产品CLI合同仍由产品实现拥有。
+`business`选择业务，`module`选择业务内部功能，`action`选择具体动作。选择关系唯一声明在`core/catalog.py`，当前58项，包括原49项功能及资源generate、迁移build/rollback、重排build/activate/rollback/finalize、公司live-sync前台同步计量和关闭时轴shutdown。公司coverage另以互斥具名参数公开pacing及材料键审计，沿用所属业务的事实输入、外部目录及回收预算围栏；公司I/O候选由B独立交付，不纳入本批候选或功能验收。根帮助只展示中立公共选项；选中动作的帮助只导入其参数模块，展示该动作输入、上限和副作用。原profile分派、`--check`及live/full/sources/runtime别名删除，无参数拒绝执行；内部worker仅由同一入口在隔离子进程调用，不保留旧独立入口或转发模块。普通产品CLI合同仍由产品实现拥有。
+
+`recommendation/web/shutdown`经同一入口在前台观测显式`--pid`、`--birth-ticks`及已有普通日志文件`--shutdown-log`，默认只读；只有显式`--send-sigterm`才向经当前boot/PID/出生时刻复核的pidfd发送一次SIGTERM。调用者每次必须重新核对当前身份；CLI不接收预期boot，不能自动拒绝跨重启的旧参数。观测默认40秒、最多60秒，超时只结束观测，不强杀目标；该动作归工具层，产品HTTP/Web继续只读。
+
+该动作仅支持Linux；当前解释器或内核缺少所需pidfd能力时明确报告unsupported，不自动更换解释器或退回PID信号。报告分别保留发送、Python处理器、业务返回与pidfd退出观测时间，缺失或冲突不签完整时轴；pidfd就绪是退出观测而非精确内核退出时刻，目标退出码仍未知，`runtime_shutdown_acceptance`保持false。30秒退出门不变，工具定向验证不能代签真实服务退出验收，具体参数见[scripts说明](../../scripts/README.md)。
 
 公共报告参数为`--report`及`--report-format`，默认标准输出，保存时只能使用显式仓库外路径的新文件；解析时拒绝已有文件、目录和链接，最终独占创建，不能覆盖配置、输入或旧报告。业务原有`--output`保留其工件含义，不作为公共报告别名。公共报告必须与原生工件文件、维护source/target/backup及skills工件目录分离；相同路径及双向祖先重叠都在执行前拒绝。业务参数先由所属解析器转换为不可变类型，不再有包含所有业务字段的全局Options对象。
 
@@ -613,7 +622,7 @@ scripts/
   core/                       中立选择、执行、报告及公共类型
   recommendation/
     pipeline/                 荐股链路、就绪与性能
-    web/                      只读Web、浏览器与公司账本展示
+    web/                      只读Web、浏览器、公司账本展示与显式关闭观测
     long/                     长期观察准入
     assets/                   荐股静态资源检查与生成
   download/
@@ -651,10 +660,10 @@ scripts/
 
 每项实测报告固定代码、配置、数据、模型身份，实际 CPU/内存/介质，负载、缓存状态、重复次数、输出一致性和失败恢复。HDD 与 SSD 分别固定门槛；未有实机证据不能跨介质外推。
 
-性能执行统一由g第4.5节的独立任务D承担，A/B/C提供已交付代码、诊断接口、合法输入和功能证据，继续各自实现及功能回归。D在开发验证之外安排机器窗口；发生争用时由D延后或作废受影响轮次，不以性能窗口暂停所有开发验证。缺性能证据的优化仍不能启用，但不阻塞其它正确性改动交付；普通测试在SSD/HDD目录执行只说明功能夹具位置，不能当成介质性能通过。任务归属、排队和两种介质的结果只在g维护。
+性能执行统一由g第4.5节的CodexC内部唯一后台承接，保留原P编号及历史D证据，不另设独立D或第二执行者。A/B/C提供已交付代码、诊断接口、合法输入和功能证据，继续各自实现及功能回归；后台只对冻结版本在空闲或独立机器执行。发生开发验证争用时，C后台仅延后、暂停或作废自己的受影响轮次，不停止A/B/C前台或用户进程。缺性能证据的优化仍不能启用，但不阻塞其它正确性改动交付；普通测试在SSD/HDD目录执行只说明功能夹具位置，不能当成介质性能通过。当前只接续本机HDD，另一台SSD进度原样保留，任务归属、排队和两种介质的结果只在g维护。
 
 当前 `performance.json` 中分别有 HDD/SSD 门槛和证据状态，但配置中的 `validated` 不是本轮重新验收。旧5秒局部预算、来源年龄、120秒整轮 deadline 的对象不同，必须在测量报告中逐项对应，不能混成一个通过指标。
 
-第一项荐股公共因子优化提供显式离线候选`raw_factor_reuse`，入口及参数见[scripts说明](../../scripts/README.md)。现有基础因子、横截面缓存继续唯一拥有其算术；候选只在既有连续回放中缓存原`FeatureBuilder._raw_features`结果，不缓存整份快照，不修改生产组合根或默认实现。缓存身份包含完整报价、原始日线、历史摘要、模型horizons、基础配置、交易日和schema；返回副本供本次公司/风险/证据/分钟及模型专属组装处理。候选与基础缓存共用既有特征组容量/字节预算及停止生命周期，预算拒写仍返回本次计算结果；非有限输入继续交原实现计算并保留其异常，不缓存失败或取消。报告区分基础与候选原计算次数、原函数调用、特征组全部逻辑字节和实际RSS。只有功能等价及D完整同输入性能对照均通过后才考虑生产切换，不能把计算次数减少直接称为提速。
+第一项荐股公共因子优化提供显式离线候选`raw_factor_reuse`，入口及参数见[scripts说明](../../scripts/README.md)。现有基础因子、横截面缓存继续唯一拥有其算术；候选只在既有连续回放中缓存原`FeatureBuilder._raw_features`结果，不缓存整份快照，不修改生产组合根或默认实现。缓存身份包含完整报价、原始日线、历史摘要、模型horizons、基础配置、交易日和schema；返回副本供本次公司/风险/证据/分钟及模型专属组装处理。候选与基础缓存共用既有特征组容量/字节预算及停止生命周期，预算拒写仍返回本次计算结果；非有限输入继续交原实现计算并保留其异常，不缓存失败或取消。报告区分基础与候选原计算次数、原函数调用、特征组全部逻辑字节和实际RSS。只有功能等价及C后台完整同输入性能对照均通过后，才交原业务owner考虑原子采用并复测；这不自动授权生产切换，不能把计算次数减少直接称为提速。
 
 本批只做文档 diff 审查、链接检查和 `git diff --check`。后续按改动风险运行最小充分检查；不自动运行格式脚本或含有它们的聚合目标。正式发布还要有功能、类型、构建、真实浏览器、轮次、冻结和恢复证据，通过只表示形成候选，不自动发布。

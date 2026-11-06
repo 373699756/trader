@@ -8,12 +8,8 @@ from zoneinfo import ZoneInfo
 from trader.download.application.company_evidence import SyncCompanyEvidence
 from trader.download.domain.company_evidence import CompanyDocumentExtraction, CompanyDocumentPolicies, CompanyListing, CompanySyncConfiguration, Disclosure, DisclosurePage, DisclosurePartition, StructuredCompanyPage
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-from tests.helpers.shared.configuration import (
-    CompanyEventPolicyFixture,
-    CompanyEvidenceRequestFixture as CompanyEvidenceRequest,
-    CompanyDocumentFilesFixture as CompanyDocumentFiles,
-    SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex,
-)
+from tests.helpers.download.configuration import CompanyEventPolicyFixture, CompanyEvidenceRequestFixture as CompanyEvidenceRequest
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex
 
 CompanyEventPolicy = CompanyEventPolicyFixture
 

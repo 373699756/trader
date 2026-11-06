@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from tests.helpers.recommendation.cycle_fixture import CycleFixture, CycleFixtureDependencies
 from tests.helpers.recommendation.pipeline_helpers import observed_market_batch
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.ports.runtime import CycleRequest, PipelineTaskRequest
 from trader.recommendation.application.runtime.cadence import PipelineTask

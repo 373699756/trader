@@ -1,6 +1,7 @@
 """Every download filters current and historical ST before business requests."""
 
-from tests.helpers.shared.configuration import DownloadFailureConfigurationFixture, SqlitePolicyFixture
+from tests.helpers.download.configuration import DownloadFailureConfigurationFixture
+from tests.helpers.shared.configuration import SqlitePolicyFixture
 
 from dataclasses import replace
 from datetime import timedelta
@@ -18,7 +19,7 @@ from trader import bootstrap
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_reference import HistoryStEvidence
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadQfqWindowConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
@@ -52,8 +53,7 @@ def st_sources(monkeypatch):
             pass
 
     class Session:
-        def __init__(self, *, identity_content_encodings=()):
-            assert identity_content_encodings in ((), ("normal",))
+        def __init__(self):
             self.closed = False
             sessions.append(self)
 

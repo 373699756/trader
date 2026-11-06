@@ -7,7 +7,7 @@ import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_field_recovery import _DETAIL, _facts, _put
-from tests.helpers.shared.configuration import CompanyDocumentFilesFixture, SQLiteCompanyFactsIndexFixture
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_event_extraction import CompanyLinkCandidate
 from trader.download.domain.company_events import (
     CompanyEventStatus,

@@ -15,10 +15,10 @@ from tests.helpers.download.history.history_sync_progress import _compact_log
 from tests.helpers.download.history.infra.history_sync import NOW, ProgressRecorder, _download
 from tests.helpers.download.history.history_supplier_router import Baseline, Prices, _at, _current_universe, _router
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra import history_sync_runner
+from trader.download.infra import history_sync_io
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_index import HistoryDownloadIndex
@@ -172,14 +172,14 @@ def test_interrupted_initial_publication_defers_known_invalid_qfq_without_reload
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=tmp_path.parent / "reference"
     )
-    publish = history_sync_runner.PublishHistorySnapshot
+    publish = history_sync_io.PublishHistorySnapshot
 
     def interrupted(*args):
         raise RuntimeError("fixture_publication_failed")
 
-    monkeypatch.setattr(history_sync_runner, "PublishHistorySnapshot", interrupted)
+    monkeypatch.setattr(history_sync_io, "PublishHistorySnapshot", interrupted)
     assert RunHistoryFixture(config, supplier, clock=lambda: NOW).state == "failed"
-    monkeypatch.setattr(history_sync_runner, "PublishHistorySnapshot", publish)
+    monkeypatch.setattr(history_sync_io, "PublishHistorySnapshot", publish)
 
     def no_full_reload(*args):
         raise AssertionError("deferred or completed stock must not reload its download window")
@@ -369,7 +369,7 @@ def test_deferred_qfq_gap_is_not_successful_reuse_in_mixed_retry_summary(
             raise RuntimeError("fixture_publication_failed")
 
         with monkeypatch.context() as patch:
-            patch.setattr(history_sync_runner, "PublishHistorySnapshot", fail_publication)
+            patch.setattr(history_sync_io, "PublishHistorySnapshot", fail_publication)
             interrupted = RunHistoryFixture(config, supplier, clock=lambda: NOW)
         assert interrupted.state == "failed"
         assert interrupted.reason == "fixture_publication_failed"

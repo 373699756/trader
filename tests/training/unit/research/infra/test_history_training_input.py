@@ -34,7 +34,7 @@ from trader.download.domain.history_control import HistorySnapshot, HistorySnaps
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext
-from tests.helpers.shared.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
+from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisionComparison

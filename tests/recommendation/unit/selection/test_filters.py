@@ -15,7 +15,7 @@ from trader.recommendation.domain.candidate.filters import (
     LevelTwoFilterRules as _LevelTwoFilterRules,
 )
 from trader.recommendation.domain.market.models import Board
-from tests.helpers.shared.configuration import HardFilterPolicyFixture
+from tests.helpers.recommendation.configuration import HardFilterPolicyFixture
 
 
 def HardFilter(snapshot, now, *, max_age_seconds, policy=None):
@@ -186,7 +186,7 @@ def test_configured_blacklist_is_a_hard_filter(feature_factory, observed_at) -> 
     assert "blacklisted" in {item.filter_code for item in result.reasons}
 
 
-def test_filter_registry_separates_permanent_issuer_and_dynamic_runtime_rules() -> None:
+def test_filter_index_separates_permanent_issuer_and_dynamic_runtime_rules() -> None:
     level_one = LevelOneFilterRules(max_age_seconds=20)
     level_two = LevelTwoFilterRules(max_age_seconds=20)
 

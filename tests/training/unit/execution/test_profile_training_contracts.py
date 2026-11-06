@@ -15,10 +15,8 @@ import pytest
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.scoring.cost_settings import (
-    LoadEvaluationCostScenarios,
-    LoadExecutionCostPolicy,
-)
+from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
+from trader.training.infra.research_settings import LoadEvaluationCostScenarios
 from trader.training.application.tomorrow_training import TomorrowTrainingWindow
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.engine import ProfileTrainingRequest
@@ -117,7 +115,7 @@ def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: P
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
     requested: list[frozenset[date]] = []
 
-    class Archive:
+    class HistoryEvidence:
         snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates), listing_intervals=())
 
         @staticmethod
@@ -130,13 +128,13 @@ def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: P
             progress(0)
             return iter(())
 
-    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V2_TRAINING_PROFILE.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as repository:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", V2_TRAINING_PROFILE.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index:
         BuildTrainingSamples(
             TrainingSampleBuildRequest(
-                Archive(),  # type: ignore[arg-type]
+                HistoryEvidence(),  # type: ignore[arg-type]
                 (),
                 TomorrowTrainingWindow(split),
-                repository,
+                index,
                 V2_TRAINING_PROFILE,
             )
         )

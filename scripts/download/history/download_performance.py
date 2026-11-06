@@ -28,7 +28,7 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, PriceAdjustment
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.settings.models import CompanyPreloadSettings
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 

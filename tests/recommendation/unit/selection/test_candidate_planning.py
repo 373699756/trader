@@ -12,14 +12,14 @@ from trader.recommendation.domain.selection.scored_selection import (
 from dataclasses import replace
 from datetime import timedelta, timezone
 import pytest
-from tests.helpers.shared.configuration import StrategySettingsFixture
+from tests.helpers.recommendation.configuration import StrategySettingsFixture
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import FilterFeatureCandidates, ScoredSelectionIdentity, ScoredSelectionOptions
 from trader.recommendation.application.pipeline.stage_output import StageOutput
 from trader.recommendation.domain.candidate.filters import QuoteFreshnessBasis
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, SourceHealth, SourceHealthState
 from trader.recommendation.domain.publication.preview import PreviewContext
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 
 
 def _empty_plan(strategy: Strategy, start: int) -> ScoredCandidatePlan:
@@ -79,7 +79,7 @@ def test_discovery_receipt_basis_cannot_revalidate_a_previous_day_quote(applicat
     source_time = previous if source_zone is None else previous.astimezone(source_zone)
     feature = application_feature_factory("600001", previous)
     feature = replace(feature, quote=replace(feature.quote, source_time=source_time, received_time=source_time))
-    service = CandidateFilteringService(_recommendation_policy(StrategySettingsFixture()), None)
+    service = CandidateFilteringService(BuildRecommendationPolicy(StrategySettingsFixture()), None)
 
     plans = service.plan((feature,), None, evaluated_at=NOW, data_version="previous-day-discovery")
 
@@ -99,7 +99,7 @@ def test_discovery_processing_time_cannot_repair_an_invalid_arrival(
 ):
     feature = application_feature_factory("600001", NOW)
     feature = replace(feature, quote=replace(feature.quote, source_time=NOW + source_offset))
-    service = CandidateFilteringService(_recommendation_policy(StrategySettingsFixture()), None)
+    service = CandidateFilteringService(BuildRecommendationPolicy(StrategySettingsFixture()), None)
 
     plans = service.plan(
         (feature,), None, evaluated_at=NOW + timedelta(seconds=45), data_version="invalid-arrival",
@@ -113,7 +113,7 @@ def test_discovery_processing_time_cannot_repair_an_invalid_arrival(
 def test_final_filter_keeps_completion_freshness_and_cannot_select_receipt_basis(application_feature_factory) -> None:
     feature = application_feature_factory("600001", NOW)
     completed_at = NOW + timedelta(seconds=45)
-    policy = _recommendation_policy(StrategySettingsFixture())
+    policy = BuildRecommendationPolicy(StrategySettingsFixture())
     identity = ScoredSelectionIdentity(NOW.date(), "final", "final")
     options = ScoredSelectionOptions(completed_at, 30.0, phase="afternoon")
 
@@ -153,7 +153,7 @@ def test_discovery_checks_each_receipt_and_preserves_invalid_source_time(
     invalid = replace(first, quote=replace(first.quote, code="600003", source_time=NOW.replace(tzinfo=None)))
     features = (first, later, invalid)
     completed_at = NOW + timedelta(seconds=90)
-    service = CandidateFilteringService(_recommendation_policy(StrategySettingsFixture()), None)
+    service = CandidateFilteringService(BuildRecommendationPolicy(StrategySettingsFixture()), None)
 
     if observed_pipeline:
         source = StageOutput(
@@ -187,7 +187,7 @@ def test_discovery_checks_each_receipt_and_preserves_invalid_source_time(
 def test_discovery_rejects_invalid_receipt_before_qualifying_refresh(application_feature_factory, invalid_receipt) -> None:
     feature = application_feature_factory("600001", NOW)
     feature = replace(feature, quote=replace(feature.quote, received_time=invalid_receipt))
-    service = CandidateFilteringService(_recommendation_policy(StrategySettingsFixture()), None)
+    service = CandidateFilteringService(BuildRecommendationPolicy(StrategySettingsFixture()), None)
 
     with pytest.raises(ValueError, match="receipt time must be timezone-aware|after its evaluation time"):
         service.plan((feature,), None, evaluated_at=NOW + timedelta(seconds=45), data_version="invalid-receipt")
@@ -203,7 +203,7 @@ def test_discovery_receipt_basis_preserves_only_the_legal_preview_close(applicat
         quote=replace(feature.quote, source_time=context.market_as_of + source_offset),
         preview_context=context,
     )
-    service = CandidateFilteringService(_recommendation_policy(StrategySettingsFixture()), None)
+    service = CandidateFilteringService(BuildRecommendationPolicy(StrategySettingsFixture()), None)
 
     plans = service.plan(
         (feature,), None, evaluated_at=received_at + timedelta(seconds=45), data_version="preview-discovery",

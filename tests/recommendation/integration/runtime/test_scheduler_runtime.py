@@ -143,9 +143,9 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
         operation = "freeze_event" if failure == "event" else "observer_enqueue"
     payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
     assert payload["health"]["issue_count"] > 0
-    repository = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    repository.initialize()
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), repository, clock)
+    index = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    index.initialize()
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), index, clock)
     stream = UnifiedFreezeEventStream()
     client = CreateApp(services=UnifiedWebServices(queries, stream, lambda: payload)).test_client()
     response = client.get("/api/status").get_json()

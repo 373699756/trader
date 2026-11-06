@@ -14,37 +14,37 @@ from trader.training.infra.research.baseline_reports import BaselineReportConfli
 def test_r3_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
     extraction = HistoricalExtractor(_Port(), _Evaluator()).extract()
     report = HistoricalBaselineReplayer(_ReplayEvaluator()).replay(extraction)
-    archive = JsonBaselineReportIndex(tmp_path)
+    evidence = JsonBaselineReportIndex(tmp_path)
 
-    first = archive.write(report)
-    second = archive.write(report)
+    first = evidence.write(report)
+    second = evidence.write(report)
 
     assert first == second
-    assert archive.verify().report_hash == report.report_hash
+    assert evidence.verify().report_hash == report.report_hash
     payload = json.loads((tmp_path / "historical-baseline-report.json").read_text(encoding="utf-8"))
     assert payload["schema_version"] == "historical_baseline_report"
     assert payload["report_hash"] == report.report_hash
     assert "research_identity" not in payload
     assert "research_spec_hash" not in payload
-    assert archive.verify() == report
+    assert evidence.verify() == report
 
 
 def test_r3_report_rejects_tampering_and_identity_conflicts(tmp_path) -> None:
     extraction = HistoricalExtractor(_Port(), _Evaluator()).extract()
     report = HistoricalBaselineReplayer(_ReplayEvaluator()).replay(extraction)
-    archive = JsonBaselineReportIndex(tmp_path)
-    archive.write(report)
+    evidence = JsonBaselineReportIndex(tmp_path)
+    evidence.write(report)
 
     path = tmp_path / "historical-baseline-report.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["status"] = "replayed"
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(BaselineReportConflictError, match="hash"):
-        archive.verify()
+        evidence.verify()
 
     path.unlink()
-    archive.write(report)
+    evidence.write(report)
     conflicting_extraction = HistoricalExtractor(_Port(), _Evaluator(61.0)).extract()
     conflicting = HistoricalBaselineReplayer(_ReplayEvaluator()).replay(conflicting_extraction)
     with pytest.raises(BaselineReportConflictError):
-        archive.write(conflicting)
+        evidence.write(conflicting)

@@ -15,7 +15,8 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.download.application.sync_data import SyncResult
-from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
+from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
@@ -202,7 +203,7 @@ def _run_training_command(
             parser.error(f"{args.command} does not accept --profile")
         from trader.training.entrypoints.research_evidence import RunResearchEvidence
 
-        return RunResearchEvidence(args, repository_root=runtime.project_root, sqlite_policy=sqlite_policy)
+        return RunResearchEvidence(args, project_root=runtime.project_root, config_dir=runtime.config_path.parent, sqlite_policy=sqlite_policy)
     from trader.training.entrypoints.commands import ResearchCommandOptions, RunResearchCommand
 
     return RunResearchCommand(
@@ -248,10 +249,8 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
     )
     watchlist = LoadLongWatchlist(runtime.long_watchlist_path)
     from trader.download.infra.download_settings import LoadDownloadFailureConfiguration, LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
-    from trader.recommendation.infra.scoring.cost_settings import (
-        LoadEvaluationCostScenarios,
-        LoadExecutionCostPolicy,
-    )
+    from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
+    from trader.training.infra.research_settings import LoadEvaluationCostScenarios
     from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
     from trader.training.infra.profile.v5.configuration import TcnConfigurationDocument
     from trader.training.infra.profile.v5.settings import TcnFittingParameters

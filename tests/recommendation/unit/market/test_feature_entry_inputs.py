@@ -14,7 +14,7 @@ from trader.infra.market_data.history.history import (
     PriceAdjustment,
     SummarizeHistoryMetrics,
 )
-from trader.infra.settings import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.risk.downside import DeriveEntrySetup
 from trader.recommendation.infra.normalization.features import FeatureBuilder

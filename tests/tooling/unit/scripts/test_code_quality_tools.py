@@ -129,6 +129,19 @@ def test_no_substring_bans(name: str) -> None:
     assert not any(rule == "NAME002" for rule, _, _ in NameIssues(name, "class"))
 
 
+def test_fixed_content_field_permission_is_bound_to_its_annotated_declaration() -> None:
+    path = "src/trader/training/application/tomorrow_daily_close_training.py"
+    source = SourceFile(path, b"class DatasetManifest:\n    source_archive_hash: str\n\ndef Local(source_archive_hash):\n    archive = source_archive_hash\n    return archive\n")
+    forbidden = [item for item in Audit(source) if item.rule == "NAME002"]
+    assert {(item.scope, item.name) for item in forbidden} == {
+        ("Local", "source_archive_hash"), ("Local", "archive"),
+    }
+    unrelated = SourceFile("src/trader/example.py", b"class DatasetManifest:\n    source_archive_hash: str\n")
+    assert any(item.rule == "NAME002" for item in Audit(unrelated))
+    unannotated = SourceFile(path, b"class DatasetManifest:\n    source_archive_hash = 'a'\n")
+    assert any(item.rule == "NAME002" for item in Audit(unannotated))
+
+
 def test_name_categories_and_external_literals() -> None:
     assert Words("HTTPActiveCache") == ("http", "active", "cache")
     assert NameIssues("class", "variable")[0][0] == "NAME001"

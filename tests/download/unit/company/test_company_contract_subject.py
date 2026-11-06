@@ -6,7 +6,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.helpers.shared.configuration import CompanyEventPolicyFixture, CompanyScoringPolicyFixture
+from tests.helpers.download.configuration import CompanyEventPolicyFixture
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents, ExtractCompanyLinkCandidate, ResolveCompanyLinks
 from trader.download.domain.company_events import (
     CompanyDataState,

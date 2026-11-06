@@ -50,7 +50,7 @@ from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, Http
 from trader.recommendation.infra.market_data.providers.tencent import TencentFullMarketSource
 from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 from trader.recommendation.domain.candidate.filters import HardFilter
-from tests.helpers.shared.configuration import HardFilterPolicyFixture
+from tests.helpers.recommendation.configuration import HardFilterPolicyFixture
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 

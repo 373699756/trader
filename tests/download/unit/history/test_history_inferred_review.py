@@ -12,15 +12,11 @@ from tests.helpers.download.history.infra.history_sync import NOW, FakeSupplier,
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewConfiguration
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra import history_sqlite_read_connection, history_sync_runner
+from trader.download.infra import history_sqlite_read_connection, history_sync_io
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
-from trader.download.infra.history_download_index import (
-    HistoryDownloadBatch,
-    HistoryDownloadCompletion,
-    HistoryDownloadIndex,
-    HistoryDownloadTask,
-)
+from trader.download.domain.history_download import HistoryDownloadBatch, HistoryDownloadCompletion, HistoryDownloadTask
+from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_inferred_review import HistoryInferredReviewIndex
 from trader.download.infra.history_price_repair import HistoryPriceRepair
 from trader.download.infra.history_prices import HistoryPricePartition
@@ -30,7 +26,8 @@ from trader.download.infra.history_snapshot_inspection import (
 )
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.bootstrap import ExecuteHistorySync
+from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.tencent_request_budget import TencentRequestBudget
 from trader.infra.sqlite_codec import DecodeDate
 
@@ -66,12 +63,12 @@ class _InferredSupplier(FakeSupplier):
 
 def _run(root, supplier, *, budget=None):
     configuration = replace(_configuration(root), sessions=len(DAYS))
-    return RunHistorySync(
+    return ExecuteHistorySync(
         configuration,
         _BudgetSupplier(supplier, configuration.reference_root / "company_st.sqlite3"),
         clock=lambda: NOW,
-        price_review_budget=budget,
         sqlite_policy=SqlitePolicyFixture(),
+        resources=HistorySyncResources(price_review_budget=budget),
     )
 
 
@@ -531,19 +528,19 @@ def test_cross_year_partial_review_reseals_only_written_year_and_preserves_old_s
             ))
 
     def run(supplier, budget=None):
-        return RunHistorySync(
+        return ExecuteHistorySync(
             configuration,
             _BudgetSupplier(supplier, configuration.reference_root / "company_st.sqlite3"),
             clock=lambda: NOW,
-            price_review_budget=budget,
             sqlite_policy=SqlitePolicyFixture(),
+            resources=HistorySyncResources(price_review_budget=budget),
         )
 
     assert run(AcrossYears(inferred=True)).state == "completed"
     before = _snapshot(tmp_path)
     _legacy_metadata(tmp_path)
     original = HistoryDirectPrices.commit_for_review
-    original_seal = history_sync_runner.PublishSqliteFile
+    original_seal = history_sync_io.PublishSqliteFile
     sealed = []
 
     def partial(prices, results, budget):
@@ -556,7 +553,7 @@ def test_cross_year_partial_review_reseals_only_written_year_and_preserves_old_s
         return original_seal(path, *args, **kwargs)
 
     monkeypatch.setattr(HistoryDirectPrices, "commit_for_review", partial)
-    monkeypatch.setattr(history_sync_runner, "PublishSqliteFile", seal)
+    monkeypatch.setattr(history_sync_io, "PublishSqliteFile", seal)
     deferred = run(AcrossYears(inferred=False), _budget())
     assert deferred.state == "blocked"
     assert deferred.reason == "history_review_deferred"

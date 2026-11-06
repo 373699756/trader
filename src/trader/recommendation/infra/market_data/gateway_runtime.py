@@ -29,7 +29,7 @@ _FULL_MARKET_QUOTE_SOURCES = frozenset({"tencent", "sina"})
 
 
 @dataclass
-class _CircuitState:
+class MarketCircuitState:
     failures: int = 0
     open_until: float = 0.0
     success_count: int = 0
@@ -48,7 +48,7 @@ class _CircuitState:
 
 
 @dataclass(frozen=True)
-class _SourceFetch:
+class MarketSourceFetch:
     name: str
     status: str
     observations: tuple[SourceObservation, ...] = ()
@@ -57,7 +57,7 @@ class _SourceFetch:
     duration_ms: float = 0.0
 
 
-class _SingleFlight(Generic[_T]):
+class MarketCollectionSingleFlight(Generic[_T]):
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._running: dict[object, Future[_T]] = {}
@@ -89,7 +89,7 @@ class _SingleFlight(Generic[_T]):
                 self._running.pop(key, None)
 
 
-def _market_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:
+def BuildMarketRouteOutcome(results: Sequence[MarketSourceFetch]) -> RouteOutcome:
     successes = [result for result in results if result.status == "success"]
     no_data = any(result.status == "no_data" for result in results)
     route_results = tuple(
@@ -129,7 +129,7 @@ def _market_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:
     )
 
 
-def _market_route_error_message(results: Sequence[_SourceFetch]) -> str:
+def DescribeMarketRouteError(results: Sequence[MarketSourceFetch]) -> str:
     no_data = [result for result in results if result.status == "no_data"]
     failures = [result for result in results if result.status != "no_data"]
     if no_data:
@@ -140,7 +140,7 @@ def _market_route_error_message(results: Sequence[_SourceFetch]) -> str:
     return "; ".join(f"{result.name}: {result.error}" for result in failures)
 
 
-def _source_degraded_reasons(results: Sequence[_SourceFetch]) -> set[str]:
+def BuildSourceDegradedReasons(results: Sequence[MarketSourceFetch]) -> set[str]:
     reasons: set[str] = set()
     for result in results:
         if result.status == "success":
@@ -164,7 +164,7 @@ def _source_degraded_reasons(results: Sequence[_SourceFetch]) -> set[str]:
     return reasons
 
 
-def _percentile(values: Sequence[float], quantile: float) -> float | None:
+def CalculateMarketLatencyPercentile(values: Sequence[float], quantile: float) -> float | None:
     if not values:
         return None
     ordered = sorted(values)
@@ -172,27 +172,27 @@ def _percentile(values: Sequence[float], quantile: float) -> float | None:
     return round(float(ordered[index]), 2)
 
 
-def _strip_source(source: str, message: str) -> str:
+def StripSourcePrefix(source: str, message: str) -> str:
     prefix = f"{source}:"
     return message[len(prefix) :].strip() if message.startswith(prefix) else message
 
 
-def _elapsed(started: float, finished: float) -> float:
+def ElapsedMilliseconds(started: float, finished: float) -> float:
     return max(0.0, (finished - started) * 1000.0)
 
 
-def _before_deadline(now: datetime, deadline: datetime | None) -> bool:
+def IsBeforeDeadline(now: datetime, deadline: datetime | None) -> bool:
     return deadline is None or now < deadline
 
 
-def _cache_error_code(exc: Exception) -> str:
+def ClassifyMarketCacheError(exc: Exception) -> str:
     if isinstance(exc, MarketDataNoDataError):
         return "no_data"
     failure = ClassifyAdapterFailure(exc, provider="market", operation="source_fetch")
     return "late" if failure.code.value == "deadline" else failure.code.value
 
 
-def _observation_version(observation: SourceObservation) -> tuple[datetime, datetime, str, ObservationFacts]:
+def BuildObservationVersion(observation: SourceObservation) -> tuple[datetime, datetime, str, ObservationFacts]:
     return (
         observation.source_time,
         observation.received_at,
@@ -201,7 +201,7 @@ def _observation_version(observation: SourceObservation) -> tuple[datetime, date
     )
 
 
-def _reference_replaces(current: SourceObservation, incoming: SourceObservation) -> bool:
+def ShouldReplaceReference(current: SourceObservation, incoming: SourceObservation) -> bool:
     current_priority = SourcePriority(current.source)
     incoming_priority = SourcePriority(incoming.source)
     if current_priority != incoming_priority:
@@ -217,7 +217,7 @@ def _reference_replaces(current: SourceObservation, incoming: SourceObservation)
     return ObservationFacts(incoming) >= ObservationFacts(current)
 
 
-def _preserve_newer_quotes(
+def PreserveNewerQuotes(
     current: CanonicalMarketSnapshot,
     previous: CanonicalMarketSnapshot | None,
     *,
@@ -265,18 +265,18 @@ def _previous_quote_is_newer(previous: MarketQuote, current: MarketQuote) -> boo
 
 
 __all__ = [
-    "_CircuitState",
-    "_SingleFlight",
-    "_SourceFetch",
-    "_before_deadline",
-    "_cache_error_code",
-    "_elapsed",
-    "_observation_version",
-    "_market_route_error_message",
-    "_market_route_outcome",
-    "_percentile",
-    "_preserve_newer_quotes",
-    "_reference_replaces",
-    "_source_degraded_reasons",
-    "_strip_source",
+    "MarketCircuitState",
+    "MarketCollectionSingleFlight",
+    "MarketSourceFetch",
+    "IsBeforeDeadline",
+    "ClassifyMarketCacheError",
+    "ElapsedMilliseconds",
+    "BuildObservationVersion",
+    "DescribeMarketRouteError",
+    "BuildMarketRouteOutcome",
+    "CalculateMarketLatencyPercentile",
+    "PreserveNewerQuotes",
+    "ShouldReplaceReference",
+    "BuildSourceDegradedReasons",
+    "StripSourcePrefix",
 ]

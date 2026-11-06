@@ -19,7 +19,7 @@ from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSessio
 from trader.training.infra.sample_sequences import SampleSequenceLayout
 from trader.training.infra.sample_schema import SampleFormatId
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
-from tests.helpers.shared.configuration import TcnFittingParametersFixture
+from tests.helpers.training.configuration import TcnFittingParametersFixture
 
 
 def test_lite_quality_limits_and_missing_values_fail_closed():

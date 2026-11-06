@@ -57,7 +57,7 @@ def _dataset():
         samples,
         feature_names=("qfq_return_1d", "qfq_return_3d"),
         feature_units=("ratio", "ratio"),
-        source_archive_hash=_HASH_A,
+        source_history_hash=_HASH_A,
         filter_spec_hash=_HASH_B,
     )
 
