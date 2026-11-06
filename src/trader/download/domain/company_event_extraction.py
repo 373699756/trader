@@ -769,9 +769,12 @@ def _reduction_plan(body: str) -> ReductionPlan | None:
 
 def _planned_reduction_ratio(body: str) -> float | None:
     pattern = (
-        r"(?:拟|计划)(?:通过[^。；;]{0,30})?减持(?:公司)?(?:股份)?[^。；;]{0,90}?"
-        r"占(?:本公司|公司)?(?:目前|当前|现有)?总股本(?:的?比例|的)?"
-        r"(?:不超过|不高于|为|约为|为约)?[：:]?([0-9]+(?:\.[0-9]+)?)[%％]"
+        r"(?:拟|计划)(?:通过[^。；;]{0,30}|以(?:集中竞价|大宗交易|协议转让)(?:交易)?(?:方式)?)?"
+        r"减持(?:公司)?(?:股份)?[^。；;]{0,90}?"
+        r"(?:占(?:本公司|公司)?(?:目前|当前|现有)?总股本(?:的?比例|的)?"
+        r"(?:不超过|不高于|为|约为|为约)?"
+        r"|(?:不超过|不高于)(?:本公司|公司)?(?:目前|当前|现有)?总股本(?:的?比例|的)?)"
+        r"[：:]?([0-9]+(?:\.[0-9]+)?)[%％]"
     )
     matches = tuple(re.finditer(pattern, body))
     if len(matches) != 1 or any(marker in matches[0][0] for marker in ("已减持", "已实施", "持有", "流通股", "所持股份")):
@@ -798,7 +801,9 @@ def _planned_reduction_ratio(body: str) -> float | None:
 def _planned_reduction_intent(text: str) -> bool:
     return any(
         re.search(r"(?:未|不|尚未)$", text[max(0, match.start() - 3) : match.start()]) is None
-        for match in re.finditer(r"(?:拟|计划)(?:通过[^。；;]{0,30})?减持", text)
+        for match in re.finditer(
+            r"(?:拟|计划)(?:通过[^。；;]{0,30}|以(?:集中竞价|大宗交易|协议转让)(?:交易)?(?:方式)?)?减持", text
+        )
     )
 
 
@@ -1065,7 +1070,7 @@ def _contract(body: str, published: datetime) -> ContractMeasurements:
     ) and not any(x in body for x in ("框架协议", "意向协议", "中标候选", "尚未生效"))
     binding = binding and re.search(r"(?:尚需|须经|需经)[^。；]{0,40}生效", body) is None
     amount = _single_measurement(
-        r"(?:合同|协议)(?:总)?金额(?:[（(](?:不含税|含税)[）)])?(?:为|约为)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
+        r"(?:合同额|(?:合同|协议)(?:总)?金额)(?:[（(](?:不含税|含税)[）)])?(?:为|约为)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
     )
     revenue = _single_measurement(
         r"(20[0-9]{2})年度(?:经审计的)?营业收入(?:为|合计)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
@@ -1207,6 +1212,8 @@ def _subject_body(verified: _VerifiedDocument) -> str:
     for offset in range(0, len(parts), 2):
         clause = parts[offset]
         text = re.sub(r"(?:本公司|上市公司|公司)的?(?=控股股东|实际控制人|持股5%以上|5%以上股东|大股东)", "", clause)
+        # The issuer owns the total-share denominator; it is not a second actor.
+        text = re.sub(r"(占|不超过|不高于)本公司(?=(?:目前|当前|现有)?总股本)", r"\1", text)
         if (_positive_type(verified.title) is CompanyPositiveType.OPERATING_CONTRACT
             and any(marker in text for marker in _SUBSIDIARY_MARKERS)):
             current = None

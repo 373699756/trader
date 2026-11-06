@@ -461,7 +461,7 @@ def test_attempt_on_material_removed_from_code_does_not_suppress_current_same_id
         )
         collected.run(
             "INSERT INTO company_field_repairs SELECT id,'600001',record_hash,?,'planned_pct',"
-            "'reduction_total_capital_ratio:1','attempted' FROM disclosures WHERE source='exchange_disclosure'",
+            "'reduction_total_capital_ratio:2','attempted' FROM disclosures WHERE source='exchange_disclosure'",
             (event.event_id,),
         )
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
@@ -470,7 +470,7 @@ def test_attempt_on_material_removed_from_code_does_not_suppress_current_same_id
         with SqliteTransaction(collected):
             collected.run(
                 "INSERT INTO company_field_repairs SELECT id,'600001',record_hash,?,'planned_pct',"
-                "'reduction_total_capital_ratio:1','attempted' FROM disclosures WHERE source=?",
+                "'reduction_total_capital_ratio:2','attempted' FROM disclosures WHERE source=?",
                 (event.event_id, item.source),
             )
         plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)

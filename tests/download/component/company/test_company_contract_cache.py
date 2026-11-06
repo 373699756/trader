@@ -206,7 +206,7 @@ def test_same_body_amount_rule_upgrade_completes_old_fact_and_cache_without_subj
     assert publication.extraction_hash == parent.extraction_hash and next_valid == valid
     with SqliteSession(index.path) as collected:
         assert collected.run(
-            "SELECT state FROM company_field_repairs WHERE field='contract_amount' AND rule_id='explicit_cny_contract_amount:2'"
+            "SELECT state FROM company_field_repairs WHERE field='contract_amount' AND rule_id='explicit_cny_contract_amount:3'"
         ).require_one()[0] == "complete"
         rebuilt = DecodeCompanyLink(collected.run("SELECT payload FROM document_link_candidates").require_one()[0])
         assert rebuilt.positive.positive_level == 3 and rebuilt.positive.measurements == event.measurements

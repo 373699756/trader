@@ -354,5 +354,5 @@ def test_amount_rule_upgrade_reuses_retained_text_once_without_upgrading_documen
         )) == original_receipts
         assert formal.run(
             "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted' "
-            "AND policy_id LIKE '%:contract_amount:explicit_cny_contract_amount:2'"
+            "AND policy_id LIKE '%:contract_amount:explicit_cny_contract_amount:3'"
         ).require_one()[0] == 1

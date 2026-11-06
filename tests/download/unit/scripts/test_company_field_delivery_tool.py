@@ -128,7 +128,7 @@ def test_material_conclusions_are_bound_to_the_exact_current_source_version(tmp_
         results = company_field_audit.ReadCompanyFieldResults(formal, ("600001",))
     proof = CompanyFieldEvidence(
         "sse" if guard == "source" else "cninfo", "contract-income", "old" if guard == "record" else row[0],
-        b"x" * 32 if guard == "body" else row[1], "explicit_cny_contract_amount:2",
+        b"x" * 32 if guard == "body" else row[1], "explicit_cny_contract_amount:3",
         fixtures.NOW if guard == "time" else datetime.fromisoformat(row[2]),
         1, 1, "合同金额人民币2亿元。", "cny", CompanySubject.ISSUER,
     )

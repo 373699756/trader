@@ -45,10 +45,10 @@ from trader.infra.sqlite_connection import SqliteConnection
 COMPANY_FIELD_RULES = (
     ("start_date", "explicit_reduction_start_date:2"),
     ("end_date", "explicit_reduction_end_date:2"),
-    ("planned_pct", "reduction_total_capital_ratio:1"),
+    ("planned_pct", "reduction_total_capital_ratio:2"),
     ("actual_pct", "implemented_total_capital_ratio:2"),
     ("repurchase_purpose", "explicit_repurchase_purpose:2"),
-    ("contract_amount", "explicit_cny_contract_amount:2"),
+    ("contract_amount", "explicit_cny_contract_amount:3"),
     ("revenue_report_date", "explicit_contract_revenue_year:1"),
 )
 _REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence:1"
