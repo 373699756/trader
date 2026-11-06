@@ -50,7 +50,7 @@ def test_published_projection_keeps_unknown_components_and_valid_released_receip
     assert "company_reviews_pending" in result["findings"]
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
     audit = result["field_audit"]
-    assert audit["table_count"] == 15 and audit["field_count"] == 127
+    assert audit["table_count"] == 15 and audit["field_count"] == 126
     assert audit["invalid_value_types"] == 0 and audit["source_agreement"]["unlocated_evidence_refs"] == 0
 
 
