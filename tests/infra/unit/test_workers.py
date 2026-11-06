@@ -329,6 +329,146 @@ def test_executor_deadline_cancels_pending_and_never_waits_for_blocked_running_t
         running.result(timeout=1.0)
 
 
+@pytest.mark.parametrize("urgent", (False, True))
+@pytest.mark.parametrize("wait", (False, True))
+def test_executor_shutdown_deadline_covers_done_callback_after_inflight_reaches_zero(urgent, wait):
+    prefix = f"callback-deadline-{urgent}-{wait}"
+    pool = BoundedExecutor(worker_count=2, urgent_worker_count=1, queue_capacity=1, thread_name_prefix=prefix)
+    task_release, callback_entered, callback_release = threading.Event(), threading.Event(), threading.Event()
+    stop_finished = threading.Event()
+    reports, errors = [], []
+
+    def block_callback(_future):
+        callback_entered.set()
+        assert callback_release.wait(3), "controlled worker callback was not released"
+
+    def stop():
+        try:
+            reports.append(pool.stop(wait=wait, deadline=ShutdownDeadline.start(0.05)))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            stop_finished.set()
+
+    pool.start()
+    owned_threads = tuple(thread for thread in threading.enumerate() if thread.name.startswith(prefix))
+    submit = pool.submit_urgent if urgent else pool.submit
+    future = submit(lambda: task_release.wait(3))
+    assert future is not None
+    future.add_done_callback(block_callback)
+    stopper = threading.Thread(target=stop, name=f"{prefix}-stopper", daemon=True)
+    try:
+        task_release.set()
+        assert callback_entered.wait(1)
+        assert pool.status().inflight == 0 and future.done()
+        assert any(thread.is_alive() for thread in owned_threads)
+        stopper.start()
+        assert stop_finished.wait(0.3), "stop joined a callback without respecting wait/deadline"
+        assert not errors and len(reports) == 1
+        assert not reports[0].completed
+        assert reports[0].timed_out is wait
+    finally:
+        task_release.set()
+        callback_release.set()
+        if stopper.ident is not None:
+            stopper.join(3)
+        assert not stopper.is_alive()
+        assert pool.stop(deadline=ShutdownDeadline.start(1)).completed
+        for thread in owned_threads:
+            thread.join(1)
+        assert not any(thread.is_alive() for thread in owned_threads)
+
+
+@pytest.mark.parametrize("urgent", (False, True))
+def test_repeated_executor_stop_does_not_report_callback_worker_as_already_finished(urgent):
+    prefix = f"callback-repeated-stop-{urgent}"
+    pool = BoundedExecutor(worker_count=2, urgent_worker_count=1, queue_capacity=1, thread_name_prefix=prefix)
+    task_started, task_release, callback_entered, callback_release = (
+        threading.Event(), threading.Event(), threading.Event(), threading.Event()
+    )
+
+    def run():
+        task_started.set()
+        assert task_release.wait(3)
+
+    def block_callback(_future):
+        callback_entered.set()
+        assert callback_release.wait(3)
+
+    pool.start()
+    owned_threads = tuple(thread for thread in threading.enumerate() if thread.name.startswith(prefix))
+    submit = pool.submit_urgent if urgent else pool.submit
+    future = submit(run)
+    assert future is not None
+    future.add_done_callback(block_callback)
+    try:
+        assert task_started.wait(1)
+        first = pool.stop(wait=False, deadline=ShutdownDeadline.start(1))
+        assert not first.completed and not first.timed_out
+        task_release.set()
+        assert callback_entered.wait(1)
+        assert pool.status().inflight == 0
+        following = pool.stop(deadline=ShutdownDeadline.start(0.05))
+        assert not following.completed, "inflight=0 does not mean its callback worker exited"
+        assert following.timed_out
+        assert any(thread.is_alive() for thread in owned_threads)
+    finally:
+        task_release.set()
+        callback_release.set()
+        assert pool.stop(deadline=ShutdownDeadline.start(1)).completed
+        for thread in owned_threads:
+            thread.join(1)
+        assert not any(thread.is_alive() for thread in owned_threads)
+
+
+@pytest.mark.parametrize("urgent", (False, True))
+def test_worker_can_request_shutdown_without_joining_itself(urgent):
+    prefix = f"callback-self-stop-{urgent}"
+    pool = BoundedExecutor(worker_count=2, urgent_worker_count=1, queue_capacity=1, thread_name_prefix=prefix)
+    pool.start()
+    owned_threads = tuple(thread for thread in threading.enumerate() if thread.name.startswith(prefix))
+    try:
+        submit = pool.submit_urgent if urgent else pool.submit
+        future = submit(pool.stop)
+        assert future is not None
+        step = future.result(timeout=1)
+        assert not step.completed and not step.timed_out
+    finally:
+        assert pool.stop(deadline=ShutdownDeadline.start(1)).completed
+        assert not any(thread.is_alive() for thread in owned_threads)
+
+
+@pytest.mark.parametrize("cancel_futures", (False, True))
+def test_nonwaiting_shutdown_preserves_uncancelled_queued_work_for_the_final_join(cancel_futures):
+    pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="callback-preserved-queue")
+    entered, release = threading.Event(), threading.Event()
+
+    def block():
+        entered.set()
+        assert release.wait(3)
+
+    pool.start()
+    first = pool.submit(block)
+    assert first is not None and entered.wait(1)
+    queued = pool.submit(lambda: "completed")
+    assert queued is not None
+    try:
+        step = pool.stop(wait=False)
+        assert not step.completed and not step.timed_out
+        assert not queued.cancelled()
+        following = pool.stop(cancel_futures=cancel_futures, deadline=ShutdownDeadline.start(0.05))
+        assert not following.completed and following.timed_out
+        # Keep the first task blocked through the second stop so this Future
+        # cannot win a scheduling race with implicit deadline cancellation.
+        assert not queued.running()
+        assert queued.cancelled() is cancel_futures
+    finally:
+        release.set()
+        assert pool.stop(deadline=ShutdownDeadline.start(1)).completed
+    if not cancel_futures:
+        assert queued.result(timeout=1) == "completed"
+
+
 def test_full_injected_queue_rejects_without_running_on_caller() -> None:
     executor = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="test-rejected")
     release = threading.Event()

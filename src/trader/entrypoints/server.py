@@ -8,6 +8,7 @@ import ipaddress
 import json
 import logging
 import os
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import asdict
@@ -20,7 +21,10 @@ from werkzeug.serving import BaseWSGIServer, make_server
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.shutdown import (
+    ObserveShutdownStep,
     PendingShutdownSteps,
+    ReadShutdownTimeline,
+    RecordShutdownEvent,
     ShutdownDeadline,
     ShutdownReport,
     ShutdownSignalController,
@@ -94,10 +98,12 @@ def _run_system(
 
     def request_shutdown(_deadline: ShutdownDeadline) -> None:
         shutdown_requested.set()
+        _start_shutdown_diagnostics(_deadline)
 
     controller = ShutdownSignalController(
         timeout_seconds=timeout_seconds,
         on_first_signal=request_shutdown,
+        protect_process_exit=True,
     )
     started = False
     delegated = False
@@ -112,6 +118,9 @@ def _run_system(
                     _log_shutdown_report(report)
                     os._exit(2)
             controller.mark_completed()
+            RecordShutdownEvent(deadline, "return_ready")
+            if started:
+                _queue_shutdown_report(report, deadline)
             return controller.exit_code
         if not started:
             controller.mark_completed()
@@ -157,10 +166,12 @@ def _serve_until_signal(
 
     def request_shutdown(_deadline: ShutdownDeadline) -> None:
         shutdown_requested.set()
+        _start_shutdown_diagnostics(_deadline)
 
     controller = ShutdownSignalController(
         timeout_seconds=timeout_seconds,
         on_first_signal=request_shutdown,
+        protect_process_exit=True,
     )
     try:
         controller.install()
@@ -198,6 +209,7 @@ def _serve_with_controller(
         web_thread.start()
         shutdown_requested.wait()
         deadline = controller.deadline or ShutdownDeadline.start(timeout_seconds)
+        RecordShutdownEvent(deadline, "shutdown_wakeup")
         steps = [_stop_web(server, web_thread, deadline)]
         system_report = _stop_system(system, deadline)
         steps.extend(system_report.steps)
@@ -206,6 +218,8 @@ def _serve_with_controller(
             _log_shutdown_report(report)
             os._exit(2)
         controller.mark_completed()
+        RecordShutdownEvent(deadline, "return_ready")
+        _queue_shutdown_report(report, deadline)
         if server_failed.is_set():
             return 2
         return controller.exit_code
@@ -229,8 +243,9 @@ def _stop_web(
 
     def stop() -> None:
         try:
-            server.shutdown()
-            server.server_close()
+            with ObserveShutdownStep(deadline, "web:stopper"):
+                server.shutdown()
+                server.server_close()
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -238,9 +253,10 @@ def _stop_web(
 
     stopper = threading.Thread(target=stop, name="trader-web-stop", daemon=True)
     stopper.start()
-    stopped = completed.wait(deadline.remaining_seconds())
-    if stopped:
-        web_thread.join(deadline.remaining_seconds())
+    with ObserveShutdownStep(deadline, "web:wait"):
+        stopped = completed.wait(deadline.remaining_seconds())
+        if stopped:
+            web_thread.join(deadline.remaining_seconds())
     finished = stopped and not web_thread.is_alive() and not errors
     detail = ""
     if errors:
@@ -262,11 +278,12 @@ def _stop_system(system: _StoppableSystem, deadline: ShutdownDeadline) -> Shutdo
 
     def stop() -> None:
         try:
-            stop_method = cast(Callable[..., object], system.stop)
-            if "deadline" in inspect.signature(stop_method).parameters:
-                result.append(stop_method(deadline=deadline))
-            else:
-                result.append(stop_method())
+            with ObserveShutdownStep(deadline, "application:stopper"):
+                stop_method = cast(Callable[..., object], system.stop)
+                if "deadline" in inspect.signature(stop_method).parameters:
+                    result.append(stop_method(deadline=deadline))
+                else:
+                    result.append(stop_method())
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -274,7 +291,8 @@ def _stop_system(system: _StoppableSystem, deadline: ShutdownDeadline) -> Shutdo
 
     stopper = threading.Thread(target=stop, name="trader-system-stop", daemon=True)
     stopper.start()
-    finished = completed.wait(deadline.remaining_seconds())
+    with ObserveShutdownStep(deadline, "application:wait"):
+        finished = completed.wait(deadline.remaining_seconds())
     if finished and result and isinstance(result[0], ShutdownReport):
         return result[0]
     detail = ""
@@ -296,6 +314,50 @@ def _log_shutdown_report(report: ShutdownReport) -> None:
         "shutdown deadline exceeded: %s",
         json.dumps(asdict(report), ensure_ascii=False, sort_keys=True, indent=2),
     )
+
+
+def _start_shutdown_diagnostics(deadline: ShutdownDeadline) -> None:
+    # Projection may encounter a blocked log handler. It owns no resource that
+    # main or the hard-deadline watchdog must wait for.
+    def project() -> None:
+        for _index in range(8):
+            spans = ReadShutdownTimeline(deadline)
+            frames = sys._current_frames()
+            threads = []
+            for thread in threading.enumerate()[:128]:
+                frame = frames.get(thread.ident) if thread.ident is not None else None
+                stack = []
+                for _depth in range(12):
+                    if frame is None:
+                        break
+                    stack.append(f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}:{frame.f_code.co_name}")
+                    frame = frame.f_back
+                threads.append({"name": thread.name[:160], "daemon": thread.daemon, "stack": stack})
+            frames.clear()
+            frame = None
+            _LOGGER.warning("shutdown progress: %s", json.dumps({
+                "started_at_monotonic": deadline.started_at_monotonic,
+                "elapsed_seconds": deadline.elapsed_seconds,
+                "timeline": [asdict(span) for span in spans],
+                "threads": threads,
+            }, ensure_ascii=False, sort_keys=True))
+            if deadline.expired:
+                return
+            threading.Event().wait(min(5.0, deadline.remaining_seconds()))
+
+    threading.Thread(target=project, name="trader-shutdown-diagnostics", daemon=True).start()
+
+
+def _queue_shutdown_report(report: ShutdownReport, deadline: ShutdownDeadline) -> None:
+    timeline = ReadShutdownTimeline(deadline)
+
+    def project() -> None:
+        _LOGGER.warning("shutdown completed: %s", json.dumps({
+            "started_at_monotonic": deadline.started_at_monotonic,
+            "report": asdict(report), "timeline": [asdict(span) for span in timeline],
+        }, ensure_ascii=False, sort_keys=True))
+
+    threading.Thread(target=project, name="trader-shutdown-report", daemon=True).start()
 
 
 def _absolute_config_path(raw_path: str) -> Path:

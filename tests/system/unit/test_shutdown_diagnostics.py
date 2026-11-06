@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import threading
 import logging
+import os
+import subprocess
+import sys
 from contextlib import ExitStack
 from types import SimpleNamespace
 
@@ -12,6 +15,8 @@ from trader.entrypoints import server as server_entrypoint
 from trader.infra.shutdown import (
     ObserveShutdownStep,
     PendingShutdownSteps,
+    ReadShutdownTimeline,
+    RecordShutdownEvent,
     ShutdownDeadline,
     ShutdownReport,
     ShutdownSignalController,
@@ -203,3 +208,59 @@ def test_shutdown_diagnostic_capacity_and_names_are_bounded():
         assert pending[-1].name == "shutdown:diagnostic_capacity"
         assert all(len(step.name) <= 160 for step in pending)
     assert PendingShutdownSteps(deadline) == ()
+
+
+def test_shutdown_timeline_keeps_completed_owner_durations_and_is_bounded():
+    now = [10.0]
+    deadline = ShutdownDeadline.start(2, monotonic=lambda: now[0])
+    with ObserveShutdownStep(deadline, "web"):
+        now[0] = 10.5
+        RecordShutdownEvent(deadline, "wakeup")
+    spans = ReadShutdownTimeline(deadline)
+    assert [(span.name, span.started_seconds, span.finished_seconds) for span in spans] == [
+        ("web", 0.0, 0.5), ("wakeup", 0.5, 0.5),
+    ]
+    assert PendingShutdownSteps(deadline) == ()
+    for _index in range(300):
+        RecordShutdownEvent(deadline, "bounded")
+    assert len(ReadShutdownTimeline(deadline)) == 256
+
+
+@pytest.mark.parametrize("protect_process_exit,expected_code", ((False, 0), (True, 2)))
+def test_server_watchdog_covers_interpreter_thread_join_after_cleanup_returns(protect_process_exit, expected_code):
+    # This is an actual interpreter-exit tail, not a fake stop() wait. The
+    # scoped CLI mode must still cancel its watchdog; server mode must not.
+    code = """
+import signal, threading
+from trader.infra.shutdown import ShutdownSignalController
+controller = ShutdownSignalController(timeout_seconds=0.15, on_first_signal=lambda deadline: None,
+    protect_process_exit=PROTECT)
+threading.Thread(target=lambda: threading.Event().wait(0.5), name='controlled-exit-tail').start()
+controller.handle(signal.SIGTERM)
+controller.mark_completed()
+""".replace("PROTECT", repr(protect_process_exit))
+    environment = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
+    completed = subprocess.run((sys.executable, "-c", code), env=environment, timeout=5, check=False)
+    assert completed.returncode == expected_code
+
+
+def test_final_shutdown_projection_does_not_hold_up_the_caller(monkeypatch):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def blocked_log(*_args, **_kwargs):
+        entered.set()
+        try:
+            assert release.wait(3), "controlled report projection was not released"
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(server_entrypoint._LOGGER, "warning", blocked_log)
+    deadline = ShutdownDeadline.start(1)
+    report = ShutdownReport.from_steps(deadline, (ShutdownStep("application", True, False),))
+    try:
+        server_entrypoint._queue_shutdown_report(report, deadline)
+        assert entered.wait(1)
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(3)
