@@ -4,6 +4,8 @@ from dataclasses import replace
 
 from datetime import timedelta
 
+import pytest
+
 
 from trader.infra.market_data.observations import SourceObservation
 
@@ -132,6 +134,36 @@ def test_volume_only_change_survives_scalar_merge_and_both_dirty_projections() -
         assert changes.dirty_codes == ("600001",)
         assert changes.dirty_field_families == ("quote_liquidity",)
         assert changes.to_public().dirty_codes == ("600001",)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    (
+        ((), ("market_data_degraded",)),
+        (("market_data_degraded",), ()),
+        (("market_data_degraded",), ("history_price_basis_unavailable",)),
+        (("market_data_degraded",), ("market_data_degraded",)),
+    ),
+)
+def test_restriction_only_changes_are_risk_changes_in_both_projections(
+    before: tuple[str, ...], after: tuple[str, ...],
+) -> None:
+    snapshot = MergeMarketObservations((_observation("tencent_market"),), observed_at=NOW, merge_epoch="first")
+    first = replace(snapshot, quotes=(replace(snapshot.quotes[0], execution_restrictions=before),))
+    second = replace(first, merge_epoch="second", quotes=(replace(first.quotes[0], execution_restrictions=after),))
+    previous = ColumnarQuoteBatch.from_snapshot(first, config_version="config", schema_version="fixture")
+    current = ColumnarQuoteBatch.from_snapshot(second, config_version="config", schema_version="fixture")
+
+    expected_codes = ("600001",) if before != after else ()
+    for changes in (MarketChanges(previous, current), TargetedMarketChanges(first, second, ("600001",))):
+        assert changes.dirty_codes == expected_codes
+        assert changes.updated_codes == expected_codes
+        assert changes.risk_changed_codes == expected_codes
+        assert changes.dirty_field_families == (("risk",) if expected_codes else ())
+        assert changes.overlay_only is False
+        assert changes.to_public().updated_codes == expected_codes
+
+    assert TargetedMarketChanges(first, second, ()).dirty_codes == ()
 
 
 def test_columnar_merge_failure_uses_scalar_projection_and_marks_degraded(monkeypatch) -> None:

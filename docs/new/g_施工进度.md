@@ -110,6 +110,9 @@
 
 ### 阶段281：codexA接续真实荐股链条与失败恢复核验
 
+- **本HDD执行限制变更接续（2026-11-06，completed，仅P29投影修复；281整体in_progress）**：将`execution_restrictions`纳入同一列式行情owner的类型列、行投影及risk字段族，使仅限制新增、解除或替换时，全量与定向比较均报告dirty/updated/risk_changed；未变化及未选代码不报变化，限制变化不按纯报价overlay隐藏公开updated。只修观测投影，不改变实际动作门、评分、冻结或候选默认。
+- **本切片验证与关闭欠项**：最小回归修前3 failed/1 passed，最终行情合并/gateway两文件60 passed（3.28秒，`/tmp/trader-281-restriction-after.xml`）；2修改Python文件Ruff E9/F/B/UP、1源码mypy、完整diff/空白及独立Review通过。本机未取得旧PC的33.087947秒退出报告原件；源码确认内部期限始于Python信号处理器实际执行，须与外部发信号/pidfd观察对齐后才能定位，不能把与return_ready约0.319秒的差值全部算解释器退出尾。b第3章按此澄清，30秒真实退出门仍未通过。父基线为已推送`9d02f782`，未启动真实服务/盘中或性能作业；五轮新鲜交付、15:00/恢复、全负载及收益欠项继续保留。
+
 - **本HDD接续（2026-11-06 19时，completed，仅候选准备计量切片；281整体in_progress）**：用户明确指定接续17:44提交`b361a4b4`的荐股欠项。开工`14632194`，Afuture与同名上游一致、工作树干净；本机runtime为hdd，项目与/tmp分别为sda6/sda5，空闲约70/5.5GiB，上一台SSD报告目录本机缺失，保留其原结论不补造。本批只改离线replay、性能入口口径、直接测试、scripts说明及本281记录，不启动活动迁移、训练或服务切换，不启用候选；完整性能仍交4.5唯一C队列。
 - **实际改动与验证**：每档单列候选并集规划及逐头质量检查，按原`PrepareNativeQualityBatch`准备一次后显式传入评分；每头保存动态过滤、候选规划、质量检查的原阶段计数及完整未入选计数，继续保留完整选择特征/业务指纹。新增timing_contract并拒绝旧口径基线，档位共享刷新只计一次，嵌套阶段不相加；阶段3仍只测已取得报价的因子组装，不冒称覆盖采集/分钟/研究I/O。两文件73项及入口基线7项通过；最终投影/绑定修改后再核3项通过，与前两集重叠不累加。3个Python文件Ruff、2个源码mypy、完整diff及空白检查通过；mypy中间lambda推导失败已改为显式类型函数，未运行格式或全仓门禁。
 - **本机采用条件已实读**：`company_facts.sqlite3`的schema3及文件凭据存在；生产`SQLiteCompanyEvidenceReader.publication_version()`真实拒绝，RuntimeError→DatabaseError、受控码`sqlite_schema_unsupported`，与当前要求schema4一致。核验前后主文件/WAL/凭据摘要完全不变；这是本机已定位的采用条件，不作为上一台036230世代未知DatabaseError的根因。八头模型由生产loader全部加载成功且各实际预测128个合成输入，不因文件存在就签活动服务采用或新训练收益资格。

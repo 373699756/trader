@@ -33,6 +33,7 @@ _FIELD_FAMILIES: dict[str, str] = {
     "is_one_price_limit": "risk",
     "is_blacklisted": "risk",
     "has_major_regulatory_risk": "risk",
+    "execution_restrictions": "risk",
 }
 
 
@@ -357,6 +358,7 @@ _QUOTE_SCHEMA: dict[str, DataTypeClass | DataType] = {
     "is_one_price_limit": pl.Boolean,
     "is_blacklisted": pl.Boolean,
     "has_major_regulatory_risk": pl.Boolean,
+    "execution_restrictions": pl.List(pl.String),
     "cross_source_deviation_pct": pl.Float64,
     "cross_source_verified": pl.Boolean,
 }
@@ -393,6 +395,7 @@ def _quote_row(
     bool,
     bool,
     bool,
+    list[str],
     float | None,
     bool,
 ]:
@@ -415,6 +418,7 @@ def _quote_row(
         quote.is_one_price_limit,
         quote.is_blacklisted,
         quote.has_major_regulatory_risk,
+        list(quote.execution_restrictions),
         quote.cross_source_deviation_pct,
         quote.cross_source_verified,
     )
