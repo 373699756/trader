@@ -8,6 +8,10 @@
 
 每次作业固定一个已发布历史版本及配置、特征身份。四档各有 Tomorrow、D25，共八个模型头；每档双头合格才发布该档模型。某档失败不污染其它档位，不覆盖旧有效工件。
 
+正常训练先形成独立诊断模型，再将最终模型重新拟合到该头最新标签成熟日。`BuildFinalFitDatePlan`按冻结交易日历，从源截止日回退Tomorrow的1个交易日或D25的5个交易日，取配置的最近N个成熟信号日；V1/V2/V3/V5分别仍为750/1000/750/61日。读取源末日用于观测标签，不把源末日本身当成成熟信号日，也不把`label_cutoff`当作旧诊断模型的实际拟合终点。源版本没有最近资料时，训练不会自行下载或伪补，须先完成历史同步。
+
+独立诊断保留自己的拟合、早停、校准和验证日期及实际模型。V1/V2最终重拟合以诊断选出的树轮数为固定上限，无法继续分裂时如实保存实际树数；V3按原Ridge设置重拟合；V5最终按当前配置10轮拟合，不再对最终训练行做早停或伪装成未见验证。最终模型重新估计训练变换及模型权重，冻结并转移诊断模型的收益校准系数，明确标为校准转移；原诊断指标只属于原诊断模型，不能证明最终模型的校准或收益已经通过独立验证。最终重拟合可能使用研究留出中的日期，不能继续把这些日期称为最终模型的未见留出；历史记录和独立研究日期类型保持原身份。
+
 独立训练入口为 `ExecuteSelectedTraining`。A的提交 `7a562886`已将CLI切换到该入口并删除 `ExecuteDownloadTrain`及旧下载异常分支；该提交的远端交付状态见g，不由C推断。下面原始字段字典以 `e69d3e02`核对，第9.2节保留该基线旧消费者作为交接证据；C的计量改动不新增下载或组合入口。
 
 ## 2. 四档比较
@@ -73,7 +77,7 @@ V1十因子和V5的60×6通道在c第7章逐项解释；物理字段、列顺序
 
 ### 3.3 日期与标签
 
-2000日是整体历史目标，251/61日是特征回看，750/1000/61日是各档有效拟合日期，200日是终端留出最低范围，它们不是同一门槛。新股不要求上市前有数据，不统一要求每股拥有全部历史。
+2000日是整体历史目标，251/61日是特征回看，750/1000/61日是各档有效拟合日期，200日属于原研究/诊断切分的终端留出最低范围，不能据此把正常最终模型长期停在旧数据窗口。它们不是同一门槛。新股不要求上市前有数据，不统一要求每股拥有全部历史。
 
 同一市场日历定位标签。已发布资料中的确认停牌、推定停牌、个股缺行和整市场缺日分别处理；可按合同用此前同源收盘作估值时保留estimated标志，量额为0不等于随意填缺失为0。异常单侧价格不能补造，不能向后借值；原始库事实不改写。
 
@@ -189,7 +193,7 @@ V5在各头辅助列后接360个序列值；两个头完整输入维数分别366
 
 写入者 `BuildLearnedRankSamples` 先从251个历史完成日构造特征，再加入当前信号日；因此不能将V2同名收益列直接借给V1。`LearnedRankSampleIndex.read_matrices` 一次按日期/代码排序读取，最多分发双头四分区共8个独立矩阵，4096行批读并恢复负零；query组内同日、两个头分别按自身有效标签过滤。
 
-V1日期切分由 `BuildLearnedRankDateSplit` 拥有：拟合、早停、校准、验证四段，每段之间至少5个市场日隔离；两头成熟期分别1/5日。它没有V2/V3/V5的 `sample_split_dates`、统计表和 `complete.json`。当前工件有效时可直接复用工件；工件不能复用时，V1从历史重建临时样本，“样本缓存复用”实验对V1须记为不适用，不能伪报缓存命中或另造缓存。
+V1独立诊断日期切分由 `BuildLearnedRankDateSplit` 拥有：拟合、早停、校准、验证四段，每段之间至少5个市场日隔离；两头成熟期分别1/5日。正常最终拟合另用`FinalFitDatePlan`。八份诊断矩阵关闭后，独立重读双头最终原始矩阵，避免拼接已标准化的诊断矩阵污染最终变换。它没有V2/V3/V5的 `sample_split_dates`、统计表和 `complete.json`。只有当前最终工件身份匹配才允许正常训练复用；旧诊断工件仍按原身份只读，不能补签成最终拟合。工件不能复用时，V1从历史重建临时样本，“样本缓存复用”实验对V1须记为不适用，不能伪报缓存命中或另造缓存。
 
 ### 3.7 训练到期和提醒表
 
@@ -373,7 +377,7 @@ P54本批按用户授权由C接通公共解析及训练组合根。`config/train
 | CPU现值留1、原生基线2 | `TrainingCpuBudget`及训练启动环境/原生上下文 | 已由cpu资源段注入；普通拟合请求2仍保留独立算法合同 |
 | 每档队列2、公共批次256行 | `_TrainingFanout`发送/接收与取消清空 | 已由fanout资源段注入；不是V5张量batch_size |
 | 拟合容量最多3GiB、预留1.5GiB、宿主低水位256MiB | `FittingMemoryCapacity → TrainingMemoryBudget` | 已由memory资源段注入；实际cgroup各级上限继续收紧，约束不可核验时拒绝 |
-| `engine.py`TCN预约512MiB，普通模型256MiB＋最大行业矩阵估计×4 | 拟合前内存预约 | 先实测估计与RSS误差；不能因常量小就直接降低预约 |
+| `engine.py`TCN预约512MiB＋最终最大行业矩阵估计×2，普通模型256MiB＋诊断/最终较大行业矩阵估计×4 | 拟合前内存预约 | 最终近期行业可能比旧诊断行业更大，不能只按旧窗口预约；估计与RSS误差仍待实测 |
 | `sample_index.py`页缓存/mmap、独立矩阵阈值 | 样本index及行业独立矩阵 | 已由samples前三字段注入；共享行业矩阵仍按原设计始终映射，不被此阈值改成驻内存 |
 | V1 `samples.py`页缓存及具名批读 | V1临时样本及最多8矩阵 | 已由samples.v1两字段独立注入；矩阵仍按原设计映射 |
 | `sample_sequences.py`reader缓存及writer尾部证券数 | V5重叠序列读写 | 已由samples.sequence两字段注入所有入口；256窗在途上限为批次安全边界，保留 |
@@ -411,11 +415,13 @@ Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU�
 | 字段路径，相对timing | 单位与含义 | 不能据此推断 |
 | --- | --- | --- |
 | `source_read_seconds` | 秒；共享流每批取数的累计耗时，含价格读取、解码、日历对齐 | 不等于纯磁盘I/O，未包含打开历史和前期复用检查 |
+| `source_read_thread_cpu_seconds` | 秒；相同来源读取区间中调用线程实际消耗的累计CPU，真实观测无读取为0，手工构造旧计量缺观测为null | 不等于墙钟或整进程CPU，不包含其它线程和原生worker |
 | `peak_cpu_reservations` | 同时进入CPU预约体的观测峰值，次数 | 不等于实际同时拟合的模型数或原生线程数 |
 | `peak_memory_reservations` | 同时进入内存预约体的观测峰值，次数 | 不等于实际RSS或宿主硬隔离 |
 | `profiles[].profile` | v1/v2/v3/v5，保持请求顺序 | 不按完成顺序重排档位身份 |
 | `started_after_seconds` | 秒；该档worker相对计量对象创建时点的开始偏移，可空 | 不包括该档worker开始前的准备工作 |
 | `finished_after_seconds` | 秒；worker退出偏移，可空；异常/取消也记录 | 不等于全部作业的收尾/提醒完成时点 |
+| `native_id`、`thread_cpu_seconds` | 本次worker的操作系统线程号及该任务区间调用线程CPU秒；未开始为null，CPU仅在成功/失败/取消退出后定格，运行中仍为null | 线程号不是业务身份，不能跨作业复用；CPU不包含其它线程或原生库worker，不能把运行中null写成0 |
 | `queue_send_seconds` | 秒；向该档队列发送的累计区间，含阻塞、轮询及终止通知 | 不全是纯阻塞时间，不能当特征计算时间 |
 | `queue_receive_seconds` | 秒；该档取下一批的累计区间，含空队列轮询 | 不等于源读取时间；不同worker之间会重叠 |
 | `cpu.wait_seconds`、`memory.wait_seconds` | 秒；进入原预约端口至授权的耗时，失败等待同样累计 | 包含快速路径、心跳与进入开销，不只统计Condition阻塞 |
@@ -426,6 +432,8 @@ Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU�
 | `cpu_held_while_memory_wait_seconds` | 秒；该档已持CPU时进入内存预约的累计等待，包含失败等待 | 不能把CPU持有整段都当这类等待 |
 
 等待、持有、任务、队列和来源区间会相互重叠，不能把所有项相加当墙钟。全作业墙钟仍看 `selected_training_result.elapsed_seconds`；实际请求/授权线程沿用CPU预算字段，真实原生线程及RSS另测。计量只在批次和预约边界读时钟，不逐历史行采样。
+
+新增线程CPU由可注入`thread_time`读取，`thread_cpu_scope`白名单说明仅调用线程且任务值退出后才最终有效，不改observer协议、调度或资源准入。需要从另一个进程监控正常train时，沿`scripts/training/resources/training_process_measurement.py::ReadTrainingProcessSnapshot`读取目标`/proc`累计计数，并以`ProjectTrainingProcessSnapshot`显式投影；前后校验PID出生ticks，后续调用须携带原出生身份，退出/复用返回null、线程消失单列，其它读取/格式错误保留。进程和线程读数位于明确的非原子读取时间窗，分别按相同PID/出生身份、native_id/出生身份计算差值，不拿观察者`process_time`或`RUSAGE_SELF`替代目标CPU/缺页。原`TrainingProcessMeasurement`继续只服务当前诊断调用的自身资源计量；新能力不改变原生线程或模型计算。
 
 计量继续包住原 `TrainingCpuAdmission/TrainingMemoryAdmission`，原请求、授权、心跳、异常及释放语义不变；V1和其它三档都接入。全部工件复用时没有源批读或拟合预约，必须同时看到扫描0和预约授权0，不能只看耗时很短。
 
@@ -452,6 +460,8 @@ D可在原内部worker命令追加`--scheduling-candidate fixed|long_task_first|
 当前已有同档双头行业共享读取、4096行批读、较大矩阵临时映射、V5重叠序列块和统计小表；下一步核对是否实际命中及退出释放。V1/V5模型、样本和决策身份独立，不借别档补工件。
 
 每档先写候选双头和报告，再检查完整工件组、输入/配置/特征身份和工程资格，通过才切换。取消、单头失败、校准拒绝或落盘失败均保留上一有效模型；复用不刷新拟合日期，不把复用标成新训练。
+
+V2/V3/V5最终工件使用显式`*_head_refit_metadata`版本，`final_fit`保存完整源日历及其绑定、最终实际拟合日期/行业行数、诊断模型完整载荷及摘要、诊断切分日期/摘要、校准转移政策和`final_model_unseen_validation_passed=false`。原`validation_report.model_hash`始终指向实际受评价的诊断模型，顶层`model_hash`指向最终模型；读取时同时校验两者，不能用最终模型摘要替代诊断摘要。V1使用独立`learned_rank_final_head_model/metadata`版本并保存完整诊断头与最终计划。旧schema仅保持原身份读取，不补造最终证据；新训练身份拒绝复用旧模型。前台进度分别报告`model_fit`和`final_model_refit`，最终命令回执列源截止、标签成熟截止及实际拟合首尾/N。
 
 训练工件字典至少说明：档位、策略头、算法、样本/特征/数据身份、日期范围、拟合/早停/校准区、行业覆盖、质量状态、模型文件及摘要、发布版本。定义和全部消费者由训练负责，不由Web推断。
 
@@ -489,6 +499,7 @@ V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要�
 | `validation_report` | object，工程评价报告 | 切分/目标/模型身份及实际覆盖、预测诊断；收益资格独立 |
 | `industry_sample_counts` | object，行业→计数 | 每行业 `training_rows/validation_rows`，与报告预测覆盖交叉核对 |
 | `model_hash` | string，SHA-256 | 与model文档content_hash一致 |
+| 最终版本 `final_fit` | object，最终成熟日拟合及独立诊断凭证 | `*_head_refit_metadata`必须含；原版本禁止补签，见本节上文 |
 | V5 `training_configuration` | object，fit_dates/parameters/content_hash | 完整TCN参数及架构摘要，非V5不能带此字段 |
 | `content_hash` | string，SHA-256 | metadata自身规范化内容摘要 |
 
@@ -554,7 +565,9 @@ P52/P55的候选由既有`sample_comparison_worker --construct-features`或完�
 - schema_cache最多保留64个完全相同的不可变列序/序列布局校验摘要；实际摘要仍由`SampleFeatureHash`首次校验/计算。列序、布局值与标量类型均区分，异常不缓存。库内schema、feature/split身份、样本形状/值、标签成熟和防泄漏检查全部保留，不把“曾校验”当作跳过逐行或外部内容审计的资格。
 - 候选只允许在隔离worker主线程安装；完整作业的四档线程沿原执行器运行并在退出候选作用域前收尾，计数加锁，LRU允许并发首次计算同一键。样本构建/拟合过程中可按原语义失败或取消；finally恢复三个原调用绑定并清空本轮缓存。唯一白名单投影列出索引调用、schema请求/实际计算和缓存容量，production_enabled及performance_evidence均为false；计数锁与钩子开销包含在候选耗时内，完整对照另行裁决。
 
-使用既有统一入口的内部worker参数，在外部输出目录运行：`python3 -m scripts.tools --internal-worker scripts.training.samples.sample_comparison_worker -- --checkout <冻结版本> --root <全新仓库外目录> --size 64 --sessions 2000 --construct-features --computation-candidate combined --runtime-config <对应PC配置>`。baseline及两种单候选分别运行，不能只测组合后将收益归给某一项；该fixture最大128代码，不替代真实完整负载。
+使用既有统一入口的内部worker参数，在外部输出目录运行：`python3 -m scripts.tools --internal-worker scripts.training.samples.sample_comparison_worker -- --checkout <冻结版本> --root <全新仓库外目录> --size 64 --sessions 2000 --medium ssd --construct-features --computation-candidate combined --runtime-config <对应PC配置>`。`--medium`必须明确选择本轮hdd/ssd，并透传给样本资源配置；上层采用探测后的介质，不能仍硬编码另一机器段。baseline及两种单候选分别运行，不能只测组合后将收益归给某一项；该fixture最大128代码，不替代真实完整负载。
+
+仅在上述特征构造模式显式加`--profile-functions`，用进程CPU时钟的cProfile在四档实际样本builder调用期间启用，报告最多30项调用次数和自身/累计CPU；夹具准备、配置和摘要扫描在启用区间之外，不执行模型拟合。不保证线程隔离：解释器事件覆盖随Python运行时而异，较新运行时可记录同进程其它Python线程，进程CPU计时也包含其它线程及原生计算。已有`sys.getprofile`状态或解释器保留的profiler槽已占用时明确拒绝，避免覆盖调用者；成功、失败及取消均退出本轮profiler作用域。源码路径只给相对checkout/工具路径，运行库绝对路径省略；累计时间相互重叠且含插桩开销，始终标fixture/instrumented、性能与生产授权false。默认不开profiler；当前1000日V2拟合加预热和隔离要求下，四档完整夹具应保留2000日，不能为凑1800日降低训练合同。
 
 完整三负载沿用同一个注册worker：`python3 -m scripts.tools --internal-worker scripts.training.jobs.training_alignment -- --history-root <本机合法历史> --work-root <全新仓库外目录> --profiles v1,v2,v3,v5 --product-checkout <冻结版本> --runtime-config <冻结且绑定本机资料的配置> --published-history-read-only --sample-cache-transfer hardlink --computation-candidate combined`。同一候选覆盖首次全训练、全工件复用及样本复用重拟合，保留每次资源计量、数值/指标指纹、源只读守卫和身份核对；V1样本复用仍明确不适用。baseline不安装候选钩子，单候选及combined分别与同输入baseline比较；这里只提供诊断选择，不授权生产启用、活动模型切换或调整10轮方案。
 

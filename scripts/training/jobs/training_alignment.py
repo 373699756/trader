@@ -755,6 +755,24 @@ def _numeric_fingerprints(model_root: Path, profiles: tuple[ScoringProfileId, ..
             if not isinstance(report, dict):
                 raise ValueError("training_alignment_validation_report_invalid")
             components = _fingerprint_model_values(profile, model)
+            # Historical schemas retain their original fingerprint; only Final schemas
+            # contain a separately evaluated estimator. Reuse the numeric projection for
+            # both estimators, leaving date plans and calibration policy to bundle identity.
+            if profile == "v1" and metadata.get("schema_version") == "learned_rank_final_head_metadata":
+                diagnostic = _fingerprint_model_object(report.get("diagnostic_head"))
+                fields = _fingerprint_model_object(model["components"])
+                if not fields.keys() <= diagnostic.keys():
+                    raise ValueError("training_alignment_diagnostic_model_document_invalid")
+                diagnostic_values = _fingerprint_model_values(profile, {
+                    "components": {name: diagnostic[name] for name in fields},
+                })
+                components = {"final": components, "diagnostic": diagnostic_values}
+            elif profile != "v1" and metadata.get("schema_version") == f"{profile}_head_refit_metadata":
+                final_fit = _fingerprint_model_object(metadata.get("final_fit"))
+                diagnostic = _fingerprint_model_object(final_fit.get("diagnostic_model"))
+                if "industries" not in diagnostic:
+                    raise ValueError("training_alignment_diagnostic_model_document_invalid")
+                components = {"final": components, "diagnostic": _fingerprint_model_values(profile, diagnostic)}
             metrics = report["validation"] if profile == "v1" else {field: report[field] for field in metric_fields}
             numeric = json.dumps((components, metrics), ensure_ascii=True, sort_keys=True, allow_nan=False).encode()
             fingerprints.append(

@@ -170,6 +170,7 @@ def test_existing_worker_projects_candidate_counts_without_claiming_performance(
     from tests.helpers.shared.configuration import SqlitePolicyFixture
 
     def construct(*_args, **_kwargs):
+        assert _kwargs["medium"] == "ssd" and _kwargs["profile_functions"] is False
         sample_schema.SampleFeatureHash(("alpha",), None)
         sample_index.SampleFeatureHash(("alpha",), None)
         sample_builder.CalculateProfileQfqAlpha(QfqPriceAnchors(10.0, ((1, 9.0),)), ())
@@ -177,7 +178,8 @@ def test_existing_worker_projects_candidate_counts_without_claiming_performance(
 
     monkeypatch.setattr(sample_comparison_worker, "_construct_samples", construct)
     report = sample_comparison_worker._measure_feature_construction(
-        tmp_path, tmp_path / "output", 6, 2000, sqlite_policy=SqlitePolicyFixture(), computation_candidate="combined"
+        tmp_path, tmp_path / "output", 6, 2000, medium="ssd",
+        sqlite_policy=SqlitePolicyFixture(), computation_candidate="combined"
     )
     assert report["computation_candidate"] == {
         "name": "combined", "indexed_anchor_calls": 1, "schema_requests": 2, "schema_computations": 1,

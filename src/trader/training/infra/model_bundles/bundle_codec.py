@@ -20,6 +20,9 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.training.infra.model_bundles.contracts import TrainedAlgorithm, TrainedProfileContract
+from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT, FinalFitDatePlan
+from trader.download.domain.baostock_daily import BaoStockCalendar
+from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.model_bundles.evaluation_codec import (
     PREDICTION_REPORT_FIELDS,
     ValidatePredictionReport,
@@ -188,6 +191,7 @@ class TrainedHeadModelBundle:
     dependencies: tuple[tuple[str, str], ...]
     metadata_hash: str
     content_hash: str
+    final_fit: FinalFitDatePlan | None = None
 
 
 @dataclass(frozen=True)
@@ -231,7 +235,11 @@ def DecodeHeadBundle(
     profile: TrainedProfileContract,
 ) -> TrainedHeadModelBundle:
     model, declared_hash = _hashed_object(model_document, _MODEL_FIELDS, "model")
+    final_schema = f"{profile.profile_id}_head_refit_metadata"
+    is_final = isinstance(metadata_document, dict) and metadata_document.get("schema_version") == final_schema
     metadata_fields = _METADATA_FIELDS | {"training_configuration"} if profile.algorithm == "tcn" else _METADATA_FIELDS
+    if is_final:
+        metadata_fields = metadata_fields | {"final_fit"}
     metadata, metadata_hash = _hashed_object(metadata_document, metadata_fields, "metadata")
     contract = profile.head_for_strategy(strategy)
     feature_ids = tuple(_string_list(metadata, "feature_ids"))
@@ -266,8 +274,20 @@ def DecodeHeadBundle(
         raise ModelBundleContractError(
             "trained-head actual evaluation coverage conflicts; retraining is required"
         ) from exc
+    final_rows = None
+    final_plan = None
+    diagnostic_hash = declared_hash
+    if is_final:
+        final_rows, diagnostic_hash, final_plan = _decode_final_fit(
+            metadata["final_fit"], metadata["training_input"], report, declared_hash, industries,
+            profile, contract.maturity_sessions,
+        )
+        if profile.algorithm == "tcn":
+            configured_dates, _ = DecodeTcnConfiguration(metadata["training_configuration"])
+            if len(final_plan.fit_dates) != configured_dates:
+                raise ModelBundleContractError("final fit dates conflict with V5 training configuration")
     if (
-        _text(metadata, "schema_version") != f"{profile.profile_id}_head_metadata"
+        _text(metadata, "schema_version") != (final_schema if is_final else f"{profile.profile_id}_head_metadata")
         or _text(metadata, "profile_id") != profile.profile_id
         or _text(metadata, "strategy_head") != strategy.value
         or _text(metadata, "model_id") != contract.model_id
@@ -282,7 +302,7 @@ def DecodeHeadBundle(
         or report.training_rows < 1
         or report.validation_rows is None
         or report.validation_rows < 1
-        or report.model_hash != declared_hash
+        or report.model_hash != diagnostic_hash
         or report.training_input_document_hash != training_input.content_hash
         or _identity_tuple(report) != _identity_tuple(training_input)
     ):
@@ -317,13 +337,104 @@ def DecodeHeadBundle(
         "15:00_close_proxy",
         contract.runtime_anchor,
         False,
-        report.training_rows,
+        final_rows if final_rows is not None else report.training_rows,
         report.validation_rows,
         industries,
         dependencies,
         metadata_hash,
         declared_hash,
+        final_plan,
     )
+
+
+def _decode_final_fit(
+    raw: object,
+    raw_input: object,
+    report: _GroupIdentity,
+    model_hash: str,
+    models: tuple[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot | TrainedTcnModelSnapshot], ...],
+    profile: TrainedProfileContract,
+    maturity_sessions: int,
+) -> tuple[int, str, FinalFitDatePlan]:
+    if not isinstance(raw, dict) or set(raw) != {
+        "contract", "source_cutoff", "calendar_dates", "maturity_sessions", "fit_dates", "plan_hash", "model_hash",
+        "industry_training_rows", "diagnostic_model", "diagnostic_split_hash", "diagnostic_dates",
+        "evaluation_model_role", "calibration_policy", "final_model_unseen_validation_passed", "research_holdout_status",
+    }:
+        raise ModelBundleContractError("final fit evidence fields are invalid")
+    value = cast(dict[str, object], raw)
+    if (
+        value["contract"] != FINAL_FIT_CONTRACT
+        or type(value["maturity_sessions"]) is not int
+        or value["maturity_sessions"] != maturity_sessions
+        or value["model_hash"] != model_hash
+        or value["evaluation_model_role"] != "pre_refit_diagnostic"
+        or value["calibration_policy"] != "frozen_diagnostic_model_transfer"
+        or value["final_model_unseen_validation_passed"] is not False
+        or value["research_holdout_status"] != "may_be_used_by_final_refit_not_unseen_for_final_model"
+        or not isinstance(raw_input, dict)
+        or value["source_cutoff"] != raw_input.get("source_cutoff")
+    ):
+        raise ModelBundleContractError("final fit evidence identity is invalid")
+    plan = FinalFitDatePlan(
+        _date(value, "source_cutoff"), maturity_sessions,
+        tuple(date.fromisoformat(day) for day in _string_list(value, "fit_dates")),
+    )
+    if plan.content_hash != value["plan_hash"] or plan.fit_dates[-1] != report.label_cutoff:
+        raise ModelBundleContractError("final fit does not end at the mature label cutoff")
+    calendar_dates = tuple(date.fromisoformat(day) for day in _string_list(value, "calendar_dates"))
+    if not 1_250 <= len(calendar_dates) <= 2_000 or BaoStockCalendar(calendar_dates).content_hash != raw_input["calendar_hash"]:
+        raise ModelBundleContractError("final fit source calendar binding is invalid")
+    if plan != BuildFinalFitDatePlan(
+        calendar_dates, source_cutoff=plan.source_cutoff,
+        fit_sessions=len(plan.fit_dates), maturity_sessions=maturity_sessions,
+    ):
+        raise ModelBundleContractError("final fit is not the latest mature calendar window")
+    diagnostic, diagnostic_hash = _hashed_object(value["diagnostic_model"], _MODEL_FIELDS, "diagnostic model")
+    evaluated = _decode_industries(diagnostic, len(profile.head_for_strategy(report.strategy).feature_manifest.names), profile.algorithm)
+    if tuple(name for name, _ in evaluated) != tuple(name for name, _ in models):
+        raise ModelBundleContractError("final fit diagnostic industry coverage is invalid")
+    for (_name, old), (_industry, final) in zip(evaluated, models, strict=True):
+        if (old.calibration_intercept, old.calibration_slope) != (final.calibration_intercept, final.calibration_slope):
+            raise ModelBundleContractError("final fit calibration transfer is invalid")
+        if isinstance(old, TrainedLightGBMModelSnapshot) and isinstance(final, TrainedLightGBMModelSnapshot):
+            if not 1 <= final.lightgbm_best_iteration <= old.lightgbm_best_iteration:
+                raise ModelBundleContractError("final fit selected boosting rounds changed")
+    dates = value["diagnostic_dates"]
+    if not isinstance(dates, dict) or set(dates) != {
+        "fitting", "early_stopping", "calibration", "validation", "count_only_holdout",
+    }:
+        raise ModelBundleContractError("final fit diagnostic dates are invalid")
+    groups = tuple(
+        tuple(date.fromisoformat(day) for day in _string_list(dates, name))
+        for name in ("fitting", "early_stopping", "calibration", "validation", "count_only_holdout")
+    )
+    flattened = tuple(day for group in groups for day in group)
+    if any(not group for position, group in enumerate(groups) if position != 1) or flattened != tuple(sorted(set(flattened))):
+        raise ModelBundleContractError("final fit diagnostic dates must remain separate and ordered")
+    _require_sha256(value, "diagnostic_split_hash")
+    split_hash = value["diagnostic_split_hash"]
+    expected_split = BuildTrainingDateSplit(
+        tuple(day for day in calendar_dates if day <= plan.source_cutoff), parent_manifest_hash=report.training_input_hash,
+        fit_dates=len(plan.fit_dates), recent_fit=profile.profile_id == "v5",
+        early_stopping_sessions=20 if profile.algorithm in {"lightgbm", "tcn"} else 0,
+        history_sessions=profile.history_sessions, history_excludes_signal=profile.algorithm == "tcn",
+    )
+    if split_hash != expected_split.content_hash or groups != (
+        expected_split.model_fit_dates, expected_split.early_stopping_dates, expected_split.calibration_dates,
+        expected_split.confirmation_dates, expected_split.daily_proxy_holdout_dates,
+    ):
+        raise ModelBundleContractError("final fit diagnostic calendar dates conflict with its split")
+    if ContentHash({"calendar_split_hash": split_hash, "strategy_head": report.strategy.value,
+                    "maturity_sessions": maturity_sessions,
+                    "label_target": profile.head_for_strategy(report.strategy).label_target}) != report.split_hash:
+        raise ModelBundleContractError("final fit diagnostic split binding is invalid")
+    counts = value["industry_training_rows"]
+    if not isinstance(counts, dict) or set(counts) != {name for name, _ in models}:
+        raise ModelBundleContractError("final fit industry counts are invalid")
+    if any(not IsInteger(count) or count < 1 for count in counts.values()):
+        raise ModelBundleContractError("final fit row counts are invalid")
+    return sum(cast(dict[str, int], counts).values()), diagnostic_hash, plan
 
 
 def _decode_group_document(

@@ -34,14 +34,16 @@ from trader.training.domain.v1.learned_rank import (
     LEARNED_RANK_CONTRACT,
     BuildLearnedRankDateSplit,
     LearnedRankHead,
-    LearnedRankPair,
+    LearnedRankFinalHead,
+    LearnedRankFinalPair,
     V1TrainingSettings,
 )
+from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.implementation_identity import TrainingImplementationIdentity
 from trader.training.infra.execution_options import BASELINE_EXECUTION_OPTIONS, TrainingExecutionOptions
 from trader.training.infra.fitting_resources import ReserveTrainingFittingResources
-from trader.training.infra.profile.v1.fitting import FitLearnedRankHead, LearnedRankPartitions
+from trader.training.infra.profile.v1.fitting import FitLearnedRankHead, LearnedRankPartitions, RefitLearnedRankHead
 from trader.training.infra.profile.v1.models import (
     LearnedRankPredictor,
     PublishLearnedRankPair,
@@ -67,7 +69,7 @@ class V1TrainingResult:
     run_id: str
     training_input_hash: str
     sample_database_peak_bytes: int
-    heads: tuple[LearnedRankHead, ...] = ()
+    heads: tuple[LearnedRankFinalHead, ...] = ()
     sample_counts: LearnedRankSampleCounts | None = None
     failure_reasons: tuple[str, ...] = ()
     coverage: tuple[LearnedRankPartitionCoverage, ...] = ()
@@ -84,6 +86,7 @@ def _training_identity(
             settings,
             compute_threads,
             LEARNED_RANK_CONTRACT,
+            FINAL_FIT_CONTRACT,
             TrainingImplementationIdentity(),
             (platform.python_version(), version("numpy"), version("lightgbm")),
         )
@@ -107,6 +110,8 @@ def InspectV1Training(
     identity = _training_identity(snapshot, settings, compute_threads)
     try:
         pair = ReadLearnedRankPair(model_root)
+        if not isinstance(pair, LearnedRankFinalPair):
+            return None
         if (
             pair.training_identity_hash != identity
             or pair.training_input_hash != snapshot.snapshot_hash
@@ -114,9 +119,23 @@ def InspectV1Training(
             or pair.calendar_hash != snapshot.calendar_hash
             or pair.source_cutoff != snapshot.source_cutoff
             or pair.settings != settings
+            or pair.calendar_dates != snapshot.calendar.open_dates
             or tuple(head.split for head in pair.heads)
             != tuple(
-                BuildLearnedRankDateSplit(snapshot.calendar.open_dates, settings, maturity_sessions=maturity)
+                BuildLearnedRankDateSplit(
+                    tuple(day for day in snapshot.calendar.open_dates if day <= snapshot.source_cutoff),
+                    settings,
+                    maturity_sessions=maturity,
+                )
+                for maturity in (1, 5)
+            )
+            or tuple(head.final_fit for head in pair.heads) != tuple(
+                BuildFinalFitDatePlan(
+                    snapshot.calendar.open_dates,
+                    source_cutoff=snapshot.source_cutoff,
+                    fit_sessions=settings.fit_dates,
+                    maturity_sessions=maturity,
+                )
                 for maturity in (1, 5)
             )
         ):
@@ -155,7 +174,7 @@ def RunV1Training(
     run_id = input_hash = ""
     counts: LearnedRankSampleCounts | None = None
     peak_bytes = 0
-    heads: list[LearnedRankHead] = []
+    heads: list[LearnedRankFinalHead] = []
     coverage: tuple[LearnedRankPartitionCoverage, ...] = ()
     try:
         with (
@@ -174,9 +193,20 @@ def RunV1Training(
             if reused is not None:
                 return reused
             calendar = snapshot.calendar.open_dates
+            diagnostic_calendar = tuple(day for day in calendar if day <= snapshot.source_cutoff)
             splits = (
-                BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=1),
-                BuildLearnedRankDateSplit(calendar, settings, maturity_sessions=5),
+                BuildLearnedRankDateSplit(diagnostic_calendar, settings, maturity_sessions=1),
+                BuildLearnedRankDateSplit(diagnostic_calendar, settings, maturity_sessions=5),
+            )
+            final_fit_plans = (
+                BuildFinalFitDatePlan(
+                    calendar, source_cutoff=snapshot.source_cutoff,
+                    fit_sessions=settings.fit_dates, maturity_sessions=1,
+                ),
+                BuildFinalFitDatePlan(
+                    calendar, source_cutoff=snapshot.source_cutoff,
+                    fit_sessions=settings.fit_dates, maturity_sessions=5,
+                ),
             )
             with TemporaryTrainingSamples(sample_root, "v1") as directory:
                 sample_path = directory / "samples.sqlite3"
@@ -187,26 +217,34 @@ def RunV1Training(
                         index,
                         history_sessions=settings.history_sessions,
                         stream=LearnedRankSampleStream(progress, cancel_requested, aligned_rows),
+                        final_fit_plans=final_fit_plans,
                     )
                     peak_bytes = sample_path.stat().st_size
-                    coverage = index.coverage(splits)
+                    coverage = index.coverage(splits, final_fit_plans=final_fit_plans)
                     failures = tuple(
                         f"learned_rank_sample_partition_empty:{item.strategy.value}:{item.partition}"
                         if item.rows == 0
+                        else f"learned_rank_final_fit_dates_insufficient:{item.strategy.value}"
+                        if item.partition == "final_fitting" and item.effective_dates != item.expected_dates
                         else f"learned_rank_training_rows_insufficient:{item.strategy.value}:{item.partition}"
                         for item in coverage
                         if item.rows == 0
-                        or (item.partition == "fitting" and item.rows < settings.minimum_training_rows)
+                        or (item.partition in {"fitting", "final_fitting"} and item.rows < settings.minimum_training_rows)
+                        or (item.partition == "final_fitting" and item.effective_dates != item.expected_dates)
                     )
                     if failures:
                         return V1TrainingResult(
                             "failed", run_id, input_hash, peak_bytes, (), counts, failures, coverage
                         )
                 strategies = (Strategy.TOMORROW, Strategy.D25)
-                # Both raw mapped heads plus one native fitter fit within the existing
-                # 512-byte-per-row reservation; no second simultaneous fitter.
+                # Close each head's maps before opening the next head or final
+                # phase, and keep only one native fitter in flight.
                 required_bytes = max(
-                    sum(item.rows for item in coverage if item.strategy is strategy) for strategy in strategies
+                    sum(
+                        item.rows for item in coverage
+                        if item.strategy is strategy and (item.partition == "final_fitting") == final_phase
+                    )
+                    for strategy in strategies for final_phase in (False, True)
                 ) * 512 + 256 * 1024**2
                 with (
                     closing(LearnedRankSampleIndex(sample_path, sample_settings=sample_settings, read_only=True, sqlite_policy=sqlite_policy)) as index,
@@ -218,28 +256,47 @@ def RunV1Training(
                         lambda: CheckV1Cancellation(cancel_requested),
                         memory_first=execution_options.memory_first,
                     ) as reservation,
-                    ExitStack() as resources,
                 ):
-                    requests = tuple(
-                        LearnedRankMatrixRequest(dates, strategy)
-                        for strategy, split in zip(strategies, splits, strict=True)
-                        for dates in (split.fitting, split.early_stopping, split.calibration, split.validation)
-                    )
-                    matrices = index.read_matrices(
-                        requests, directory / "matrices", resources, cancel_requested=cancel_requested
-                    )
-                    for number, (strategy, split) in enumerate(zip(strategies, splits, strict=True)):
-                        CheckV1Cancellation(cancel_requested)
-                        _progress(progress, "model_fit", "started", strategy)
-                        heads.append(
-                            FitLearnedRankHead(
-                                strategy, split, LearnedRankPartitions(*matrices[number * 4:number * 4 + 4]),
-                                settings, cancel_requested=cancel_requested, compute_threads=reservation.compute_threads,
-                            )
+                    diagnostics: list[LearnedRankHead] = []
+                    for strategy, split in zip(strategies, splits, strict=True):
+                        requests = tuple(
+                            LearnedRankMatrixRequest(dates, strategy)
+                            for dates in (split.fitting, split.early_stopping, split.calibration, split.validation)
                         )
-                        _progress(progress, "model_fit", "completed", strategy)
+                        with ExitStack() as diagnostic_resources:
+                            CheckV1Cancellation(cancel_requested)
+                            _progress(progress, "model_fit", "started", strategy)
+                            matrices = index.read_matrices(
+                                requests, directory / "matrices", diagnostic_resources,
+                                cancel_requested=cancel_requested,
+                            )
+                            diagnostics.append(
+                                FitLearnedRankHead(
+                                    strategy, split, LearnedRankPartitions(*matrices),
+                                    settings, cancel_requested=cancel_requested, compute_threads=reservation.compute_threads,
+                                )
+                            )
+                            _progress(progress, "model_fit", "completed", strategy)
+                            del matrices
+                    for diagnostic, plan in zip(diagnostics, final_fit_plans, strict=True):
+                        with ExitStack() as final_resources:
+                            _progress(progress, "final_model_refit", "started", diagnostic.strategy)
+                            matrices = index.read_matrices(
+                                (LearnedRankMatrixRequest(plan.fit_dates, diagnostic.strategy),),
+                                directory / "matrices", final_resources, cancel_requested=cancel_requested,
+                            )
+                            heads.append(RefitLearnedRankHead(
+                                diagnostic,
+                                plan,
+                                matrices[0],
+                                settings,
+                                compute_threads=reservation.compute_threads,
+                                cancel_requested=cancel_requested,
+                            ))
+                            _progress(progress, "final_model_refit", "completed", diagnostic.strategy)
+                            del matrices
                 _progress(progress, "artifact_publish", "started", None)
-                pair = LearnedRankPair(
+                pair = LearnedRankFinalPair(
                     snapshot.snapshot_hash,
                     snapshot.source_identity_hash,
                     snapshot.calendar_hash,
@@ -247,6 +304,7 @@ def RunV1Training(
                     settings,
                     (heads[0], heads[1]),
                     run_id,
+                    calendar,
                 )
                 CheckV1Cancellation(cancel_requested)
                 PublishLearnedRankPair(model_root, pair)
@@ -281,7 +339,9 @@ def _progress(
         completed = int(state == "completed")
         progress.publish(
             TomorrowTrainingProgress(
-                stage, state, completed, 1, produced_units=completed if stage == "model_fit" else 0, strategy=strategy
+                stage, state, completed, 1,
+                produced_units=completed if stage in {"model_fit", "final_model_refit"} else 0,
+                strategy=strategy,
             )
         )
 

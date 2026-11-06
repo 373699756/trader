@@ -3,7 +3,8 @@
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
-from threading import Lock
+from threading import Lock, get_native_id
+import time
 from typing import Literal, TypeVar
 
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
@@ -46,6 +47,8 @@ class _ProfileTiming:
     cpu: _ResourceTiming = field(default_factory=_ResourceTiming)
     memory: _ResourceTiming = field(default_factory=_ResourceTiming)
     cpu_held_while_memory_wait_seconds: float = 0.0
+    native_id: int | None = None
+    thread_cpu_seconds: float | None = None
 
     def snapshot(self) -> TrainingProfileTiming:
         return TrainingProfileTiming(
@@ -57,20 +60,32 @@ class _ProfileTiming:
             self.cpu.snapshot(),
             self.memory.snapshot(),
             self.cpu_held_while_memory_wait_seconds,
+            native_id=self.native_id,
+            thread_cpu_seconds=self.thread_cpu_seconds,
         )
 
 
 class TrainingExecutionMeasurements:
     """Observe port scopes without changing admission, cancellation or publication."""
 
-    def __init__(self, profiles: tuple[ScoringProfileId, ...], monotonic: Callable[[], float]) -> None:
+    def __init__(
+        self,
+        profiles: tuple[ScoringProfileId, ...],
+        monotonic: Callable[[], float],
+        *,
+        thread_time: Callable[[], float] = time.thread_time,
+        native_id: Callable[[], int] = get_native_id,
+    ) -> None:
         if not profiles or len(set(profiles)) != len(profiles) or not set(profiles) <= set(SCORING_PROFILE_IDS):
             raise ValueError("training_measurement_profiles_invalid")
         self._profiles = tuple(_ProfileTiming(profile) for profile in profiles)
         self._monotonic = monotonic
+        self._thread_time = thread_time
+        self._native_id = native_id
         self._started = monotonic()
         self._lock = Lock()
         self._source_read_seconds = 0.0
+        self._source_read_thread_cpu_seconds = 0.0
         self._peak_cpu_reservations = 0
         self._peak_memory_reservations = 0
 
@@ -84,28 +99,38 @@ class TrainingExecutionMeasurements:
                 self._peak_cpu_reservations,
                 self._peak_memory_reservations,
                 tuple(item.snapshot() for item in self._profiles),
+                source_read_thread_cpu_seconds=self._source_read_thread_cpu_seconds,
             )
 
     @contextmanager
     def task(self, profile: ScoringProfileId) -> Iterator[None]:
         state = self._profile(profile)
+        started_cpu = self._thread_time()
+        native_id = self._native_id()
         with self._lock:
             state.started_after_seconds = self._monotonic() - self._started
+            state.native_id = native_id
+            state.thread_cpu_seconds = None
         try:
             yield
         finally:
+            elapsed_cpu = self._thread_time() - started_cpu
             with self._lock:
                 state.finished_after_seconds = self._monotonic() - self._started
+                state.thread_cpu_seconds = elapsed_cpu
 
     @contextmanager
     def read_source(self) -> Iterator[None]:
         started = self._monotonic()
+        started_cpu = self._thread_time()
         try:
             yield
         finally:
             elapsed = self._monotonic() - started
+            elapsed_cpu = self._thread_time() - started_cpu
             with self._lock:
                 self._source_read_seconds += elapsed
+                self._source_read_thread_cpu_seconds += elapsed_cpu
 
     @contextmanager
     def send_queue(self, profile: ScoringProfileId) -> Iterator[None]:

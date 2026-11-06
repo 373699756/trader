@@ -3,8 +3,10 @@
 import os
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
+from trader.training.domain.v1.learned_rank import LearnedRankFinalPair
 from trader.training.infra.model_bundles.bundle_snapshot import MakeBundleStagingDirectory
 from trader.training.infra.model_bundles.profile_publication import PublishProfileBundles
 from trader.training.infra.profile.v1.models import PublishLearnedRankPair, ReadLearnedRankPair
@@ -31,8 +33,10 @@ def _publish_until_exit(model_root: Path, profile_id: str, point: str) -> None:
 
     if profile_id == "v1":
         pair = ReadLearnedRankPair(model_root)
-        os.replace = crash_replace
-        PublishLearnedRankPair(model_root, pair)
+        if not isinstance(pair, LearnedRankFinalPair):
+            raise ValueError("publication crash fixture requires a final-refit V1 pair")
+        with patch.object(os, "replace", crash_replace):
+            PublishLearnedRankPair(model_root, pair)
     else:
         profile = next(
             item for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
@@ -44,8 +48,8 @@ def _publish_until_exit(model_root: Path, profile_id: str, point: str) -> None:
         )
         for strategy, destination in staged:
             shutil.copytree(profile_root / strategy.value, destination, dirs_exist_ok=True)
-        os.replace = crash_replace
-        PublishProfileBundles(profile_root, profile, staged)
+        with patch.object(os, "replace", crash_replace):
+            PublishProfileBundles(profile_root, profile, staged)
 
 
 __all__ = ["CrashProfilePublication"]

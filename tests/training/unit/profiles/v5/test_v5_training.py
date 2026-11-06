@@ -115,8 +115,15 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
     assert result.status == "engineering_ready", result.heads
     assert {h.strategy for h in result.heads} == {Strategy.TOMORROW, Strategy.D25}
     for head in result.heads:
-        details = [update.fit_detail for update in updates if update.strategy is head.strategy and update.fit_detail]
-        assert {item.phase for item in details} == {
+        diagnostic = [
+            update.fit_detail for update in updates
+            if update.stage == "model_fit" and update.strategy is head.strategy and update.fit_detail
+        ]
+        final = [
+            update.fit_detail for update in updates
+            if update.stage == "final_model_refit" and update.strategy is head.strategy and update.fit_detail
+        ]
+        assert {item.phase for item in diagnostic} == {
             "preparation",
             "batch_cache",
             "normalization",
@@ -125,14 +132,16 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
             "calibration",
             "completed",
         }
-        assert all(item.industry == "bank" and item.training_rows == head.training_rows for item in details)
-        for epoch in (1, 2):
-            trained = [item for item in details if item.phase == "training" and item.epoch == epoch]
-            assert trained[0].completed_batches == 0
-            assert trained[-1].completed_batches == trained[-1].total_batches == math.ceil(head.training_rows / 256)
-            assert all(item.total_epochs == 2 for item in trained)
-            assert [item.completed_batches for item in trained] == sorted(item.completed_batches for item in trained)
-        assert details[-1].phase == "completed"
+        assert {item.phase for item in final} == {"preparation", "normalization", "training", "completed"}
+        for details in (diagnostic, final):
+            assert all(item.industry == "bank" and item.training_rows == head.training_rows for item in details)
+            for epoch in (1, 2):
+                trained = [item for item in details if item.phase == "training" and item.epoch == epoch]
+                assert trained[0].completed_batches == 0
+                assert trained[-1].completed_batches == trained[-1].total_batches == math.ceil(head.training_rows / 256)
+                assert all(item.total_epochs == 2 for item in trained)
+                assert [item.completed_batches for item in trained] == sorted(item.completed_batches for item in trained)
+            assert details[-1].phase == "completed"
     assert sorted(p.relative_to(models).as_posix() for p in models.rglob("*.json")) == [
         "v5/d25/metadata.json",
         "v5/d25/model.json",

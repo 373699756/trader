@@ -15,6 +15,8 @@ from trader.recommendation.domain.market.v1.features import (
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
+from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT, FinalFitDatePlan
+from trader.training.domain.training_dates import MAX_TRAINING_SESSIONS
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,13 @@ def LearnedRankContractHash(settings: V1TrainingSettings) -> str:
     return CanonicalResearchHash((LEARNED_RANK_CONTRACT, settings))
 
 
+def LearnedRankFinalContractHash(settings: V1TrainingSettings) -> str:
+    return CanonicalResearchHash((
+        LEARNED_RANK_CONTRACT, FINAL_FIT_CONTRACT,
+        "fixed_diagnostic_rank_iterations_and_transferred_independent_calibrator", settings,
+    ))
+
+
 @dataclass(frozen=True)
 class LearnedRankHead:
     """One complete ranking/return pair; never a production authorization."""
@@ -277,6 +286,30 @@ class LearnedRankHead:
 
 
 @dataclass(frozen=True)
+class LearnedRankFinalHead(LearnedRankHead):
+    """Latest mature final fit plus the distinct, complete pre-refit diagnostic model."""
+
+    final_fit: FinalFitDatePlan
+    diagnostic: LearnedRankHead
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if (
+            type(self.diagnostic) is not LearnedRankHead
+            or self.split != self.diagnostic.split
+            or self.final_fit.maturity_sessions != self.split.maturity_sessions
+            or self.final_fit.fit_dates[-1] != self.split.label_cutoff
+            or self.rank_iterations > self.diagnostic.rank_iterations
+            or self.calibration_intercept != self.diagnostic.calibration_intercept
+            or self.calibration_slope != self.diagnostic.calibration_slope
+            or self.early_stopping_rows != self.diagnostic.early_stopping_rows
+            or self.calibration_rows != self.diagnostic.calibration_rows
+            or self.validation != self.diagnostic.validation
+        ):
+            raise ValueError("learned-rank final-fit evidence is invalid")
+
+
+@dataclass(frozen=True)
 class LearnedRankPair:
     """Both strategy models and their shared training provenance."""
 
@@ -314,8 +347,48 @@ class LearnedRankPair:
         return CanonicalResearchHash((LEARNED_RANK_CONTRACT, self))
 
 
+@dataclass(frozen=True)
+class LearnedRankFinalPair(LearnedRankPair):
+    heads: tuple[LearnedRankFinalHead, LearnedRankFinalHead]
+    calendar_dates: tuple[date, ...]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if (
+            not self.calendar_dates or len(self.calendar_dates) > MAX_TRAINING_SESSIONS
+            or self.calendar_dates != tuple(sorted(set(self.calendar_dates)))
+            or self.source_cutoff not in self.calendar_dates
+        ):
+            raise ValueError("learned-rank final calendar is invalid")
+        diagnostic_calendar = tuple(day for day in self.calendar_dates if day <= self.source_cutoff)
+        for head in self.heads:
+            if (
+                not isinstance(head, LearnedRankFinalHead)
+                or head.diagnostic.training_contract_hash != LearnedRankContractHash(self.settings)
+                or head.final_fit != BuildFinalFitDatePlan(
+                    self.calendar_dates,
+                    source_cutoff=self.source_cutoff,
+                    fit_sessions=self.settings.fit_dates,
+                    maturity_sessions=head.split.maturity_sessions,
+                )
+                or head.split != BuildLearnedRankDateSplit(
+                    diagnostic_calendar, self.settings, maturity_sessions=head.split.maturity_sessions,
+                )
+            ):
+                raise ValueError("learned-rank final-fit calendar provenance is invalid")
+
+    @property
+    def contract_hash(self) -> str:
+        return LearnedRankFinalContractHash(self.settings)
+
+    @property
+    def content_hash(self) -> str:
+        return CanonicalResearchHash((LEARNED_RANK_CONTRACT, FINAL_FIT_CONTRACT, self))
+
+
 __all__ = [
     "LearnedRankContractHash",
+    "LearnedRankFinalContractHash",
     "BuildLearnedRankDateSplit",
     "LearnedRankDateSplit",
     "LearnedRankPredictionMetrics",
@@ -323,5 +396,7 @@ __all__ = [
     "V1TrainingSettings",
     "LearnedRankHead",
     "LearnedRankPair",
+    "LearnedRankFinalHead",
+    "LearnedRankFinalPair",
     "LEARNED_RANK_CONTRACT",
 ]

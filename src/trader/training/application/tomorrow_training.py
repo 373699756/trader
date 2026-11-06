@@ -22,6 +22,7 @@ TomorrowTrainingStage = Literal[
     "target_statistics",
     "industry_statistics",
     "model_fit",
+    "final_model_refit",
     "artifact_publish",
 ]
 TomorrowTrainingProgressState = Literal["started", "running", "completed"]
@@ -122,6 +123,37 @@ class TomorrowTrainingWindow:
             raise ValueError("Tomorrow V3 date is outside the frozen split")
 
 
+@dataclass(frozen=True)
+class ProductionTrainingWindow:
+    """Read current source labels for final refit, without a sealed-research claim."""
+
+    split: TrainingDateSplit
+    source_dates: tuple[date, ...]
+    readable_dates: frozenset[date] = field(init=False)
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.source_dates) is not tuple
+            or not self.source_dates
+            or any(type(day) is not date for day in self.source_dates)
+            or self.source_dates != tuple(sorted(set(self.source_dates)))
+            or not self.split.warmup_dates
+        ):
+            raise ValueError("production_training_source_dates_invalid")
+        required = (
+            *TomorrowTrainingWindow(self.split).readable_dates,
+            *self.split.point_in_time_holdout_dates,
+        )
+        if not set(required).issubset(self.source_dates):
+            raise ValueError("production_training_source_calendar_mismatch")
+        start = self.source_dates.index(self.split.warmup_dates[0])
+        object.__setattr__(self, "readable_dates", frozenset(self.source_dates[start:]))
+
+    def require_readable(self, dates: tuple[date, ...]) -> None:
+        if not frozenset(dates).issubset(self.readable_dates):
+            raise ValueError("production_training_date_outside_source")
+
+
 __all__ = [
     "TOMORROW_TRAINING_COMPUTE_THREADS",
     "TOMORROW_TRAINING_PEAK_RSS_MIB",
@@ -130,6 +162,7 @@ __all__ = [
     "TomorrowTrainingProgressState",
     "TomorrowTrainingStage",
     "TomorrowTrainingWindow",
+    "ProductionTrainingWindow",
     "TrainingFitDetail",
     "TrainingFitPhase",
 ]

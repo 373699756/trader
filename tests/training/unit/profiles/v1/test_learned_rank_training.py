@@ -18,12 +18,14 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 
 
 from trader.infra.process_lock import ProcessLock
+from trader.download.domain.baostock_daily import BaoStockCalendar
 
-from trader.infra.serialization.canonical import ContentHash
+from trader.infra.serialization.canonical import CanonicalValue, ContentHash
 
 from trader.recommendation.application.ports.loaded_profile import ModelInput
 
@@ -33,7 +35,15 @@ from trader.recommendation.domain.publication.models import Strategy
 
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
 
-from trader.training.domain.v1.learned_rank import BuildLearnedRankDateSplit, LearnedRankRelevance
+from trader.training.domain.v1.learned_rank import (
+    BuildLearnedRankDateSplit,
+    LearnedRankFinalHead,
+    LearnedRankFinalPair,
+    LearnedRankHead,
+    LearnedRankPair,
+    LearnedRankRelevance,
+)
+from trader.training.domain.final_fit import FINAL_FIT_CONTRACT
 
 
 from trader.training.entrypoints.profile_training import ProjectLearnedRankTrainingResult
@@ -134,7 +144,9 @@ def test_v1_reuse_rejects_any_changed_identity_or_invalid_head(tmp_path, monkeyp
     elif changed == "split":
         pair = ReadLearnedRankPair(model_root)
         split = BuildLearnedRankDateSplit(history.dates, replace(settings, fit_dates=29), maturity_sessions=1)
-        PublishLearnedRankPair(model_root, replace(pair, heads=(replace(pair.heads[0], split=split), pair.heads[1])))
+        with pytest.raises(ValueError, match="final-fit evidence"):
+            replace(pair.heads[0], split=split)
+        settings = replace(settings, fit_dates=29)
     elif changed == "missing":
         (model_root / "v1/d25/model.json").unlink()
     elif changed == "corrupt":
@@ -185,7 +197,10 @@ def test_v1_reserves_shared_matrices_and_releases_memory_before_publishing(tmp_p
             finally:
                 reserved_leases.clear()
 
-    original_fit, original_publish = training.FitLearnedRankHead, training.PublishLearnedRankPair
+    original_fit, original_refit, original_publish = (
+        training.FitLearnedRankHead, training.RefitLearnedRankHead, training.PublishLearnedRankPair,
+    )
+    final_fits = []
 
     def fit(*args, **kwargs):
         assert len(reserved_leases) == 1
@@ -195,7 +210,20 @@ def test_v1_reserves_shared_matrices_and_releases_memory_before_publishing(tmp_p
         assert not reserved_leases
         return original_publish(*args, **kwargs)
 
+    def refit(diagnostic, plan, matrix, settings, **kwargs):
+        assert len(reserved_leases) == 1
+        assert tuple(sorted(set(matrix.dates))) == plan.fit_dates
+        history = _History()
+        position = history.dates.index(matrix.dates[0])
+        expected = CalculateLearnedRankFeatures(
+            tuple(history.point(day, 0) for day in range(position - settings.history_sessions, position))
+        )
+        assert tuple(matrix.features[0]) == pytest.approx(expected)
+        final_fits.append(plan)
+        return original_refit(diagnostic, plan, matrix, settings, **kwargs)
+
     monkeypatch.setattr(training, "FitLearnedRankHead", fit)
+    monkeypatch.setattr(training, "RefitLearnedRankHead", refit)
     monkeypatch.setattr(training, "PublishLearnedRankPair", publish)
     result = RunV1Training(
         _History,
@@ -207,6 +235,11 @@ def test_v1_reserves_shared_matrices_and_releases_memory_before_publishing(tmp_p
         sample_settings=TrainingSampleSettingsFixture(),
     )
     assert result.status == "engineering_ready" and len(leases) == 1 and not reserved_leases
+    assert len(final_fits) == 2
+    assert leases == [max(
+        sum(item.rows for item in result.coverage if item.strategy is strategy and item.partition != "final_fitting")
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
+    ) * 512 + 256 * 1024**2]
 
 
 def test_recent_split_matures_labels_and_never_overlaps_partitions() -> None:
@@ -225,6 +258,217 @@ def test_recent_split_matures_labels_and_never_overlaps_partitions() -> None:
     assert LearnedRankRelevance((2, 2, 2)) == (2, 2, 2)
     assert LearnedRankRelevance((2,)) == (2,)
     assert LearnedRankRelevance((1, 1, 3, 4, 5)) == (0, 0, 2, 3, 4)
+
+
+def test_final_heads_fit_latest_raw_features_and_keep_distinct_diagnostic_evidence(reusable_pair):
+    root, result = reusable_pair
+    history, settings = _History(), _settings()
+    pair = ReadLearnedRankPair(root)
+    assert isinstance(pair, LearnedRankFinalPair)
+    assert pair.calendar_dates == history.dates
+    projected = ProjectLearnedRankTrainingResult(result)
+    for head, summary in zip(pair.heads, projected["heads"], strict=True):
+        assert isinstance(head, LearnedRankFinalHead) and type(head.diagnostic) is LearnedRankHead
+        last = len(history.dates) - 1 - head.final_fit.maturity_sessions
+        assert head.final_fit.fit_dates == history.dates[last - settings.fit_dates + 1:last + 1]
+        assert head.final_fit.fit_dates[-1] == head.split.label_cutoff
+        assert head.final_fit.fit_dates[-1] > head.diagnostic.split.fitting[-1]
+        assert head.content_hash != head.diagnostic.content_hash
+        assert head.training_contract_hash != head.diagnostic.training_contract_hash
+        assert head.validation == head.diagnostic.validation
+        assert head.calibration_intercept == head.diagnostic.calibration_intercept
+        assert head.calibration_slope == head.diagnostic.calibration_slope
+        assert head.rank_iterations <= head.diagnostic.rank_iterations
+        raw = np.asarray([
+            CalculateLearnedRankFeatures(tuple(history.point(day, code_index) for day in range(position - settings.history_sessions, position)))
+            for position in range(last - settings.fit_dates + 1, last + 1)
+            for code_index in range(len(history.codes))
+        ])
+        means, scales = raw.mean(axis=0), raw.std(axis=0)
+        scales[scales < 1e-12] = 1.0
+        assert head.transformer_means == pytest.approx(means)
+        assert head.transformer_scales == pytest.approx(scales)
+        assert head.transformer_means != head.diagnostic.transformer_means
+        assert head.ridge_coefficients != head.diagnostic.ridge_coefficients
+        metadata = json.loads((root / "v1" / head.strategy.value / "metadata.json").read_text(encoding="utf-8"))
+        assert metadata["schema_version"] == "learned_rank_final_head_metadata"
+        report = metadata["validation_report"]
+        assert report["diagnostic_head"] == CanonicalValue(head.diagnostic)
+        assert report["diagnostic_head_hash"] == head.diagnostic.content_hash
+        assert report["calibration_source_model_hash"] == head.diagnostic.content_hash
+        assert report["evaluation_scope"] == "independent_pre_refit_model"
+        assert report["calibration_transfer"] is True and report["final_model_unseen_validation_passed"] is False
+        assert report["selected_rank_iterations"] == head.diagnostic.rank_iterations
+        assert report["final_rank_iterations"] == head.rank_iterations
+        assert LearnedRankPredictor(head.diagnostic).model_hash == head.diagnostic.content_hash
+        assert summary["source_cutoff"] == history.dates[-1].isoformat()
+        assert summary["final_fit_end"] == history.dates[last].isoformat()
+        assert summary["final_fit_sessions"] == settings.fit_dates
+        assert summary["evaluation_model_role"] == "pre_refit_diagnostic"
+        assert summary["final_model_unseen_validation_passed"] is False
+
+
+def test_old_diagnostic_pair_keeps_original_schema_but_cannot_reuse_as_final(tmp_path, reusable_pair):
+    root, _ = reusable_pair
+    final = ReadLearnedRankPair(root)
+    assert isinstance(final, LearnedRankFinalPair)
+    old = LearnedRankPair(
+        final.training_input_hash, final.source_identity_hash, final.calendar_hash, final.source_cutoff,
+        final.settings, (final.heads[0].diagnostic, final.heads[1].diagnostic), final.training_identity_hash,
+    )
+    model_root = tmp_path / "models"
+    shutil.copytree(root, model_root)
+    for head in old.heads:
+        directory = model_root / "v1" / head.strategy.value
+        model = json.loads((directory / "model.json").read_text(encoding="utf-8"))
+        metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
+        values = CanonicalValue(head)
+        model["schema_version"] = "learned_rank_head_model"
+        model["pair_content_hash"], model["head_content_hash"] = old.content_hash, head.content_hash
+        model["components"] = {key: values[key] for key in model["components"]}
+        model["content_hash"] = ContentHash({key: value for key, value in model.items() if key != "content_hash"})
+        metadata["schema_version"] = "learned_rank_head_metadata"
+        metadata["pair_content_hash"], metadata["head_content_hash"] = old.content_hash, head.content_hash
+        metadata["model_hash"], metadata["contract_hash"] = model["content_hash"], old.contract_hash
+        metadata["training_input"] = {
+            key: values[key] if key in values else value
+            for key, value in metadata["training_input"].items() if key not in {"calendar_dates", "final_fit"}
+        }
+        metadata["validation_report"] = {
+            key: value for key, value in metadata["validation_report"].items()
+            if key in {"validation", "production_authority", "prediction_return_validation_passed",
+                       "point_in_time_parity", "feature_anchor", "label_anchor"}
+        }
+        metadata["content_hash"] = ContentHash({key: value for key, value in metadata.items() if key != "content_hash"})
+        (directory / "model.json").write_text(json.dumps(model), encoding="utf-8")
+        (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    read = ReadLearnedRankPair(model_root)
+    assert type(read) is LearnedRankPair and read == old and read.content_hash != final.content_hash
+    for strategy in ("tomorrow", "d25"):
+        metadata = json.loads((model_root / "v1" / strategy / "metadata.json").read_text(encoding="utf-8"))
+        assert metadata["schema_version"] == "learned_rank_head_metadata"
+        assert "final_fit" not in metadata["training_input"]
+        assert "final_model_unseen_validation_passed" not in metadata["validation_report"]
+    assert InspectV1Training(_History(), model_root, _settings()) is None
+    before = {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")}
+    with pytest.raises(ValueError, match="diagnostic schemas are read-only"):
+        PublishLearnedRankPair(model_root, read)
+    assert {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")} == before
+    missing_root = tmp_path / "uncreated"
+    with pytest.raises(ValueError, match="diagnostic schemas are read-only"):
+        PublishLearnedRankPair(missing_root, read)
+    assert not missing_root.exists()
+
+
+def test_production_final_fit_uses_source_cutoff_for_each_head_maturity(tmp_path):
+    history = _History()
+    cutoff = history.dates[-4]
+    calendar = BaoStockCalendar(history.dates[:-3])
+    history.snapshot = replace(
+        history.snapshot, source_cutoff=cutoff, label_cutoff=history.dates[-5],
+        calendar=calendar, calendar_hash=calendar.content_hash,
+    )
+    original = history.iter_training_rows
+    requested = []
+
+    def rows(dates):
+        requested.extend(dates)
+        assert max(dates) <= cutoff
+        yield from original(dates)
+
+    history.iter_training_rows = rows
+    result = RunV1Training(
+        lambda: history, tmp_path / "models", history_root=tmp_path / "history", sample_root=tmp_path / "samples",
+        settings=_settings(), sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture(),
+    )
+    assert result.status == "engineering_ready", result.failure_reasons
+    assert requested and max(requested) == cutoff
+    pair = ReadLearnedRankPair(tmp_path / "models")
+    assert isinstance(pair, LearnedRankFinalPair) and pair.source_cutoff == cutoff
+    assert [head.final_fit.fit_dates[-1] for head in pair.heads] == [history.dates[-5], history.dates[-9]]
+    assert InspectV1Training(history, tmp_path / "models", _settings()).reused
+
+
+@pytest.mark.parametrize("error", (ValueError, InterruptedError))
+def test_failure_in_second_final_refit_preserves_the_complete_previous_pair(tmp_path, monkeypatch, reusable_pair, error):
+    import trader.training.infra.profile.v1.training as training
+
+    root, _ = reusable_pair
+    model_root = tmp_path / "models"
+    shutil.copytree(root, model_root)
+    before = {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")}
+    original = training.RefitLearnedRankHead
+    refitted = []
+
+    def refit(diagnostic, *args, **kwargs):
+        if diagnostic.strategy is Strategy.D25:
+            raise error("final fixture interruption")
+        refitted.append(diagnostic.strategy)
+        return original(diagnostic, *args, **kwargs)
+
+    monkeypatch.setattr(training, "RefitLearnedRankHead", refit)
+
+    def run():
+        return RunV1Training(
+            _History, model_root, history_root=tmp_path / "history", sample_root=tmp_path / "samples",
+            settings=replace(_settings(), boosting_rounds=13), sqlite_policy=SqlitePolicyFixture(),
+            sample_settings=TrainingSampleSettingsFixture(),
+        )
+
+    if error is InterruptedError:
+        with pytest.raises(InterruptedError, match="final fixture"):
+            run()
+    else:
+        assert run().status == "failed"
+    assert refitted == [Strategy.TOMORROW]
+    assert {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")} == before
+    assert not (tmp_path / "samples").exists()
+
+
+@pytest.mark.parametrize("changed", ("diagnostic", "calibration", "claim", "source_cutoff", "calendar", "fit_dates"))
+def test_final_pair_rejects_resigned_false_provenance(tmp_path, reusable_pair, changed):
+    root, _ = reusable_pair
+    model_root = tmp_path / "models"
+    shutil.copytree(root, model_root)
+    pair = ReadLearnedRankPair(model_root)
+    for head in pair.heads:
+        path = model_root / "v1" / head.strategy.value
+        metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
+        model = json.loads((path / "model.json").read_text(encoding="utf-8"))
+        report, training = metadata["validation_report"], metadata["training_input"]
+        if changed == "diagnostic":
+            report["diagnostic_head"]["ridge_intercept"] += 0.1
+        elif changed == "calibration":
+            model["components"]["calibration_intercept"] += 0.1
+        elif changed == "claim":
+            report["final_model_unseen_validation_passed"] = True
+        elif changed == "source_cutoff":
+            training["source_cutoff"] = _History().dates[-2].isoformat()
+        elif changed == "calendar":
+            training["calendar_dates"].pop(0)
+        else:
+            plan = training["final_fit"]
+            history = _History()
+            plan["fit_dates"][0] = history.dates[history.dates.index(head.final_fit.fit_dates[0]) - 1].isoformat()
+            plan["content_hash"] = ContentHash((FINAL_FIT_CONTRACT, plan["source_cutoff"], plan["maturity_sessions"], plan["fit_dates"]))
+            values = CanonicalValue(head)
+            values["final_fit"] = {key: value for key, value in plan.items() if key != "content_hash"}
+            metadata["head_content_hash"] = model["head_content_hash"] = ContentHash(values)
+        model["content_hash"] = ContentHash({key: value for key, value in model.items() if key != "content_hash"})
+        metadata["model_hash"] = model["content_hash"]
+        metadata["content_hash"] = ContentHash({key: value for key, value in metadata.items() if key != "content_hash"})
+        (path / "model.json").write_text(json.dumps(model), encoding="utf-8")
+        (path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    reason = {
+        "diagnostic": "diagnostic or calibration provenance",
+        "calibration": "final-fit evidence",
+        "claim": "diagnostic or calibration provenance",
+        "source_cutoff": "pair provenance",
+        "calendar": "calendar differs",
+        "fit_dates": "calendar provenance",
+    }[changed]
+    with pytest.raises(ValueError, match=reason):
+        ReadLearnedRankPair(model_root)
 
 
 def test_training_samples_use_prior_completed_sessions_and_explicit_missing_labels(tmp_path: Path) -> None:
@@ -308,16 +552,16 @@ def test_missing_d25_partition_fails_before_either_head_fit_and_reports_coverage
     assert result.status == "failed"
     assert result.failure_reasons == tuple(
         f"learned_rank_sample_partition_empty:d25:{name}"
-        for name in ("fitting", "early_stopping", "calibration", "validation")
+        for name in ("fitting", "early_stopping", "calibration", "validation", "final_fitting")
     )
-    assert len(result.coverage) == 8
+    assert len(result.coverage) == 10
     assert all(item.rows > 0 for item in result.coverage if item.strategy is Strategy.TOMORROW)
     projected = ProjectLearnedRankTrainingResult(result)
     assert projected["failure_reasons"] == list(result.failure_reasons)
     assert projected["coverage"][-1] == {
         "strategy": "d25",
-        "partition": "validation",
-        "expected_dates": 5,
+        "partition": "final_fitting",
+        "expected_dates": 30,
         "effective_dates": 0,
         "rows": 0,
     }
@@ -534,6 +778,9 @@ def test_retraining_replaces_obsolete_contract_and_reports_actual_fit_and_public
     assert ReadLearnedRankPair(model_root).heads == result.heads
     fitted = [event for event in events if event.stage == "model_fit" and event.state == "completed"]
     assert [event.produced_units for event in fitted] == [1, 1]
+    refitted = [event for event in events if event.stage == "final_model_refit" and event.state == "completed"]
+    assert [event.strategy for event in refitted] == [Strategy.TOMORROW, Strategy.D25]
+    assert [event.produced_units for event in refitted] == [1, 1]
     assert [(event.stage, event.state, event.strategy) for event in events[-2:]] == [
         ("artifact_publish", "started", None),
         ("artifact_publish", "completed", None),

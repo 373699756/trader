@@ -24,7 +24,7 @@ class _History:
             "complete_manifest",
             "a" * 64,
             "b" * 64,
-            "c" * 64,
+            BaoStockCalendar(self.dates).content_hash,
             self.dates[-1],
             self.dates[-2],
             BaoStockCalendar(self.dates),

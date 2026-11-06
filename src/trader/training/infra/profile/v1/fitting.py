@@ -13,12 +13,15 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
 from trader.training.domain.v1.learned_rank import (
     LearnedRankContractHash,
+    LearnedRankFinalContractHash,
     LearnedRankDateSplit,
     LearnedRankHead,
+    LearnedRankFinalHead,
     LearnedRankPredictionMetrics,
     LearnedRankRelevance,
     V1TrainingSettings,
 )
+from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.infra.profile.v1.samples import CheckV1Cancellation, LearnedRankMatrix
 
 _CHUNK_ROWS = 8192
@@ -63,45 +66,13 @@ def FitLearnedRankHead(
     coefficients, intercept = _ridge(fitting, weights, settings.ridge_penalty, cancel_requested)
     del weights
 
-    def cancellation_callback(_environment: lgb.callback.CallbackEnv) -> None:
-        CheckV1Cancellation(cancel_requested)
-
-    booster = lgb.train(
-        {
-            "objective": "lambdarank",
-            "metric": "ndcg",
-            "ndcg_eval_at": [6],
-            "label_gain": [0, 1, 2, 3, 4],
-            "lambdarank_truncation_level": 10,
-            "lambdarank_norm": False,
-            "learning_rate": settings.learning_rate,
-            "max_depth": settings.max_depth,
-            "num_leaves": settings.num_leaves,
-            "min_data_in_leaf": settings.minimum_leaf_rows,
-            "max_bin": settings.maximum_bins,
-            "histogram_pool_size": settings.histogram_pool_mib,
-            "seed": settings.seed,
-            "deterministic": True,
-            "force_col_wise": True,
-            "num_threads": compute_threads,
-            "verbosity": -1,
-        },
-        lgb.Dataset(
-            fitting.features,
-            label=_relevance(fitting, settings),
-            weight=_daily_weights(fitting),
-            group=np.asarray(fitting.groups, dtype=np.int32),
-        ),
-        num_boost_round=settings.boosting_rounds,
-        valid_sets=[
-            lgb.Dataset(
-                early.features,
-                label=_relevance(early, settings),
-                weight=_daily_weights(early),
-                group=np.asarray(early.groups, dtype=np.int32),
-            )
-        ],
-        callbacks=[lgb.early_stopping(settings.early_stopping_rounds, verbose=False), cancellation_callback],
+    booster = _fit_ranker(
+        fitting,
+        settings,
+        early=early,
+        rounds=settings.boosting_rounds,
+        compute_threads=compute_threads,
+        cancel_requested=cancel_requested,
     )
     CheckV1Cancellation(cancel_requested)
     calibration_predictions = intercept + calibration.features @ coefficients
@@ -134,6 +105,122 @@ def FitLearnedRankHead(
         tuple(sorted(set(fitting.industries))),
         metrics,
     )
+
+
+def RefitLearnedRankHead(
+    diagnostic: LearnedRankHead,
+    final_fit: FinalFitDatePlan,
+    matrix: LearnedRankMatrix,
+    settings: V1TrainingSettings,
+    *,
+    compute_threads: int,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> LearnedRankFinalHead:
+    """Refit fresh raw matrices; freeze the prior round count and transferred calibrator."""
+    if (
+        type(compute_threads) is not int or compute_threads < 1
+        or type(diagnostic) is not LearnedRankHead
+        or diagnostic.training_contract_hash != LearnedRankContractHash(settings)
+        or final_fit.maturity_sessions != diagnostic.split.maturity_sessions
+        or len(final_fit.fit_dates) != settings.fit_dates
+        or tuple(sorted(set(matrix.dates))) != final_fit.fit_dates
+        or len(matrix.targets) < settings.minimum_training_rows
+    ):
+        raise ValueError("learned_rank_final_fit_input_invalid")
+    weights = _daily_weights(matrix)
+    means, scales = _transform(matrix, weights)
+    for start, end in _chunks(len(matrix.targets)):
+        CheckV1Cancellation(cancel_requested)
+        matrix.features[start:end] -= means
+        matrix.features[start:end] /= scales
+    coefficients, intercept = _ridge(matrix, weights, settings.ridge_penalty, cancel_requested)
+    del weights
+    booster = _fit_ranker(
+        matrix,
+        settings,
+        early=None,
+        rounds=diagnostic.rank_iterations,
+        compute_threads=compute_threads,
+        cancel_requested=cancel_requested,
+    )
+    CheckV1Cancellation(cancel_requested)
+    return LearnedRankFinalHead(
+        diagnostic.strategy,
+        LearnedRankFinalContractHash(settings),
+        diagnostic.split,
+        tuple(float(value) for value in means),
+        tuple(float(value) for value in scales),
+        tuple(float(value) for value in coefficients),
+        intercept,
+        diagnostic.calibration_intercept,
+        diagnostic.calibration_slope,
+        booster.model_to_string(),
+        booster.current_iteration(),
+        len(matrix.targets),
+        diagnostic.early_stopping_rows,
+        diagnostic.calibration_rows,
+        tuple(sorted(set(matrix.industries))),
+        diagnostic.validation,
+        final_fit,
+        diagnostic,
+    )
+
+
+def _fit_ranker(
+    fitting: LearnedRankMatrix,
+    settings: V1TrainingSettings,
+    *,
+    early: LearnedRankMatrix | None,
+    rounds: int,
+    compute_threads: int,
+    cancel_requested: Callable[[], bool] | None,
+) -> lgb.Booster:
+    def cancellation_callback(_environment: lgb.callback.CallbackEnv) -> None:
+        CheckV1Cancellation(cancel_requested)
+
+    valid_sets = [] if early is None else [lgb.Dataset(
+        early.features,
+        label=_relevance(early, settings),
+        weight=_daily_weights(early),
+        group=np.asarray(early.groups, dtype=np.int32),
+    )]
+    callbacks = [cancellation_callback]
+    if early is not None:
+        callbacks.append(lgb.early_stopping(settings.early_stopping_rounds, verbose=False))
+    return lgb.train(
+        _ranker_parameters(settings, compute_threads),
+        lgb.Dataset(
+            fitting.features,
+            label=_relevance(fitting, settings),
+            weight=_daily_weights(fitting),
+            group=np.asarray(fitting.groups, dtype=np.int32),
+        ),
+        num_boost_round=rounds,
+        valid_sets=valid_sets,
+        callbacks=callbacks,
+    )
+
+
+def _ranker_parameters(settings: V1TrainingSettings, compute_threads: int) -> dict[str, object]:
+    return {
+        "objective": "lambdarank",
+        "metric": "ndcg",
+        "ndcg_eval_at": [6],
+        "label_gain": [0, 1, 2, 3, 4],
+        "lambdarank_truncation_level": 10,
+        "lambdarank_norm": False,
+        "learning_rate": settings.learning_rate,
+        "max_depth": settings.max_depth,
+        "num_leaves": settings.num_leaves,
+        "min_data_in_leaf": settings.minimum_leaf_rows,
+        "max_bin": settings.maximum_bins,
+        "histogram_pool_size": settings.histogram_pool_mib,
+        "seed": settings.seed,
+        "deterministic": True,
+        "force_col_wise": True,
+        "num_threads": compute_threads,
+        "verbosity": -1,
+    }
 
 
 def _chunks(size: int) -> Iterator[tuple[int, int]]:
@@ -235,4 +322,4 @@ def _metrics(matrix: LearnedRankMatrix, predicted: np.ndarray, rank_raw: np.ndar
     )
 
 
-__all__ = ["FitLearnedRankHead", "LearnedRankPartitions"]
+__all__ = ["FitLearnedRankHead", "RefitLearnedRankHead", "LearnedRankPartitions"]

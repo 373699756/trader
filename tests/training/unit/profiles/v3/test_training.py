@@ -7,6 +7,7 @@ from tests.helpers.shared.configuration import SqlitePolicyFixture
 import json
 import sqlite3
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +20,8 @@ from trader.download.infra.history_control_index import HistoryMaintenanceAlread
 from trader.download.infra.history_partition_repack import HistoryPartitionRepackFenceError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ResidualizeExposure
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
+from trader.training.application.tomorrow_training import ProductionTrainingWindow, TomorrowTrainingProgress, TomorrowTrainingWindow
+from trader.training.domain.final_fit import BuildFinalFitDatePlan
 from trader.training.domain.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.engine import (
@@ -28,6 +30,7 @@ from trader.training.infra.engine import (
     _training_contract_hash,
 )
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
+from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.bundle_codec import TrainedLightGBMModelSnapshot, TrainedRidgeModelSnapshot
 from trader.training.infra.model_evaluation import CalibrationResult, CalibrationUnavailableError, PredictionMetrics
 from trader.training.infra.model_fitting import FitIndustryModels, RidgeFittingParameters
@@ -145,12 +148,28 @@ def _populate_samples(request: TrainingSampleBuildRequest) -> None:
         + split.confirmation_dates
         + split.daily_proxy_holdout_dates
     )
+    if isinstance(request.window, ProductionTrainingWindow):
+        plans = tuple(
+            BuildFinalFitDatePlan(
+                request.window.source_dates,
+                source_cutoff=request.history.snapshot.source_cutoff,
+                fit_sessions=len(split.model_fit_dates),
+                maturity_sessions=contract.maturity_sessions,
+            )
+            for contract in request.profile.heads
+        )
+        days = tuple(sorted({*days, *(day for plan in plans for day in plan.fit_dates)}))
     width = max(max(head.feature_positions) for head in request.profile.heads) + 1
     request.index.add_final(
         V3TrainingSample("600000", day, "main", "银行", 1.0, (0.0,) * width, (0.01, 0.02, 0.03, 0.04, 0.05, 0.035))
         for day in days
     )
     request.index.prepare_for_model_fitting(split)
+
+
+def _refitted_models(samples, contract, plan, diagnostic, *_args, **_kwargs):
+    counts = {item.industry: item for item in samples.final_fit_counts(contract, plan)}
+    return tuple(replace(model, training_rows=counts[model.industry].rows) for model in diagnostic.models)
 
 
 def test_manual_training_does_not_compare_revisions_or_cadence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,6 +267,7 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
         return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
+    monkeypatch.setattr("trader.training.infra.engine.RefitIndustryModels", _refitted_models)
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args: None)
     monkeypatch.setattr(
         "trader.training.infra.engine.BuildTrainingSamples",
@@ -324,6 +344,7 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
         return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
+    monkeypatch.setattr("trader.training.infra.engine.RefitIndustryModels", _refitted_models)
     published: list[tuple[Strategy, Path]] = []
 
     def publish(output, _profile, staged) -> None:
@@ -390,12 +411,58 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
         return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
+    monkeypatch.setattr("trader.training.infra.engine.RefitIndustryModels", _refitted_models)
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args, **_kwargs: None)
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
     assert fitted == [Strategy.TOMORROW, Strategy.D25]
     assert [head.status for head in result.heads] == ["engineering_ready", "engineering_ready"]
+
+
+def test_second_head_refit_failure_blocks_the_pair_and_preserves_published_models(tmp_path, monkeypatch) -> None:
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
+    models = tmp_path / "train"
+    original = {}
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
+        for filename in ("model.json", "metadata.json"):
+            path = models / "v3" / strategy.value / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            content = f"existing {strategy.value} {filename}".encode()
+            path.write_bytes(content)
+            original[path] = content
+
+    monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", lambda request, **_kwargs: _populate_samples(request))
+    monkeypatch.setattr(
+        "trader.training.infra.engine.FitIndustryModels",
+        lambda _samples, _split, contracts, algorithm, **_kwargs: tuple(
+            _fitted_result(len(contract.feature_positions), algorithm) for contract in contracts
+        ),
+    )
+    refitted = []
+
+    def refit(samples, contract, plan, diagnostic, *args, **kwargs):
+        refitted.append(contract.strategy)
+        if contract.strategy is Strategy.D25:
+            raise ValueError("final_fit_fixture_second_head_failed")
+        return _refitted_models(samples, contract, plan, diagnostic, *args, **kwargs)
+
+    monkeypatch.setattr("trader.training.infra.engine.RefitIndustryModels", refit)
+    monkeypatch.setattr(
+        "trader.training.infra.engine.PublishProfileBundles",
+        lambda *_args: pytest.fail("a partial refit must not publish either head"),
+    )
+
+    result = run_v3_training(tmp_path / "history", models)
+
+    assert refitted == [Strategy.TOMORROW, Strategy.D25]
+    assert result.status == "blocked"
+    assert len(result.heads) == 2
+    assert all(head.status == "blocked" and not head.model_hash for head in result.heads)
+    assert all(head.failure_reasons == ("profile_training_failed",) for head in result.heads)
+    assert all(path.read_bytes() == content for path, content in original.items())
+    assert (tmp_path / "samples" / "v3" / "complete.json").is_file()
 
 
 def test_training_reports_both_heads_when_the_shared_scan_fails(
@@ -580,6 +647,8 @@ def test_model_progress_keeps_real_industry_count_for_each_head(monkeypatch, cal
     updates: list[TomorrowTrainingProgress] = []
 
     class Samples:
+        execution_options = TrainingExecutionOptions()
+
         @staticmethod
         def require_split(_split) -> None:
             pass

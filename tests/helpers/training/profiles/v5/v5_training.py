@@ -28,7 +28,7 @@ def _history(root: Path) -> SimpleNamespace:
         "complete_manifest",
         "a" * 64,
         "b" * 64,
-        "c" * 64,
+        BaoStockCalendar(dates).content_hash,
         dates[-1],
         dates[-2],
         BaoStockCalendar(dates),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 
 import json
 
@@ -137,3 +138,135 @@ def test_ridge_and_tcn_keep_their_entire_existing_model_and_metric_values(tmp_pa
     values[0] = float(np.nextafter(values[0], np.inf))
     _write_documents(tmp_path, profile, model, metadata)
     assert alignment._numeric_fingerprints(tmp_path, (profile,)) != original
+
+
+def _final_documents(profile, model_text):
+    model, metadata = _documents(profile, model_text)
+    diagnostic = deepcopy(model)
+    if profile == "v1":
+        model["schema_version"] = "learned_rank_final_head_model"
+        metadata["schema_version"] = "learned_rank_final_head_metadata"
+        metadata["training_input"] = {"final_fit": {"fit_dates": ["2026-11-04"]}}
+        metadata["validation_report"]["diagnostic_head"] = {
+            **diagnostic["components"], "split": {"label_cutoff": "2026-01-06"},
+        }
+    else:
+        metadata["schema_version"] = f"{profile}_head_refit_metadata"
+        metadata["final_fit"] = {
+            "diagnostic_model": diagnostic, "fit_dates": ["2026-11-04"],
+            "calibration_policy": "frozen_diagnostic_model_transfer",
+        }
+    return model, metadata
+
+
+@pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
+def test_final_diagnostic_weights_change_fingerprint_and_reject_benchmark_with_final_and_metrics_unchanged(
+    tmp_path, models_by_profile, profile,
+):
+    from scripts.training.jobs.training_performance import SummarizeTrainingBenchmark
+    from tests.helpers.training.scripts.training_execution_performance import _results, _summary
+
+    text = models_by_profile[profile].two_threads if profile in {"v1", "v2"} else None
+    model, metadata = _final_documents(profile, text)
+    final_before = deepcopy(model)
+    report_before = deepcopy(metadata["validation_report"])
+    _write_documents(tmp_path, profile, model, metadata)
+    original = alignment._numeric_fingerprints(tmp_path, (profile,))
+    diagnostic = (
+        metadata["validation_report"]["diagnostic_head"] if profile == "v1"
+        else metadata["final_fit"]["diagnostic_model"]["industries"]["main"]
+    )
+    if profile in {"v1", "v2"}:
+        diagnostic["rank_model" if profile == "v1" else "lightgbm_model"] = models_by_profile[profile].changed_leaf
+    else:
+        weights = diagnostic["ridge_coefficients"] if profile == "v3" else diagnostic["tcn_network"]["weights"][0]["values"]
+        weights[0] = float(np.nextafter(weights[0], np.inf))
+    assert model == final_before
+    if profile == "v1":
+        assert metadata["validation_report"]["validation"] == report_before["validation"]
+    else:
+        assert metadata["validation_report"] == report_before
+    _write_documents(tmp_path, profile, model, metadata, strategies=("tomorrow",))
+    changed = alignment._numeric_fingerprints(tmp_path, (profile,))
+    assert changed[0] != original[0] and changed[1] == original[1]
+
+    results = _results()
+    for result in results:
+        summary = _summary(result)
+        runs = [summary["initial"], summary["repeat"], summary["sample_reuse"]["run"]]
+        for run in runs:
+            if not any(item["profile"] == profile for item in run["numeric_fingerprints"]):
+                continue
+            run["numeric_fingerprints"] = [
+                *[item for item in run["numeric_fingerprints"] if item["profile"] != profile],
+                *original,
+            ]
+    assert SummarizeTrainingBenchmark(results)["comparable"] is True
+    for result in results:
+        if ":candidate:" not in result.name:
+            continue
+        summary = _summary(result)
+        for run in (summary["initial"], summary["repeat"], summary["sample_reuse"]["run"]):
+            if not any(item["profile"] == profile for item in run["numeric_fingerprints"]):
+                continue
+            run["numeric_fingerprints"] = [
+                *[item for item in run["numeric_fingerprints"] if item["profile"] != profile],
+                *changed,
+            ]
+    comparison = SummarizeTrainingBenchmark(results)
+    assert comparison["comparable"] is False
+    assert comparison["timing_acceptance"] is False
+
+
+@pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
+def test_final_numeric_projection_keeps_thread_metadata_and_date_policy_identity_separate(
+    tmp_path, models_by_profile, profile,
+):
+    text = models_by_profile[profile].two_threads if profile in {"v1", "v2"} else None
+    model, metadata = _final_documents(profile, text)
+    _write_documents(tmp_path, profile, model, metadata)
+    original = alignment._numeric_fingerprints(tmp_path, (profile,))
+    if profile == "v1":
+        diagnostic = metadata["validation_report"]["diagnostic_head"]
+        diagnostic["rank_model"] = models_by_profile[profile].single_thread
+        diagnostic["split"] = {"label_cutoff": "2026-01-05"}
+        metadata["training_input"]["final_fit"]["fit_dates"] = ["2026-11-03"]
+        metadata["validation_report"]["evaluation_scope"] = "identity_checked_by_model_codec"
+    else:
+        evidence = metadata["final_fit"]
+        diagnostic = evidence["diagnostic_model"]
+        evidence["fit_dates"] = ["2026-11-03"]
+        evidence["calibration_policy"] = "identity_checked_by_model_codec"
+        evidence["plan_hash"] = "changed-identity"
+        if profile == "v2":
+            diagnostic["industries"]["main"]["lightgbm_model"] = models_by_profile[profile].single_thread
+    diagnostic["content_hash"] = "changed-identity"
+    _write_documents(tmp_path, profile, model, metadata)
+    assert alignment._numeric_fingerprints(tmp_path, (profile,)) == original
+
+
+@pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
+@pytest.mark.parametrize("diagnostic", (None, {}))
+def test_final_schema_rejects_missing_diagnostic_payload_without_using_final_model(
+    tmp_path, models_by_profile, profile, diagnostic,
+):
+    text = models_by_profile[profile].two_threads if profile in {"v1", "v2"} else None
+    model, metadata = _final_documents(profile, text)
+    if profile == "v1":
+        metadata["validation_report"]["diagnostic_head"] = diagnostic
+    else:
+        metadata["final_fit"]["diagnostic_model"] = diagnostic
+    _write_documents(tmp_path, profile, model, metadata)
+    with pytest.raises(ValueError, match="training_alignment_.*model_document_invalid"):
+        alignment._numeric_fingerprints(tmp_path, (profile,))
+
+
+@pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
+def test_historical_schema_keeps_its_original_numeric_fingerprint(tmp_path, models_by_profile, profile):
+    text = models_by_profile[profile].two_threads if profile in {"v1", "v2"} else None
+    model, metadata = _documents(profile, text)
+    _write_documents(tmp_path, profile, model, metadata)
+    original = alignment._numeric_fingerprints(tmp_path, (profile,))
+    metadata["schema_version"] = "learned_rank_head_metadata" if profile == "v1" else f"{profile}_head_metadata"
+    _write_documents(tmp_path, profile, model, metadata)
+    assert alignment._numeric_fingerprints(tmp_path, (profile,)) == original

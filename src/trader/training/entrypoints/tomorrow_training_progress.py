@@ -31,6 +31,7 @@ _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "target_statistics": "标签统计",
     "industry_statistics": "行业统计",
     "model_fit": "行业模型",
+    "final_model_refit": "最新成熟数据重拟合",
     "artifact_publish": "工件发布",
 }
 _STATE_LABELS = {"started": "开始", "running": "运行中", "completed": "完成"}
@@ -192,7 +193,7 @@ class StderrTomorrowTrainingProgress:
             parts.append(f"已生成样本 {progress.produced_units}")
         elif progress.stage == "cross_section_conversion":
             parts.append(f"有效样本 {progress.produced_units}")
-        elif progress.stage == "model_fit":
+        elif progress.stage in {"model_fit", "final_model_refit"}:
             parts.append(f"有效模型 {progress.produced_units}")
         if progress.fit_detail is not None:
             detail = progress.fit_detail

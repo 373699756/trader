@@ -7,12 +7,13 @@ from tests.helpers.training.training_resources import TrainingResourceSettingsFi
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from datetime import date
-from threading import Event
+from threading import Barrier, Event, get_native_id, local
 import time
 
 import pytest
 
 from trader.download.domain.history_revision import HistoryTrainingRow
+from trader.training.application.resources import TrainingExecutionTiming, TrainingProfileTiming, TrainingResourceTiming
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingTask
 from trader.training.entrypoints.training_timing_projection import ProjectTrainingExecutionTiming
 from trader.training.infra.cpu_admission import TrainingCpuBudget
@@ -29,6 +30,101 @@ class _Clock:
 
     def advance(self, seconds):
         self.value += seconds
+
+
+class _ThreadClock(local):
+    def __init__(self):
+        self.value = 0.0
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
+
+@pytest.mark.parametrize("failure", (None, ValueError("fixture_failed"), InterruptedError("fixture_cancelled")))
+def test_task_thread_cpu_is_distinct_from_wall_time_and_final_on_all_exits(failure):
+    wall, cpu = _Clock(), _Clock()
+    measured = TrainingExecutionMeasurements(("v1", "v5"), wall, thread_time=cpu, native_id=lambda: 731)
+    before = measured.snapshot()
+    outcome = pytest.raises(type(failure)) if failure is not None else nullcontext()
+    with outcome as caught, measured.task("v1"):
+        wall.advance(20)
+        cpu.advance(2.5)
+        running = measured.snapshot().profiles[0]
+        assert running.native_id == 731
+        assert running.thread_cpu_seconds is running.finished_after_seconds is None
+        if failure is not None:
+            raise failure
+    if failure is not None:
+        assert caught.value is failure
+    first, unstarted = measured.snapshot().profiles
+    assert first.finished_after_seconds - first.started_after_seconds == 20
+    assert first.native_id == 731 and first.thread_cpu_seconds == 2.5
+    assert unstarted.native_id is unstarted.thread_cpu_seconds is None
+    assert before.profiles[0].native_id is before.profiles[0].thread_cpu_seconds is None
+    projected = ProjectTrainingExecutionTiming(measured.snapshot())
+    assert projected["profiles"][0]["native_id"] == 731
+    assert projected["profiles"][0]["thread_cpu_seconds"] == 2.5
+    assert projected["profiles"][1]["thread_cpu_seconds"] is None
+    assert projected["thread_cpu_scope"] == (
+        "calling_thread_only; excludes_other_threads_and_native_workers; task_values_final_on_exit"
+    )
+
+
+def test_source_thread_cpu_accumulates_completed_and_failed_read_scopes():
+    wall, cpu = _Clock(), _Clock()
+    measured = TrainingExecutionMeasurements(("v5",), wall, thread_time=cpu)
+    with measured.read_source():
+        wall.advance(10)
+        cpu.advance(1.25)
+    failure = InterruptedError("fixture_read_cancelled")
+    with pytest.raises(InterruptedError) as caught, measured.read_source():
+        wall.advance(4)
+        cpu.advance(0.5)
+        raise failure
+    assert caught.value is failure
+    timing = measured.snapshot()
+    assert timing.source_read_seconds == 14
+    assert timing.source_read_thread_cpu_seconds == 1.75
+    assert ProjectTrainingExecutionTiming(timing)["source_read_thread_cpu_seconds"] == 1.75
+    assert timing.profiles[0].native_id is timing.profiles[0].thread_cpu_seconds is None
+
+
+def test_worker_native_ids_and_thread_cpu_do_not_include_other_threads():
+    wall, cpu = _Clock(), _ThreadClock()
+    measured = TrainingExecutionMeasurements(("v1", "v5"), wall, thread_time=cpu)
+    rendezvous = Barrier(2)
+
+    def run(profile, seconds):
+        with measured.task(profile):
+            native_id = get_native_id()
+            rendezvous.wait(timeout=5)
+            cpu.advance(seconds)
+        return native_id
+
+    with measured.read_source(), ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(run, "v1", 2.0)
+        second = workers.submit(run, "v5", 3.0)
+        native_ids = first.result(timeout=5), second.result(timeout=5)
+        wall.advance(7)
+    timing = measured.snapshot()
+    assert native_ids[0] != native_ids[1]
+    assert tuple(item.native_id for item in timing.profiles) == native_ids
+    assert tuple(item.thread_cpu_seconds for item in timing.profiles) == (2.0, 3.0)
+    assert timing.source_read_seconds == 7
+    assert timing.source_read_thread_cpu_seconds == 0
+
+
+def test_direct_timing_construction_keeps_unobserved_cpu_and_native_ids_null():
+    resource = TrainingResourceTiming(0.0, 0.0, 0, 0, 0)
+    profile = TrainingProfileTiming("v1", None, None, 0.0, 0.0, resource, resource, 0.0)
+    timing = TrainingExecutionTiming(0.0, 0, 0, (profile,))
+    projected = ProjectTrainingExecutionTiming(timing)
+    assert projected["source_read_thread_cpu_seconds"] is None
+    assert projected["profiles"][0]["native_id"] is None
+    assert projected["profiles"][0]["thread_cpu_seconds"] is None
 
 
 class _CpuAdmission:
