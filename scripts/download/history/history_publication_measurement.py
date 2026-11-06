@@ -44,6 +44,7 @@ class _SealMonths(Protocol):
     def __call__(
         self,
         partition: HistoryPricePartition,
+        /,
         calendar_months: tuple[int, ...],
         sequence: int | None = None,
         *,

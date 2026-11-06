@@ -33,6 +33,7 @@ from trader.download.domain.company_evidence import CompanyEvidenceSyncResult, C
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.prepared_reference import PreparedReference
+from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.company_document_files import CompanyDocumentFiles
@@ -103,8 +104,14 @@ class _Supplier(HistoryFixtureSupplier):
     def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         return self.load_context(as_of, sessions)
 
-    def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
-        return self.fetch_tencent_window(security, dates)
+    def fetch_window(
+        self,
+        security: BaoStockSecurity,
+        dates: tuple[date, ...],
+        *,
+        request_budget: PriceReviewRequestBudget | None = None,
+    ) -> PublishedHistoryWindow:
+        return self.fetch_tencent_window(security, dates, request_budget=request_budget)
 
 
 class _SyncFixture:

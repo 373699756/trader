@@ -40,6 +40,7 @@ from trader.download.domain.history_sync import (
     HistorySyncProgress,
 )
 from trader.download.domain.prepared_reference import PreparedReference
+from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_sync_runner import RunHistorySync
@@ -99,10 +100,22 @@ class HistoryFixtureSupplier:
         SQLiteReferenceIndex(path, sqlite_policy=self.sqlite_policy).publish(reference, reference.st_evidence)
         self.reference_id = reference.identity
 
-    def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+    def fetch_tencent_window(
+        self,
+        security: BaoStockSecurity,
+        dates: tuple[date, ...],
+        *,
+        request_budget: PriceReviewRequestBudget | None = None,
+    ) -> PublishedHistoryWindow:
+        # Synthetic reads honor review deadlines without consuming physical HTTP requests.
+        if request_budget is not None:
+            request_budget.check_deadline()
         self.requests.append(len(dates))
         cells = self.fetch_baostock_prices(security, dates).batch.cells
-        return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in cells))
+        window = PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in cells))
+        if request_budget is not None:
+            request_budget.check_deadline()
+        return window
 
     def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
         cells = []
