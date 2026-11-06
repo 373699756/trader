@@ -136,6 +136,7 @@ class QuoteCache:
             cross_section_reference = self._cross_section_reference
             cross_section_normalization_reference = self._cross_section_normalization_reference
         history_summaries = self._history.summaries(histories, observed_at)
+        history_price_bases = self._history.price_bases(tuple(quote.code for quote in quotes), observed_at)
         local_quotes = self._with_industry_quotes(quotes, observed_at)
         features = self._feature_builder.build(
             local_quotes,
@@ -146,6 +147,7 @@ class QuoteCache:
             research_observations=research_observations,
             intraday_minutes=intraday_minutes,
             history_summaries=history_summaries,
+            history_price_bases=history_price_bases,
             preview_context=self._preview_context,
         )
         return self._with_model_industries(features, action_restrictions=action_restrictions or {})
@@ -184,6 +186,7 @@ class QuoteCache:
             check_budget()
         started = self._monotonic()
         summaries = self._history.summaries(histories, observed_at)
+        history_price_bases = self._history.price_bases(tuple(quote.code for quote in quotes), observed_at)
         local_quotes = self._with_industry_quotes(quotes, observed_at)
         if check_budget is not None:
             check_budget()
@@ -195,6 +198,7 @@ class QuoteCache:
             observed_at,
             research_observations=research_observations,
             history_summaries=summaries,
+            history_price_bases=history_price_bases,
             preview_context=self._preview_context,
             check_budget=check_budget,
         )
@@ -258,7 +262,11 @@ class QuoteCache:
                 feature,
                 values={**feature.values, **dict(learned)} if learned else feature.values,
                 model_sequence=sequences.get(code),
-                model_history_quality=quality[code],
+                model_history_quality=(
+                    feature.model_history_quality
+                    if feature.model_history_quality is not None and feature.model_history_quality.failure is not None
+                    else quality[code]
+                ),
                 quote=quote,
                 model_industry=reference if reference is not None and reference.effective_date <= day else None,
             ))

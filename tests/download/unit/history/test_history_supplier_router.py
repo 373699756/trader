@@ -189,8 +189,8 @@ def test_tencent_first_fetches_one_whole_window(count):
     assert context.source_versions != baseline.load_context(dates[-1], count).source_versions
 
 
-@pytest.mark.parametrize("incoming", ("missing", "qfq_basis", "raw"))
-def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, incoming):
+@pytest.mark.parametrize("incoming", ("missing", "raw"))
+def test_existing_prices_survive_missing_or_conflicting_raw_input(tmp_path: Path, incoming):
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(
         tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=(tmp_path).parent / "reference"
@@ -220,10 +220,7 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
     current = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
     assert current.read_day(dates[-1], state.published_snapshot)[0].cell == rows[0].cell
     tail = current.read_day(new_dates[-1], state.published_snapshot)[0].cell
-    if incoming == "missing":
-        assert tail.status == "qfq_missing" and tail.qfq is None
-    else:
-        assert tail.qfq is not None and tail.qfq.close_price == 11.0
+    assert tail.status == "qfq_missing" and tail.qfq is None
 
 
 def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypatch):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import date, timezone
 
 from tests.helpers.recommendation.market_data import (
     AFTERNOON,
@@ -28,6 +28,7 @@ from tests.helpers.recommendation.market_data import (
     StaticGateway,
     StaticHistoryClient,
     StaticIntradayClient,
+    _history_price_basis,
     _quote,
     _service,
     _tail_minute_bars,
@@ -330,7 +331,7 @@ def test_close_location_has_exact_boundaries_and_preserves_missing(
 def test_zero_historical_return_has_neutral_price_volume_confirmation() -> None:
     bars = tuple(
         DailyBar(
-            trade_date=f"2026-06-{index + 1:02d}",
+            trade_date=(date(2026, 7, 15) - timedelta(days=20 - index)).isoformat(),
             open_price=10.0,
             close=10.0,
             high=10.1,
@@ -343,10 +344,11 @@ def test_zero_historical_return_has_neutral_price_volume_confirmation() -> None:
         )
         for index in range(21)
     )
-    quote = replace(_quote(), price=10.0, amount=100_000_000.0)
+    quote = replace(_quote(), price=10.0, previous_close=10.0, amount=100_000_000.0)
 
     feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
-        (quote,), {quote.code: bars}, NOW
+        (quote,), {quote.code: bars}, NOW,
+        history_price_bases={quote.code: _history_price_basis(10.0, 10.0)},
     )[0]
 
     assert feature.values["return_5d"] == pytest.approx(0.0)

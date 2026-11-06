@@ -16,6 +16,7 @@ from tests.helpers.recommendation.market_data import (
     NOW,
     TAIL_POLICY,
     _history_bars,
+    _history_price_basis,
     _quote,
 )
 from trader.infra.cache import BoundedLruCache
@@ -54,6 +55,7 @@ def _build(quotes, raw, cache, version="market:1", references=None):
 def test_four_builders_share_population_and_preserve_fresh_snapshot_identity(cache, monkeypatch):
     quote = _quote()
     history = {quote.code: _history_bars()}
+    bases = {quote.code: _history_price_basis(10.59, 10.59)}
     horizons = ((20, 40, 60, 120, 250), (20, 40, 60), (20, 40, 60), (20, 40, 60))
 
     def builder(horizon, shared_cache):
@@ -64,7 +66,7 @@ def test_four_builders_share_population_and_preserve_fresh_snapshot_identity(cac
 
     builders = [builder(horizon, cache) for horizon in horizons]
     expected = [
-        builder(horizon, None).build((quote,), history, NOW + timedelta(seconds=tick))
+        builder(horizon, None).build((quote,), history, NOW + timedelta(seconds=tick), history_price_bases=bases)
         for tick, horizon in enumerate(horizons)
     ]
     original = cross_section._calculate_population
@@ -76,7 +78,7 @@ def test_four_builders_share_population_and_preserve_fresh_snapshot_identity(cac
 
     monkeypatch.setattr(cross_section, "_calculate_population", counted)
     for tick, profile_builder in enumerate(builders):
-        assert profile_builder.build((quote,), history, NOW + timedelta(seconds=tick)) == expected[tick]
+        assert profile_builder.build((quote,), history, NOW + timedelta(seconds=tick), history_price_bases=bases) == expected[tick]
     assert len(calls) == 1
 
 

@@ -300,6 +300,7 @@ class _ProfileReplay:
         history = BuildPerformanceHistory(workload.model.features)
         self.histories = {item.code: item.bars for item in history}
         self.summaries = {item.code: item.context for item in history}
+        self.price_bases = {item.code: item.price_basis for item in history}
         self.completed = {item.code: item.model_feature for item in history}
         self.quotes = tuple(replace(item.quote, data_version="performance-replay") for item in workload.model.features)
         self.versions = InputVersionClock()
@@ -332,6 +333,7 @@ class _ProfileReplay:
             self.histories,
             self.clock.now(),
             history_summaries=self.summaries,
+            history_price_bases=self.price_bases,
             cross_section_reference={item.quote.code: item.values for item in self.market} if candidates else None,
             cross_section_normalization_reference={item.quote.code: item.normalization for item in self.market}
             if candidates
@@ -350,7 +352,11 @@ class _ProfileReplay:
                     history_days=completed.history_days,
                     model_industry=completed.model_industry,
                     model_sequence=completed.model_sequence,
-                    model_history_quality=completed.model_history_quality,
+                    model_history_quality=(
+                        feature.model_history_quality
+                        if feature.model_history_quality is not None and feature.model_history_quality.failure is not None
+                        else completed.model_history_quality
+                    ),
                 )
             )
         return tuple(result)

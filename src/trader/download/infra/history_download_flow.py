@@ -18,7 +18,7 @@ from threading import Event
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
-from trader.download.domain.history_price_qualification import QualifyReplacementWindow
+from trader.download.domain.history_price_qualification import HistoryQfqBasisError, QualifyReplacementWindow
 from trader.download.domain.history_supplier_failure import (
     HISTORY_SUPPLIER_PENDING_REASONS,
     HistorySupplierPendingError,
@@ -116,6 +116,7 @@ class HistoryDownloadFlow:
         self._resources = resources
         self._batched_price_reads = batched_price_reads
         self._reused_codes: set[str] = set()
+        self._window_cells: dict[str, int] = {}
         self._stopped = Event()
         self._baostock_codes = HistoryPriceRepair(
             resources.configuration.history_root, sqlite_policy=self._sqlite_policy,
@@ -144,12 +145,25 @@ class HistoryDownloadFlow:
                 raise RuntimeError("price_source_basis_conflict")
             qualified = QualifyReplacementWindow(task.dates, PublishedHistoryWindow(task.code, tuple(ProjectHistoryCell(cell) for cell in result.previous)), window)
             return HistoryPriceResult(task, (), (), None, replacement=qualified)
+        full_window = set(self._resources.context.calendar.expected_dates(security)).issubset(task.dates)
+        previous = {cell.trade_date: cell for cell in result.previous}
+        if result.dates and result.previous and not full_window and any(
+            cell.status == "complete" for cell in window.cells
+        ) and not any(
+            cell.qfq is not None and cell.qfq.trading_status == "trading"
+            and (before := previous.get(cell.trade_date)) is not None
+            and before.qfq is not None and before.qfq.trading_status == "trading"
+            for cell in window.cells
+        ):
+            # Five tail anchors can all be suspended. A newly observed trading
+            # price still needs a verified basis for the entire current window.
+            raise HistoryQfqBasisError("history_qfq_basis_unverified")
         return self._resources.prices.prepare(
             security,
             task,
             window,
             context=HistoryPriceContext(
-                set(self._resources.context.calendar.expected_dates(security)).issubset(task.dates), result.previous
+                full_window, result.previous
             ),
         )
 
@@ -228,7 +242,7 @@ class HistoryDownloadFlow:
         # Resume only retryable gaps; confirmed nonpositive qfq dates retain
         # their trading-session deferral even before initial publication.
         jobs = deque(task for task in tasks if not task.tencent_done or task.code in retryable_codes)
-        if any(len(task.dates) > resources.tuning.max_cells for task in jobs):
+        if any(self._task_cells(task) > resources.tuning.max_cells for task in jobs):
             raise ValueError("history_download_task_too_large")
         completed = sum(task.tencent_done and task.code not in retryable_codes for task in tasks)
         self._reused_codes.update(task.code for task in tasks if task.tencent_done and task.code not in gap_codes)
@@ -380,7 +394,7 @@ class HistoryDownloadFlow:
         selected: list[HistoryDownloadTask] = []
         while jobs and len(futures) + len(selected) < resources.configuration.history_workers and codes < resources.tuning.max_codes:
             self._check()
-            if cells + len(jobs[0].dates) > resources.tuning.max_cells:
+            if cells + self._task_cells(jobs[0]) > resources.tuning.max_cells:
                 break
             task = jobs.popleft()
             if task.dates and task.code in self._baostock_codes and task.code in self._recheck_codes:
@@ -389,7 +403,7 @@ class HistoryDownloadFlow:
                     jobs.appendleft(task)
                     break
             selected.append(task)
-            cells += len(task.dates)
+            cells += self._task_cells(task)
             codes += 1
         read_started = time.monotonic()
         previous = resources.prices.read_for_download_batch(tuple(selected)) if self._batched_price_reads else ()
@@ -408,6 +422,17 @@ class HistoryDownloadFlow:
                 jobs.extendleft(reversed(selected[position + 1:]))
                 break
         return not jobs
+
+    def _task_cells(self, task: HistoryDownloadTask) -> int:
+        # Any incremental fetch can discover a new adjustment basis. Reserve
+        # its bounded full-window fallback before handing the task to a worker.
+        if not task.dates:
+            return 0
+        capacity = self._window_cells.get(task.code)
+        if capacity is None:
+            capacity = len(self._resources.context.calendar.expected_dates(self._security(task.code)))
+            self._window_cells[task.code] = capacity
+        return max(len(task.dates), capacity)
 
     def _fetch_task(
         self,
@@ -454,7 +479,10 @@ class HistoryDownloadFlow:
             raise RuntimeError("history_supplier_identity_conflict")
         download_seconds = time.monotonic() - started
         validation_started = time.monotonic()
-        price = self._tencent_result(_TencentResult(task, dates, previous, window, failure, unusable_qfq_dates))
+        try:
+            price = self._tencent_result(_TencentResult(task, dates, previous, window, failure, unusable_qfq_dates))
+        except HistoryQfqBasisError:
+            return self._fetch_basis_replacement(task, download_seconds, read_seconds)
         return _PreparedResult(
             price,
             dates,
@@ -464,8 +492,47 @@ class HistoryDownloadFlow:
             review_confirmed=failure is None and price.failure is None,
         )
 
+    def _fetch_basis_replacement(
+        self, task: HistoryDownloadTask, download_seconds: float, read_seconds: float,
+    ) -> _PreparedResult:
+        self._check()
+        security = self._security(task.code)
+        dates = self._resources.context.calendar.expected_dates(security)
+        full_task = replace(task, dates=dates)
+        read_started = time.monotonic()
+        previous = self._resources.prices.read_for_download(task.code, dates)
+        read_seconds += time.monotonic() - read_started
+        empty = PublishedHistoryWindow(task.code, ())
+        validation_seconds = 0.0
+        try:
+            fetch_started = time.monotonic()
+            try:
+                window = self._resources.supplier.fetch_tencent_window(security, dates)
+            finally:
+                download_seconds += time.monotonic() - fetch_started
+            self._check()
+            if window.code != task.code or tuple(cell.trade_date for cell in window.cells) != dates:
+                raise RuntimeError("history_supplier_identity_conflict")
+            validation_started = time.monotonic()
+            qualified = QualifyReplacementWindow(
+                dates, PublishedHistoryWindow(task.code, tuple(ProjectHistoryCell(cell) for cell in previous)), window
+            )
+            price = HistoryPriceResult(full_task, (), (), None, replacement=qualified)
+            validation_seconds = time.monotonic() - validation_started
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            failure = DownloadFailure(exc)
+            if failure in _FATAL:
+                raise
+            # Never publish the already-fetched tail after a failed whole-window
+            # refresh. Its prices were observed on an incompatible basis.
+            price = self._failed_tencent_result(_TencentResult(full_task, dates, previous, empty), failure)
+            validation_seconds = 0.0
+        return _PreparedResult(
+            price, dates, download_seconds, read_seconds, validation_seconds,
+            review_confirmed=price.failure is None,
+        )
+
     def _tencent_result(self, result: _TencentResult) -> HistoryPriceResult:
-        task = result.task
         try:
             prepared = self._prepare(result)
             unusable = tuple(day for day in result.unusable_qfq_dates if day in prepared.missing)
@@ -473,33 +540,32 @@ class HistoryDownloadFlow:
             return (
                 replace(prepared, failure=result.failure or "tencent_history_pending") if prepared.missing else prepared
             )
-        except HistoryPricePartitionError:
+        except (HistoryPricePartitionError, HistoryQfqBasisError):
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             failure = DownloadFailure(exc)
             if failure in _FATAL:
                 raise
-            previous = result.previous
-            obtained = {cell.trade_date for cell in previous if cell.obtained}
-            count = sum(cell.status == "complete" for cell in previous)
-            suspended = sum(
-                cell.status in {"supplier_marked_suspended", "tencent_inferred_suspended"} for cell in previous
-            )
-            return HistoryPriceResult(
-                task,
-                (),
-                tuple(day for day in task.dates if day not in obtained),
-                failure,
-                HistoryPriceCoverage(
-                    len(task.dates),
-                    count,
-                    count,
-                    count,
-                    suspended,
-                    inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in previous),
-                ),
-                inferred_suspended_dates=tuple(cell.trade_date for cell in previous if cell.status == "tencent_inferred_suspended"),
-            )
+            return self._failed_tencent_result(result, failure)
+
+    def _failed_tencent_result(self, result: _TencentResult, failure: str) -> HistoryPriceResult:
+        previous = result.previous
+        obtained = {cell.trade_date for cell in previous if cell.obtained}
+        count = sum(cell.status == "complete" for cell in previous)
+        suspended = sum(
+            cell.status in {"supplier_marked_suspended", "tencent_inferred_suspended"} for cell in previous
+        )
+        return HistoryPriceResult(
+            result.task,
+            (),
+            tuple(day for day in result.task.dates if day not in obtained),
+            failure,
+            HistoryPriceCoverage(
+                len(result.task.dates), count, count, count, suspended,
+                inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in previous),
+            ),
+            inferred_suspended_dates=tuple(cell.trade_date for cell in previous if cell.status == "tencent_inferred_suspended"),
+        )
 
 
 class _TencentPipeline:
@@ -588,9 +654,9 @@ class _TencentPipeline:
 
     def _dispatch(self) -> bool:
         reserved = self._writing_cells + sum(len(item.price.task.dates) for item in self._buffered)
-        reserved += sum(len(task.dates) for task in self._futures.values())
+        reserved += sum(self._flow._task_cells(task) for task in self._futures.values())
         codes = self._writing_codes + len(self._buffered) + len(self._futures)
-        next_cells = len(self._jobs[0].dates) if self._jobs else 0
+        next_cells = self._flow._task_cells(self._jobs[0]) if self._jobs else 0
         tuning = self._flow._resources.tuning
         blocked = bool(self._jobs) and (codes >= tuning.max_codes or reserved + next_cells > tuning.max_cells)
         if not self._exhausted and not blocked:

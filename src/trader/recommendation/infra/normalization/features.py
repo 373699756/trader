@@ -6,7 +6,7 @@ import math
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
 
@@ -75,6 +75,9 @@ from trader.recommendation.infra.normalization.feature_math import (
     _structured_evidence,
 )
 from trader.recommendation.infra.normalization.feature_risks import ExtremeStructureRisks
+from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
+from trader.recommendation.domain.market.price_basis import HistoryPriceBasis, ResolveHistoryPriceScale
+from trader.recommendation.infra.normalization.history_price_basis import RebaseHistoryPrices
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -95,6 +98,7 @@ class FeatureBuildOptions(TypedDict, total=False):
     research_observations: Mapping[str, ResearchObservation] | None
     intraday_minutes: Mapping[str, Sequence[MinuteBar]] | None
     history_summaries: Mapping[str, HistoryContext] | None
+    history_price_bases: Mapping[str, HistoryPriceBasis] | None
     preview_context: PreviewContext | None
     check_budget: Callable[[], None] | None
 
@@ -348,6 +352,7 @@ class FeatureBuilder:
                 research_observations=options.get("research_observations"),
                 intraday_minutes=options.get("intraday_minutes"),
                 history_summaries=options.get("history_summaries"),
+                history_price_bases=options.get("history_price_bases"),
                 preview_context=options.get("preview_context"),
                 check_budget=check_budget,
             ):
@@ -369,16 +374,35 @@ class FeatureBuilder:
         research_observations = options.get("research_observations")
         intraday_minutes = options.get("intraday_minutes")
         history_summaries = options.get("history_summaries")
+        history_price_bases = options.get("history_price_bases") or {}
         check_budget = options.get("check_budget")
         raw: dict[str, dict[str, float | None]] = {}
+        basis_failures: set[str] = set()
         for quote in quotes:
             if check_budget is not None:
                 check_budget()
-            raw[quote.code] = self._raw_features(
-                quote,
-                histories.get(quote.code, ()),
-                (history_summaries or {}).get(quote.code),
+            original_bars = histories.get(quote.code, ())
+            original_context = (history_summaries or {}).get(quote.code)
+            historical_closes = {date.fromisoformat(bar.trade_date): bar.close for bar in original_bars}
+            if original_context is not None and original_context.latest_trade_date:
+                latest_close = dict(original_context.return_anchors).get(0)
+                if latest_close is not None:
+                    historical_closes.setdefault(date.fromisoformat(original_context.latest_trade_date), latest_close)
+            scale = ResolveHistoryPriceScale(
+                quote, history_price_bases.get(quote.code), observed_at=observed_at,
+                historical_closes=historical_closes,
+                preview_context=options.get("preview_context"),
             )
+            bars: tuple[DailyBar, ...]
+            context: HistoryContext | None
+            if scale is None:
+                basis_failures.add(quote.code)
+                bars, context = (), None
+            else:
+                bars, context = RebaseHistoryPrices(
+                    original_bars, original_context, scale,
+                )
+            raw[quote.code] = self._raw_features(quote, bars, context)
         if check_budget is not None:
             check_budget()
         cross_sections = BuildCrossSectionFeatures(
@@ -467,6 +491,13 @@ class FeatureBuilder:
                     ),
                     normalization=cross_sections[quote.code].normalization,
                     research_components=ResearchComponentsFromObservation(research_observation, observed_at),
+                    model_history_quality=(
+                        ModelHistoryQuality("history_price_basis_unavailable") if quote.code in basis_failures else None
+                    ),
+                    missing_reasons=(
+                        {"history_price_basis": "history_price_basis_unavailable"}
+                        if quote.code in basis_failures else {}
+                    ),
                     company_context=research_observation.company_context if research_observation else None,
                     preview_context=options.get("preview_context"),
                 )

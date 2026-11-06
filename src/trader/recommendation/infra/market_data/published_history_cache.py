@@ -21,6 +21,7 @@ from trader.recommendation.application.ports.market_data import MarketDataPendin
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.epochs import DailyFeaturePack, DailyFeatureRow, DataPlaneCoverageEvidence
 from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
+from trader.recommendation.domain.market.price_basis import HistoryPriceAnchor, HistoryPriceBasis
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 from trader.recommendation.domain.market.v1.features import (
     LEARNED_RANK_FEATURE_IDS,
@@ -86,6 +87,7 @@ class PublishedHistoryEntry:
     estimated_sessions: int = 0
     suspended_sessions: int = 0
     latest_observed_date: date | None = None
+    price_anchors: tuple[HistoryPriceAnchor, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,6 +414,28 @@ class PublishedHistoryCache:
             if bars
         }
 
+    def price_bases(self, codes: Sequence[str], observed_at: datetime) -> Mapping[str, HistoryPriceBasis]:
+        """Use only real paired closes for the exact previous/completed market day."""
+        day = self._preview_context.market_trade_date if self._preview_context else observed_at.astimezone(SHANGHAI).date()
+        try:
+            dates = self._open_dates() if self._open_dates is not None else ()
+        except (OSError, RuntimeError, ValueError):
+            return {}
+        previous = max((value for value in dates if value < day), default=None)
+        if previous is None or day not in dates:
+            return {}
+        with self._lock:
+            if self._manifest is None:
+                return {}
+            return {
+                code: HistoryPriceBasis(
+                    day, previous,
+                    tuple(anchor for anchor in entry.price_anchors if anchor.trade_date in (previous, day)),
+                    self._manifest.snapshot_hash,
+                )
+                for code in codes if (entry := self._entries.get(code)) is not None
+            }
+
     def completed_model_inputs(self, codes: Sequence[str], observed_at: datetime) -> tuple[CompletedModelInput, ...]:
         day = (
             self._preview_context.market_trade_date
@@ -599,6 +623,7 @@ class PublishedHistoryCache:
             estimated_sessions=sum(day >= first for day in aligned.estimated_dates),
             suspended_sessions=sum(day >= first for day in aligned.suspended_dates),
             latest_observed_date=aligned.latest_observed_date,
+            price_anchors=aligned.price_anchors,
         )
 
     def _record_error(self, reason: str) -> None:

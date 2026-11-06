@@ -27,6 +27,7 @@ from tests.helpers.recommendation.market_data import (
     StaticGateway,
     StaticHistoryClient,
     _history_bars,
+    _history_price_basis,
     _quote,
     _service,
     _tail_minute_bars,
@@ -224,21 +225,7 @@ def test_model_binding_replaces_auxiliary_restrictions_and_preserves_exchange_re
 
 def test_feature_builder_marks_history_missing_and_builds_cross_section() -> None:
     quote = _quote()
-    bars = tuple(
-        DailyBar(
-            trade_date=f"2026-06-{index:02d}",
-            open_price=10 + index / 100,
-            close=10 + index / 100,
-            high=10.2 + index / 100,
-            low=9.8 + index / 100,
-            volume=1_000_000,
-            amount=100_000_000 + index,
-            pct_change=0.1,
-            adjustment=PriceAdjustment.QFQ,
-            source="fixture",
-        )
-        for index in range(1, 61)
-    )
+    bars = _history_bars()
 
     with_history, without_history = FeatureBuilder(
         NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY
@@ -246,6 +233,7 @@ def test_feature_builder_marks_history_missing_and_builds_cross_section() -> Non
         (quote, _quote(code="600002", industry="银行")),
         {"600001": bars},
         NOW,
+        history_price_bases={"600001": _history_price_basis(10.59, 10.59)},
     )
 
     assert with_history.history_days == 60
@@ -385,6 +373,7 @@ def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_i
         {"600001": _history_bars()},
         AFTERNOON,
         intraday_minutes={"600001": _tail_minute_bars()},
+        history_price_bases={"600001": _history_price_basis(10.59, 10.59)},
     )[0]
 
     required = {
@@ -414,8 +403,9 @@ def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_i
 @pytest.mark.parametrize("minutes", ({}, {"600001": _tail_minute_bars()}))
 def test_minute_extension_matches_full_build_and_preserves_base(minutes) -> None:
     builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
-    base = builder.build((_quote(),), {"600001": _history_bars()}, AFTERNOON)
-    expected = builder.build((_quote(),), {"600001": _history_bars()}, AFTERNOON, intraday_minutes=minutes)
+    bases = {"600001": _history_price_basis(10.59, 10.59)}
+    base = builder.build((_quote(),), {"600001": _history_bars()}, AFTERNOON, history_price_bases=bases)
+    expected = builder.build((_quote(),), {"600001": _history_bars()}, AFTERNOON, intraday_minutes=minutes, history_price_bases=bases)
     extended = builder.with_intraday(base, minutes, AFTERNOON)
     assert extended == expected
     assert "tail_return_30m" not in base[0].values
@@ -468,6 +458,7 @@ def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_ses
         {quote.code: bars[-20:]},
         AFTERNOON,
         history_summaries={quote.code: BuildHistoryContext(bars)},
+        history_price_bases={quote.code: _history_price_basis(10.59, 10.59)},
     )[0]
 
     required = {
@@ -506,7 +497,7 @@ def test_live_quote_uses_yesterday_as_one_day_anchor_with_or_without_summary() -
         )
         for index in range(61)
     )
-    quote = replace(_quote(), price=121.0, source_time=AFTERNOON)
+    quote = replace(_quote(), price=121.0, previous_close=110.0, source_time=AFTERNOON)
     builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
 
     summarized = builder.build(
@@ -514,8 +505,12 @@ def test_live_quote_uses_yesterday_as_one_day_anchor_with_or_without_summary() -
         {quote.code: bars[-20:]},
         AFTERNOON,
         history_summaries={quote.code: BuildHistoryContext(bars)},
+        history_price_bases={quote.code: _history_price_basis(110.0, 110.0)},
     )[0]
-    direct = builder.build((quote,), {quote.code: bars}, AFTERNOON)[0]
+    direct = builder.build(
+        (quote,), {quote.code: bars}, AFTERNOON,
+        history_price_bases={quote.code: _history_price_basis(110.0, 110.0)},
+    )[0]
 
     expected = 121.0 / bars[-1].close - 1.0
     assert summarized.optional_value("qfq_return_1d") == pytest.approx(expected)
@@ -539,10 +534,11 @@ def test_future_history_summary_is_not_used_for_live_quote() -> None:
         )
         for index in range(3)
     )
-    quote = replace(_quote(), price=12.0, source_time=AFTERNOON)
+    quote = replace(_quote(), price=12.0, previous_close=10.0, source_time=AFTERNOON)
     context = BuildHistoryContext(bars)
     feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
-        (quote,), {quote.code: bars}, AFTERNOON, history_summaries={quote.code: context}
+        (quote,), {quote.code: bars}, AFTERNOON, history_summaries={quote.code: context},
+        history_price_bases={quote.code: _history_price_basis(10.0, 10.0)},
     )[0]
 
     assert context.anchor_price(1, quote.source_time.date().isoformat()) is None

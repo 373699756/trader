@@ -24,7 +24,7 @@ from tests.helpers.recommendation.market_data import (
     _service,
     _tail_minute_bars,
 )
-from tests.helpers.recommendation.market.candidate_history_tail import CALENDAR, NOW, HistoryInput
+from tests.helpers.recommendation.market.candidate_history_tail import CALENDAR, NOW, HistoryInput, _cell
 from tests.helpers.shared.configuration import HardFilterPolicyFixture
 from tests.helpers.recommendation.scoring_helpers import profile_for
 from tests.helpers.recommendation.scoring.tomorrow_production_model import _model_feature
@@ -184,8 +184,16 @@ def test_long_service_reads_close_without_preparing_short_model_preview(applicat
 def test_service_prepares_shared_preview_collection_and_feature_builder(application_feature_factory):
     observed = NOW + timedelta(days=2)
     context = PreviewContext("service-preview", NOW.date(), observed)
+    previous_day = max(day for day in CALENDAR if day < NOW.date())
+    closing = _cell("600001", NOW.date()).unadjusted
+    previous = _cell("600001", previous_day).unadjusted
+    assert closing is not None and previous is not None
     quote = replace(
-        application_feature_factory("600001", observed).quote, source_time=context.market_as_of, received_time=observed
+        application_feature_factory("600001", observed).quote,
+        price=closing.close_price,
+        previous_close=previous.close_price,
+        source_time=context.market_as_of,
+        received_time=observed,
     )
     gateway = MarketDataGateway(
         StaticMarketClient((quote,)),

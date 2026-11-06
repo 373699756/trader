@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.helpers.recommendation.market_data import _history_price_basis
 from trader.infra.market_data.history.history import (
     BuildHistoryContext,
     DailyBar,
@@ -33,7 +34,7 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
     )
     prior = tuple(
         DailyBar(
-            trade_date=f"2026-06-{index:02d}",
+            trade_date=(date(2026, 7, 15) - timedelta(days=25 - index)).isoformat(),
             open_price=9.0 + index / 10,
             close=9.1 + index / 10,
             high=9.2 + index / 10,
@@ -65,7 +66,7 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
         code="600001",
         name="测试股份",
         price=12.0,
-        previous_close=11.9,
+        previous_close=11.6,
         open_price=11.9,
         high=12.1,
         low=11.8,
@@ -90,12 +91,16 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
         {quote.code: bars},
         NOW,
         history_summaries={quote.code: BuildHistoryContext(bars)},
+        history_price_bases={quote.code: _history_price_basis(11.6, 11.6)},
     )[0]
 
     assert feature.values["prior_high_20d"] == max(bar.high for bar in prior[-20:])
     assert feature.values["atr20_pct"] != SummarizeHistoryMetrics(bars).atr20_pct
     assert feature.values["volume_to_5d_average"] == 0.5
-    uncached = builder.build((quote,), {quote.code: bars}, NOW)[0]
+    uncached = builder.build(
+        (quote,), {quote.code: bars}, NOW,
+        history_price_bases={quote.code: _history_price_basis(11.6, 11.6)},
+    )[0]
     assert uncached.values == feature.values
 
 
@@ -114,7 +119,7 @@ def test_entry_quality_requires_actual_volume_without_amount_or_vendor_ratio_sub
     )
     bars = tuple(
         DailyBar(
-            trade_date=f"2026-06-{index:02d}",
+            trade_date=(date(2026, 7, 15) - timedelta(days=25 - index)).isoformat(),
             open_price=9.0 + index / 100,
             close=9.0 + index / 100,
             high=9.1 + index / 100,
@@ -132,7 +137,7 @@ def test_entry_quality_requires_actual_volume_without_amount_or_vendor_ratio_sub
         code="600001",
         name="测试股份",
         price=9.25,
-        previous_close=9.24,
+        previous_close=9.25,
         open_price=9.20,
         high=9.30,
         low=9.10,
@@ -152,17 +157,21 @@ def test_entry_quality_requires_actual_volume_without_amount_or_vendor_ratio_sub
         data_version="sina-current",
     )
 
-    feature = builder.build((quote,), {quote.code: bars}, NOW)[0]
+    bases = {quote.code: _history_price_basis(9.25, 9.25)}
+    feature = builder.build((quote,), {quote.code: bars}, NOW, history_price_bases=bases)[0]
 
     if volume == 1_000.0:
         assert feature.values["volume_to_5d_average"] == 1.0
         assert feature.values["entry_quality"] == 50.0
         assert "entry_quality" not in feature.missing_fields
         repriced = replace(quote, price=18.5, amount=20_000.0, volume_ratio=3.0)
-        changed = builder.build((repriced,), {quote.code: bars}, NOW)[0]
+        changed = builder.build((repriced,), {quote.code: bars}, NOW, history_price_bases=bases)[0]
         assert changed.values["volume_to_5d_average"] == 1.0
         for unavailable_history in (bars[:4], tuple(replace(bar, volume=0.0) for bar in bars)):
-            unavailable = builder.build((quote,), {quote.code: unavailable_history}, NOW)[0]
+            unavailable = builder.build(
+                (quote,), {quote.code: unavailable_history}, NOW,
+                history_price_bases=bases if len(unavailable_history) >= 5 else {},
+            )[0]
             assert unavailable.values["volume_to_5d_average"] is None
             assert unavailable.values["entry_quality"] is None
     else:

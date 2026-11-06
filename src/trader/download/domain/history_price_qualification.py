@@ -14,6 +14,10 @@ HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-never-st")
 _RAW_ACTIVITY_REL_TOLERANCE = 0.001
 
 
+class HistoryQfqBasisError(RuntimeError):
+    """An incremental window cannot prove one observed qfq price basis."""
+
+
 def QualifyReplacementWindow(
     expected: tuple[date, ...],
     previous: PublishedHistoryWindow,
@@ -61,6 +65,7 @@ def QualifyPriceOverlap(
     """Check raw anchors but preserve the entire previously qualified daily pair."""
     prior = {cell.trade_date: cell for cell in previous}
     anchored = full_window
+    qfq_anchored = False
     for cell in cells:
         before = prior.get(cell.trade_date)
         if before is not None and before.unadjusted is not None and cell.unadjusted is not None:
@@ -68,6 +73,21 @@ def QualifyPriceOverlap(
             anchored = True
         elif before is not None and before.status == "unadjusted_missing" and cell.status == "complete":
             anchored = True
+        if before is not None and before.qfq is not None and cell.qfq is not None:
+            if before.qfq.trading_status == cell.qfq.trading_status == "trading":
+                # Supplier OHLC values round-trip unchanged through SQLite. Like
+                # MergeDailyTail, require exact same-source prices; activity
+                # refinements do not establish a different adjustment basis.
+                if _qfq_prices(before.qfq) != _qfq_prices(cell.qfq):
+                    raise HistoryQfqBasisError("history_qfq_basis_changed")
+                qfq_anchored = True
+    if not qfq_anchored and any(
+        item.qfq is not None and item.qfq.trading_status == "trading" for item in previous
+    ) and any(
+        cell.status == "complete" and (prior.get(cell.trade_date) is None or prior[cell.trade_date].qfq is None)
+        for cell in cells
+    ):
+        raise HistoryQfqBasisError("history_qfq_basis_unverified")
     result = []
     for cell in cells:
         before = prior.get(cell.trade_date)
@@ -87,6 +107,10 @@ def QualifyPriceOverlap(
         else:
             result.append(BaoStockDailyCell(cell.code, cell.trade_date, "unknown_missing", None, None))
     return tuple(result)
+
+
+def _qfq_prices(side: BaoStockDailySide) -> tuple[float | None, ...]:
+    return side.open_price, side.high_price, side.low_price, side.close_price
 
 
 def QualifyHistoryPairs(

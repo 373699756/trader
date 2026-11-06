@@ -17,6 +17,7 @@ from tests.helpers.recommendation.market_data import (
     NOW,
     TAIL_POLICY,
     _history_bars,
+    _history_price_basis,
     _quote,
     _tail_minute_bars,
 )
@@ -54,6 +55,7 @@ def test_four_builders_compute_equal_raw_facts_once_and_keep_fresh_snapshots(cac
     bars = _history_bars()
     context = BuildHistoryContext(bars)
     histories = {quote.code: bars}
+    bases = {quote.code: _history_price_basis(10.59, 10.59)}
     calls = []
     original = FeatureBuilder._raw_features
 
@@ -63,7 +65,7 @@ def test_four_builders_compute_equal_raw_facts_once_and_keep_fresh_snapshots(cac
 
     monkeypatch.setattr(FeatureBuilder, "_raw_features", counted)
     actual = tuple(
-        _builder(cache).build((quote,), histories, NOW + timedelta(seconds=index), history_summaries={quote.code: context})
+        _builder(cache).build((quote,), histories, NOW + timedelta(seconds=index), history_summaries={quote.code: context}, history_price_bases=bases)
         for index in range(4)
     )
     assert calls == [quote.code]
@@ -71,7 +73,7 @@ def test_four_builders_compute_equal_raw_facts_once_and_keep_fresh_snapshots(cac
     monkeypatch.setattr(FeatureBuilder, "_raw_features", original)
     for index, snapshots in enumerate(actual):
         at = NOW + timedelta(seconds=index)
-        assert snapshots == _builder(candidate=False).build((quote,), histories, at, history_summaries={quote.code: context})
+        assert snapshots == _builder(candidate=False).build((quote,), histories, at, history_summaries={quote.code: context}, history_price_bases=bases)
         assert snapshots[0].observed_at == snapshots[0].evidence[0].published_at == at
     assert _builder(cache)._raw_features(quote, bars, context)["news_sentiment"] is None
 
@@ -93,9 +95,10 @@ def test_reused_raw_facts_do_not_hide_new_company_risk_financial_loss_or_minutes
         ),),
     )
     builder = _builder(cache)
+    bases = {quote.code: _history_price_basis(10.59, 10.59)}
     monkeypatch.setattr(FeatureBuilder, "_raw_features", counted)
-    first = builder.build((quote,), {quote.code: bars}, NOW)
-    options = {"research_observations": {quote.code: observation}, "intraday_minutes": {quote.code: _tail_minute_bars()}}
+    first = builder.build((quote,), {quote.code: bars}, NOW, history_price_bases=bases)
+    options = {"research_observations": {quote.code: observation}, "intraday_minutes": {quote.code: _tail_minute_bars()}, "history_price_bases": bases}
     actual = builder.build((quote,), {quote.code: bars}, AFTERNOON, **options)
     assert calls == [1]
     monkeypatch.setattr(FeatureBuilder, "_raw_features", original)
@@ -216,7 +219,10 @@ def test_nonfinite_unused_input_preserves_original_calculation_and_raw_prices_re
     assert RAW_FACTOR_REUSE_CANDIDATE not in cache.status().datasets.get("quote_factor_inputs", {})
     raw = (replace(bars[0], adjustment=PriceAdjustment.RAW), *bars[1:])
     with pytest.raises(HistoryAdjustmentError):
-        _builder(cache).build((quote,), {quote.code: raw}, NOW)
+        _builder(cache).build(
+            (quote,), {quote.code: raw}, NOW,
+            history_price_bases={quote.code: _history_price_basis(10.59, 10.59)},
+        )
 
 
 def test_shared_budget_rejection_calculates_without_allocating_another_cache():

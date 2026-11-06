@@ -16,6 +16,7 @@ from tests.helpers.recommendation.market_data import (
     NOW,
     TAIL_POLICY,
     _history_bars,
+    _history_price_basis,
     _quote,
 )
 from trader.infra.cache import BoundedLruCache
@@ -71,11 +72,12 @@ def test_cached_full_features_match_uncached_after_quote_changes(factor_cache, m
     monkeypatch.setattr(builder, "_base_features", counted)
     quote = replace(_quote(), volume=1_000_000.0)
     history = {quote.code: _history_bars()}
-    builder.build((quote,), history, NOW)
+    bases = {quote.code: _history_price_basis(10.59, 10.59)}
+    builder.build((quote,), history, NOW, history_price_bases=bases)
     changed = replace(quote, **changes)
     at = max(NOW + timedelta(seconds=1), changed.source_time)
-    got = builder.build((changed,), history, at)
-    expected = _builder().build((changed,), history, at)
+    got = builder.build((changed,), history, at, history_price_bases=bases)
+    expected = _builder().build((changed,), history, at, history_price_bases=bases)
     assert got == expected
     assert got[0].quote == changed
     assert got[0].observed_at == got[0].evidence[0].published_at == at

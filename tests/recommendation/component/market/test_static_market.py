@@ -20,6 +20,7 @@ from tests.helpers.recommendation.market_data import (
     StaticMarketClient,
     StaticTencentClient,
     _history_bars,
+    _history_price_basis,
     _quote,
     _service,
 )
@@ -161,7 +162,7 @@ def test_static_eligibility_is_built_once_shared_by_matching_profiles_and_rebuil
     source = StaticReferenceRead(reference, "reference-a", False, 86400)
     service = _service(
         StaticGateway((quote,)),
-        CountingHistoryClient(_history_bars()),
+        CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
 
@@ -219,7 +220,7 @@ def test_matching_profiles_initialize_static_eligibility_concurrently_once() -> 
     )
     service = _service(
         StaticGateway((quote,)),
-        CountingHistoryClient(_history_bars()),
+        CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
     pipelines = tuple(StaticMarketPipeline(service.eligibility, cache=cache, monotonic=lambda: 1.0) for _ in range(2))
@@ -268,7 +269,7 @@ def test_fixed_official_identity_survives_missing_quote_name_and_market_failure(
     gateway = RecordingGateway((_quote("600001"), replace(_quote("600002"), name=" ")))
     reference = PreparedFixture(NOW, _current_universe("600001", "600002"))
     references = PublishedReferences(lambda: reference, lambda: reference.identity, lambda _: (), max_age_seconds=86400)
-    history = CountingHistoryClient(_history_bars())
+    history = CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors)
     service = _service(
         gateway,
         history,
@@ -343,7 +344,7 @@ def test_empty_static_population_is_not_reported_as_completed() -> None:
 def test_only_permanent_startup_facts_are_filtered_before_current_quotes() -> None:
     service = _service(
         StaticGateway((_quote(),)),
-        CountingHistoryClient(_history_bars()),
+        CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
     quote = _quote()
@@ -384,7 +385,7 @@ def test_new_quote_st_risk_is_dynamic_and_remains_excluded_after_name_recovers(t
     gateway = StaticGateway((_quote(),))
     service = _service(
         gateway,
-        CountingHistoryClient(_history_bars()),
+        CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         eligibility=CompanyEligibility(
             PublishCompanyExclusions(SQLiteCompanyFactsIndex(tmp_path / "company_facts.sqlite3"))
@@ -450,7 +451,7 @@ def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory
     reference = PreparedFixture(NOW)
     service = _service(
         StaticGateway((_quote(),)),
-        CountingHistoryClient(_history_bars()),
+        CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         company_evidence_reader=reader,
         published_references=PublishedReferences(
@@ -492,7 +493,7 @@ def test_future_permanent_fact_takes_effect_dynamically_without_rebuilding_stati
     eligibility.record((ManualBlacklistFact("600001", effective_at=effective, config_hash="future"),))
     service = _service(
         StaticGateway((_quote(),)),
-        CountingHistoryClient(_history_bars()),
+        CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         eligibility=eligibility,
     )

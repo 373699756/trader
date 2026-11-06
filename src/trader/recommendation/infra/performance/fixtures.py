@@ -21,6 +21,7 @@ from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.feature_contracts import CalculateProfileQfqAlpha, QfqPriceAnchors
 from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote, ModelIndustryReference
+from trader.recommendation.domain.market.price_basis import HistoryPriceAnchor, HistoryPriceBasis
 from trader.recommendation.domain.market.v1.features import (
     LEARNED_RANK_FEATURE_IDS,
     CalculateLearnedRankFeatures,
@@ -44,6 +45,7 @@ class PerformanceHistoryInput:
     bars: tuple[DailyBar, ...]
     context: HistoryContext
     model_feature: FeatureSnapshot
+    price_basis: HistoryPriceBasis
 
 
 def BuildPerformanceHistory(features: tuple[FeatureSnapshot, ...]) -> tuple[PerformanceHistoryInput, ...]:
@@ -76,6 +78,12 @@ def BuildPerformanceHistory(features: tuple[FeatureSnapshot, ...]) -> tuple[Perf
                 bars[-20:],
                 BuildHistoryContext(bars, lookback_sessions=feature.history_days),
                 feature,
+                HistoryPriceBasis(
+                    feature.observed_at.astimezone(SHANGHAI).date(),
+                    days[-1],
+                    (HistoryPriceAnchor(days[-1], points[-1].close, points[-1].close),),
+                    _FIXTURE_SOURCE,
+                ),
             )
         )
     return tuple(result)

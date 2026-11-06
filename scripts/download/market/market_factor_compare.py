@@ -42,6 +42,7 @@ from trader.recommendation.application.pipeline.final_selection.freeze_projectio
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.industry import QuoteWithIndustry
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
+from trader.recommendation.domain.market.price_basis import HistoryPriceBasis
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.scoring import ScoreBoardStrategy
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
@@ -320,6 +321,21 @@ def RunSample(
     local_quotes = tuple(
         QuoteWithIndustry(quote, references.model_industries.get(quote.code), received_at.date()) for quote in quotes
     )
+    market_day = received_at.astimezone(_SHANGHAI).date()
+    previous_day = max((day for day in references.open_dates if day < market_day), default=None)
+    price_bases = {
+        quote.code: HistoryPriceBasis(
+            market_day,
+            previous_day,
+            tuple(
+                anchor for anchor in inputs.price_anchors.get(quote.code, ())
+                if anchor.trade_date in (previous_day, market_day)
+            ),
+            inputs.snapshot_hash,
+        )
+        for quote in local_quotes
+        if previous_day is not None and market_day in references.open_dates
+    }
     profiler = cProfile.Profile() if cpu_profile_dir is not None else None
     if profiler is not None:
         profiler.enable()
@@ -329,6 +345,7 @@ def RunSample(
             inputs.histories,
             received_at,
             history_summaries=inputs.contexts,
+            history_price_bases=price_bases,
             research_observations=auxiliary.research,
             intraday_minutes=auxiliary.minutes,
         )

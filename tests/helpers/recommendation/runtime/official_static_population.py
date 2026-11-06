@@ -10,6 +10,7 @@ from tests.helpers.recommendation.market_data import (
     FeatureBuilder,
     StaticGateway,
     _history_bars,
+    _history_price_basis,
     _quote,
     _service,
 )
@@ -37,7 +38,7 @@ def _reader(state):
 def _fixture(*, quotes=None, missing=False, population=None, **options):
     state = {"reference": None if missing else PreparedFixture(NOW, population or _population())}
     gateway = StaticGateway((_quote(),) if quotes is None else quotes)
-    history = CountingHistoryClient(_history_bars())
+    history = CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors)
     service = _service(
         gateway,
         history,

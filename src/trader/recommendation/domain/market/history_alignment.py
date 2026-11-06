@@ -15,6 +15,7 @@ HISTORY_INPUT_FAILURES = frozenset(
         "history_window_insufficient",
         "history_model_date_mismatch",
         "history_invalid_prices",
+        "history_price_basis_unavailable",
     }
 )
 

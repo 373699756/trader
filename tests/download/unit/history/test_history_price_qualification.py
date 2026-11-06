@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.download.domain.history_price_qualification import QualifyPriceOverlap, QualifyReplacementWindow
+from trader.download.domain.history_price_qualification import HistoryQfqBasisError, QualifyPriceOverlap, QualifyReplacementWindow
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 
 
@@ -18,6 +18,28 @@ def test_replacement_uses_whole_new_adjustment_basis():
     )
     incoming = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(complete),))
     assert QualifyReplacementWindow((partial.trade_date,), previous, incoming) is incoming
+
+
+@pytest.mark.parametrize("field", ("open_price", "high_price", "low_price", "close_price"))
+def test_incremental_same_source_requires_unchanged_qfq_price_anchors(field):
+    _partial, previous = _partial_and_complete(1628280000.0)
+    incoming = replace(previous, qfq=replace(previous.qfq, **{field: getattr(previous.qfq, field) + 0.01}))
+    with pytest.raises(HistoryQfqBasisError, match="history_qfq_basis_changed"):
+        QualifyPriceOverlap((incoming,), (previous,), full_window=False)
+
+
+def test_incremental_qfq_activity_refinement_does_not_change_price_basis():
+    _partial, previous = _partial_and_complete(1628280000.0)
+    incoming = replace(previous, qfq=replace(previous.qfq, volume=previous.qfq.volume + 100.0, amount=previous.qfq.amount + 100.0))
+    assert QualifyPriceOverlap((incoming,), (previous,), full_window=False) == (previous,)
+
+
+def test_new_trading_price_without_observed_qfq_overlap_requires_whole_window():
+    _partial, previous = _partial_and_complete(1628280000.0)
+    day = date(2026, 10, 26)
+    incoming = replace(previous, trade_date=day, unadjusted=replace(previous.unadjusted, trade_date=day), qfq=replace(previous.qfq, trade_date=day))
+    with pytest.raises(HistoryQfqBasisError, match="history_qfq_basis_unverified"):
+        QualifyPriceOverlap((incoming,), (previous,), full_window=False)
 
 
 def test_explicit_suspension_replaces_inference_without_fabricating_a_trading_price():

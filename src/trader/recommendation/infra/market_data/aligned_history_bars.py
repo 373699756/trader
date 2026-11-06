@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import math
 
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
@@ -13,6 +14,7 @@ from trader.recommendation.domain.market.history_alignment import (
     MarketDailyObservation,
     SessionKind,
 )
+from trader.recommendation.domain.market.price_basis import HistoryPriceAnchor
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +23,7 @@ class AlignedHistoryBars:
     estimated_dates: tuple[date, ...]
     suspended_dates: tuple[date, ...]
     latest_observed_date: date | None
+    price_anchors: tuple[HistoryPriceAnchor, ...] = ()
 
 
 def BuildAlignedHistoryBars(
@@ -35,6 +38,7 @@ def BuildAlignedHistoryBars(
     bars: list[DailyBar] = []
     estimated: list[date] = []
     suspended: list[date] = []
+    price_anchors: list[HistoryPriceAnchor] = []
     previous: AlignedMarketSession | None = None
     latest_observed_date: date | None = None
     for day in calendar:
@@ -69,6 +73,7 @@ def BuildAlignedHistoryBars(
             suspended.clear()
             previous = None
             latest_observed_date = None
+            price_anchors.clear()
             continue
         assert point.open_price is not None and point.high is not None and point.low is not None
         assert point.volume is not None
@@ -93,8 +98,20 @@ def BuildAlignedHistoryBars(
             suspended.append(day)
         if point.label_available:
             latest_observed_date = day
+            if (
+                raw is not None and side is not None
+                and raw.trade_date == side.trade_date == day
+                and raw.close_price is not None and side.close_price is not None
+                and math.isfinite(raw.close_price) and raw.close_price > 0
+                and math.isfinite(side.close_price) and side.close_price > 0
+            ):
+                price_anchors.append(HistoryPriceAnchor(day, raw.close_price, side.close_price))
         previous = point
-    return AlignedHistoryBars(tuple(bars), tuple(estimated), tuple(suspended), latest_observed_date)
+    retained_dates = frozenset(date.fromisoformat(bar.trade_date) for bar in bars[-2:])
+    return AlignedHistoryBars(
+        tuple(bars), tuple(estimated), tuple(suspended), latest_observed_date,
+        tuple(anchor for anchor in price_anchors if anchor.trade_date in retained_dates),
+    )
 
 
 __all__ = ["AlignedHistoryBars", "BuildAlignedHistoryBars"]

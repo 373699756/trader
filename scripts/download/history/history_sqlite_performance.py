@@ -391,18 +391,27 @@ def _measure_features(
     settings = LoadRuntimeSettings(config)
     entries = profiles[0].entries()
     industries = references.model_industries(tuple(entries))
-    quotes = tuple(
-        MarketQuote(
-            code=code, name=code, price=entry.bars[-1].close, previous_close=entry.bars[-1].close,
-            open_price=entry.bars[-1].open_price, high=entry.bars[-1].high, low=entry.bars[-1].low,
+    bases = profiles[0].price_bases(tuple(entries), observed)
+    quote_inputs: list[MarketQuote] = []
+    for code, entry in entries.items():
+        if not entry.bars:
+            continue
+        basis = bases.get(code)
+        anchor = next(
+            (item for item in basis.anchors if item.trade_date == basis.previous_trade_date), None
+        ) if basis is not None else None
+        if anchor is None:
+            raise RuntimeError("history_feature_audit_price_basis_unavailable")
+        quote_inputs.append(MarketQuote(
+            code=code, name=code, price=anchor.raw_close, previous_close=anchor.raw_close,
+            open_price=anchor.raw_close, high=anchor.raw_close, low=anchor.raw_close,
             pct_change=0.0, change_5m=0.0, speed=0.0, volume_ratio=1.0, turnover_rate=entry.bars[-1].turnover_rate,
             amount=entry.bars[-1].amount, amplitude=2.0, market_cap=1e10,
             industry=industries[code].industry_id if code in industries else "",
             source="diagnostic_synthetic", source_time=observed, received_time=observed,
             data_version="diagnostic_synthetic", volume=entry.bars[-1].volume,
-        )
-        for code, entry in entries.items() if entry.bars
-    )
+        ))
+    quotes = tuple(quote_inputs)
     codes = tuple(quote.code for quote in quotes)
     observations = research.cached(codes, include_structured=True, as_of=observed)
     barrier = threading.Barrier(len(selected))
@@ -430,7 +439,10 @@ def _measure_features(
         if profiler is not None:
             profiler.enable()
         try:
-            features = builder.build(quotes, histories, observed, research_observations=observations, history_summaries=summaries)
+            features = builder.build(
+                quotes, histories, observed, research_observations=observations, history_summaries=summaries,
+                history_price_bases=history.price_bases(codes, observed),
+            )
         finally:
             if profiler is not None:
                 profiler.disable()

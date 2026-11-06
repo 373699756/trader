@@ -261,11 +261,12 @@ def test_non_positive_gross_minus_cost_closes_selection_before_local_score(appli
     assert projection.stages.local_score.snapshot.input_count == 0
 
 
-def test_missing_history_is_pending_without_invoking_v1_predictor(application_feature_factory) -> None:
+@pytest.mark.parametrize("failure", ("history_model_date_mismatch", "history_price_basis_unavailable"))
+def test_missing_history_is_pending_without_invoking_v1_predictor(application_feature_factory, failure) -> None:
     from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 
     features = tuple(
-        replace(feature, model_history_quality=ModelHistoryQuality("history_model_date_mismatch"))
+        replace(feature, model_history_quality=ModelHistoryQuality(failure))
         for feature in _features(application_feature_factory)
     )
     service = _service()
@@ -283,7 +284,7 @@ def test_missing_history_is_pending_without_invoking_v1_predictor(application_fe
         0,
         0,
     )
-    assert [(reason.code, reason.count) for reason in stage.reasons] == [("history_model_date_mismatch", 12)]
+    assert [(reason.code, reason.count) for reason in stage.reasons] == [(failure, 12)]
     assert service.status().computation.request_count == 1
     assert service.status().computation.predictor_batch_count == 0
     service.score(_features(application_feature_factory))

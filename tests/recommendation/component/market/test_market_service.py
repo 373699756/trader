@@ -37,6 +37,7 @@ from tests.helpers.recommendation.market_data import (
     ThreadRecordingGateway,
     ThreadRecordingHistoryClient,
     _history_bars,
+    _history_price_basis,
     _quote,
     _service,
     _tail_minute_bars,
@@ -266,7 +267,7 @@ def test_stale_intraday_and_missing_published_research_remain_observe_only() -> 
     quote = replace(_quote(), source_time=measured_at, received_time=measured_at)
     service = _service(
         StaticGateway((quote,)),
-        CountingHistoryClient(_history_bars()),
+        CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         cache=cache,
         source_contracts=runtime.market_data.source_contracts,
@@ -592,7 +593,7 @@ def test_feature_service_current_quote_index_reads_canonical_quote_before_featur
 
 def test_market_service_uses_injected_runtime_data_pool_for_market_gateway() -> None:
     pool = BoundedExecutor(worker_count=1, queue_capacity=8, thread_name_prefix="shared-data")
-    history = ThreadRecordingHistoryClient(_history_bars())
+    history = ThreadRecordingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors)
     gateway = ThreadRecordingGateway((_quote(), _quote(code="600002")))
     service = _service(
         gateway,

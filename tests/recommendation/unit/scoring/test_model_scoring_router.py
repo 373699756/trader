@@ -16,6 +16,7 @@ from trader.recommendation.application.ports.loaded_profile import (
     ScoringHeadRuntimeStatus,
 )
 from trader.recommendation.domain.market.models import ModelIndustryReference
+from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
@@ -180,6 +181,26 @@ def test_model_inputs_match_training_population_before_industry_prediction_filte
         for horizon in profile.market_state_momentum_horizons:
             position = predictor.feature_ids.index(f"market_qfq_momentum_{horizon}d_skip5")
             assert tuple(observed[code][position] for code in modeled_codes) == pytest.approx((0.04 * horizon / 20,) * 2)
+
+
+@pytest.mark.parametrize("profile", (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE), ids=lambda item: item.profile_id)
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_unverified_history_price_basis_never_reaches_any_industry_predictor(
+    application_feature_factory, profile, strategy,
+):
+    contract = profile.head_for_strategy(strategy)
+    auxiliary_count = len(contract.feature_manifest.names) - (360 if profile.profile_id == "v5" else 0)
+    predictor = _InputRecordingPredictor(profile.profile_id, contract.feature_manifest.names[:auxiliary_count])
+    population, _ = _cross_section_population(application_feature_factory, profile)
+    blocked = tuple(
+        replace(feature, model_history_quality=ModelHistoryQuality("history_price_basis_unavailable"))
+        for feature in population
+    )
+    service = ProductionModelScoringService(profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY)
+    assert all(not service.is_input_eligible(feature) for feature in blocked)
+    batch = service.score(blocked, context=ModelScoringContext(population_features=blocked))
+    assert predictor.inputs == () and batch.predictions == ()
+    assert set(batch.missing_codes) == {feature.quote.code for feature in blocked}
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))

@@ -13,6 +13,7 @@ from tests.helpers.recommendation.market_data import (
     StaticGateway,
     StaticHistoryClient,
     _history_bars,
+    _history_price_basis,
     _quote,
     _service,
 )
@@ -29,7 +30,8 @@ def test_candidate_full_reference_reuses_population_values_and_metadata_without_
     builder = _builder()
     quotes = tuple(replace(_quote(f"60000{index}"), speed=float(index)) for index in range(4))
     histories = {quote.code: _history_bars() for quote in quotes}
-    market = builder.build(quotes, histories, NOW)
+    bases = {quote.code: _history_price_basis(10.59, 10.59) for quote in quotes}
+    market = builder.build(quotes, histories, NOW, history_price_bases=bases)
     reference = {item.quote.code: item.values for item in market}
     normalization = {item.quote.code: item.normalization for item in market}
 
@@ -45,6 +47,7 @@ def test_candidate_full_reference_reuses_population_values_and_metadata_without_
         changed_quotes,
         histories,
         NOW + timedelta(seconds=1),
+        history_price_bases=bases,
         cross_section_reference=reference,
         cross_section_normalization_reference=normalization,
     )
@@ -62,6 +65,7 @@ def test_candidate_full_reference_reuses_population_values_and_metadata_without_
         changed_quotes,
         histories,
         NOW,
+        history_price_bases=bases,
         cross_section_reference=revised,
         cross_section_normalization_reference=normalization,
     )
@@ -72,18 +76,20 @@ def test_partial_reference_computes_only_available_population_and_preserves_expl
     builder = _builder()
     quotes = tuple(replace(_quote(f"60000{index}"), speed=float(index)) for index in range(4))
     histories = {quote.code: _history_bars() for quote in quotes}
-    market = builder.build(quotes, histories, NOW)
+    bases = {quote.code: _history_price_basis(10.59, 10.59) for quote in quotes}
+    market = builder.build(quotes, histories, NOW, history_price_bases=bases)
     candidates = builder.build(
         quotes[:2],
         histories,
         NOW,
+        history_price_bases=bases,
         cross_section_reference={
             market[0].quote.code: market[0].values,
             market[1].quote.code: {"industry_strength": None},
         },
         cross_section_normalization_reference={market[0].quote.code: market[0].normalization},
     )
-    independent = builder.build(quotes[:2], histories, NOW)
+    independent = builder.build(quotes[:2], histories, NOW, history_price_bases=bases)
     assert candidates[0].normalization == market[0].normalization
     assert candidates[0].values["speed_percentile"] == market[0].values["speed_percentile"]
     assert candidates[1].normalization == independent[1].normalization

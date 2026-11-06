@@ -58,6 +58,7 @@ from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
 from trader.recommendation.domain.market.news import NewsSignalPolicy
+from trader.recommendation.domain.market.price_basis import HistoryPriceAnchor, HistoryPriceBasis
 from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
 from trader.recommendation.domain.market.tail import MinuteBar, TailSignalPolicy
@@ -164,6 +165,24 @@ class _FixtureHistory:
         self._bars: dict[str, tuple[DailyBar, ...]] = {}
         self._contexts: dict[str, HistoryContext] = {}
         self._universe = 0
+        self._preview_context = None
+
+    def prepare_preview(self, context) -> None:
+        self._preview_context = context
+
+    def price_bases(self, codes: Sequence[str], observed_at: datetime) -> Mapping[str, HistoryPriceBasis]:
+        anchors = getattr(self._client, "price_anchors", ())
+        if not anchors:
+            return {}
+        day = self._preview_context.market_trade_date if self._preview_context else observed_at.astimezone(_SHANGHAI).date()
+        previous = max((value for value in PreparedFixture(NOW).open_dates if value < day), default=None)
+        if previous is None:
+            return {}
+        selected = tuple(anchor for anchor in anchors if anchor.trade_date in (previous, day))
+        return {
+            code: HistoryPriceBasis(day, previous, selected, self.input_identity)
+            for code in codes if code in self._contexts
+        }
 
     def refresh(self) -> bool:
         return False
@@ -650,9 +669,10 @@ class StaticHistoryClient:
 
 
 class CountingHistoryClient:
-    def __init__(self, bars) -> None:
+    def __init__(self, bars, *, price_anchors: tuple[HistoryPriceAnchor, ...] = ()) -> None:
         self._bars = bars
         self.calls = []
+        self.price_anchors = price_anchors
 
     def fetch_history(self, code, *, days):
         self.calls.append(code)
@@ -660,8 +680,8 @@ class CountingHistoryClient:
 
 
 class BlockingHistoryClient(CountingHistoryClient):
-    def __init__(self, bars) -> None:
-        super().__init__(bars)
+    def __init__(self, bars, *, price_anchors: tuple[HistoryPriceAnchor, ...] = ()) -> None:
+        super().__init__(bars, price_anchors=price_anchors)
         self.release = threading.Event()
 
     def fetch_history(self, code, *, days):
@@ -670,8 +690,8 @@ class BlockingHistoryClient(CountingHistoryClient):
 
 
 class ThreadRecordingHistoryClient(CountingHistoryClient):
-    def __init__(self, bars) -> None:
-        super().__init__(bars)
+    def __init__(self, bars, *, price_anchors: tuple[HistoryPriceAnchor, ...] = ()) -> None:
+        super().__init__(bars, price_anchors=price_anchors)
         self.thread_names = []
 
     def fetch_history(self, code, *, days):
@@ -680,8 +700,8 @@ class ThreadRecordingHistoryClient(CountingHistoryClient):
 
 
 class SelectiveHistoryClient(CountingHistoryClient):
-    def __init__(self, bars, *, failing_codes) -> None:
-        super().__init__(bars)
+    def __init__(self, bars, *, failing_codes, price_anchors: tuple[HistoryPriceAnchor, ...] = ()) -> None:
+        super().__init__(bars, price_anchors=price_anchors)
         self._failing_codes = set(failing_codes)
 
     def fetch_history(self, code, *, days):
@@ -811,7 +831,7 @@ def _quote(code: str = "600001", industry: str = "工业") -> MarketQuote:
         code=code,
         name="测试股份",
         price=12.0,
-        previous_close=11.65,
+        previous_close=10.59,
         open_price=11.8,
         high=12.2,
         low=11.7,
@@ -831,10 +851,26 @@ def _quote(code: str = "600001", industry: str = "工业") -> MarketQuote:
     )
 
 
+def _history_price_basis(
+    raw_close: float,
+    qfq_close: float,
+    *,
+    market_trade_date: date = date(2026, 7, 16),
+    previous_trade_date: date = date(2026, 7, 15),
+) -> HistoryPriceBasis:
+    """Declare paired fixture facts explicitly, independently of live quote fields."""
+    return HistoryPriceBasis(
+        market_trade_date,
+        previous_trade_date,
+        (HistoryPriceAnchor(previous_trade_date, raw_close, qfq_close),),
+        "fixture:paired-history",
+    )
+
+
 def _history_bars() -> tuple[DailyBar, ...]:
     return tuple(
         DailyBar(
-            trade_date=f"2026-{5 + index // 30:02d}-{index % 30 + 1:02d}",
+            trade_date=(date(2026, 7, 15) - timedelta(days=59 - index)).isoformat(),
             open_price=10.0 + index / 100,
             close=10.0 + index / 100,
             high=10.2 + index / 100,

@@ -28,6 +28,7 @@ from trader.recommendation.application.pipeline.policy import RecommendationPoli
 from trader.recommendation.application.ports.loaded_profile import ModelPredictorPort
 from trader.recommendation.domain.market.industry import QuoteWithIndustry
 from trader.recommendation.domain.market.models import FeatureSnapshot, ModelIndustryReference
+from trader.recommendation.domain.market.price_basis import HistoryPriceAnchor
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.infra.market_data.published_history_bars import QfqBars
@@ -71,6 +72,7 @@ class FactorInputs:
     model_heads: tuple[ModelFeatureRequirements, ...]
     histories: Mapping[str, tuple[DailyBar, ...]]
     contexts: Mapping[str, HistoryContext]
+    price_anchors: Mapping[str, tuple[HistoryPriceAnchor, ...]]
     snapshot_hash: str
     config_version: str
     preparation_ms: Mapping[str, float]
@@ -116,6 +118,18 @@ def LoadFactorInputs(
         raise RuntimeError("qfq_snapshot_unavailable")
     windows = cache.read_codes(codes)
     histories = {window.code: HistoryAtCut(QfqBars(window), at) for window in windows}
+    price_anchors = {
+        window.code: tuple(
+            HistoryPriceAnchor(cell.trade_date, cell.unadjusted.close_price, cell.qfq.close_price)
+            for cell in window.cells
+            if cell.status == "complete"
+            and cell.unadjusted is not None
+            and cell.qfq is not None
+            and cell.unadjusted.close_price is not None
+            and cell.qfq.close_price is not None
+        )
+        for window in windows
+    }
     verified = cache.manifest()
     if verified is None or verified.snapshot_hash != manifest.snapshot_hash:
         raise RuntimeError("qfq_snapshot_changed")
@@ -162,6 +176,7 @@ def LoadFactorInputs(
         model_heads=model_heads,
         histories=MappingProxyType(histories),
         contexts=MappingProxyType(contexts),
+        price_anchors=MappingProxyType(price_anchors),
         snapshot_hash=manifest.snapshot_hash,
         config_version=settings.config_version + ":" + strategy.strategy_version,
         preparation_ms=MappingProxyType(

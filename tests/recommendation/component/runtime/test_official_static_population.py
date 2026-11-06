@@ -19,6 +19,7 @@ from tests.helpers.recommendation.market_data import (
     FeatureBuilder,
     StaticGateway,
     _history_bars,
+    _history_price_basis,
     _quote,
     _service,
 )
@@ -170,7 +171,7 @@ def test_reference_st_revision_is_adopted_only_on_restart_before_history_reads(t
     assert not reference.status().restart_required
     assert reference.historical_st_eligibility().eligible_codes == ("300001", "600001")
     restarted = _reader(state)
-    history = CountingHistoryClient(_history_bars())
+    history = CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors)
     service = _service(
         StaticGateway((_quote("300001"), _quote("600001"))),
         history,

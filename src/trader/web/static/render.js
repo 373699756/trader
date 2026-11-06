@@ -167,6 +167,7 @@
     strategy_history_insufficient: "策略所需历史交易日不足", production_model_features_missing: "模型输入字段缺失",
     history_snapshot_unavailable: "已发布历史尚不可用", history_window_insufficient: "对齐后的历史窗口不足",
     history_model_date_mismatch: "模型历史截止日期不匹配", history_invalid_prices: "历史价格或成交额不可用",
+    history_price_basis_unavailable: "价格基准待核验，暂缓评分",
     candidate_quotes_pending: "候选行情待补充", security_master_coverage_incomplete: "证券基础资料覆盖不完整",
     below_score_threshold: "最终分低于观察线", filter_observe_only: "数据或风险限制，仅供观察",
     observation_phase: "当前时段仅供观察", downside_guard: "下行保护触发，仅供观察",

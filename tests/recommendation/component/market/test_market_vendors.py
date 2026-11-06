@@ -34,6 +34,7 @@ from tests.helpers.recommendation.market_data import (
     VendorRoute,
     VendorSeverity,
     _history_bars,
+    _history_price_basis,
     _quote,
     _service,
     date,
@@ -689,7 +690,7 @@ def test_tencent_history_rejects_day_payload_without_zero_adjustment_proof(
 
 def test_history_fallback_uses_eastmoney_only_when_tencent_is_insufficient() -> None:
     primary = CountingHistoryClient(())
-    fallback = CountingHistoryClient(_history_bars())
+    fallback = CountingHistoryClient(_history_bars(), price_anchors=_history_price_basis(10.59, 10.59).anchors)
 
     bars = FallbackHistoryClient(primary, fallback).fetch_history("600001", days=90)
 

@@ -12,7 +12,9 @@ import pytest
 from tests.helpers.recommendation.runtime.performance_fixtures import _budgets, _history_sessions
 from tests.helpers.recommendation.scoring.performance_models import _workload
 from trader.entrypoints import performance
+from trader.infra.cache import BoundedLruCache
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.performance.cpu_trace import PerformanceCpuTrace
 from trader.recommendation.infra.performance.fixtures import BuildPerformanceFixtures
 from trader.recommendation.infra.performance.model_workload import PerformanceProfileWorkload
@@ -36,6 +38,35 @@ def _replay(profiles, ticks=2, trace=None, factor_reuse=False, scoring_candidate
             scoring_candidate=scoring_candidate,
             prediction_executor=predictions if scoring_candidate in {"v5_industry_parallel", "combined"} else None,
         )
+
+
+@pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
+def test_replay_keeps_price_basis_rejection_when_completed_model_inputs_are_merged(profile):
+    from trader.recommendation.infra.performance import pipeline_workload
+
+    settings = LoadRuntimeSettings(Path("config/runtime.json"))
+    workload = PipelineReplayWorkload(
+        _workload(profile), LoadStrategySettings(Path("config/strategy.json"), scoring_profile=profile)
+    )
+    cache = BoundedLruCache(settings.market_data.cache_policy)
+    try:
+        replay = pipeline_workload._ProfileReplay(
+            workload, cache, pipeline_workload._ReplayClock(workload.model.features[0].observed_at),
+            factor_reuse=False, scoring_candidate="baseline", industry_prediction=None,
+        )
+        changed = tuple(replace(quote, previous_close=quote.previous_close / 2) for quote in replay.quotes)
+        blocked = replay._build(changed)
+        assert blocked and all(
+            feature.model_history_quality.failure == "history_price_basis_unavailable" for feature in blocked
+        )
+        assert all(
+            not replay.scoring.is_input_eligible(strategy, feature)
+            for strategy in (Strategy.TOMORROW, Strategy.D25) for feature in blocked
+        )
+        restored = replay._build(replay.quotes)
+        assert all(feature.model_history_quality.failure is None for feature in restored)
+    finally:
+        cache.stop()
 
 
 def test_replay_projects_measured_stages_and_full_selection_features_after_scoring(monkeypatch):
