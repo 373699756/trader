@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.helpers.configuration import SqlitePolicyFixture
 
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 
@@ -45,10 +46,16 @@ from tests.component.market_data_test_support import (
 )
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
+from trader.http_api.route_services import UnifiedWebServices
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
+from trader.web import CreateApp
 
 
 def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_lock() -> None:
@@ -323,6 +330,88 @@ def test_feature_market_data_health_reports_bounded_quote_age_summaries() -> Non
     }
     assert health["candidate_quote_age"]["maximum_seconds"] == 31.0
     assert health["candidate_quote_latest_source"] == "fixture"
+
+
+class _UnlistedCompanyFailure(RuntimeError):
+    pass
+
+
+@pytest.mark.parametrize(("failure_type", "expected"), (
+    (OSError, "company_snapshot:OSError"),
+    (RuntimeError, "company_snapshot:RuntimeError"),
+    (ValueError, "company_snapshot:ValueError"),
+    (TypeError, "company_snapshot:TypeError"),
+    (FileNotFoundError, "company_snapshot:FileNotFoundError"),
+    (PermissionError, "company_snapshot:PermissionError"),
+    (TimeoutError, "company_snapshot:TimeoutError"),
+    (_UnlistedCompanyFailure, "company_snapshot_unavailable"),
+))
+def test_company_preload_failure_reaches_http_as_a_finite_error_code(failure_type, expected, monkeypatch) -> None:
+    class FailedPublishedEvidence:
+        def publication_version(self):
+            raise failure_type("private-company-payload")
+
+        def visit(self, codes, consume, *, cancel_requested=None):
+            raise AssertionError("failed publication must not read company rows")
+
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        company_evidence_reader=FailedPublishedEvidence(),
+    )
+    status = service.research.status()
+    assert status.entries == status.planned_count == status.error_count == 0
+    assert status.last_error == f"company_snapshot:{failure_type.__name__}"
+    clock = Mock()
+    clock.now.return_value = NOW
+    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), Mock(), clock)
+    app = CreateApp(services=UnifiedWebServices(
+        queries,
+        UnifiedFreezeEventStream(),
+        lambda: {"market_data": service.health()},
+    ))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("HTTP company diagnostics must not access a database")
+
+    monkeypatch.setattr("sqlite3.connect", forbidden)
+    response = app.test_client().get("/api/status")
+
+    assert response.status_code == 200
+    source = response.get_json()["market_data"]["sources"]["company_evidence"]
+    assert source["last_error_code"] == expected
+    assert source["error_count"] == 0
+    assert "last_error" not in source
+    assert "private-company-payload" not in response.get_data(as_text=True)
+    assert "_UnlistedCompanyFailure" not in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize(("reason", "expected"), (
+    ("", None),
+    ("company_not_loaded", "company_not_loaded"),
+    ("company_population_unavailable", "company_population_unavailable"),
+    ("company_preload_cancelled", "company_preload_cancelled"),
+    ("company_preload_deadline", "company_preload_deadline"),
+    ("company_preload_capacity", "company_preload_capacity"),
+    ("company_publication_changed", "company_publication_changed"),
+    ("company_snapshot:missing", "company_snapshot:missing"),
+    ("company_snapshot:private-company-payload", "company_snapshot_unavailable"),
+    ("private-company-payload", "company_snapshot_unavailable"),
+))
+def test_company_health_exposes_only_known_preload_error_codes(reason, expected, monkeypatch) -> None:
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+    )
+    status = replace(service.research.status(), last_error=reason)
+    monkeypatch.setattr(service.research, "status", lambda: status)
+
+    source = service.health()["sources"]["company_evidence"]
+
+    assert source["last_error_code"] == expected
+    assert "last_error" not in source
 
 
 def test_candidate_quote_cache_retains_disjoint_three_strategy_union() -> None:

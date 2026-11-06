@@ -529,6 +529,10 @@ Long 实时报价按来源时间判断年龄，超过scheduler配置的上限时
 
 `profile` 只允许一个已启动的 v1/v2/v3/v5，`strategy` 只允许 tomorrow/d25/long。内部模型与完整供应商载荷不得直接序列化，adapter 用公开白名单。
 
+`/api/status`的`market_data.sources.company_evidence.last_error_code`只公开有限的预载状态和已知读取异常类别；未知原因归`company_snapshot_unavailable`，无错误为null，不公开原始错误文本。planned_count/error_count统计已采用资料，预载完全失败时也可能同时为0，须结合错误码、loaded_identity及覆盖判断，不能仅据0错误签加载成功。
+
+未发布正式结果时，`/current`可用观察draft的版本作为ETag/projection_version，`/status`仍不公开该draft身份。健康工具只对双方明确not_ready、无正式freeze且符合观察draft合同的情况免比较这项版本；日期、覆盖和正式结果身份差异仍报告，不通过公开draft到status消除误报。
+
 Tomorrow/D25×V1/V2/V3/V5八个评分组合分别保留排名最高的6只股票，API、SSE、页面及冻结读取保持已固定席位的同一组代码和排名；推荐、关注、回避及复核结论随股票展示，不能用旧“只显示正式推荐”的投影隐藏已固定席位。选席前的输入、模型、成本及板限合同按[h的时间线与R08](h_需求文档.md#1-依据和冲突处理)核对，不从“保留6只”推导其全部撤销。Long完整名单独立更新，不进入这八组排名、发布屏障或冻结。
 
 ### 8.3 一次替换与恢复
@@ -546,6 +550,8 @@ flowchart TD
 ```
 
 事件丢失、队列溢出、重连时重新读取完整批次；迟到响应不能覆盖较新事件。名单、分数、报价、原因和诊断同批替换；连接状态、来源年龄、错误提示可以单独更新。桌面验收用稳定版 Chrome、Edge 或 Firefox，检查可读性、操作和数据一致性，不定死分辨率。
+
+真实页面检测使用统一入口的`recommendation/web/browser-live`，访问已运行服务，选择可用Chrome/Chromium或Firefox/geckodriver，并在报告注明实际浏览器；不启动模拟服务。检测自身的浏览器资源由会话及统一工具进程组有界回收。页面/API一致、SSE已连接与短线结果ready分项判断，空结果一致不能签荐股成功。
 
 慢SSE客户端不得阻塞发布。游标超前、过期、不连续或身份不匹配时重同步；策略/日期切换后，迟到结果不能覆盖当前页。具体队列和超时参数由delivery配置逐字段解释。
 

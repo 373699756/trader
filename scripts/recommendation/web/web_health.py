@@ -571,6 +571,11 @@ def _freeze_contract_findings(
         )
     )
     for code_field, evidence_field, status_value, freeze_value in comparisons:
+        if (
+            code_field == "projection" and strategy_status is not None
+            and _private_draft_projection(strategy_status, freeze)
+        ):
+            continue
         if status_value != freeze_value:
             findings.append(
                 _finding(
@@ -1268,11 +1273,35 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
     }
 
 
+def _private_draft_projection(status: ProjectionSnapshot, current: ProjectionSnapshot) -> bool:
+    if not (
+        status.status == current.status == "not_ready"
+        and status.freeze_identity_known and current.freeze_identity_known
+        and status.freeze_version is None and current.freeze_version is None
+        and status.projection_version is None
+        and status.frozen is False and current.frozen is False
+        and current.item_count == 0
+    ):
+        return False
+    projection = current.projection_version
+    draft = current.draft_version
+    if projection is None or draft is None:
+        return False
+    if projection == draft:
+        return True
+    prefix = f"{draft}+industry:"
+    suffix = projection[len(prefix):]
+    return projection.startswith(prefix) and len(suffix) == 16 and all(char in "0123456789abcdef" for char in suffix)
+
+
 def _projection_summary(payload: ProjectionSnapshot | None) -> dict[str, object]:
     return {
         "status": payload.status if payload is not None else None,
         "trade_date": payload.trade_date if payload is not None else None,
         "projection_version": payload.projection_version if payload is not None else None,
+        "freeze_version": payload.freeze_version if payload is not None else None,
+        "freeze_identity_known": payload.freeze_identity_known if payload is not None else False,
+        "draft_version": payload.draft_version if payload is not None else None,
         "frozen": payload.frozen if payload is not None else None,
         "candidate_count": payload.coverage.candidate_count if payload is not None else None,
         "evaluated_count": payload.coverage.evaluated_count if payload is not None else None,

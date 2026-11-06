@@ -184,6 +184,9 @@ class ProjectionSnapshot:
     degraded_reasons: tuple[str, ...] = ()
     selected_item_count: int | None = None
     available_quote_count: int | None = None
+    freeze_version: str | None = None
+    freeze_identity_known: bool = False
+    draft_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -540,6 +543,10 @@ def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> 
         selected_item_count=sum(value is True for value in selected_flags)
         if selected_flags is not None and all(isinstance(value, bool) for value in selected_flags)
         else None,
+        freeze_version=_text(payload.get("freeze_version")),
+        freeze_identity_known="freeze_version" in payload
+        and (payload.get("freeze_version") is None or _text(payload.get("freeze_version")) is not None),
+        draft_version=_text(_mapping(payload.get("draft")).get("freeze_version")) if include_items else None,
     )
 
 

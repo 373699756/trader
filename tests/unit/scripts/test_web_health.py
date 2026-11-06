@@ -850,6 +850,80 @@ def test_status_and_current_projection_mismatch_is_reported() -> None:
     )
 
 
+@pytest.mark.parametrize(("status_changes", "current_changes", "missing_identity", "mismatch"), (
+    ({}, {}, None, False),
+    ({}, {"projection_version": "draft-1+industry:" + "a" * 16}, None, False),
+    ({}, {"coverage": {"candidate_count": 1, "evaluated_count": 0, "selected_count": 0}}, None, False),
+    ({}, {"trade_date": "2026-08-24"}, None, False),
+    ({}, {"draft": None}, None, True),
+    ({}, {"draft": {}}, None, True),
+    ({}, {"projection_version": "unrelated"}, None, True),
+    ({}, {"projection_version": "draft-1+industry:invalid"}, None, True),
+    ({"projection_version": "unexpected-status-projection"}, {}, None, True),
+    ({}, {"freeze_version": "formal-1"}, None, True),
+    ({"freeze_version": "formal-1"}, {}, None, True),
+    ({"freeze_version": ""}, {}, None, True),
+    ({}, {}, "status", True),
+    ({}, {}, "current", True),
+    (
+        {"status": "ready", "freeze_version": "formal-1", "projection_version": "formal-1"},
+        {"status": "ready", "freeze_version": "formal-2", "projection_version": "formal-2", "draft": None},
+        None,
+        True,
+    ),
+))
+def test_projection_comparison_distinguishes_private_drafts_from_formal_identity_mismatches(
+    status_changes, current_changes, missing_identity, mismatch,
+) -> None:
+    coverage = {"candidate_count": 0, "evaluated_count": 0, "selected_count": 0}
+    strategy_status = {
+        "status": "not_ready",
+        "trade_date": _TRADE_DATE,
+        "freeze_version": None,
+        "projection_version": None,
+        "frozen": False,
+        "coverage": coverage,
+        **status_changes,
+    }
+    current = {
+        "schema_version": "freeze_view",
+        "strategy": _STRATEGY,
+        "status": "not_ready",
+        "trade_date": _TRADE_DATE,
+        "freeze_version": None,
+        "projection_version": "draft-1",
+        "frozen": False,
+        "coverage": coverage,
+        "items": [],
+        "draft": {"freeze_version": "draft-1", "items": [], "private": "must-not-leak"},
+        **current_changes,
+    }
+    if missing_identity == "status":
+        strategy_status.pop("freeze_version")
+    elif missing_identity == "current":
+        current.pop("freeze_version")
+    sample = parse_web_sample(
+        1,
+        _TRADE_DATE + "T10:00:00+08:00",
+        status_payload={"strategies": {_STRATEGY: strategy_status}},
+        freeze_payloads={_STRATEGY: current},
+    )
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=3)
+
+    assert any(finding.code == "status_current_projection_mismatch" for finding in findings) is mismatch
+    if "coverage" in current_changes:
+        assert any(finding.code == "status_current_candidate_count_mismatch" for finding in findings)
+    if "trade_date" in current_changes:
+        assert any(finding.code == "status_current_trade_date_mismatch" for finding in findings)
+    if status_changes.get("status") == "ready":
+        assert sample.status is not None
+        assert sample.status.strategies[_STRATEGY].freeze_version == "formal-1"
+        assert sample.freezes[_STRATEGY].freeze_version == "formal-2"
+    report = build_report("http://localhost", (sample,), findings, strategies=(_STRATEGY,), consecutive_zero_threshold=3)
+    assert "must-not-leak" not in str(report)
+
+
 def test_status_and_current_coverage_mismatch_is_reported() -> None:
     sample = _sample(1)
     freeze = sample.freezes[_STRATEGY]
