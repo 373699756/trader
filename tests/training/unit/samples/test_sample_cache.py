@@ -19,7 +19,7 @@ from trader.training.infra.sample_schema import TrainingFeatureNames
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 
-def test_read_only_sample_contract_rejects_wrong_features_split_and_old_schema(tmp_path):
+def test_read_only_samples_check_structure_and_split_without_a_format_number(tmp_path):
     split = BuildTrainingDateSplit(
         tuple(date(2020, 1, 1) + timedelta(days=i) for i in range(2000)), parent_manifest_hash="a" * 64
     )
@@ -27,12 +27,21 @@ def test_read_only_sample_contract_rejects_wrong_features_split_and_old_schema(t
     with SQLiteTrainingSampleIndex(path, ("first", "second"), sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as samples:
         samples.prepare_for_model_fitting(split)
     original = path.read_bytes()
-    for names, identity in ((("second", "first"), split.content_hash), (("first", "second"), "b" * 64)):
-        with pytest.raises(ValueError, match="contract"):
+    for names, identity, error, reason in (
+        (("second", "first"), split.content_hash, sqlite3.DatabaseError, "schema_unsupported"),
+        (("first", "second"), "b" * 64, ValueError, "contract"),
+    ):
+        with pytest.raises(error, match=reason):
             SQLiteTrainingSampleIndex(path, names, prepared_split_hash=identity, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
         assert path.read_bytes() == original
     with SqliteSession(path) as connection:
         connection.run("PRAGMA user_version=1")
+    original = path.read_bytes()
+    with SQLiteTrainingSampleIndex(path, ("first", "second"), prepared_split_hash=split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as samples:
+        samples.require_split(split)
+    assert path.read_bytes() == original
+    with SqliteSession(path) as connection:
+        connection.run("DROP TABLE sample_statistics")
     original = path.read_bytes()
     with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
         SQLiteTrainingSampleIndex(path, ("first", "second"), prepared_split_hash=split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())

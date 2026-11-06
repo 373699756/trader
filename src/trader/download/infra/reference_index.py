@@ -228,12 +228,12 @@ class SQLiteReferenceIndex:
 
 
 def _initialize_contract(connection: SqliteConnection) -> None:
-    connection.run("INSERT INTO schema_contract VALUES('market_reference',1)")
+    connection.run("INSERT INTO schema_contract(schema_id) VALUES('market_reference')")
 
 
 def _validate_contract(connection: SqliteConnection) -> None:
-    rows = connection.run("SELECT schema_id,schema_version FROM schema_contract").fetchall()
-    if [tuple(row) for row in rows] != [("market_reference", 1)]:
+    rows = connection.run("SELECT schema_id FROM schema_contract").fetchall()
+    if [tuple(row) for row in rows] != [("market_reference",)]:
         raise ValueError("reference_format_requires_rebuild")
 
 

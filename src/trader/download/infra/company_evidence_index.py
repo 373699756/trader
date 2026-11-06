@@ -243,8 +243,6 @@ class SQLiteCompanyEvidenceIndex:
     def _validate_contract(connection: SqliteConnection) -> None:
         if connection.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name='contract'").fetchone() is None:
             raise ValueError("company_evidence_database_contract_mismatch")
-        if connection.run("PRAGMA user_version").require_one()[0] != SCHEMA.version:
-            raise ValueError("company_evidence_database_contract_mismatch")
         contract = connection.run("SELECT schema_id FROM contract").fetchall()
         if [row[0] for row in contract] != ["company_collection"]:
             raise ValueError("company_evidence_database_contract_mismatch")

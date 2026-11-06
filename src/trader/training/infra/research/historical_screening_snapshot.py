@@ -545,7 +545,6 @@ def _sha256(value: bytes) -> str:
 
 
 _SCHEMA = SqliteSchema(
-    1,
     (
         """
         CREATE TABLE screening_spec(

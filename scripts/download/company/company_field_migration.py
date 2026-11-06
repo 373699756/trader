@@ -1,4 +1,4 @@
-"""Explicit schema3-to-schema4 rehearsal on a new external company database copy."""
+"""Materialize field conclusions on a new external company database copy."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from trader.download.domain.company_field_results import CompanyFieldConclusion,
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash, CompanyInteger, RequireCompanyTime
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
-from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA, COMPANY_FACTS_VERSION
+from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults, WriteCompanyFieldResults
 from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.serialization.canonical_codec import CanonicalDigest, CanonicalText
@@ -94,22 +94,20 @@ def _integrity(connection: SqliteConnection, deadline: float) -> None:
 
 
 def _source_identity(connection: SqliteConnection) -> tuple[bytes, bytes, int]:
-    if connection.run("PRAGMA user_version").require_one()[0] != 3:
-        raise ValueError("company_field_migration_source_schema_unsupported")
     tables = {row[0] for row in connection.run("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'")}
     if tables != {*_BUSINESS_TABLES, "company_publication"}:
         raise ValueError("company_field_migration_source_tables_unsupported")
     rows = connection.run(
-        "SELECT singleton,schema_version,extraction_hash,content_hash,published_at FROM company_publication"
+        "SELECT singleton,extraction_hash,content_hash,published_at FROM company_publication"
     ).fetchall()
-    if len(rows) != 1 or rows[0][0] != 1 or rows[0][1] != 3:
+    if len(rows) != 1 or rows[0][0] != 1:
         raise ValueError("company_field_migration_source_publication_invalid")
     row = rows[0]
-    if any(not isinstance(value, bytes) or len(value) != 32 for value in row[2:4]):
+    if any(not isinstance(value, bytes) or len(value) != 32 for value in row[1:3]):
         raise ValueError("company_field_migration_source_publication_invalid")
-    published_at = CompanyInteger(row[4])
+    published_at = CompanyInteger(row[3])
     RequireCompanyTime(published_at)
-    return cast(bytes, row[2]), cast(bytes, row[3]), published_at
+    return cast(bytes, row[1]), cast(bytes, row[2]), published_at
 
 
 def _columns(connection: SqliteConnection, table: str) -> tuple[tuple[str, str, int, int], ...]:
@@ -187,7 +185,7 @@ def AuditCompanyFieldMigration(
     source_path: Path, directory: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy,
     event_policy: CompanyEventPolicy, protected_roots: Sequence[Path],
 ) -> dict[str, object]:
-    """Preserve schema3 input, rehearse a full schema4 copy and never authorize production.
+    """Preserve the source, materialize field conclusions and never authorize production.
 
     Invalid output paths fail before creating artifacts. Operational failures
     keep the backup/target and a bounded failure report for the next review.
@@ -196,19 +194,19 @@ def AuditCompanyFieldMigration(
         raise ValueError("company_field_migration_budget_invalid")
     deadline = time.monotonic() + budget_seconds
     source_path, directory = _prepare_paths(source_path, directory, protected_roots)
-    backup_path = directory / "source_schema3.sqlite3"
+    backup_path = directory / "source.sqlite3"
     target_path = directory / "company_facts.sqlite3"
     report_path = directory / "field-migration.json"
     report: dict[str, object] = {
         "schema_version": "company-field-migration", "status": "failed", "read_only_source": True,
-        "isolated_copy": True, "production_authorized": False, "source_schema": None, "expected_source_schema": 3, "target_schema": 4,
+        "isolated_copy": True, "production_authorized": False,
         "source_data_writes": 0, "field_correctness_verified": False,
         "baseline_is_not_field_verification": True, "target_path": str(target_path),
     }
     cancelled = lambda: time.monotonic() >= deadline
     try:
         verified_source = VerifySqliteFile(
-            source_path, 3, sqlite_policy=sqlite_policy, check=lambda: _check_deadline(deadline),
+            source_path, sqlite_policy=sqlite_policy, check=lambda: _check_deadline(deadline),
         )
         report["source_file_publication_verified"] = True
         before = _source_files(source_path, deadline)
@@ -224,7 +222,7 @@ def AuditCompanyFieldMigration(
                 report["source_changed_during_backup"] = True
                 raise ValueError("company_field_migration_source_changed_during_backup")
             current_source = VerifySqliteFile(
-                source_path, 3, sqlite_policy=sqlite_policy, previous=verified_source,
+                source_path, sqlite_policy=sqlite_policy, previous=verified_source,
                 check=lambda: _check_deadline(deadline),
             )
             if current_source != verified_source or before != _source_files(source_path, deadline):
@@ -238,7 +236,6 @@ def AuditCompanyFieldMigration(
             target_path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=sqlite_policy, cancel_requested=cancelled,
         ) as target:
             _integrity(source, deadline)
-            report["source_schema"] = CompanyInteger(source.run("PRAGMA user_version").require_one()[0])
             extraction_hash, content_hash, published_at = _source_identity(source)
             report.update({"source_publication_hash": content_hash.hex(), "source_extraction_hash": extraction_hash.hex(),
                            "source_published_at": RequireCompanyTime(published_at).isoformat(), "source_snapshot_sha256": snapshot_hash})
@@ -250,10 +247,10 @@ def AuditCompanyFieldMigration(
                 codes = tuple(row[0] for row in target.run("SELECT code FROM company_facts ORDER BY code"))
                 states, fields_hash = _baseline_fields(target, codes, deadline)
                 migrated_hash = CanonicalDigest((
-                    "company-field-migration:3-to-4", content_hash.hex(), extraction_hash.hex(), published_at, fields_hash,
+                    "company-field-conclusions", content_hash.hex(), extraction_hash.hex(), published_at, fields_hash,
                 ))
-                target.run("INSERT INTO company_publication VALUES(1,?,?,?,?)",
-                           (COMPANY_FACTS_VERSION, extraction_hash, bytes.fromhex(migrated_hash), published_at))
+                target.run("INSERT INTO company_publication(singleton,extraction_hash,content_hash,published_at) VALUES(1,?,?,?)",
+                           (extraction_hash, bytes.fromhex(migrated_hash), published_at))
                 _integrity(target, deadline)
                 for table in _BUSINESS_TABLES:
                     if _table_fingerprint(source, table, deadline) != _table_fingerprint(target, table, deadline):
@@ -261,7 +258,7 @@ def AuditCompanyFieldMigration(
                 for offset in range(0, len(codes), 128):
                     _check_deadline(deadline)
                     ReadCompanyFieldResults(target, codes[offset:offset + 128])
-        PublishSqliteFile(target_path, COMPANY_FACTS_VERSION, sqlite_policy=sqlite_policy, check=lambda: _check_deadline(deadline))
+        PublishSqliteFile(target_path, sqlite_policy=sqlite_policy, check=lambda: _check_deadline(deadline))
         reader = SQLiteCompanyEvidenceReader(target_path, event_policy=event_policy, sqlite_policy=sqlite_policy)
         if reader.read_fields((), cancel_requested=cancelled).publication_hash != migrated_hash:
             raise ValueError("company_field_migration_reader_inconsistent")

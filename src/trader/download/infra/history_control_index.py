@@ -35,6 +35,7 @@ from trader.download.infra.history_control_rows import (
     WriteControlRecord,
 )
 from trader.download.infra.history_download_index import HISTORY_DOWNLOAD_SCHEMA
+from trader.download.infra.history_inferred_review import HISTORY_INFERRED_REVIEW_SQL
 from trader.download.infra.history_reference_index import ReadHistoryReference, WriteHistoryReference
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.process_lock import ProcessLock, ProcessLockError
@@ -42,6 +43,7 @@ from trader.infra.sqlite_codec import DecodeHash, EncodeHash
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
     EnsureSqliteSchema,
+    HasSqliteSchema,
     SqliteConnection,
     SqliteConnectionOptions,
     SqliteSchema,
@@ -141,16 +143,20 @@ class HistoryControlIndex:
             with SqliteSession(
                 self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True), sqlite_policy=self._sqlite_policy
             ) as connection:
-                EnsureSqliteSchema(
-                    connection,
-                    SqliteSchema(
-                        HISTORY_CONTROL_SCHEMA.version,
-                        HISTORY_CONTROL_SCHEMA.statements + HISTORY_DOWNLOAD_SCHEMA.statements,
-                    ),
-                    allow_create=True,
-                    initialize=self._initialize_metadata,
-                    validate=self._validate_metadata,
-                )
+                # Auxiliary review metadata is installed by its explicit writer
+                # after context preparation, with its own cancellation boundary.
+                required = SqliteSchema(HISTORY_CONTROL_SCHEMA.statements + tuple(
+                    statement for statement in HISTORY_DOWNLOAD_SCHEMA.statements
+                    if statement not in HISTORY_INFERRED_REVIEW_SQL
+                ))
+                if not HasSqliteSchema(connection, required, self._validate_metadata):
+                    EnsureSqliteSchema(
+                        connection,
+                        SqliteSchema(HISTORY_CONTROL_SCHEMA.statements + HISTORY_DOWNLOAD_SCHEMA.statements),
+                        allow_create=True,
+                        initialize=self._initialize_metadata,
+                        validate=self._validate_metadata,
+                    )
         except (sqlite3.Error, ValueError) as exc:
             raise HistoryControlError("history control initialization failed") from exc
         self._fault_injector("schema_initialized")
@@ -163,16 +169,16 @@ class HistoryControlIndex:
             if self._reference_path
             else None
         )
-        connection.run("INSERT INTO schema_contract VALUES(1,?,2,?)", (_SCHEMA_IDENTITY, relative))
+        connection.run("INSERT INTO schema_contract(singleton,schema_id,reference_file) VALUES(1,?,?)", (_SCHEMA_IDENTITY, relative))
 
     def _validate_metadata(self, connection: SqliteConnection) -> None:
         row = connection.run(
-            "SELECT schema_id,schema_version,reference_file FROM schema_contract WHERE singleton=1"
+            "SELECT schema_id,reference_file FROM schema_contract WHERE singleton=1"
         ).fetchone()
-        if row is None or tuple(row)[:2] != (_SCHEMA_IDENTITY, 2):
+        if row is None or row[0] != _SCHEMA_IDENTITY:
             raise HistoryControlError("history_format_requires_rebuild")
         if self._reference_path is not None and (
-            row[2] is None or (self._path.parent / row[2]).resolve() != self._reference_path.resolve()
+            row[1] is None or (self._path.parent / row[1]).resolve() != self._reference_path.resolve()
         ):
             raise HistoryControlError("history_reference_location_conflict")
 
@@ -311,7 +317,7 @@ class HistoryControlIndex:
 
     def publish_file(self) -> None:
         """Finish the catalog publication with the common database file fingerprint."""
-        PublishSqliteFile(self._path, 2, sqlite_policy=self._sqlite_policy)
+        PublishSqliteFile(self._path, sqlite_policy=self._sqlite_policy)
 
     def load_state(self, *, reference_base: Path | None = None) -> HistoryControlState:
         try:

@@ -103,7 +103,6 @@ V1十因子和V5的60×6通道在c第7章逐项解释；物理字段、列顺序
 | 表/列 | 类型、单位与空值 | 中文含义、来源和使用 |
 | --- | --- | --- |
 | `sample_contract.singleton` | INTEGER主键，固定1 | 单份列合同 |
-| `schema_version` | INTEGER非空，固定2 | 命名列样本格式 |
 | `feature_hash` | BLOB非空，32字节 | schema、特征有序列和序列布局的SHA-256 |
 | `split_hash` | BLOB可空，32字节 | 构建期可空；分区准备/封存后必须匹配split身份 |
 | `samples.trade_date` | INTEGER非空，日 | 信号日；同日股票必须进入同一分区 |
@@ -174,7 +173,7 @@ V5在各头辅助列后接360个序列值；两个头完整输入维数分别366
 
 ### 3.6 V1独立样本
 
-来源：`training/infra/profile/v1/samples.py::_SAMPLE_SCHEMA` 和 `recommendation/domain/market/v1/features.py`。V1样本库也标schema 2，但结构与V2/V3/V5不同，不能仅按数字2互读。以下所有列除两个标签外均非空；`samples`以 `(trade_date,code)` 为主键、`WITHOUT ROWID`，没有额外二级索引。`sample_contract`只有 `singleton INTEGER PRIMARY KEY CHECK(singleton=1)` 和32字节非空 `feature_hash BLOB`。
+来源：`training/infra/profile/v1/samples.py::_SAMPLE_SCHEMA` 和 `recommendation/domain/market/v1/features.py`。V1样本库的结构与V2/V3/V5不同，按实际DDL、特征顺序及内容身份校验，不使用数字schema编号区分。以下所有列除两个标签外均非空；`samples`以 `(trade_date,code)` 为主键、`WITHOUT ROWID`，没有额外二级索引。`sample_contract`只有 `singleton INTEGER PRIMARY KEY CHECK(singleton=1)` 和32字节非空 `feature_hash BLOB`。
 
 | `samples`列，按实际顺序 | 类型/单位 | 含义和消费者 |
 | --- | --- | --- |
@@ -226,7 +225,7 @@ V1独立诊断日期切分由 `BuildLearnedRankDateSplit` 拥有：拟合、早�
 | `failure_code` | TEXT可空 | 通知降级原因，不含完整异常载荷 |
 | `content_hash` | BLOB非空，32字节 | 通知结果完整性 |
 
-读取不会为缺表自动建库；写入在确认 `history_catalog` schema 2 后创建完整表组并事务提交。仅完成训练模型可读不能替代到期状态检查；提醒领取也不代表训练或桌面通知已经成功。
+读取不会为缺表自动建库；写入在确认 `history_catalog` 实际结构和合同标识后创建完整表组并事务提交，不使用数字schema编号。仅完成训练模型可读不能替代到期状态检查；提醒领取也不代表训练或桌面通知已经成功。
 
 ## 4. 一次作业如何并行
 
@@ -545,7 +544,7 @@ V1的两个文件使用独立白名单：model包含 `schema_version/profile_id/
 
 临时对象仍由 `training/infra/sample_cache.py`负责，调用者在整个使用与恢复期间持有该档训练锁。正常完成或取消先退出样本连接、映射和资源上下文，再清理临时目录；进程硬退出由操作系统释放连接、映射和锁，下次显式训练在取得同一锁后恢复遗留对象，不依赖旧进程执行清理。
 
-V1临时样本位于 `data/training/samples/v1/.temporary-training-v1/training-<32位十六进制标识>/`，仅识别 `samples.sqlite3`及其journal、`matrices/0`至`matrices/7`下的 `features.bin/targets.bin`。空命名空间和部分创建的上述对象也可恢复；重启后重新建样本，不把临时样本升级为可复用封存缓存。清理前先核对全部受管工作目录，发现未知文件、目录或符号链接就拒绝清理并保留全部现场；旧版或用户自有文件不能仅因位于v1目录被删除。
+V1临时样本位于 `data/training/samples/v1/.temporary-training/training-<32位十六进制标识>/`，仅识别 `samples.sqlite3`及其journal、`matrices/0`至`matrices/7`下的 `features.bin/targets.bin`。空命名空间和部分创建的上述对象也可恢复；重启后重新建样本，不把临时样本升级为可复用封存缓存。清理前先核对全部受管工作目录，发现未知文件、目录或符号链接就拒绝清理并保留全部现场；旧版或用户自有文件不能仅因位于v1目录被删除。
 
 共用样本index的拟合矩阵由`sample_index.py`创建，恢复仍由`TrainingSampleCache`负责。`sample-fit-<8位标识>`只包含`training/early_stopping/calibration`各自的`-features.bin/-labels.bin`，`sample-shared-<8位标识>`只包含`common-features.bin/common-labels.bin`；标识仅小写字母、数字及下划线。空目录或固定文件的部分创建可恢复，名称不符合、未知文件、子目录或符号链接均拒绝清理。目录名只有前缀相似不能证明归属。
 
@@ -655,7 +654,7 @@ V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON
 
 CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分段基线、实际拟合重叠及原生线程利用率仍须实测；`stage_seconds`或采样线程数不能替代。重放的工件/报告指纹一致也不等于独立输入上的全部预测回放一致。历史准备复用同一诊断模块的SQLite只读在线备份能力，镜像catalog、价格分区及关联资格/行业库，备份前后核对发布输入身份；备份超时或来源变化不产生成功凭据，不能将目录存在当作冻结完成。实现与实测状态只记g中的对应阶段。
 
-长作业在显式`work-root/workload-checkpoints/`逐段原子保存`initial.json`、`all_artifacts_reuse.json`、`sample_preparation.json`、`sample_refit.json`及`sample_reuse.json`，只写实际已返回的步骤；后续中断不删除已保存结果。初训未完成时不生成复用文件，V1仍没有样本重拟合步骤。每份使用`training-workload-checkpoint-1`，`audit_state`始终为`pending_final_source_and_reuse_audit`，性能/生产授权均为false；它保留局部事实，不替代整轮最终报告。审核须同时绑定该作业冻结清单、配置/输入/模型身份和最终源稳定性、数值及零扫描复用核对；缺最终报告时继续保留未验。目录/文件符号链接及既有同名报告会被拒绝，不覆盖旧证据。原子落盘发生在对应训练/准备返回之后，工具总墙钟包含其开销，比较仍须统一工具版本和计量口径。
+长作业在显式`work-root/workload-checkpoints/`逐段原子保存`initial.json`、`all_artifacts_reuse.json`、`sample_preparation.json`、`sample_refit.json`及`sample_reuse.json`，只写实际已返回的步骤；后续中断不删除已保存结果。初训未完成时不生成复用文件，V1仍没有样本重拟合步骤。每份使用`training-workload-checkpoint`，`audit_state`始终为`pending_final_source_and_reuse_audit`，性能/生产授权均为false；它保留局部事实，不替代整轮最终报告。审核须同时绑定该作业冻结清单、配置/输入/模型身份和最终源稳定性、数值及零扫描复用核对；缺最终报告时继续保留未验。目录/文件符号链接及既有同名报告会被拒绝，不覆盖旧证据。原子落盘发生在对应训练/准备返回之后，工具总墙钟包含其开销，比较仍须统一工具版本和计量口径。
 
 ### 9.2 P61训练检测清单与A交接
 

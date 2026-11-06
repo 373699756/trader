@@ -8,7 +8,7 @@ import pytest
 from trader.download.domain.company_events import CompanyRiskType, CompanySubject
 from trader.download.domain.company_field_results import CompanyFieldConclusion, CompanyFieldEvidence, CompanyFieldSnapshot
 from trader.download.infra.company_facts_protocol import EncodeCompanyDate, EncodeCompanyTime, RISK_TYPES
-from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA, COMPANY_FACTS_VERSION
+from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults, WriteCompanyFieldResults
 from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
@@ -144,7 +144,7 @@ def test_codec_roundtrips_values_from_fact_columns_and_explicit_states(connectio
     assert ReadCompanyFieldResults(connection, ("600002",)) == ()
     columns = {row[1] for row in connection.run("PRAGMA table_info(company_field_result)")}
     assert columns == {"code", "event_key", "field", "state", "applicable", "reason"}
-    assert connection.run("PRAGMA user_version").require_one()[0] == COMPANY_FACTS_VERSION == 4
+    assert "schema_version" not in {row[1] for row in connection.run("PRAGMA table_info(company_publication)")}
 
 
 @pytest.mark.parametrize("changes", ({"value": 0.2}, {"event_id": "missing"}, {"field": "contract_amount"}))

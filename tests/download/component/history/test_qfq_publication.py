@@ -259,7 +259,7 @@ def test_obsolete_schema_is_rejected_without_rewriting_it(tmp_path):
         connection.run("DROP TABLE window_publication")
         connection.run("PRAGMA user_version=1")
     before = primary.path.read_bytes()
-    with pytest.raises(RuntimeError, match="sqlite_publication_schema_invalid"):
+    with pytest.raises(RuntimeError, match="sqlite_publication_checksum_mismatch"):
         primary.manifest()
     with pytest.raises(QfqPairPublicationError):
         primary.replace_paired_windows(
@@ -343,4 +343,4 @@ def test_only_current_eligibility_writer_can_add_a_missing_population_declaratio
     assert primary.completed(_DAYS[-1], "600002", "fixture")
     assert primary.read_code("600002") == windows[1]
     with SqliteSession(primary.path) as connection:
-        assert connection.run("PRAGMA user_version").require_one()[0] == 3
+        assert connection.run("PRAGMA user_version").require_one()[0] == 0

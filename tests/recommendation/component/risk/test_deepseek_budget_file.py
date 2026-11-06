@@ -12,6 +12,7 @@ import pytest
 
 from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.process_lock import ProcessLock
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek import budget_file
@@ -111,7 +112,24 @@ def test_restart_charges_reserved_but_unsent_requests_and_config_changes(tmp_pat
     restarted.close()
 
 
-@pytest.mark.parametrize("damage", ["missing", "corrupt", "version", "negative", "naive", "too_large"])
+def test_verified_legacy_numbering_does_not_reset_consumed_budget(tmp_path):
+    ledger = _ready(tmp_path, limit=1)
+    assert _reserve(ledger).allowed
+    ledger.close()
+    path = tmp_path / "runtime/state.json"
+    payload = json.loads(path.read_text())
+    assert "schema_version" not in payload
+    payload["schema_version"] = 999
+    payload["state_hash"] = CanonicalDigest({key: value for key, value in payload.items() if key != "state_hash"})
+    path.write_text(json.dumps(payload))
+    restarted = _ledger(tmp_path, limit=1)
+    restarted.initialize(NOW)
+    assert restarted.summary(NOW.date().isoformat())["used"] == 1
+    assert _reserve(restarted).reason == "daily_hard_limit"
+    restarted.close()
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "metadata", "negative", "naive", "too_large"])
 def test_unverifiable_file_cannot_replenish_today(tmp_path, damage):
     ledger = _ready(tmp_path)
     assert _reserve(ledger).allowed
@@ -125,7 +143,7 @@ def test_unverifiable_file_cannot_replenish_today(tmp_path, damage):
         path.write_bytes(b" " * (4 * 1024 * 1024 + 1))
     else:
         state = json.loads(path.read_text())
-        if damage == "version":
+        if damage == "metadata":
             state["schema_version"] = 999
         elif damage == "negative":
             state["requests"][0]["token_count"] = -1

@@ -587,7 +587,6 @@ __all__ = ["H1PointInTimeSnapshotConflictError", "H1PointInTimeSnapshotStatus", 
 
 
 _SCHEMA = SqliteSchema(
-    1,
     (
         """
         CREATE TABLE h1_spec (

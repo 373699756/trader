@@ -18,9 +18,8 @@ from trader.infra.sqlite_connection import (
 )
 
 _SCHEMA = SqliteSchema(
-    1,
     (
-        "CREATE TABLE schema_contract(schema_id TEXT NOT NULL PRIMARY KEY,schema_version INTEGER NOT NULL)",
+        "CREATE TABLE schema_contract(schema_id TEXT NOT NULL PRIMARY KEY)",
         "CREATE TABLE publication_sequence(singleton INTEGER NOT NULL PRIMARY KEY CHECK(singleton=1),"
         "reserved_until INTEGER NOT NULL CHECK(reserved_until>=0))",
     ),
@@ -28,13 +27,13 @@ _SCHEMA = SqliteSchema(
 
 
 def _initialize_schema(connection: SqliteConnection) -> None:
-    connection.run("INSERT INTO schema_contract VALUES ('publication_sequence',1)")
+    connection.run("INSERT INTO schema_contract(schema_id) VALUES ('publication_sequence')")
     connection.run("INSERT INTO publication_sequence VALUES (1,0)")
 
 
 def _validate_schema(connection: SqliteConnection) -> None:
-    rows = connection.run("SELECT schema_id,schema_version FROM schema_contract").fetchall()
-    if [tuple(row) for row in rows] != [("publication_sequence", 1)]:
+    rows = connection.run("SELECT schema_id FROM schema_contract").fetchall()
+    if [tuple(row) for row in rows] != [("publication_sequence",)]:
         raise sqlite3.DatabaseError("publication_schema_invalid")
 
 

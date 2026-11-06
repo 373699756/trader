@@ -55,8 +55,7 @@ _SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS schema_contract (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     schema_id TEXT NOT NULL,
-    calendar_year INTEGER NOT NULL,
-    schema_version INTEGER NOT NULL CHECK(schema_version=2)
+    calendar_year INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS daily_price_revision (
     trade_date INTEGER NOT NULL,
@@ -88,7 +87,7 @@ CREATE INDEX IF NOT EXISTS history_price_price_gap_idx
 ON daily_price_revision(code, trade_date, revision_id)
 WHERE status IN ('unknown_missing','qfq_missing','unadjusted_missing');
 """
-_SCHEMA = SqliteSchema(2, tuple(statement.strip() for statement in _SCHEMA_SQL.split(";") if statement.strip()))
+_SCHEMA = SqliteSchema(tuple(statement.strip() for statement in _SCHEMA_SQL.split(";") if statement.strip()))
 _PRICE_SELECT = ", ".join(f"records.{name}" for name in PRICE_COLUMNS)
 _REVISION_COLUMNS = (
     "records.trade_date, records.code, records.revision_id, records.first_seen_sequence, records.board, "
@@ -325,7 +324,7 @@ class HistoryPricePartition:
 
                 def initialize_metadata(connection: SqliteConnection) -> None:
                     connection.run(
-                        "INSERT OR IGNORE INTO schema_contract(singleton,schema_id,calendar_year,schema_version) VALUES(1,?,?,2)",
+                        "INSERT OR IGNORE INTO schema_contract(singleton,schema_id,calendar_year) VALUES(1,?,?)",
                         (_SCHEMA_IDENTITY, self._calendar_year),
                     )
 
@@ -782,7 +781,7 @@ class HistoryPricePartition:
             counts = dict.fromkeys(calendar_months, 0)
             check = self._activity.tick if self._activity else None
             prepared = PrepareSqliteFilePublication(
-                self._path, 2, sqlite_policy=self._sqlite_policy, check=check,
+                self._path, sqlite_policy=self._sqlite_policy, check=check,
             ) if fingerprint_before_statistics else None
             with (
                 closing(self._read_connection()) as connection,
@@ -814,7 +813,7 @@ class HistoryPricePartition:
                         if month in counts:
                             counts[month] += count
             fingerprint = PublishPreparedSqliteFile(prepared, check=check) if prepared is not None else PublishSqliteFile(
-                self._path, 2, sqlite_policy=self._sqlite_policy, check=check,
+                self._path, sqlite_policy=self._sqlite_policy, check=check,
             )
             return tuple(
                 HistorySnapshotPartition(
@@ -855,7 +854,7 @@ class HistoryPricePartition:
         ) != len(references):
             raise ValueError("history verification months invalid")
         try:
-            verified = VerifySqliteFile(path, 2, sqlite_policy=sqlite_policy, check=check)
+            verified = VerifySqliteFile(path, sqlite_policy=sqlite_policy, check=check)
             if progress is not None:
                 size = verified.fingerprint.database_size + verified.fingerprint.wal_size
                 progress(size, size, "hash")
@@ -1047,9 +1046,9 @@ class HistoryPricePartition:
 
     def _require_metadata(self, connection: SqliteConnection) -> None:
         metadata = connection.run(
-            "SELECT schema_id, calendar_year, schema_version FROM schema_contract WHERE singleton=1"
+            "SELECT schema_id, calendar_year FROM schema_contract WHERE singleton=1"
         ).fetchone()
-        if metadata is None or tuple(metadata) != (_SCHEMA_IDENTITY, self._calendar_year, 2):
+        if metadata is None or tuple(metadata) != (_SCHEMA_IDENTITY, self._calendar_year):
             raise HistoryPricePartitionError("history month metadata conflicts")
 
     def _require_schema(self, connection: SqliteConnection) -> None:

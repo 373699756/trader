@@ -1,6 +1,7 @@
 """Strict portable tensor codec; parsing never imports or executes PyTorch."""
 
 import math
+import re
 from dataclasses import dataclass
 
 from trader.recommendation.domain.market.v5.features import SEQUENCE_CONTRACT
@@ -77,7 +78,8 @@ def DecodeTcnNetwork(value: object, auxiliary_width: int) -> tuple[float, tuple[
     if (
         type(channels) is not int
         or dtype not in ("float32", "float64")
-        or value["architecture"] != TCN_NETWORK_CONTRACT
+        or not isinstance(value["architecture"], str)
+        or re.sub(r"[_-]v[0-9]+$", "", value["architecture"]) != TCN_NETWORK_CONTRACT
     ):
         raise ValueError("V5 network architecture is invalid")
     architecture = TcnArchitecture(channels, "float32" if dtype == "float32" else "float64")

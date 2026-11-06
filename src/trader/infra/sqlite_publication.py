@@ -33,7 +33,6 @@ class SqliteFileStamp:
 
 @dataclass(frozen=True)
 class SqlitePublicationFingerprint:
-    schema_version: int
     database_size: int
     database_sha256: str
     wal_size: int
@@ -120,7 +119,6 @@ def _digest(path: Path, size: int, check: Callable[[], None] | None) -> str:
 
 def _fingerprint(
     path: Path,
-    schema_version: int,
     check: Callable[[], None] | None,
     sqlite_policy: SqliteIoPolicy,
 ) -> PreparedSqlitePublication:
@@ -130,8 +128,7 @@ def _fingerprint(
         with closing(OpenSqliteConnection(
             path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy,
         )) as connection:
-            if connection.run("PRAGMA user_version").require_one()[0] != schema_version:
-                raise SqlitePublicationError("sqlite_publication_schema_invalid")
+            connection.run("SELECT COUNT(*) FROM sqlite_master").require_one()
     except sqlite3.DatabaseError as exc:
         raise SqlitePublicationError("sqlite_publication_database_unreadable") from exc
     before = _stamp(path)
@@ -148,7 +145,6 @@ def _fingerprint(
     ):
         raise SqlitePublicationError("sqlite_publication_header_invalid")
     value = SqlitePublicationFingerprint(
-        schema_version,
         before.size,
         _digest(path, before.size, check),
         wal.size if wal is not None else 0,
@@ -160,29 +156,28 @@ def _fingerprint(
     return prepared
 
 
-def _read_receipt(path: Path, schema_version: int) -> SqlitePublicationFingerprint:
+def _read_receipt(path: Path) -> SqlitePublicationFingerprint:
     if _stamp(path) is None or path.stat().st_size > 4096:
         raise SqlitePublicationError("sqlite_publication_receipt_invalid")
     try:
         raw = AtomicReadJson(path)
     except (OSError, ValueError) as exc:
         raise SqlitePublicationError("sqlite_publication_receipt_invalid") from exc
-    fields = {"schema_version", "database_size", "database_sha256", "wal_size", "wal_sha256"}
-    if not isinstance(raw, dict) or set(raw) != fields:
+    fields = {"database_size", "database_sha256", "wal_size", "wal_sha256"}
+    if not isinstance(raw, dict) or not fields.issubset(raw):
         raise SqlitePublicationError("sqlite_publication_receipt_invalid")
-    version, size, digest, wal_size, wal_digest = (raw[name] for name in (
-        "schema_version", "database_size", "database_sha256", "wal_size", "wal_sha256"
+    size, digest, wal_size, wal_digest = (raw[name] for name in (
+        "database_size", "database_sha256", "wal_size", "wal_sha256"
     ))
     if (
-        type(version) is not int or version != schema_version
-        or type(size) is not int or size < 100
+        type(size) is not int or size < 100
         or type(wal_size) is not int or wal_size < 0
         or not _valid_digest(digest)
         or (wal_size == 0 and wal_digest is not None)
         or (wal_size > 0 and not _valid_digest(wal_digest))
     ):
         raise SqlitePublicationError("sqlite_publication_receipt_invalid")
-    return SqlitePublicationFingerprint(version, size, digest, wal_size, wal_digest)
+    return SqlitePublicationFingerprint(size, digest, wal_size, wal_digest)
 
 
 def _valid_digest(value: object) -> TypeGuard[str]:
@@ -191,25 +186,23 @@ def _valid_digest(value: object) -> TypeGuard[str]:
 
 def PublishSqliteFile(
     path: Path,
-    schema_version: int,
     *,
     sqlite_policy: SqliteIoPolicy,
     check: Callable[[], None] | None = None,
 ) -> SqlitePublicationFingerprint:
     """Seal closed writer output once; this never reads a business table or changes the database."""
-    prepared = PrepareSqliteFilePublication(path, schema_version, sqlite_policy=sqlite_policy, check=check)
+    prepared = PrepareSqliteFilePublication(path, sqlite_policy=sqlite_policy, check=check)
     return PublishPreparedSqliteFile(prepared, check=check)
 
 
 def PrepareSqliteFilePublication(
     path: Path,
-    schema_version: int,
     *,
     sqlite_policy: SqliteIoPolicy,
     check: Callable[[], None] | None = None,
 ) -> PreparedSqlitePublication:
     """Read the required full fingerprint without publishing a receipt."""
-    return _fingerprint(path, schema_version, check, sqlite_policy)
+    return _fingerprint(path, check, sqlite_policy)
 
 
 def PublishPreparedSqliteFile(
@@ -227,7 +220,6 @@ def PublishPreparedSqliteFile(
     if receipt.is_symlink():
         raise SqlitePublicationError("sqlite_publication_path_unsafe")
     AtomicWriteJson(receipt, {
-        "schema_version": value.schema_version,
         "database_size": value.database_size,
         "database_sha256": value.database_sha256,
         "wal_size": value.wal_size,
@@ -240,7 +232,6 @@ def PublishPreparedSqliteFile(
 
 def VerifySqliteFile(
     path: Path,
-    schema_version: int,
     *,
     sqlite_policy: SqliteIoPolicy,
     previous: VerifiedSqlitePublication | None = None,
@@ -257,12 +248,11 @@ def VerifySqliteFile(
         raise AssertionError("required publication file stamp missing")
     if previous is not None and (
         previous.database == database and previous.wal == wal and previous.receipt == receipt
-        and previous.fingerprint.schema_version == schema_version
         and _same_headers(path, previous.database_header, previous.wal_header)
     ):
         return previous
-    expected = _read_receipt(receipt_path, schema_version)
-    actual = _fingerprint(path, schema_version, check, sqlite_policy)
+    expected = _read_receipt(receipt_path)
+    actual = _fingerprint(path, check, sqlite_policy)
     if expected != actual.fingerprint or receipt != _stamp(receipt_path):
         raise SqlitePublicationError("sqlite_publication_checksum_mismatch")
     return VerifiedSqlitePublication(

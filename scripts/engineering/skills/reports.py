@@ -7,7 +7,6 @@ from pathlib import Path
 
 from scripts.engineering.skills.contracts import CaseResult
 
-REPORT_VERSION = 1
 
 
 def ExitCode(results: tuple[CaseResult, ...]) -> int:
@@ -46,7 +45,6 @@ def WriteReport(
         for result in results
     ]
     raw = {
-        "report_version": REPORT_VERSION,
         "suite_digest": suite_digest,
         "skill_digest": skill_digest,
         "cli_version": cli_version,
@@ -82,8 +80,8 @@ def _load(path: Path) -> dict[str, object]:
     if target.is_symlink() or target.stat().st_size > 1024 * 1024:
         raise ValueError("report must be a bounded regular JSON file")
     raw = json.loads(target.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or raw.get("report_version") != REPORT_VERSION:
-        raise ValueError("unsupported report version")
+    if not isinstance(raw, dict) or not {"suite_digest", "skill_digest", "cli_version", "results"}.issubset(raw):
+        raise ValueError("invalid report structure")
     return raw
 
 

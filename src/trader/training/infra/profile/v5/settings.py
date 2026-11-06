@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 TcnComputeDtype = Literal["float32", "float64"]
-TCN_NETWORK_CONTRACT = "causal_tcn_blocks4_kernel3_dilations1_2_4_8_v1"
+TCN_NETWORK_CONTRACT = "causal_tcn_blocks4_kernel3_dilations1_2_4_8"
 
 
 @dataclass(frozen=True)

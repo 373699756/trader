@@ -51,7 +51,6 @@ class BudgetHealth:
 
 @dataclass(frozen=True)
 class BudgetState:
-    schema_version: int
     budget_date: date
     budget_policy_hash: str
     revision: int

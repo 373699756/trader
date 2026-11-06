@@ -17,7 +17,6 @@ from trader.download.infra.company_evidence_sql import SCHEMA
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash
-from trader.download.infra.company_facts_schema import COMPANY_FACTS_VERSION
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
@@ -49,7 +48,6 @@ class SQLiteCompanyEvidenceReader:
             return ""
         self._file_verification = VerifySqliteFile(
             self.path,
-            COMPANY_FACTS_VERSION,
             sqlite_policy=self._sqlite_policy,
             previous=self._file_verification,
             check=check,

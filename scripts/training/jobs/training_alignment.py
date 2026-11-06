@@ -102,7 +102,7 @@ def PrepareTrainingHistoryCopy(
 
     for path, relative in files:
         if relative.parent == Path("history"):
-            VerifySqliteFile(path, 2, sqlite_policy=sqlite_policy, check=check_deadline)
+            VerifySqliteFile(path, sqlite_policy=sqlite_policy, check=check_deadline)
     destination.mkdir(parents=True, exist_ok=False)
     receipts = 0
     for number, (path, relative) in enumerate(files, 1):
@@ -118,7 +118,7 @@ def PrepareTrainingHistoryCopy(
             original.backup_to(replica, deadline=deadline, monotonic=time.monotonic)
         pending.replace(target)
         if relative.parent == Path("history"):
-            PublishSqliteFile(target, 2, sqlite_policy=sqlite_policy, check=check_deadline)
+            PublishSqliteFile(target, sqlite_policy=sqlite_policy, check=check_deadline)
             receipts += 1
         print(f"训练历史副本 | 已备份 {number}/{len(files)} 个数据库", file=sys.stderr, flush=True)
     _require_history_copy_reference(destination / "history", sqlite_policy)
@@ -406,7 +406,7 @@ def _write_workload_checkpoint(
     if path.exists() or path.is_symlink():
         raise FileExistsError("training_workload_checkpoint_output_exists")
     AtomicWriteJson(path, {
-        "schema_version": "training-workload-checkpoint-1",
+        "schema_version": "training-workload-checkpoint",
         "workload": name,
         "audit_state": "pending_final_source_and_reuse_audit",
         "performance_acceptance": False,

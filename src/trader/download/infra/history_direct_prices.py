@@ -418,7 +418,6 @@ class HistoryDirectPrices:
                 else:
                     PublishSqliteFile(
                         self._root / label,
-                        2,
                         sqlite_policy=self._sqlite_policy,
                         check=self._activity.tick,
                     )

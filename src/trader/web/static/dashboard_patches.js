@@ -3,7 +3,7 @@
 
   function patchVersionValid(patch) {
     return Boolean(
-      patch && patch.schema_version === "freeze_event" && patch.patch_schema_version === 4
+      patch && patch.schema_version === "freeze_event"
       && typeof patch.publication_id === "string" && patch.publication_id
       && patch.publication_id === patch.snapshot_id
     );

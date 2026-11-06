@@ -3,7 +3,6 @@
 from trader.infra.sqlite_connection import SqliteSchema
 
 SCHEMA = SqliteSchema(
-    3,
     (
         "CREATE TABLE IF NOT EXISTS contract(schema_id TEXT PRIMARY KEY CHECK(schema_id='company_collection'))",
         "CREATE TABLE company_sync_job(singleton INTEGER PRIMARY KEY CHECK(singleton=1),initialized_at TEXT NOT NULL,cutoff TEXT NOT NULL)",

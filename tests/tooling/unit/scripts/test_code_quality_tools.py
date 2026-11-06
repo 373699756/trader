@@ -174,7 +174,6 @@ def _manifest(root: Path, path: str, name: str, new: str, scope: str = "", kind:
     symbol = next(s for s in symbols if s.name == name and s.scope == scope and s.kind == kind)
     head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     document = {
-        "version": 1,
         "base_commit": head,
         "files": [{"path": s.path, "sha256": s.digest} for s in sources],
         "renames": [
@@ -280,7 +279,22 @@ def test_path_and_concurrent_edit_protection(workspace: Path) -> None:
 
 def test_manifest_strict_schema() -> None:
     with pytest.raises(ValueError):
-        ParseManifest('{"version": 1}')
+        ParseManifest('{"base_commit": "missing-files"}')
+
+
+def test_manifest_validates_content_without_a_numbered_format() -> None:
+    payload = {
+        "base_commit": "a" * 40,
+        "files": [{"path": "src/trader/example.py", "sha256": "b" * 64}],
+        "renames": [{"path": "src/trader/example.py", "scope": "", "kind": "function", "old": "load_old",
+                     "new": "LoadValues", "line": 1, "column": 0, "visibility": "public", "reason": "fixture"}],
+        "references": [],
+    }
+    expected = ParseManifest(json.dumps(payload))
+    assert ParseManifest(json.dumps({**payload, "version": 999})) == expected
+    payload["files"] = []
+    with pytest.raises(ValueError):
+        ParseManifest(json.dumps(payload))
 
 
 @pytest.mark.parametrize(

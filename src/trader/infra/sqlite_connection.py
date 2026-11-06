@@ -370,12 +370,9 @@ class SqliteTransaction:
 class SqliteSchema:
     """Adapter-owned DDL statements; infrastructure owns their atomic installation."""
 
-    version: int | None
     statements: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if self.version is not None and (type(self.version) is not int or not 1 <= self.version <= 2_147_483_647):
-            raise ValueError("sqlite_schema_version_invalid")
         if not self.statements or any(
             not statement.strip().upper().startswith("CREATE ") for statement in self.statements
         ):
@@ -385,11 +382,37 @@ class SqliteSchema:
 def _schema_tokens(statement: str) -> tuple[str, ...]:
     statement = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", statement, count=1, flags=re.IGNORECASE)
     tokens = re.findall(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|\w+|[^\w\s]", statement.rstrip().rstrip(";"))
-    return tuple(token if token.startswith(("'", '"')) else token.lower() for token in tokens)
+    normalized = tuple(token if token.startswith(("'", '"')) else token.lower() for token in tokens)
+    if "table" not in normalized[:4] or "(" not in normalized:
+        return normalized
+    start = normalized.index("(")
+    depth = 1
+    current: list[str] = []
+    columns: list[tuple[str, ...]] = []
+    for position in range(start + 1, len(normalized)):
+        token = normalized[position]
+        depth += int(token == "(") - int(token == ")")
+        if depth == 0 or token == "," and depth == 1:
+            # Numbering columns carry no business meaning. Their presence in a
+            # previously published file must not select another schema reader.
+            numbering = len(current) > 1 and current[0].strip('"').lower() == "schema_version" and current[1] == "integer"
+            if current and not numbering:
+                columns.append(tuple(current))
+            current = []
+            if depth == 0:
+                body: list[str] = []
+                for column in columns:
+                    if body:
+                        body.append(",")
+                    body.extend(column)
+                return (*normalized[:start + 1], *body, *normalized[position:])
+        else:
+            current.append(token)
+    return normalized
 
 
-def _validate_unversioned_schema(connection: SqliteConnection, schema: SqliteSchema) -> None:
-    """Unversioned formats retain their exact adapter-owned DDL instead of acquiring a second identity."""
+def _validate_schema(connection: SqliteConnection, schema: SqliteSchema) -> None:
+    """Validate the adapter-owned definitions independently of database numbering."""
     actual = {
         str(row[0]): str(row[1]) for row in connection.run("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL")
     }
@@ -409,23 +432,12 @@ def HasSqliteSchema(
     validate: Callable[[SqliteConnection], None] | None = None,
 ) -> bool:
     """Return false only for an uninitialized database; reject incompatible schemas."""
-    # Read both facts in one SQLite statement so a concurrent initializer cannot
-    # make us combine the old version with its newly committed tables.
-    version, populated = connection.run(
-        "SELECT user_version, EXISTS(SELECT 1 FROM sqlite_master WHERE name NOT GLOB 'sqlite_*') "
-        "FROM pragma_user_version"
-    ).require_one()
-    if schema.version is not None and version == schema.version:
-        if validate is not None:
-            validate(connection)
-        return True
-    if version != 0:
-        raise sqlite3.DatabaseError("sqlite_schema_unsupported")
+    populated = connection.run(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name NOT GLOB 'sqlite_*')"
+    ).require_one()[0]
     if not populated:
         return False
-    if schema.version is not None:
-        raise sqlite3.DatabaseError("sqlite_schema_unsupported")
-    _validate_unversioned_schema(connection, schema)
+    _validate_schema(connection, schema)
     if validate is not None:
         validate(connection)
     return True
@@ -463,8 +475,6 @@ def _initialize_schema(
         connection.run(statement)
     if initialize is not None:
         initialize(connection)
-    if schema.version is not None:
-        connection.run(f"PRAGMA user_version={schema.version}")
     if validate is not None:
         validate(connection)
 

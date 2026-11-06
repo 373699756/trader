@@ -961,18 +961,17 @@ D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术�
 
 ### 16.7 推荐持久化物理字典
 
-以下按源码SqliteSchema/SQL与codec核对，在仅内存SQLite执行DDL读取table_info/index_list，未打开活动业务数据库。路径以data_dir=data为例，profile为v1/v2/v3/v5。四处共8张表、42个列实例（两个schema_contract分别列出），无年度重复字典；全部列默认无DEFAULT，除failure_code外NOT NULL。日为epoch日、时为UTC微秒，由`infra/sqlite_codec`转换；BLOB哈希为32字节。schema版本同时由SQLite user_version及各自严格schema/codec校验，不把本章当迁库授权。
+以下按源码SqliteSchema/SQL与codec核对，在仅内存SQLite执行DDL读取table_info/index_list，未打开活动业务数据库。路径以data_dir=data为例，profile为v1/v2/v3/v5。四处共8张表、40个列实例（两个schema_contract分别列出），无年度重复字典；全部列默认无DEFAULT，除failure_code外NOT NULL。日为epoch日、时为UTC微秒，由`infra/sqlite_codec`转换；BLOB哈希为32字节。结构、约束、合同标识和codec共同校验，不再读取或写入数字schema版本；已有资料中的编号列不参与准入，业务字段及事件类型文本仍须完整，不把本章当迁库授权。
 
 #### `data/recommendation/<profile>/freeze.sqlite3`
 
-来源：`recommendation/infra/persistence/freeze_records.py`，SqliteSchema版本2。`SQLiteFreezeRecords`创建/提交，first-wins `(strategy,trade_date)`；同字节重入幂等，冲突拒绝。application只读用例加载，冻结日期索引和规范字节codec共同验证；HTTP不自行查库。schema_contract固定freeze_record/2，freeze_id唯一，两项哈希及规范载荷由codec核验，failure_code是唯一可空列。
+来源：`recommendation/infra/persistence/freeze_records.py`。`SQLiteFreezeRecords`创建/提交，first-wins `(strategy,trade_date)`；同字节重入幂等，冲突拒绝。application只读用例加载，冻结日期索引和规范字节codec共同验证；HTTP不自行查库。schema_contract固定标识freeze_record，freeze_id唯一，两项哈希及规范载荷由codec核验，failure_code是唯一可空列。
 
 表：`schema_contract`。
 
 | 原列 | SQL类型/单位与作用 | 空值/主键 |
 | --- | --- | --- |
 | `schema_id` | TEXT；库的合同标识；非业务股票身份 | 必填；联合主键第1项 |
-| `schema_version` | INTEGER；schema合同版本；trace此列是事件schema文本 | 必填 |
 
 表：`freeze_record`。
 
@@ -991,14 +990,13 @@ D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术�
 
 #### `data/recommendation/<profile>/publication_state.sqlite3`
 
-来源：`recommendation/infra/persistence/publication_sequence.py`，SqliteSchema版本1。`PublicationSequence.initialize/prepare`在控制路径先持久预留，allocate只用内存；崩溃可跳号不复用。schema_contract固定publication_sequence/1，singleton CHECK=1，reserved_until CHECK≥0；默认块大小是工程参数，不是收益参数。
+来源：`recommendation/infra/persistence/publication_sequence.py`。`PublicationSequence.initialize/prepare`在控制路径先持久预留，allocate只用内存；崩溃可跳号不复用。schema_contract固定标识publication_sequence，singleton CHECK=1，reserved_until CHECK≥0；默认块大小是工程参数，不是收益参数。
 
 表：`schema_contract`。
 
 | 原列 | SQL类型/单位与作用 | 空值/主键 |
 | --- | --- | --- |
 | `schema_id` | TEXT；库的合同标识；非业务股票身份 | 必填；联合主键第1项 |
-| `schema_version` | INTEGER；schema合同版本；trace此列是事件schema文本 | 必填 |
 
 表：`publication_sequence`。
 
@@ -1009,7 +1007,7 @@ D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术�
 
 #### `data/research/<profile>/traces/<YYYY-MM-DD>.sqlite3`
 
-来源：`recommendation/infra/persistence/trace_schema.py`，SqliteSchema版本1。`SQLiteFreezeTraceIndex`消费原committed event并分日保留；日期/策略/观察时点索引供研究只读查询，解码失败转quarantine，不改正式freeze。committed_events_trade_date索引为(trade_date DESC,strategy,observed_at DESC)；每个hash约束长度32。
+来源：`recommendation/infra/persistence/trace_schema.py`。`SQLiteFreezeTraceIndex`消费原committed event并分日保留；日期/策略/观察时点索引供研究只读查询，解码失败转quarantine，不改正式freeze。committed_events_trade_date索引为(trade_date DESC,strategy,observed_at DESC)；每个hash约束长度32。
 
 表：`committed_events`。
 
@@ -1035,7 +1033,7 @@ D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术�
 
 #### `data/research/<profile>/outcomes.sqlite3`
 
-来源：`recommendation/infra/persistence/outcome_evidence_index.py`，SqliteSchema版本1。`SQLiteOutcomeEvidenceIndex`及OutcomeSettlement追加已成熟结果，已有结果不可覆盖；只读summary按正式freeze身份关联。recommendation_outcomes_date_idx为(freeze_date,strategy)，主键含snapshot_id/strategy/code/horizon；benchmark按trade_date唯一，hash长度32。
+来源：`recommendation/infra/persistence/outcome_evidence_index.py`。`SQLiteOutcomeEvidenceIndex`及OutcomeSettlement追加已成熟结果，已有结果不可覆盖；只读summary按正式freeze身份关联。recommendation_outcomes_date_idx为(freeze_date,strategy)，主键含snapshot_id/strategy/code/horizon；benchmark按trade_date唯一，hash长度32。
 
 表：`benchmark_returns`。
 

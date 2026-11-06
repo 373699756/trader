@@ -29,19 +29,19 @@ def test_schema_installation_is_atomic_and_driver_api_is_hidden(tmp_path):
     with SqliteSession(tmp_path / "index.sqlite3") as connection:
         assert not hasattr(connection, "execute")
         assert not hasattr(connection, "cursor")
-        broken = SqliteSchema(1, ("CREATE TABLE facts(value INTEGER)", "CREATE INVALID STATEMENT"))
+        broken = SqliteSchema(("CREATE TABLE facts(value INTEGER)", "CREATE INVALID STATEMENT"))
         with pytest.raises(sqlite3.OperationalError):
             EnsureSqliteSchema(connection, broken, allow_create=True)
         assert connection.run("PRAGMA user_version").require_one()[0] == 0
         assert connection.run("SELECT name FROM sqlite_master WHERE type='table'").fetchone() is None
-        valid = SqliteSchema(1, ("CREATE TABLE facts(value INTEGER)",))
+        valid = SqliteSchema(("CREATE TABLE facts(value INTEGER)",))
         EnsureSqliteSchema(connection, valid, allow_create=True)
         EnsureSqliteSchema(connection, valid)
-        assert connection.run("PRAGMA user_version").require_one()[0] == 1
+        assert connection.run("PRAGMA user_version").require_one()[0] == 0
 
 
 def test_schema_and_first_publication_share_the_callers_transaction(tmp_path):
-    schema = SqliteSchema(1, ("CREATE TABLE facts(value INTEGER NOT NULL)",))
+    schema = SqliteSchema(("CREATE TABLE facts(value INTEGER NOT NULL)",))
     with SqliteSession(tmp_path / "facts.sqlite3") as connection:
         with pytest.raises(ValueError, match="interrupted"):
             with SqliteTransaction(connection, immediate=True):
@@ -56,25 +56,52 @@ def test_schema_and_first_publication_share_the_callers_transaction(tmp_path):
         assert connection.run("SELECT value FROM facts").require_one()[0] == 2
 
 
-def test_schema_rejects_nonempty_unversioned_database(tmp_path):
+def test_schema_rejects_incompatible_tables(tmp_path):
     with SqliteSession(tmp_path / "index.sqlite3") as connection:
         connection.run("CREATE TABLE legacy(value INTEGER)")
         with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
-            EnsureSqliteSchema(connection, SqliteSchema(1, ("CREATE TABLE facts(value INTEGER)",)), allow_create=True)
+            EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value INTEGER)",)), allow_create=True)
         assert connection.run("PRAGMA user_version").require_one()[0] == 0
 
 
 def test_concurrent_schema_initializers_share_one_valid_schema(tmp_path):
     path = tmp_path / "index.sqlite3"
-    schema = SqliteSchema(1, ("CREATE TABLE facts(value INTEGER)",))
+    schema = SqliteSchema(("CREATE TABLE facts(value INTEGER)",))
 
     def initialize():
         with SqliteSession(path) as connection:
             EnsureSqliteSchema(connection, schema, allow_create=True)
-            return connection.run("PRAGMA user_version").require_one()[0]
+            return connection.run("SELECT COUNT(*) FROM facts").require_one()[0]
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        assert list(pool.map(lambda _: initialize(), range(8))) == [1] * 8
+        assert list(pool.map(lambda _: initialize(), range(8))) == [0] * 8
+
+
+@pytest.mark.parametrize("number", (0, 3, 4, 999))
+def test_schema_uses_actual_definitions_and_preserves_legacy_markers(tmp_path, number):
+    path = tmp_path / "facts.sqlite3"
+    with SqliteSession(path) as connection:
+        connection.run("CREATE TABLE facts(value INTEGER NOT NULL)")
+        connection.run(f"PRAGMA user_version={number}")
+    before = path.read_bytes()
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
+        EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value INTEGER NOT NULL)",)))
+        with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+            EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value TEXT NOT NULL)",)))
+    assert path.read_bytes() == before
+
+
+def test_schema_ignores_only_legacy_numbering_column_and_checks_business_constraints(tmp_path):
+    with SqliteSession(tmp_path / "facts.sqlite3") as connection:
+        connection.run("CREATE TABLE facts(schema_version INTEGER NOT NULL CHECK(schema_version=4),value INTEGER NOT NULL)")
+        EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value INTEGER NOT NULL)",)))
+        with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+            EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value INTEGER)",)))
+        connection.run("CREATE TABLE events(event_hash BLOB NOT NULL)")
+        with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+            EnsureSqliteSchema(connection, SqliteSchema((
+                "CREATE TABLE events(event_hash BLOB NOT NULL,schema_version TEXT NOT NULL)",
+            )))
 
 
 def test_cancelled_transaction_rolls_back_and_connection_remains_usable(tmp_path):
@@ -221,7 +248,7 @@ def test_explicit_cross_thread_and_immediate_transaction_options(tmp_path):
 
 
 def test_schema_seed_failure_rolls_back_ddl_and_can_retry(tmp_path):
-    schema = SqliteSchema(1, ("CREATE TABLE facts(value INTEGER NOT NULL)",))
+    schema = SqliteSchema(("CREATE TABLE facts(value INTEGER NOT NULL)",))
 
     def seed(connection):
         connection.run("INSERT INTO facts VALUES(7)")
@@ -280,7 +307,7 @@ def test_nested_transaction_is_rejected_without_finishing_outer_transaction(tmp_
 
 
 def test_schema_validation_failure_rolls_back_initial_records(tmp_path):
-    schema = SqliteSchema(None, ("CREATE TABLE facts(value INTEGER)",))
+    schema = SqliteSchema(("CREATE TABLE facts(value INTEGER)",))
 
     def reject(connection):
         assert connection.run("SELECT value FROM facts").require_one()[0] == 7

@@ -9,7 +9,6 @@ from trader.infra.process_lock import ProcessLock
 from trader.infra.serialization.canonical_codec import CanonicalDigest, CanonicalJsonText
 from trader.recommendation.infra.deepseek.budget_codec import (
     MAX_STATE_BYTES,
-    SCHEMA_VERSION,
     BudgetDay,
     DecodeBudgetState,
     EncodeBudgetState,
@@ -41,7 +40,7 @@ class BudgetStateFile:
             # Unknown evidence never means zero usage. Persist the quarantine day
             # so a normal restart tomorrow can recover, without clearing today.
             state = BudgetState(
-                SCHEMA_VERSION, day, policy_hash, 0, self._identity,
+                day, policy_hash, 0, self._identity,
                 blocked_date=day, blocked_reason="budget_state_unverified",
             )
             self.write(state, replace_unverified=True)

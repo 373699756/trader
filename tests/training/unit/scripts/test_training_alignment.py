@@ -237,7 +237,7 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
     connections[0].execute("INSERT INTO schema_contract VALUES(1,'../reference/company_st.sqlite3')")
     connections[0].commit()
     for path in paths[:2]:
-        PublishSqliteFile(path, 2, sqlite_policy=SqlitePolicyFixture())
+        PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
     before = tuple(path.read_bytes() for path in paths)
     snapshot = SimpleNamespace(
         snapshot_hash="a" * 64, source_identity_hash="b" * 64,
@@ -298,7 +298,7 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
             "../reference/company_st.sqlite3" if invalid == "copy_escape" else binding,
         ))
     for path in paths[:2]:
-        PublishSqliteFile(path, 2, sqlite_policy=SqlitePolicyFixture())
+        PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
     original_backup = SqliteConnection.backup_to
     backups = []
 

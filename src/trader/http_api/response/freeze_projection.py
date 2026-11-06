@@ -383,7 +383,6 @@ def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
             snapshot_id=payload.parent_version,
             publication_id=payload.parent_version,
             projection_version=payload.projection_version,
-            patch_schema_version=4,
             quotes=[_serialize_overlay_quote(quote) for quote in payload.quotes],
             scoring_profile=payload.profile,
         )
@@ -450,7 +449,6 @@ def _serialize_freeze_replacement(
 ) -> dict[str, object]:
     diagnostics = replacement.selection_diagnostics
     return {
-        "patch_schema_version": 4,
         **_preview_fields(replacement.preview_context, replacement.observed_at),
         "snapshot_id": payload.version,
         "publication_id": payload.version,

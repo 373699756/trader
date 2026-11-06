@@ -62,7 +62,7 @@ class HistorySupplierRouter:
                     ("tencent_calendar", price_context.source_versions.content_hash),
                     HISTORY_TAIL_CONTRACT,
                     HISTORY_UNIVERSE_CONTRACT,
-                    ("price-repair", "whole-window-v1"),
+                    ("price-repair", "whole-window"),
                 ),
             ),
         )

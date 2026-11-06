@@ -32,11 +32,10 @@ _TABLES = {
 }
 
 HISTORY_CONTROL_SCHEMA = SqliteSchema(
-    2,
     (
         """CREATE TABLE schema_contract(
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_id TEXT NOT NULL,
-            schema_version INTEGER NOT NULL, reference_file TEXT
+            reference_file TEXT
         )""",
         """CREATE TABLE reference_binding(
             reference_hash BLOB PRIMARY KEY CHECK(length(reference_hash)=32), publication_id TEXT NOT NULL

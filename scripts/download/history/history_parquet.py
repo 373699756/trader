@@ -25,7 +25,6 @@ from trader.download.infra.history_snapshot_inspection import LoadPublishedHisto
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 
-_VERSION = 1
 _SCHEMA = {
     "trade_date": pl.Int32, "code": pl.String, "board": pl.String, "industry": pl.String,
     "cell_status": pl.String, "point_present": pl.Boolean,
@@ -84,7 +83,7 @@ class ParquetHistoryProjection:
 
     def load(self) -> ParquetPublication:
         value = json.loads((self.root / "manifest.json").read_text())
-        if set(value) != {"version", "snapshot_hash", "months"} or value["version"] != _VERSION:
+        if not isinstance(value, dict) or not {"snapshot_hash", "months"}.issubset(value):
             raise ValueError("parquet_manifest_format_invalid")
         months = tuple(ParquetMonth(**item) for item in value["months"])
         keys = tuple(item.month for item in months)
@@ -116,7 +115,7 @@ class ParquetHistoryProjection:
                 continue
             # Reference changes invalidate industry/eligibility projections too.
             source_hash = hashlib.sha256(json.dumps((
-                _VERSION, month, part.logical_hash, part.row_count,
+                month, part.logical_hash, part.row_count,
                 history.snapshot.source_identity_hash, history.snapshot.universe_hash,
                 tuple(EncodeDate(day) for day in dates),
             ), separators=(",", ":")).encode()).hexdigest()
@@ -155,7 +154,7 @@ class ParquetHistoryProjection:
 
     def _publish_manifest(self, publication: ParquetPublication) -> None:
         payload = {
-            "version": _VERSION, "snapshot_hash": publication.snapshot_hash,
+            "snapshot_hash": publication.snapshot_hash,
             "months": [
                 {"month": item.month, "source_hash": item.source_hash, "file_hash": item.file_hash,
                  "row_count": item.row_count} for item in publication.months

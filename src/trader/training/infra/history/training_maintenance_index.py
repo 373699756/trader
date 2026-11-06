@@ -65,9 +65,9 @@ class TrainingMaintenanceIndex:
                 SqliteTransaction(connection, immediate=write),
             ):
                 contract = connection.run(
-                    "SELECT schema_id,schema_version FROM schema_contract WHERE singleton=1"
+                    "SELECT schema_id FROM schema_contract WHERE singleton=1"
                 ).fetchone()
-                if contract is None or tuple(contract) != ("history_catalog", 2):
+                if contract is None or tuple(contract) != ("history_catalog",):
                     raise TrainingMaintenanceError("training maintenance catalog identity is invalid")
                 existing = {
                     row[0]

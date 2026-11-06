@@ -62,7 +62,7 @@ def LoadPublishedHistorySnapshot(root: Path, *, sequence: int | None = None, sql
     if not control_path.is_file():
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
     try:
-        VerifySqliteFile(control_path, 2, sqlite_policy=sqlite_policy)
+        VerifySqliteFile(control_path, sqlite_policy=sqlite_policy)
         references: dict[str, PreparedReference] = {}
         state = HistoryControlIndex(control_path, sqlite_policy=sqlite_policy).load_published_state(sequence=sequence, references=references)
     except (HistoryControlError, SqlitePublicationError) as exc:

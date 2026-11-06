@@ -1725,7 +1725,6 @@ const payload = {
   items: [{ code: "600001", rank: 1 }, { code: "600002", rank: 2 }],
 };
 const patch = {
-  patch_schema_version: 4,
   schema_version: "freeze_event",
   publication_id: "tomorrow-next",
   base_projection_version: "tomorrow-base",
@@ -1874,7 +1873,6 @@ assert.strictEqual(
   "ignore_late_draft",
 );
 const overlay = {
-  patch_schema_version: 4,
   schema_version: "freeze_event",
   publication_id: "tomorrow-freeze",
   projection_version: "tomorrow-next",

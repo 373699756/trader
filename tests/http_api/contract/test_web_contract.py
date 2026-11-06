@@ -349,7 +349,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     assert "event: freeze" in event
     freeze_patch = json.loads(event.split("data: ", 1)[1])
     assert freeze_patch["strategy"] == "tomorrow"
-    assert freeze_patch["patch_schema_version"] == 4
+    assert "patch_schema_version" not in freeze_patch
     assert freeze_patch["publication_id"] == _freeze().version
     assert freeze_patch["replace"] is True
     assert freeze_patch["coverage"] == {

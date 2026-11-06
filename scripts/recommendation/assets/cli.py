@@ -15,7 +15,7 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
     argparse.ArgumentParser(description=description).parse_args(arguments)
     from scripts.recommendation.assets import generation
 
-    schema = "asset-consistency-v1" if action_identity == "assets" else "asset-generation-v1"
+    schema = "asset-consistency" if action_identity == "assets" else "asset-generation"
     try:
         if action_identity == "assets-generate":
             generation.GenerateAsset()

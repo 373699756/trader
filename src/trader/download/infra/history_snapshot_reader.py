@@ -563,7 +563,6 @@ class HistorySnapshotReader:
                 previous = self._file_verifications.get(reference.relative_path)
                 identity = VerifySqliteFile(
                     path,
-                    2,
                     sqlite_policy=self._sqlite_policy,
                     previous=previous,
                     check=check,

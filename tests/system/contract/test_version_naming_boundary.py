@@ -64,7 +64,11 @@ def _configuration_version_controllers(document: object, document_name: str) -> 
                     location in {"training.json.resources.hdd.samples", "training.json.resources.ssd.samples"}
                     and key in {"v1_batch_rows", "v1_sqlite_cache_bytes"}
                 )
-                if not profile_sample_resource and (
+                profile_cpu_resource = (
+                    location in {"training.json.resources.hdd.cpu.profile_threads", "training.json.resources.ssd.cpu.profile_threads"}
+                    and key in SCORING_PROFILE_IDS
+                )
+                if not (profile_sample_resource or profile_cpu_resource) and (
                     (_NUMBERED_STAGE.search(key) and not _PERCENTILE_METRIC.search(key))
                     or _NUMBERED_VERSION.search(key)
                 ):
@@ -89,6 +93,13 @@ def _configuration_version_controllers(document: object, document_name: str) -> 
 def test_profile_sample_resources_are_owned_only_by_their_declared_configuration_path(medium: str) -> None:
     location = f"training.json.resources.{medium}.samples"
     assert _configuration_version_controllers({"v1_batch_rows": 256, "v1_sqlite_cache_bytes": 1024}, location) == []
+
+
+@pytest.mark.parametrize("medium", ("hdd", "ssd"))
+def test_profile_cpu_keys_keep_scoring_profile_identity(medium: str) -> None:
+    location = f"training.json.resources.{medium}.cpu.profile_threads"
+    assert _configuration_version_controllers({profile: 2 for profile in SCORING_PROFILE_IDS}, location) == []
+    assert _configuration_version_controllers({"v4": 2}, location) == [f"{location}.v4"]
 
 
 @pytest.mark.parametrize(

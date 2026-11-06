@@ -185,7 +185,7 @@ def test_formal_records_and_payloads_share_one_database(tmp_path):
     with SqliteSession(path) as connection:
         tables = {row[0] for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
         assert tables == {"schema_contract", "freeze_record"}
-        assert connection.run("PRAGMA user_version").require_one()[0] == 2
+        assert connection.run("PRAGMA user_version").require_one()[0] == 0
         persisted = connection.run("SELECT typeof(trade_date), typeof(committed_at), length(freeze_hash), length(record_hash) FROM freeze_record").require_one()
         assert tuple(persisted) == ("integer", "integer", 32, 32)
 

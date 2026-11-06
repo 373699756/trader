@@ -390,7 +390,6 @@ def _raise_on_conflict(existing: sqlite3.Row | None, payload: bytes, label: str)
 
 
 _SCHEMA = SqliteSchema(
-    1,
     (
         """
         CREATE TABLE benchmark_returns(

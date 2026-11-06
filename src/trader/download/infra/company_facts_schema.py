@@ -2,10 +2,7 @@
 
 from trader.infra.sqlite_connection import SqliteSchema
 
-COMPANY_FACTS_VERSION = 4
-
 COMPANY_FACTS_SCHEMA = SqliteSchema(
-    COMPANY_FACTS_VERSION,
     (
         """CREATE TABLE company_input_receipt (
           source TEXT NOT NULL,source_key TEXT NOT NULL,code TEXT NOT NULL,record_hash TEXT NOT NULL,
@@ -121,7 +118,7 @@ COMPANY_FACTS_SCHEMA = SqliteSchema(
           UNIQUE(code,reason,source,source_key)
         )""",
         """CREATE TABLE company_publication (
-          singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL CHECK(schema_version=4),
+          singleton INTEGER PRIMARY KEY CHECK(singleton=1),
           extraction_hash BLOB NOT NULL CHECK(typeof(extraction_hash)='blob' AND length(extraction_hash)=32),
           content_hash BLOB NOT NULL CHECK(typeof(content_hash)='blob' AND length(content_hash)=32),
           published_at INTEGER NOT NULL
@@ -156,4 +153,4 @@ COMPANY_FACTS_SCHEMA = SqliteSchema(
     ),
 )
 
-__all__ = ["COMPANY_FACTS_SCHEMA", "COMPANY_FACTS_VERSION"]
+__all__ = ["COMPANY_FACTS_SCHEMA"]

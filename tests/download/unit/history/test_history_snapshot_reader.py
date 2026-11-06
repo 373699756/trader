@@ -126,7 +126,7 @@ def test_training_stream_reports_invalid_projected_field_as_snapshot_error(tmp_p
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE daily_price_revision SET qfq_trading_status='invalid'")
     # This fixture tests typed projection errors after a valid file publication.
-    PublishSqliteFile(path, 2, sqlite_policy=SqlitePolicyFixture())
+    PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
 
     with pytest.raises(HistorySnapshotReadError, match="history training partition read failed"):
         tuple(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(snapshot, (day,), ("600001",)))

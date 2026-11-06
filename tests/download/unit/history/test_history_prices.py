@@ -672,13 +672,13 @@ def test_batch_verification_keeps_each_month_observation_sequence(tmp_path: Path
     original = partition_module.VerifySqliteFile
     calls = []
 
-    def verify_file(database, version, **options):
-        calls.append((database, version))
-        return original(database, version, **options)
+    def verify_file(database, **options):
+        calls.append(database)
+        return original(database, **options)
 
     monkeypatch.setattr(partition_module, "VerifySqliteFile", verify_file)
     HistoryPricePartition.verify_months(path, references, sqlite_policy=SqlitePolicyFixture())
-    assert calls == [(path, 2)]
+    assert calls == [path]
     assert january.sequence == 1 and march.sequence == 2
     with pytest.raises(ValueError):
         HistoryPricePartition.verify_months(path, (january, january), sqlite_policy=SqlitePolicyFixture())

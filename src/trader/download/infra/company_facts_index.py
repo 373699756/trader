@@ -25,7 +25,7 @@ from trader.download.infra.company_facts_protocol import (
     EncodeCompanyTime,
     RequireCompanyTime,
 )
-from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA, COMPANY_FACTS_VERSION
+from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     HasSqliteSchema,
@@ -59,34 +59,36 @@ class CompanyInputReceipt:
 def ReadCompanyPublicationIdentity(connection: SqliteConnection) -> CompanyPublicationIdentity | None:
     EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA)
     row = connection.run(
-        "SELECT schema_version,extraction_hash,content_hash,published_at FROM company_publication WHERE singleton=1"
+        "SELECT extraction_hash,content_hash,published_at FROM company_publication WHERE singleton=1"
     ).fetchone()
     if row is None:
         return None
     if (
-        row[0] != COMPANY_FACTS_VERSION
+        not isinstance(row[0], bytes)
+        or len(row[0]) != 32
         or not isinstance(row[1], bytes)
         or len(row[1]) != 32
-        or not isinstance(row[2], bytes)
-        or len(row[2]) != 32
     ):
         raise ValueError("company_publication_identity_invalid")
-    return CompanyPublicationIdentity(row[2], row[1], RequireCompanyTime(row[3]))
+    return CompanyPublicationIdentity(row[1], row[0], RequireCompanyTime(row[2]))
 
 
 def _write_identity(
     connection: SqliteConnection, extraction_hash: bytes, at: datetime, content_hash: bytes
 ) -> None:
     """Record a publication generation; file integrity is owned by the file checksum."""
-    connection.run(
-        "INSERT OR REPLACE INTO company_publication VALUES(1,?,?,?,?)",
-        (
-            COMPANY_FACTS_VERSION,
-            extraction_hash,
-            content_hash,
-            EncodeCompanyTime(at),
-        ),
-    )
+    if connection.run(
+        "SELECT 1 FROM company_publication WHERE singleton=1"
+    ).fetchone() is not None:
+        connection.run(
+            "UPDATE company_publication SET extraction_hash=?,content_hash=?,published_at=? WHERE singleton=1",
+            (extraction_hash, content_hash, EncodeCompanyTime(at)),
+        )
+    else:
+        connection.run(
+            "INSERT INTO company_publication(singleton,extraction_hash,content_hash,published_at) VALUES(1,?,?,?)",
+            (extraction_hash, content_hash, EncodeCompanyTime(at)),
+        )
 
 
 def _parent_identity(parent: CompanyPublicationIdentity | None) -> tuple[str, str, datetime] | None:
@@ -125,7 +127,7 @@ class SQLiteCompanyFactsIndex:
 
     def publish_file(self) -> None:
         if self.path.is_file():
-            PublishSqliteFile(self.path, COMPANY_FACTS_VERSION, sqlite_policy=self._sqlite_policy)
+            PublishSqliteFile(self.path, sqlite_policy=self._sqlite_policy)
 
     def publish(
         self,
@@ -218,7 +220,6 @@ class SQLiteCompanyFactsIndex:
                 return ()
             self._file_verification = VerifySqliteFile(
                 self.path,
-                COMPANY_FACTS_VERSION,
                 sqlite_policy=self._sqlite_policy,
                 previous=self._file_verification,
             )

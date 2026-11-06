@@ -17,7 +17,6 @@ from trader.infra.sqlite_connection import (
 )
 
 SCHEMA = SqliteSchema(
-    1,
     (
         """
         CREATE TABLE committed_events (

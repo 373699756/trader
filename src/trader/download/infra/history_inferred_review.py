@@ -14,7 +14,7 @@ from trader.download.domain.baostock_daily import BaoStockDailyCell
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.price_review import PriceReviewBudget, PriceReviewBudgetExhausted, PriceReviewConfiguration
 from trader.infra.sqlite_codec import DecodeDate, EncodeDate
-from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnection, SqliteConnectionOptions, SqliteSchema, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 if TYPE_CHECKING:
@@ -114,8 +114,7 @@ class HistoryInferredReviewIndex:
         )
 
     def initialize(self) -> bool:
-        # This additive metadata also upgrades an existing version-2 catalog;
-        # its immutable price and reference schema identities remain unchanged.
+        # Additive review metadata preserves immutable prices and reference identities.
         with (
             SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
@@ -123,6 +122,7 @@ class HistoryInferredReviewIndex:
             before = int(connection.run("PRAGMA schema_version").require_one()[0])
             for statement in HISTORY_INFERRED_REVIEW_SQL:
                 connection.run(statement)
+            EnsureSqliteSchema(connection, SqliteSchema(HISTORY_INFERRED_REVIEW_SQL))
             changed = before != int(connection.run("PRAGMA schema_version").require_one()[0])
         return changed
 

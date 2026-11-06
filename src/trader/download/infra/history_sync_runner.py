@@ -361,7 +361,7 @@ class _HistorySync:
             )
         for completed, path in enumerate(changed, 1):
             _publish_progress(self.progress, "sealing_partitions", "started", (completed - 1, len(changed)), path.name)
-            PublishSqliteFile(path, 2, sqlite_policy=self.sqlite_policy)
+            PublishSqliteFile(path, sqlite_policy=self.sqlite_policy)
             _publish_progress(self.progress, "sealing_partitions", "completed", (completed, len(changed)), path.name)
         self.control.publish_file()
 
@@ -724,7 +724,7 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
             if result.published:
                 for path in sorted(configuration.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3")):
                     if not Path(f"{path}.sha256").is_file():
-                        PublishSqliteFile(path, 2, sqlite_policy=sqlite_policy)
+                        PublishSqliteFile(path, sqlite_policy=sqlite_policy)
                 # A completed download has just sealed the catalog after its
                 # final writer transaction; already-current/reference repair
                 # paths still need their own final seal.

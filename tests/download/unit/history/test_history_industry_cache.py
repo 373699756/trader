@@ -264,7 +264,7 @@ def test_explicit_writer_upgrades_industry_schema_without_rewriting_supplier_row
     index.import_evidence((_official_evidence(),))
     with SqliteSession(index.path) as connection:
         assert tuple(connection.run("SELECT * FROM industry_query").require_one()) == before
-        assert connection.run("PRAGMA user_version").require_one()[0] == 2
+        assert connection.run("PRAGMA user_version").require_one()[0] == 1
 
 
 @pytest.mark.parametrize("cancelled", (True, False))

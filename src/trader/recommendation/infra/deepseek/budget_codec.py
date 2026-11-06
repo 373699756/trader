@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 from trader.infra.serialization.canonical_codec import CanonicalDigest, CanonicalValue, EncodeCanonicalValue
 from trader.recommendation.infra.deepseek.budget_state import BudgetBatch, BudgetHealth, BudgetRequest, BudgetState
 
-SCHEMA_VERSION = 1
 MAX_STATE_BYTES = 4 * 1024 * 1024
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -23,14 +22,13 @@ def DecodeBudgetState(value: object, identity: str) -> BudgetState:
     content = {key: item for key, item in data.items() if key != "state_hash"}
     if data.get("state_hash") != CanonicalDigest(content):
         raise ValueError("budget_state_hash_mismatch")
-    if _integer(data, "schema_version") != SCHEMA_VERSION or _text(data, "owner_identity") != identity:
+    if _text(data, "owner_identity") != identity:
         raise ValueError("budget_state_identity_unsupported")
     requests = tuple(_request(item) for item in _array(data, "requests"))
     batches = tuple(_batch(item) for item in _array(data, "review_batches"))
     health = _object(data["health_state"])
     mode = _text(health, "mode", {"closed", "open", "half_open", "recovering"})
     result = BudgetState(
-        SCHEMA_VERSION,
         date.fromisoformat(_text(data, "budget_date")),
         _text(data, "budget_policy_hash"),
         _integer(data, "revision"),
@@ -164,4 +162,4 @@ def _required_timestamp(data: dict[str, object], key: str) -> datetime:
     return result
 
 
-__all__ = ["SCHEMA_VERSION", "MAX_STATE_BYTES", "BudgetDay", "EncodeBudgetState", "DecodeBudgetState"]
+__all__ = ["MAX_STATE_BYTES", "BudgetDay", "EncodeBudgetState", "DecodeBudgetState"]

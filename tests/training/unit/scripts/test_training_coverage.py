@@ -11,6 +11,8 @@ from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 def test_statistics_audit_does_not_read_wide_samples_and_separates_projection(tmp_path):
     path = tmp_path / "samples.sqlite3"
     with SqliteSession(path) as connection, SqliteTransaction(connection):
+        connection.run("CREATE TABLE samples (trade_date INTEGER, code TEXT)")
+        connection.run("CREATE TABLE sample_contract (feature_hash BLOB)")
         connection.run("CREATE TABLE sample_split_dates (trade_date INTEGER, split_name TEXT)")
         connection.run("CREATE TABLE sample_statistics (trade_date INTEGER, target TEXT, sample_count INTEGER)")
         connection.run(

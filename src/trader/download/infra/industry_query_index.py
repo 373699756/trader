@@ -20,6 +20,7 @@ from trader.download.infra.industry_evidence_codec import IndustryEvidencePayloa
 from trader.infra.sqlite_codec import DecodeHash, EncodeHash
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
+    HasSqliteSchema,
     SqliteConnectionOptions,
     SqliteSchema,
     SqliteSession,
@@ -34,7 +35,6 @@ _EVIDENCE_DDL = """CREATE TABLE official_industry_evidence(
 _EVIDENCE_INDEX_DDL = "CREATE INDEX official_industry_interval ON official_industry_evidence(code,effective_from,effective_to)"
 
 _SCHEMA = SqliteSchema(
-    2,
     tuple(
         f"CREATE TABLE {table} ({date_column} TEXT PRIMARY KEY, source TEXT NOT NULL, "
         "checked_date TEXT NOT NULL, members_json TEXT NOT NULL, "
@@ -75,14 +75,16 @@ class SQLiteIndustryQueryIndex:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with SqliteSession(self.path, SqliteConnectionOptions(), sqlite_policy=self.sqlite_policy) as connection:
-                # Only an explicit writer upgrades the query database. Supplier
-                # rows and their digests remain byte-for-byte unchanged.
+                # Only the explicit writer installs missing evidence structures.
+                # Existing supplier rows and digests remain unchanged.
                 with SqliteTransaction(connection, immediate=True):
-                    if connection.run("PRAGMA user_version").require_one()[0] == 1:
-                        connection.run(_EVIDENCE_DDL)
-                        connection.run(_EVIDENCE_INDEX_DDL)
-                        connection.run("PRAGMA user_version=2")
-                EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
+                    if HasSqliteSchema(connection, SqliteSchema(_SCHEMA.statements[:-2])):
+                        existing = {row[0] for row in connection.run("SELECT name FROM sqlite_master")}
+                        if "official_industry_evidence" not in existing:
+                            connection.run(_EVIDENCE_DDL)
+                        if "official_industry_interval" not in existing:
+                            connection.run(_EVIDENCE_INDEX_DDL)
+                    EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
         except sqlite3.Error as exc:
             raise RuntimeError("industry_query_cache_unavailable") from exc
 

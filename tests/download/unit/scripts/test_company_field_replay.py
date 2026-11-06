@@ -50,16 +50,16 @@ def _sources(root):
     assert extraction.text == _TEXT
     assert index.commit_document(item, extraction, _AT)
     # A complete real raw collection is paired with an old legal publication.
-    # Derive only schema3 fixture DDL; the product has no schema3 fallback.
+    # Derive only the earlier business structure without field conclusions.
     source = incoming / "company_facts.sqlite3"
     statements = tuple(
-        statement.replace("CHECK(schema_version=4)", "CHECK(schema_version=3)")
+        statement
         for statement in COMPANY_FACTS_SCHEMA.statements
         if not statement.startswith("CREATE TABLE company_field_")
     )
     at = EncodeCompanyTime(_AT)
     with SqliteSession(source) as connection:
-        EnsureSqliteSchema(connection, SqliteSchema(3, statements), allow_create=True)
+        EnsureSqliteSchema(connection, SqliteSchema(statements), allow_create=True)
         connection.run(
             "INSERT INTO company_facts(code,finance_state,pledge_state,unlock_state,pending_docs,announcement_state,"
             "announcement_start_date,announcement_end_date,checked_at,published_at) VALUES('600001',0,0,0,0,1,?,?,?,?)",
@@ -78,8 +78,8 @@ def _sources(root):
             ("cninfo", _KEY, "600001", item.digest, CompanyExtractionHash(policy),
              hashlib.sha256(_TEXT.encode()).digest(), at, "valid", "legacy-input-policy"),
         )
-        connection.run("INSERT INTO company_publication VALUES(1,3,?,?,?)", (CompanyExtractionHash(policy), b"s" * 32, at))
-    PublishSqliteFile(source, 3, sqlite_policy=_IO)
+        connection.run("INSERT INTO company_publication VALUES(1,?,?,?)", (CompanyExtractionHash(policy), b"s" * 32, at))
+    PublishSqliteFile(source, sqlite_policy=_IO)
     return raw, source, policy
 
 
@@ -226,7 +226,7 @@ def test_source_context_and_text_path_must_be_unambiguous(tmp_path, problem):
     elif problem == "listing_context":
         with SqliteSession(facts) as connection:
             connection.run("UPDATE company_facts SET announcement_start_date=?", (EncodeCompanyDate(_AT.date()),))
-        PublishSqliteFile(facts, 3, sqlite_policy=_IO)
+        PublishSqliteFile(facts, sqlite_policy=_IO)
     else:
         text_path, = (raw.parent / "text").glob("*/*.txt.gz")
         outside = tmp_path / "untrusted.gz"

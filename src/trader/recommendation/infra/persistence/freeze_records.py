@@ -37,9 +37,8 @@ from trader.recommendation.infra.persistence.freeze_record_codec import Committe
 FaultInjector = Callable[[str], None]
 _MAX_RECOVERY_PAYLOAD_BYTES = 8 * 1024 * 1024
 _SCHEMA = SqliteSchema(
-    2,
     (
-        "CREATE TABLE schema_contract(schema_id TEXT NOT NULL PRIMARY KEY, schema_version INTEGER NOT NULL)",
+        "CREATE TABLE schema_contract(schema_id TEXT NOT NULL PRIMARY KEY)",
         "CREATE TABLE freeze_record("
         "strategy TEXT NOT NULL CHECK(strategy IN ('tomorrow','d25')),trade_date INTEGER NOT NULL,"
         "freeze_id TEXT NOT NULL UNIQUE,freeze_hash BLOB NOT NULL CHECK(length(freeze_hash)=32),"
@@ -52,12 +51,12 @@ _SCHEMA = SqliteSchema(
 
 
 def _initialize_schema(connection: SqliteConnection) -> None:
-    connection.run("INSERT INTO schema_contract VALUES ('freeze_record',2)")
+    connection.run("INSERT INTO schema_contract(schema_id) VALUES ('freeze_record')")
 
 
 def _validate_schema(connection: SqliteConnection) -> None:
-    rows = connection.run("SELECT schema_id,schema_version FROM schema_contract").fetchall()
-    if [tuple(row) for row in rows] != [("freeze_record", 2)]:
+    rows = connection.run("SELECT schema_id FROM schema_contract").fetchall()
+    if [tuple(row) for row in rows] != [("freeze_record",)]:
         raise sqlite3.DatabaseError("freeze_schema_invalid")
 
 

@@ -47,7 +47,6 @@ LEARNED_RANK_SAMPLE_COLUMNS = (
     "return_120d", "return_250d", "volatility_20d", "drawdown_60d", "log_avg_amount_20d",
 )
 _SAMPLE_SCHEMA = SqliteSchema(
-    2,
     (
         "CREATE TABLE sample_contract (singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
         "feature_hash BLOB NOT NULL CHECK(length(feature_hash)=32))",

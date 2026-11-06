@@ -8,7 +8,6 @@ from trader.infra.sqlite_connection import SqliteSchema
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.sample_sequences import SEQUENCE_FORMAT, SampleSequenceLayout
 
-SAMPLE_SCHEMA_VERSION = 2
 SAMPLE_TARGET_COLUMNS = (
     "target_t1", "target_t2", "target_t3", "target_t4", "target_t5", "target_d25_aggregate"
 )
@@ -36,7 +35,7 @@ def SampleFeatureHash(names: tuple[str, ...], layout: SampleSequenceLayout | Non
     ):
         raise ValueError("training_sample_feature_names_invalid")
     payload = (
-        SAMPLE_SCHEMA_VERSION, names,
+        names,
         (SEQUENCE_FORMAT, layout.auxiliary, layout.steps, layout.channels) if layout else None,
     )
     return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).digest()
@@ -50,7 +49,6 @@ def TrainingSampleSchema(names: tuple[str, ...], layout: SampleSequenceLayout | 
         features += ",sequence_start INTEGER NOT NULL CHECK(sequence_start>=0)"
     statements: tuple[str, ...] = (
         "CREATE TABLE sample_contract (singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
-        "schema_version INTEGER NOT NULL CHECK(schema_version=2),"
         "feature_hash BLOB NOT NULL CHECK(length(feature_hash)=32),"
         "split_hash BLOB CHECK(split_hash IS NULL OR length(split_hash)=32))",
         f"CREATE TABLE samples (trade_date INTEGER NOT NULL,code TEXT NOT NULL,board TEXT NOT NULL,"
@@ -71,11 +69,11 @@ def TrainingSampleSchema(names: tuple[str, ...], layout: SampleSequenceLayout | 
             "CREATE TABLE sample_sequence_blocks (code TEXT NOT NULL,block_id INTEGER NOT NULL,"
             "sequence_bytes BLOB NOT NULL,PRIMARY KEY(code,block_id))",
         )
-    return SqliteSchema(SAMPLE_SCHEMA_VERSION, statements)
+    return SqliteSchema(statements)
 
 
 def SampleFormatId(names: tuple[str, ...], layout: SampleSequenceLayout | None) -> str:
-    return f"named_samples:{SAMPLE_SCHEMA_VERSION}:" + SampleFeatureHash(names, layout).hex()
+    return "named_samples:" + SampleFeatureHash(names, layout).hex()
 
 
 __all__ = ["SAMPLE_TARGET_COLUMNS", "TrainingFeatureNames", "SampleFeatureHash", "SampleFormatId", "TrainingSampleSchema"]

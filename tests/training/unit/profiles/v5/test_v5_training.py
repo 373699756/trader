@@ -29,7 +29,7 @@ from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfi
 
 
 
-from trader.training.infra.profile.v5.tensors import DecodeTcnTensors, TensorShapes
+from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork, DecodeTcnTensors, TensorShapes
 
 from trader.training.infra.profile.v5.training import RunV5Training
 
@@ -208,3 +208,26 @@ def test_v5_tensor_codec_rejects_duplicate_wrong_shape_and_nonfinite():
     weights[0]["values"][0] = float("nan")
     with pytest.raises(ValueError):
         DecodeTcnTensors(weights, 6, architecture)
+
+
+@pytest.mark.parametrize("suffix", ("", "_v1", "_v999"))
+def test_v5_network_validates_actual_architecture_independently_of_format_number(suffix):
+    from trader.recommendation.domain.market.v5.features import SEQUENCE_CONTRACT
+    from trader.training.infra.profile.v5.settings import TCN_NETWORK_CONTRACT, TcnArchitecture
+
+    architecture = TcnArchitecture(8, "float32")
+    network = {
+        "contract": SEQUENCE_CONTRACT,
+        "architecture": TCN_NETWORK_CONTRACT + suffix,
+        "hidden_channels": 8,
+        "compute_dtype": "float32",
+        "dropout": 0.1,
+        "weights": [
+            {"name": name, "shape": list(shape), "values": [0.0] * math.prod(shape)}
+            for name, shape in TensorShapes(6, architecture)
+        ],
+    }
+    assert DecodeTcnNetwork(network, 6)[2] == architecture
+    network["architecture"] = "different-network" + suffix
+    with pytest.raises(ValueError, match="architecture"):
+        DecodeTcnNetwork(network, 6)

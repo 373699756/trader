@@ -150,7 +150,6 @@ def Main(argv: list[str] | None = None, *, root: Path = PROJECT_ROOT) -> int:
                                     for f in findings
                                 ],
                                 "manifest_template": {
-                                    "version": 1,
                                     "base_commit": _git_head(root),
                                     "files": [{"path": s.path, "sha256": s.digest} for s in sources],
                                     "renames": [],

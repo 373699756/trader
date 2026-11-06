@@ -93,7 +93,6 @@ class HistoryDownloadBatch:
 
 
 HISTORY_DOWNLOAD_SCHEMA = SqliteSchema(
-    None,
     (
         PRICE_REPAIR_ATTEMPT_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1),
         *HISTORY_INFERRED_REVIEW_SQL,

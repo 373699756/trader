@@ -28,7 +28,9 @@ def _audit(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
 
 
 def _require_sample_format(connection: SqliteConnection) -> None:
-    if connection.run("PRAGMA user_version").require_one()[0] != 2:
+    required = {"samples", "sample_contract", "sample_split_dates", "sample_statistics", "sample_day_diagnostics"}
+    actual = {row[0] for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not required.issubset(actual):
         raise ValueError("training_sample_format_requires_rebuild")
 
 

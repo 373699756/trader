@@ -146,7 +146,7 @@ def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int,
     if runtime_hash != hashlib.sha256(config.read_bytes()).hexdigest() or performance_hash != hashlib.sha256(performance_config.read_bytes()).hexdigest():
         raise ValueError("training_samples_configuration_changed")
     return {
-        "schema_version": "training-samples-v1",
+        "schema_version": "training-samples",
         "status": "passed" if sqlite_passed else "degraded",
         "summary": {
             "fixture": True, "runtime_config_hash": runtime_hash, "performance_budget_hash": performance_hash,

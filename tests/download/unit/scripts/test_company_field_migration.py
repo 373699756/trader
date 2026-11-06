@@ -1,4 +1,4 @@
-"""Schema3 rehearsal preserves input values and never certifies legacy fields."""
+"""Field materialization preserves input values and never certifies legacy fields."""
 
 import json
 from datetime import datetime
@@ -31,14 +31,14 @@ def policy():
 def _source(tmp_path, policy):
     source = tmp_path / "input" / "company_facts.sqlite3"
     source.parent.mkdir()
-    # Only the old fixture's DDL is derived here; production has no schema3
-    # reader, fallback or in-place migration path.
+    # A previously published fixture retains an obsolete numbering column.
     statements = tuple(
-        statement.replace("CHECK(schema_version=4)", "CHECK(schema_version=3)")
+        statement.replace("CREATE TABLE company_publication (",
+                          "CREATE TABLE company_publication (schema_version INTEGER NOT NULL CHECK(schema_version=3),")
         for statement in COMPANY_FACTS_SCHEMA.statements
         if not statement.startswith("CREATE TABLE company_field_")
     )
-    schema = SqliteSchema(3, statements)
+    schema = SqliteSchema(statements)
     at = EncodeCompanyTime(_AT)
     extraction = CompanyExtractionHash(policy)
     with SqliteSession(source) as connection:
@@ -59,8 +59,9 @@ def _source(tmp_path, policy):
             ("cninfo", "source-one", "600001", "record-one", extraction, b"b" * 32, at, "valid", "legacy-input-policy"),
             ("cninfo", "source-one", "600001", "record-one", b"f" * 32, b"b" * 32, at, "field_attempted", "old-field-policy"),
         ))
-        connection.run("INSERT INTO company_publication VALUES(1,3,?,?,?)", (extraction, b"s" * 32, at))
-    PublishSqliteFile(source, 3, sqlite_policy=_IO)
+        connection.run("INSERT INTO company_publication(schema_version,singleton,extraction_hash,content_hash,published_at) "
+                       "VALUES(3,1,?,?,?)", (extraction, b"s" * 32, at))
+    PublishSqliteFile(source, sqlite_policy=_IO)
     return source
 
 
@@ -109,7 +110,7 @@ def test_rehearsal_preserves_all_old_values_and_receipts_and_only_adds_unverifie
     assert report["status"] == "passed" and report["source_input_unchanged"]
     assert report["read_only_source"] and report["isolated_copy"] and not report["production_authorized"]
     assert report["source_data_writes"] == 0 and report["business_data_unchanged"] and report["original_receipts_unchanged"]
-    assert report["source_schema"] == 3 and report["target_schema"] == 4 and report["target_reader_verified"]
+    assert report["target_reader_verified"] and "target_schema" not in report and "source_schema" not in report
     assert report["field_states"] == {"present_unverified": 2}
     assert report["fields"] == 2 and not report["field_correctness_verified"]
     assert report["source_file_publication_verified"] and report["source_backup_generation_verified"]
@@ -119,11 +120,11 @@ def test_rehearsal_preserves_all_old_values_and_receipts_and_only_adds_unverifie
     with SqliteSession(target) as connection:
         assert tuple(tuple(row) for row in connection.run("SELECT * FROM company_input_receipt ORDER BY extraction_hash")) == old_receipts
         publication = tuple(connection.run("SELECT * FROM company_publication").require_one())
-        assert publication[1] == 4 and publication[2] == old_publication[2] and publication[4] == old_publication[4]
-        assert publication[3] != old_publication[3]
+        assert publication[1] == old_publication[2] and publication[3] == old_publication[4]
+        assert publication[2] != old_publication[3]
         assert connection.run("SELECT actual_pct,repurchase_purpose FROM company_positive_event").require_one()[:] == (0.1, 2)
         assert connection.run("SELECT COUNT(*) FROM company_field_evidence").require_one()[0] == 0
-    with SqliteSession(directory / "source_schema3.sqlite3") as backup:
+    with SqliteSession(directory / "source.sqlite3") as backup:
         assert tuple(backup.run("SELECT * FROM company_publication").require_one()) == old_publication
     reader = SQLiteCompanyEvidenceReader(target, event_policy=policy, sqlite_policy=_IO)
     assert reader.read_fields(("600001",)).publication_hash == report["target_publication_hash"]
@@ -135,17 +136,18 @@ def test_rehearsal_preserves_all_old_values_and_receipts_and_only_adds_unverifie
     assert (directory / "field-migration.json").read_bytes() == previous_report
 
 
-@pytest.mark.parametrize("version", (2, 4))
-def test_wrong_source_schema_is_rejected_without_sealing_a_target(tmp_path, policy, version):
+@pytest.mark.parametrize("table", ("company_positive_evidence", "company_input_receipt"))
+def test_missing_source_table_is_rejected_without_sealing_a_target(tmp_path, policy, table):
     source = _source(tmp_path, policy)
     with SqliteSession(source) as connection:
-        connection.run(f"PRAGMA user_version={version}")
+        connection.run(f"DROP TABLE {table}")
+    PublishSqliteFile(source, sqlite_policy=_IO)
     before = source.read_bytes()
     directory = tmp_path / "rehearsal"
     report = _run(source, directory, policy)
-    assert report["status"] == "failed" and report["failure_category"] == "SqlitePublicationError"
-    assert report["source_schema"] is None and report["failure_code"] == "sqlite_publication_schema_invalid"
-    assert not (directory / "source_schema3.sqlite3").exists()
+    assert report["status"] == "failed" and report["failure_category"] == "ValueError"
+    assert report["failure_code"] == "company_field_migration_source_tables_unsupported"
+    assert (directory / "source.sqlite3").is_file()
     assert not (directory / "company_facts.sqlite3.sha256").exists()
     assert source.read_bytes() == before
 
@@ -197,7 +199,7 @@ def test_copy_failure_rolls_back_target_and_preserves_external_failure_evidence(
     with SqliteSession(directory / "company_facts.sqlite3") as target:
         assert target.run("PRAGMA user_version").require_one()[0] == 0
         assert target.run("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").require_one()[0] == 0
-    assert (directory / "source_schema3.sqlite3").is_file()
+    assert (directory / "source.sqlite3").is_file()
     assert not (directory / "company_facts.sqlite3.sha256").exists()
     assert source.read_bytes() == before
 
@@ -216,7 +218,7 @@ def test_reader_policy_mismatch_never_rewrites_the_old_extraction_identity(tmp_p
     source = _source(tmp_path, policy)
     with SqliteSession(source) as connection:
         connection.run("UPDATE company_publication SET extraction_hash=?", (b"x" * 32,))
-    PublishSqliteFile(source, 3, sqlite_policy=_IO)
+    PublishSqliteFile(source, sqlite_policy=_IO)
     before = source.read_bytes()
     destination = tmp_path / "rehearsal"
     report = _run(source, destination, policy)
@@ -230,7 +232,7 @@ def test_source_foreign_key_failure_is_not_copied_into_a_published_target(tmp_pa
     source = _source(tmp_path, policy)
     with SqliteSession(source) as connection:
         connection.run("DELETE FROM company_evidence_ref")
-    PublishSqliteFile(source, 3, sqlite_policy=_IO)
+    PublishSqliteFile(source, sqlite_policy=_IO)
     before = source.read_bytes()
     destination = tmp_path / "rehearsal"
     report = _run(source, destination, policy)
@@ -276,7 +278,7 @@ def test_unpublished_source_is_rejected_before_backup_and_never_resigned(tmp_pat
     assert report["failure_code"] == (
         "sqlite_publication_file_missing" if receipt_state == "missing" else "sqlite_publication_receipt_invalid"
     )
-    assert not (directory / "source_schema3.sqlite3").exists()
+    assert not (directory / "source.sqlite3").exists()
     assert not (directory / "company_facts.sqlite3").exists()
     assert source.read_bytes() == source_bytes
     assert (receipt.read_bytes() if receipt.exists() else None) == receipt_bytes
@@ -292,7 +294,7 @@ def test_source_commit_during_backup_invalidates_the_round_without_stopping_the_
         with SqliteSession(source) as writer:
             writer.run("UPDATE company_positive_event SET actual_pct=0.2")
             writer.run("UPDATE company_publication SET content_hash=?", (b"n" * 32,))
-        PublishSqliteFile(source, 3, sqlite_policy=_IO)
+        PublishSqliteFile(source, sqlite_policy=_IO)
 
     monkeypatch.setattr(SqliteConnection, "backup_to", concurrent_commit)
     directory = tmp_path / "rehearsal"
@@ -300,7 +302,7 @@ def test_source_commit_during_backup_invalidates_the_round_without_stopping_the_
     assert report["status"] == "failed" and report["source_changed_during_backup"]
     assert report["failure_code"] == "company_field_migration_source_changed_during_backup"
     assert report["source_data_writes"] == 0
-    assert (directory / "source_schema3.sqlite3").exists()
+    assert (directory / "source.sqlite3").exists()
     assert not (directory / "company_facts.sqlite3.sha256").exists()
     with SqliteSession(source) as connection:
         assert connection.run("SELECT actual_pct FROM company_positive_event").require_one()[0] == 0.2

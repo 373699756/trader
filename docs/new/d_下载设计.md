@@ -109,7 +109,7 @@
 | `page/excerpt` | 一起存物理页码和原文摘录；去空白及书名号后逐字核对，不做自由文本行业推断 |
 | `mapping` | 固定包含`native_classification/native_code/native_name/target_industry/reference_url/reference_sha256/reference_page/reference_excerpt/rationale`；保留原生标准及代码、目标模型行业、映射依据PDF/页/摘录和人工理由；缺一拒绝，不按代码相似自动推广其它类别 |
 
-唯一持久化owner仍是`SQLiteIndustryQueryIndex`，物理文件仍为`data/market/reference/industry.sqlite3`。格式从user_version=1升到2，新增`official_industry_evidence`；只读打开不迁移，显式writer以事务追加表/索引并保留原两张查询表的行及摘要。升级及导入本批只在隔离库演练；活动库未切换。旧格式须在另行授权的正常sync中先升级，再由新版本只读消费者采用，不能交给旧冻结代码加载。
+唯一持久化owner仍是`SQLiteIndustryQueryIndex`，物理文件仍为`data/market/reference/industry.sqlite3`。按实际表和索引校验`official_industry_evidence`，不按user_version区分；只读打开不补表，显式writer先验证原查询表，再以事务追加缺失表/索引并保留原两张查询表的行及摘要。补齐及导入只在隔离库演练；活动库未切换，正常sync的数据采用仍按原授权边界处理。
 
 | 新表列/索引 | SQLite类型、用途与读写边界 |
 | --- | --- |
@@ -374,7 +374,7 @@ flowchart TD
 
 ### 5.9 公告必须交付哪些字段
 
-下表指向`data/company/company_facts.sqlite3`现有物理列。采集库`data/company/raw/company_collection.sqlite3`的唯一协调器拥有提取候选、任务及恢复；正式事实值和已发布字段结论/证据由正式库拥有。schema4已实现第5.14节的类型、关系结构、同事务发布和正式reader，当前自动原文出证主要覆盖实际股份比例与回购用途。下表仍是完整业务交付清单，不表示全部列已有完整提取器或自动证据；原始口径、币种/税口径和派生依赖的普遍覆盖仍须逐项核验，不用自由JSON或第二份完成账本补洞。
+下表指向`data/company/company_facts.sqlite3`现有物理列。采集库`data/company/raw/company_collection.sqlite3`的唯一协调器拥有提取候选、任务及恢复；正式事实值和已发布字段结论/证据由正式库拥有。已实现第5.14节的类型、关系结构、同事务发布和正式reader，不使用数字schema编号，当前自动原文出证主要覆盖实际股份比例与回购用途。下表仍是完整业务交付清单，不表示全部列已有完整提取器或自动证据；原始口径、币种/税口径和派生依赖的普遍覆盖仍须逐项核验，不用自由JSON或第二份完成账本补洞。
 
 持久职责分开：采集库拥有逐篇提取候选、任务与恢复状态；正式库拥有已发布字段、对应结论和证据。同事务提交仅指正式库的事实、字段结论与凭证，随后由采集库确认发布；不把两库写入描述为天然原子，也不让采集状态覆盖正式事实。
 
@@ -408,7 +408,7 @@ flowchart TD
 | 中 | 减持计划起始日期、比例及其他展示明细；官方公告/表格 | 计划事实、关联及审计 | 结束/完成关系影响风险到期，按上方高优先级处理；当前未按计划比例对硬过滤分档。窄规则已有，表格/变体/多主体须按样本验证 |
 | 后 | 回购/增持实际比例、用途、状态、取消及里程碑；官方公告 | 正式事实、审计和候选奖励 | `company_scoring.enabled=false`，当前不产生额外公司奖励；补齐不自动启用评分。事实提取完整与得分为0分别报告 |
 | 后 | 合同金额、约束性、币种/税口径、年度营收及占比；官方公告与合法年度依据 | 合同事实、审计和候选奖励 | 原文有金额却未取到属于数据缺口；中标金额与已签合同金额不可互换，外币不能直接填人民币列。分数、可比性和原始事实分别核验，不能因不可加分丢弃事实 |
-| 贯穿；扩大出证覆盖在后 | schema4字段状态、来源/规则版本、正文hash、主体及行号 | 正式发布校验、恢复、`read_fields`和审计 | 当前推荐仍消费原`CompanyFacts`，未将`read_fields`作为独立评分准入。证据身份校验始终保留，自动出证数量不代表全字段或收益已验证 |
+| 贯穿；扩大出证覆盖在后 | 字段状态、来源/规则身份、正文hash、主体及行号 | 正式发布校验、恢复、`read_fields`和审计 | 当前推荐仍消费原`CompanyFacts`，未将`read_fields`作为独立评分准入。证据身份校验始终保留，自动出证数量不代表全字段或收益已验证 |
 
 消费者依据：`published_company_research._observation/_qualified/_qualified_unlock`、`research.DeriveLatestDisclosedReportLoss/DeriveCorporateRiskFeatures/_financial_deterioration/_quality_score/_valuation_score/_growth_score`、`filters`及`scored_fusion._action_for`；D25权重和额外公司开关分别见`config/scoring.json`，当前准入不由本表重定义。减持解析见`company_event_extraction._reduction_plan/_planned_reduction_ratio/_risk_closure`，年度关联见`company_annual_income.ApplyCompanyAnnualIncome`。具体源码/配置身份和样本证据只记g原332及仓库外报告，不在此复制第二份进度。
 
@@ -545,7 +545,7 @@ HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒�
 
 ### 5.14 逐字段正式结论与升级验证
 
-阶段332已实现正式schema4，当前本机活动库已按本轮明确授权切换并使用匹配reader；具体备份、切换和运行回执见g原332。以下描述已实现机制及其覆盖边界，不表示全部字段质量通过。新reader显式拒绝旧schema；旧库先通过具名仓库外演练工具验证，实际切换仍须明确授权，不在普通读取或同步启动时偷偷迁移。
+阶段332已实现正式字段结论表及配套reader；当时PC的备份、切换和运行回执见g原332，不能据此断定其它PC已切换。当前按实际DDL、必需表和字段校验，忽略旧数字schema标记，不因编号不同拒绝资料；缺少字段结论表等真实结构仍显式拒绝，不表示全部字段质量通过。需要补齐的资料先通过具名仓库外演练工具验证，实际切换仍须明确授权，不在普通读取或同步启动时偷偷迁移。
 
 字段数值继续只由原财报、风险、减持和利好事实列拥有。新增`company_field_result`按`code/event_key/field`保存唯一正式结论，列为`state/applicable/reason`；`company_field_evidence`按同一字段键及`position`保存有序证据，列为`source/source_key/record_hash/body_hash/rule_id/published_at/start_line/end_line/quote/unit/subject_type`。证据外键级联到字段结论，字段结论级联到证券事实；不新增数值副本或第二份任务完成账本。实际DDL及约束见`company_facts_schema.py`，读写codec见`company_field_result_rows.py`。
 
@@ -559,7 +559,7 @@ HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒�
 
 正式只读入口`read_fields`与事实共用固定读事务，返回发布hash及类型化字段结论，实际值从同一事实列读取；支持取消。诊断读取这些正式结论，不另推导一份持久状态；具名材料按公开白名单展示有限行段、来源身份与字段状态，全市场汇总仍不把规则出证数当独立留出质量或召回率。
 
-统一`download/company/coverage`的`--company-field-migration-audit`要求显式新建的仓库外目录。工具只读并先核验旧schema3的文件发布凭据，备份期间核对来源代际；缺失/损坏凭据或变动均拒绝，不给源补签。外部一致备份保留旧12张业务表及原publication，新schema4目标逐表核对全部值、ID、关联及旧凭据，仅为旧字段建立未核实/不适用/待核基线。新目标生成独立迁移身份，保留旧提取身份和业务时点，通过完整性、外键及真实reader核验后才封存；操作失败保留隔离现场。路径重叠、符号链接或非空输出拒绝，源数据不删除、不重建；该报告的`production_authorized`始终为false，活动切换和完整发布仍按AGENTS授权边界处理。
+统一`download/company/coverage`的`--company-field-migration-audit`要求显式新建的仓库外目录。工具只读并先核验尚无字段结论表的源库结构和文件发布凭据，备份期间核对来源代际；缺失/损坏凭据或变动均拒绝，不给源补签。外部一致备份保留旧12张业务表及原publication，目标逐表核对全部值、ID、关联及旧凭据，仅为旧字段建立未核实/不适用/待核基线，不输出数字格式版本。新目标生成独立补齐身份，保留旧提取身份和业务时点，通过完整性、外键及真实reader核验后才封存；操作失败保留隔离现场。路径重叠、符号链接或非空输出拒绝，源数据不删除、不重建；该报告的`production_authorized`始终为false，活动切换和完整发布仍按AGENTS授权边界处理。
 
 同入口`--company-field-replay-keys`按具名材料执行隔离升级后真实发布与再次启动复查，复制并校验已有必要文本，不发网络请求。报告分别保存迁移、来源文件变化、两轮原文读取、新字段尝试、旧有效回执及字段/发布身份变化；缺文本与当前事件/上市范围依据不完整均显式拒绝或降级。第二次无新增字段尝试和零正文读取须以实际结果证明，不能由一次性字段回执推断整个发布准备已无重复读取；该工具不代签性能、召回率或生产切换。
 

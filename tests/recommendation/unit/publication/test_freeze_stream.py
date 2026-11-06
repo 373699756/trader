@@ -103,7 +103,7 @@ def test_scored_freeze_event_serializes_complete_replace_patch_without_snapshot_
 
     payload = SerializeEvent(UnifiedFreezeEventStream().publish_committed(BuildFreezeCommitted(freeze)))
 
-    assert payload["patch_schema_version"] == 4
+    assert "patch_schema_version" not in payload
     assert payload["replace"] is True
     assert payload["snapshot_id"] == freeze.version
     assert payload["publication_id"] == freeze.version
@@ -227,7 +227,7 @@ def test_overlay_event_serializes_row_patch_with_parent_and_projection_identitie
     assert payload["publication_id"] == freeze.version
     assert payload["projection_version"] != freeze.version
     assert payload["schema_version"] == "freeze_event"
-    assert payload["patch_schema_version"] == 4
+    assert "patch_schema_version" not in payload
     assert payload["quotes"] == [
         {
             "code": "600000",

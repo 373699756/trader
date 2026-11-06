@@ -118,7 +118,7 @@ def ProbeV5Samples(
                 )
         sizes = tuple(item.cache.path.stat().st_size for item in measurements)
         return {
-            "schema_version": "v5-samples-v1",
+            "schema_version": "v5-samples",
             "status": "passed" if equal else "failed",
             "summary": {
                 "synthetic": wide_source is None,

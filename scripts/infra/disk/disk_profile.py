@@ -98,7 +98,7 @@ def Main() -> int:
     print(
         json.dumps(
             {
-                "schema_version": "disk-profile-v1",
+                "schema_version": "disk-profile",
                 "status": "degraded" if unknown or actual_unknown or configured_mismatches or (
                     policy_audit is not None and (
                         policy_audit["missing_policy_calls"] or policy_audit["unpacked_policy_calls_require_review"]

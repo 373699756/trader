@@ -19,7 +19,7 @@ from trader.training.infra.profile.v1.samples import LearnedRankMatrixRequest, L
 from trader.training.infra.sample_cache import TemporaryTrainingSamples
 
 _DAY = date(2026, 1, 5)
-_NAMESPACE = ".temporary-training-v1"
+_NAMESPACE = ".temporary-training"
 
 
 def _populate(index: LearnedRankSampleIndex) -> None:

@@ -57,7 +57,6 @@ _BAR_ROW_PARAMETERS = len(PRICE_COLUMNS) + 2
 _INSERT_ROWS_PER_STATEMENT = 38
 _INSERT_ROW_PLACEHOLDERS = "(" + ",".join("?" for _ in range(_BAR_ROW_PARAMETERS)) + ")"
 _SCHEMA = SqliteSchema(
-    version=3,
     statements=(
         f"CREATE TABLE daily_price(code TEXT NOT NULL, trade_date INTEGER NOT NULL, {PRICE_WINDOW_SQL}, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
         "CREATE TABLE window_binding(profile TEXT NOT NULL, code TEXT NOT NULL, content_hash BLOB NOT NULL CHECK(length(content_hash)=32), "
@@ -284,14 +283,13 @@ class SQLiteQfqWindowCache:
                         return
             self._file_verification = VerifySqliteFile(
                 self.path,
-                3,
                 sqlite_policy=self._sqlite_policy,
                 previous=self._file_verification,
             )
 
     def publish_file(self) -> None:
         if self.path.is_file():
-            PublishSqliteFile(self.path, 3, sqlite_policy=self._sqlite_policy)
+            PublishSqliteFile(self.path, sqlite_policy=self._sqlite_policy)
             self._file_verification = None
             self._file_dirty = False
 

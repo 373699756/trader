@@ -221,14 +221,14 @@ class SQLiteTrainingSampleIndex:
             self._transaction.begin()
 
     def _initialize_contract(self, connection: SqliteConnection) -> None:
-        connection.run("INSERT INTO sample_contract VALUES(1,2,?,NULL)", (self._feature_hash,))
+        connection.run("INSERT INTO sample_contract(singleton,feature_hash,split_hash) VALUES(1,?,NULL)", (self._feature_hash,))
 
     def _validate_contract(self, connection: SqliteConnection) -> None:
-        row = connection.run("SELECT schema_version,feature_hash,split_hash FROM sample_contract WHERE singleton=1").require_one()
-        if row[0] != 2 or row[1] != self._feature_hash:
+        row = connection.run("SELECT feature_hash,split_hash FROM sample_contract WHERE singleton=1").require_one()
+        if row[0] != self._feature_hash:
             raise ValueError("training_sample_feature_contract_mismatch")
         expected = EncodeHash(self._prepared_split_hash) if self._prepared_split_hash is not None else None
-        if row[2] != expected:
+        if row[1] != expected:
             raise ValueError("training_sample_split_contract_mismatch")
 
     def _feature_columns(self, contract: TrainedHeadContract) -> tuple[str, ...]:

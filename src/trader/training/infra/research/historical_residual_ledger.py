@@ -363,7 +363,6 @@ __all__ = [
 
 
 _SCHEMA = SqliteSchema(
-    1,
     (
         """
         CREATE TABLE historical_prediction (

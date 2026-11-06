@@ -44,7 +44,7 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
     args = _build_parser(action_identity).parse_args(arguments)
     from scripts.engineering.migration import operations
 
-    schema = "migration-inspection-v1" if action_identity == "migration" else "trader_data_layout_migration"
+    schema = "migration-inspection" if action_identity == "migration" else "trader_data_layout_migration"
     result: dict[str, object]
     try:
         if action_identity == "migration":

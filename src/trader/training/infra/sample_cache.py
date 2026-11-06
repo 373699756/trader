@@ -23,7 +23,7 @@ from trader.training.infra.sample_sequences import SampleSequenceLayout
 from trader.training.infra.sample_schema import SampleFormatId
 
 _LOGGER = logging.getLogger(__name__)
-_TEMPORARY_SAMPLE_NAMESPACE = ".temporary-training-v1"
+_TEMPORARY_SAMPLE_NAMESPACE = ".temporary-training"
 _TEMPORARY_SAMPLE_NAME = re.compile(r"training-[0-9a-f]{32}")
 _FITTING_MATRIX_NAME = re.compile(r"sample-(?:fit|shared)-[a-z0-9_]{8}")
 _FITTING_WORKSPACE_FILES: tuple[tuple[str, frozenset[str], str], ...] = (

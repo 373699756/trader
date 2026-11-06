@@ -160,13 +160,12 @@ class HistoryPublicationMeasurement:
 
         def measured_publish(
             path: Path,
-            schema_version: int,
             *,
             sqlite_policy: SqliteIoPolicy,
             check: Callable[[], None] | None = None,
         ) -> SqlitePublicationFingerprint:
             with self.phase("file_seal", path.name) as record:
-                fingerprint = PublishSqliteFile(path, schema_version, sqlite_policy=sqlite_policy, check=check)
+                fingerprint = PublishSqliteFile(path, sqlite_policy=sqlite_policy, check=check)
                 record.update({
                     "database_bytes": fingerprint.database_size, "database_sha256": fingerprint.database_sha256,
                     "wal_bytes": fingerprint.wal_size, "wal_sha256": fingerprint.wal_sha256,
@@ -175,13 +174,12 @@ class HistoryPublicationMeasurement:
 
         def measured_prepare(
             path: Path,
-            schema_version: int,
             *,
             sqlite_policy: SqliteIoPolicy,
             check: Callable[[], None] | None = None,
         ) -> PreparedSqlitePublication:
             with self.phase("file_fingerprint", path.name) as record:
-                prepared = PrepareSqliteFilePublication(path, schema_version, sqlite_policy=sqlite_policy, check=check)
+                prepared = PrepareSqliteFilePublication(path, sqlite_policy=sqlite_policy, check=check)
                 record["database_bytes"] = prepared.fingerprint.database_size
                 record["wal_bytes"] = prepared.fingerprint.wal_size
                 return prepared
@@ -285,7 +283,7 @@ def ProfilePublishedHistory(
     started = time.perf_counter()
     with HistoryPublicationMeasurement(profiler=profiler) as publication, DatabaseMeasurement(root, sample_wal=False) as database:
         with publication.phase("source_verification", catalog.name):
-            catalog_verified = VerifySqliteFile(catalog, 2, sqlite_policy=sqlite_policy)
+            catalog_verified = VerifySqliteFile(catalog, sqlite_policy=sqlite_policy)
         if catalog_verified.wal is not None:
             raise ValueError("history_publication_profile_requires_closed_writers")
         with publication.phase("published_metadata", catalog.name):
@@ -301,7 +299,7 @@ def ProfilePublishedHistory(
         for name, references in sorted(groups.items()):
             source = root / name
             with publication.phase("source_verification", name):
-                verified = VerifySqliteFile(source, 2, sqlite_policy=sqlite_policy)
+                verified = VerifySqliteFile(source, sqlite_policy=sqlite_policy)
             inputs[source] = verified
             if verified.wal is not None:
                 raise ValueError("history_publication_profile_requires_closed_writers")
@@ -310,7 +308,7 @@ def ProfilePublishedHistory(
                 with publication.phase("copy_preparation", name, profile=False):
                     shutil.copyfile(source, target)
                 with publication.phase("source_stability", name):
-                    if VerifySqliteFile(source, 2, sqlite_policy=sqlite_policy, previous=verified) != verified:
+                    if VerifySqliteFile(source, sqlite_policy=sqlite_policy, previous=verified) != verified:
                         raise RuntimeError("history_publication_profile_source_changed")
                 ordered = tuple(sorted(references, key=lambda item: item.calendar_month))
                 sealed = HistoryPricePartition(
@@ -321,7 +319,7 @@ def ProfilePublishedHistory(
                     fingerprint_before_statistics=candidate in {"fingerprint-first", "combined"},
                 )
                 with publication.phase("copy_verification", name):
-                    copy_verified = VerifySqliteFile(target, 2, sqlite_policy=sqlite_policy)
+                    copy_verified = VerifySqliteFile(target, sqlite_policy=sqlite_policy)
                 equal = (
                     tuple(item.row_count for item in sealed) == tuple(item.row_count for item in ordered)
                     and copy_verified.fingerprint == verified.fingerprint
@@ -333,14 +331,14 @@ def ProfilePublishedHistory(
                 shutil.copyfile(catalog, target)
             HistoryControlIndex(target, sqlite_policy=sqlite_policy).publish_file()
             with publication.phase("copy_verification", catalog.name):
-                copied = VerifySqliteFile(target, 2, sqlite_policy=sqlite_policy)
+                copied = VerifySqliteFile(target, sqlite_policy=sqlite_policy)
             files.append({
                 "file": catalog.name, "bytes": catalog_verified.fingerprint.database_size,
                 "counts_and_bytes_equal": copied.fingerprint == catalog_verified.fingerprint,
             })
         with publication.phase("final_source_stability", "history"):
             for source, previous in inputs.items():
-                if VerifySqliteFile(source, 2, sqlite_policy=sqlite_policy, previous=previous) != previous:
+                if VerifySqliteFile(source, sqlite_policy=sqlite_policy, previous=previous) != previous:
                     raise RuntimeError("history_publication_profile_source_changed")
     return {
         "schema_version": "history-publication-profile",
