@@ -41,6 +41,8 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "persisting_partitions": "正式月库提交",
     "preparing_partitions": "准备月分片",
     "downloading_codes": "股票下载",
+    "preparing_publication": "发布准备",
+    "checking_partitions": "发布分区检查",
     "sealing_partitions": "数据库文件校验",
     "publishing_snapshot": "发布快照",
     "confirming_download": "下载断点提交",
@@ -64,6 +66,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "tencent_history": "股票",
     "persisting_partitions": "月份",
     "sealing_partitions": "数据库",
+    "checking_partitions": "月份",
     "history_published_gaps": "月份",
     "history_gap_resume": "处理项",
     "baostock_repair": "股票",
@@ -86,6 +89,7 @@ _COUNT_STAGES = frozenset(
         "tencent_history",
         "persisting_partitions",
         "sealing_partitions",
+        "checking_partitions",
         "supplier_industry",
     }
 )
@@ -95,7 +99,10 @@ _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplie
 
 def _suppress_transient(progress: HistorySyncProgress) -> bool:
     return progress.state in {"started", "waiting"} and not (
-        progress.stage in {"history_published_gaps", "history_gap_resume", "baostock_repair", "sealing_partitions", "preparing_partitions"}
+        progress.stage in {
+            "history_published_gaps", "history_gap_resume", "baostock_repair", "sealing_partitions",
+            "preparing_partitions", "preparing_publication", "checking_partitions", "publishing_snapshot",
+        }
         or progress.stage in {"tencent_history", "persisting_prices"}
         and progress.state == "waiting"
     )
@@ -213,9 +220,11 @@ class StderrHistorySyncProgress:
 
     def _publish(self, progress: HistorySyncProgress) -> None:
         now = self._monotonic()
-        monthly = progress.stage in {"persisting_partitions", "sealing_partitions", "history_published_gaps"}
+        monthly = progress.stage in {
+            "persisting_partitions", "sealing_partitions", "history_published_gaps", "checking_partitions",
+        }
         phase_key = (progress.stage, progress.current_item if monthly else None)
-        if progress.stage == "sealing_partitions" and progress.state == "started":
+        if progress.stage in {"sealing_partitions", "checking_partitions"} and progress.state == "started":
             self._phase_started[phase_key] = now
         else:
             self._phase_started.setdefault(phase_key, now)

@@ -40,6 +40,8 @@ HistorySyncProgressStage = Literal[
     "persisting_partitions",
     "preparing_partitions",
     "downloading_codes",
+    "preparing_publication",
+    "checking_partitions",
     "sealing_partitions",
     "publishing_snapshot",
     "confirming_download",

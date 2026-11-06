@@ -350,7 +350,10 @@ class HistoryPricePartition:
         return tuple(item for batch in self.iter_changed_batches(revisions) for item in batch)
 
     def has_observations_after(self, sequence: int) -> bool:
-        with closing(self._read_connection()) as connection:
+        with (
+            closing(self._read_connection()) as connection,
+            self._activity.watch(connection) if self._activity else nullcontext(),
+        ):
             return (
                 connection.run(
                     "SELECT 1 FROM daily_price_observation WHERE sync_sequence>? AND trade_date>=? AND trade_date<? LIMIT 1",

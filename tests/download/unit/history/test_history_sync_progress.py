@@ -201,33 +201,54 @@ def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:
     )
 
 
-def test_partition_sealing_prints_only_completed_month_with_elapsed_time(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 101.0, 106.0))
+def test_partition_sealing_reports_file_start_heartbeat_and_completion(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 101.0, 106.0, 127.0))
 
-    progress.publish(HistorySyncProgress("sealing_partitions", "started", 0, 100, current_item="2018-07"))
-    progress.publish(HistorySyncProgress("sealing_partitions", "completed", 1, 100, current_item="2018-07"))
+    progress.publish(HistorySyncProgress("sealing_partitions", "started", 0, 1, "prices_2026.sqlite3"))
+    progress.publish(HistorySyncProgress("sealing_partitions", "waiting", 0, 1, "prices_2026.sqlite3"))
+    progress.publish(HistorySyncProgress("sealing_partitions", "completed", 1, 1, "prices_2026.sqlite3"))
 
-    assert (
-        _compact_log(capsys.readouterr().err)
-        == "00:00:06 | 发布内容校验 | 完成 | 1/100 (1.00%) | 月份 2018-07 | 本月耗时 00:00:05\n"
-    )
+    assert _compact_log(capsys.readouterr().err).splitlines() == [
+        "00:00:01 | 数据库文件校验 | 开始 | 0/1 (0.00%) | 数据库 prices_2026.sqlite3 | 本库耗时 00:00:00",
+        "00:00:06 | 数据库文件校验 | 等待 | 0/1 (0.00%) | 数据库 prices_2026.sqlite3 | 本库耗时 00:00:05",
+        "00:00:27 | 数据库文件校验 | 完成 | 1/1 (100.00%) | 数据库 prices_2026.sqlite3 | 本库耗时 00:00:26",
+    ]
 
 
-def test_partition_sealing_batch_prints_month_range_and_batch_elapsed_time(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 101.0, 106.0))
+def test_publication_checks_report_month_progress_and_reset_each_month_elapsed(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100, 101, 106, 107, 108, 113, 114))
 
-    progress.publish(
-        HistorySyncProgress("sealing_partitions", "started", 72, 100, current_item="2024-01..2024-12")
-    )
-    progress.publish(
-        HistorySyncProgress("sealing_partitions", "completed", 84, 100, current_item="2024-01..2024-12")
-    )
+    progress.publish(HistorySyncProgress("checking_partitions", "started", 0, 2, "2026-01"))
+    progress.publish(HistorySyncProgress("checking_partitions", "waiting", 0, 2, "2026-01"))
+    progress.publish(HistorySyncProgress("checking_partitions", "completed", 1, 2, "2026-01"))
+    progress.publish(HistorySyncProgress("checking_partitions", "started", 1, 2, "2026-02"))
+    progress.publish(HistorySyncProgress("checking_partitions", "waiting", 1, 2, "2026-02"))
+    progress.publish(HistorySyncProgress("checking_partitions", "completed", 2, 2, "2026-02"))
 
-    assert (
-        _compact_log(capsys.readouterr().err)
-        == "00:00:06 | 发布内容校验 | 完成 | 84/100 (84.00%) | "
-        "月份 2024-01..2024-12 | 本批耗时 00:00:05\n"
-    )
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert len(lines) == 6
+    assert "发布分区检查 | 开始 | 0/2 (0.00%) | 月份 2026-01 | 本月耗时 00:00:00" in lines[0]
+    assert "等待 | 0/2 (0.00%) | 月份 2026-01 | 本月耗时 00:00:05" in lines[1]
+    assert "完成 | 1/2 (50.00%)" in lines[2]
+    assert "开始 | 1/2 (50.00%) | 月份 2026-02 | 本月耗时 00:00:00" in lines[3]
+    assert "等待 | 1/2 (50.00%) | 月份 2026-02 | 本月耗时 00:00:05" in lines[4]
+    assert "完成 | 2/2 (100.00%)" in lines[5]
+
+
+def test_publication_preparation_and_snapshot_start_are_not_silent(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(0, 1, 6, 7, 8))
+
+    progress.publish(HistorySyncProgress("preparing_publication", "started", 0, 1))
+    progress.publish(HistorySyncProgress("preparing_publication", "waiting", 0, 1))
+    progress.publish(HistorySyncProgress("preparing_publication", "completed", 1, 1))
+    progress.publish(HistorySyncProgress("publishing_snapshot", "started", 0, 1))
+
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert len(lines) == 4
+    assert "发布准备 | 开始 | 阶段耗时 00:00:00" in lines[0]
+    assert "发布准备 | 等待 | 阶段耗时 00:00:05" in lines[1]
+    assert "发布准备 | 完成 | 阶段耗时 00:00:06" in lines[2]
+    assert "发布快照 | 开始" in lines[3]
 
 
 def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) -> None:

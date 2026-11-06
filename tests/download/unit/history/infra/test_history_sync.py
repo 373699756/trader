@@ -122,6 +122,17 @@ def test_initial_cross_month_sync_batches_publication_proofs(tmp_path: Path) -> 
     )
 
     assert result.state == "completed"
+    preparation = tuple(value.state for value in progress.values if value.stage == "preparing_publication")
+    assert preparation == ("started", "completed")
+    checking = tuple(value for value in progress.values if value.stage == "checking_partitions")
+    assert tuple(
+        (value.state, value.completed_units, value.total_units, value.current_item) for value in checking
+    ) == (
+        ("started", 0, 2, "2026-01"),
+        ("completed", 1, 2, "2026-01"),
+        ("started", 1, 2, "2026-02"),
+        ("completed", 2, 2, "2026-02"),
+    )
     sealing = tuple(value for value in progress.values if value.stage == "sealing_partitions")
     assert tuple(
         (value.state, value.completed_units, value.total_units, value.current_item) for value in sealing
@@ -130,6 +141,58 @@ def test_initial_cross_month_sync_batches_publication_proofs(tmp_path: Path) -> 
         ("completed", 1, 1, "prices_2026.sqlite3"),
     )
     assert tuple(item.calendar_month for item in _snapshot(tmp_path).partitions) == (1, 2)
+
+
+@pytest.mark.parametrize("cancel_during_check", [False, True])
+def test_incremental_partition_check_heartbeats_preserve_the_published_snapshot(
+    tmp_path, monkeypatch, cancel_during_check,
+):
+    from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
+
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    config = _configuration(tmp_path)
+    assert RunHistoryFixture(config, FakeSupplier(days), clock=lambda: NOW).state == "completed"
+    previous = _snapshot(tmp_path)
+    progress = ProgressRecorder()
+    cancelled = False
+    elapsed = 0.0
+    original_check = HistoryPricePartition.has_observations_after
+
+    def advance():
+        nonlocal elapsed
+        elapsed += 5.0
+        return elapsed
+
+    def check(prices, sequence):
+        nonlocal cancelled
+        assert progress.values[-1].stage == "checking_partitions"
+        assert any(value.stage == "checking_partitions" and value.state == "started" for value in progress.values)
+        before = len(progress.values)
+        result = original_check(prices, sequence)
+        assert len(progress.values) > before
+        assert progress.values[-1].stage == "checking_partitions"
+        assert progress.values[-1].state == "waiting"
+        cancelled = cancel_during_check
+        prices._activity.tick()
+        return result
+
+    monkeypatch.setattr(
+        history_sync_module, "HistorySqliteActivity",
+        lambda report, cancel: HistorySqliteActivity(report, cancel, monotonic=advance),
+    )
+    monkeypatch.setattr(HistoryPricePartition, "has_observations_after", check)
+    advanced = (*days[1:], date(2026, 9, 11))
+    result = RunHistoryFixture(
+        config, FakeSupplier(advanced), clock=lambda: NOW + timedelta(days=1),
+        progress=progress, cancel_requested=lambda: cancelled,
+    )
+    assert result.state == ("cancelled" if cancel_during_check else "completed")
+    if cancel_during_check:
+        assert _snapshot(tmp_path) == previous
+        assert not any(value.stage == "publishing_snapshot" for value in progress.values)
+    else:
+        assert _snapshot(tmp_path).sequence == previous.sequence + 1
+    assert HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], previous)
 
 
 def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(

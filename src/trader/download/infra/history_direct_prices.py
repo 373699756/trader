@@ -21,6 +21,7 @@ from trader.download.domain.history_price_qualification import QualifyHistoryPai
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewRequestBudget
+from trader.download.domain.history_sync import HistorySyncProgressStage
 from trader.download.infra.history_download_index import HistoryDownloadTask
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPricePartitionError, HistoryPriceWriteSession
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
@@ -372,22 +373,28 @@ class HistoryDirectPrices:
     def publishable_partitions(
         self,
         dates: tuple[date, ...],
-        progress: Callable[[Literal["started", "waiting", "completed"], int, int, str], None],
+        progress: Callable[[HistorySyncProgressStage, Literal["started", "waiting", "completed"], int, int, str], None],
         *,
         exact_month_ranges: bool = False,
         fingerprint_before_statistics: bool = False,
     ) -> tuple[HistorySnapshotPartition, ...]:
         months = tuple(sorted(set(self._previous) | {(day.year, day.month) for day in dates}))
         references: dict[tuple[int, int], HistorySnapshotPartition] = {}
-        for year, month in months:
-            self._activity.tick()
-            target = self._month(year, month)
-            if not (self._root / f"prices_{year:04d}.sqlite3").exists():
-                target.initialize()
-            if (year, month) in self._previous and not target.has_observations_after(
-                self._previous[(year, month)].sequence
+        for completed, (year, month) in enumerate(months):
+            label = f"{year:04d}-{month:02d}"
+            progress("checking_partitions", "started", completed, len(months), label)
+            with self._activity.reporting(
+                partial(progress, "checking_partitions", "waiting", completed, len(months), label)
             ):
-                references[(year, month)] = self._previous[(year, month)]
+                self._activity.tick()
+                target = self._month(year, month)
+                if not (self._root / f"prices_{year:04d}.sqlite3").exists():
+                    target.initialize()
+                if (year, month) in self._previous and not target.has_observations_after(
+                    self._previous[(year, month)].sequence
+                ):
+                    references[(year, month)] = self._previous[(year, month)]
+            progress("checking_partitions", "completed", completed + 1, len(months), label)
 
         years = tuple(sorted(
             {year for year, month in months if (year, month) not in references}
@@ -395,10 +402,10 @@ class HistoryDirectPrices:
         ))
         for completed, year in enumerate(years):
             label = f"prices_{year:04d}.sqlite3"
-            progress("started", completed, len(years), label)
+            progress("sealing_partitions", "started", completed, len(years), label)
             selected = tuple(month for candidate_year, month in months if candidate_year == year and (year, month) not in references)
             with self._activity.reporting(
-                partial(progress, "waiting", completed, len(years), label)
+                partial(progress, "sealing_partitions", "waiting", completed, len(years), label)
             ):
                 if selected:
                     sealed = self._month(year, selected[0]).seal_months(
@@ -415,7 +422,7 @@ class HistoryDirectPrices:
                         sqlite_policy=self._sqlite_policy,
                         check=self._activity.tick,
                     )
-            progress("completed", completed + 1, len(years), label)
+            progress("sealing_partitions", "completed", completed + 1, len(years), label)
         return tuple(references[month] for month in months)
 
 __all__ = [

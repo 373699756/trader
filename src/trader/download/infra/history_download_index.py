@@ -5,6 +5,7 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import re
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 from trader.download.domain.history_maintenance import HistoryPriceGapReason, HistoryPriceGapSummary
 from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PriceRepairAttempts
 from trader.download.infra.history_inferred_review import HISTORY_INFERRED_REVIEW_SQL, RecordHistoryInferredSuspensions
+from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
@@ -269,6 +271,7 @@ class HistoryDownloadIndex:
 
     def gaps_by_code(
         self, calendar_dates: tuple[date, ...] | None = None, *, retryable_only: bool = True,
+        activity: HistorySqliteActivity | None = None,
     ) -> dict[str, tuple[date, ...]]:
         """Select calendar members; only Tencent retries apply the qfq cooldown."""
         if calendar_dates is not None and (not calendar_dates or calendar_dates != tuple(sorted(set(calendar_dates)))):
@@ -276,12 +279,17 @@ class HistoryDownloadIndex:
         positions = {day: index for index, day in enumerate(calendar_dates or ())}
         last = len(positions) - 1
         grouped: dict[str, list[date]] = {}
-        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+        with (
+            SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
+            activity.watch(connection) if activity is not None else nullcontext(),
+        ):
             for code, day, checked in connection.run(
                 "SELECT g.code,g.trade_date,u.cutoff_date FROM download_gaps g "
                 "LEFT JOIN download_qfq_unusable u ON u.code=g.code AND u.trade_date=g.trade_date "
                 "ORDER BY g.code,g.trade_date"
             ):
+                if activity is not None:
+                    activity.tick()
                 trade_date = DecodeDate(day)
                 if calendar_dates is not None and trade_date not in positions:
                     continue

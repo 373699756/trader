@@ -554,7 +554,7 @@ class _HistorySync:
         review_files = tuple(
             _ReviewPriceFile(path, _review_file_stamp(path), _review_file_stamp(Path(f"{path}-wal")))
             for path in sorted(root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"))
-        ) if self.price_review_budget is not None else ()
+        )
         activity = HistorySqliteActivity(
             lambda: _publish_progress(self.progress, "persisting_partitions", "waiting"),
             self.cancel,
@@ -603,21 +603,31 @@ class _HistorySync:
         repair.replay(inputs.batch.sequence, codes=allowed_codes)
         if self.progress is not None:
             self.progress.publish(HistorySyncProgress("baostock_repair", "completed", len(selected), len(selected), repair_summary=HistoryRepairSummary(attempted, repaired, len(selected) - attempted)))
-        remaining_gaps = self.index.gaps_by_code(inputs.calendar.open_dates, retryable_only=False)
-        for security in inputs.context.universe:
-            if missing_dates := remaining_gaps.get(security.code):
-                prices.record_missing(security, missing_dates)
-        self._review_batch(inputs, prices, flow, review_files)
-        if self.cancel():
-            raise KeyboardInterrupt
-        partitions = prices.publishable_partitions(
-            inputs.calendar.open_dates,
-            lambda state, done, total, month: _publish_progress(
-                self.progress, "sealing_partitions", state, (done, total), month
-            ),
-            exact_month_ranges=self.exact_month_ranges,
-            fingerprint_before_statistics=self.fingerprint_before_statistics,
-        )
+        try:
+            _publish_progress(self.progress, "preparing_publication", "started")
+            with activity.reporting(lambda: _publish_progress(self.progress, "preparing_publication", "waiting")):
+                remaining_gaps = self.index.gaps_by_code(
+                    inputs.calendar.open_dates, retryable_only=False, activity=activity,
+                )
+                for security in inputs.context.universe:
+                    activity.tick()
+                    if missing_dates := remaining_gaps.get(security.code):
+                        prices.record_missing(security, missing_dates)
+                self._review_batch(inputs, prices, flow, review_files)
+                if self.cancel():
+                    raise KeyboardInterrupt
+            _publish_progress(self.progress, "preparing_publication", "completed", (1, 1))
+            partitions = prices.publishable_partitions(
+                inputs.calendar.open_dates,
+                lambda stage, state, done, total, item: _publish_progress(
+                    self.progress, stage, state, (done, total), item
+                ),
+                exact_month_ranges=self.exact_month_ranges,
+                fingerprint_before_statistics=self.fingerprint_before_statistics,
+            )
+        except KeyboardInterrupt:
+            self._seal_deferred_review(review_files, include_created=True)
+            raise
         calendar, batch = inputs.calendar, inputs.batch
         snapshot = HistorySnapshot(
             batch.sequence,
