@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import math
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -72,11 +73,9 @@ from trader.recommendation.infra.normalization.columnar import (
     NormalizedMarketChangeSet,
     TargetedMarketChanges,
 )
-from trader.recommendation.infra.normalization.field_quality import REALTIME_SOURCES
 from trader.recommendation.infra.normalization.merge import (
     MergeMarketObservations,
     MergeObservationLimits,
-    ObservationFromQuote,
     OverlayCanonicalSnapshot,
 )
 from trader.recommendation.infra.normalization.merge_quote import RejectionReason
@@ -506,69 +505,63 @@ class MarketDataGateway:
             )
         except FutureTimeoutError:
             _require_current_round(request.cancelled)
-            self._mark_snapshot_degraded("tencent:late", max(requested_at, self._wall_clock()))
-            with self._state_lock:
-                return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+            return self._retain_targeted_quotes(codes, "tencent:late", request.cancelled, isolated=isolated)
         except SourceRequestSupersededError:
             _require_current_round(request.cancelled)
-            self._mark_snapshot_degraded("tencent:superseded", requested_at)
-            with self._state_lock:
-                return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+            return self._retain_targeted_quotes(codes, "tencent:superseded", request.cancelled, isolated=isolated)
         except Exception as exc:
             _require_current_round(request.cancelled)
-            self._mark_snapshot_degraded(f"tencent:{_cache_error_code(exc)}", requested_at)
-            with self._state_lock:
-                return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+            return self._retain_targeted_quotes(
+                codes, f"tencent:{_cache_error_code(exc)}", request.cancelled, isolated=isolated,
+            )
         completed_at = max(requested_at, self._wall_clock())
         _require_current_round(request.cancelled)
         if deadline is not None and completed_at >= deadline:
-            self._mark_snapshot_degraded("tencent:late", completed_at)
-            with self._state_lock:
-                return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
-        refreshed_codes = frozenset(
-            observation.subject_key
-            for observation in observations
-            if observation.subject_key in requested_codes and RejectionReason(observation, completed_at) is None
-        )
+            return self._retain_targeted_quotes(codes, "tencent:late", request.cancelled, isolated=isolated)
         with self._state_lock:
-            baseline = tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
-            # A directed result owns this code's new realtime cut. Older
-            # provider batches have different observation points and cannot
-            # participate in this merge, even through a different source name.
-            raw_baseline = tuple(
-                observation
-                for code in normalized_codes
-                for observation in self._latest_observations.get(code, {}).values()
-                if code not in refreshed_codes
-                or SourceName(observation.source) not in REALTIME_SOURCES
-                or "price" not in observation.fields
-            )
             references = tuple(
                 observation
                 for code, observation in self._reference_observations.items()
                 if code in requested_codes
             )
-        raw_codes = {observation.subject_key for observation in raw_baseline}
-        baseline_observations = tuple(
-            ObservationFromQuote(quote, source=quote.source, observed_at=completed_at)
-            for quote in baseline
-            if quote.code not in raw_codes and quote.code not in refreshed_codes
+        limits = MergeObservationLimits(
+            targeted_codes=codes,
+            max_age_seconds=request.max_observation_age_seconds,
+            preview_context=request.preview_context if isolated else self._preview_context,
         )
         merge_started = self._monotonic()
         snapshot = MergeMarketObservations(
-            (*raw_baseline, *baseline_observations, *observations, *references),
-            observed_at=completed_at,
-            merge_epoch=self._versions.advance("targeted"),
-            limits=MergeObservationLimits(
-                targeted_codes=codes,
-                max_age_seconds=request.max_observation_age_seconds,
-                preview_context=request.preview_context if isolated else self._preview_context,
-            ),
+            (*observations, *references), observed_at=completed_at,
+            merge_epoch=self._versions.advance("targeted"), limits=limits,
+        )
+        target_identities = {
+            (item.subject_key, SourceName(item.source), item.source_time, item.received_at, item.data_version)
+            for item in observations if _has_positive_target_price(item)
+        }
+        refreshed_codes = frozenset(
+            quote.code for quote in snapshot.quotes
+            if quote.code in requested_codes and quote.price is not None
+            and math.isfinite(quote.price) and quote.price > 0.0
+            and "market_data_degraded" not in quote.execution_restrictions
+            and (quote.code, quote.source, quote.source_time, quote.received_time, quote.data_version) in target_identities
+        )
+        observations = tuple(observation for observation in observations if observation.subject_key in refreshed_codes)
+        # Only this response's accepted price observations own the new cut.
+        # Failed codes retain their exact prior quote during the atomic commit;
+        # old realtime observations cannot supply a successful directed result.
+        snapshot = replace(
+            snapshot,
+            quotes=tuple(quote for quote in snapshot.quotes if quote.code in refreshed_codes),
+            field_sources={code: fields for code, fields in snapshot.field_sources.items() if code in refreshed_codes},
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         with self._state_lock:
             _require_current_round(request.cancelled)
-            return self._commit_candidate_snapshot_locked(observations, snapshot, completed_at, codes)
+            if deadline is not None and self._wall_clock() >= deadline:
+                return self._retain_targeted_quotes_locked(codes, "tencent:late", isolated=isolated)
+            return self._commit_candidate_snapshot_locked(
+                observations, snapshot, completed_at, codes, refreshed_codes, isolated=isolated,
+            )
 
     def _target_quote_observations(
         self,
@@ -636,23 +629,34 @@ class MarketDataGateway:
         snapshot: CanonicalMarketSnapshot,
         completed_at: datetime,
         codes: Sequence[str],
+        refreshed_codes: frozenset[str],
+        *,
+        isolated: bool,
     ) -> tuple[MarketQuote, ...]:
         commit_started = self._monotonic()
-        self._remember_observations_locked(observations, completed_at)
         previous = self._latest_snapshot
         commit_snapshot = OverlayCanonicalSnapshot(
             previous, snapshot, merge_epoch=self._versions.advance("targeted_commit")
         )
-        missing_codes = set(codes) - {observation.subject_key for observation in observations}
+        # Request failure facts remain observable even when no quote wins the
+        # overlay. Quote adoption must not erase this attempt's diagnosis.
+        commit_snapshot = replace(
+            _with_snapshot_degradation(commit_snapshot, set(snapshot.degraded_reasons)),
+            missing_reasons={**commit_snapshot.missing_reasons, **snapshot.missing_reasons},
+        )
+        committed = {quote.code: quote for quote in commit_snapshot.quotes}
+        successful_codes = {
+            quote.code for quote in snapshot.quotes
+            if quote.code in refreshed_codes and committed.get(quote.code) == quote
+        }
+        self._remember_observations_locked(
+            tuple(observation for observation in observations if observation.subject_key in successful_codes), completed_at,
+        )
+        missing_codes = set(codes) - successful_codes
         if missing_codes:
-            # A missing code retains its previous quote, so the quote overlay
-            # deliberately cannot carry this request's separate failure facts.
-            commit_snapshot = replace(
-                _with_snapshot_degradation(commit_snapshot, {"tencent:partial_response"}),
-                missing_reasons={
-                    **commit_snapshot.missing_reasons,
-                    **{f"{code}.price.tencent": "targeted_quote_missing" for code in sorted(missing_codes)},
-                },
+            commit_snapshot = self._retain_failed_target_quotes_locked(
+                _with_snapshot_degradation(commit_snapshot, {"tencent:partial_response"}), missing_codes,
+                restrict_execution=not isolated,
             )
         selected_codes = set(codes)
         self._latest_snapshot = commit_snapshot
@@ -669,6 +673,60 @@ class MarketDataGateway:
             "targeted_overlay_commit",
             _elapsed(commit_started, self._monotonic()),
         )
+        return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
+
+    def _retain_failed_target_quotes_locked(
+        self, snapshot: CanonicalMarketSnapshot, failed_codes: set[str],
+        *,
+        restrict_execution: bool,
+    ) -> CanonicalMarketSnapshot:
+        retained = {
+            code: replace(quote, execution_restrictions=tuple(sorted({
+                *quote.execution_restrictions, "market_data_degraded",
+            }))) if restrict_execution else quote
+            for code in failed_codes if (quote := self._latest_by_code.get(code)) is not None
+        }
+        previous_sources = self._latest_snapshot.field_sources if self._latest_snapshot is not None else {}
+        return replace(
+            snapshot,
+            quotes=tuple(
+                retained.get(quote.code, quote) for quote in snapshot.quotes
+                if quote.code not in failed_codes or quote.code in retained
+            ),
+            field_sources={
+                **snapshot.field_sources,
+                **{code: previous_sources[code] for code in retained if code in previous_sources},
+            },
+            missing_reasons={
+                **snapshot.missing_reasons,
+                **{f"{code}.price.tencent": "targeted_quote_missing" for code in sorted(failed_codes)},
+            },
+        )
+
+    def _retain_targeted_quotes(
+        self, codes: Sequence[str], reason: str, cancelled: Callable[[], bool] | None,
+        *,
+        isolated: bool,
+    ) -> tuple[MarketQuote, ...]:
+        with self._state_lock:
+            _require_current_round(cancelled)
+            return self._retain_targeted_quotes_locked(codes, reason, isolated=isolated)
+
+    def _retain_targeted_quotes_locked(
+        self, codes: Sequence[str], reason: str, *, isolated: bool,
+    ) -> tuple[MarketQuote, ...]:
+        previous = self._latest_snapshot
+        if previous is None:
+            return ()
+        snapshot = self._retain_failed_target_quotes_locked(
+            _with_snapshot_degradation(previous, {reason}), set(codes),
+            restrict_execution=not isolated,
+        )
+        self._latest_snapshot = snapshot
+        self._latest_changes = TargetedMarketChanges(previous, snapshot, codes)
+        for quote in snapshot.quotes:
+            if quote.code in codes:
+                self._latest_by_code[quote.code] = quote
         return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
 
     def update_reference_observations(self, observations: Sequence[SourceObservation]) -> None:
@@ -791,12 +849,6 @@ class MarketDataGateway:
     def canonical_snapshot(self) -> CanonicalMarketSnapshot | None:
         with self._state_lock:
             return self._latest_snapshot
-
-    def _mark_snapshot_degraded(self, reason: str, _observed_at: datetime) -> None:
-        with self._state_lock:
-            if self._latest_snapshot is None:
-                return
-            self._latest_snapshot = _with_snapshot_degradation(self._latest_snapshot, {reason})
 
     def current_quotes(self, codes: Sequence[str]) -> Sequence[MarketQuote]:
         with self._state_lock:
@@ -1070,6 +1122,14 @@ def _with_snapshot_degradation(
         degraded_reasons=merged_reasons,
         failure_categories=tuple(sorted(categories)),
         status=status,
+    )
+
+
+def _has_positive_target_price(observation: SourceObservation) -> bool:
+    price = observation.fields.get("price")
+    return (
+        isinstance(price, (int, float)) and not isinstance(price, bool)
+        and math.isfinite(price) and price > 0.0
     )
 
 

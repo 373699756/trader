@@ -8,8 +8,9 @@ import threading
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, TypedDict
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -33,6 +34,13 @@ SessionFactory = Callable[[], HttpTransport]
 COUNT_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"
 QUOTE_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
 _REQUEST_ATTEMPTS = 2
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_SOURCE_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_SOURCE_CLOCK = re.compile(r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})?")
+_SOURCE_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})?"
+)
 
 
 @dataclass(frozen=True)
@@ -131,6 +139,8 @@ class SinaClient:
         quotes = NormalizeQuotes(rows, received_at, normalizer=_quote_from_row)
         unique_codes = {quote.code for quote in quotes}
         if len(unique_codes) < total:
+            if any(_source_time(row, received_at) is None for row in rows):
+                raise RuntimeError("sina_source_time_unknown")
             raise RuntimeError(f"sina quote coverage is incomplete: {len(quotes)}/{total}")
         return quotes
 
@@ -280,6 +290,9 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
     code_match = re.search(r"(\d{6})", raw_code)
     if code_match is None:
         return None
+    source_time = _source_time(row, received_at)
+    if source_time is None:
+        return None
     code = code_match.group(1)
     name = str(row.get("name") or "").strip()
     high = ToFloat(row.get("high"))
@@ -307,13 +320,49 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
             market_cap=_scaled_market_cap(row.get("mktcap")),
             industry="",
             source="sina",
-            source_time=received_at,
+            source_time=source_time,
             received_time=received_at,
             data_version=f"sina:{int(received_at.timestamp())}",
             is_st="ST" in name.upper() or "退" in name,
             is_suspended=price is None or price <= 0,
         )
     )
+
+
+def _source_time(row: Mapping[str, object], received_at: datetime) -> datetime | None:
+    raw_time = row.get("ticktime")
+    if not isinstance(raw_time, str) or received_at.tzinfo is None or received_at.utcoffset() is None:
+        return None
+    stamp = raw_time.strip()
+    supplied_dates: list[date] = []
+    for field in ("day", "date"):
+        raw_date = row.get(field)
+        if raw_date is None or raw_date == "":
+            continue
+        if not isinstance(raw_date, str) or _SOURCE_DATE.fullmatch(raw_date.strip()) is None:
+            return None
+        try:
+            supplied_dates.append(date.fromisoformat(raw_date.strip()))
+        except ValueError:
+            return None
+    if len(set(supplied_dates)) > 1:
+        return None
+    if _SOURCE_TIMESTAMP.fullmatch(stamp) is None:
+        # HQNodeData commonly supplies only a clock. Its quote date cannot be
+        # inferred from when an old or repeated response happens to arrive.
+        if not supplied_dates or _SOURCE_CLOCK.fullmatch(stamp) is None:
+            return None
+        stamp = f"{supplied_dates[0].isoformat()}T{stamp}"
+    try:
+        parsed = datetime.fromisoformat(f"{stamp[:-1]}+00:00" if stamp.endswith("Z") else stamp)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=_SHANGHAI)
+    source_time = parsed.astimezone(_SHANGHAI)
+    if supplied_dates and source_time.date() != supplied_dates[0]:
+        return None
+    return source_time if source_time <= received_at else None
 
 
 def _amplitude(high: float | None, low: float | None, previous_close: float | None) -> float | None:

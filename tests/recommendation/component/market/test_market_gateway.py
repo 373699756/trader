@@ -864,13 +864,15 @@ def test_targeted_missing_after_success_keeps_last_quotes_and_current_gap(return
 
     result = tuple(gateway.fetch_candidates(codes, observed_at=first_at, force=True))
 
-    assert result[1] == first_result[1]
+    assert result[1] == replace(first_result[1], execution_restrictions=tuple(sorted({
+        *first_result[1].execution_restrictions, "market_data_degraded",
+    })))
     assert result[1].source_time == result[1].received_time == first_at
     assert result[1].age_seconds(next_at) == 45
     snapshot = gateway.canonical_snapshot()
     assert snapshot is not None
     if returned_quote == "none":
-        assert result == first_result
+        assert all("market_data_degraded" in quote.execution_restrictions for quote in result)
         assert gateway.health().sources["tencent"].error_count == 1
         assert any(reason.startswith("tencent:") for reason in snapshot.degraded_reasons)
     else:
@@ -880,7 +882,8 @@ def test_targeted_missing_after_success_keeps_last_quotes_and_current_gap(return
             assert result[0].source_time == next_at
             assert result[0].price == 12.03
         else:
-            assert result == first_result
+            assert all("market_data_degraded" in quote.execution_restrictions for quote in result)
+            assert [quote.source_time for quote in result] == [quote.source_time for quote in first_result]
 
 
 def test_targeted_partial_response_keeps_missing_quotes_old_and_marks_the_gap() -> None:
@@ -908,7 +911,9 @@ def test_targeted_partial_response_keeps_missing_quotes_old_and_marks_the_gap() 
 
     assert refreshed[initial[0].code].source_time == refreshed_at
     missing = refreshed[initial[1].code]
-    assert missing == previous[initial[1].code]
+    assert missing == replace(previous[initial[1].code], execution_restrictions=tuple(sorted({
+        *previous[initial[1].code].execution_restrictions, "market_data_degraded",
+    })))
     assert missing.source_time == missing.received_time == NOW
     assert missing.age_seconds(refreshed_at) == 45
     snapshot = gateway.canonical_snapshot()
@@ -966,9 +971,16 @@ def test_targeted_invalid_or_cancelled_result_preserves_last_quote(failure) -> N
         with pytest.raises(MarketDataDeadlineExceededError, match="round_input_cancelled"):
             refresh()
     else:
-        assert refresh() == previous
+        retained = refresh()
+        assert retained == tuple(replace(quote, execution_restrictions=tuple(sorted({
+            *quote.execution_restrictions, "market_data_degraded",
+        }))) for quote in previous)
 
-    assert tuple(gateway.current_quotes((initial.code,))) == previous
+    current = tuple(gateway.current_quotes((initial.code,)))
+    if failure == "cancelled":
+        assert current == previous
+    else:
+        assert current == retained
     if failure in ("future", "late", "cancelled"):
         assert not any(
             observation.data_version == "invalid-target"

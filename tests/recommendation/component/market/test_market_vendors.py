@@ -50,6 +50,8 @@ from trader.recommendation.infra.market_data.providers.tencent import TencentFul
 from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 from trader.recommendation.domain.candidate.filters import HardFilter
 from tests.helpers.shared.configuration import HardFilterPolicyFixture
+from tests.helpers.shared.reference_fixtures import PreparedFixture
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
 
 import pytest
 
@@ -235,7 +237,7 @@ def test_tencent_short_status_payload_is_rejected_without_indexing_past_its_end(
     assert len(session.calls) == 1
 
 
-def test_tencent_quote_without_supplier_timestamp_uses_shanghai_fallback() -> None:
+def test_tencent_quote_without_supplier_timestamp_is_rejected() -> None:
     fields = [""] * 50
     fields[1:5] = ["测试股份", "600001", "12.00", "11.65"]
     body = f'v_sh600001="{"~".join(fields)}";'.encode("gb18030")
@@ -246,10 +248,8 @@ def test_tencent_quote_without_supplier_timestamp_uses_shanghai_fallback() -> No
         wall_clock=lambda: NOW.astimezone(timezone.utc),
     )
 
-    quote = client.fetch_quotes(("600001",))[0]
-
-    assert quote.source_time == NOW
-    assert quote.source_time.tzinfo == ZoneInfo("Asia/Shanghai")
+    with pytest.raises(RuntimeError, match="no usable candidate quotes"):
+        client.fetch_quotes(("600001",))
 
 
 def test_tencent_full_market_rejects_partial_coverage_and_preserves_targeted_partial_results() -> None:
@@ -740,6 +740,7 @@ def test_sina_market_request_uses_injected_transport() -> None:
                     "amount": "300000000",
                     "volume": "25000000",
                     "mktcap": "3000000",
+                    "ticktime": NOW.isoformat(),
                 }
             ],
         ]
@@ -779,6 +780,7 @@ def test_sina_full_market_pages_are_fetched_with_bounded_parallelism() -> None:
                         "symbol": f"sh{600000 + (page - 1) * 100 + index:06d}",
                         "name": "测试股份",
                         "trade": "12.00",
+                        "ticktime": NOW.isoformat(),
                     }
                     for index in range(100 if page < 3 else 1)
                 ]
@@ -829,7 +831,7 @@ def test_sina_refills_a_free_worker_before_the_slowest_page_finishes() -> None:
                 third_started.set()
             return FakeResponse(
                 [
-                    {"symbol": f"sh{600000 + (page - 1) * 100 + index:06d}", "trade": "12.00"}
+                    {"symbol": f"sh{600000 + (page - 1) * 100 + index:06d}", "trade": "12.00", "ticktime": NOW.isoformat()}
                     for index in range(100 if page < 3 else 1)
                 ]
             )
@@ -918,7 +920,7 @@ def test_sina_market_source_retries_transient_page_504() -> None:
         [
             b"1",
             HttpStatusError(504),
-            [{"symbol": "sh600001", "name": "测试股份", "trade": "12.00"}],
+            [{"symbol": "sh600001", "name": "测试股份", "trade": "12.00", "ticktime": NOW.isoformat()}],
         ]
     )
     sina = SinaClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: sina_session)
@@ -1131,11 +1133,15 @@ def test_candidate_feature_service_prefers_newer_tencent_quote_over_market_quote
         circuit_breaker_seconds=60,
         wall_clock=lambda: NOW + timedelta(seconds=1),
     )
+    reference = PreparedFixture(NOW)
     service = _service(
         gateway,
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         wall_clock=lambda: NOW,
+        published_references=PublishedReferences(
+            lambda: reference, lambda: reference.identity, lambda _: (), max_age_seconds=86400,
+        ),
     )
     service.fetch_market_features(NOW)
 
