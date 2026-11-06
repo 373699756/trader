@@ -961,7 +961,7 @@ D25完整评价包含T+2、T+3、T+4、T+5四个期限，聚合取四项算术�
 
 ### 16.7 推荐持久化物理字典
 
-以下按源码SqliteSchema/SQL与codec核对，在仅内存SQLite执行DDL读取table_info/index_list，未打开活动业务数据库。路径以data_dir=data为例，profile为v1/v2/v3/v5。四处共8张表、40个列实例（两个schema_contract分别列出），无年度重复字典；全部列默认无DEFAULT，除failure_code外NOT NULL。日为epoch日、时为UTC微秒，由`infra/sqlite_codec`转换；BLOB哈希为32字节。结构、约束、合同标识和codec共同校验，不再读取或写入数字schema版本；已有资料中的编号列不参与准入，业务字段及事件类型文本仍须完整，不把本章当迁库授权。
+以下按源码SqliteSchema/SQL与codec核对，在仅内存SQLite执行DDL读取table_info/index_list，未打开活动业务数据库。路径以data_dir=data为例，profile为v1/v2/v3/v5。四处共8张表、40个列实例（两个schema_contract分别列出），无年度重复字典；全部列默认无DEFAULT，除failure_code外NOT NULL。日为epoch日、时为UTC微秒，由`infra/sqlite_codec`转换；BLOB哈希为32字节。只按当前结构、约束、合同标识和codec校验，不设置数字schema版本，也不忽略旧列或转换旧格式；业务字段及事件类型文本仍须完整。下载资料结构不兼容时删除后重新下载，模型与正式冻结记录保持独立数据边界。
 
 #### `data/recommendation/<profile>/freeze.sqlite3`
 

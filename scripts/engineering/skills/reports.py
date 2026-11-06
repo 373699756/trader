@@ -80,7 +80,10 @@ def _load(path: Path) -> dict[str, object]:
     if target.is_symlink() or target.stat().st_size > 1024 * 1024:
         raise ValueError("report must be a bounded regular JSON file")
     raw = json.loads(target.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or not {"suite_digest", "skill_digest", "cli_version", "results"}.issubset(raw):
+    if not isinstance(raw, dict) or set(raw) != {
+        "suite_digest", "skill_digest", "cli_version", "harness_digest", "model_selection",
+        "expected_runs", "complete", "exit_code", "results",
+    }:
         raise ValueError("invalid report structure")
     return raw
 

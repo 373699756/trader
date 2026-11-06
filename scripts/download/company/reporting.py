@@ -32,19 +32,7 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
             )) and all(source.get(name) is True for name in (
                 "source_input_unchanged", "collection_backup_generation_stable", "original_valid_receipts_unchanged",
                 "second_fields_and_publication_unchanged", "second_zero_publication_text_reads",
-            )) and source.get("migration_status") == "passed"
-        return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
-    if schema == "company-field-migration":
-        valid = (
-            isinstance(source.get("status"), str) and source.get("status") in ("passed", "degraded", "failed")
-            and source.get("read_only_source") is True and source.get("isolated_copy") is True
-            and source.get("production_authorized") is False and source.get("source_schema") == 3
-            and source.get("target_schema") == 4 and source.get("field_correctness_verified") is False
-        )
-        if source.get("status") == "passed":
-            valid = valid and _migration_count(source.get("source_data_writes")) == 0 and all(source.get(name) is True for name in (
-                "source_input_unchanged", "business_data_unchanged", "original_receipts_unchanged",
-                "target_reader_verified", "target_integrity_verified", "target_foreign_keys_verified",
+                "facts_backup_generation_stable",
             ))
         return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
     if schema in ("company-annual-income-source", "company-structured-field-sampling"):
@@ -408,6 +396,7 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
                 "original_valid_receipts_unchanged", "second_fields_and_publication_unchanged",
                 "second_zero_publication_text_reads", "source_input_unchanged", "fields_truncated", "deadline_exceeded",
                 "collection_source_files_unchanged", "facts_source_files_unchanged", "source_empty_wal_created",
+                "facts_backup_generation_stable",
             )},
             **{name: _migration_count(source.get(name)) for name in (
                 "network_requests", "source_data_writes", "required_texts", "copied_texts", "missing_texts",
@@ -417,7 +406,7 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
                 "first_field_attempted", "second_field_attempted", "second_new_field_attempted", "fields",
             )},
             **{name: _text(source.get(name), 110) for name in (
-                "migration_status", "first_publication_hash", "second_publication_hash", "failure_category", "failure_code",
+                "first_publication_hash", "second_publication_hash", "failure_category", "failure_code",
             )},
             "source_input_comparison": "database_wal_receipt_sha256_exact",
             "codes": [code for code in (codes[:6] if isinstance(codes, (tuple, list)) else [])
@@ -433,33 +422,6 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
             **{name: _digest_triplet(source.get(name)) for name in (
                 "collection_source_files_sha256_before", "collection_source_files_sha256_after",
             )},
-        }
-        return
-    if source.get("schema_version") == "company-field-migration":
-        payload["summary"] = {
-            **{name: source.get(name) is True for name in (
-                "read_only_source", "isolated_copy",
-                "baseline_is_not_field_verification", "source_input_unchanged", "business_data_unchanged",
-                "original_receipts_unchanged", "target_reader_verified", "target_integrity_verified",
-                "target_foreign_keys_verified", "deadline_exceeded",
-            )},
-            **{name: _migration_count(source.get(name)) for name in (
-                "source_schema", "target_schema", "source_data_writes", "fields",
-            )},
-            **{name: _text(source.get(name), 64) for name in (
-                "source_publication_hash", "source_extraction_hash", "source_snapshot_sha256",
-                "target_publication_hash", "failure_category",
-            )},
-            "production_authorized": False, "field_correctness_verified": False,
-            "field_states": _bounded_migration_counts(source.get("field_states"), (
-                "verified", "present_unverified", "not_applicable", "pending_download", "pending_extraction",
-                "pending_publication", "verification_required", "unsupported", "out_of_range", "not_disclosed",
-            )),
-            "preserved_business_tables": _bounded_migration_counts(source.get("preserved_business_tables"), (
-                "company_facts", "company_input_receipt", "company_evidence_ref", "company_risk_event",
-                "company_reduction_plan", "company_positive_event", "company_positive_milestone", "company_unlock",
-                "company_review", "company_risk_evidence", "company_positive_evidence", "company_exclusion",
-            )),
         }
         return
     if source.get("schema_version") == "company-field-material":

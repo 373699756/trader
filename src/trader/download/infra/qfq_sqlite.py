@@ -26,7 +26,7 @@ from trader.download.infra.published_history_codec import EncodePublishedHistory
 from trader.download.domain.qfq_window import QfqWindowConfiguration, QfqWindowSnapshot, QfqWindowState
 from trader.download.domain.qfq_planning import QfqNonTradingFact, QfqPlanningSnapshot, QfqPlanningState
 from trader.download.infra.qfq_nontrading import (
-    EnsureNonTradingProvenance, NonTradingProvenanceUpgradeRequired, ObservedNonTradingFacts, ReadNonTradingFacts, ReplaceNonTradingFacts,
+    ObservedNonTradingFacts, ReadNonTradingFacts, ReplaceNonTradingFacts,
 )
 from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewRequestBudget
 from trader.download.infra.qfq_review_guard import GuardQfqReviewSqlite
@@ -56,17 +56,6 @@ _BAR_ROW_PARAMETERS = len(PRICE_COLUMNS) + 2
 # 38 structured rows use 988 parameters, below SQLite's older 999-parameter limit.
 _INSERT_ROWS_PER_STATEMENT = 38
 _INSERT_ROW_PLACEHOLDERS = "(" + ",".join("?" for _ in range(_BAR_ROW_PARAMETERS)) + ")"
-_SCHEMA = SqliteSchema(
-    statements=(
-        f"CREATE TABLE daily_price(code TEXT NOT NULL, trade_date INTEGER NOT NULL, {PRICE_WINDOW_SQL}, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
-        "CREATE TABLE window_binding(profile TEXT NOT NULL, code TEXT NOT NULL, content_hash BLOB NOT NULL CHECK(length(content_hash)=32), "
-        "source TEXT NOT NULL, start_date INTEGER NOT NULL, end_date INTEGER NOT NULL, "
-        "PRIMARY KEY(profile,code)) WITHOUT ROWID",
-        "CREATE TABLE window_calendar(profile TEXT NOT NULL, trade_date INTEGER NOT NULL, PRIMARY KEY(profile,trade_date)) WITHOUT ROWID",
-        "CREATE TABLE window_completion(code TEXT PRIMARY KEY, cutoff_date INTEGER NOT NULL, source TEXT NOT NULL) WITHOUT ROWID",
-        "CREATE TABLE window_publication(profile TEXT PRIMARY KEY, publication_id TEXT NOT NULL) WITHOUT ROWID",
-    ),
-)
 _POPULATION_SQL = (
     "CREATE TABLE IF NOT EXISTS window_population(profile TEXT NOT NULL, code TEXT NOT NULL, "
     "PRIMARY KEY(profile,code)) WITHOUT ROWID"
@@ -77,7 +66,21 @@ _REPAIR_SQL = (
     PRICE_REPAIR_ATTEMPT_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1),
     "CREATE TABLE IF NOT EXISTS price_issue(code TEXT NOT NULL, trade_date INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
     "CREATE TABLE IF NOT EXISTS price_candidate(code TEXT NOT NULL, trade_date INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
-    "CREATE TABLE IF NOT EXISTS price_nontrading(code TEXT NOT NULL, trade_date INTEGER NOT NULL, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
+    "CREATE TABLE price_nontrading(code TEXT NOT NULL,trade_date INTEGER NOT NULL,kind TEXT NOT NULL,"
+    "checked_on INTEGER,source TEXT,PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
+)
+_SCHEMA = SqliteSchema(
+    statements=(
+        f"CREATE TABLE daily_price(code TEXT NOT NULL, trade_date INTEGER NOT NULL, {PRICE_WINDOW_SQL}, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
+        "CREATE TABLE window_binding(profile TEXT NOT NULL, code TEXT NOT NULL, content_hash BLOB NOT NULL CHECK(length(content_hash)=32), "
+        "source TEXT NOT NULL, start_date INTEGER NOT NULL, end_date INTEGER NOT NULL, "
+        "PRIMARY KEY(profile,code)) WITHOUT ROWID",
+        "CREATE TABLE window_calendar(profile TEXT NOT NULL, trade_date INTEGER NOT NULL, PRIMARY KEY(profile,trade_date)) WITHOUT ROWID",
+        "CREATE TABLE window_completion(code TEXT PRIMARY KEY, cutoff_date INTEGER NOT NULL, source TEXT NOT NULL) WITHOUT ROWID",
+        "CREATE TABLE window_publication(profile TEXT PRIMARY KEY, publication_id TEXT NOT NULL) WITHOUT ROWID",
+        _POPULATION_SQL,
+        *_REPAIR_SQL,
+    ),
 )
 
 
@@ -149,7 +152,7 @@ class SQLiteQfqWindowCache:
             return
         with closing(self._connection(review_budget=review_budget)) as connection, GuardQfqReviewSqlite(connection, review_budget):
             # A rolled-back first publication has no schema or visible windows.
-            # Any populated or versioned incompatible database still fails closed.
+            # Populated incompatible databases require a fresh download.
             if not HasSqliteSchema(connection, _SCHEMA):
                 yield None
                 return
@@ -166,10 +169,6 @@ class SQLiteQfqWindowCache:
         with closing(self._connection(write=True, review_budget=review_budget)) as connection, SqliteTransaction(connection, immediate=True):
             with GuardQfqReviewSqlite(connection, review_budget):
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
-                connection.run(_POPULATION_SQL)
-                for statement in _REPAIR_SQL:
-                    connection.run(statement)
-                EnsureNonTradingProvenance(connection)
                 yield connection
         self._mark_publication()
 
@@ -205,7 +204,7 @@ class SQLiteQfqWindowCache:
         self, codes: frozenset[str] | None = None, dates: tuple[date, ...] | None = None
     ) -> tuple[PriceIssue, ...]:
         with self._read_connection() as connection:
-            if connection is None or connection.run("SELECT 1 FROM sqlite_master WHERE name='price_issue'").fetchone() is None:
+            if connection is None:
                 return ()
             grouped: dict[str, list[date]] = {}
             reasons: dict[str, str] = {}
@@ -259,7 +258,7 @@ class SQLiteQfqWindowCache:
     def repair_reference(self, code: str) -> PublishedHistoryWindow:
         cells = {cell.trade_date: cell for cell in self.read_code(code).cells}
         with self._read_connection() as connection:
-            if connection is not None and connection.run("SELECT 1 FROM sqlite_master WHERE name='price_candidate'").fetchone():
+            if connection is not None:
                 for day, payload in connection.run("SELECT trade_date,payload FROM price_candidate WHERE code=?", (code,)):
                     cell = DecodePublishedHistoryCellPayload(code, DecodeDate(day).isoformat(), payload)
                     if cell.unadjusted is not None:
@@ -475,17 +474,15 @@ class SQLiteQfqWindowCache:
         facts: dict[str, list[QfqNonTradingFact]] = {}
         for fact in ReadNonTradingFacts(connection, codes, review_budget=review_budget):
             facts.setdefault(fact.code, []).append(fact)
-        has_checks = bool(connection.run("SELECT 1 FROM sqlite_master WHERE name='price_tencent_check'").fetchone())
         for start in range(0, len(codes), 128):
             if review_budget is not None:
                 review_budget.check_deadline()
             batch = codes[start:start + 128]
             placeholders = ",".join("?" for _ in batch)
-            check_join = " LEFT JOIN price_tencent_check AS checks ON checks.code=binding.code" if has_checks else ""
-            check_date = "checks.trade_date" if has_checks else "NULL"
             for code, source, completed_day, completed_source, checked_on in connection.run(
-                f"SELECT binding.code,binding.source,completion.cutoff_date,completion.source,{check_date} FROM window_binding AS binding "
-                "LEFT JOIN window_completion AS completion ON completion.code=binding.code" + check_join +
+                "SELECT binding.code,binding.source,completion.cutoff_date,completion.source,checks.trade_date FROM window_binding AS binding "
+                "LEFT JOIN window_completion AS completion ON completion.code=binding.code "
+                "LEFT JOIN price_tencent_check AS checks ON checks.code=binding.code"
                 f" WHERE binding.profile=? AND binding.code IN ({placeholders}) ORDER BY binding.code",
                 (self.profile, *batch),
             ):
@@ -499,7 +496,7 @@ class SQLiteQfqWindowCache:
 
     def _has_price_issues(self, codes: tuple[str, ...], calendar: tuple[date, ...]) -> bool:
         with self._read_connection() as connection:
-            if connection is None or not connection.run("SELECT 1 FROM sqlite_master WHERE name='price_issue'").fetchone():
+            if connection is None:
                 return False
             for start in range(0, len(codes), 128):
                 batch = codes[start:start + 128]
@@ -534,31 +531,24 @@ class SQLiteQfqWindowCache:
         for code in allowed_codes:
             _validate_code(code)
         changes: list[tuple[SQLiteQfqWindowCache, tuple[str, ...]]] = []
-        needs_provenance_upgrade = False
         with self._read_connection() as connection:
             if connection is None:
                 return (), 0
             with SqliteTransaction(connection):
-                needs_provenance_upgrade = NonTradingProvenanceUpgradeRequired(connection)
-                declared = connection.run(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='window_population'"
-                ).fetchone() is not None
                 for cache in (self, peer):
                     desired = tuple(
                         row[0] for row in connection.run(
                             "SELECT code FROM window_binding WHERE profile=? ORDER BY code", (cache.profile,),
                         ) if row[0] in allowed_codes
                     )
-                    # A missing declaration is initialized only by this writer,
-                    # using the caller's current eligibility, never by a reader.
                     previous = tuple(
                         row[0] for row in connection.run(
                             "SELECT code FROM window_population WHERE profile=? ORDER BY code", (cache.profile,),
                         )
-                    ) if declared else None
+                    )
                     if previous != desired or bool(cache._publication_id(connection)) != bool(desired):
                         changes.append((cache, desired))
-        if not changes and not needs_provenance_upgrade:
+        if not changes:
             return (), 0
         with self._write_connection() as connection:
             for cache, desired in changes:

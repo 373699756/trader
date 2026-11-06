@@ -10,37 +10,15 @@ from scripts.download.company.cli import BuildParser, ParseOptions
 from scripts.download.company.commands import BuildCommands
 
 
-def test_field_migration_public_mode_requires_external_directory_and_preserves_worker_flag(tmp_path):
-    parser = BuildParser("company-resume")
-    with pytest.raises(ValueError, match="requires a new external"):
-        ParseOptions(parser.parse_args(["--company-field-migration-audit"]))
-    options = ParseOptions(parser.parse_args([
-        "--company-field-migration-audit", "--company-replay-directory", str(tmp_path / "candidate"),
-    ]))
-    command, = BuildCommands(options)
-    assert "--field-migration-only" in command.argv
-    assert "--directory" in command.argv
-    assert options.company_field_migration_audit
-
-
-def test_field_migration_public_mode_rejects_symbolic_link_before_path_resolution(tmp_path):
-    destination = tmp_path / "actual"
-    destination.mkdir()
-    link = tmp_path / "linked"
-    link.symlink_to(destination, target_is_directory=True)
-    parser = BuildParser("company-resume")
-    with pytest.raises(ValueError, match="symbolic links"):
-        ParseOptions(parser.parse_args([
-            "--company-field-migration-audit", "--company-replay-directory", str(link),
-        ]))
-
-
-def test_field_migration_cannot_be_combined_with_other_company_modes(tmp_path):
+def test_field_schema_migration_flag_is_not_supported():
     with pytest.raises(SystemExit):
-        BuildParser("company-resume").parse_args([
-            "--company-field-migration-audit", "--company-database-audit",
-            "--company-replay-directory", str(tmp_path / "candidate"),
-        ])
+        BuildParser("company-resume").parse_args(["--company-field-migration-audit"])
+
+
+
+
+
+
 
 
 def test_field_replay_public_mode_preserves_explicit_keys_and_requires_isolation(tmp_path):
@@ -80,41 +58,8 @@ def test_material_field_conclusions_bound_members_and_do_not_publish_full_source
     assert "PRIVATE_FULL_TEXT" not in json.dumps(report)
 
 
-@pytest.mark.parametrize("missing", [None, "business_data_unchanged", "original_receipts_unchanged", "target_reader_verified"])
-def test_migration_report_requires_actual_isolated_preservation_and_does_not_authorize_production(missing):
-    payload = {
-        "schema_version": "company-field-migration", "status": "passed", "read_only_source": True,
-        "isolated_copy": True, "production_authorized": False, "source_schema": 3, "target_schema": 4,
-        "source_data_writes": 0, "field_correctness_verified": False,
-        "source_input_unchanged": True, "business_data_unchanged": True, "original_receipts_unchanged": True,
-        "target_reader_verified": True, "target_integrity_verified": True, "target_foreign_keys_verified": True,
-        "source_files_sha256_before": {"PRIVATE_SOURCE_PATH": "PRIVATE_SOURCE_PAYLOAD"},
-    }
-    if missing is not None:
-        payload.pop(missing)
-    report = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
-    assert report["status"] == ("passed" if missing is None else "failed")
-    assert report["checks"][0]["summary"]["production_authorized"] is False
-    assert "PRIVATE_SOURCE" not in json.dumps(report)
 
 
-def test_migration_projection_limits_state_and_table_counts_and_rejects_raw_nested_values():
-    payload = {
-        "schema_version": "company-field-migration", "status": "failed", "read_only_source": True,
-        "isolated_copy": True, "production_authorized": False, "source_schema": 3, "target_schema": 4,
-        "field_correctness_verified": False, "fields": {"PRIVATE_RAW": ["PRIVATE_RAW"] * 1000},
-        "business_data_unchanged": {"PRIVATE_RAW": "PRIVATE_RAW"},
-        "field_states": {"present_unverified": 7, "verified": True, "not_disclosed": 10**40,
-                         "PRIVATE_RAW": {"PRIVATE_RAW": "PRIVATE_RAW"}},
-        "preserved_business_tables": {"company_facts": 2, "company_review": -1,
-                                      "PRIVATE_RAW": ["PRIVATE_RAW"] * 1000},
-    }
-    report = BuildReport("company-resume", (DiagnosticResult("company_resume", 1, 0.1, payload, None),))
-    summary = report["checks"][0]["summary"]
-    assert summary["field_states"] == {"present_unverified": 7}
-    assert summary["preserved_business_tables"] == {"company_facts": 2}
-    assert summary["fields"] is None and summary["business_data_unchanged"] is False
-    assert "PRIVATE_RAW" not in json.dumps(report)
 
 
 def test_field_replay_projection_bounds_fields_and_keeps_physical_source_change_explicit():
@@ -151,7 +96,7 @@ def test_replay_pass_requires_strict_zero_counts_without_contradictory_evidence(
         "full_market_verified": False, "performance_verified": False, "network_requests": 0, "source_data_writes": 0,
         "source_input_unchanged": True, "collection_backup_generation_stable": True,
         "original_valid_receipts_unchanged": True, "second_fields_and_publication_unchanged": True,
-        "second_zero_publication_text_reads": True, "migration_status": "passed",
+        "second_zero_publication_text_reads": True, "facts_backup_generation_stable": True,
         "second_new_field_attempted": 0, "missing_texts": 0, "round_2_publication_text_reads": 0,
     }
     valid = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))

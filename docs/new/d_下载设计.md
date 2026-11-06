@@ -109,7 +109,7 @@
 | `page/excerpt` | 一起存物理页码和原文摘录；去空白及书名号后逐字核对，不做自由文本行业推断 |
 | `mapping` | 固定包含`native_classification/native_code/native_name/target_industry/reference_url/reference_sha256/reference_page/reference_excerpt/rationale`；保留原生标准及代码、目标模型行业、映射依据PDF/页/摘录和人工理由；缺一拒绝，不按代码相似自动推广其它类别 |
 
-唯一持久化owner仍是`SQLiteIndustryQueryIndex`，物理文件仍为`data/market/reference/industry.sqlite3`。按实际表和索引校验`official_industry_evidence`，不按user_version区分；只读打开不补表，显式writer先验证原查询表，再以事务追加缺失表/索引并保留原两张查询表的行及摘要。补齐及导入只在隔离库演练；活动库未切换，正常sync的数据采用仍按原授权边界处理。
+唯一持久化owner仍是`SQLiteIndustryQueryIndex`，物理文件仍为`data/market/reference/industry.sqlite3`。按完整当前表和索引校验，不使用user_version，也不为旧库补表或升级；新空库一次创建完整结构，不兼容的下载资料删除后重新下载。原行业证据的真实来源、时间及内容摘要校验保留。
 
 | 新表列/索引 | SQLite类型、用途与读写边界 |
 | --- | --- |
@@ -543,9 +543,9 @@ Tushare作为补充候选：[利润表](https://tushare.pro/document/2?doc_id=33
 
 HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒发布及下载/文本/OCR并发2/2/1。候选包括跨批次计时与合批、可能结束旧补缺时立即发布、单页目录HTTP预取、每次预留只扫描一次和链接候选分块读取；最终发布、原子回执与文件封存不省略。既有company worker的`--io-candidates-only`在仓库外隔离样本中对15/30/60秒各做5组与现有5秒的配对，输入、PDF和事实摘要须一致；总耗时中位数差距不足5%时取更短间隔，只输出候选、不修改生产配置。该PDF样本不包含目录预取性能验收，完整目录、全作业及CPU/RSS/I/O由C后台按原队列测量，未测不启用。
 
-### 5.14 逐字段正式结论与升级验证
+### 5.14 逐字段正式结论与发布复查
 
-阶段332已实现正式字段结论表及配套reader；当时PC的备份、切换和运行回执见g原332，不能据此断定其它PC已切换。当前按实际DDL、必需表和字段校验，忽略旧数字schema标记，不因编号不同拒绝资料；缺少字段结论表等真实结构仍显式拒绝，不表示全部字段质量通过。需要补齐的资料先通过具名仓库外演练工具验证，实际切换仍须明确授权，不在普通读取或同步启动时偷偷迁移。
+阶段332已实现正式字段结论表及配套reader；当时PC的备份、切换和运行回执见g原332，不能据此断定其它PC已切换。程序只支持当前完整DDL和字段，不设置数字schema编号，不忽略旧编号列，也不维护旧库升级或转换路径；不兼容的公司下载资料按删除后重新下载处理，不能用兼容读取冒充字段质量已通过。
 
 字段数值继续只由原财报、风险、减持和利好事实列拥有。新增`company_field_result`按`code/event_key/field`保存唯一正式结论，列为`state/applicable/reason`；`company_field_evidence`按同一字段键及`position`保存有序证据，列为`source/source_key/record_hash/body_hash/rule_id/published_at/start_line/end_line/quote/unit/subject_type`。证据外键级联到字段结论，字段结论级联到证券事实；不新增数值副本或第二份任务完成账本。实际DDL及约束见`company_facts_schema.py`，读写codec见`company_field_result_rows.py`。
 
@@ -559,11 +559,13 @@ HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒�
 
 正式只读入口`read_fields`与事实共用固定读事务，返回发布hash及类型化字段结论，实际值从同一事实列读取；支持取消。诊断读取这些正式结论，不另推导一份持久状态；具名材料按公开白名单展示有限行段、来源身份与字段状态，全市场汇总仍不把规则出证数当独立留出质量或召回率。
 
-统一`download/company/coverage`的`--company-field-migration-audit`要求显式新建的仓库外目录。工具只读并先核验尚无字段结论表的源库结构和文件发布凭据，备份期间核对来源代际；缺失/损坏凭据或变动均拒绝，不给源补签。外部一致备份保留旧12张业务表及原publication，目标逐表核对全部值、ID、关联及旧凭据，仅为旧字段建立未核实/不适用/待核基线，不输出数字格式版本。新目标生成独立补齐身份，保留旧提取身份和业务时点，通过完整性、外键及真实reader核验后才封存；操作失败保留隔离现场。路径重叠、符号链接或非空输出拒绝，源数据不删除、不重建；该报告的`production_authorized`始终为false，活动切换和完整发布仍按AGENTS授权边界处理。
+旧字段格式升级工具及`--company-field-migration-audit`入口已删除。不再为旧库生成补齐候选或提供双格式reader；新的正式库由正常下载writer按当前完整结构创建。
 
-同入口`--company-field-replay-keys`按具名材料执行隔离升级后真实发布与再次启动复查，复制并校验已有必要文本，不发网络请求。报告分别保存迁移、来源文件变化、两轮原文读取、新字段尝试、旧有效回执及字段/发布身份变化；缺文本与当前事件/上市范围依据不完整均显式拒绝或降级。第二次无新增字段尝试和零正文读取须以实际结果证明，不能由一次性字段回执推断整个发布准备已无重复读取；该工具不代签性能、召回率或生产切换。
+同入口`--company-field-replay-keys`只复制已通过当前reader及文件凭据校验的正式库，并备份采集库、核验必要文本，再执行真实发布与再次启动复查，不发网络请求或转换格式。报告保存两库备份代际、来源文件变化、两轮原文读取、新字段尝试、原有效回执及字段/发布身份变化；不兼容源库直接失败。缺文本与当前事件/上市范围依据不完整均显式拒绝或降级；第二次无新增字段尝试和零正文读取须实际验证，不代签性能、召回率或生产切换。
 
 ## 6. 统一的中断、错误和完整性规则
+
+可下载数据库只支持当前结构；结构不兼容时按整套相关下载资料删除后重新下载恢复，不维护格式版本或升级兼容路径。读取、同步失败不会自动清空文件；模型、正式冻结记录和DeepSeek请求预算不属于可重下资料，不能跟随下载数据库批量删除。
 
 | 中断点 | 重启依据 | 不应发生的事 |
 | --- | --- | --- |
@@ -589,7 +591,7 @@ HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒�
 
 company发布身份由父版本、本批事实/来源/凭据及发布时点确定，不遍历全部正式表生成逐行摘要；没有事实或凭据变化时保留原身份。正式事实和输入成功凭据仍在同一事务，父版本冲突及回滚不能冒充成功。文件核验与字段提取正确性分别验收，前者不证明公告字段齐全。
 
-market的v3价格与窗口表保持原结构，新增辅助表`window_population`：`profile TEXT NOT NULL`为`v2`/`v3`，`code TEXT NOT NULL`为六位代码，联合主键`(profile,code)`，无额外索引，`WITHOUT ROWID`。唯一writer是`SQLiteQfqWindowCache`，消费者为发布manifest、成员读取和下载诊断；普通/补缺/本地提取显式选择成员，配对价格写入在同一事务登记成员。读取者不建表、不从旧绑定隐式生成成员；缺少该声明的旧v3库拒绝提供manifest。只有先通过既有文件凭据核验、再由用户显式同步的writer按当前资格声明后才可发布，不为无凭据旧库补签，不清价格或重建数据库。本批没有对活动库执行该变化。
+market配对价格、窗口、修复与停牌证据表由`SQLiteQfqWindowCache`按完整当前DDL一次创建。`window_population`的`profile TEXT NOT NULL`为评分档位`v2`/`v3`，`code TEXT NOT NULL`为六位代码，联合主键`(profile,code)`，无额外索引，`WITHOUT ROWID`；发布manifest、成员读取及下载诊断共同消费。停牌表直接包含`kind/checked_on/source`，不再补列或从旧绑定重建缺表；缺失当前结构的数据库拒绝读写，删除相关下载资料后重新下载。有效当前库的成员调整和配对价格仍在同一事务发布，不自动删除活动文件或给无凭据旧库补签。
 
 下载诊断`qfq_sqlite.py`的`profiles`仅统计发布成员；`pending_stocks`/`pending_days`保留全库问题库存，另以`published_pending_stocks`和`unpublished_pending_stocks`区分问题归属，`retained_binding_codes`显示未发布但保留绑定的不同代码数。全库配对与凭证审计继续包含保留资料，不能把库存问题数当成本轮下载分母。
 

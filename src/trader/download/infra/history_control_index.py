@@ -35,7 +35,6 @@ from trader.download.infra.history_control_rows import (
     WriteControlRecord,
 )
 from trader.download.infra.history_download_index import HISTORY_DOWNLOAD_SCHEMA
-from trader.download.infra.history_inferred_review import HISTORY_INFERRED_REVIEW_SQL
 from trader.download.infra.history_reference_index import ReadHistoryReference, WriteHistoryReference
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.process_lock import ProcessLock, ProcessLockError
@@ -43,7 +42,6 @@ from trader.infra.sqlite_codec import DecodeHash, EncodeHash
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
     EnsureSqliteSchema,
-    HasSqliteSchema,
     SqliteConnection,
     SqliteConnectionOptions,
     SqliteSchema,
@@ -143,20 +141,13 @@ class HistoryControlIndex:
             with SqliteSession(
                 self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True), sqlite_policy=self._sqlite_policy
             ) as connection:
-                # Auxiliary review metadata is installed by its explicit writer
-                # after context preparation, with its own cancellation boundary.
-                required = SqliteSchema(HISTORY_CONTROL_SCHEMA.statements + tuple(
-                    statement for statement in HISTORY_DOWNLOAD_SCHEMA.statements
-                    if statement not in HISTORY_INFERRED_REVIEW_SQL
-                ))
-                if not HasSqliteSchema(connection, required, self._validate_metadata):
-                    EnsureSqliteSchema(
-                        connection,
-                        SqliteSchema(HISTORY_CONTROL_SCHEMA.statements + HISTORY_DOWNLOAD_SCHEMA.statements),
-                        allow_create=True,
-                        initialize=self._initialize_metadata,
-                        validate=self._validate_metadata,
-                    )
+                EnsureSqliteSchema(
+                    connection,
+                    SqliteSchema(HISTORY_CONTROL_SCHEMA.statements + HISTORY_DOWNLOAD_SCHEMA.statements),
+                    allow_create=True,
+                    initialize=self._initialize_metadata,
+                    validate=self._validate_metadata,
+                )
         except (sqlite3.Error, ValueError) as exc:
             raise HistoryControlError("history control initialization failed") from exc
         self._fault_injector("schema_initialized")

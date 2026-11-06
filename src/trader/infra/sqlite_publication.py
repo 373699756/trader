@@ -164,7 +164,7 @@ def _read_receipt(path: Path) -> SqlitePublicationFingerprint:
     except (OSError, ValueError) as exc:
         raise SqlitePublicationError("sqlite_publication_receipt_invalid") from exc
     fields = {"database_size", "database_sha256", "wal_size", "wal_sha256"}
-    if not isinstance(raw, dict) or not fields.issubset(raw):
+    if not isinstance(raw, dict) or set(raw) != fields:
         raise SqlitePublicationError("sqlite_publication_receipt_invalid")
     size, digest, wal_size, wal_digest = (raw[name] for name in (
         "database_size", "database_sha256", "wal_size", "wal_sha256"

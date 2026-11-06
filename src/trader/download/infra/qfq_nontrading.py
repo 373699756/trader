@@ -13,30 +13,11 @@ from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 from trader.infra.sqlite_connection import SqliteConnection
 
 
-def NonTradingProvenanceUpgradeRequired(connection: SqliteConnection) -> bool:
-    columns = {row[1] for row in connection.run("PRAGMA table_info(price_nontrading)")}
-    if not columns or {"code", "trade_date", "kind", "checked_on", "source"}.issubset(columns):
-        return False
-    if columns != {"code", "trade_date"}:
-        raise RuntimeError("qfq_nontrading_provenance_schema_invalid")
-    return True
-
-
-def EnsureNonTradingProvenance(connection: SqliteConnection) -> None:
-    """An old bare date stays unverified; readers never perform this upgrade."""
-    if NonTradingProvenanceUpgradeRequired(connection):
-        connection.run("ALTER TABLE price_nontrading ADD COLUMN kind TEXT NOT NULL DEFAULT 'legacy_unverified'")
-        connection.run("ALTER TABLE price_nontrading ADD COLUMN checked_on INTEGER")
-        connection.run("ALTER TABLE price_nontrading ADD COLUMN source TEXT")
-
-
 def ReadNonTradingFacts(
     connection: SqliteConnection, codes: Sequence[str], *, review_budget: PriceReviewRequestBudget | None = None
 ) -> tuple[QfqNonTradingFact, ...]:
-    if not codes or not connection.run("SELECT 1 FROM sqlite_master WHERE name='price_nontrading'").fetchone():
+    if not codes:
         return ()
-    if NonTradingProvenanceUpgradeRequired(connection):
-        raise RuntimeError("qfq_nontrading_provenance_upgrade_required")
     result: list[QfqNonTradingFact] = []
     for start in range(0, len(codes), 128):
         if review_budget is not None:

@@ -77,18 +77,10 @@ def _write_identity(
     connection: SqliteConnection, extraction_hash: bytes, at: datetime, content_hash: bytes
 ) -> None:
     """Record a publication generation; file integrity is owned by the file checksum."""
-    if connection.run(
-        "SELECT 1 FROM company_publication WHERE singleton=1"
-    ).fetchone() is not None:
-        connection.run(
-            "UPDATE company_publication SET extraction_hash=?,content_hash=?,published_at=? WHERE singleton=1",
-            (extraction_hash, content_hash, EncodeCompanyTime(at)),
-        )
-    else:
-        connection.run(
-            "INSERT INTO company_publication(singleton,extraction_hash,content_hash,published_at) VALUES(1,?,?,?)",
-            (extraction_hash, content_hash, EncodeCompanyTime(at)),
-        )
+    connection.run(
+        "INSERT OR REPLACE INTO company_publication(singleton,extraction_hash,content_hash,published_at) VALUES(1,?,?,?)",
+        (extraction_hash, content_hash, EncodeCompanyTime(at)),
+    )
 
 
 def _parent_identity(parent: CompanyPublicationIdentity | None) -> tuple[str, str, datetime] | None:

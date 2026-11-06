@@ -252,7 +252,7 @@ def test_industry_evidence_conflicts_are_atomic_and_corruption_is_rejected(tmp_p
         index.read_evidence(at)
 
 
-def test_explicit_writer_upgrades_industry_schema_without_rewriting_supplier_rows(tmp_path):
+def test_industry_readers_and_writers_reject_missing_tables_without_upgrading(tmp_path):
     index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "baostock_dated_industry_queries", sqlite_policy=SqlitePolicyFixture())
     index.save("supplier", DATES[0], DATES[0], "[]")
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
@@ -261,7 +261,10 @@ def test_explicit_writer_upgrades_industry_schema_without_rewriting_supplier_row
         connection.run("PRAGMA user_version=1")
     with pytest.raises(RuntimeError, match="unavailable"):
         index.read(DATES[0], DATES[0])
-    index.import_evidence((_official_evidence(),))
+    before_bytes = index.path.read_bytes()
+    with pytest.raises(RuntimeError, match="unavailable"):
+        index.import_evidence((_official_evidence(),))
+    assert index.path.read_bytes() == before_bytes
     with SqliteSession(index.path) as connection:
         assert tuple(connection.run("SELECT * FROM industry_query").require_one()) == before
         assert connection.run("PRAGMA user_version").require_one()[0] == 1

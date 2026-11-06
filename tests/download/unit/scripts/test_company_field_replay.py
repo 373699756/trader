@@ -12,10 +12,14 @@ from scripts.download.company import company_field_replay as replay
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.shared.configuration import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceIndexFixture
 from trader.download.domain.company_evidence import CompanyListing, DisclosurePage, DisclosurePartition
+from trader.download.domain.company_field_plan import BuildCompanyFieldResults
+from trader.download.domain.company_field_results import CompanyFieldConclusion
+from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_field_result_rows import WriteCompanyFieldResults
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash, EncodeCompanyDate, EncodeCompanyTime
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
-from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSchema, SqliteSession
+from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import PublishSqliteFile
 
@@ -49,17 +53,11 @@ def _sources(root):
     extraction = fixtures._extraction(_TEXT)
     assert extraction.text == _TEXT
     assert index.commit_document(item, extraction, _AT)
-    # A complete real raw collection is paired with an old legal publication.
-    # Derive only the earlier business structure without field conclusions.
+    # Both sources use the current structure; replay never upgrades a database.
     source = incoming / "company_facts.sqlite3"
-    statements = tuple(
-        statement
-        for statement in COMPANY_FACTS_SCHEMA.statements
-        if not statement.startswith("CREATE TABLE company_field_")
-    )
     at = EncodeCompanyTime(_AT)
     with SqliteSession(source) as connection:
-        EnsureSqliteSchema(connection, SqliteSchema(statements), allow_create=True)
+        EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA, allow_create=True)
         connection.run(
             "INSERT INTO company_facts(code,finance_state,pledge_state,unlock_state,pending_docs,announcement_state,"
             "announcement_start_date,announcement_end_date,checked_at,published_at) VALUES('600001',0,0,0,0,1,?,?,?,?)",
@@ -79,6 +77,12 @@ def _sources(root):
              hashlib.sha256(_TEXT.encode()).digest(), at, "valid", "legacy-input-policy"),
         )
         connection.run("INSERT INTO company_publication VALUES(1,?,?,?)", (CompanyExtractionHash(policy), b"s" * 32, at))
+        for fact in ReadCompanyFactRows(connection, ("600001",)):
+            WriteCompanyFieldResults(connection, fact.code, tuple(
+                CompanyFieldConclusion(item.code, item.event_id, item.field, item.value,
+                                       item.state, item.applicable, item.reason, ())
+                for item in BuildCompanyFieldResults(fact)
+            ))
     PublishSqliteFile(source, sqlite_policy=_IO)
     return raw, source, policy
 
@@ -107,7 +111,7 @@ def test_real_publication_proves_local_fields_and_second_restart_reuses_them(tmp
 
     assert report["status"] == "passed", report
     assert report["schema_version"] == "company-field-replay"
-    assert report["migration_status"] == "passed" and report["source_input_unchanged"]
+    assert report["facts_backup_generation_stable"] and report["source_input_unchanged"]
     assert report["network_requests"] == report["source_data_writes"] == 0
     assert not report["production_authorized"] and not report["field_correctness_verified"]
     assert report["copied_texts"] == 1 and report["missing_texts"] == 0
@@ -118,7 +122,7 @@ def test_real_publication_proves_local_fields_and_second_restart_reuses_them(tmp
     assert report["second_fields_and_publication_unchanged"] and report["original_valid_receipts_unchanged"]
     assert report["first_publication_hash"] == report["second_publication_hash"]
     assert (raw.read_bytes(), facts.read_bytes(), Path(f"{facts}.sha256").read_bytes()) == before
-    target = directory / "migration" / "company_facts.sqlite3"
+    target = directory / "facts" / "company_facts.sqlite3"
     reader = SQLiteCompanyEvidenceReader(target, event_policy=policy, sqlite_policy=_IO)
     fields = reader.read_fields(("600001",)).results
     assert {item.field for item in fields} == {"actual_pct", "repurchase_purpose"}
@@ -241,11 +245,13 @@ def test_source_context_and_text_path_must_be_unambiguous(tmp_path, problem):
     assert report["network_requests"] == report["source_data_writes"] == 0
 
 
-def test_migration_failure_cannot_be_used_as_a_replay_target(tmp_path):
+def test_incompatible_facts_are_rejected_without_conversion_or_replay(tmp_path):
     raw, facts, policy = _sources(tmp_path)
     with SqliteSession(facts) as connection:
-        connection.run("PRAGMA user_version=2")
+        connection.run("DROP TABLE company_field_result")
+    PublishSqliteFile(facts, sqlite_policy=_IO)
+    before = facts.read_bytes()
     report = _run(raw, facts, tmp_path / "replay", policy)
-    assert report["status"] == "failed" and report["migration_status"] == "failed"
-    assert report["failure_code"] == "company_field_replay_migration_not_verified"
+    assert report["status"] == "failed" and "facts_backup_generation_stable" not in report
+    assert facts.read_bytes() == before
     assert not (tmp_path / "replay" / "raw").exists()

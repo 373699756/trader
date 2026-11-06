@@ -14,7 +14,7 @@ from trader.download.domain.baostock_daily import BaoStockDailyCell
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.price_review import PriceReviewBudget, PriceReviewBudgetExhausted, PriceReviewConfiguration
 from trader.infra.sqlite_codec import DecodeDate, EncodeDate
-from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnection, SqliteConnectionOptions, SqliteSchema, SqliteSession, SqliteTransaction
+from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 if TYPE_CHECKING:
@@ -112,19 +112,6 @@ class HistoryInferredReviewIndex:
         self._sqlite_policy = replace(
             sqlite_policy, connection_timeout_seconds=min(sqlite_policy.connection_timeout_seconds, 0.001),
         )
-
-    def initialize(self) -> bool:
-        # Additive review metadata preserves immutable prices and reference identities.
-        with (
-            SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection,
-            SqliteTransaction(connection, immediate=True),
-        ):
-            before = int(connection.run("PRAGMA schema_version").require_one()[0])
-            for statement in HISTORY_INFERRED_REVIEW_SQL:
-                connection.run(statement)
-            EnsureSqliteSchema(connection, SqliteSchema(HISTORY_INFERRED_REVIEW_SQL))
-            changed = before != int(connection.run("PRAGMA schema_version").require_one()[0])
-        return changed
 
     def known_inferred_codes(self, budget: PriceReviewBudget) -> int:
         """Return a budgeted inventory count, or the safe lower bound on exhaustion."""

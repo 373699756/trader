@@ -172,7 +172,6 @@ def test_legacy_discovery_rotates_eight_exact_stock_windows_and_resumes(tmp_path
     ), key=lambda revision: (revision.trade_date, revision.code))))
     prices = HistoryDirectPrices(tmp_path, 1, None, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=SqlitePolicyFixture())
     index = HistoryInferredReviewIndex(path, sqlite_policy=SqlitePolicyFixture())
-    index.initialize()
     first_budget = _budget()
     assert index.plan(context, prices, 1, PriceReviewConfiguration(), first_budget, lambda: False) == ()
     assert first_budget.reviewed_codes == tuple(security.code for security in universe[:8])
@@ -189,7 +188,6 @@ def test_discovery_deadline_leaves_cursor_for_next_command(tmp_path, monkeypatch
     context = FakeSupplier(DAYS).load_context(DAYS[-1], len(DAYS))
     prices = HistoryDirectPrices(tmp_path, 1, None, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=SqlitePolicyFixture())
     index = HistoryInferredReviewIndex(path, sqlite_policy=SqlitePolicyFixture())
-    index.initialize()
 
     def expired(*_args):
         raise PriceReviewBudgetExhausted("deadline")
@@ -250,7 +248,6 @@ def test_review_due_uses_five_exchange_sessions_instead_of_old_price_date(tmp_pa
     path = tmp_path / "catalog.sqlite3"
     HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
     review = HistoryInferredReviewIndex(path, sqlite_policy=SqlitePolicyFixture())
-    review.initialize()
     cell = replace(_download("600001", (DAYS[0],)).batch.cells[0], status="tencent_inferred_suspended", unadjusted=None, qfq=None)
     partition = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
     partition.initialize()
@@ -474,22 +471,17 @@ def test_context_failure_does_not_upgrade_or_invalidate_legacy_review_metadata(t
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='download_inferred_suspension'").fetchall() == []
 
 
-def test_cancellation_after_review_metadata_upgrade_keeps_old_public_snapshot(tmp_path, monkeypatch):
+def test_incomplete_review_schema_requires_redownload_without_altering_the_file(tmp_path):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
     with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
         connection.execute("DROP TABLE download_inferred_suspension")
         connection.execute("DROP TABLE download_inferred_cursor")
     HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_file()
-    original = HistoryInferredReviewIndex.initialize
-
-    def cancelled(index):
-        original(index)
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(HistoryInferredReviewIndex, "initialize", cancelled)
+    before_bytes = (tmp_path / "catalog.sqlite3").read_bytes()
     status = _run(tmp_path, _InferredSupplier(inferred=False), budget=_budget())
-    assert status.state == "cancelled"
+    assert status.state == "failed"
+    assert (tmp_path / "catalog.sqlite3").read_bytes() == before_bytes
     _assert_public_snapshot(tmp_path, before)
     assert HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).pending(before.sequence) is None
 

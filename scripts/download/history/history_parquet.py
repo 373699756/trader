@@ -83,7 +83,7 @@ class ParquetHistoryProjection:
 
     def load(self) -> ParquetPublication:
         value = json.loads((self.root / "manifest.json").read_text())
-        if not isinstance(value, dict) or not {"snapshot_hash", "months"}.issubset(value):
+        if not isinstance(value, dict) or set(value) != {"snapshot_hash", "months"}:
             raise ValueError("parquet_manifest_format_invalid")
         months = tuple(ParquetMonth(**item) for item in value["months"])
         keys = tuple(item.month for item in months)

@@ -78,7 +78,7 @@ def test_concurrent_schema_initializers_share_one_valid_schema(tmp_path):
 
 
 @pytest.mark.parametrize("number", (0, 3, 4, 999))
-def test_schema_uses_actual_definitions_and_preserves_legacy_markers(tmp_path, number):
+def test_schema_checks_structure_without_using_sqlite_user_metadata(tmp_path, number):
     path = tmp_path / "facts.sqlite3"
     with SqliteSession(path) as connection:
         connection.run("CREATE TABLE facts(value INTEGER NOT NULL)")
@@ -91,10 +91,11 @@ def test_schema_uses_actual_definitions_and_preserves_legacy_markers(tmp_path, n
     assert path.read_bytes() == before
 
 
-def test_schema_ignores_only_legacy_numbering_column_and_checks_business_constraints(tmp_path):
+def test_schema_rejects_obsolete_columns_without_converting_them(tmp_path):
     with SqliteSession(tmp_path / "facts.sqlite3") as connection:
         connection.run("CREATE TABLE facts(schema_version INTEGER NOT NULL CHECK(schema_version=4),value INTEGER NOT NULL)")
-        EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value INTEGER NOT NULL)",)))
+        with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+            EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value INTEGER NOT NULL)",)))
         with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
             EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value INTEGER)",)))
         connection.run("CREATE TABLE events(event_hash BLOB NOT NULL)")

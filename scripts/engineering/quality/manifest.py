@@ -67,10 +67,7 @@ def _array(value: object) -> list[object]:
 
 
 def ParseManifest(text: str) -> Manifest:
-    payload = json.loads(text)
-    if isinstance(payload, dict):
-        payload = {key: value for key, value in payload.items() if key != "version"}
-    raw = _object(payload, {"base_commit", "files", "renames", "references"})
+    raw = _object(json.loads(text), {"base_commit", "files", "renames", "references"})
     files: list[FileIdentity] = []
     for value in _array(raw["files"]):
         item = _object(value, {"path", "sha256"})

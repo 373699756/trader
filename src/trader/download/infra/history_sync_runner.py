@@ -206,7 +206,6 @@ class _HistorySync:
             and HISTORY_UNIVERSE_CONTRACT not in context.source_versions.dependency_versions
         ):
             raise RuntimeError("supplier_universe_regressed")
-        self._initialize_review_metadata(current_snapshot)
         if pending is not None:
             return self._resume(context, current_snapshot, pending, publication_id)
         source, calendar, universe = _control_identities(context)
@@ -238,20 +237,6 @@ class _HistorySync:
         self.control.save_inputs((source, calendar, universe), reference, publication_id)
         self.index.begin(batch, tasks)
         return inputs
-
-    def _initialize_review_metadata(self, snapshot: HistorySnapshot | None) -> None:
-        try:
-            changed = HistoryInferredReviewIndex(
-                self.configuration.history_root / "catalog.sqlite3", sqlite_policy=self.sqlite_policy,
-            ).initialize()
-            if changed and snapshot is not None:
-                self.control.publish_file()
-        except BaseException:
-            # An interrupt may arrive after DDL committed but before its receipt
-            # was signed. Finish this additive upgrade's safety boundary only.
-            if snapshot is not None:
-                self.control.publish_file()
-            raise
 
     def _review_summary(self) -> HistoryPriceReviewSummary | None:
         budget = self.price_review_budget

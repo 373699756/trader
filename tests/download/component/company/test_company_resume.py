@@ -488,10 +488,12 @@ def test_company_noop_publish_keeps_identity_and_closes_wal_before_sealing(tmp_p
 
 
 @pytest.mark.parametrize("number", (3, 4))
-def test_company_reader_and_writer_preserve_legacy_numbering_without_using_it(tmp_path, number):
+def test_company_reader_and_writer_reject_old_columns_without_migration(tmp_path, number):
+    import sqlite3
     from tests.helpers.shared.configuration import CompanyEventPolicyFixture, SqlitePolicyFixture
     from trader.download.infra.company_facts_protocol import CompanyExtractionHash, EncodeCompanyTime
     from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
+    from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
     from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteSchema
     from trader.infra.sqlite_publication import PublishSqliteFile
 
@@ -512,11 +514,13 @@ def test_company_reader_and_writer_preserve_legacy_numbering_without_using_it(tm
     PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
     reader = SQLiteCompanyEvidenceReader(path)
     before = path.read_bytes()
-    assert reader.publication_version() == (b"s" * 32).hex()
+    with pytest.raises(RuntimeError, match="company_snapshot_unreadable"):
+        reader.publication_version()
     assert path.read_bytes() == before
-    index = fixtures._index(tmp_path)
-    index.publish(("600001",), NOW)
-    assert reader.publication_version() != (b"s" * 32).hex()
+    writer = SQLiteCompanyFactsIndex(path, event_policy=CompanyEventPolicyFixture(), sqlite_policy=SqlitePolicyFixture())
+    with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
+        writer.initialize()
+    assert path.read_bytes() == before
     with SqliteSession(path) as connection:
         assert connection.run("SELECT schema_version FROM company_publication").require_one()[0] == number
         assert connection.run("PRAGMA user_version").require_one()[0] == number

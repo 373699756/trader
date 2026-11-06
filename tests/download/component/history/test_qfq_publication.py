@@ -326,7 +326,7 @@ def test_population_change_is_atomic_and_keeps_prices_bindings_and_receipts(tmp_
         ) == before
 
 
-def test_only_current_eligibility_writer_can_add_a_missing_population_declaration(tmp_path):
+def test_missing_population_declaration_requires_a_fresh_database(tmp_path):
     primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture())
     peer = SQLiteQfqWindowCache(primary.path, "v3", sqlite_policy=SqlitePolicyFixture())
     windows = (_window("600001"), _window("600002"))
@@ -338,9 +338,8 @@ def test_only_current_eligibility_writer_can_add_a_missing_population_declaratio
     with pytest.raises(RuntimeError, match="qfq_manifest_unavailable"):
         primary.manifest()
     assert primary.path.read_bytes() == before
-    primary.select_published_codes(peer, frozenset({"600001"}))
-    assert primary.manifest().universe_codes == peer.manifest().universe_codes == ("600001",)
-    assert primary.completed(_DAYS[-1], "600002", "fixture")
-    assert primary.read_code("600002") == windows[1]
+    with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
+        primary.select_published_codes(peer, frozenset({"600001"}))
+    assert primary.path.read_bytes() == before
     with SqliteSession(primary.path) as connection:
         assert connection.run("PRAGMA user_version").require_one()[0] == 0

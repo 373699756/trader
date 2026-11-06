@@ -281,7 +281,6 @@ def Main() -> int:
     audit = parser.add_mutually_exclusive_group()
     audit.add_argument("--audit-only", action="store_true")
     audit.add_argument("--database-only", action="store_true")
-    audit.add_argument("--field-migration-only", action="store_true")
     audit.add_argument("--field-replay-keys", nargs="+")
     audit.add_argument("--pagination-only", action="store_true")
     audit.add_argument("--pipeline-only", action="store_true")
@@ -294,8 +293,8 @@ def Main() -> int:
     args = parser.parse_args()
     if args.budget_seconds is None:
         parser.error("--budget-seconds is required")
-    if args.database is None and not args.field_migration_only:
-        parser.error("--database is required except with --field-migration-only")
+    if args.database is None:
+        parser.error("--database is required")
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
     runtime = LoadRuntimeSettings(args.config or TOOL_ROOT / "config/runtime.json")
@@ -325,19 +324,6 @@ def Main() -> int:
             args.database.expanduser().absolute(), args.facts_database.expanduser().absolute(), tuple(args.field_replay_keys), args.directory,
             observed_at=datetime.now(ZoneInfo("Asia/Shanghai")), budget_seconds=args.budget_seconds,
             sqlite_policy=sqlite_policy, event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
-            protected_roots=(runtime.project_root, runtime.data_paths.root, runtime.runtime_dir),
-        )
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0
-    if args.field_migration_only:
-        if args.facts_database is None or args.directory is None:
-            parser.error("--field-migration-only requires --facts-database and a new external --directory")
-        from scripts.download.company.company_field_migration import AuditCompanyFieldMigration
-
-        report = AuditCompanyFieldMigration(
-            args.facts_database.expanduser().absolute(), args.directory, budget_seconds=args.budget_seconds,
-            sqlite_policy=sqlite_policy,
-            event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
             protected_roots=(runtime.project_root, runtime.data_paths.root, runtime.runtime_dir),
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))

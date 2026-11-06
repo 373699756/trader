@@ -19,6 +19,11 @@ def EncodeBudgetState(state: BudgetState) -> CanonicalValue:
 
 def DecodeBudgetState(value: object, identity: str) -> BudgetState:
     data = _object(value)
+    if set(data) != {
+        "budget_date", "budget_policy_hash", "revision", "owner_identity", "blocked_date", "blocked_reason",
+        "requests", "review_batches", "health_state", "state_hash",
+    }:
+        raise ValueError("budget_state_fields_invalid")
     content = {key: item for key, item in data.items() if key != "state_hash"}
     if data.get("state_hash") != CanonicalDigest(content):
         raise ValueError("budget_state_hash_mismatch")

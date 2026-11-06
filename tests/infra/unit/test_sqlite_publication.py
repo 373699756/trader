@@ -50,7 +50,7 @@ def test_file_tampering_invalidates_previous_verification(tmp_path):
     assert module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture()).fingerprint != previous.fingerprint
 
 
-def test_legacy_receipt_number_is_ignored_but_content_digest_remains_required(tmp_path):
+def test_receipts_require_current_fields_and_correct_content_digest(tmp_path):
     path = tmp_path / "prices.sqlite3"
     _create(path)
     fingerprint = module.PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
@@ -58,6 +58,10 @@ def test_legacy_receipt_number_is_ignored_but_content_digest_remains_required(tm
     payload = json.loads(receipt.read_text())
     assert "schema_version" not in payload
     payload["schema_version"] = 999
+    receipt.write_text(json.dumps(payload))
+    with pytest.raises(module.SqlitePublicationError, match="receipt_invalid"):
+        module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture())
+    payload.pop("schema_version")
     receipt.write_text(json.dumps(payload))
     assert module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture()).fingerprint == fingerprint
     payload["database_sha256"] = "0" * 64

@@ -63,9 +63,9 @@ isolated比较可读取明确指定的旧checkout；只在隔离演练内处理�
 
 公司coverage原生用途已公开为具名业务参数：`--company-pacing-audit`比较真实PDF/目录的共享与分源限速，`--company-material-keys <源键...>`核对1至6个唯一材料键。两者与既有审计模式互斥；pacing模式必须提供`--company-replay-directory`仓库外绝对目录，材料事实由显式`--company-evidence-database`或所选runtime正式facts路径提供，不用空数据回退。`--company-audit-budget-seconds`范围30至10800秒，子进程deadline至少多留30秒回收，例如预算120秒时配置`--command-timeout-seconds 150`。公司I/O候选及其新增消费者由B独立交付，不纳入本批候选或功能验收。
 
-字段结论补齐演练仍走同一coverage入口，显式选择`--company-field-migration-audit --company-replay-directory <新仓库外目录>`，并可用`--company-evidence-database`指定有合法发布凭据且尚无字段结论表的正式库。该模式按实际表和字段校验，只读源库，在隔离目录保存一致备份、字段结论候选及`field-migration.json`，不联网、不切换活动资料；源凭据缺失/损坏、备份期间变动、符号链接、目录重叠或输出非空均拒绝。旧字段只建未核实基线，补齐通过不表示字段质量或生产授权通过；具名材料诊断另可读取正式字段结论及有限证据定位。
+字段格式升级模式及`--company-field-migration-audit`参数已删除。程序不兼容或转换旧下载数据库；结构不匹配时删除相关下载资料后重新下载，诊断不自动清库，也不将模型、正式冻结记录或请求预算当作可重下资料。
 
-已有原文的发布复查也走coverage，选择`--company-field-replay-keys <1至6个cninfo材料键> --company-replay-directory <新仓库外目录>`，与升级演练及其它专用模式互斥。工具只读备份采集与正式库、核验并复制有界保留文本，先升级隔离正式库，再两次启动真实发布者及字段reader，分别记录正文读取、字段尝试、旧valid和发布身份是否变化。缺材料或来源文件变化明确降级，原始文件/WAL/凭据hash按实际比较，不以空WAL差异归一化为通过；不联网、不改源库、不签全市场质量或性能。
+已有原文的发布复查也走coverage，选择`--company-field-replay-keys <1至6个cninfo材料键> --company-replay-directory <新仓库外目录>`，与其它专用模式互斥。工具只接受当前结构及合法凭据，直接备份采集与正式库、核验并复制有界保留文本，再两次启动真实发布者及字段reader，不转换格式；报告分别核对备份代际、正文读取、字段尝试、原有效回执和发布身份。缺材料或来源文件变化明确降级，原始文件/WAL/凭据hash按实际比较，不以空WAL差异归一化为通过；不联网、不改源库、不签全市场质量或性能。
 
 公司sources的普通与字段模式均检查全市场来源，不按证券清单过滤；另以`--field-sources-only`选择字段观测，`--field-source-rows`限定样本，`--field-source-schema`和`--field-source-identities`仅在字段模式明确选择。`--annual-income-period`查询单个年末期间，必须配合单个`--codes`，不能与字段模式混用；其它模式拒绝codes。每种模式都消费所选`--runtime-config`并报告`runtime_configuration_sha256`，身份摘要不表示字段质量、覆盖或生产采用已合格。
 
@@ -296,6 +296,6 @@ assets/consistency只读核对，assets/generate显式重建打包JS资源；公
   --command-timeout-seconds 1800 --report /external/preload-candidate.json
 ```
 
-C后台分别去掉候选参数取得baseline；固定源快照、配置、全部模型、源码及同一实际PC，先比对完整结果、原因、六席和输入身份，再测总时间、CPU/RSS/I/O、驻留与取消回收。三种计算候选及预载候选都尚未取得生产启用证据。新行业读取格式要求在隔离输入副本完成显式schema升级后再运行；不修改活动行业/价格库，不以失败的预载或旧进程补签。
+C后台分别去掉候选参数取得baseline；固定源快照、配置、全部模型、源码及同一实际PC，先比对完整结果、原因、六席和输入身份，再测总时间、CPU/RSS/I/O、驻留与取消回收。三种计算候选及预载候选都尚未取得生产启用证据。行业输入须已具备当前完整结构，旧库不做schema升级；不修改活动行业/价格库，不以失败的预载或旧进程补签。
 
 公司事实预载统一读取`--runtime-config`关联scheduler的`pipeline.company_preload`，总时限默认30秒、发布版本变化最多尝试3次；Long准入诊断沿用同一设置，删除原先没有消费者的`--timeout-seconds`参数。该时限只约束预载工作，统一入口的`--command-timeout-seconds`仍负责整个诊断进程的回收。

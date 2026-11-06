@@ -382,33 +382,7 @@ class SqliteSchema:
 def _schema_tokens(statement: str) -> tuple[str, ...]:
     statement = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", statement, count=1, flags=re.IGNORECASE)
     tokens = re.findall(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|\w+|[^\w\s]", statement.rstrip().rstrip(";"))
-    normalized = tuple(token if token.startswith(("'", '"')) else token.lower() for token in tokens)
-    if "table" not in normalized[:4] or "(" not in normalized:
-        return normalized
-    start = normalized.index("(")
-    depth = 1
-    current: list[str] = []
-    columns: list[tuple[str, ...]] = []
-    for position in range(start + 1, len(normalized)):
-        token = normalized[position]
-        depth += int(token == "(") - int(token == ")")
-        if depth == 0 or token == "," and depth == 1:
-            # Numbering columns carry no business meaning. Their presence in a
-            # previously published file must not select another schema reader.
-            numbering = len(current) > 1 and current[0].strip('"').lower() == "schema_version" and current[1] == "integer"
-            if current and not numbering:
-                columns.append(tuple(current))
-            current = []
-            if depth == 0:
-                body: list[str] = []
-                for column in columns:
-                    if body:
-                        body.append(",")
-                    body.extend(column)
-                return (*normalized[:start + 1], *body, *normalized[position:])
-        else:
-            current.append(token)
-    return normalized
+    return tuple(token if token.startswith(("'", '"')) else token.lower() for token in tokens)
 
 
 def _validate_schema(connection: SqliteConnection, schema: SqliteSchema) -> None:

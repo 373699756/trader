@@ -14,7 +14,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from scripts.core.paths import PROJECT_ROOT
-from scripts.download.company.company_field_migration import AuditCompanyFieldMigration
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent
 from trader.download.domain.company_facts import CompanyFacts
@@ -28,6 +27,7 @@ from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_publication import PublishSqliteFile
 
 
 _MAX_TEXT_BYTES = 256 * 1024 * 1024
@@ -120,6 +120,40 @@ def _backup_collection(source_path: Path, target_path: Path, policy: SqliteIoPol
             raise ValueError("company_field_replay_collection_integrity_failed")
         if target.run("PRAGMA foreign_key_check").fetchone() is not None:
             raise ValueError("company_field_replay_collection_foreign_keys_failed")
+    return stable
+
+
+def _backup_facts(
+    source_path: Path, target_path: Path, policy: SqliteIoPolicy, event_policy: CompanyEventPolicy, deadline: float,
+) -> bool:
+    reader = SQLiteCompanyEvidenceReader(source_path, event_policy=event_policy, sqlite_policy=policy)
+    cancelled = lambda: time.monotonic() >= deadline
+    publication = reader.read_fields((), cancel_requested=cancelled).publication_hash
+    if not publication:
+        raise ValueError("company_field_replay_facts_publication_missing")
+    target_path.parent.mkdir(parents=True)
+    with target_path.open("xb"):
+        pass
+    with SqliteSession(
+        source_path, SqliteConnectionOptions(read_only=True), sqlite_policy=policy, cancel_requested=cancelled,
+    ) as source, SqliteSession(target_path, sqlite_policy=policy, cancel_requested=cancelled) as target:
+        identity = ReadCompanyPublicationIdentity(source)
+        generation = source.run("PRAGMA data_version").require_one()[0]
+        source.backup_to(target, deadline=deadline, monotonic=time.monotonic)
+        if ReadCompanyPublicationIdentity(target) != identity:
+            raise ValueError("company_field_replay_facts_identity_changed")
+        if tuple(row[0] for row in target.run("PRAGMA integrity_check")) != ("ok",):
+            raise ValueError("company_field_replay_facts_integrity_failed")
+        if target.run("PRAGMA foreign_key_check").fetchone() is not None:
+            raise ValueError("company_field_replay_facts_foreign_keys_failed")
+        stable = bool(generation == source.run("PRAGMA data_version").require_one()[0])
+    PublishSqliteFile(target_path, sqlite_policy=policy, check=lambda: _check_deadline(deadline))
+    copied = SQLiteCompanyEvidenceReader(target_path, event_policy=event_policy, sqlite_policy=policy)
+    if (
+        copied.read_fields((), cancel_requested=cancelled).publication_hash != publication
+        or reader.read_fields((), cancel_requested=cancelled).publication_hash != publication
+    ):
+        raise ValueError("company_field_replay_facts_identity_changed")
     return stable
 
 
@@ -290,18 +324,10 @@ def AuditCompanyFieldReplay(
     }
     try:
         before = (_source_files(collection_path, deadline), _source_files(facts_path, deadline))
-        migration = AuditCompanyFieldMigration(
-            facts_path, directory / "migration", budget_seconds=deadline - time.monotonic(),
-            sqlite_policy=sqlite_policy, event_policy=event_policy,
-            protected_roots=(collection_path.parent, facts_path.parent, *protected_roots),
+        target_facts = directory / "facts" / "company_facts.sqlite3"
+        report["facts_backup_generation_stable"] = _backup_facts(
+            facts_path, target_facts, sqlite_policy, event_policy, deadline,
         )
-        report["migration_status"] = migration["status"]
-        if migration["status"] not in {"passed", "degraded"} or any(migration.get(key) is not True for key in (
-            "target_reader_verified", "business_data_unchanged", "original_receipts_unchanged",
-            "target_integrity_verified", "target_foreign_keys_verified",
-        )):
-            raise ValueError("company_field_replay_migration_not_verified")
-        target_facts = directory / "migration" / "company_facts.sqlite3"
         target_raw = directory / "raw" / "company_collection.sqlite3"
         stable_backup = _backup_collection(collection_path, target_raw, sqlite_policy, deadline)
         report["collection_backup_generation_stable"] = stable_backup
@@ -368,7 +394,7 @@ def AuditCompanyFieldReplay(
             raise ValueError("company_field_replay_second_state_changed")
         report["second_zero_publication_text_reads"] = report["round_2_publication_text_reads"] == 0
         report["status"] = "passed" if (
-            before == after and stable_backup and migration["status"] == "passed" and missing == 0
+            before == after and stable_backup and report["facts_backup_generation_stable"] is True and missing == 0
             and report["second_zero_publication_text_reads"]
         ) else "degraded"
     except (OSError, sqlite3.Error, ValueError, RuntimeError, TimeoutError, InterruptedError, EOFError) as error:

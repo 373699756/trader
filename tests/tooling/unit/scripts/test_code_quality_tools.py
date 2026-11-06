@@ -291,7 +291,9 @@ def test_manifest_validates_content_without_a_numbered_format() -> None:
         "references": [],
     }
     expected = ParseManifest(json.dumps(payload))
-    assert ParseManifest(json.dumps({**payload, "version": 999})) == expected
+    assert expected.base_commit == payload["base_commit"]
+    with pytest.raises(ValueError):
+        ParseManifest(json.dumps({**payload, "version": 999}))
     payload["files"] = []
     with pytest.raises(ValueError):
         ParseManifest(json.dumps(payload))

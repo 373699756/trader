@@ -211,7 +211,7 @@ def test_v5_tensor_codec_rejects_duplicate_wrong_shape_and_nonfinite():
 
 
 @pytest.mark.parametrize("suffix", ("", "_v1", "_v999"))
-def test_v5_network_validates_actual_architecture_independently_of_format_number(suffix):
+def test_v5_network_accepts_only_the_current_architecture_description(suffix):
     from trader.recommendation.domain.market.v5.features import SEQUENCE_CONTRACT
     from trader.training.infra.profile.v5.settings import TCN_NETWORK_CONTRACT, TcnArchitecture
 
@@ -227,7 +227,11 @@ def test_v5_network_validates_actual_architecture_independently_of_format_number
             for name, shape in TensorShapes(6, architecture)
         ],
     }
-    assert DecodeTcnNetwork(network, 6)[2] == architecture
+    if suffix:
+        with pytest.raises(ValueError, match="architecture"):
+            DecodeTcnNetwork(network, 6)
+    else:
+        assert DecodeTcnNetwork(network, 6)[2] == architecture
     network["architecture"] = "different-network" + suffix
     with pytest.raises(ValueError, match="architecture"):
         DecodeTcnNetwork(network, 6)

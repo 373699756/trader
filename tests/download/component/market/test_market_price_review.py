@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
@@ -241,7 +240,7 @@ def test_review_caps_codes_and_physical_requests(tmp_path: Path) -> None:
     assert all(state.nontrading[0].checked_on == _DAYS[14] for state in remaining)
 
 
-def test_legacy_provenance_upgrade_only_changes_isolated_copy(tmp_path: Path) -> None:
+def test_incompatible_provenance_requires_deletion_and_a_fresh_download(tmp_path: Path) -> None:
     source = tmp_path / "sealed"
     supplier = _Supplier(suspended_on=_DAYS[14])
     updater = _updater(source, supplier)
@@ -251,48 +250,20 @@ def test_legacy_provenance_upgrade_only_changes_isolated_copy(tmp_path: Path) ->
         connection.run("CREATE TABLE price_nontrading(code TEXT NOT NULL,trade_date INTEGER NOT NULL,PRIMARY KEY(code,trade_date)) WITHOUT ROWID")
         connection.run("INSERT INTO price_nontrading VALUES(?,?)", ("600001", EncodeDate(_DAYS[14])))
     before = {path.name: path.read_bytes() for path in source.iterdir() if path.is_file()}
-    with pytest.raises(RuntimeError, match="qfq_nontrading_provenance_upgrade_required"):
+    with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
         updater.v2.planning_snapshot(frozenset(supplier.codes))
-    legacy = QfqNonTradingFact("600001", _DAYS[14], "legacy_unverified", None, None)
-    copy_root = tmp_path / "isolated"
-    shutil.copytree(source, copy_root)
-    copy = _updater(copy_root, supplier)
-    copy.v2.select_published_codes(copy.v3, frozenset(supplier.codes))
-    assert copy.v2.planning_snapshot(frozenset(supplier.codes)).metadata[0].nontrading == (legacy,)
-    assert _DAYS[14] not in copy.v2.covered_dates("600001")
-    direct_root = tmp_path / "direct_sync_copy"
-    shutil.copytree(source, direct_root)
-    direct = _updater(direct_root, supplier)
-    supplier.calls.clear()
-    result = direct.execute(_observed(_DAYS[14]))
-    assert result.skipped_codes == 0 and len(supplier.calls) == 1
-    assert direct.v2.planning_snapshot(frozenset(supplier.codes)).metadata[0].nontrading[0].kind == "confirmed"
-    assert {path.name: path.read_bytes() for path in source.iterdir() if path.is_file()} == before
-
-
-def test_failed_provenance_upgrade_rolls_back_price_and_completion(tmp_path: Path, monkeypatch) -> None:
-    from trader.download.infra import qfq_sqlite as module
-
-    supplier = _Supplier(suspended_on=_DAYS[14])
-    updater = _updater(tmp_path, supplier)
-    updater.execute(_observed(_DAYS[14]))
-    previous = updater.v2.read_code("600001")
-    with updater.v2._write_connection() as connection:
-        connection.run("DROP TABLE price_nontrading")
-        connection.run("CREATE TABLE price_nontrading(code TEXT NOT NULL,trade_date INTEGER NOT NULL,PRIMARY KEY(code,trade_date)) WITHOUT ROWID")
-        connection.run("INSERT INTO price_nontrading VALUES(?,?)", ("600001", EncodeDate(_DAYS[14])))
-
-    def interrupted_upgrade(connection) -> None:
-        connection.run("ALTER TABLE price_nontrading ADD COLUMN kind TEXT NOT NULL DEFAULT 'legacy_unverified'")
-        raise RuntimeError("isolated_upgrade_interrupted")
-
-    monkeypatch.setattr(module, "EnsureNonTradingProvenance", interrupted_upgrade)
-    with pytest.raises(RuntimeError, match="isolated_upgrade_interrupted"):
+    with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
         updater.v2.select_published_codes(updater.v3, frozenset(supplier.codes))
-    assert updater.v2.read_code("600001") == previous
-    assert updater.v2.completed(_DAYS[14], "600001", _SOURCE)
-    with pytest.raises(RuntimeError, match="qfq_nontrading_provenance_upgrade_required"):
-        updater.v2.planning_snapshot(frozenset(supplier.codes))
+    assert {path.name: path.read_bytes() for path in source.iterdir() if path.is_file()} == before
+    # Only this isolated fixture is discarded; ordinary reads and writes never delete it.
+    updater.v2.path.unlink()
+    Path(f"{updater.v2.path}.sha256").unlink()
+    supplier.calls.clear()
+    fresh = _updater(source, supplier)
+    result = fresh.execute(_observed(_DAYS[14]))
+    assert result.failure_reason is None and len(supplier.calls) == 1
+    fact = fresh.v2.planning_snapshot(frozenset(supplier.codes)).metadata[0].nontrading[0]
+    assert fact.kind == "confirmed"
 
 
 def test_discovery_sql_deadline_is_not_a_supplier_failure(tmp_path: Path, monkeypatch) -> None:

@@ -630,7 +630,7 @@ def test_market_eligibility_exit_keeps_window_and_success_receipt(tmp_path, stat
 
 
 @pytest.mark.parametrize("repair_only", (False, True))
-def test_explicit_market_sync_restores_legacy_population_from_current_eligibility(tmp_path, repair_only):
+def test_explicit_market_sync_rejects_incomplete_database_without_restoring_tables(tmp_path, repair_only):
     class Qualified(Supplier):
         def load_qfq_context(self, as_of, sessions):
             return replace(super().load_qfq_context(as_of, sessions), universe=_reference(("600001",)).eligible_universe)
@@ -641,7 +641,6 @@ def test_explicit_market_sync_restores_legacy_population_from_current_eligibilit
     source = supplier.load_qfq_context(DAYS[-1], 251).source_versions
     identity = f"{source.sdk_version}:{source.content_hash}"
     updater.seed((_window("600001"), _window("600002")), identity, calendar=DAYS[-251:])
-    preserved = updater.v2.read_code("600002")
     with SqliteSession(updater.v2.path) as connection, SqliteTransaction(connection):
         connection.run("DROP TABLE window_population")
     updater.v2.publish_file()
@@ -649,11 +648,10 @@ def test_explicit_market_sync_restores_legacy_population_from_current_eligibilit
     with pytest.raises(RuntimeError, match="qfq_manifest_unavailable"):
         updater.v2.manifest()
     assert updater.v2.path.read_bytes() == before
-    result = replace(updater, repair_only=repair_only).execute(now)
-    assert result.failure_reason is None and result.pending_codes == 0
-    assert updater.v2.codes() == updater.v3.codes() == frozenset({"600001"})
-    assert updater.v2.read_code("600002") == preserved
-    assert supplier.calls == ([] if repair_only else [("600001", DAYS[-3:])])
+    with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
+        replace(updater, repair_only=repair_only).execute(now)
+    assert updater.v2.path.read_bytes() == before
+    assert supplier.calls == []
 
 
 def test_qfq_refills_worker_before_slowest_request_finishes(tmp_path) -> None:

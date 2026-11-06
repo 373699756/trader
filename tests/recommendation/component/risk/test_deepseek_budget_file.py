@@ -112,7 +112,7 @@ def test_restart_charges_reserved_but_unsent_requests_and_config_changes(tmp_pat
     restarted.close()
 
 
-def test_verified_legacy_numbering_does_not_reset_consumed_budget(tmp_path):
+def test_incompatible_budget_fields_block_requests_without_conversion(tmp_path):
     ledger = _ready(tmp_path, limit=1)
     assert _reserve(ledger).allowed
     ledger.close()
@@ -124,8 +124,7 @@ def test_verified_legacy_numbering_does_not_reset_consumed_budget(tmp_path):
     path.write_text(json.dumps(payload))
     restarted = _ledger(tmp_path, limit=1)
     restarted.initialize(NOW)
-    assert restarted.summary(NOW.date().isoformat())["used"] == 1
-    assert _reserve(restarted).reason == "daily_hard_limit"
+    assert _reserve(restarted).reason == "budget_state_unverified"
     restarted.close()
 
 
