@@ -6,15 +6,19 @@ from datetime import date, timedelta
 import pytest
 
 from tests.component import test_company_evidence as fixtures
-from tests.helpers.configuration import SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
-from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
+from tests.helpers.configuration import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
+from trader.download.domain.company_event_extraction import ExtractCompanyEvents
+from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition
 from trader.download.domain.company_events import (
     CompanyEventStatus,
+    CompanyPositiveStatus,
+    CompanyReviewReason,
     CompanyRiskEvent,
     CompanyRiskType,
     CompanySeverityBasis,
     CompanySubject,
     ReductionPlan,
+    RepurchasePurpose,
 )
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.download.infra.company_field_recovery import (
@@ -100,6 +104,51 @@ def _legacy_reduction(tmp_path, body=_PLAN):
     assert _facts(index).risk_events[0].reduction_plan.planned_ratio_pct is None
     assert _state(index) == ()
     assert not tuple((tmp_path / "text").rglob("*.gz"))
+    return index, item
+
+
+def _legacy_repurchase(tmp_path, body):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("purpose-plan", "关于回购股份的公告")
+    index.commit_page(
+        DisclosurePartition("sse", NOW.date(), NOW.date()), DisclosurePage((item,), 1, False), NOW,
+    )
+    index.publish(item.codes, NOW)
+    facts = _facts(index)
+    extraction = fixtures._extraction(body)
+    parsed = ExtractCompanyEvents((CompanyDocument(item, extraction.text, True),), NOW, fixtures.CompanyEventPolicy())
+    event = replace(
+        parsed.positives[0], measurements=replace(parsed.positives[0].measurements, purpose=RepurchasePurpose.UNKNOWN),
+        positive_level=0, level_milestones=(), not_eligible_reason="implementation_or_measurement_unverified",
+    )
+    review = CompanyReviewReason("positive", "implementation_or_measurement_unverified", item.identity, NOW, "旧规则用途待核验")
+    legacy = replace(
+        facts, positive_events=(event,), pending_document_count=0,
+        review_reasons=(*tuple(r for r in facts.review_reasons if r.evidence_id != item.identity), review),
+    )
+    body_hash = CompanyDocumentFilesFixture(tmp_path / "text").write(extraction.text)
+    formal_index = SQLiteCompanyFactsIndexFixture(index.facts_path)
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("UPDATE disclosures SET body_checked=1,body_retained=1,body_hash=?", (body_hash,))
+        collected.run(
+            "INSERT INTO company_field_repairs SELECT id,?,record_hash,?,'repurchase_purpose',"
+            "'required_field_evidence:1','pending' FROM disclosures",
+            (item.codes[0], event.event_id),
+        )
+        old_attempts = CompanyFieldRepairReceipts(collected, item.codes, NOW)
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+    formal_index.publish(
+        (legacy,), {item.identity: item.source}, parent, NOW,
+        receipts=(CompanyInputReceipt(item.source, item.identity, item.codes[0], item.digest,
+                                     formal_index.extraction_hash, body_hash, NOW), *old_attempts),
+    )
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("UPDATE company_field_repairs SET state='attempted'")
+        collected.run(
+            "INSERT INTO document_publications SELECT id,?,?,?,? FROM disclosures",
+            (item.codes[0], item.digest, formal_index.extraction_hash, NOW.isoformat()),
+        )
     return index, item
 
 
@@ -304,22 +353,233 @@ def test_first_attempt_restore_rejects_a_different_current_source_or_body(tmp_pa
         assert collected.run("SELECT COUNT(*) FROM company_field_repairs").require_one()[0] == 0
 
 
-def test_recovery_without_an_automatic_field_rule_is_explicitly_unsupported(tmp_path):
+def test_existing_reduction_date_rules_recover_old_generic_tasks_from_local_text(tmp_path):
     index, item = _legacy_reduction(tmp_path)
     facts = _facts(index)
     event = facts.risk_events[0]
     legacy = replace(facts, risk_events=(replace(
-        event, reduction_plan=replace(event.reduction_plan, planned_start_date=None)
+        event, reduction_plan=replace(event.reduction_plan, planned_start_date=None, planned_end_date=None)
     ),))
+    body_hash = CompanyDocumentFilesFixture(tmp_path / "text").write(fixtures._extraction(_PLAN).text)
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("UPDATE disclosures SET body_retained=1,body_hash=?", (body_hash,))
+        for field in ("start_date", "end_date"):
+            collected.run(
+                "INSERT INTO company_field_repairs SELECT id,?,record_hash,?,?,"
+                "'required_field_evidence:1','pending' FROM disclosures WHERE source_key=?",
+                (item.codes[0], event.event_id, field, item.identity),
+            )
+        old_attempts = CompanyFieldRepairReceipts(collected, item.codes, NOW)
     with SqliteSession(index.facts_path) as formal:
         parent = ReadCompanyPublicationIdentity(formal)
     SQLiteCompanyFactsIndexFixture(index.facts_path).publish(
-        (legacy,), {item.identity: item.source}, parent, NOW
+        (legacy,), {item.identity: item.source}, parent, NOW, receipts=old_attempts
     )
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("UPDATE company_field_repairs SET state='attempted'")
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+        valid = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
+        plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
+    assert all(plan.action == "extract" for plan in plans if plan.gap.field in {"start_date", "end_date"})
+    index.prepare_publication(item.codes, NOW)
+    restored = _facts(index)
+    assert len(restored.risk_events) == 1 and restored.risk_events[0].event_id == event.event_id
+    assert restored.risk_events[0].reduction_plan.planned_start_date == date(2026, 10, 19)
+    assert restored.risk_events[0].reduction_plan.planned_end_date == date(2026, 11, 19)
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+        rows = tuple(tuple(row) for row in collected.run(
+            "SELECT field,rule_id,state FROM company_field_repairs WHERE field IN ('start_date','end_date')"
+        ))
+        assert len(rows) == 4 and all(row[2] == "complete" for row in rows)
+        assert {(row[0], row[1]) for row in rows if row[1] != "required_field_evidence:1"} == {
+            ("start_date", "explicit_reduction_start_date:1"), ("end_date", "explicit_reduction_end_date:1"),
+        }
+        assert tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == valid
+
+
+def test_repurchase_purpose_rule_preserves_planned_state_and_other_event_requirements(tmp_path):
+    index, item = _legacy_repurchase(tmp_path, "本公司拟回购股份，回购股份用于注销。" + _DETAIL)
+    planned = _facts(index).positive_events[0]
+    other = fixtures._disclosure("other-repurchase", "关于回购股份的公告", when=NOW - timedelta(days=1))
+    _put(index, other, "本公司累计已实际回购股份，占公司总股本的比例为0.2%。" + _DETAIL)
+    index.publish(item.codes, NOW)
+    with SqliteSession(index.facts_path) as formal:
+        valid = tuple(tuple(row) for row in formal.run(
+            "SELECT * FROM company_input_receipt WHERE source_key=? AND outcome='valid'", (item.identity,),
+        ))
+
+    index.prepare_publication(item.codes, NOW)
+
+    facts = _facts(index)
+    assert len(facts.positive_events) == 2
+    restored = next(event for event in facts.positive_events if event.event_id == planned.event_id)
+    untouched = next(event for event in facts.positive_events if event.event_id != planned.event_id)
+    assert restored.measurements.purpose is RepurchasePurpose.CANCELLATION
+    assert restored.status is CompanyPositiveStatus.PLANNED and restored.measurements.actual_ratio_pct is None
+    assert restored.positive_level == 0 and restored.level_milestones == ()
+    assert untouched.measurements.purpose is RepurchasePurpose.UNKNOWN
+    assert untouched.measurements.actual_ratio_pct == 0.2
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+        assert collected.run(
+            "SELECT state FROM company_field_repairs WHERE event_id=? AND field='repurchase_purpose' "
+            "AND rule_id='explicit_repurchase_purpose:1'", (planned.event_id,),
+        ).require_one()[0] == "complete"
+        assert collected.run(
+            "SELECT state FROM company_field_repairs WHERE event_id=? AND field='repurchase_purpose' "
+            "AND rule_id='explicit_repurchase_purpose:1'", (untouched.event_id,),
+        ).require_one()[0] == "attempted"
+        assert collected.run(
+            "SELECT count(*) FROM company_field_repairs WHERE event_id=? AND field='actual_pct'", (planned.event_id,),
+        ).require_one()[0] == 0
+        assert tuple(tuple(row) for row in formal.run(
+            "SELECT * FROM company_input_receipt WHERE source_key=? AND outcome='valid'", (item.identity,),
+        )) == valid
+
+
+def test_unmatched_repurchase_purpose_is_attempted_once_then_verified_without_redownload(tmp_path):
+    index, item = _legacy_repurchase(
+        tmp_path, "本公司累计已实际回购股份，占公司总股本的比例为0.2%。" + _DETAIL,
+    )
+    with SqliteSession(index.facts_path) as formal:
+        valid = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
+    index.prepare_publication(item.codes, NOW)
+    assert _facts(index).positive_events[0].measurements.purpose is RepurchasePurpose.UNKNOWN
+    with SqliteSession(index.facts_path) as formal:
+        attempts = tuple(tuple(row) for row in formal.run(
+            "SELECT * FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY policy_id",
+        ))
+    assert len(attempts) == 2
+    for _ in range(2):
+        restarted = fixtures._index(tmp_path)
+        restarted.prepare_publication(item.codes, NOW)
+        assert not restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
+        with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+            purpose = next(plan for plan in ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
+                           if plan.gap.field == "repurchase_purpose")
+            assert (purpose.action, purpose.reason) == ("verify", "same_rule_already_attempted")
+            assert tuple(tuple(row) for row in formal.run(
+                "SELECT * FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY policy_id",
+            )) == attempts
+            assert tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == valid
+            assert collected.run(
+                "SELECT state FROM company_field_repairs WHERE field='repurchase_purpose' AND rule_id='explicit_repurchase_purpose:1'"
+            ).require_one()[0] == "attempted"
+
+
+@pytest.mark.parametrize(
+    ("kind", "code", "expected_actual_gap"),
+    (("announcement", "600002", True), ("news", "600001", True), ("announcement", "600001", False)),
+    ids=("other-stock", "news", "same-stock-multiple-sources"),
+)
+def test_progress_field_recovery_scopes_titles_to_same_stock_announcements(tmp_path, kind, code, expected_actual_gap):
+    index, item = _legacy_repurchase(tmp_path, "本公司拟回购股份，回购股份用于注销。" + _DETAIL)
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("UPDATE disclosures SET title='关于回购股份进展的公告'")
+        collected.run(
+            "INSERT INTO disclosures(source,source_key,kind,title,published_at,url,record_hash) "
+            "SELECT 'exchange_disclosure',source_key,?,'普通公告',published_at,url,'collision' "
+            "FROM disclosures WHERE source=? AND source_key=?",
+            (kind, item.source, item.identity),
+        )
+        collected.run(
+            "INSERT INTO disclosure_codes(code,disclosure_id) "
+            "SELECT ?,id FROM disclosures WHERE source='exchange_disclosure'",
+            (code,),
+        )
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
         plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
-    start = next(plan for plan in plans if plan.gap.field == "start_date")
-    assert (start.action, start.reason) == ("unsupported", "automatic_field_rule_unavailable")
+    actual = tuple(plan for plan in plans if plan.gap.field == "actual_pct")
+    assert bool(actual) is expected_actual_gap
+    if actual:
+        assert len(actual) == 1 and actual[0].gap.code == item.codes[0]
+        assert actual[0].gap.evidence_id == item.identity and actual[0].gap.reason == "measurement_missing"
+
+
+def test_multistock_recovery_does_not_borrow_another_codes_same_id_material(tmp_path):
+    index, item = _legacy_reduction(tmp_path)
+    facts = _facts(index)
+    body_hash = CompanyDocumentFilesFixture(tmp_path / "text").write(fixtures._extraction(_PLAN).text)
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("INSERT INTO company_population VALUES('600002')")
+        collected.run("UPDATE disclosures SET body_retained=1,body_hash=?", (body_hash,))
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+    SQLiteCompanyFactsIndexFixture(index.facts_path).publish(
+        (replace(facts, code="600002"),), {item.identity: item.source}, parent, NOW,
+    )
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+        plans = ReadCompanyFieldRecovery(formal, collected, ("600001", "600002"), NOW, tmp_path)
+    assert {(plan.gap.code, plan.action, plan.reason) for plan in plans} == {
+        ("600001", "extract", "local_text_available"),
+        ("600002", "verify", "source_metadata_missing"),
+    }
+
+
+def test_multistock_recovery_keeps_same_id_material_and_event_times_with_their_code(tmp_path):
+    index, item = _legacy_reduction(tmp_path)
+    facts = _facts(index)
+    other_time = NOW - timedelta(days=1)
+    other_event = replace(
+        facts.risk_events[0], first_disclosed_at=other_time, last_disclosed_at=other_time, effective_at=other_time,
+    )
+    body_hash = CompanyDocumentFilesFixture(tmp_path / "text").write(fixtures._extraction(_PLAN).text)
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("INSERT INTO company_population VALUES('600002')")
+        collected.run("UPDATE disclosures SET published_at=?", ((NOW - timedelta(days=2)).isoformat(),))
+        collected.run(
+            "INSERT INTO disclosures(source,source_key,kind,title,published_at,url,record_hash,body_retained,body_hash) "
+            "SELECT 'exchange_disclosure',source_key,kind,title,?,url,'other-record',1,? FROM disclosures",
+            (other_time.isoformat(), body_hash),
+        )
+        collected.run(
+            "INSERT INTO disclosure_codes(code,disclosure_id) "
+            "SELECT '600002',id FROM disclosures WHERE source='exchange_disclosure'",
+        )
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+    SQLiteCompanyFactsIndexFixture(index.facts_path).publish(
+        (replace(facts, code="600002", risk_events=(other_event,)),),
+        {item.identity: "exchange_disclosure"}, parent, NOW,
+    )
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+        plans = ReadCompanyFieldRecovery(formal, collected, ("600001", "600002"), NOW, tmp_path)
+    assert {(plan.gap.code, plan.action, plan.reason) for plan in plans} == {
+        ("600001", "verify", "earlier_evidence_requires_revision_check"),
+        ("600002", "extract", "local_text_available"),
+    }
+
+
+def test_attempt_on_material_removed_from_code_does_not_suppress_current_same_id_material(tmp_path):
+    index, item = _legacy_reduction(tmp_path)
+    event = _facts(index).risk_events[0]
+    body_hash = CompanyDocumentFilesFixture(tmp_path / "text").write(fixtures._extraction(_PLAN).text)
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("INSERT INTO company_population VALUES('600002')")
+        collected.run("UPDATE disclosures SET body_retained=1,body_hash=?", (body_hash,))
+        collected.run(
+            "INSERT INTO disclosures(source,source_key,kind,title,published_at,url,record_hash) "
+            "SELECT 'exchange_disclosure',source_key,kind,title,published_at,url,'old-record' FROM disclosures",
+        )
+        collected.run(
+            "INSERT INTO disclosure_codes(code,disclosure_id) "
+            "SELECT '600002',id FROM disclosures WHERE source='exchange_disclosure'",
+        )
+        collected.run(
+            "INSERT INTO company_field_repairs SELECT id,'600001',record_hash,?,'planned_pct',"
+            "'reduction_total_capital_ratio:1','attempted' FROM disclosures WHERE source='exchange_disclosure'",
+            (event.event_id,),
+        )
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+        plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
+        assert [(plan.action, plan.reason) for plan in plans] == [("extract", "local_text_available")]
+        with SqliteTransaction(collected):
+            collected.run(
+                "INSERT INTO company_field_repairs SELECT id,'600001',record_hash,?,'planned_pct',"
+                "'reduction_total_capital_ratio:1','attempted' FROM disclosures WHERE source=?",
+                (event.event_id, item.source),
+            )
+        plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
+        assert [(plan.action, plan.reason) for plan in plans] == [("verify", "same_rule_already_attempted")]
 
 
 def test_formal_field_receipt_recovers_collection_rollback_without_another_document_request(tmp_path):

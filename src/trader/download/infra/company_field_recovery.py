@@ -36,8 +36,11 @@ from trader.infra.sqlite_connection import SqliteConnection
 # These rules change measurements only; old document receipts keep their identity.
 # Unknown dependencies/subjects still require verification and are not download jobs.
 COMPANY_FIELD_RULES = (
+    ("start_date", "explicit_reduction_start_date:1"),
+    ("end_date", "explicit_reduction_end_date:1"),
     ("planned_pct", "reduction_total_capital_ratio:1"),
     ("actual_pct", "implemented_total_capital_ratio:1"),
+    ("repurchase_purpose", "explicit_repurchase_purpose:1"),
     ("contract_amount", "explicit_cny_contract_amount:2"),
     ("revenue_report_date", "explicit_contract_revenue_year:1"),
 )
@@ -244,56 +247,57 @@ def ReadCompanyFieldRecovery(
             risk for risk in fact.risk_events if risk.expires_at is None or risk.expires_at > observed_at
         )) for fact in ReadCompanyFactRows(formal, codes[offset:offset + 128]))
         has_repairs = _has_repairs(collected)
-        events: tuple[CompanyRiskEvent | CompanyPositiveEvent, ...] = tuple(
-            event for fact in facts for event in fact.risk_events
-        ) + tuple(event for fact in facts for event in fact.positive_events)
-        gaps = tuple(gap for fact in facts for gap in _field_gaps(fact, collected))
-        materials: list[CompanyFieldMaterial] = []
-        for key in sorted({gap.evidence_id for gap in gaps}):
-            rows = collected.run(
-                "SELECT d.published_at,d.body_retained,d.body_hash,t.path,r.failure "
-                "FROM disclosures d LEFT JOIN document_tasks t ON t.source=d.source "
-                "AND t.source_key=d.source_key AND t.record_hash=d.record_hash "
-                "LEFT JOIN document_retries r ON r.disclosure_id=d.id AND r.record_hash=d.record_hash "
-                "WHERE d.source_key=? AND d.kind='announcement'", (key,),
-            ).fetchall()
-            # Evidence keys shared by different sources are not interchangeable.
-            if len(rows) != 1:
-                continue
-            row = rows[0]
-            digest = row[2]
-            text = bool(row[1]) and isinstance(digest, bytes) and len(digest) == 32 and (
-                raw_root / "text" / digest.hex()[:2] / (digest.hex() + ".txt.gz")
-            ).is_file()
-            pdf = _local_file(raw_root, row[3])
-            materials.append(CompanyFieldMaterial(
-                key, datetime.fromisoformat(row[0]), text, pdf,
-                any(failure == row[4] and route == "ocr" for failure, route, _transient in CompanyDocumentFailureRules()),
-            ))
-        for item in PlanCompanyFieldRecovery(gaps, tuple(materials), observed_at):
-            # A processed attempt is not proof of non-disclosure, and is not a
-            # reason to request unchanged material again with the same rule.
-            rule = _field_attempt_rule(item.gap)
-            attempted = collected.run(
-                "SELECT 1 FROM company_field_repairs f JOIN disclosures d ON d.id=f.disclosure_id "
-                "AND d.record_hash=f.record_hash WHERE d.source_key=? AND f.code=? "
-                "AND f.event_id=? AND f.field=? AND f.rule_id=? AND f.state='attempted'",
-                (item.gap.evidence_id, item.gap.code, item.gap.event_id, item.gap.field, rule),
-            ).fetchone() if has_repairs else None
-            material = next((m for m in materials if m.evidence_id == item.gap.evidence_id), None)
-            event_time = next((event.last_disclosed_at for event in events if event.event_id == item.gap.event_id), None)
-            if material is not None and event_time is not None and material.published_at < event_time:
-                item = replace(item, action="verify", reason="earlier_evidence_requires_revision_check")
-            if material is not None and material.published_at.date() < observed_at.date() - timedelta(days=365) and not material.text_available:
-                item = replace(item, action="verify", reason="old_local_material_requires_verification") if material.pdf_available else item
-            if (
-                item.action in {"extract", "ocr", "download"}
-                and not any(field == item.gap.field for field, _rule in COMPANY_FIELD_RULES)
-            ):
-                item = replace(item, action="unsupported", reason="automatic_field_rule_unavailable")
-            if attempted and item.action in {"extract", "ocr", "download"}:
-                item = replace(item, action="verify", reason="same_rule_already_attempted")
-            recoveries.append(item)
+        for fact in facts:
+            events: tuple[CompanyRiskEvent | CompanyPositiveEvent, ...] = (*fact.risk_events, *fact.positive_events)
+            gaps = _field_gaps(fact, collected)
+            materials: list[CompanyFieldMaterial] = []
+            for key in sorted({gap.evidence_id for gap in gaps}):
+                rows = collected.run(
+                    "SELECT d.published_at,d.body_retained,d.body_hash,t.path,r.failure "
+                    "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+                    "LEFT JOIN document_tasks t ON t.source=d.source "
+                    "AND t.source_key=d.source_key AND t.record_hash=d.record_hash "
+                    "LEFT JOIN document_retries r ON r.disclosure_id=d.id AND r.record_hash=d.record_hash "
+                    "WHERE c.code=? AND d.source_key=? AND d.kind='announcement'", (fact.code, key),
+                ).fetchall()
+                # Evidence keys shared by different sources are not interchangeable.
+                if len(rows) != 1:
+                    continue
+                row = rows[0]
+                digest = row[2]
+                text = bool(row[1]) and isinstance(digest, bytes) and len(digest) == 32 and (
+                    raw_root / "text" / digest.hex()[:2] / (digest.hex() + ".txt.gz")
+                ).is_file()
+                pdf = _local_file(raw_root, row[3])
+                materials.append(CompanyFieldMaterial(
+                    key, datetime.fromisoformat(row[0]), text, pdf,
+                    any(failure == row[4] and route == "ocr" for failure, route, _transient in CompanyDocumentFailureRules()),
+                ))
+            for item in PlanCompanyFieldRecovery(gaps, tuple(materials), observed_at):
+                # A processed attempt is not proof of non-disclosure, and is not a
+                # reason to request unchanged material again with the same rule.
+                rule = _field_attempt_rule(item.gap)
+                attempted = collected.run(
+                    "SELECT 1 FROM company_field_repairs f JOIN disclosures d ON d.id=f.disclosure_id "
+                    "AND d.record_hash=f.record_hash JOIN disclosure_codes c ON c.disclosure_id=d.id AND c.code=f.code "
+                    "WHERE d.source_key=? AND f.code=? AND d.kind='announcement' "
+                    "AND f.event_id=? AND f.field=? AND f.rule_id=? AND f.state='attempted'",
+                    (item.gap.evidence_id, item.gap.code, item.gap.event_id, item.gap.field, rule),
+                ).fetchone() if has_repairs else None
+                material = next((m for m in materials if m.evidence_id == item.gap.evidence_id), None)
+                event_time = next((event.last_disclosed_at for event in events if event.event_id == item.gap.event_id), None)
+                if material is not None and event_time is not None and material.published_at < event_time:
+                    item = replace(item, action="verify", reason="earlier_evidence_requires_revision_check")
+                if material is not None and material.published_at.date() < observed_at.date() - timedelta(days=365) and not material.text_available:
+                    item = replace(item, action="verify", reason="old_local_material_requires_verification") if material.pdf_available else item
+                if (
+                    item.action in {"extract", "ocr", "download"}
+                    and not any(field == item.gap.field for field, _rule in COMPANY_FIELD_RULES)
+                ):
+                    item = replace(item, action="unsupported", reason="automatic_field_rule_unavailable")
+                if attempted and item.action in {"extract", "ocr", "download"}:
+                    item = replace(item, action="verify", reason="same_rule_already_attempted")
+                recoveries.append(item)
     return tuple(recoveries)
 
 
@@ -571,7 +575,11 @@ def _field_gaps(fact: CompanyFacts, connection: SqliteConnection) -> tuple[Compa
             continue
         if event.measurements.actual_ratio_pct is not None:
             continue
-        source = connection.run("SELECT title FROM disclosures WHERE source_key=?", (event.evidence_ids[-1],)).fetchall()
+        source = connection.run(
+            "SELECT d.title FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+            "WHERE c.code=? AND d.source_key=? AND d.kind='announcement'",
+            (fact.code, event.evidence_ids[-1]),
+        ).fetchall()
         if len(source) == 1 and any(marker in source[0][0] for marker in ("进展", "实施情况", "结果", "完成")):
             gaps.append(CompanyFieldGap(fact.code, event.event_id, event.evidence_ids[-1], "actual_pct", "measurement_missing"))
     return tuple(gaps)
