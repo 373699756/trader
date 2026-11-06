@@ -1,0 +1,864 @@
+from __future__ import annotations
+
+# This module intentionally re-exports shared component fixtures to the split suites.
+# ruff: noqa: F401
+import hashlib
+import json
+import threading
+import time
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import replace
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from scripts.download.history.history_fallback import FallbackHistoryClient
+from tests.helpers.shared.reference_fixtures import PreparedFixture
+from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.infra import tushare_records as tushare_records_module
+from trader.download.infra.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
+from trader.download.infra.exchange_security_master import ExchangeSecurityMasterClient
+from tests.helpers.shared.configuration import TushareClientFixture as TushareClient
+from trader.infra.cache import BoundedLruCache
+from trader.infra.market_data.history.history import (
+    BuildHistoryContext,
+    DailyBar,
+    HistoryAdjustmentError,
+    HistoryContext,
+    PriceAdjustment,
+)
+from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.source_health import ReferenceSourceHealth
+from trader.infra.settings import ConfigurationError, LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.workers import BoundedExecutor, InjectedExecutor
+from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
+from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
+from trader.recommendation.application.ports.market_data import (
+    MarketDataDeadlineExceededError,
+    MarketDataFailedError,
+    MarketDataNoDataError,
+    MarketDataUnavailableError,
+)
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.source_lanes import (
+    LatestRequestLane,
+    SourceLaneScheduler,
+    SourceRequestSupersededError,
+)
+from trader.recommendation.domain.market.eligibility import IssuerEligibilitySnapshot, IssuerEligibilityView
+from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
+from trader.recommendation.domain.market.models import (
+    Board,
+    Evidence,
+    FeatureSnapshot,
+    MarketQuote,
+)
+from trader.recommendation.domain.market.news import NewsSignalPolicy
+from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
+from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
+from trader.recommendation.domain.market.tail import MinuteBar, TailSignalPolicy
+from trader.recommendation.infra.market_data import gateway as gateway_module
+from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
+from trader.recommendation.infra.market_data.gateway import MarketDataGateway
+from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
+from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
+from trader.recommendation.infra.market_data.market_cache_identity import (
+    _history_population_codes,
+    _history_preload_codes,
+)
+from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.recommendation.infra.market_data.market_feature_service import (
+    MarketFeatureDependencies,
+    MarketFeatureService,
+)
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
+from trader.recommendation.infra.market_data.providers.sina import SinaClient
+from trader.recommendation.infra.market_data.providers.tencent import TencentClient
+from tests.helpers.shared.configuration import PublishedCompanyResearchFixture as PublishedCompanyResearch
+from trader.recommendation.infra.market_data.published_history_cache import CompletedModelInput
+from trader.recommendation.infra.market_data.published_references import PublishedReferences
+from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS
+from trader.recommendation.infra.market_data.trading_calendar import (
+    ChinaTradingCalendar,
+    TradingCalendarUnavailableError,
+)
+from trader.recommendation.infra.market_data.vendor_routing import Route, VendorRoute, VendorSeverity
+from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
+from trader.recommendation.infra.normalization.features import FeatureBuilder
+
+NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+AFTERNOON = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
+NEWS_POLICY = NewsSignalPolicy(
+    lookback_hours=72.0,
+    freshness_full_score_hours=1.0,
+    positive_score=75.0,
+    neutral_score=50.0,
+    negative_score=25.0,
+    positive_keywords=("回购", "增持", "中标"),
+    negative_keywords=("减持", "立案", "亏损"),
+)
+TAIL_POLICY = TailSignalPolicy(
+    lookback_minutes=30,
+    minimum_baseline_minutes=30,
+    return_score_points_per_pct=25.0,
+    volume_score_points_per_ratio=50.0,
+)
+_STRATEGY_SETTINGS = LoadStrategySettings(Path(__file__).parents[3] / "config" / "strategy.json")
+MARKET_REGIME_POLICY = _STRATEGY_SETTINGS.market_regime
+LONG_POLICY = _STRATEGY_SETTINGS.long_research
+FEATURE_WEIGHT_POLICY = _STRATEGY_SETTINGS.feature_component_weights
+
+
+class _AllowAllEligibility:
+    def view(self, _observed_at):
+        return IssuerEligibilityView((), {}, frozenset(), frozenset())
+
+    def record(self, _facts) -> int:
+        return 0
+
+    def filter_codes(self, codes, _observed_at):
+        return tuple(codes)
+
+    def status(self) -> IssuerEligibilitySnapshot:
+        return IssuerEligibilitySnapshot(
+            "issuer_eligibility_registry",
+            0,
+            0,
+            (),
+            hashlib.sha256(b"").hexdigest(),
+            True,
+            0,
+        )
+
+    def exclusions(self, _observed_at):
+        return ()
+
+    def facts(self):
+        return ()
+
+    def refresh_due(self, _observed_at):
+        return False
+
+    def refresh_snapshot(self, _observed_at, *, source):
+        return None
+
+    def refresh_failed(self, _observed_at, _reason):
+        return None
+
+
+class _FixtureHistory:
+    """Test-only history projection; production uses the published BaoStock archive."""
+
+    input_identity = "fixture:history"
+
+    def __init__(self, client: Any, monotonic: Any) -> None:
+        self._client = client
+        self._monotonic = monotonic
+        self._lock = threading.RLock()
+        self._bars: dict[str, tuple[DailyBar, ...]] = {}
+        self._contexts: dict[str, HistoryContext] = {}
+        self._universe = 0
+
+    def refresh(self) -> bool:
+        return False
+
+    def require_projection(self) -> None:
+        pass
+
+    def load(self, codes, **_kwargs):
+        for code in tuple(dict.fromkeys(codes)):
+            try:
+                bars = tuple(self._client.fetch_history(code, days=61))
+            except Exception:
+                continue
+            if bars:
+                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))
+                self._bars[code] = ordered[-20:]
+                self._contexts[code] = BuildHistoryContext(ordered, lookback_sessions=61)
+        return self.cached(codes)
+
+    def cached(self, codes, **_kwargs):
+        return {code: self._bars[code] for code in codes if code in self._bars}
+
+    def summaries(self, histories, _observed_at):
+        return {code: self._contexts[code] for code in histories if code in self._contexts}
+
+    def completed_model_inputs(self, codes: Sequence[str], observed_at: datetime) -> tuple[CompletedModelInput, ...]:
+        day = observed_at.astimezone(_SHANGHAI).date().isoformat()
+        with self._lock:
+            contexts = {code: self._contexts.get(code) for code in codes}
+        completed = []
+        for code, context in contexts.items():
+            failure = None
+            if context is None:
+                failure = "history_invalid_prices"
+            elif context.sample_count < 61:
+                failure = "history_window_insufficient"
+            elif context.latest_trade_date > day:
+                failure = "history_model_date_mismatch"
+            completed.append(CompletedModelInput(code, ModelHistoryQuality(failure)))
+        return tuple(completed)
+
+    def update_coverage(self, codes, _versions=None):
+        self._universe = len(tuple(codes))
+
+    def apply_source_bars(self, bars_by_code, *, source):
+        del source
+        for code, bars in bars_by_code.items():
+            ordered = tuple(sorted(bars, key=lambda item: item.trade_date))
+            if ordered:
+                self._bars[code] = ordered[-20:]
+                self._contexts[code] = BuildHistoryContext(ordered, lookback_sessions=61)
+
+    def entries(self):
+        return {
+            code: SimpleNamespace(bars=bars, context=self._contexts.get(code), expires_at=self._monotonic() + 60)
+            for code, bars in self._bars.items()
+        }
+
+    def status(self):
+        return SimpleNamespace(
+            state="published" if self._bars else "unavailable",
+            snapshot_hash="fixture" if self._bars else None,
+            disk_snapshot_hash="fixture" if self._bars else None,
+            outcome_snapshot_hash=None,
+            outcome_disk_snapshot_hash=None,
+            restart_required=False,
+            data_cutoff=None,
+            entries=len(self._bars),
+            raw_rows=sum(len(bars) for bars in self._bars.values()),
+            profile_entries=len(self._contexts),
+            estimated_history_codes=0,
+            suspended_history_codes=0,
+            history_scan_count=0,
+            history_window_count=0,
+            universe_rows=self._universe,
+            covered_rows=sum(len(bars) >= 20 for bars in self._bars.values()),
+            error_count=0,
+            data_versions=(),
+            out_of_order_count=0,
+            maintenance_state="idle",
+            maintenance_reason=None,
+            maintenance_stage=None,
+            maintenance_completed_units=0,
+            maintenance_total_units=0,
+            maintenance_elapsed_seconds=0.0,
+        )
+
+    def read_outcome_bars(self, codes, _observed_at):
+        fetch = getattr(self._client, "fetch_outcome_history", None)
+        if not callable(fetch):
+            return {}
+        return {code: tuple(fetch(code, days=61)) for code in codes}
+
+
+def _service(
+    gateway: Any,
+    history_client: Any,
+    feature_builder: Any,
+    **kwargs: Any,
+) -> MarketFeatureService:
+    monotonic = kwargs.pop("monotonic", time.monotonic)
+    wall_clock = kwargs.pop("wall_clock", lambda: NOW)
+    worker_pool = kwargs.pop("worker_pool", None)
+    source_lanes = kwargs.pop("source_lanes", None)
+    cache = kwargs.pop("cache", None)
+    runner = MarketTaskRunner(
+        worker_pool=worker_pool,
+        source_lanes=source_lanes,
+        cache=cache,
+        source_contracts=kwargs.pop("source_contracts", {"tushare": "tushare-component"}),
+        config_version=kwargs.pop("config_version", "component-default"),
+        schema_version=kwargs.pop("schema_version", "market_snapshot"),
+        wall_clock=wall_clock,
+    )
+    history = kwargs.pop("published_history", None)
+    if history is None:
+        history = _FixtureHistory(history_client, monotonic)
+    kwargs.pop("history_worker_pool", None)
+    kwargs.pop("history_workers", 6)
+    kwargs.pop("history_ttl_seconds", 21_600)
+    kwargs.pop("history_cache_limit", 360)
+    references = kwargs.pop("published_references", None)
+    if references is None:
+        # Explicit fixture population; the production reader never derives references from quotes.
+        population = (
+            tuple(
+                BaoStockSecurity(
+                    q.code,
+                    q.name,
+                    "star" if q.code.startswith("688") else "chinext" if q.code.startswith(("300", "301")) else "main",
+                    q.listing_date or date(1999, 1, 1),
+                    None,
+                    "fixture-official",
+                )
+                for q in gateway._quotes
+            )
+            if isinstance(gateway, StaticGateway)
+            else ()
+        )
+        reference = PreparedFixture(NOW, population) if population else None
+        references = PublishedReferences(
+            lambda: reference,
+            lambda: reference.identity if reference else None,
+            lambda _: (),
+            max_age_seconds=86400,
+        )
+    references.initialize()
+    eligibility = kwargs.pop("eligibility", _AllowAllEligibility())
+    historical_st_eligibility = kwargs.pop("historical_st_eligibility", None)
+    historical_st_source = (
+        (lambda: historical_st_eligibility)
+        if historical_st_eligibility is not None
+        else references.historical_st_eligibility
+    )
+
+    class EmptyPublishedEvidence:
+        def publication_version(self):
+            return ""
+
+        def visit(self, codes, consume, *, cancel_requested=None):
+            return None
+
+    research = PublishedCompanyResearch(
+        kwargs.pop("company_evidence_reader", EmptyPublishedEvidence()),
+        wall_clock=wall_clock,
+        open_dates=lambda: PreparedFixture(NOW).open_dates,
+        monotonic=monotonic,
+    )
+    reference = references.reference()
+    research.initialize(
+        tuple(item.code for item in reference.official_universe) if reference else (),
+        cancelled=lambda: False,
+    )
+    intraday_capacity = kwargs.pop("intraday_cache_limit", 360)
+    candidate_quote_capacity = kwargs.pop("candidate_quote_cache_limit", 1080)
+    intraday = IntradayLoader(
+        kwargs.pop("intraday_client", None),
+        runner,
+        workers=kwargs.pop("intraday_workers", 5),
+        minute_pool=kwargs.pop("minute_pool", InjectedExecutor(worker_pool)),
+        ttl_seconds=kwargs.pop("intraday_ttl_seconds", 45),
+        batch_timeout_seconds=kwargs.pop("intraday_batch_timeout_seconds", 3),
+        capacity=intraday_capacity,
+        monotonic=monotonic,
+    )
+    quotes = QuoteCache(
+        QuoteCacheDependencies(gateway, feature_builder, history, references),
+        market_ttl_seconds=kwargs.pop("market_ttl_seconds", 30),
+        candidate_capacity=candidate_quote_capacity,
+        monotonic=monotonic,
+    )
+    health = MarketDataHealth(
+        MarketDataHealthDependencies(quotes, history, research, intraday, references, eligibility),
+        wall_clock=wall_clock,
+    )
+    static_cache = kwargs.pop("static_cache", StaticMarketCache())
+    assert kwargs == {}
+    service = MarketFeatureService(
+        MarketFeatureDependencies(
+            quotes,
+            history,
+            research,
+            intraday,
+            references,
+            runner,
+            health,
+            eligibility,
+            monotonic,
+            StaticMarketPipeline(
+                eligibility,
+                cache=static_cache,
+                monotonic=monotonic,
+                historical_st_eligibility=historical_st_source,
+            ),
+        )
+    )
+    # The fixture's startup timestamp is fixed; task clocks may be finite deadline sequences.
+    service._static_pipeline.initialize(references.static_reference(), NOW)
+    return service
+
+
+class FakeResponse:
+    def __init__(self, payload) -> None:
+        self._payload = payload
+        self.content = payload if isinstance(payload, bytes) else b""
+        self.text = (
+            payload.decode("gb18030") if isinstance(payload, bytes) else payload if isinstance(payload, str) else ""
+        )
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class FakeSession:
+    def __init__(self, payloads) -> None:
+        self._payloads = iter(payloads)
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def get(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        payload = next(self._payloads)
+        if isinstance(payload, Exception):
+            raise payload
+        return FakeResponse(payload)
+
+
+class FailingMarketClient:
+    @staticmethod
+    def fetch_market():
+        raise RuntimeError("offline")
+
+
+class StaticMarketClient:
+    def __init__(self, quotes) -> None:
+        self._quotes = quotes
+
+    def fetch_market(self):
+        return self._quotes
+
+
+class CountingMarketClient(StaticMarketClient):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.calls = 0
+
+    def fetch_market(self):
+        self.calls += 1
+        return super().fetch_market()
+
+
+class SequenceMarketClient:
+    def __init__(self, results) -> None:
+        self._results = iter(results)
+        self.calls = 0
+
+    def fetch_market(self):
+        self.calls += 1
+        result = next(self._results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+class BlockingMarketClient(StaticMarketClient):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def fetch_market(self, *, cancel_event=None):
+        self.calls += 1
+        self.started.set()
+        started = time.monotonic()
+        while not self.release.wait(0.01) and time.monotonic() - started < 1.0:
+            if cancel_event is not None and cancel_event.is_set():
+                break
+        return super().fetch_market()
+
+
+class CoordinatedMarketClient(StaticMarketClient):
+    def __init__(self, quotes, started: threading.Barrier, release: threading.Event) -> None:
+        super().__init__(quotes)
+        self._started = started
+        self._release = release
+        self.calls = 0
+        self.thread_name = ""
+
+    def fetch_market(self):
+        self.calls += 1
+        self.thread_name = threading.current_thread().name
+        self._started.wait(1.0)
+        assert self._release.wait(1.0)
+        return super().fetch_market()
+
+
+class FakeTushareFrame:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+
+    def to_dict(self, orient: str):
+        assert orient == "records"
+        return list(self._rows)
+
+
+class FakeTusharePro:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def stock_basic(self, **kwargs):
+        self.calls.append(("stock_basic", kwargs))
+        return FakeTushareFrame(self._rows)
+
+
+class StaticTencentClient:
+    def __init__(self, quotes) -> None:
+        self._quotes = quotes
+
+    def fetch_quotes(self, _codes, *, timeout_seconds=None, cancel_event=None):
+        del timeout_seconds
+        return self._quotes
+
+
+class BlockingTencentClient(StaticTencentClient):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.release = threading.Event()
+
+    def fetch_quotes(self, codes, *, timeout_seconds=None, cancel_event=None):
+        while not self.release.wait(0.01):
+            if cancel_event is not None and cancel_event.is_set():
+                break
+        return super().fetch_quotes(codes, timeout_seconds=timeout_seconds)
+
+
+class FailFirstTencentClient(StaticTencentClient):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.calls = 0
+
+    def fetch_quotes(self, codes, *, timeout_seconds=None, cancel_event=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("long quote failure")
+        return super().fetch_quotes(codes, timeout_seconds=timeout_seconds)
+
+
+def _empty_gateway_health() -> MarketGatewayHealthStatus:
+    return MarketGatewayHealthStatus(
+        latest_source="unavailable",
+        cached_rows=0,
+        merge_count=0,
+        conflict_count=0,
+        snapshot=None,
+        changes=NormalizedMarketChangeSet("", (), (), ()),
+        route=None,
+        source_lanes=None,
+        security_master=SecurityMasterHealthStatus(0, 0, 0, 0, "free_market+production_calendar", False, 0),
+        sources={},
+        cache=None,
+        latency_waterfall=LatencyWaterfall().status(),
+    )
+
+
+def _tushare_health(
+    *,
+    enabled: bool,
+    history_mode: str,
+    degraded_reason: str | None = None,
+) -> ReferenceSourceHealth:
+    return ReferenceSourceHealth(
+        enabled=enabled,
+        access_points=0,
+        history_mode=history_mode,
+        minute_call_limit=0,
+        daily_call_limit=0,
+        process_api_attempts_last_minute=0,
+        process_api_attempts_today=0,
+        process_remaining_calls_today=0,
+        local_rate_limit_count=0,
+        planned_count=0,
+        success_count=0,
+        error_count=0,
+        consecutive_failures=0,
+        circuit_open=False,
+        timeout_count=0,
+        last_latency_ms=0.0,
+        p50_latency_ms=None,
+        p95_latency_ms=None,
+        degraded_reason=degraded_reason,
+        timeout_seconds=8.0,
+        data_age_seconds=None,
+    )
+
+
+class StaticGateway:
+    def __init__(self, quotes) -> None:
+        self._quotes = quotes
+        self._references = {}
+        self.local_latencies: dict[str, float] = {}
+
+    def record_local_latency(self, stage: str, duration_ms: float) -> None:
+        self.local_latencies[stage] = duration_ms
+
+    def fetch_candidates(self, _codes, **_kwargs):
+        return self._quotes
+
+    def fetch_market(self, **_kwargs):
+        return self._quotes
+
+    def current_quotes(self, codes):
+        requested = set(codes)
+        return tuple(quote for quote in self._quotes if quote.code in requested)
+
+    def update_reference_observations(self, observations):
+        for observation in observations:
+            self._references[observation.subject_key] = observation
+
+    def reference_observations(self, codes):
+        return tuple(self._references[code] for code in codes if code in self._references)
+
+    @staticmethod
+    def health():
+        return _empty_gateway_health()
+
+
+class StaticGatewayWithSeparateQuotes(StaticGateway):
+    def __init__(self, market_quotes, candidate_quotes) -> None:
+        super().__init__(market_quotes)
+        self._candidate_quotes = candidate_quotes
+
+    def fetch_candidates(self, _codes, **_kwargs):
+        return self._candidate_quotes
+
+
+class ThreadRecordingGateway(StaticGateway):
+    def __init__(self, quotes) -> None:
+        super().__init__(quotes)
+        self.thread_names = []
+
+    def fetch_market(self, **kwargs):
+        self.thread_names.append(threading.current_thread().name)
+        return super().fetch_market(**kwargs)
+
+    def fetch_candidates(self, codes, **kwargs):
+        self.thread_names.append(threading.current_thread().name)
+        return super().fetch_candidates(codes, **kwargs)
+
+
+class StaticHistoryClient:
+    @staticmethod
+    def fetch_history(_code, *, days):
+        return ()
+
+
+class CountingHistoryClient:
+    def __init__(self, bars) -> None:
+        self._bars = bars
+        self.calls = []
+
+    def fetch_history(self, code, *, days):
+        self.calls.append(code)
+        return self._bars
+
+
+class BlockingHistoryClient(CountingHistoryClient):
+    def __init__(self, bars) -> None:
+        super().__init__(bars)
+        self.release = threading.Event()
+
+    def fetch_history(self, code, *, days):
+        self.release.wait(1.0)
+        return super().fetch_history(code, days=days)
+
+
+class ThreadRecordingHistoryClient(CountingHistoryClient):
+    def __init__(self, bars) -> None:
+        super().__init__(bars)
+        self.thread_names = []
+
+    def fetch_history(self, code, *, days):
+        self.thread_names.append(threading.current_thread().name)
+        return super().fetch_history(code, days=days)
+
+
+class SelectiveHistoryClient(CountingHistoryClient):
+    def __init__(self, bars, *, failing_codes) -> None:
+        super().__init__(bars)
+        self._failing_codes = set(failing_codes)
+
+    def fetch_history(self, code, *, days):
+        self.calls.append(code)
+        if code in self._failing_codes:
+            raise RuntimeError("offline")
+        return self._bars
+
+
+class MutableMonotonic:
+    value = 0.0
+
+    def __call__(self):
+        return self.value
+
+
+class StaticResearchClient:
+    def __init__(self, evidence) -> None:
+        self._evidence = evidence
+        self.calls = 0
+
+    def fetch_news(self, _code, *, observed_at):
+        self.calls += 1
+        return self._evidence
+
+
+class BlockingResearchClient(StaticResearchClient):
+    def __init__(self, evidence) -> None:
+        super().__init__(evidence)
+        self.release = threading.Event()
+
+    def fetch_news(self, code, *, observed_at):
+        self.release.wait(1.0)
+        return super().fetch_news(code, observed_at=observed_at)
+
+
+class FailingResearchClient:
+    @staticmethod
+    def fetch_news(_code, *, observed_at):
+        raise RuntimeError("offline")
+
+
+class StaticStructuredResearchClient:
+    def __init__(self, news, observation) -> None:
+        self._news = (news,)
+        self._observation = observation
+        self.news_calls = 0
+        self.snapshot_calls = 0
+
+    def fetch_news(self, _code, *, observed_at):
+        self.news_calls += 1
+        return self._news
+
+    def fetch_snapshot(self, _code, *, observed_at):
+        self.snapshot_calls += 1
+        return self._observation
+
+
+class BlockingStructuredResearchClient:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+
+    def fetch_snapshot(self, _code, *, observed_at):
+        self.release.wait(2.0)
+        return ResearchObservation(announcements_available=True)
+
+
+class PartiallyBlockingStructuredResearchClient:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+
+    def fetch_snapshot(self, code, *, observed_at):
+        if code == "600002":
+            self.release.wait(2.0)
+        return ResearchObservation(
+            announcements_available=True,
+            corporate_risk_window_complete=True,
+            corporate_risk_evidence_version=f"evidence:{code}",
+            pledge_ratio_pct=0.0,
+            unlock_ratio_pct=0.0,
+        )
+
+
+class StaticIntradayClient:
+    def __init__(self, bars) -> None:
+        self._bars = bars
+        self.calls = []
+
+    def fetch_intraday_minutes(self, code, *, now, deadline=None, cancelled=None):
+        self.calls.append(code)
+        return self._bars
+
+
+class SequenceIntradayClient:
+    def __init__(self, batches) -> None:
+        self._batches = iter(batches)
+
+    def fetch_intraday_minutes(self, _code, *, now, deadline=None, cancelled=None):
+        return next(self._batches)
+
+
+class FailingIntradayClient:
+    @staticmethod
+    def fetch_intraday_minutes(_code, *, now, deadline=None, cancelled=None):
+        raise RuntimeError("offline")
+
+
+class BlockingIntradayClient:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.started = threading.Event()
+        self.finished = threading.Event()
+        self.calls = []
+
+    def fetch_intraday_minutes(self, code, *, now, deadline=None, cancelled=None):
+        self.calls.append(code)
+        self.started.set()
+        while not self.release.wait(0.01):
+            if cancelled is not None and cancelled():
+                break
+        self.finished.set()
+        return _tail_minute_bars()
+
+
+def _quote(code: str = "600001", industry: str = "工业") -> MarketQuote:
+    return MarketQuote(
+        code=code,
+        name="测试股份",
+        price=12.0,
+        previous_close=11.65,
+        open_price=11.8,
+        high=12.2,
+        low=11.7,
+        pct_change=3.0,
+        change_5m=1.0,
+        speed=0.8,
+        volume_ratio=2.0,
+        turnover_rate=3.0,
+        amount=300_000_000.0,
+        amplitude=4.0,
+        market_cap=30_000_000_000.0,
+        industry=industry,
+        source="fixture",
+        source_time=NOW,
+        received_time=NOW,
+        data_version="fixture",
+    )
+
+
+def _history_bars() -> tuple[DailyBar, ...]:
+    return tuple(
+        DailyBar(
+            trade_date=f"2026-{5 + index // 30:02d}-{index % 30 + 1:02d}",
+            open_price=10.0 + index / 100,
+            close=10.0 + index / 100,
+            high=10.2 + index / 100,
+            low=9.8 + index / 100,
+            volume=1_000_000,
+            amount=100_000_000 + index,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index in range(60)
+    )
+
+
+def _tail_minute_bars() -> tuple[MinuteBar, ...]:
+    start = AFTERNOON - timedelta(minutes=60)
+    return tuple(
+        MinuteBar(
+            source_time=start + timedelta(minutes=index),
+            close=10.2 if index == 60 else 10.0,
+            volume=150.0 if index >= 31 else 100.0,
+            source="eastmoney_intraday",
+            received_time=AFTERNOON,
+            data_version="intraday",
+        )
+        for index in range(61)
+    )

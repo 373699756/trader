@@ -1,1 +1,0 @@
-"""Application research unit tests."""

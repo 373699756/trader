@@ -827,7 +827,7 @@ def _live_browser_session() -> Iterator[tuple[str, _LiveBrowser]]:
     """Prefer the existing Chrome path; own a bounded Firefox session when Chrome is absent."""
     binary = shutil.which("google-chrome") or shutil.which("chromium")
     if binary is not None:
-        from tests.performance.run_desktop_dashboard import _ChromeSession
+        from tests.helpers.recommendation.desktop_dashboard import _ChromeSession
 
         chrome = _ChromeSession(binary, _free_port())
         try:

@@ -1,0 +1,98 @@
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from scripts.training.resources import memory as check_tomorrow_training_memory
+from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
+
+
+@pytest.mark.parametrize("repeat_matches", (True, False))
+def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
+    tmp_path: Path, monkeypatch, capsys, repeat_matches: bool
+) -> None:
+    observed: list[tuple[Path, Path]] = []
+
+    def train(
+        history: Path,
+        output: Path,
+        *,
+        settings,
+        sample_root,
+        sample_settings,
+        progress,
+        expected_history_snapshot_hash: str,
+        sqlite_policy,
+    ):
+        del progress, settings
+        assert sample_settings == TrainingSampleSettingsFixture()
+        assert sample_root == tmp_path / "samples"
+        assert expected_history_snapshot_hash == "a" * 64
+        observed.append((history, output))
+        head = SimpleNamespace(
+            strategy=SimpleNamespace(value="tomorrow"),
+            status="engineering_ready",
+            model_hash=("b" if repeat_matches or len(observed) == 1 else "d") * 64,
+            report_hash="c" * 64,
+            failure_reasons=(),
+        )
+        return SimpleNamespace(
+            status=head.status,
+            training_input_hash="a" * 64,
+            heads=(head,),
+            sample_database_peak_bytes=1234,
+        )
+
+    monkeypatch.setattr("trader.training.infra.profile.v3.training.RunRepackV3Training", train)
+    monkeypatch.setattr(check_tomorrow_training_memory, "_peak_rss_bytes", lambda: 100)
+    monkeypatch.setattr(check_tomorrow_training_memory.os, "nice", lambda _increment: None)
+    history = tmp_path / "history"
+    output = tmp_path / "train"
+    evidence = tmp_path / "historyless/training-memory-result.json"
+
+    assert check_tomorrow_training_memory.Main(
+        [
+            "--history-root",
+            str(history),
+            "--sample-root",
+            str(tmp_path / "samples"),
+            "--train-root",
+            str(output),
+            "--expected-history-snapshot-hash",
+            "a" * 64,
+            "--max-rss-mib",
+            "1",
+            "--output",
+            str(evidence),
+        ]
+    ) == (0 if repeat_matches else 1)
+    assert observed == [
+        (history.resolve(), output.resolve()),
+        (history.resolve(), output.resolve()),
+    ]
+    reported = json.loads(capsys.readouterr().out)
+    assert reported == json.loads(evidence.read_text(encoding="utf-8"))
+    assert reported["peak_rss_bytes"] == 100
+    assert reported["repeat_training_status"] == "engineering_ready"
+    assert reported["sample_database_peak_bytes"] == 1234
+    assert reported["stage_durations_ms"] == {}
+    assert len(reported["content_hash"]) == 64
+
+
+def test_training_memory_gate_applies_the_shared_two_thread_policy(monkeypatch) -> None:
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        monkeypatch.delenv(name, raising=False)
+
+    check_tomorrow_training_memory._configure_resources()
+
+    assert check_tomorrow_training_memory.TOMORROW_TRAINING_PEAK_RSS_MIB == 2_048
+    assert {
+        name: check_tomorrow_training_memory.os.environ[name]
+        for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+    } == {
+        "OMP_NUM_THREADS": "2",
+        "OPENBLAS_NUM_THREADS": "2",
+        "MKL_NUM_THREADS": "2",
+        "NUMEXPR_NUM_THREADS": "2",
+    }

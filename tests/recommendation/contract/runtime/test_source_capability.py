@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+import ast
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[4]
+BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
+GATEWAY = ROOT / "src" / "trader" / "recommendation" / "infra" / "market_data" / "gateway.py"
+COORDINATOR = ROOT / "src" / "trader" / "recommendation" / "infra" / "market_data" / "source_coordinator.py"
+SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings" / "runtime_loader.py"
+MARKET_DIR = ROOT / "src" / "trader" / "infra" / "market_data"
+MARKET_PORTS = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "market_data.py"
+
+
+def test_unimplemented_sources_are_not_wired_into_market_runtime() -> None:
+    for missing in ("exchange.py", "baostock.py", "mootdx.py"):
+        assert not (MARKET_DIR / missing).exists()
+    assert not (MARKET_DIR / "providers" / "cninfo.py").exists()
+    assert (ROOT / "src/trader/download/infra/company_disclosure_source.py").is_file()
+    assert (ROOT / "src/trader/download/infra/company_structured_source.py").is_file()
+    assert not (ROOT / "src/trader/recommendation/infra/market_data/announcement_sync.py").exists()
+
+    for path in (BOOTSTRAP, GATEWAY, COORDINATOR):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.append(node.module)
+        for forbidden in ("exchange", "cninfo", "baostock", "mootdx"):
+            assert all(forbidden not in name.split(".") for name in imports), f"unexpected {forbidden} in {path}"
+
+
+def test_source_contracts_contract_expected_five_sources() -> None:
+    text = SETTINGS_RUNTIME.read_text(encoding="utf-8")
+    expected_raw = re.search(r"expected = \{([^}]*)\}", text)
+    assert expected_raw is not None, "market_data.source_contracts expected set not found"
+    actual = {
+        token.strip().strip("\"'").split(":")[0]
+        for token in expected_raw.group(1).replace("\n", " ").split(",")
+        if token.strip()
+    }
+    assert actual == {"eastmoney", "sina", "tencent", "tushare"}
+
+
+def test_source_contract_keeps_read_port_and_removes_unused_calendar_copy() -> None:
+    market_tree = ast.parse(MARKET_PORTS.read_text(encoding="utf-8"))
+    market_classes = {node.name for node in ast.walk(market_tree) if isinstance(node, ast.ClassDef)}
+
+    assert "DataPlaneReadPort" in market_classes
+    assert not (ROOT / "src/trader/recommendation/application/ports/data_plane_records.py").exists()

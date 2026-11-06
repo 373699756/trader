@@ -1,6 +1,7 @@
 SHELL := /bin/bash
 PYTHON ?= .venv/bin/python3
 PYTEST_WORKERS ?= 4
+PYTEST_DISTRIBUTION ?= loadgroup
 SOURCE_PATHS := src/trader tests scripts
 
 .PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-fast test-train test-history test-recommendation test-recommendation-runtime test-recommendation-suppliers test-static-contracts test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-list diagnose-local
@@ -18,7 +19,7 @@ help:
 	@echo "make test-recommendation-runtime - run recommendation scheduler and worker timing tests"
 	@echo "make test-recommendation-suppliers - run recommendation supplier and gateway timing tests"
 	@echo "make test-static-contracts - run repository-wide naming and static source scans"
-	@echo "make test-full     - run every test, including all slow tests"
+	@echo "make test-full     - run all tests including slow tests; format_tools require explicit --run-format-tools"
 	@echo "make test-unit     - run unit tests"
 	@echo "make test-component - run component tests"
 	@echo "make test-contract  - run contract tests"
@@ -53,40 +54,40 @@ type-check:
 test: test-fast
 
 test-fast:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "not slow"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests -m "not slow"
 
 test-train:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "train"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests/training
 
 test-history:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "history"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests/download
 
 test-recommendation:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "recommendation"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests/recommendation tests/http_api tests/web
 
 test-recommendation-runtime:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "recommendation and slow_runtime"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests/recommendation tests/infra -m "slow_runtime"
 
 test-recommendation-suppliers:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "recommendation and slow_supplier"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests/recommendation tests/infra -m "slow_supplier"
 
 test-static-contracts:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "crosscut and slow_static"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests/system/contract -m "slow_static"
 
 test-full:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests
 
 test-unit:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/unit
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests -m "unit"
 
 test-component:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/component
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests -m "component"
 
 test-contract:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/contract
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests -m "contract"
 
 test-integration:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests/integration
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) --dist $(PYTEST_DISTRIBUTION) tests -m "integration"
 
 test-release: package
 	$(PYTHON) scripts/tools.py --business engineering --module packaging --action install -- --dist-dir dist

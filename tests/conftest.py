@@ -1,314 +1,122 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast
 
 import pytest
+from xdist import is_xdist_worker
 
-from trader.infra.workers import BoundedExecutor
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
-from trader.recommendation.domain.evidence.review import RiskRule
-from trader.recommendation.domain.market.models import (
-    FeatureSnapshot,
-    MarketQuote,
-)
-from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy
-from tests.helpers.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
+if TYPE_CHECKING:
+    from _pytest.terminal import TerminalReporter
+    from xdist.workermanage import WorkerController
+
+    from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+    from trader.recommendation.domain.market.models import FeatureSnapshot
+
+pytest_plugins = ("tests.helpers.recommendation.domain_fixtures",)
 
 _TEST_DIRECTORY_MARKERS = frozenset({"unit", "component", "integration", "contract", "performance", "js"})
-_BUSINESS_OWNERS = frozenset({"train", "history", "recommendation", "crosscut"})
-_TRAINING_COMPONENT_PATHS = frozenset(
-    {
-        "component/test_factor_diagnostic_reports.py",
-        "component/test_historical_baseline_reports.py",
-        "component/test_historical_label_evidence.py",
-        "component/test_historical_partitions.py",
-        "component/test_research_trace_index.py",
-        "component/test_terminal_holdout_reports.py",
-        "component/test_tomorrow_historical_evidence.py",
-        "component/test_tomorrow_historical_risk_evidence.py",
-    }
-)
-_HISTORY_PATHS = frozenset(
-    {
-        "unit/infra/test_history_tencent_coverage.py",
-        "unit/infra/test_history_completion_pipeline.py",
-        "unit/infra/test_tencent_history_recovery.py",
-        "unit/scripts/test_tencent_history_coverage.py",
-        "component/test_qfq_windows.py",
-        "component/test_qfq_layout_migration.py",
-        "component/test_published_input_preloader.py",
-        "unit/infra/test_history_st_merge.py",
-        "unit/infra/test_history_supplier_router.py",
-        "unit/infra/test_history_reference_codec.py",
-        "unit/infra/test_tencent_history_supplier.py",
-        "unit/infra/research/test_history_industry_cache.py",
-        "unit/scripts/test_baostock_qfq_shadow.py",
-        "contract/test_baostock_history_cli.py",
-        "contract/test_history_partition_repack_contract.py",
-        "contract/test_history_automation_contract.py",
-        "unit/application/research/test_history_automation.py",
-        "unit/application/research/test_history_sync.py",
-        "unit/domain/research/test_history_control.py",
-        "unit/domain/research/test_history_revision.py",
-        "unit/entrypoints/test_history_sync_progress.py",
-        "unit/infra/research/test_baostock_gap_supplier.py",
-        "unit/infra/research/test_baostock_gateway.py",
-        "unit/infra/research/test_baostock_sync_supplier.py",
-        "unit/infra/research/test_history_snapshot_reader.py",
-        "unit/infra/research/test_history_partition_repack.py",
-        "unit/infra/research/test_history_snapshot_status.py",
-        "unit/infra/research/test_history_sync_runner.py",
-        "unit/infra/research/test_history_automation_uninstall.py",
-        "unit/infra/research/test_history_control_index.py",
-        "unit/infra/research/test_history_prices.py",
-        "unit/infra/test_baostock_industry.py",
-        "unit/scripts/test_history_daily_capability.py",
-        "unit/scripts/test_history_sources.py",
-        "unit/scripts/test_tushare_daily.py",
-        "unit/scripts/test_company_document_download_audit.py",
-        "unit/scripts/test_company_publication_audit.py",
-        "unit/scripts/test_company_resume_diagnostic.py",
-        "unit/scripts/test_company_structured_field_audit.py",
-        "unit/scripts/test_company_sync_measurement.py",
-        "unit/scripts/test_company_live_sync_tool.py",
-        "unit/scripts/test_company_material_reporting.py",
-        "unit/scripts/test_company_output_isolation.py",
-        "unit/scripts/test_company_source_reporting.py",
-        "unit/scripts/test_company_source_runtime.py",
-        "unit/scripts/test_company_source_options.py",
-        "unit/scripts/test_history_publication_audit.py",
-        "unit/scripts/test_history_publication_measurement.py",
-        "unit/scripts/test_market_factor_compare.py",
-        "unit/scripts/test_qfq_sqlite.py",
-        "unit/scripts/test_security_master_probe.py",
-    }
-)
-_TRAINING_CONTRACT_PATHS = frozenset(
-    {
-        "contract/test_baseline_identity_audit_contract.py",
-        "contract/test_candidate_recall_ledger_contract.py",
-        "contract/test_historical_industry_facts_contract.py",
-        "contract/test_historical_only_score_validation.py",
-        "contract/test_limited_factor_family_research_contract.py",
-        "contract/test_point_in_time_dataset_contract.py",
-        "contract/test_risk_cost_uncertainty_contract.py",
-        "contract/test_score_cost_aware_selection_contract.py",
-        "contract/test_score_plan_contract.py",
-        "contract/test_score_point_in_time_population_contract.py",
-        "contract/test_score_research_detailed_strategy_contract.py",
-        "contract/test_score_shadow_model_contract.py",
-        "contract/test_score_tomorrow_features_contract.py",
-        "contract/test_scoring_hot_path_efficiency_contract.py",
-        "contract/test_scoring_weight_configuration_contract.py",
-    }
-)
-_RECOMMENDATION_CONTRACT_PATHS = frozenset(
-    {
-        "contract/test_candidate_planning_contract.py",
-        "contract/test_current_product_contract.py",
-        "contract/test_d25_contract.py",
-        "contract/test_freeze_contract.py",
-        "contract/test_feature_contract_unification.py",
-        "contract/test_long_contract.py",
-        "contract/test_recommendation_sections.py",
-        "contract/test_runtime_contract.py",
-        "contract/test_source_capability.py",
-        "contract/test_tomorrow_contract.py",
-        "contract/test_web_contract.py",
-    }
-)
-_TRAINING_SCRIPT_PATHS = frozenset(
-    {
-        "unit/scripts/test_check_tomorrow_training_memory.py",
-        "unit/scripts/test_training_alignment.py",
-        "unit/scripts/test_training_coverage.py",
-        "unit/scripts/test_training_performance.py",
-        "unit/scripts/test_training_resources.py",
-        "unit/scripts/test_training_samples.py",
-        "unit/scripts/test_training_output_isolation.py",
-        "unit/scripts/test_v5_diagnostic.py",
-        "unit/scripts/test_v5_lite.py",
-        "unit/scripts/test_v5_samples.py",
-    }
-)
-_TRAINING_ENTRYPOINT_PATHS = frozenset(
-    {
-        "unit/entrypoints/test_h1_point_in_time.py",
-        "unit/entrypoints/test_tomorrow_training_progress.py",
-    }
-)
-_RECOMMENDATION_INFRA_PATHS = frozenset(
-    {
-        "unit/infra/test_cninfo_incremental.py",
-        "unit/infra/test_data_plane.py",
-        "unit/infra/test_freeze_records.py",
-        "unit/infra/test_issuer_eligibility_index.py",
-    }
-)
-_RECOMMENDATION_SCRIPT_PATHS = frozenset(
-    {
-        "unit/scripts/test_desktop_dashboard.py",
-        "unit/scripts/test_company_ledger_tool.py",
-        "unit/scripts/test_long_watchlist.py",
-        "unit/scripts/test_tools_recommendation_options.py",
-        "unit/scripts/test_web_health.py",
-    }
-)
-_CROSSCUT_PATHS = frozenset(
-    {
-        "component/test_process_lock.py",
-        "unit/application/test_history_training_boundaries.py",
-        "unit/infra/test_evidence_publication.py",
-        "unit/infra/test_exchange_security_master.py",
-        "unit/test_infra_failures.py",
-        "unit/test_server_entrypoint.py",
-        "unit/test_settings.py",
-        "unit/scripts/test_check_entrypoint.py",
-        "unit/scripts/test_code_quality_tools.py",
-        "unit/scripts/test_database_baseline.py",
-        "unit/scripts/test_diagnose_runtime.py",
-        "unit/scripts/test_disk_diagnostic.py",
-        "unit/scripts/test_migrate_runtime_data.py",
-        "unit/scripts/test_runtime_diagnostics_reporting.py",
-        "unit/scripts/test_skill_evaluation.py",
-        "unit/scripts/test_tools_business_options.py",
-        "unit/scripts/test_tools_control_options.py",
-        "unit/scripts/test_tools_maintenance.py",
-    }
-)
-_SLOW_MARKERS_BY_PATH = {
-    "slow_history": frozenset(
-        {
-            "unit/infra/research/test_history_sync_runner.py",
-            "unit/infra/research/test_history_partition_repack.py",
-            "unit/infra/research/test_history_control_index.py",
-            "unit/infra/research/test_history_training_input.py",
-        }
-    ),
-    "slow_migration": frozenset(
-        {
-            "unit/infra/research/test_history_sync_runner.py",
-            "unit/infra/research/test_history_partition_repack.py",
-            "unit/infra/research/test_history_control_index.py",
-            "unit/infra/research/test_history_training_input.py",
-        }
-    ),
-    "slow_runtime": frozenset(
-        {
-            "integration/test_scheduler_runtime.py",
-            "unit/application/test_input_runtime.py",
-            "unit/application/test_workers.py",
-            "unit/application/test_supervisor.py",
-        }
-    ),
-    "slow_supplier": frozenset(
-        {
-            "component/test_market_vendors.py",
-            "component/test_market_gateway.py",
-            "component/test_market_service.py",
-            "component/test_market_references.py",
-            "component/test_market_exchange_references.py",
-            "component/test_market_research.py",
-            "unit/test_market_data_cache.py",
-        }
-    ),
-    "slow_static": frozenset(
-        {
-            "contract/test_professional_naming_contract.py",
-            "contract/test_stable_naming_contract.py",
-        }
-    ),
+_BUSINESS_DIRECTORY_MARKERS = {
+    "download": "history",
+    "training": "train",
+    "recommendation": "recommendation",
+    "http_api": "recommendation",
+    "web": "recommendation",
+    "infra": "crosscut",
+    "system": "crosscut",
+    "tooling": "crosscut",
 }
+_SLOW_CATEGORIES = frozenset(
+    {"slow_history", "slow_migration", "slow_runtime", "slow_supplier", "slow_static", "slow_training"}
+)
+_FORMAT_TOOLS_DESELECTED = pytest.StashKey[set[str]]()
+_FORMAT_TOOLS_OUTPUT = "trader_format_tools_deselected"
+
+
+class _XdistWorkerConfig(Protocol):
+    workeroutput: dict[str, object]
+
+
+class _ApplicationFeatureFactory(Protocol):
+    def __call__(self, code: str, observed_at: datetime, *, industry: str = "工业") -> FeatureSnapshot: ...
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    group = parser.getgroup("Trader test authorization")
+    group.addoption(
+        "--run-format-tools",
+        action="store_true",
+        default=False,
+        help="Run format_tools tests only after explicit authorization to execute formatting tools.",
+    )
 
 
 def _business_owner(relative_path: str) -> str:
-    if relative_path in _CROSSCUT_PATHS:
-        return "crosscut"
-    if relative_path in _HISTORY_PATHS:
-        return "history"
-    if relative_path in (
-        _TRAINING_COMPONENT_PATHS | _TRAINING_CONTRACT_PATHS | _TRAINING_SCRIPT_PATHS | _TRAINING_ENTRYPOINT_PATHS
-    ):
-        return "train"
-    if relative_path in _RECOMMENDATION_CONTRACT_PATHS | _RECOMMENDATION_INFRA_PATHS | _RECOMMENDATION_SCRIPT_PATHS:
-        return "recommendation"
-    if relative_path.startswith("unit/application/outcomes/"):
-        return "train"
-    if relative_path.startswith("unit/application/research/"):
-        return "train"
-    if relative_path.startswith("unit/domain/research/"):
-        return "train"
-    if relative_path.startswith("unit/infra/research/"):
-        return "train"
-    if relative_path.startswith("unit/infra/scoring/"):
-        return "train"
-    if relative_path.startswith("unit/training/"):
-        return "train"
-    if relative_path == "unit/domain/test_outcomes.py":
-        return "train"
-    if relative_path == "unit/infra/test_historical_screening_snapshot.py":
-        return "train"
-    if relative_path == "unit/infra/test_outcomes.py":
-        return "train"
-    if relative_path.startswith("component/"):
-        return "recommendation"
-    if relative_path.startswith("integration/"):
-        return "recommendation"
-    if relative_path.startswith("performance/"):
-        return "recommendation"
-    if relative_path.startswith("unit/application/"):
-        return "recommendation"
-    if relative_path.startswith("unit/domain/"):
-        return "recommendation"
-    if relative_path.startswith("unit/"):
-        return "recommendation"
-    if relative_path.startswith("contract/"):
-        return "crosscut"
-    raise pytest.UsageError(f"Test has no registered business owner: tests/{relative_path}")
+    root = Path(relative_path).parts[0]
+    owner = _BUSINESS_DIRECTORY_MARKERS.get(root)
+    if owner is None:
+        raise pytest.UsageError(f"Test has no registered business owner: tests/{relative_path}")
+    return owner
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    excluded: list[pytest.Item] = []
+    selected: list[pytest.Item] = []
     for item in items:
         relative = item.path.relative_to(Path(__file__).parent)
-        category = relative.parts[0]
-        if category in _TEST_DIRECTORY_MARKERS:
-            item.add_marker(category)
-        business_owner = _business_owner(relative.as_posix())
-        if business_owner not in _BUSINESS_OWNERS:
-            raise pytest.UsageError(f"Invalid business owner {business_owner!r} for {relative}")
-        item.add_marker(business_owner)
-        if category == "performance":
+        category = relative.parts[1] if len(relative.parts) > 1 else ""
+        if category not in _TEST_DIRECTORY_MARKERS:
+            raise pytest.UsageError(f"Test has no registered test category: tests/{relative}")
+        item.add_marker(category)
+        item.add_marker(_business_owner(relative.as_posix()))
+        if category == "performance" or any(item.get_closest_marker(marker) for marker in _SLOW_CATEGORIES):
             item.add_marker("slow")
-        for marker, paths in _SLOW_MARKERS_BY_PATH.items():
-            if relative.as_posix() in paths:
-                item.add_marker(marker)
-                item.add_marker("slow")
+        if item.get_closest_marker("format_tools") is not None and not config.getoption("run_format_tools"):
+            excluded.append(item)
+        else:
+            selected.append(item)
+    if excluded:
+        config.stash.setdefault(_FORMAT_TOOLS_DESELECTED, set()).update(item.nodeid for item in excluded)
+        config.hook.pytest_deselected(items=excluded)
+        items[:] = selected
 
 
-@pytest.fixture
-def market_worker_pool():
-    pool = BoundedExecutor(worker_count=2, queue_capacity=4, thread_name_prefix="test-market-worker")
-    pool.start()
-    try:
-        yield pool
-    finally:
-        pool.stop(cancel_futures=True)
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    if is_xdist_worker(session):
+        worker_config = cast(_XdistWorkerConfig, session.config)
+        excluded_nodeids: set[str] = session.config.stash.get(_FORMAT_TOOLS_DESELECTED, set())
+        worker_config.workeroutput[_FORMAT_TOOLS_OUTPUT] = sorted(excluded_nodeids)
 
 
-@pytest.fixture
-def training_worker_pool():
-    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="test-training-worker")
-    pool.start()
-    try:
-        yield pool
-    finally:
-        pool.stop(cancel_futures=True)
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: WorkerController, error: object) -> None:
+    if error is not None:
+        return
+    excluded = node.workeroutput.get(_FORMAT_TOOLS_OUTPUT, ())
+    if not isinstance(excluded, (list, tuple)) or not all(isinstance(nodeid, str) for nodeid in excluded):
+        raise pytest.UsageError("Invalid format_tools deselection report from pytest worker")
+    node.config.stash.setdefault(_FORMAT_TOOLS_DESELECTED, set()).update(excluded)
+
+
+def pytest_terminal_summary(terminalreporter: TerminalReporter, config: pytest.Config) -> None:
+    count = len(config.stash.get(_FORMAT_TOOLS_DESELECTED, set()))
+    if count:
+        terminalreporter.write_line(
+            f"{count} format_tools deselected: explicit --run-format-tools required; "
+            "format-tool release checks were not run."
+        )
 
 
 @pytest.fixture
 def recommendation_policy() -> RecommendationPolicy:
+    from tests.helpers.shared.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
+    from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
+    from trader.recommendation.domain.evidence.review import RiskRule
+    from trader.recommendation.domain.publication.models import Strategy
+    from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy
+
     risk_rules = {
         "near_limit_crowding": RiskRule("near_limit_crowding", "medium", 5.0, 0.7, "market_crowding"),
         "price_volume_divergence": RiskRule("price_volume_divergence", "medium", 4.0, 0.7, "market_structure"),
@@ -346,7 +154,9 @@ def recommendation_policy() -> RecommendationPolicy:
 
 
 @pytest.fixture
-def application_feature_factory():
+def application_feature_factory() -> _ApplicationFeatureFactory:
+    from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
+
     def build(code: str, observed_at: datetime, *, industry: str = "工业") -> FeatureSnapshot:
         quote = MarketQuote(
             code=code,
@@ -447,8 +257,3 @@ def application_feature_factory():
         return FeatureSnapshot(quote=quote, values=values, observed_at=observed_at, history_days=60)
 
     return build
-
-
-@pytest.fixture
-def utc_now() -> datetime:
-    return datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)

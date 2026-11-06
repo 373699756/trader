@@ -661,7 +661,7 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 
 还要与A共同核对`infra/database/database_layout_comparison.py`的训练样本/窄扫描负载、`download/history/history_sqlite_performance.py`的training_projection，以及`download/history/history_parquet.py`的共享投影，owner不能仅凭文件名判定。前两者是跨业务检查，不由C擅自搬走；Parquet仅供现有诊断比较，不能因生产未采用就删除有效研究能力。
 
-内存检查由`core/catalog.py`的memory动作注册，脚本工具表与`tests/conftest.py::_TRAINING_SCRIPT_PATHS`同步；`scripts/engineering/quality/debt.py::TOP_LEVEL_SCRIPT_MANIFEST`只核对tools.py公开根入口，不维护另一份内存入口名单。其输出schema `tomorrow_training_memory_gate`被产品`src/trader/training/infra/history/repack_training_evidence.py::ReadTomorrowTrainingMemoryEvidence`用于重排证据核验；该证据消费者必须同步保留字段、摘要和身份要求，不能只更新入口命令就删旧报告合同。
+内存检查由`core/catalog.py`的memory动作注册，对应回归位于`tests/training/unit/scripts/test_check_tomorrow_training_memory.py`，`tests/conftest.py`按`tests/training/`目录推导`train`标记；`scripts/engineering/quality/debt.py::TOP_LEVEL_SCRIPT_MANIFEST`只核对tools.py公开根入口，不维护另一份内存入口名单。其输出schema `tomorrow_training_memory_gate`被产品`src/trader/training/infra/history/repack_training_evidence.py::ReadTomorrowTrainingMemoryEvidence`用于重排证据核验；该证据消费者必须同步保留字段、摘要和身份要求，不能只更新入口命令就删旧报告合同。
 
 以下交接记录保留原接口需求及核销位置；321/338/345已交付部分不重复派发，真实采用和性能仍按g取证：
 

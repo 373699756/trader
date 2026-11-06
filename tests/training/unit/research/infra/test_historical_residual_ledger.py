@@ -1,0 +1,109 @@
+
+from tests.helpers.shared.configuration import SqlitePolicyFixture
+import json
+from dataclasses import replace
+from datetime import date
+
+import pytest
+
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+from trader.training.domain.evaluation.historical_residual_ledger import (
+    HistoricalOutcomeRecord,
+    HistoricalPredictionRecord,
+    ResidualJoinKey,
+)
+from trader.training.infra.research.historical_residual_ledger import (
+    HistoricalResidualLedgerConflictError,
+    HistoricalResidualLedgerCorruptionError,
+    SQLiteHistoricalResidualLedger,
+)
+
+_HASH_A = "a" * 64
+_HASH_B = "b" * 64
+
+
+def _prediction() -> HistoricalPredictionRecord:
+    return HistoricalPredictionRecord(
+        ResidualJoinKey("tomorrow", date(2024, 1, 2), "15:00", "600001", 1),
+        _HASH_A,
+        _HASH_A,
+        _HASH_B,
+        "main",
+        "industrial",
+        "normal",
+        "liquid",
+        "normal",
+        0.01,
+        75.0,
+        "passed",
+        False,
+        "below_top6",
+    )
+
+
+def _outcome() -> HistoricalOutcomeRecord:
+    return HistoricalOutcomeRecord(
+        _prediction().key,
+        _HASH_A,
+        0.018,
+        0.001,
+        0.002,
+        0.015,
+        -0.3,
+        False,
+        "matured",
+    )
+
+
+def test_sqlite_ledger_is_append_only_idempotent_and_detects_conflicts(tmp_path) -> None:
+    ledger = SQLiteHistoricalResidualLedger(tmp_path / "ledger.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    prediction = _prediction()
+    outcome = _outcome()
+
+    ledger.append_predictions((prediction,))
+    ledger.append_predictions((prediction,))
+    ledger.append_outcomes((outcome,))
+    ledger.append_outcomes((outcome,))
+
+    assert ledger.read_joined("tomorrow", _HASH_A) == (ledger.read_joined("tomorrow", _HASH_A)[0],)
+    assert ledger.read_joined("tomorrow", _HASH_A)[0].prediction_error == pytest.approx(0.005)
+    with pytest.raises(HistoricalResidualLedgerConflictError):
+        ledger.append_predictions((replace(prediction, score=74.0),))
+    with pytest.raises(HistoricalResidualLedgerConflictError):
+        ledger.append_outcomes((replace(outcome, gross_return=0.017, actual_net_excess_return=0.014),))
+
+
+def test_sqlite_ledger_does_not_join_different_parent_split(tmp_path) -> None:
+    ledger = SQLiteHistoricalResidualLedger(tmp_path / "ledger.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    ledger.append_predictions((_prediction(),))
+    ledger.append_outcomes((replace(_outcome(), parent_split_hash=_HASH_B),))
+
+    assert ledger.read_joined("tomorrow", _HASH_A) == ()
+
+
+def test_sqlite_ledger_rejects_prediction_payload_tampering(tmp_path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    ledger = SQLiteHistoricalResidualLedger(path, sqlite_policy=SqlitePolicyFixture())
+    ledger.append_predictions((_prediction(),))
+    ledger.append_outcomes((_outcome(),))
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE historical_prediction SET content_hash = ?", (bytes.fromhex("f" * 64),))
+
+    with pytest.raises(HistoricalResidualLedgerCorruptionError, match="prediction"):
+        ledger.read_joined("tomorrow", _HASH_A)
+
+
+def test_sqlite_ledger_rejects_unknown_payload_fields(tmp_path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    ledger = SQLiteHistoricalResidualLedger(path, sqlite_policy=SqlitePolicyFixture())
+    ledger.append_predictions((_prediction(),))
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
+        payload = json.loads(connection.run("SELECT prediction_json FROM historical_prediction").fetchone()[0])
+        payload["unexpected"] = True
+        connection.run(
+            "UPDATE historical_prediction SET prediction_json = ?",
+            (json.dumps(payload, sort_keys=True, separators=(",", ":")),),
+        )
+
+    with pytest.raises(HistoricalResidualLedgerCorruptionError, match="schema"):
+        ledger.read_predictions("tomorrow", _HASH_A)

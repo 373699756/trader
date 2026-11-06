@@ -1,0 +1,515 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from trader.recommendation.domain.candidate.composition import LocalScoreResult
+from trader.recommendation.domain.evidence.review import RiskRule
+from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.publication.models import BoardStrategyPolicy, ScoredDisposition, Strategy
+from trader.recommendation.domain.selection import scored_selection
+from trader.recommendation.domain.selection.scored_selection import (
+    PlanScoredCandidates,
+    ScoredSelectionPolicy,
+    ScoredSelectionRequest,
+    SelectScored,
+)
+from tests.helpers.shared.configuration import CompanyScoringPolicyFixture, HardFilterPolicyFixture
+
+import hashlib
+import pytest
+from trader.infra.cache_contracts import CanonicalJsonBytes
+
+NOW = datetime(2026, 7, 28, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+_CANDIDATE_WEIGHTS = {
+    "liquidity": 0.4,
+    "trend": 0.3,
+    "stability": 0.2,
+    "data_completeness": 0.1,
+}
+_LOCAL_WEIGHTS = {
+    "tail_structure": 0.2,
+    "turnover_flow": 0.1,
+    "trend": 0.2,
+    "stability": 0.2,
+    "market_state": 0.1,
+    "entry_quality": 0.2,
+}
+_CANDIDATE_COMPONENT_WEIGHTS = {
+    "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+}
+_LOCAL_COMPONENT_WEIGHTS = {
+    "tail_structure": {"tail_return_30m": 0.35, "tail_volume_ratio": 0.3, "close_location": 0.35},
+    "turnover_flow": {
+        "turnover_shock_score": 0.35,
+        "amount_shock_score": 0.35,
+        "flow_confirmation_score": 0.3,
+    },
+    "trend": {"ma20_60_position": 0.375, "ma_slope": 0.375, "breakout_20d": 0.25},
+    "stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5},
+}
+
+
+def _board_policy(board: Board) -> BoardStrategyPolicy:
+    return BoardStrategyPolicy(
+        policy_id=f"tomorrow-policy:{board.value}",
+        version="tomorrow-policy",
+        board=board,
+        strategy=Strategy.TOMORROW,
+        local_weights=_LOCAL_WEIGHTS,
+        local_component_weights=_LOCAL_COMPONENT_WEIGHTS,
+    )
+
+
+def _selection_policy(*, candidate_limit: int = 120, top_k: int = 10) -> ScoredSelectionPolicy:
+    return ScoredSelectionPolicy(
+        board_policies={
+            Board.MAIN: _board_policy(Board.MAIN),
+            Board.CHINEXT: _board_policy(Board.CHINEXT),
+            Board.STAR: _board_policy(Board.STAR),
+        },
+        risk_rules={
+            "price_volume_divergence": RiskRule(
+                risk_code="price_volume_divergence",
+                severity="medium",
+                penalty=5.0,
+                minimum_confidence=0.7,
+                group="market_structure",
+                strategies=("tomorrow",),
+                trigger_factor="price_volume_divergence",
+                trigger_operator="gte",
+                trigger_thresholds=(1.0,),
+                veto=True,
+            )
+        },
+        max_age_seconds=60.0,
+        local_risk_cap=25.0,
+        hard_filter=HardFilterPolicyFixture(),
+        company_scoring=CompanyScoringPolicyFixture(),
+        top_k=top_k,
+        minimum_local_score=0.0,
+    )
+
+
+def _features(application_feature_factory, count: int = 125):
+    result = []
+    for index in range(count):
+        code = f"600{index:03d}"
+        feature = application_feature_factory(code, NOW, industry=f"industry-{index}")
+        result.append(
+            replace(
+                feature,
+                quote=replace(
+                    feature.quote,
+                    board=Board.MAIN,
+                    board_source="security_master",
+                    board_reliability="verified",
+                    listing_age_sessions=100,
+                ),
+                values={
+                    **feature.values,
+                    "return_3d": float(index),
+                    "return_5d": float(index),
+                    "volatility_20d": 2.0 + index / 1000,
+                    "max_drawdown_20d": -5.0 - index / 1000,
+                    "turnover_median_20d": 1.0,
+                    "tail_return_30m": 60.0 + index / 10,
+                },
+            )
+        )
+    return tuple(result)
+
+
+def _request(features, policy: ScoredSelectionPolicy) -> ScoredSelectionRequest:
+    return ScoredSelectionRequest(
+        features=features,
+        evaluated_at=NOW,
+        trade_date=NOW.date().isoformat(),
+        phase="tomorrow",
+        data_version="market-1",
+        merge_epoch="market:2026-07-28:1",
+        policy=policy,
+    )
+
+
+def test_tomorrow_selection_keeps_filter_tristate_and_bounds_each_board(
+    application_feature_factory,
+) -> None:
+    features = list(_features(application_feature_factory))
+    features[0] = replace(features[0], quote=replace(features[0].quote, is_st=True))
+    features[1] = replace(
+        features[1],
+        quote=replace(
+            features[1].quote,
+            cross_source_deviation_pct=0.6,
+            cross_source_verified=False,
+        ),
+    )
+    features[2] = replace(
+        features[2],
+        values={
+            **features[2].values,
+            "trend_score": None,
+            "volatility_20d": None,
+        },
+    )
+    features[3] = replace(
+        features[3],
+        quote=replace(
+            features[3].quote,
+            execution_restrictions=("history_data_degraded",),
+        ),
+    )
+
+    result = SelectScored(_request(tuple(reversed(features)), _selection_policy()))
+    by_code = {item.code: item for item in result.evaluations}
+
+    assert by_code["600000"].disposition is ScoredDisposition.REJECT
+    assert tuple(reason.code for reason in by_code["600000"].filter_reasons) == ("st_or_delisting",)
+    assert by_code["600001"].disposition is ScoredDisposition.OBSERVE_ONLY
+    assert tuple(flag.code for flag in by_code["600001"].optional_flags) == ("cross_source_deviation",)
+    assert by_code["600002"].local_score is not None
+    assert by_code["600003"].disposition is ScoredDisposition.OBSERVE_ONLY
+    assert len(result.scored_candidates) == len(features) - 1
+    assert tuple(item.code for item in result.evaluations) == tuple(sorted(item.code for item in result.evaluations))
+
+
+def test_tomorrow_selection_deducts_local_risk_once_and_is_stable(
+    application_feature_factory,
+) -> None:
+    features = list(_features(application_feature_factory, count=105))
+    features[-1] = replace(
+        features[-1],
+        quote=replace(features[-1].quote, industry="concentrated"),
+        values={**features[-1].values, "price_volume_divergence": 2.0},
+    )
+    features[-2] = replace(features[-2], quote=replace(features[-2].quote, industry="concentrated"))
+    features[-3] = replace(features[-3], quote=replace(features[-3].quote, industry="concentrated"))
+    policy = _selection_policy()
+
+    forward = SelectScored(_request(tuple(features), policy))
+    reverse = SelectScored(_request(tuple(reversed(features)), policy))
+    risky = next(item for item in forward.scored_candidates if item.code == "600104")
+
+    assert risky.local_risk_penalty == 5.0
+    assert risky.local_score == round(risky.local_base_score - 5.0, 2)
+    assert risky.disposition is ScoredDisposition.OBSERVE_ONLY
+    assert risky.selection_skip_reason == "local_risk_veto"
+    assert tuple(item.code for item in forward.scored_candidates) == tuple(
+        item.code for item in reverse.scored_candidates
+    )
+    # Local scoring exposes the complete population; the fixed-seat boundary
+    # owns the six seats before optional review and action calculation.
+    assert len(forward.scored_candidates) == 105
+    assert sum(item.features.quote.industry == "concentrated" for item in forward.scored_candidates) == 3
+    assert all(item.rank == 0 for item in forward.scored_candidates)
+
+
+def test_risk_deduction_rounds_only_after_subtracting_unrounded_base(application_feature_factory, monkeypatch) -> None:
+    feature = _features(application_feature_factory, count=1)[0]
+    feature = replace(feature, values={**feature.values, "price_volume_divergence": 2.0})
+    policy = _selection_policy()
+    policy = replace(
+        policy,
+        risk_rules={"price_volume_divergence": replace(policy.risk_rules["price_volume_divergence"], penalty=0.006)},
+    )
+    monkeypatch.setattr(
+        scored_selection,
+        "ScoreBoardStrategy",
+        lambda feature, policy: LocalScoreResult(components={"trend": 82.344}, base_score=82.344),
+    )
+
+    result = SelectScored(_request((feature,), policy)).scored_candidates[0]
+
+    assert result.local_base_score == 82.34
+    assert result.local_risk_penalty == 0.01
+    assert result.local_score == 82.34  # ROUND_HALF_UP(82.344 - 0.006, 2), not 82.33.
+
+
+def test_production_model_ineligible_candidate_does_not_consume_board_limit(
+    application_feature_factory,
+) -> None:
+    features = _features(application_feature_factory, count=2)
+    request = replace(
+        _request(features, _selection_policy(candidate_limit=1, top_k=1)),
+        model_input_eligible_codes=frozenset({"600001"}),
+    )
+
+    result = SelectScored(request)
+    by_code = {item.code: item for item in result.evaluations}
+
+    assert tuple(item.code for item in result.scored_candidates) == ("600001",)
+    assert by_code["600000"].selection_skip_reason == "production_model_features_missing"
+
+
+def test_candidate_stage_counts_follow_issuer_and_dynamic_qualification_before_cap(
+    application_feature_factory,
+) -> None:
+    features = list(_features(application_feature_factory, count=5))
+    features[0] = replace(features[0], quote=replace(features[0].quote, is_st=True))
+    features[1] = replace(features[1], quote=replace(features[1].quote, is_suspended=True))
+    features[2] = replace(features[2], history_days=10)
+    features[3] = replace(
+        features[3],
+        values={
+            **features[3].values,
+            "trend_score": None,
+            "volatility_20d": None,
+            "max_drawdown_20d": None,
+        },
+    )
+
+    plan = PlanScoredCandidates(
+        replace(
+            _request(tuple(features), _selection_policy(candidate_limit=1)),
+            minimum_history_sessions=20,
+        )
+    )
+
+    assert plan.stage_counts.issuer_eligible_population == 5
+    assert plan.stage_counts.dynamic_filter_eligible == 3
+    assert plan.stage_counts.strategy_history_eligible == 2
+    assert plan.stage_counts.model_input_eligible == 2
+    assert plan.stage_counts.scoring_input_eligible == 2
+    assert plan.stage_counts.scoring_input_count == 2
+
+
+def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
+    application_feature_factory,
+) -> None:
+    def feature(code: str):
+        value = application_feature_factory(code, NOW, industry=f"industry-{code}")
+        return replace(
+            value,
+            quote=replace(
+                value.quote,
+                board=Board.MAIN,
+                board_source="security_master",
+                board_reliability="verified",
+                listing_age_sessions=100,
+            ),
+        )
+
+    unsupported = feature("900001")
+    st = feature("600001")
+    delisting = feature("600002")
+    suspended = feature("600003")
+    invalid_price = feature("600004")
+    invalid_amount = feature("600005")
+    stale = feature("600006")
+    too_new = feature("600007")
+    one_price = feature("600008")
+    no_liquidity_history = feature("600009")
+    insufficient_liquidity = feature("600013")
+    no_strategy_history = feature("600010")
+    no_model_input = feature("600011")
+    core_missing = feature("600012")
+    eligible = tuple(feature(code) for code in ("600100", "600101", "600102"))
+    rejected = (
+        replace(unsupported, quote=replace(unsupported.quote, board=Board.UNSUPPORTED)),
+        replace(st, quote=replace(st.quote, is_st=True)),
+        replace(delisting, quote=replace(delisting.quote, name="退市样本")),
+        replace(suspended, quote=replace(suspended.quote, is_suspended=True)),
+        replace(invalid_price, quote=replace(invalid_price.quote, price=None)),
+        replace(invalid_amount, quote=replace(invalid_amount.quote, amount=None)),
+        replace(stale, quote=replace(stale.quote, source_time=NOW - timedelta(seconds=61))),
+        replace(too_new, quote=replace(too_new.quote, listing_age_sessions=5)),
+        replace(one_price, quote=replace(one_price.quote, is_one_price_limit=True)),
+        replace(no_liquidity_history, values={**no_liquidity_history.values, "amount_median_20d": None}),
+        replace(
+            insufficient_liquidity,
+            values={**insufficient_liquidity.values, "amount_median_20d": 49_999_999.0},
+        ),
+        replace(no_strategy_history, history_days=19),
+        no_model_input,
+        replace(
+            core_missing,
+            values={
+                **core_missing.values,
+                "trend_score": None,
+                "volatility_20d": None,
+                "max_drawdown_20d": None,
+            },
+        ),
+    )
+    features = (*rejected, *eligible)
+    request = replace(
+        _request(features, _selection_policy(candidate_limit=3)),
+        minimum_history_sessions=20,
+        model_input_eligible_codes=frozenset(
+            item.quote.code for item in features if item.quote.code != no_model_input.quote.code
+        ),
+    )
+
+    plan = PlanScoredCandidates(request)
+    by_code = {item.code: item for item in plan.evaluations}
+
+    assert plan.qualified_codes() == ("600012", *(item.quote.code for item in eligible))
+    assert {reason.code for reason in by_code[unsupported.quote.code].filter_reasons} == {"unsupported_code"}
+    assert {reason.code for reason in by_code[st.quote.code].filter_reasons} == {"st_or_delisting"}
+    assert {reason.code for reason in by_code[delisting.quote.code].filter_reasons} == {"st_or_delisting"}
+    assert {reason.code for reason in by_code[suspended.quote.code].filter_reasons} == {"suspended"}
+    assert {reason.code for reason in by_code[invalid_price.quote.code].filter_reasons} == {"invalid_price"}
+    assert {reason.code for reason in by_code[invalid_amount.quote.code].filter_reasons} == {"invalid_amount"}
+    assert {reason.code for reason in by_code[stale.quote.code].filter_reasons} == {"stale_quote"}
+    assert {reason.code for reason in by_code[too_new.quote.code].filter_reasons} == {"new_listing_session"}
+    assert {reason.code for reason in by_code[one_price.quote.code].filter_reasons} == {"one_price_limit"}
+    assert {reason.code for reason in by_code[no_liquidity_history.quote.code].filter_reasons} == {
+        "missing_liquidity_history"
+    }
+    assert {reason.code for reason in by_code[insufficient_liquidity.quote.code].filter_reasons} == {
+        "insufficient_liquidity"
+    }
+    assert by_code[no_liquidity_history.quote.code].disposition is ScoredDisposition.OBSERVE_ONLY
+    assert by_code[no_liquidity_history.quote.code].selection_skip_reason == "data_pending"
+    for item in (invalid_price, invalid_amount):
+        assert by_code[item.quote.code].disposition is ScoredDisposition.OBSERVE_ONLY
+        assert by_code[item.quote.code].selection_skip_reason == "data_pending"
+    assert by_code[insufficient_liquidity.quote.code].disposition is ScoredDisposition.REJECT
+    assert plan.population_rejected_count == 7
+    assert by_code[no_strategy_history.quote.code].selection_skip_reason == "strategy_history_insufficient"
+    assert by_code[no_model_input.quote.code].selection_skip_reason == "production_model_features_missing"
+    assert by_code[core_missing.quote.code].selection_skip_reason == ""
+
+
+def test_st_and_suspended_rough_leaders_do_not_displace_the_next_three_eligible_codes(
+    application_feature_factory,
+) -> None:
+    features = list(_features(application_feature_factory, count=5))
+    features[0] = replace(features[0], quote=replace(features[0].quote, is_st=True))
+    features[1] = replace(features[1], quote=replace(features[1].quote, is_suspended=True))
+
+    request = _request(tuple(features), _selection_policy(candidate_limit=3))
+    plan = PlanScoredCandidates(request)
+    repeated = PlanScoredCandidates(replace(request, features=tuple(reversed(features))))
+
+    assert plan.qualified_codes() == ("600002", "600003", "600004")
+    assert repeated.qualified_codes() == plan.qualified_codes()
+
+
+def test_local_scoring_does_not_apply_the_action_threshold(application_feature_factory) -> None:
+    policy = replace(_selection_policy(top_k=1), minimum_local_score=100.0)
+    result = SelectScored(_request(_features(application_feature_factory, count=100), policy))
+    assert len(result.scored_candidates) == 100
+    assert all(item.selection_skip_reason != "local_score_below_minimum" for item in result.scored_candidates)
+
+
+def test_tomorrow_selection_uses_full_population_but_scores_only_explicit_candidates(
+    application_feature_factory,
+) -> None:
+    population = _features(application_feature_factory, count=100)
+    candidate = replace(
+        population[-1],
+        values={**population[-1].values, "tail_return_30m": 99.0},
+        merge_epoch="candidate:explicit",
+    )
+    request = replace(
+        _request(population, _selection_policy()),
+        candidate_features=(candidate,),
+    )
+
+    result = SelectScored(request)
+
+    assert len(result.evaluations) == 100
+    assert tuple(item.code for item in result.scored_candidates) == (candidate.quote.code,)
+    assert result.scored_candidates[0].features.values["tail_return_30m"] == 99.0
+    assert result.scored_candidates[0].features.merge_epoch == request.merge_epoch
+    assert result.population_versions
+
+
+def test_explicit_refresh_keeps_candidates_inside_static_boundary(application_feature_factory) -> None:
+    population = _features(application_feature_factory, count=3)
+    statically_rejected_refresh = replace(
+        population[0],
+        quote=replace(population[0].quote, is_st=True),
+    )
+    request = replace(
+        _request(population, _selection_policy(candidate_limit=3)),
+        candidate_features=(statically_rejected_refresh, population[1]),
+    )
+
+    plan = PlanScoredCandidates(request)
+    assert plan.stage_counts.dynamic_filter_eligible == 1
+    assert plan.qualified_codes() == (population[1].quote.code,)
+    rejected = next(item for item in plan.evaluations if item.code == population[0].quote.code)
+    assert rejected.disposition is ScoredDisposition.REJECT
+
+
+def test_tomorrow_selection_rejects_feature_observed_after_evaluation(application_feature_factory) -> None:
+    feature = replace(
+        _features(application_feature_factory, count=1)[0],
+        observed_at=NOW + timedelta(seconds=1),
+    )
+
+    try:
+        SelectScored(_request((feature,), _selection_policy()))
+    except ValueError as exc:
+        assert str(exc) == "scored selection cannot use future features"
+    else:
+        raise AssertionError("future feature batch must be rejected")
+
+
+@pytest.mark.parametrize("candidate_mode", ("population", "empty", "subset"))
+def test_explicit_candidate_ranking_does_not_apply_discarded_population_policy(
+    application_feature_factory,
+    monkeypatch,
+    tmp_path,
+    record_property,
+    candidate_mode,
+) -> None:
+    features = list(_features(application_feature_factory, 315))
+    for offset, (board, prefix) in enumerate(((Board.MAIN, "600"), (Board.CHINEXT, "300"), (Board.STAR, "688"))):
+        for local in range(105):
+            index = offset * 105 + local
+            feature = features[index]
+            features[index] = replace(feature, quote=replace(
+                feature.quote,
+                code=f"{prefix}{local:03d}",
+                board=board,
+                exchange_limit_pct=10.0 if board is Board.MAIN else 20.0,
+            ))
+        first = offset * 105
+        features[first] = replace(features[first], quote=replace(features[first].quote, is_st=True))
+        features[first + 1] = replace(
+            features[first + 1], values={**features[first + 1].values, "amount_median_20d": None},
+        )
+        features[first + 2] = replace(
+            features[first + 2], quote=replace(features[first + 2].quote, source_time=NOW - timedelta(seconds=61)),
+        )
+        features[first + 3] = replace(features[first + 3], history_days=19)
+    population = tuple(features)
+    candidates = (
+        None if candidate_mode == "population" else () if candidate_mode == "empty"
+        else tuple(population[index] for index in (0, 1, 2, 3, 100, 105, 208, 210, 314))
+    )
+    request = replace(
+        _request(population, _selection_policy()),
+        candidate_features=candidates,
+        execution_gate_reasons={population[100].quote.code: "input_quality_pending"},
+        model_input_eligible_codes=frozenset(
+            feature.quote.code for feature in population if feature is not population[208]
+        ),
+    )
+    calls = []
+    original = scored_selection.ApplyBoardPolicy
+
+    def apply_policy(section, strategy, policy):
+        calls.append((section.board, len(section.features)))
+        return original(section, strategy, policy)
+
+    monkeypatch.setattr(scored_selection, "ApplyBoardPolicy", apply_policy)
+
+    selection = SelectScored(request)
+
+    canonical = CanonicalJsonBytes(selection)
+    output = tmp_path / "selection.json"
+    output.write_bytes(canonical)
+    record_property("selection_sha256", hashlib.sha256(canonical).hexdigest())
+    record_property("selection_path", str(output))
+    record_property("discarded_policy_rows", sum(count for _board, count in calls))
+    assert len(selection.evaluations) == 315
+    assert set(selection.population_versions) == {Board.MAIN, Board.CHINEXT, Board.STAR}
+    assert all(count >= 100 for _board, count in calls)
+    assert len(calls) == (3 if candidate_mode == "population" else 0)

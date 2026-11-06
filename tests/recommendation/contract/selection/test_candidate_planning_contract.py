@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[4]
+
+
+def _read(relative: str) -> str:
+    return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def test_candidate_planning_contract_is_synchronized_across_authoritative_documents() -> None:
+    strategy = _read("docs/1_评分逻辑.md")
+    design = _read("docs/2_工程设计.md")
+    work = _read("docs/3_工程实施.md")
+
+    compact_strategy = "".join(strategy.split())
+    assert "每轮每股只请求一次" in compact_strategy
+    assert "不维护按候选分排序的储备或失败补位" in compact_strategy
+    assert "不设720只并集上限" in design
+    assert "`ScoredNativeInput.requested_codes` 与特征按策略隔离" in design
+    assert "candidate_eligibility_before_board_cap" not in work
+
+
+def test_runtime_has_no_generic_candidate_weight_owner() -> None:
+    runtime = _read("src/trader/recommendation/application/pipeline/data_source/source_router.py")
+    config = _read("config/strategy.json")
+    settings = _read("src/trader/infra/settings/models.py")
+    performance = _read("src/trader/entrypoints/performance.py")
+
+    assert "_CANDIDATE_WEIGHTS" not in runtime
+    assert '"candidate_weights"' not in config
+    assert "candidate_weights: Mapping[str, float]" not in settings
+    assert "from trader.recommendation.domain.selection.ranking import candidate_score" not in performance
+    assert "candidate_score(" not in performance
+    assert "_CANDIDATE_WEIGHTS" not in performance
+    assert "trader.recommendation.application.pipeline.candidate_pool.candidate_builder import" in performance
+    assert "BuildCandidatePlans" in performance
+    assert '"board_preselection"' in performance
+    assert '"candidate_union_projection"' in performance
+    assert "CandidatePlanSet.physical_union" in performance
+    assert '"candidate_rows": 5500' in _read("config/performance.json")
+
+
+def test_candidate_quote_cache_is_sized_and_wired_for_the_physical_union() -> None:
+    bootstrap = _read("src/trader/bootstrap.py")
+    cache_config = json.loads(_read("config/cache.json"))
+
+    assert 'datasets["candidate_quotes"].capacity' in bootstrap
+    assert cache_config["cache_policy"]["datasets"]["candidate_quotes"]["capacity"] == 12000

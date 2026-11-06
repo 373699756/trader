@@ -1,0 +1,299 @@
+from __future__ import annotations
+
+import ast
+import re
+from functools import cache
+from pathlib import Path
+
+from scripts.engineering.quality.naming import Symbols
+from scripts.engineering.quality.naming import Words
+from tests.helpers.shared.python_source import source_text, source_tree
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[3]
+SOURCE = ROOT / "src" / "trader"
+
+FORBIDDEN_SOURCE_PATHS = (
+    "application/ports/types.py",
+    "application/research/challenger_models.py",
+    "application/research/cost_aware_selection_models.py",
+    "application/research/factor_diagnostic_models.py",
+    "application/research/models.py",
+    "application/research/replay_models.py",
+    "application/research/research_tomorrow_orchestrator.py",
+    "application/research/shadow_models.py",
+    "application/research/tomorrow_daily_close_c3.py",
+    "application/research/tomorrow_feature_models.py",
+    "application/research/tomorrow_historical_models.py",
+    "application/research/transparent_candidate.py",
+    "application/research/shadow_model_models.py",
+    "recommendation/application/runtime/runtime.py",
+    "domain/research/transparent_candidate.py",
+    "recommendation/infra/deepseek/base_client.py",
+    "infra/market_data/ground_truth.py",
+    "infra/market_data/history/service_history.py",
+    "infra/market_data/history/service_history_warmup.py",
+    "recommendation/infra/market_data/facade.py",
+    "recommendation/infra/market_data/service_calendar_state.py",
+    "recommendation/infra/market_data/service_candidates.py",
+    "recommendation/infra/market_data/service_execution.py",
+    "recommendation/infra/market_data/service_health.py",
+    "recommendation/infra/market_data/service_intraday.py",
+    "recommendation/infra/market_data/service_models.py",
+    "recommendation/infra/market_data/service_research.py",
+    "recommendation/infra/market_data/service_research_data_plane.py",
+    "recommendation/infra/market_data/service_research_models.py",
+    "recommendation/infra/market_data/service_tushare.py",
+    "infra/research/history_automation_runtime.py",
+    "infra/research/history_sync_runtime.py",
+    "infra/runtime_support.py",
+    "recommendation/infra/scoring/profiles/v3/bundle_store.py",
+    "recommendation/infra/scoring/profiles/v3/sample_store.py",
+    "recommendation/application/ports/market_data_repository.py",
+    "infra/settings/runtime.py",
+)
+
+FORBIDDEN_REPOSITORY_PATHS = ("scripts/runtime_diagnostics/common.py",)
+
+FORBIDDEN_NAMING_PATHS = (
+    "scripts/repack_baostock_history.py",
+    "src/trader/infra/research/history_archive.py",
+)
+
+FORBIDDEN_PUBLIC_NAMES = {
+    "C3BaseModelFitPort",
+    "C3CandidateEvaluator",
+    "C3CandidateMetrics",
+    "C3CandidateOOF",
+    "C3CandidateTrainer",
+    "C3DevelopmentResult",
+    "C3OOFPrediction",
+    "DeepSeekClientBase",
+    "FittedBaseModels",
+    "H1HTTPSession",
+    "H1Strategy",
+    "H1UniverseProvider",
+    "HttpResponse",
+    "ScoreFactorDiagnosticReport",
+    "ScoreNativeFactorDiagnostics",
+    "ScoreResearchCoverage",
+    "ScoreResearchSpec",
+    "ScoreResearchWindowCoverage",
+    "ScoreTomorrowCostAwareSelection",
+    "ScoreTomorrowPointInTimeFeatures",
+    "ScoreTomorrowShadowModels",
+    "ScoredBuildRuntime",
+    "V3SampleStore",
+    "V3StoredSample",
+    "TomorrowC3Terminal",
+    "TomorrowResearchPrerequisite",
+    "TomorrowResearchPrerequisitePort",
+    "TransparentCandidate",
+    "TransparentCandidateEvaluation",
+    "TransparentCandidateFamily",
+    "TransparentCandidateMetrics",
+    "TransparentCandidateReport",
+    "H1ArchiveConflictError",
+    "H1ArchivePort",
+    "H1ArchiveStatus",
+    "H1DownloadResult",
+    "HistoricalArchiveConflictError",
+    "HistoricalArchiveManifest",
+    "HistoricalArchivePort",
+    "HistoricalArchiveStatus",
+    "HistoricalHistoryIdentity",
+    "HistoricalRiskEvidence",
+    "HistoricalRiskModelArtifact",
+    "HistoricalRiskStatus",
+    "HistoricalRiskValidationOutcome",
+    "HistoricalRiskValidationReport",
+    "HistoricalRiskValidationService",
+    "HistoricalRiskValidationSpec",
+    "HistoricalSelectedDay",
+    "HistoryArchiveActivationJournal",
+    "HistoryArchiveActivationState",
+    "HistoryArchiveRepackPartition",
+    "HistoryArchiveSourceFile",
+    "HistoryMonthlyArchiveError",
+    "HistoryMonthlyRevision",
+    "HistoryTrainingMemoryEvidence",
+    "DataPlaneRepository",
+    "DataPlaneRepositoryError",
+    "SecurityMasterRepositoryPort",
+    "RiskEvidenceRepositoryPort",
+    "SourceCursorRepositoryPort",
+    "TradingCalendarRepositoryPort",
+    "SQLiteHistoricalArchive",
+    "SQLiteHistoryMonthlyArchive",
+    "TomorrowInputCompatibility",
+    "TomorrowInputCompatibilityStatus",
+    "TomorrowPartitionValidationProgress",
+    "read_history_activation_journal",
+    "read_history_repack_build_state",
+    "read_training_memory_evidence",
+    "require_history_repack_inactive",
+    "write_history_activation_journal",
+    "write_history_repack_build_state",
+}
+
+FORBIDDEN_MODULE_CONSTANTS = {"HISTORICAL_RISK_VALIDATION_SPEC"}
+
+MIGRATED_DATA_PLANE_PATHS = (
+    "recommendation/application/runtime/runtime_issues.py",
+    "recommendation/application/runtime/source_lanes.py",
+    "recommendation/application/ports/freeze_records.py",
+    "recommendation/application/pipeline/freeze_publish/freeze_coordinator.py",
+    "recommendation/infra/persistence/freeze_records.py",
+    "recommendation/domain/market/eligibility.py",
+    "recommendation/application/ports/eligibility.py",
+)
+
+
+@cache
+def _source_python_paths() -> tuple[Path, ...]:
+    return tuple(sorted((*SOURCE.rglob("*.py"), *(ROOT / "scripts").rglob("*.py"))))
+
+
+@cache
+def _project_python_paths() -> tuple[Path, ...]:
+    return tuple(sorted((*_source_python_paths(), *(ROOT / "tests").rglob("*.py"))))
+
+
+def test_source_paths_use_stable_business_responsibilities() -> None:
+    assert [relative for relative in FORBIDDEN_SOURCE_PATHS if (SOURCE / relative).exists()] == []
+    assert [relative for relative in FORBIDDEN_REPOSITORY_PATHS if (ROOT / relative).exists()] == []
+    assert [relative for relative in FORBIDDEN_NAMING_PATHS if (ROOT / relative).exists()] == []
+
+
+def test_responsibility_naming_rule_is_authoritative() -> None:
+    collaboration_rules = source_text(ROOT / "AGENTS.md")
+
+    authority = ".agents/skills/python-engineering-guide/references/coding-standard.md"
+    assert f"({authority}#3-命名格式与可读性)" in collaboration_rules
+    coding_rules = source_text(ROOT / authority)
+    for term in ("`store`", "`stored`", "`storage`", "`*Store`", "`*Storage`", "`Repository`", "`Archive`", "`Registry`"):
+        assert term in coding_rules
+    assert "兼容别名" in coding_rules
+
+
+def test_source_python_has_no_c3_or_relative_holdout_identity_names() -> None:
+    violations: list[str] = []
+    token = re.compile(r"(?<![a-z0-9])c3(?![a-z0-9])", re.IGNORECASE)
+    for path in _source_python_paths():
+        content = source_text(path)
+        if token.search(content) or "new_holdout_" in content or "legacy_holdout_" in content:
+            violations.append(path.relative_to(ROOT).as_posix())
+    assert violations == []
+
+
+def test_public_python_names_describe_business_roles() -> None:
+    violations: list[str] = []
+    for path in _source_python_paths():
+        tree = source_tree(path)
+        for node in tree.body:
+            names: tuple[str, ...] = ()
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = (node.name,)
+            elif isinstance(node, ast.Assign):
+                names = tuple(target.id for target in node.targets if isinstance(target, ast.Name))
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names = (node.target.id,)
+            for name in names:
+                # The shared HTTP protocol value has one technical owner; business wrappers remain retired.
+                if name == "HttpResponse" and path == SOURCE / "infra/http_contracts.py":
+                    continue
+                if name in FORBIDDEN_PUBLIC_NAMES:
+                    violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{name}")
+    assert violations == []
+
+
+def test_module_constants_describe_business_roles() -> None:
+    violations: list[str] = []
+    for path in _source_python_paths():
+        tree = source_tree(path)
+        for node in tree.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id in FORBIDDEN_MODULE_CONSTANTS:
+                        violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{target.id}")
+    assert violations == []
+
+
+def test_source_python_text_has_no_accidental_duplicate_words_or_e1_phase_relic() -> None:
+    violations: list[str] = []
+    repeated_word = re.compile(r"\b([A-Za-z][A-Za-z0-9_-]*)\s+\1\b", re.IGNORECASE)
+    for path in _source_python_paths():
+        for line_number, line in enumerate(source_text(path).splitlines(), 1):
+            repeated = repeated_word.search(line)
+            if (repeated is not None and repeated.group(1).lower() != "end") or re.search(r"\bE1\b", line):
+                violations.append(f"{path.relative_to(ROOT).as_posix()}:{line_number}")
+    assert violations == []
+
+
+def test_shared_application_contract_names_are_unique() -> None:
+    occurrences: dict[str, list[str]] = {
+        "DataPlaneCoverage": [],
+        "MarketChangeSet": [],
+        "SelectionPolicy": [],
+        "TradingCalendarPort": [],
+    }
+    for path in SOURCE.rglob("*.py"):
+        tree = source_tree(path)
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name in occurrences:
+                occurrences[node.name].append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
+    assert {name: values for name, values in occurrences.items() if len(values) > 1} == {}
+
+
+def test_project_owned_python_names_follow_responsibility_rules() -> None:
+    violations: list[str] = []
+    forbidden = {"store", "stores", "stored", "storage"}
+    for path in _project_python_paths():
+        for symbol in Symbols(source_text(path)):
+            if set(Words(symbol.name)) & forbidden:
+                violations.append(f"{path.relative_to(ROOT).as_posix()}:{symbol.line}:{symbol.name}")
+        for part in path.relative_to(ROOT).with_suffix("").parts:
+            if set(Words(part)) & forbidden:
+                violations.append(f"{path.relative_to(ROOT).as_posix()}:1:{part}")
+    for path in (ROOT / "config").glob("*.json"):
+        if set(Words(path.stem)) & forbidden:
+            violations.append(path.relative_to(ROOT).as_posix())
+    assert violations == []
+
+
+def test_migrated_data_plane_names_describe_persistence_roles() -> None:
+    violations: list[str] = []
+    forbidden = {"store", "stored", "repository", "archive", "registry"}
+    for relative in MIGRATED_DATA_PLANE_PATHS:
+        path = SOURCE / relative
+        tree = source_tree(path)
+        for node in ast.walk(tree):
+            names: tuple[str, ...] = ()
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = (node.name,)
+            elif isinstance(node, ast.arg):
+                names = (node.arg,)
+            elif isinstance(node, ast.Name):
+                names = (node.id,)
+            elif isinstance(node, ast.Attribute):
+                names = (node.attr,)
+            for name in names:
+                words = name.split("_") if "_" in name else re.findall(r"[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+", name)
+                if any(word.lower() in forbidden for word in words):
+                    violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{name}")
+    assert violations == []
+
+
+def test_public_class_names_are_unique() -> None:
+    occurrences: dict[str, list[str]] = {}
+    for path in _source_python_paths():
+        tree = source_tree(path)
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+                occurrences.setdefault(node.name, []).append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
+    assert {name: values for name, values in occurrences.items() if len(values) > 1} == {}
+
+
+pytestmark = [pytest.mark.slow_static]

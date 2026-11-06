@@ -1,0 +1,83 @@
+
+from tests.helpers.shared.configuration import SqlitePolicyFixture
+from datetime import date
+
+from trader.training.application.h1_point_in_time_completion import CompleteH1Research
+from trader.training.domain.evaluation.h1_point_in_time import (
+    BuildH1CapabilityAudit,
+    H1CapabilityProbe,
+    H1PointInTimeSpec,
+)
+from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
+
+
+def _insufficient_capability():
+    return BuildH1CapabilityAudit(
+        (
+            H1CapabilityProbe(
+                "tencent_qfq_daily",
+                date(2023, 1, 10),
+                False,
+                "qfq",
+                False,
+                640,
+                3,
+                1024,
+                0.5,
+            ),
+            H1CapabilityProbe(
+                "eastmoney_historical_minute",
+                None,
+                False,
+                "unsupported",
+                False,
+                0,
+                3,
+                512,
+                0.5,
+            ),
+        ),
+        probe_failures=("eastmoney_historical_minute_probe_failed",),
+    )
+
+
+def test_h1_research_completion_seals_all_downstream_insufficient_states_without_fake_rows(tmp_path) -> None:
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
+
+    completion = CompleteH1Research(
+        capability=_insufficient_capability(),
+        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
+    )
+
+    assert completion.status == "historical_data_insufficient"
+    assert {item.status for item in completion.labels.strategies} == {"historical_data_insufficient"}
+    assert {item.status for item in completion.residual_ledgers} == {"historical_data_insufficient"}
+    assert completion.daily_close_selection.status == "historical_data_insufficient"
+    assert completion.daily_close_selection.oof_artifact_hash is None
+    assert completion.daily_close_selection.candidate_model_artifact_hash is None
+    assert "eastmoney_historical_minute_probe_failed" in completion.daily_close_selection.failure_reasons
+    assert completion.terminal_holdout_opened is False
+    assert completion.production_authority is False
+
+
+def test_h1_research_completion_projects_a_terminal_development_handoff_with_parent_hashes(tmp_path) -> None:
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    completion = CompleteH1Research(
+        capability=_insufficient_capability(),
+        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
+    )
+
+    handoff = completion.to_development_handoff(
+        parent_graph_hash="f" * 64,
+        resource_probe_artifact_hash="e" * 64,
+    )
+
+    assert handoff.stage == "development_training"
+    assert handoff.outcome == "historical_data_insufficient"
+    assert tuple(item.artifact_id for item in handoff.artifacts) == ("h1_coverage_audit",)
+    assert not hasattr(handoff.artifacts[0], "owner")
+    assert handoff.parent_graph_hash == "f" * 64
+    assert handoff.artifacts[0].parent_hashes == ("e" * 64,)
+    assert handoff.artifacts[0].content_hash == completion.content_hash
+    assert handoff.evidence_partitions == ()
+    assert handoff.production_authority is False

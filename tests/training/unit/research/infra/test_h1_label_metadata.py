@@ -1,0 +1,48 @@
+
+from tests.helpers.shared.configuration import SqlitePolicyFixture
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from trader.training.application.historical_screening import HistoricalSecurity
+from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeRecord, H1PointInTimeSpec
+from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
+from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
+
+
+def _record(code: str, day: date) -> H1PointInTimeRecord:
+    bar = HistoricalPriceBar(day, 10.0, 10.2, 10.3, 9.9, 100.0, 1000.0, 2.0, None, "qfq", "fixture")
+    digest = "a" * 64
+    return H1PointInTimeRecord(
+        "tomorrow",
+        code,
+        day,
+        datetime.combine(day, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai")).replace(hour=15, minute=0),
+        bar,
+        10.1,
+        50.0,
+        500.0,
+        digest,
+        digest,
+        digest,
+    )
+
+
+def test_h1_label_metadata_reads_only_common_dates_and_manifest_identity(tmp_path) -> None:
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    spec = H1PointInTimeSpec("tomorrow")
+    securities = (
+        HistoricalSecurity("600001", "main", "A", False, False),
+        HistoricalSecurity("600002", "main", "B", False, False),
+    )
+    archive.register_universe(spec, securities)
+    first = date(2024, 1, 1)
+    archive.save_records(spec, "600001", tuple(_record("600001", first + timedelta(days=i)) for i in range(3)))
+    archive.save_records(spec, "600002", tuple(_record("600002", first + timedelta(days=i)) for i in range(1, 4)))
+
+    metadata = archive.label_metadata(spec)
+
+    assert metadata.common_trading_dates == (first + timedelta(days=1), first + timedelta(days=2))
+    assert metadata.universe_hash == archive.manifest(spec).universe_hash
+    assert metadata.h1_manifest_hash == archive.manifest(spec).content_hash
+    assert metadata.source_cutoff == date(2026, 8, 31)
+    assert not hasattr(metadata, "returns")

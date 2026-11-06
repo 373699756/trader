@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.outcomes.models import OutcomeHorizons
+
+ROOT = Path(__file__).resolve().parents[4]
+DOMAIN = ROOT / "src/trader/recommendation/domain/outcomes/evaluation.py"
+MODELS = ROOT / "src/trader/recommendation/domain/outcomes/models.py"
+APPLICATION = ROOT / "src/trader/recommendation/application/outcome_settlement.py"
+PERSISTENCE = ROOT / "src/trader/recommendation/infra/persistence/outcome_evidence_index.py"
+HISTORY = ROOT / "src/trader/recommendation/infra/market_data/published_history_cache.py"
+WORK = ROOT / "docs/3_工程实施.md"
+
+
+def test_d25_horizons_have_one_domain_owner_and_include_t4() -> None:
+    application = APPLICATION.read_text(encoding="utf-8")
+    persistence = PERSISTENCE.read_text(encoding="utf-8")
+
+    assert OutcomeHorizons(Strategy.D25) == (2, 3, 4, 5)
+    assert "OutcomeHorizons(target.strategy)" in application
+    assert "OutcomeHorizons(strategy)" in persistence
+    assert "(2, 3, 5)" not in application
+    assert "(2, 3, 5)" not in persistence
+
+
+def test_canonical_evaluator_is_pure_domain_code() -> None:
+    tree = ast.parse(DOMAIN.read_text(encoding="utf-8"), filename=str(DOMAIN))
+    imports = {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)} | {
+        alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
+    }
+
+    assert "class CanonicalOutcomeEvaluator" in DOMAIN.read_text(encoding="utf-8")
+    assert not any(
+        name.startswith(("trader.application", "trader.infra", "trader.web", "flask", "requests")) for name in imports
+    )
+
+
+def test_persistence_returns_only_missing_horizons_for_restart_recovery() -> None:
+    persistence = PERSISTENCE.read_text(encoding="utf-8")
+
+    assert "pending_horizons = self._pending_horizons" in persistence
+    assert "pending_horizons," in persistence
+    assert "tuple(horizon for horizon in horizons if horizon not in settled)" in persistence
+
+
+def test_outcome_contract_owns_explicit_price_basis_and_exit_tradability() -> None:
+    models = MODELS.read_text(encoding="utf-8")
+    domain = DOMAIN.read_text(encoding="utf-8")
+    application = APPLICATION.read_text(encoding="utf-8")
+    persistence = PERSISTENCE.read_text(encoding="utf-8")
+    history = HISTORY.read_text(encoding="utf-8")
+
+    assert "class OutcomePrice" in models
+    assert "qfq: OutcomePrice" in models
+    assert "raw: OutcomePrice" in models
+    assert "anchor_raw_price" in models
+    assert "anchor_qfq_price" in models
+    assert "exit_status" in models
+    assert "missing_carried_forward" in models
+    assert "_anchor_qfq_price" in domain
+    assert "_settlement_window" in domain
+    assert "expected_trade_dates=expected_dates" in application
+    assert '"exit_untradable": outcome.exit_untradable' in persistence
+    assert "read_windows" in history
+    assert "OutcomeBars(window.cells)" in history
+    pairing = (HISTORY.parent / "published_history_bars.py").read_text(encoding="utf-8")
+    assert "PairOutcomeHistory(qfq, raw)" in pairing
