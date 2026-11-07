@@ -107,6 +107,7 @@ class HistorySyncIo:
                 PublishHistoryProgress(self.progress, "initializing", "started", current_item="catalog_schema")
                 self.control.initialize()
                 PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "catalog_schema")
+                PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1))
                 yield
         except HistoryMaintenanceAlreadyRunningError as exc:
             raise HistorySyncAlreadyRunningError("history_maintenance_running") from exc

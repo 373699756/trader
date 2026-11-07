@@ -94,10 +94,6 @@ if (($#)); then
   FORWARD_ARGS=("$@")
 fi
 
-if [[ "$MODE" == "sync" ]]; then
-  printf '%s: 正在检查运行环境。\n' "$MODE" >&2
-fi
-
 find_python() {
   local candidate
   for candidate in python3; do
@@ -109,13 +105,36 @@ find_python() {
   return 1
 }
 
+if [[ "$MODE" == "sync" ]]; then
+  if [[ -x "$VENV_DIR/bin/python3" ]]; then
+    SYNC_PYTHON="$VENV_DIR/bin/python3"
+  else
+    SYNC_PYTHON="$(find_python || true)"
+  fi
+  if [[ -z "$SYNC_PYTHON" ]]; then
+    printf '需要 Python 3.10-3.14，sync 尚未启动。\n' >&2
+    exit 1
+  fi
+  TRADER_SYNC_STARTED_MONOTONIC="$("$SYNC_PYTHON" -c 'import time; print(time.monotonic())')"
+  export TRADER_SYNC_STARTED_MONOTONIC
+  sync_log() {
+    "$SYNC_PYTHON" "$ROOT_DIR/src/trader/download/application/progress_message.py" "$@"
+  }
+  sync_log 开始 检查运行环境
+  trap 'sync_log 失败 运行环境准备失败' ERR
+fi
+
 if [[ ! -x "$VENV_DIR/bin/python3" ]]; then
   PYTHON_BIN="$(find_python || true)"
   if [[ -z "$PYTHON_BIN" ]]; then
     printf '需要 Python 3.10-3.14。\n' >&2
     exit 1
   fi
-  "$PYTHON_BIN" -m venv "$VENV_DIR"
+  if [[ "$MODE" == "sync" ]]; then
+    "$PYTHON_BIN" -m venv "$VENV_DIR" 2>&1 | sync_log --pipe
+  else
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
+  fi
 fi
 
 if [[ "$COMMAND_KIND" == "server" ]]; then
@@ -134,11 +153,19 @@ fi
 if ((NEEDS_INSTALL)); then
   # pip 25.1.1 can raise InvalidVersion: '' while resolving extras on Python 3.14.
   if "$VENV_DIR/bin/python3" -c 'import pip, sys; raise SystemExit(not (sys.version_info[:2] == (3, 14) and int(pip.__version__.split(".", 1)[0]) < 26))'; then
-    "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check --upgrade 'pip>=26,<27' >&2
+    if [[ "$MODE" == "sync" ]]; then
+      "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check --upgrade 'pip>=26,<27' 2>&1 | sync_log --pipe
+    else
+      "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check --upgrade 'pip>=26,<27' >&2
+    fi
   fi
   # Let pip provision the build requirements declared in pyproject.toml;
   # a fresh virtual environment may contain pip without setuptools.
-  "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR" >&2
+  if [[ "$MODE" == "sync" ]]; then
+    "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR" 2>&1 | sync_log --pipe
+  else
+    "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR" >&2
+  fi
 fi
 
 export TRADER_HOST="${TRADER_HOST:-127.0.0.1}"
@@ -148,6 +175,8 @@ if [[ "$COMMAND_KIND" == "server" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${FORWARD_ARGS[@]}"
 fi
 if [[ "$MODE" == "sync" ]]; then
+  sync_log 完成 运行环境检查完成
+  trap - ERR
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" sync "${FORWARD_ARGS[@]}"
 fi
 if [[ "$MODE" == "train" ]]; then

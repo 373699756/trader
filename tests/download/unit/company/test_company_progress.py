@@ -11,7 +11,7 @@ import pytest
 
 from trader import bootstrap
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
-from trader.download.application.progress_message import ProgressField, ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.domain.company_evidence import (
     CompanyDateProgress,
     CompanyEvidenceSyncResult,
@@ -65,23 +65,22 @@ def test_elapsed_hms_and_final_progress_are_printed_even_inside_throttle_window(
     first, final = stream.getvalue().splitlines()
     assert "已尝试 2/147 篇 | 已提取正文 1 篇" in first
     assert "当前正文股票 600001 示例" in first and "已分析 0" not in first and "待分析 0" not in first
-    assert "累计 00:09:51" in first and "591.1秒" not in first
-    assert "已尝试 147/147 篇 | 已提取正文 147 篇" in final and "状态 本批结束" in final
+    assert first.startswith("00:09:51 | company·公告正文下载提取 00:00:00") and "591.1秒" not in first
+    assert "已尝试 147/147 篇 | 已提取正文 147 篇" in final and "结果 本批结束" in final
 
 
-@pytest.mark.parametrize("command", ("sync", "sync market", "sync history", "sync company"))
-def test_reference_progress_keeps_the_invoked_command_and_flushes_each_stage(command):
+def test_reference_progress_uses_the_shared_prefix_and_flushes_each_stage():
     stream = StringIO()
-    report = CompanyEvidenceProgress(stream, command=command, monotonic=lambda: 0)
+    report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
     report(EvidenceSyncProgress("st_eligibility", 1, 1, 0, 0, 0))
     report(EvidenceSyncProgress("st_eligibility", 2, 0, 0, 0, 0))
     report(EvidenceSyncProgress("calendar", 1, 0, 0, 0, 1, status="reused"))
-    report.report_preparation(ProgressMessage((ProgressField("当前行业"), ProgressField("开始准备"))))
+    report.report_preparation(ProgressMessage((ProgressField("开始准备"),), task=ProgressTask("参考", "当前行业", "当前行业"), state="开始"))
     lines = stream.getvalue().splitlines()
     assert len(lines) == 4
-    assert all(line.startswith(f"{command} | ") for line in lines)
-    assert "状态 完成" in lines[1] and "状态 本地复用" in lines[2]
-    assert "当前行业 | 开始准备 | 命令累计 00:00:00" in lines[3]
+    assert all(line.startswith("00:00:00 | 参考·") for line in lines)
+    assert "结果 完成" in lines[1] and "结果 本地复用" in lines[2]
+    assert "参考·当前行业 00:00:00 | 开始 | 开始准备" in lines[3]
 
 
 def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
@@ -92,7 +91,7 @@ def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
     unknown, reused = stream.getvalue().splitlines()
     assert "进度 0/? 页（总数待确认）" in unknown
     assert "无需请求，复用有效缓存" in reused
-    assert "状态 本地复用" in reused and "100.00%" not in reused
+    assert "结果 本地复用" in reused and "100.00%" not in reused
 
 
 def test_batch_announcement_progress_uses_dates_and_fact_verification_uses_stocks():
@@ -133,7 +132,7 @@ def test_batch_announcement_progress_uses_dates_and_fact_verification_uses_stock
     assert "原始资料变更" not in output and "变更行" not in output
     assert "已分析" not in output and "待分析" not in output and "事件待核验" not in output
     assert "证券组" not in output and "分片" not in output
-    assert "本阶段 00:00:00" in output and "命令累计 00:35:10" in output
+    assert output.startswith("00:35:10 | company·公告目录下载 00:00:00")
     report(
         EvidenceSyncProgress(
             "facts",
@@ -180,7 +179,7 @@ def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end()
     assert "原因 公告正文：PDF超过扩展大小上限" in third and "PDF无法解析" not in third
     assert "已提取正文 156 篇" in fourth and "原因" not in fourth
     assert "PDF无法解析；公告正文：PDF超过扩展大小上限" in final
-    assert "状态 待续传" in final
+    assert "结果 待续传" in final
 
 
 def test_restart_displays_persistent_failures_separately_from_new_failures():
@@ -202,7 +201,7 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
     assert "已发布 4402 股（含待核实） | 公告待补 26 个范围 | 可重试正文 3 篇" in output
     assert "原始资料变更 2589 条（非每股发布行）" in output
     assert "下次 sync company 从已提交断点续传" in output
-    assert "100.00%" not in output and "状态 待续传" in output
+    assert "100.00%" not in output and "结果 待续传" in output
     result = CompanyEvidenceSyncResult(
         datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
         4402,
@@ -270,8 +269,8 @@ def test_last_stock_starts_atomic_publication_and_news_without_candidates_is_exp
     facts, pending, published, news = stream.getvalue().splitlines()
     assert "逐股事件核验" in facts and "当前 600001 示例" in facts
     assert "正在原子提交（尚未发布）" in pending
-    assert "已发布 1/1 股" in published and "状态 完成" in published
-    assert "无候选名单，本轮未抓取新闻" in news and "状态 未覆盖" in news
+    assert "已发布 1/1 股" in published and "结果 完成" in published
+    assert "无候选名单，本轮未抓取新闻" in news and "结果 未覆盖" in news
 
 
 def test_source_failure_and_unreadable_documents_have_separate_recovery_messages():

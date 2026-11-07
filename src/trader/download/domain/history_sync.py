@@ -257,8 +257,18 @@ class HistoryPipelineProgress:
     read_seconds: float = 0.0
     validation_seconds: float = 0.0
     unconfirmed_write_seconds: float = 0.0
+    network_completed_codes: int = 0
+    reused_codes: int = 0
+    writing_codes: int = 0
+    oldest_inflight_code: str | None = None
+    seconds_since_commit: float = 0.0
+    write_operation: str = "空闲"
 
     def __post_init__(self) -> None:
+        if self.writing_codes > self.queued_codes or (
+            self.oldest_inflight_code is not None and not re.fullmatch(r"[0-9]{6}", self.oldest_inflight_code)
+        ):
+            raise ValueError("history_pipeline_progress_invalid")
         if any(
             type(value) is not int or value < 0
             for value in (
@@ -266,6 +276,9 @@ class HistoryPipelineProgress:
                 self.queued_codes,
                 self.inflight_codes,
                 self.pending_codes,
+                self.network_completed_codes,
+                self.reused_codes,
+                self.writing_codes,
             )
         ) or any(
             not math.isfinite(value) or value < 0
@@ -277,6 +290,7 @@ class HistoryPipelineProgress:
                 self.read_seconds,
                 self.validation_seconds,
                 self.unconfirmed_write_seconds,
+                self.seconds_since_commit,
             )
         ):
             raise ValueError("history_pipeline_progress_invalid")
@@ -306,8 +320,19 @@ class HistorySyncProgress:
     industry_missing_codes: int | None = None
     failure_detail: str | None = None
     repair_summary: HistoryRepairSummary | None = None
+    requested_from: date | None = None
+    requested_to: date | None = None
+    stock_download_seconds: float | None = None
+    stock_read_seconds: float | None = None
+    stock_validation_seconds: float | None = None
 
     def __post_init__(self) -> None:
+        if any(value is not None and (not math.isfinite(value) or value < 0) for value in (
+            self.stock_download_seconds, self.stock_read_seconds, self.stock_validation_seconds,
+        )) or (self.requested_from is None) != (self.requested_to is None) or (
+            self.requested_from is not None and self.requested_to is not None and self.requested_from > self.requested_to
+        ):
+            raise ValueError("history_stock_progress_invalid")
         if (
             self.stage not in _PROGRESS_STAGES
             or self.state not in _PROGRESS_STATES

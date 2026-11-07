@@ -4,6 +4,7 @@ import sqlite3
 
 from trader.download.infra.history_sync_failure import HistoryFailureDetail
 from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.http_contracts import HttpStatusError
 
 
 def test_sqlite_failure_detail_keeps_safe_error_name_without_message() -> None:
@@ -25,3 +26,7 @@ def test_sqlite_failure_detail_uses_numeric_code_if_name_is_unavailable() -> Non
     error = sqlite3.OperationalError("private error text")
     error.sqlite_errorcode = 5
     assert HistoryFailureDetail(error) == "OperationalError:SQLITE_CODE_5"
+
+
+def test_http_failure_keeps_status_without_response_payload() -> None:
+    assert "HTTP_503" in HistoryFailureDetail(HttpStatusError(503))

@@ -72,7 +72,7 @@ def st_sources(monkeypatch):
             calls.append(code)
             return Response(code)
 
-    monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args: universe)
+    monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args, **_kwargs: universe)
     monkeypatch.setattr(bootstrap, "OpenExternalHttp", Session)
     monkeypatch.setattr(bootstrap, "_utc_now", lambda: NOW)
     monkeypatch.setattr(
@@ -106,7 +106,7 @@ def _seed_st(path):
 
 
 @pytest.mark.parametrize("existing_cache", (False, True))
-def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, monkeypatch, st_sources, existing_cache):
+def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, monkeypatch, st_sources, existing_cache, capsys):
     calls, sessions = st_sources
     settings = replace(
         LoadRuntimeSettings(_ROOT / "config/runtime.json"),
@@ -123,8 +123,9 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     if not existing_cache:
         expected_queries |= {"600001", "600003"}
 
-    def download(root, progress, request, *, cancel_requested, sqlite_policy, failure_configuration):
+    def download(root, progress, request, *, cancel_requested, sqlite_policy, failure_configuration, **_kwargs):
         codes, observed_at = request.codes, request.observed_at
+        assert _kwargs["report"] is not None
         assert request.configuration.source_timeout_seconds == 8.0
         assert set(calls) == expected_queries
         assert all(session.closed for session in sessions)
@@ -147,7 +148,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
         "600003",
         "600006",
     }
-    assert "ST资格" in stream.getvalue()
+    assert "ST资格" in capsys.readouterr().err
     assert all(session.closed for session in sessions)
     assert not any(thread.name.startswith("risk-st-check") for thread in enumerate_threads())
 
@@ -222,9 +223,9 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(
         assert all(cell.qfq is not None for cell in window.cells)
         output = capsys.readouterr().err
         assert "sync company" not in output
-        stages = ("ST资格", "交易日历", "当前行业", "参考发布", "行情更新", "qfq 准备")
+        stages = ("ST资格", "交易日历", "当前行业", "参考发布", "资料交接", "market·准备")
         assert [output.index(stage) for stage in stages] == sorted(output.index(stage) for stage in stages)
-        assert "sync market | ST资格" in output
+        assert "参考·ST资格" in output
         assert "开始更新 raw/qfq 短窗口" in output
     assert set(downloaded) == {"600001", "600005", "600007"}
     assert all(session.closed for session in sessions)

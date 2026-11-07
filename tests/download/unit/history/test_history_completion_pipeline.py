@@ -198,7 +198,7 @@ def test_explicit_unknown_tencent_cell_remains_retryable_without_baostock(tmp_pa
     assert all(row.point is None for row in training if row.trade_date == DAYS[1])
     assert {row.trade_date for row in training} == set(DAYS)
     logs = _compact_log(capsys.readouterr().err)
-    assert "Tencent下载 | 完成" in logs
+    assert "history·Tencent下载" in logs and "| 完成 |" in logs
     assert "股票 600001 600001" in logs
     assert "raw 2/3 | qfq 2/3 | 完整配对 2/3 | 缺日 1 |" in logs
     assert " | 原因 tencent_history_pending" in logs

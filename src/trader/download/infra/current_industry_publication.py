@@ -11,7 +11,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressTask
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError
 from trader.download.domain.current_industry import CurrentIndustryReference
@@ -72,10 +72,10 @@ class CurrentIndustryPublication:
     def _progress(self, code: str, completed: int, total: int, *, cached: bool, missing: bool = False) -> None:
         if self.report is not None:
             self.report(ProgressMessage((
-                ProgressField("当前行业"), ProgressField(f"{completed}/{total}股"),
+                ProgressField(f"{completed}/{total}股"),
                 ProgressField(f"代码 {code}"), ProgressField("缓存复用" if cached else "接口获取"),
                 ProgressField("分类缺失" if missing else "完成", ProgressLevel.WARNING if missing else ProgressLevel.SUCCESS),
-            )))
+            ), task=ProgressTask("参考", "当前行业", "当前行业")))
 
     def fetch(
         self,
@@ -107,7 +107,8 @@ class CurrentIndustryPublication:
                 and cut < _timestamp(payload, "refresh_after")
             ):
                 if self.report is not None:
-                    self.report(ProgressMessage((ProgressField("当前行业"), ProgressField(f"当前发布缓存复用 {len(codes)} 股"))))
+                    self.report(ProgressMessage((ProgressField(f"当前发布缓存复用 {len(codes)} 股"),),
+                                                task=ProgressTask("参考", "当前行业", "当前行业")))
                 return _query_observations(previous, as_of=cut)
         taxonomy_document = index.read_source_document(_TAXONOMY_KEY, cut)
         if taxonomy_document is not None and taxonomy_document.requested_to > day:

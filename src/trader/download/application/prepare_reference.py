@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Protocol
 
-from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressTask, ProgressState
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.prepared_reference import PreparedReference, SelectEligibleSecurities
@@ -45,7 +45,9 @@ def PrepareReference(
 ) -> PreparedReference:
     if dependencies.cancelled():
         raise RuntimeError("reference_preparation_cancelled")
+    _report(report, "ST资格", f"总体 {len(universe)} 股", state="开始")
     source_evidence = dependencies.st_evidence(universe, observed_at.date())
+    _report(report, "ST资格", f"完成核验 {len(source_evidence)} 股", state="完成")
     if dependencies.cancelled():
         raise RuntimeError("reference_preparation_cancelled")
     population = tuple(sorted(universe, key=lambda item: item.code))
@@ -55,10 +57,12 @@ def PrepareReference(
     eligible = SelectEligibleSecurities(population, evidence)
     if not eligible:
         raise ValueError("sync_population_empty")
+    _report(report, "交易日历", "检查有效缓存或请求来源", state="开始")
     calendar = dependencies.calendar()
+    _report(report, "交易日历", f"交易日 {len(calendar)} 日", state="完成")
     if dependencies.cancelled():
         raise RuntimeError("reference_preparation_cancelled")
-    _report(report, "当前行业", "开始准备，完成后继续下载")
+    _report(report, "当前行业", "开始准备，完成后继续下载", state="开始")
     try:
         industries = dependencies.industries(observed_at, eligible, calendar)
     except IndustryDatabaseIncompatibleError:
@@ -67,10 +71,11 @@ def PrepareReference(
             report, "当前行业",
             "行业下载库结构不兼容；仅清理 market/reference/industry.sqlite3 及配套文件后重新下载行业资料，其他资料同步继续",
             ProgressLevel.WARNING,
+            state="失败",
         )
     except (OSError, RuntimeError, ValueError) as exc:
         industries = ()
-        _report(report, "当前行业", f"准备失败（{type(exc).__name__}），继续资料同步", ProgressLevel.WARNING)
+        _report(report, "当前行业", f"准备失败（{type(exc).__name__}），继续资料同步", ProgressLevel.WARNING, state="失败")
     else:
         missing = len(eligible) - len(industries)
         _report(
@@ -78,6 +83,7 @@ def PrepareReference(
             "当前行业",
             f"准备完成 {len(industries)}/{len(eligible)} 股，缺分类 {missing} 股，继续资料同步" if industries else "行业资料不可用，继续资料同步",
             ProgressLevel.SUCCESS if industries and missing == 0 else ProgressLevel.WARNING,
+            state="完成",
         )
     completed_at = max(observed_at, *(item.received_at for item in industries)) if industries else observed_at
     reference = PreparedReference(
@@ -89,9 +95,9 @@ def PrepareReference(
     )
     if dependencies.cancelled():
         raise RuntimeError("reference_preparation_cancelled")
-    _report(report, "参考发布", "开始保存证券、ST资格及交易日历")
+    _report(report, "参考发布", "开始保存证券、ST资格及交易日历", state="开始")
     dependencies.publish(reference, source_evidence)
-    _report(report, "参考发布", "完成", ProgressLevel.SUCCESS)
+    _report(report, "参考发布", "保存证券、ST资格及交易日历", ProgressLevel.SUCCESS, state="完成")
     return reference
 
 
@@ -100,9 +106,14 @@ def _report(
     stage: str,
     details: str,
     level: ProgressLevel = ProgressLevel.NORMAL,
+    *,
+    state: ProgressState = "处理中",
 ) -> None:
     if report is not None:
-        report(ProgressMessage((ProgressField(stage), ProgressField(details, level))))
+        report(ProgressMessage(
+            (ProgressField(details, level),), task=ProgressTask("参考", stage, stage), state=state,
+            finished=state in {"完成", "失败", "取消"},
+        ))
 
 
 __all__ = [

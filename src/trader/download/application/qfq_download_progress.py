@@ -14,6 +14,8 @@ from trader.download.application.progress_message import (
     ProgressField,
     ProgressLevel,
     ProgressMessage,
+    ProgressTask,
+    ProgressState,
     ProgressNumber,
 )
 from trader.download.application.stock_download_progress import (
@@ -28,23 +30,24 @@ from trader.download.domain.qfq_window import QfqPendingReason, QfqPriceReviewSu
 
 
 def QfqMessage(
-    elapsed: float, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL
+    stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL,
+    state: ProgressState = "处理中", finished: bool = False,
 ) -> ProgressMessage:
     return ProgressMessage(
         (
-            FormatProgressField(ProgressDuration(elapsed), 8),
-            FormatProgressField(f"qfq {stage}", 24, level=level),
             *(
                 FormatProgressField(part, level=level if level is ProgressLevel.ERROR else ProgressLevel.NORMAL)
                 for part in details.split(" | ")
             ),
-        )
+        ),
+        task=ProgressTask("market", stage, stage),
+        state="失败" if level is ProgressLevel.ERROR else state,
+        finished=finished or level is ProgressLevel.ERROR,
     )
 
 
 def ReportQfqStProgress(
     report: Callable[[ProgressMessage], None],
-    elapsed: float,
     completed: int,
     total: int,
     summary: HistoryStEligibilitySummary | None,
@@ -54,7 +57,7 @@ def ReportQfqStProgress(
     details = f"{ProgressNumber(completed)}/{ProgressNumber(total)}"
     if summary is not None:
         details += f" | 合格 {ProgressNumber(summary.clear)} | 曾ST排除 {ProgressNumber(summary.ever_st)} | 未知排除 {ProgressNumber(summary.unknown)}"
-    report(QfqMessage(elapsed, "ST资格", details))
+    report(QfqMessage("ST资格", details))
 
 
 def QfqFailureCode(exc: Exception) -> str:
@@ -88,7 +91,6 @@ class QfqDownloadProgress:
     source: str
     total: int
     report: Callable[[ProgressMessage], None]
-    elapsed: Callable[[], float]
     completed: int = 0
     pending: int = 0
     skipped: int = 0
@@ -108,13 +110,15 @@ class QfqDownloadProgress:
     def processed(self) -> int:
         return self.completed + self.pending + self.not_applicable + self.no_trade_data
 
-    def publish(self, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL) -> None:
-        self.report(QfqMessage(self.elapsed(), stage, details, level=level))
+    def publish(
+        self, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL,
+        state: ProgressState = "处理中", finished: bool = False,
+    ) -> None:
+        self.report(QfqMessage(stage, details, level=level, state=state, finished=finished))
 
     def record_stock(self, security: BaoStockSecurity, feedback: QfqStockFeedback) -> None:
         self.report(
             FormatStockDownloadProgress(
-                self.elapsed(),
                 StockDownloadProgress(
                     command="sync market",
                     completed=self.processed,
@@ -231,6 +235,7 @@ class QfqDownloadProgress:
             f"| 变更文件 {ProgressNumber(len(self.changed))} | 变更行 {ProgressNumber(self.rows)} "
             f"| 落库耗时 {ProgressDuration(self.write_seconds)}",
             level=level,
+            state="完成", finished=True,
         )
 
     def finish(

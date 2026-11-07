@@ -50,6 +50,7 @@ class HistoryPriceResult:
     unusable_qfq_dates: tuple[date, ...] = ()
     replacement: PublishedHistoryWindow | None = None
     inferred_suspended_dates: tuple[date, ...] = ()
+    diagnostic: str | None = None
 
 
 class HistoryDirectPrices:

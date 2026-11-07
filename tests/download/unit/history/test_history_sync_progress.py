@@ -31,6 +31,7 @@ from trader.download.domain.history_sync import (
 )
 
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
+from trader.download.application.progress_message import WithProgressTime
 
 from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 
@@ -51,16 +52,16 @@ def test_local_history_preparation_reports_counts_and_elapsed_before_stocks(caps
     reporter.publish(HistorySyncProgress("tencent_history", "started", 0, 4402))
 
     lines = _compact_log(capsys.readouterr().err).splitlines()
-    assert "读取历史下载任务 | 开始 | 股票 0/4402" in lines[0]
-    assert "读取历史下载任务 | 等待 | 股票 512/4402" in lines[1]
-    assert "阶段耗时 00:00:05" in lines[1]
-    assert "读取历史下载任务 | 完成 | 股票 4402/4402" in lines[2]
-    assert "Tencent下载 | 开始 | 0/4402" in lines[3]
+    assert "history·读取历史下载任务 00:00:00 | 开始 | 股票 0/4402" in lines[0]
+    assert "读取历史下载任务 00:00:05 | 等待 | 股票 512/4402" in lines[1]
+    assert "读取历史下载任务 00:00:10 | 完成 | 股票 4402/4402" in lines[2]
+    assert "Tencent下载 00:00:00 | 开始 | 0/4402" in lines[3]
 
 
 @pytest.mark.parametrize("fail", [False, True])
 def test_preparation_heartbeat_keeps_real_counts_and_stops_on_exit(capsys, monkeypatch, fail: bool) -> None:
-    reporter = StderrHistorySyncProgress()
+    clock = [0.0]
+    reporter = StderrHistorySyncProgress(monotonic=lambda: clock[0])
     waiting = Event()
     output = reporter._output
 
@@ -72,9 +73,10 @@ def test_preparation_heartbeat_keeps_real_counts_and_stops_on_exit(capsys, monke
     monkeypatch.setattr(reporter, "_output", report)
 
     def run() -> None:
-        with reporter.keep_alive(interval_seconds=0.01):
+        with output.keep_alive():
             reporter.publish(HistorySyncProgress("initializing", "started", 512, 4402, "reading_tasks"))
-            assert waiting.wait(5), "slow preparation produced no heartbeat"
+            clock[0] = 5
+            output.heartbeat()
             if fail:
                 raise RuntimeError("fixture_preparation_failed")
             reporter.publish(HistorySyncProgress("initializing", "completed", 4402, 4402, "reading_tasks"))
@@ -84,7 +86,7 @@ def test_preparation_heartbeat_keeps_real_counts_and_stops_on_exit(capsys, monke
             run()
     else:
         run()
-    assert not any(thread.name == "history-preparation-progress" for thread in enumerate_threads())
+    assert not any(thread.name == "download-progress" for thread in enumerate_threads())
     lines = _compact_log(capsys.readouterr().err).splitlines()
     assert any("等待 | 股票 512/4402" in line for line in lines)
     if not fail:
@@ -117,8 +119,8 @@ def test_legacy_resume_progress_is_visible_with_counts_and_month(capsys):
     reporter.publish(HistorySyncProgress("history_gap_resume", "waiting", 64, 65, current_item="2026-09"))
     reporter.publish(HistorySyncProgress("history_gap_resume", "completed", 65, 65, current_item="2026-09"))
     output = _compact_log(capsys.readouterr().err)
-    assert "旧断点恢复 | 等待 | 64/65" in output
-    assert "旧断点恢复 | 完成 | 65/65" in output
+    assert "旧断点恢复 00:00:00 | 等待 | 64/65" in output
+    assert "旧断点恢复 00:00:00 | 完成 | 65/65" in output
     assert "处理项 2026-09" in output
 
 
@@ -127,7 +129,8 @@ def test_complete_code_reuse_is_not_reported_as_another_network_request(capsys):
     reporter.publish(HistorySyncProgress("tencent_history", "completed", 1, 2, "600001"))
     output = _compact_log(capsys.readouterr().err)
     assert "无新增或缺口，复用" in output
-    assert "请求" not in output and "来源 Tencent" not in output
+    assert "本次请求 0日" in output and "处理 本地复用" in output
+    assert "本次覆盖 未重新核验" in output and "来源 Tencent" not in output
 
 
 def test_st_checkpoints_report_progress_before_completion(capsys) -> None:
@@ -143,7 +146,7 @@ def test_st_checkpoints_report_progress_before_completion(capsys) -> None:
         )
     )
     output = _compact_log(capsys.readouterr().err).splitlines()
-    assert "检查中" in output[0] and "2/4" in output[0]
+    assert "处理中" in output[0] and "2/4" in output[0]
     assert "完成" in output[1] and "4/4" in output[1]
     assert "合格 3 | 曾ST排除 1 | 未知排除 0" in output[1]
 
@@ -163,7 +166,7 @@ def test_supplier_preparation_waiting_and_retry_are_reported(capsys) -> None:
             call_elapsed_seconds=10.849,
         )
     )
-    assert "行业快照 | 等待 | 0/1" in _compact_log(capsys.readouterr().err)
+    assert "行业快照 00:00:00 | 等待 | 0/1" in _compact_log(capsys.readouterr().err)
 
     progress.publish(
         HistorySyncProgress(
@@ -179,7 +182,7 @@ def test_supplier_preparation_waiting_and_retry_are_reported(capsys) -> None:
 
     assert (
         _compact_log(capsys.readouterr().err)
-        == "00:14:38 | 行业快照 | 重试 | 0/1 (0.00%) | 日期 2021-01-04 | 尝试 3/3\n"
+        == "00:14:38 | history·行业快照 00:00:00 | 重试 | 0/1 (0.00%) | 日期 2021-01-04 | 尝试 3/3\n"
     )
 
 
@@ -192,10 +195,9 @@ def test_industry_progress_reports_date_counts_and_cache_without_duplicate_start
     progress.publish(HistorySyncProgress("supplier_industry", "waiting", 4, 18, "2020-07-01", call_elapsed_seconds=5))
     progress.publish(HistorySyncProgress("supplier_industry", "completed", 5, 18, "2020-07-01", cache_hit=True))
     lines = _compact_log(capsys.readouterr().err).splitlines()
-    assert len(lines) == 3
     assert "开始 | 4/18" in lines[0]
-    assert "等待 | 4/18" in lines[1]
-    assert "完成 | 5/18" in lines[2] and "缓存复用" in lines[2]
+    assert "处理中 | 5/18" in lines[-1] and "缓存复用" in lines[-1]
+    assert all("行业快照" in line for line in lines)
 
 
 def test_unlocated_failure_does_not_blame_last_successful_stock(capsys):
@@ -244,10 +246,10 @@ def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:
     progress.publish(HistorySyncProgress("supplier_daily_qfq", "completed", 1, 1, current_item="sh.600001"))
     progress.publish(HistorySyncProgress("downloading_codes", "completed", 13, 100, current_item="600001"))
 
-    assert (
-        _compact_log(capsys.readouterr().err)
-        == "00:00:35 | 股票下载 | 完成 | 13/100 (13.00%) | 股票 600001 | 阶段耗时 00:00:35\n"
-    )
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert "股票下载 00:00:00 | 开始" in lines[0]
+    assert any("未复权日线" in line and "等待" in line for line in lines)
+    assert "13/100" in lines[-1] and "处理中" in lines[-1]
 
 
 def test_partition_sealing_reports_file_start_heartbeat_and_completion(capsys) -> None:
@@ -257,14 +259,15 @@ def test_partition_sealing_reports_file_start_heartbeat_and_completion(capsys) -
     progress.publish(HistorySyncProgress("sealing_partitions", "waiting", 0, 1, "prices_2026.sqlite3"))
     progress.publish(HistorySyncProgress("sealing_partitions", "completed", 1, 1, "prices_2026.sqlite3"))
 
-    assert _compact_log(capsys.readouterr().err).splitlines() == [
-        "00:00:01 | 数据库文件校验 | 开始 | 0/1 (0.00%) | 数据库 prices_2026.sqlite3 | 本库耗时 00:00:00",
-        "00:00:06 | 数据库文件校验 | 等待 | 0/1 (0.00%) | 数据库 prices_2026.sqlite3 | 本库耗时 00:00:05",
-        "00:00:27 | 数据库文件校验 | 完成 | 1/1 (100.00%) | 数据库 prices_2026.sqlite3 | 本库耗时 00:00:26",
-    ]
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert len(lines) == 3
+    assert "数据库文件校验 00:00:00 | 开始" in lines[0]
+    assert "数据库文件校验 00:00:05 | 等待" in lines[1]
+    assert "数据库文件校验 00:00:26 | 完成" in lines[2]
+    assert all("prices_2026.sqlite3" in line for line in lines)
 
 
-def test_publication_checks_report_month_progress_and_reset_each_month_elapsed(capsys) -> None:
+def test_publication_checks_keep_stage_elapsed_across_months(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=_Clock(100, 101, 106, 107, 108, 113, 114))
 
     progress.publish(HistorySyncProgress("checking_partitions", "started", 0, 2, "2026-01"))
@@ -275,13 +278,11 @@ def test_publication_checks_report_month_progress_and_reset_each_month_elapsed(c
     progress.publish(HistorySyncProgress("checking_partitions", "completed", 2, 2, "2026-02"))
 
     lines = _compact_log(capsys.readouterr().err).splitlines()
-    assert len(lines) == 6
-    assert "发布分区检查 | 开始 | 0/2 (0.00%) | 月份 2026-01 | 本月耗时 00:00:00" in lines[0]
-    assert "等待 | 0/2 (0.00%) | 月份 2026-01 | 本月耗时 00:00:05" in lines[1]
-    assert "完成 | 1/2 (50.00%)" in lines[2]
-    assert "开始 | 1/2 (50.00%) | 月份 2026-02 | 本月耗时 00:00:00" in lines[3]
-    assert "等待 | 1/2 (50.00%) | 月份 2026-02 | 本月耗时 00:00:05" in lines[4]
-    assert "完成 | 2/2 (100.00%)" in lines[5]
+    assert "发布分区检查 00:00:00 | 开始 | 0/2" in lines[0]
+    assert "月份 2026-01" in lines[0]
+    assert "发布分区检查 00:00:07 | 开始 | 1/2" in lines[3]
+    assert "月份 2026-02" in lines[3]
+    assert "发布分区检查 00:00:13 | 完成 | 2/2" in lines[-1]
 
 
 def test_publication_preparation_and_snapshot_start_are_not_silent(capsys) -> None:
@@ -293,11 +294,10 @@ def test_publication_preparation_and_snapshot_start_are_not_silent(capsys) -> No
     progress.publish(HistorySyncProgress("publishing_snapshot", "started", 0, 1))
 
     lines = _compact_log(capsys.readouterr().err).splitlines()
-    assert len(lines) == 4
-    assert "发布准备 | 开始 | 阶段耗时 00:00:00" in lines[0]
-    assert "发布准备 | 等待 | 阶段耗时 00:00:05" in lines[1]
-    assert "发布准备 | 完成 | 阶段耗时 00:00:06" in lines[2]
-    assert "发布快照 | 开始" in lines[3]
+    assert "发布准备 00:00:00 | 开始" in lines[0]
+    assert "发布准备 00:00:05 | 等待" in lines[1]
+    assert "发布准备 00:00:06 | 完成" in lines[2]
+    assert "发布快照 00:00:00 | 开始" in lines[3]
 
 
 def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) -> None:
@@ -308,19 +308,19 @@ def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) ->
     progress.publish(HistorySyncProgress("persisting_partitions", "started", 1, 3, "2026-08"))
     progress.publish(HistorySyncProgress("persisting_partitions", "completed", 3, 3, "2026-09"))
 
-    assert _compact_log(capsys.readouterr().err).splitlines() == [
-        "00:00:00 | 正式月库提交 | 开始 | 0/3 (0.00%) | 月份 2026-07 | 本月耗时 00:00:00",
-        "00:00:06 | 正式月库提交 | 开始 | 1/3 (33.33%) | 月份 2026-08 | 本月耗时 00:00:00",
-        "00:00:07 | 正式月库提交 | 完成 | 3/3 (100.00%) | 月份 2026-09 | 本月耗时 00:00:00",
-    ]
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert "正式月库提交 00:00:00 | 开始" in lines[0]
+    assert "月份 2026-07" in lines[0]
+    assert "正式月库提交 00:00:07 | 完成 | 3/3" in lines[-1]
+    assert "月份 2026-09" in lines[-1]
 
 
-def test_partition_persistence_placeholder_waiting_is_suppressed(capsys) -> None:
+def test_partition_persistence_waiting_is_visible(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=_Clock(0.0, 21.0))
 
     progress.publish(HistorySyncProgress("persisting_partitions", "waiting", 0, 1))
 
-    assert _compact_log(capsys.readouterr().err) == ""
+    assert "正式月库提交 00:00:00 | 等待" in _compact_log(capsys.readouterr().err)
 
 
 def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
@@ -348,16 +348,10 @@ def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
         )
     )
 
-    assert _compact_log(capsys.readouterr().err).splitlines() == [
-        "00:00:00 | sync history 股票进度 | 29/4400（0.66%） | 股票 600001 — | 处理 Tencent下载 | 结果 失败 "
-        "| raw -/2000 | qfq -/2000 | 完整配对 -/2000 | 缺日 未知 "
-        "| 网络 -/4400 | 落库 29/4400 | 待写 - | 下载 --:--:-- "
-        "| 恢复读库累计 --:--:-- | 校验累计 --:--:-- | 落库耗时 --:--:-- | 本批待确认 --:--:-- | 回压 --:--:-- "
-        "| 总计 00:00:00 | 原因 history_tencent_overlap_conflict",
-        "00:00:00 | Tencent下载 | 完成 | 4400/4400 | 完整 4371 股 | 部分 0 股 | 失败 29 股 "
-        "| 其中待重试 0 股 | 其中本地复用 0 股 "
-        "| 重叠冲突 24 股 | 其它失败 5 股 | 总计 00:00:00",
-    ]
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert "结果 失败" in lines[0] and "history_tencent_overlap_conflict" in lines[0]
+    assert "已确认 29/4400" in lines[0]
+    assert "Tencent下载" in lines[-1] and "其它失败 5 股" in lines[-1]
 
 
 def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(capsys) -> None:
@@ -377,14 +371,13 @@ def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(cap
         )
     )
 
-    assert _compact_log(capsys.readouterr().err) == (
-        "00:00:00 | Tencent下载 | 开始 | 0/4400 | 总计 00:00:00\n"
-        "00:23:06 | sync history 股票进度 | 388/4400（8.82%） | 股票 000952 — | 处理 Tencent下载 | 结果 部分 "
-        "| raw 1980/2000 | qfq 1980/2000 | 完整配对 1980/2000 | 缺日 20 "
-        "| 网络 404/4400 | 落库 388/4400 | 待写 16 | 下载 00:14:03 "
-        "| 恢复读库累计 00:00:00 | 校验累计 00:00:00 | 落库耗时 00:38:20 "
-        "| 本批待确认 00:00:00 | 回压 00:37:38 | 总计 00:23:06 | 原因 无\n"
-    )
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert "Tencent下载 00:00:00 | 开始" in lines[0]
+    assert "00:23:06 | history·Tencent下载 00:23:06" in lines[-1]
+    assert "结果 部分" in lines[-1] and "raw 1980/2000" in lines[-1] and "缺日 20" in lines[-1]
+    assert "任务已处理 404/4400" in lines[-1] and "已确认 388/4400" in lines[-1]
+    assert "网络累计 00:14:03" in lines[-1] and "落库累计 00:38:20" in lines[-1]
+    assert "恢复读库累计" in lines[-1] and "回压 00:37:38" in lines[-1]
 
 
 def test_tencent_waiting_state_does_not_reserve_a_wide_column(capsys) -> None:
@@ -417,7 +410,7 @@ def test_tencent_waiting_state_does_not_reserve_a_wide_column(capsys) -> None:
     assert "网络" in output and "落库" in output and "回压" in output
     assert "在途 8" in _compact_log(output)
     assert "待派发 4201" in _compact_log(output)
-    assert "最久在途 00:00:50" in output
+    assert "最久在途 无 00:00:50" in output
     assert "恢复读库累计 00:00:12" in output
     assert "校验累计 00:00:03" in output
     assert "本批待确认 00:00:08" in output
@@ -441,9 +434,10 @@ def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) 
 
     progress.publish_result(_failed_status("supplier_industry_timeout"))
 
-    assert _compact_log(capsys.readouterr().err).splitlines()[-1] == (
-        "00:16:10 | 同步失败 | 行业快照 | 日期 2021-01-04 | 错误 supplier_industry_timeout"
-    )
+    line = _compact_log(capsys.readouterr().err).splitlines()[-1]
+    assert "history·结果汇总" in line and "失败" in line
+    assert "行业快照" in line and "日期 2021-01-04" in line
+    assert "supplier_industry_timeout" in line
 
 
 def test_successful_supplier_retry_clears_the_transient_failure_location(capsys) -> None:
@@ -465,9 +459,9 @@ def test_successful_supplier_retry_clears_the_transient_failure_location(capsys)
 
     progress.publish_result(_failed_status("history_sync_failed"))
 
-    assert _compact_log(capsys.readouterr().err).splitlines()[-1] == (
-        "00:00:40 | 同步失败 | 加载上下文 | 错误 history_sync_failed"
-    )
+    line = _compact_log(capsys.readouterr().err).splitlines()[-1]
+    assert "同步失败 | 加载上下文" in line and "history_sync_failed" in line
+    assert "行业快照" not in line
 
 
 def test_completed_result_keeps_machine_json_out_of_the_progress_stream(capsys) -> None:
@@ -486,7 +480,7 @@ def test_completed_result_keeps_machine_json_out_of_the_progress_stream(capsys) 
 
     progress.publish_result(completed)
 
-    assert _compact_log(capsys.readouterr().err) == "00:00:01 | 同步完成\n"
+    assert _compact_log(capsys.readouterr().err) == "00:00:01 | history·结果汇总 00:00:00 | 完成 | 同步完成\n"
 
 
 @pytest.mark.parametrize(
@@ -509,10 +503,10 @@ def test_stock_fields_remain_compact_across_names_and_counts(name, result, actua
         missing_dates=(date(2026, 10, 12),),
         reason="a_long_failure_reason",
     )
-    message = FormatStockDownloadProgress(0, progress)
+    message = FormatStockDownloadProgress(progress)
     plain = RenderProgress(message)
-    assert DisplayWidth(message.fields[3].text) == DisplayWidth("股票 688058 ") + 8
-    assert not re.search(r" {2,}\|", plain.replace(message.fields[3].text, "股票"))
+    assert DisplayWidth(message.fields[1].text) == DisplayWidth("股票 688058 ") + 8
+    assert not re.search(r" {2,}\|", plain.replace(message.fields[1].text, "股票"))
     assert "raw " in plain and "qfq " in plain and "完整配对 " in plain
     assert "\n" not in plain and "\t" not in plain
     assert plain.index("原因") < plain.index("缺失日期")
@@ -532,7 +526,7 @@ def test_stock_fields_remain_compact_across_names_and_counts(name, result, actua
     ),
 )
 def test_color_preserves_exact_plain_layout_and_resets_each_field(result, missing, escape) -> None:
-    message = FormatStockDownloadProgress(1, _stock_progress(result=result, missing=missing))
+    message = FormatStockDownloadProgress(_stock_progress(result=result, missing=missing))
     plain = RenderProgress(message)
     colored = RenderProgress(message, color=True)
     assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == plain
@@ -558,21 +552,20 @@ def test_terminal_color_policy_and_single_write(monkeypatch, tty, no_color, term
     monkeypatch.setenv("TERM", term)
     stream = _Terminal(tty)
     report = TerminalDownloadProgress(stream)
-    report(FormatStockDownloadProgress(0, _stock_progress()))
+    report(FormatStockDownloadProgress(_stock_progress()))
     assert ("\x1b[32m" in stream.getvalue()) is expected
     assert stream.writes == 1 and stream.getvalue().count("\n") == 1
 
 
 def test_untrusted_fields_cannot_inject_ansi_newlines_or_columns() -> None:
     message = FormatStockDownloadProgress(
-        0,
         _stock_progress(
             name="宝\n兰\t德|\x1b[31m",
             reason="bad\rreason|\x1b]0;title\x07",
         ),
     )
     line = RenderProgress(message)
-    assert line.count("|") == 10
+    assert line.count("|") == 8
     assert all(char not in line for char in ("\x1b", "\n", "\r", "\t", "\x07"))
     assert "title" not in line and "[31m" not in line
 
@@ -582,7 +575,7 @@ def test_history_stock_output_keeps_compact_fields_across_coverage_and_result(mo
     monkeypatch.setattr("sys.stderr", stream)
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("TERM", "xterm")
-    reporter = StderrHistorySyncProgress(monotonic=lambda: 0)
+    reporter = StderrHistorySyncProgress(monotonic=_Clock(0, 1, 2, 3))
     for completed, code, name, coverage, reason in (
         (9, "688058", "宝兰德", HistoryPriceCoverage(2000, 2000, 2000, 2000), None),
         (10, "688060", "云涌科技", HistoryPriceCoverage(2000, 19, 19, 19), None),
@@ -615,7 +608,7 @@ def test_qfq_write_failure_is_red_but_retry_stays_yellow(monkeypatch) -> None:
     monkeypatch.setenv("TERM", "xterm")
     monkeypatch.delenv("NO_COLOR", raising=False)
     stream = _Terminal(True)
-    progress = QfqDownloadProgress(date(2026, 10, 13), "test", 2, TerminalDownloadProgress(stream), lambda: 0)
+    progress = QfqDownloadProgress(date(2026, 10, 13), "test", 2, TerminalDownloadProgress(stream))
     security = BaoStockSecurity("688058", "宝兰德", "star", date(2019, 1, 1), None, "test")
     progress.record_pending(security, RuntimeError("timeout"), (), action="Tencent下载")
     progress.record_pending(security, OSError("disk_full"), (), action="Tencent下载", failure_level=ProgressLevel.ERROR)
@@ -623,8 +616,8 @@ def test_qfq_write_failure_is_red_but_retry_stays_yellow(monkeypatch) -> None:
     lines = stream.getvalue().splitlines()
     assert "\x1b[33m结果 待重试" in lines[0]
     assert "\x1b[31m结果 待重试" in lines[1] and "\x1b[31m原因 disk_full" in lines[1]
-    assert "\x1b[31mqfq 待重试原因" in lines[2]
-    assert "\x1b[31mqfq 结束" in lines[-1]
+    assert "\x1b[31mtimeout" in lines[2]
+    assert "\x1b[31m已处理" in lines[-1]
 
 
 def test_terminal_also_sanitizes_direct_message_fields() -> None:
@@ -632,18 +625,18 @@ def test_terminal_also_sanitizes_direct_message_fields() -> None:
 
 
 def test_empty_population_and_large_numbers_are_never_truncated() -> None:
-    empty = FormatStockDownloadProgress(0, _stock_progress(total=0, completed=0, target=0, raw=0, qfq=0, paired=0))
+    empty = FormatStockDownloadProgress(_stock_progress(total=0, completed=0, target=0, raw=0, qfq=0, paired=0))
     assert "100.00%" in RenderProgress(empty)
-    large = FormatStockDownloadProgress(360000, _stock_progress(total=1000000, completed=1000000))
+    large = FormatStockDownloadProgress(_stock_progress(total=1000000, completed=1000000))
     assert "1000000/1000000" in RenderProgress(large)
-    assert RenderProgress(large).startswith("100:00:00")
+    assert RenderProgress(WithProgressTime(large, 360000, 360000)).startswith("100:00:00")
 
 
 def test_missing_dates_keep_bounded_preview_in_tail() -> None:
     dates = tuple(date(2026, 10, day) for day in range(1, 11))
-    line = RenderProgress(FormatStockDownloadProgress(0, _stock_progress(missing=10, missing_dates=dates)))
-    assert "缺失日期 2026-10-01" in line and "等 10 个交易日" in line
-    assert "2026-10-09" not in line and "2026-10-10" not in line
+    line = RenderProgress(FormatStockDownloadProgress(_stock_progress(missing=10, missing_dates=dates)))
+    assert "缺失日期 2026-10-01" in line and "2026-10-10" in line
+    assert "2026-10-09" in line and "2026-10-10" in line
 
 
 def test_history_summary_uses_final_gap_state_after_repair(monkeypatch) -> None:

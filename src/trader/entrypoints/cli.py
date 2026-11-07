@@ -15,6 +15,8 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.download.application.sync_data import SyncResult
+from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
+from trader.download.application.sync_progress import SyncProgress
 from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
@@ -95,6 +97,20 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     args = parser.parse_args(argv)
     if args.command == "sync" and args.fill and args.target == "all":
         parser.error("--fill 须指定 history、market 或 company")
+    if args.command == "sync":
+        if args.profile is not None:
+            parser.error("sync does not accept --profile")
+        from trader.bootstrap import CreateSyncProgress
+
+        inherited = os.environ.pop("TRADER_SYNC_STARTED_MONOTONIC", None)
+        progress = CreateSyncProgress(float(inherited) if inherited is not None else None)
+        with progress.keep_alive():
+            try:
+                return _run_sync(args, progress)
+            except KeyboardInterrupt:
+                progress(ProgressMessage((ProgressField("已有断点保留"),),
+                                         task=ProgressTask("sync", "result", "结果汇总"), state="取消", finished=True))
+                return 130
     try:
         config_path = _absolute_config_path(args.config)
         runtime = LoadRuntimeSettings(config_path)
@@ -106,37 +122,13 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, indent=2, ensure_ascii=False))
         return 2
     profile_override = cast(ScoringProfileId | None, args.profile)
-    if args.command in ("sync", "train"):
+    if args.command == "train":
         if args.profile is not None:
-            parser.error(f"{args.command} does not accept --profile")
-        if args.command == "train":
-            profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
-            print(f"train: 本次训练档位 {', '.join(profile.upper() for profile in profiles)}。", file=sys.stderr)
-            print("train: 仅使用本地已发布资料；缺资料请先手动执行 ./run.sh sync history，再重新训练。", file=sys.stderr)
-            return _run_selected_training(runtime, profiles)
-        try:
-            _configuration_payload(runtime, None)
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, indent=2, ensure_ascii=False))
-            return 2
-        print("sync: 正在准备官方总体、ST资格、交易日历及当前行业。", file=sys.stderr)
-        from trader.bootstrap import ExecuteSync
-        from trader.download.entrypoints.sync_projection import ProjectSyncResult
-
-        with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
-            try:
-                result = ExecuteSync(
-                    config_path,
-                    args.target,
-                    cancel_requested=cancelled.is_set,
-                    fill_missing=args.fill,
-                )
-            except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
-                print(json.dumps({"status": "failed", "failure": "sync_input_invalid", "category": type(exc).__name__}))
-                return 2
-        _report_sync_failure(result)
-        print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True, indent=2))
-        return result.exit_code
+            parser.error("train does not accept --profile")
+        profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
+        print(f"train: 本次训练档位 {', '.join(profile.upper() for profile in profiles)}。", file=sys.stderr)
+        print("train: 仅使用本地已发布资料；缺资料请先手动执行 ./run.sh sync history，再重新训练。", file=sys.stderr)
+        return _run_selected_training(runtime, profiles)
     if args.command == "history-automation-status":
         from trader.bootstrap import ExecuteTrainingReminderStatus
         from trader.training.entrypoints.training_reminder_projection import ProjectTrainingReminderStatus
@@ -173,26 +165,63 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     return _run_config_validation(runtime, profile_override)
 
 
-def _report_sync_failure(result: SyncResult) -> None:
+def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
+    from trader.bootstrap import ExecuteSync, PrepareRuntimeDisk
+    from trader.download.entrypoints.sync_projection import ProjectSyncResult
+
+    task = ProgressTask("启动", "configuration", "配置检查")
+    progress(ProgressMessage((), task=task, state="开始"))
+    try:
+        config_path = _absolute_config_path(args.config)
+        runtime = LoadRuntimeSettings(config_path)
+        runtime = PrepareRuntimeDisk(runtime, choose=True, report_line=progress.report_disk)
+        _configuration_payload(runtime, None)
+    except (OSError, RuntimeError, ValueError) as exc:
+        progress(ProgressMessage((ProgressField(f"原因 {type(exc).__name__}"),), task=task, state="失败", finished=True))
+        print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, ensure_ascii=False))
+        return 2
+    progress.finish_owner("启动")
+    progress(ProgressMessage((ProgressField("配置与运行环境就绪"),), task=task, state="完成", finished=True))
+    with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
+        try:
+            result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set,
+                                 fill_missing=args.fill, report=progress)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            progress(ProgressMessage((ProgressField(f"原因 {type(exc).__name__}"),),
+                                     task=ProgressTask("sync", "result", "结果汇总"), state="失败", finished=True))
+            print(json.dumps({"status": "failed", "failure": "sync_input_invalid", "category": type(exc).__name__}))
+            return 2
+    _report_sync_failure(result, progress)
+    progress(ProgressMessage(tuple(ProgressField(f"{task.task} {task.status} 原因 {task.reason or '无'}") for task in result.tasks)
+                             + (ProgressField(f"前置失败 {result.failure or '无'}"),),
+                             task=ProgressTask("sync", "result", "结果汇总"),
+                             state="取消" if result.cancelled else "完成" if result.exit_code == 0 else "失败", finished=True))
+    print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True, indent=2))
+    return result.exit_code
+
+
+def _report_sync_failure(result: SyncResult, progress: SyncProgress) -> None:
     if result.failure == "preparation_ReferenceDatabaseIncompatibleError":
-        print(
+        _sync_error(progress,
             "sync: ST资格及交易日历参考库 company_st.sqlite3 的结构不兼容，尚未进入下载。"
             "请退出使用该库的任务，删除下载目录 market/reference 下的 company_st.sqlite3 及其"
             " -wal、-shm、-journal 配套文件，再重新运行原同步命令；程序会重新下载参考资料。",
-            file=sys.stderr,
         )
     if result.failure == "preparation_AkshareCalendarTimeoutError":
-        print(
+        _sync_error(progress,
             "sync: 交易日历准备超时，AkShare/Sina 在30秒内未完成；本轮尚未进入下载，已有断点保留，请稍后重试。",
-            file=sys.stderr,
         )
     for task in result.tasks:
         if task.task == "company" and task.reason == "ProcessLockError":
-            print(
+            _sync_error(progress,
                 "sync company: 公司同步锁正由另一个任务持有。若曾按 Ctrl+Z，请在原终端用 jobs 查看，"
                 "用 fg 恢复对应任务后按 Ctrl+C 退出，等待释放锁后再续传。",
-                file=sys.stderr,
             )
+
+
+def _sync_error(progress: SyncProgress, text: str) -> None:
+    progress(ProgressMessage((ProgressField(text),), task=ProgressTask("sync", "failure", "失败诊断"),
+                             state="失败", finished=True))
 
 
 def _run_training_command(

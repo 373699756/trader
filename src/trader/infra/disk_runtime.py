@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TextIO
 
@@ -61,26 +61,29 @@ def ConfigureDisk(
     additional_paths: Sequence[Path] = (),
     choose: bool = False,
     report: bool = True,
+    report_line: Callable[[str], None] | None = None,
 ) -> RuntimeSettings:
     """Resolve terminal choices before runtime resources use the disk profile."""
     locations = InspectDataDisk(
         settings, DiskProbe(settings.disk_medium), additional_paths=additional_paths
     )
     if choose and settings.disk_medium is None:
-        selected = PromptUnknownDisk(tuple(item for item in locations if not item.role.startswith("external.")))
+        selected = PromptUnknownDisk(tuple(item for item in locations if not item.role.startswith("external.")), report_line=report_line)
         if selected is not None:
             SaveDiskMedium(settings.config_path, settings.disk_medium, selected)
-            print("[存储选择] 已保存到运行配置；下次启动将复用此选择。", file=sys.stderr)
+            _report_disk("[存储选择] 已保存到运行配置；下次启动将复用此选择。", report_line)
             settings = LoadRuntimeSettings(settings.config_path)
             locations = InspectDataDisk(
                 settings, DiskProbe(settings.disk_medium), additional_paths=additional_paths
             )
     if report:
-        ReportDiskProfiles(settings, locations)
+        ReportDiskProfiles(settings, locations, report_line=report_line)
     return settings
 
 
-def ReportDiskProfiles(settings: RuntimeSettings, locations: tuple[DiskLocation, ...]) -> None:
+def ReportDiskProfiles(
+    settings: RuntimeSettings, locations: tuple[DiskLocation, ...], *, report_line: Callable[[str], None] | None = None,
+) -> None:
     """Summarize known media and keep unknown warnings per device on stderr."""
     groups: dict[tuple[str, ...], list[DiskLocation]] = {}
     for item in locations:
@@ -91,21 +94,21 @@ def ReportDiskProfiles(settings: RuntimeSettings, locations: tuple[DiskLocation,
     for items in groups.values():
         profile = items[0].profile
         source = "已使用手动配置" if profile.source == "configuration" else "自动检测"
-        print(f"[存储检测] {profile.kind.upper()}（{source}）", file=sys.stderr)
+        _report_disk(f"[存储检测] {profile.kind.upper()}（{source}）", report_line)
         if profile.kind != "unknown":
             continue
         names = ", ".join(DisplayDiskPath(item.path, settings.project_root) for item in items)
         if items[0].role.startswith("external."):
-            print(f"[存储检测] 外部目录介质仍未知：{names}；请核实该目录所在设备。", file=sys.stderr)
+            _report_disk(f"[存储检测] 外部目录介质仍未知：{names}；请核实该目录所在设备。", report_line)
             continue
-        print(
+        _report_disk(
             "[存储配置需修改] "
             f"原因：{_REASONS.get(profile.reason, profile.reason)}。unknown按保守策略处理。\n"
             f"受影响目录：{names}\n"
             f"请修改 {DisplayDiskPath(settings.config_path, settings.project_root)} 的 disk_medium，"
             '例如："disk_medium": "ssd" 或 "disk_medium": "hdd"。\n'
             "此选项统一应用于程序的数据路径，保存后重新启动命令生效。",
-            file=sys.stderr,
+            report_line,
         )
 
 
@@ -113,14 +116,15 @@ def PromptUnknownDisk(
     locations: tuple[DiskLocation, ...],
     *,
     input_stream: TextIO | None = None,
+    report_line: Callable[[str], None] | None = None,
 ) -> DiskMedium | None:
     """Ask once for the global medium when automatic detection is inconclusive."""
     source = input_stream if input_stream is not None else sys.stdin
     if not source.isatty() or not any(item.profile.kind == "unknown" for item in locations):
         return None
-    print("[存储选择] 无法自动确认介质，请为程序选择统一的存储介质。", file=sys.stderr)
+    _report_disk("[存储选择] 无法自动确认介质，请为程序选择统一的存储介质。", report_line)
     while True:
-        print("请选择 1=SSD 固态硬盘、2=HDD 机械硬盘；回车暂不设置：", end="", file=sys.stderr, flush=True)
+        _report_disk("请选择 1=SSD 固态硬盘、2=HDD 机械硬盘；回车暂不设置：", report_line)
         answer = source.readline()
         if not answer or not answer.strip():
             return None
@@ -129,7 +133,15 @@ def PromptUnknownDisk(
             return "ssd"
         if selected in {"2", "hdd"}:
             return "hdd"
-        print("请输入 1、2 或直接回车。", file=sys.stderr)
+        _report_disk("请输入 1、2 或直接回车。", report_line)
+
+
+def _report_disk(text: str, report_line: Callable[[str], None] | None) -> None:
+    for line in text.splitlines():
+        if report_line is None:
+            print(line, file=sys.stderr, flush=True)
+        else:
+            report_line(line)
 
 
 def DisplayDiskPath(path: Path, project_root: Path) -> str:

@@ -13,6 +13,7 @@ from trader.download.domain.download_failure import DownloadFailureConfiguration
 from trader.download.infra.history_sync_failure import HistoryFailureCauses, HistoryFailureDetail, HistoryRemoteFailureError
 from trader.infra.http_contracts import HttpCancelled, HttpStatusError
 from trader.infra.sqlite_connection import SqliteConnection
+from trader.download.application.progress_message import ProgressDuration, ProgressField, ProgressLevel, ProgressMessage, ProgressTask
 
 _LOGGER = logging.getLogger(__name__)
 _SAFE_CODE = re.compile(r"(?:tencent|qfq|supplier|history|http|company|disclosure|cninfo)_[a-z0-9_]{1,56}")
@@ -37,10 +38,15 @@ class DownloadFailureDiagnostics:
         self,
         persist: Callable[[DownloadFailureRecord], None],
         clock: Callable[[], datetime],
+        *,
+        report: Callable[[ProgressMessage], None] | None = None,
+        owner: str = "market",
     ) -> None:
         self._persist = persist
         self._clock = clock
         self._run_id = uuid4().hex
+        self._report = report
+        self._owner = owner
 
     def __call__(self, context: DownloadFailureContext, exc: BaseException) -> None:
         if isinstance(exc, (KeyboardInterrupt, HttpCancelled)) or str(exc) in {"cancelled", "supplier_cancelled", "tencent_qfq_cancelled"}:
@@ -65,6 +71,19 @@ class DownloadFailureDiagnostics:
             self._run_id, observed, context, _reason(exc), " > ".join(reasons),
             (HistoryFailureDetail(exc) + (" > " + context.detail if context.detail else ""))[:1000],
         )
+        if self._report is not None:
+            details = (
+                f"实际操作 {context.stage}", f"股票 {context.code or '不适用'}", f"来源 {context.supplier}",
+                f"尝试 {context.attempt}/{context.maximum_attempts}", f"原因 {record.reason}",
+                f"诊断 {HistoryFailureDetail(exc)}",
+                *( (f"调用耗时 {ProgressDuration(context.elapsed_seconds)}",) if context.elapsed_seconds is not None else ()),
+                *( (f"单次超时 {context.timeout_seconds}秒",) if context.timeout_seconds is not None else ()),
+                *( (f"请求窗口 {context.window_start}～{context.window_end}",) if context.window_start is not None else ()),
+                "后续 原始失败保留，具体续传状态见本轮汇总",
+            )
+            self._report(ProgressMessage(tuple(ProgressField(item, ProgressLevel.ERROR) for item in details),
+                                         task=ProgressTask(self._owner, f"failure:{context.stage}", "失败诊断"),
+                                         state="失败", finished=True))
         try:
             self._persist(record)
         except (OSError, RuntimeError, sqlite3.Error, ValueError):

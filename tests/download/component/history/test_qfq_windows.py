@@ -33,7 +33,7 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.domain.qfq_planning import QfqNonTradingFact
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
-from trader.download.infra.terminal_progress import TerminalDownloadProgress
+from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 from trader.entrypoints import cli
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_codec import EncodeDate
@@ -948,7 +948,7 @@ def test_all_tencent_waves_keep_incomplete_stocks_pending_without_fallback(tmp_p
         result = updater.execute(observed)
         assert result.completed_codes == 2 and result.pending_codes == 2
         assert [event[0] for event in events] == ["tencent"] * 4
-        assert sum(" | sync market 股票进度 | " in line for line in logs) == 4
+        assert sum(" | 股票 " in line and " | 结果 " in line for line in logs) == 4
         assert any("已处理 4/4（100.00%） | 合格 2 | 待重试 2" in line for line in logs)
         for cache in (updater.v2, updater.v3):
             assert cache.codes() == frozenset({"600002", "600003"})
@@ -1067,7 +1067,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
     paths = DataPaths(tmp_path / "data")
     monkeypatch.setattr(bootstrap, "SQLitePublishedHistorySnapshot", lambda _root, *, sqlite_policy: HistoryPublication())
     monkeypatch.setattr(bootstrap, "HistoryStNameSource", st_source)
-    monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args: (eligible, excluded))
+    monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args, **_kwargs: (eligible, excluded))
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
     result = bootstrap.ExecuteQfqDownload(
         paths,
@@ -1355,21 +1355,21 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         result = updater.execute(observed)
         assert result.completed_codes == 3
         assert sorted(writes) == ["600001", "600002", "600003"]
-        stock_progress = [message for message in messages if " | sync market 股票进度 | " in message]
+        stock_progress = [message for message in messages if " | 已处理 " in message and " | 股票 " in message]
         assert len(stock_progress) == 3
         assert all("处理 Tencent下载 | 结果 合格" in message for message in stock_progress)
         assert all(
             "raw 251/251 | qfq 251/251 | 完整配对 251/251 | 缺日 0 | 原因 无" in message for message in stock_progress
         )
-        assert " | qfq 完成 | " in messages[-1]
-        ready = next(message for message in messages if " | qfq 就绪 | " in message)
+        assert "market·完成 | 完成 | " in messages[-1]
+        ready = next(message for message in messages if "market·就绪 | 完成 | " in message)
         assert "股票 3 只" in ready and "并发 2" in ready
 
         messages.clear()
         resumed = updater.execute(observed)
         assert resumed.skipped_codes == 3 and resumed.changed_files == ()
         assert len(supplier.calls) == 3
-        stock_progress = [message for message in messages if " | sync market 股票进度 | " in message]
+        stock_progress = [message for message in messages if " | 已处理 " in message and " | 股票 " in message]
         assert len(stock_progress) == 3
         assert all("处理 本地复用 | 结果 复用" in message for message in stock_progress)
         assert "合格 3 | 待重试 0 | 其中复用 3" in messages[-1]
@@ -1388,7 +1388,7 @@ def test_pending_progress_uses_one_detailed_stock_line_and_preserves_old_window(
     result = updater.execute(observed)
     assert result.completed_codes == 1 and result.pending_codes == 1
     assert updater.v2.read_code("600001") == before
-    stock_progress = [message for message in messages if " | sync market 股票进度 | " in message]
+    stock_progress = [message for message in messages if " | 已处理 " in message and " | 股票 " in message]
     assert len(stock_progress) == 2
     pending = next(message for message in stock_progress if "600001 fixture" in message)
     assert "处理 Tencent下载 | 结果 待重试" in pending
@@ -1396,8 +1396,8 @@ def test_pending_progress_uses_one_detailed_stock_line_and_preserves_old_window(
     assert " | 缺失日期 " in pending
     assert DAYS[1].isoformat() in pending
     assert " | 原因 qfq_incomplete_raw_4_qfq_4 | 缺失日期 " in pending
-    assert " | qfq 结束（仍有待重试） | " in messages[-1]
-    assert "qfq 待重试原因 | qfq_window_incomplete 1 股" in messages[-2]
+    assert "market·结束（仍有待重试） | 完成 | " in messages[-1]
+    assert "market·待重试原因 | 处理中 | qfq_window_incomplete 1 股" in messages[-2]
     assert [(item.reason, item.count) for item in result.pending_reasons] == [("qfq_window_incomplete", 1)]
     assert result.failure_reason is None
 
@@ -1423,7 +1423,7 @@ def test_reused_codes_do_not_reduce_actual_download_wave_size(tmp_path):
     supplier.codes = tuple(f"60000{index}" for index in range(1, 9))
     messages = []
     result = replace(updater, report=lambda message: messages.append(_plain_feedback(message))).execute(observed)
-    stock_progress = [message for message in messages if " | sync market 股票进度 | " in message]
+    stock_progress = [message for message in messages if " | 已处理 " in message and " | 股票 " in message]
     downloaded = [message for message in stock_progress if "处理 Tencent下载" in message]
     reused = [message for message in stock_progress if "处理 本地复用" in message]
     assert len(stock_progress) == 8 and len(downloaded) == len(reused) == 4
@@ -1455,7 +1455,7 @@ def test_preparation_pending_is_reported_without_any_download_and_hides_payload(
     assert result.completed_codes == 0 and result.pending_codes == 1
     assert supplier.calls == []
     assert "已处理 1/1（100.00%） | 合格 0 | 待重试 1" in messages[-1]
-    details = next(message for message in messages if " | sync market 股票进度 | " in message)
+    details = next(message for message in messages if " | 已处理 " in message and " | 股票 " in message)
     assert "600001 fixture | 处理 本地检查 | 结果 失败" in details
     assert "raw -/251 | qfq -/251 | 完整配对 -/251 | 缺日 未知 | 原因 RuntimeError" in details
     assert "payload" not in "\n".join(messages) and "secret" not in "\n".join(messages)
@@ -1484,10 +1484,10 @@ def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context
     result = updater.execute(observed)
     assert result.completed_codes == result.pending_codes == result.skipped_codes == 0
     assert supplier.calls == []
-    assert messages[0].startswith("00:00:00 | qfq 准备 | ")
-    stock_progress = next(message for message in messages if " | sync market 股票进度 | " in message)
+    assert messages[0].startswith("market·准备 | 开始 | ")
+    stock_progress = next(message for message in messages if " | 已处理 " in message and " | 股票 " in message)
     assert "处理 无需下载 | 结果 无需下载 | raw 0/0 | qfq 0/0 | 完整配对 0/0" in stock_progress
-    assert messages[-1].startswith("00:01:05 | qfq 完成 | 已处理 1/1（100.00%）")
+    assert messages[-1].startswith("market·完成 | 完成 | 已处理 1/1（100.00%）")
     assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 无真实日线 0" in messages[-1]
     assert "最近日停牌 0 | 最近日推定停牌 0 | 最近日未解释缺价 0 | 未处理 0" in messages[-1]
 
@@ -1515,9 +1515,9 @@ def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_process
     assert result.failure_reason == "cancelled" and result.pending_codes == 3
     assert result.completed_codes == 0 and result.changed_files == ()
     assert len(supplier.calls) == 1
-    assert " | qfq 已取消 | 已处理 0/3（0.00%） | 合格 0 | 待重试 0" in messages[-1]
+    assert "market·已取消 | 完成 | 已处理 0/3（0.00%） | 合格 0 | 待重试 0" in messages[-1]
     assert "未处理 3" in messages[-1]
-    assert not any(" | sync market 股票进度 | " in message for message in messages)
+    assert not any(" | 已处理 " in message and " | 股票 " in message for message in messages)
 
 
 def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path):
@@ -1536,7 +1536,7 @@ def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path
     )
     with pytest.raises(RuntimeError, match="private supplier payload"):
         updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
-    assert messages[-1] == "00:00:03 | qfq 准备失败 | RuntimeError"
+    assert messages[-1] == "market·准备失败 | 失败 | RuntimeError"
 
 
 def test_latest_day_missing_retries_only_when_the_batch_gap_is_widespread() -> None:
@@ -2024,7 +2024,8 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
     summary = json.loads(captured.out)
     assert summary["schema_version"] == "data_sync"
     payload = summary["tasks"][0]
-    assert captured.err == "sync: 正在准备官方总体、ST资格、交易日历及当前行业。\nqfq fixture progress\n"
+    assert "启动·配置检查" in captured.err and "sync·结果汇总" in captured.err
+    assert "qfq fixture progress" in captured.err
     assert payload["pending_codes"] == pending
     assert payload["no_trade_data_codes"] == no_trade_data
     assert payload["latest_missing_codes"] == latest_missing
@@ -2036,22 +2037,19 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
     assert calls == [(config, "market")]
 
 
-def test_local_extraction_heartbeat_is_visible_and_thread_stops() -> None:
+def test_local_extraction_heartbeat_is_visible_and_thread_stops():
     import threading
-
     from trader.download.infra.qfq_progress import QfqLocalProgress
+    from trader.download.application.sync_progress import SyncProgress
 
-    feedback = threading.Event()
+    clock = [0.0]
     messages = []
-
-    def report(message):
-        message = _plain_feedback(message)
-        messages.append(message)
-        if " | qfq 历史提取 | 等待本地历史窗口" in message:
-            feedback.set()
-
-    with QfqLocalProgress(report, interval_seconds=0.01):
-        assert messages[0] == "00:00:00 | qfq 历史提取 | 开始"
-        assert feedback.wait(2)
-    assert messages[-1] == "00:00:00 | qfq 历史提取 | 完成"
-    assert not any(thread.name == "qfq-extraction-progress" for thread in threading.enumerate())
+    report = SyncProgress(lambda message: messages.append(RenderProgress(message)), lambda: clock[0])
+    with report.keep_alive():
+        with QfqLocalProgress(report):
+            assert "market·历史提取 00:00:00 | 开始" in messages[0]
+            clock[0] = 5
+            report.heartbeat()
+            assert "历史提取 00:00:05 | 等待" in messages[-1]
+        assert "历史提取 00:00:05 | 完成" in messages[-1]
+    assert not any(thread.name == "download-progress" for thread in threading.enumerate())

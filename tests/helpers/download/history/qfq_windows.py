@@ -32,7 +32,8 @@ from trader.infra.settings.data_paths import DataPaths
 
 def _plain_feedback(message: ProgressMessage) -> str:
     # Existing behavior assertions ignore padding; separate terminal tests check exact cell positions.
-    line = re.sub(r" +", " ", RenderProgress(message))
+    identity = "" if message.task is None else f"{message.task.owner}·{message.task.label} | {message.state} | "
+    line = re.sub(r" +", " ", identity + RenderProgress(message))
     return re.sub(r" */ *", "/", re.sub(r"([（(]) +", r"\1", line))
 
 

@@ -2,26 +2,27 @@
 
 from __future__ import annotations
 
-import math
 import time
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import replace
-from threading import Event, Lock, Thread
+from collections.abc import Callable
+from threading import Lock
 
 from trader.download.application.progress_message import (
     FormatProgressField,
     ProgressLevel,
     ProgressMessage,
     ProgressNumber,
+    ProgressDuration,
+    ProgressState,
+    ProgressTask,
 )
+from trader.download.application.sync_progress import SyncProgress
 from trader.download.application.stock_download_progress import (
     FormatStockDownloadProgress,
     StockDownloadProgress,
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_supplier_failure import HISTORY_SUPPLIER_PENDING_REASONS
-from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressStage
+from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressStage, HistorySyncProgressState
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 
 _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
@@ -51,7 +52,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "confirming_download": "下载断点提交",
     "synchronization": "同步流程",
 }
-_STATE_LABELS = {
+_STATE_LABELS: dict[HistorySyncProgressState, ProgressState] = {
     "started": "开始",
     "waiting": "等待",
     "retrying": "重试",
@@ -97,7 +98,6 @@ _COUNT_STAGES = frozenset(
     }
 )
 _DAILY_STAGES = frozenset({"supplier_daily_raw", "supplier_daily_qfq"})
-_PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplier_industry"})
 _LOCAL_PREPARATION_LABELS = {
     "catalog_schema": "初始化历史控制库",
     "published_state": "读取历史发布与断点",
@@ -109,18 +109,6 @@ _LOCAL_PREPARATION_LABELS = {
     "reading_tasks": "读取历史下载任务",
     "reading_gaps": "读取历史价格缺口",
 }
-
-
-def _suppress_transient(progress: HistorySyncProgress) -> bool:
-    return progress.state in {"started", "waiting"} and not (
-        progress.stage in {
-            "initializing", "loading_context", "tencent_history",
-            "history_published_gaps", "history_gap_resume", "baostock_repair", "sealing_partitions",
-            "preparing_partitions", "preparing_publication", "checking_partitions", "publishing_snapshot",
-        }
-        or progress.stage in {"tencent_history", "persisting_prices"}
-        and progress.state == "waiting"
-    )
 
 
 def _reuse_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
@@ -138,18 +126,24 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.pipeline is not None:
         pipeline = progress.pipeline
         return (
-            f"网络 {ProgressNumber(pipeline.downloaded_codes)}/{ProgressNumber(progress.total_units)}",
-            f"落库 {ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}",
-            f"待写 {ProgressNumber(pipeline.queued_codes)}",
-            f"在途 {ProgressNumber(pipeline.inflight_codes)}",
+            f"任务已处理 {ProgressNumber(pipeline.downloaded_codes)}/{ProgressNumber(progress.total_units)}",
+            f"本轮网络返回 {pipeline.network_completed_codes}股",
+            f"本轮本地复用 {pipeline.reused_codes}股",
+            f"已确认 {ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}",
+            f"待写 {ProgressNumber(pipeline.queued_codes - pipeline.writing_codes)}",
+            f"写入中 {pipeline.writing_codes}股",
+            f"读库/请求在途 {ProgressNumber(pipeline.inflight_codes)}",
             f"待派发 {ProgressNumber(pipeline.pending_codes)}",
-            f"最久在途 {_format_duration(pipeline.oldest_inflight_seconds)}",
-            f"下载 {_format_duration(pipeline.download_seconds)}",
-            f"恢复读库累计 {_format_duration(pipeline.read_seconds)}",
-            f"校验累计 {_format_duration(pipeline.validation_seconds)}",
-            f"落库耗时 {_format_duration(pipeline.write_seconds)}",
-            f"本批待确认 {_format_duration(pipeline.unconfirmed_write_seconds)}",
-            f"回压 {_format_duration(pipeline.backpressure_seconds)}",
+            f"最久在途 {pipeline.oldest_inflight_code or '无'} {ProgressDuration(pipeline.oldest_inflight_seconds)}",
+            f"当前写入操作 {pipeline.write_operation}",
+            f"距上次持久化推进 {ProgressDuration(pipeline.seconds_since_commit)}",
+            f"网络累计 {ProgressDuration(pipeline.download_seconds)}",
+            f"恢复读库累计 {ProgressDuration(pipeline.read_seconds)}",
+            f"校验累计 {ProgressDuration(pipeline.validation_seconds)}",
+            f"落库累计 {ProgressDuration(pipeline.write_seconds)}",
+            f"本批待确认 {ProgressDuration(pipeline.unconfirmed_write_seconds)}",
+            f"回压 {ProgressDuration(pipeline.backpressure_seconds)}",
+            *_reuse_summary_parts(progress),
         )
     return _download_summary_parts(progress)
 
@@ -192,18 +186,6 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     return _reuse_summary_parts(progress)
 
 
-def _state_label(progress: HistorySyncProgress) -> str:
-    if progress.failure_reason in HISTORY_SUPPLIER_PENDING_REASONS:
-        return "待重试（Tencent价格待补）"
-    if (
-        progress.stage == "history_st_reference"
-        and progress.state == "completed"
-        and progress.completed_units < progress.total_units
-    ):
-        return "检查中"
-    return _STATE_LABELS[progress.state]
-
-
 def _price_coverage_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     coverage = progress.price_coverage
     if coverage is None:
@@ -216,120 +198,79 @@ def _price_coverage_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
 
 
 class StderrHistorySyncProgress:
-    def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, *, monotonic: Callable[[], float] = time.monotonic, report: SyncProgress | None = None) -> None:
         self._lock = Lock()
-        self._output = TerminalDownloadProgress()
-        self._monotonic = monotonic
-        self._started_at = monotonic()
+        self._output = report or SyncProgress(TerminalDownloadProgress(), monotonic)
         self._stock_counts: tuple[int, int] | None = None
         self._last_progress: tuple[HistorySyncProgressStage, str | None] | None = None
         self._specific_failure: tuple[HistorySyncProgressStage, str | None] | None = None
         self._route: HistorySyncProgress | None = None
-        self._preparation_started: tuple[HistorySyncProgressStage, str | None, int] | None = None
-        self._partition_reported_at: float | None = None
-        self._phase_started: dict[tuple[HistorySyncProgressStage, str | None], float] = {}
-        self._waiting_preparation: HistorySyncProgress | None = None
-
-    @contextmanager
-    def keep_alive(self, *, interval_seconds: float = 5.0) -> Iterator[None]:
-        """Report slow local preparation without accessing its databases or changing counts."""
-        if not math.isfinite(interval_seconds) or interval_seconds <= 0.0:
-            raise ValueError("history progress interval must be positive")
-        stopped = Event()
-
-        def heartbeat() -> None:
-            while not stopped.wait(interval_seconds):
-                with self._lock:
-                    pending = self._waiting_preparation
-                    if pending is not None:
-                        try:
-                            self._publish(replace(pending, state="waiting"))
-                        except OSError:
-                            pass
-
-        thread = Thread(target=heartbeat, name="history-preparation-progress", daemon=False)
-        thread.start()
-        try:
-            yield
-        finally:
-            stopped.set()
-            thread.join()
-            with self._lock:
-                self._waiting_preparation = None
 
     def publish(self, progress: HistorySyncProgress) -> None:
         with self._lock:
-            self._waiting_preparation = (
-                progress
-                if progress.stage in {"initializing", "loading_context"}
-                and progress.state in {"started", "waiting"}
-                else None
-            )
             self._publish(progress)
 
+    def run(self, operation: Callable[[], HistoryMaintenanceStatus]) -> HistoryMaintenanceStatus:
+        try:
+            result = operation()
+            self.publish_result(result)
+            return result
+        finally:
+            self._output.finish_owner("history")
+
     def _publish(self, progress: HistorySyncProgress) -> None:
-        now = self._monotonic()
-        monthly = progress.stage in {
-            "persisting_partitions", "sealing_partitions", "history_published_gaps", "checking_partitions",
-        }
-        phase_key = (progress.stage, progress.current_item if monthly or progress.stage == "initializing" else None)
-        if progress.stage in {"initializing", "sealing_partitions", "checking_partitions"} and progress.state == "started":
-            self._phase_started[phase_key] = now
-        else:
-            self._phase_started.setdefault(phase_key, now)
         if progress.stage == "supplier_routing":
             self._route = progress
         if progress.stage in {"downloading_codes", "tencent_history"}:
             self._stock_counts = (progress.completed_units, progress.total_units)
         self._last_progress = (progress.stage, progress.current_item)
         self._record_failure(progress)
-        if self._should_suppress(progress, now):
+        if self._should_suppress(progress):
             return
         if (
             progress.stage == "tencent_history"
             and progress.current_item is not None
-            and progress.failure_detail is None
         ):
-            message = self._stock_download_line(progress, now)
+            message = self._stock_download_line(progress)
             self._output(message)
             return
-        parts = self._progress_parts(progress, now)
-        if not progress.stage.startswith("supplier_"):
-            if progress.stage == "tencent_history":
-                label = "总计"
-            elif (
-                progress.stage == "sealing_partitions"
-                and progress.current_item is not None
-                and ".." in progress.current_item
-            ):
-                label = "本批耗时"
-            else:
-                label = "本库耗时" if progress.stage == "sealing_partitions" else "本月耗时" if monthly else "阶段耗时"
-            parts.append(f"{label} {_format_duration(now - self._phase_started[phase_key])}")
+        parts = self._progress_parts(progress)
+        key = progress.current_item or "initializing" if progress.stage == "initializing" else progress.stage
+        label = _LOCAL_PREPARATION_LABELS.get(key, _STAGE_LABELS[progress.stage])
+        if progress.stage == "tencent_history":
+            key = "prices"
         level = _progress_level(progress)
         self._output(
             ProgressMessage(
                 tuple(
                     FormatProgressField(
                         part,
-                        14 if index == 1 else 0,
+                        0,
                         level=level
                         if index == 2
                         or (progress.failure_reason is not None and part == f"错误 {progress.failure_reason}")
                         else ProgressLevel.NORMAL,
                     )
                     for index, part in enumerate(parts)
-                )
+                ),
+                task=ProgressTask("history", key, label),
+                state="处理中" if progress.state == "completed" and progress.stage in _COUNT_STAGES and progress.completed_units < progress.total_units
+                      else _STATE_LABELS[progress.state],
+                finished=progress.state == "completed" and (progress.stage not in _COUNT_STAGES or progress.completed_units == progress.total_units)
+                         or progress.state == "cancelled",
             )
         )
 
-    def _stock_download_line(self, progress: HistorySyncProgress, now: float) -> ProgressMessage:
+    def _stock_download_line(self, progress: HistorySyncProgress) -> ProgressMessage:
         code = progress.current_item
         if code is None:
             raise ValueError("stock download progress requires a stock code")
         coverage = progress.price_coverage
         target = coverage.expected if coverage is not None else progress.requested_sessions
         source_download = progress.supplier_source == "tencent"
+        if not source_download:
+            coverage = None
+            target = None
         if progress.failure_reason in HISTORY_SUPPLIER_PENDING_REASONS:
             result = "待重试"
         elif progress.failure_reason is not None:
@@ -340,23 +281,20 @@ class StderrHistorySyncProgress:
             result = "部分"
         else:
             result = "合格"
-        phase_key = (progress.stage, None)
-        pipeline = progress.pipeline
         extra = (
-            f"网络 {ProgressNumber(pipeline.downloaded_codes if pipeline else None)}/{ProgressNumber(progress.total_units)}",
-            f"落库 {ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}",
-            f"待写 {ProgressNumber(pipeline.queued_codes if pipeline else None)}",
-            f"下载 {_format_duration(pipeline.download_seconds) if pipeline else '--:--:--'}",
-            f"恢复读库累计 {_format_duration(pipeline.read_seconds) if pipeline else '--:--:--'}",
-            f"校验累计 {_format_duration(pipeline.validation_seconds) if pipeline else '--:--:--'}",
-            f"落库耗时 {_format_duration(pipeline.write_seconds) if pipeline else '--:--:--'}",
-            f"本批待确认 {_format_duration(pipeline.unconfirmed_write_seconds) if pipeline else '--:--:--'}",
-            f"回压 {_format_duration(pipeline.backpressure_seconds) if pipeline else '--:--:--'}",
-            f"总计 {_format_duration(now - self._phase_started[phase_key])}",
-            *_reuse_summary_parts(progress),
+            f"本次请求 {progress.requested_sessions or 0}日",
+            *((f"请求窗口 {progress.requested_from}～{progress.requested_to}",) if progress.requested_from else ()),
+            *((f"本股网络 {ProgressDuration(progress.stock_download_seconds)}",)
+              if progress.stock_download_seconds is not None else ()),
+            *((f"本股读库 {ProgressDuration(progress.stock_read_seconds)}",)
+              if progress.stock_read_seconds is not None else ()),
+            *((f"本股校验 {ProgressDuration(progress.stock_validation_seconds)}",)
+              if progress.stock_validation_seconds is not None else ()),
+            *_summary_parts(progress),
+            *((f"诊断 {progress.failure_detail}",) if progress.failure_detail else ()),
+            *(("后续 保留缺口，继续后续股票；补缺依现有策略",) if progress.failure_reason else ()),
         )
         return FormatStockDownloadProgress(
-            max(0.0, now - self._started_at),
             StockDownloadProgress(
                 command="sync history",
                 completed=progress.completed_units,
@@ -371,7 +309,7 @@ class StderrHistorySyncProgress:
                 paired=coverage.paired if coverage is not None else None,
                 missing=coverage.missing if coverage is not None else None,
                 inferred_suspended=coverage.inferred_suspended if coverage is not None else 0,
-                reason=progress.failure_reason or "无",
+                reason=progress.failure_reason or ("无新增日期且无待补缺口" if not source_download else "无"),
                 extra=extra,
             ),
         )
@@ -391,47 +329,18 @@ class StderrHistorySyncProgress:
         ):
             self._specific_failure = self._last_progress
 
-    def _should_suppress(self, progress: HistorySyncProgress, now: float) -> bool:
-        if progress.stage == "supplier_routing":
-            return True
-        if progress.stage == "persisting_partitions" and progress.state == "waiting":
-            return True
-        if progress.stage == "persisting_partitions":
-            return self._suppress_partition_progress(progress, now)
-        if progress.stage in _PREPARATION_STAGES and progress.state in {"started", "waiting"}:
-            return self._suppress_preparation(progress)
+    def _should_suppress(self, progress: HistorySyncProgress) -> bool:
         if progress.stage in _DAILY_STAGES and progress.state == "completed":
-            return True
-        return (
-            _suppress_transient(progress)
-            or progress.stage == "loading_context"
-            and progress.state == "failed" and self._specific_failure is not None
+            self._output.finish(ProgressTask("history", progress.stage, _STAGE_LABELS[progress.stage]))
+        return progress.stage == "supplier_routing" or (
+            progress.stage in _DAILY_STAGES and progress.state == "completed"
+        ) or (
+            progress.stage == "loading_context" and progress.state == "failed"
+            and self._specific_failure is not None
         )
 
-    def _suppress_partition_progress(self, progress: HistorySyncProgress, now: float) -> bool:
-        if progress.state == "completed" and progress.completed_units == progress.total_units:
-            self._partition_reported_at = None
-            return False
-        if self._partition_reported_at is None or now - self._partition_reported_at >= 5.0:
-            self._partition_reported_at = now
-            return False
-        return True
-
-    def _suppress_preparation(self, progress: HistorySyncProgress) -> bool:
-        if progress.state == "waiting":
-            return progress.call_elapsed_seconds < 5.0
-        key = (progress.stage, progress.current_item, progress.attempt)
-        duplicate = key == self._preparation_started
-        self._preparation_started = key
-        return duplicate
-
-    def _progress_parts(self, progress: HistorySyncProgress, now: float) -> list[str]:
-        parts = [
-            _format_duration(max(0.0, now - self._started_at)),
-            _LOCAL_PREPARATION_LABELS.get(progress.current_item or "", _STAGE_LABELS[progress.stage])
-            if progress.stage == "initializing" else _STAGE_LABELS[progress.stage],
-            _state_label(progress),
-        ]
+    def _progress_parts(self, progress: HistorySyncProgress) -> list[str]:
+        parts: list[str] = []
         if progress.stage in _COUNT_STAGES and progress.failure_detail is None:
             parts.append(
                 f"{ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}"
@@ -468,7 +377,7 @@ class StderrHistorySyncProgress:
         if progress.max_attempts > 1:
             parts.append(f"尝试 {progress.attempt}/{progress.max_attempts}")
         if progress.call_elapsed_seconds > 0.0:
-            parts.append(f"调用 {_format_duration(progress.call_elapsed_seconds)}")
+            parts.append(f"调用 {ProgressDuration(progress.call_elapsed_seconds)}")
         if progress.failure_reason is not None:
             parts.append(f"错误 {progress.failure_reason}")
         if progress.failure_detail is not None:
@@ -476,7 +385,7 @@ class StderrHistorySyncProgress:
         return parts
 
     def _result_parts(self, status: HistoryMaintenanceStatus) -> list[str]:
-        parts = [_format_duration(self._elapsed()), _RESULT_LABELS[status.state]]
+        parts = [_RESULT_LABELS[status.state]]
         if status.state == "failed":
             location = self._specific_failure
             if location is not None:
@@ -520,12 +429,12 @@ class StderrHistorySyncProgress:
                         else ProgressLevel.NORMAL,
                     )
                     for index, part in enumerate(parts)
-                )
+                ),
+                task=ProgressTask("history", "result", "结果汇总"),
+                state="失败" if status.state in {"failed", "blocked"} else "取消" if status.state == "cancelled" else "完成",
+                finished=True,
             )
         )
-
-    def _elapsed(self) -> float:
-        return max(0.0, self._monotonic() - self._started_at)
 
 
 def _format_count(completed: int, total: int) -> str:
@@ -569,13 +478,6 @@ def _maintenance_result_level(status: HistoryMaintenanceStatus) -> ProgressLevel
     if status.state in {"completed", "already_current"}:
         return ProgressLevel.SUCCESS
     return ProgressLevel.NORMAL
-
-
-def _format_duration(seconds: float) -> str:
-    total_seconds = int(max(0.0, seconds))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, remaining_seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{remaining_seconds:02d}"
 
 
 __all__ = ["StderrHistorySyncProgress"]

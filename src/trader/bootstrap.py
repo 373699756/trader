@@ -22,7 +22,9 @@ from trader.download.application.company_exclusions import PublishCompanyExclusi
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_ports import HistorySyncDependencies
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
-from trader.download.application.progress_message import ProgressField, ProgressMessage
+from trader.download.application.progress_message import ProgressMessage
+from trader.download.application.sync_progress import SyncProgress
+from trader.download.application.qfq_download_progress import QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
 from trader.download.application.update_qfq import UpdateQfqWindows
@@ -88,7 +90,6 @@ from trader.infra.initialization import InitializeIfAvailable as _initialize_if_
 from trader.infra.isolated_call import RunIsolatedCall
 from trader.infra.isolated_http import IsolatedHttpExecutor
 from trader.infra.process_lock import ProcessLock
-from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
@@ -210,8 +211,15 @@ def BuildPerformanceExecutor(workers: int) -> BoundedExecutor:
     return BoundedExecutor(worker_count=workers, queue_capacity=workers, thread_name_prefix="performance-models")
 
 
-def PrepareRuntimeDisk(settings: RuntimeSettings, *, choose: bool = False, report: bool = True) -> RuntimeSettings:
-    return ConfigureDisk(settings, choose=choose, report=report)
+def CreateSyncProgress(started_at: float | None = None) -> SyncProgress:
+    return SyncProgress(TerminalDownloadProgress(), time.monotonic, started_at=started_at)
+
+
+def PrepareRuntimeDisk(
+    settings: RuntimeSettings, *, choose: bool = False, report: bool = True,
+    report_line: Callable[[str], None] | None = None,
+) -> RuntimeSettings:
+    return ConfigureDisk(settings, choose=choose, report=report, report_line=report_line)
 
 
 def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
@@ -222,7 +230,7 @@ def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
 
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
-    fill_missing: bool = False,
+    fill_missing: bool = False, report: SyncProgress | None = None,
 ) -> SyncResult:
     if fill_missing and target == "all":
         raise ValueError("fill_requires_explicit_target")
@@ -230,10 +238,9 @@ def ExecuteSync(
     sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
-    progress = company_evidence_progress.CompanyEvidenceProgress(
-        command="sync" if target == "all" else f"sync {target}"
-    )
-    history_progress = StderrHistorySyncProgress()
+    owns_report, report = report is None, report or CreateSyncProgress()
+    progress = company_evidence_progress.CompanyEvidenceProgress(report=report)
+    history_progress = StderrHistorySyncProgress(report=report)
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
     price_review_budget = TencentRequestBudget(configuration.price_review)
     qfq_configuration = LoadQfqWindowConfiguration(settings.project_root) if target != "company" else None
@@ -242,57 +249,45 @@ def ExecuteSync(
     market_failures = (
         DownloadFailureDiagnostics(
             partial(SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy).RecordDownloadFailure,
-                    configuration=failure_configuration), clock.now
+                    configuration=failure_configuration), clock.now, report=report,
         ) if target in ("market", "all") else None
     )
 
     def sync_market(reference: PreparedReference) -> QfqUpdateResult:
         if qfq_configuration is None:
             raise RuntimeError("qfq_configuration_unavailable")
-        progress.report_preparation(
-            ProgressMessage((ProgressField("行情更新"), ProgressField("参考资料已准备，开始更新 raw/qfq 短窗口")))
-        )
-        return ExecuteQfqDownload(
-            paths,
-            configuration,
-            qfq_configuration,
-            failure_configuration=failure_configuration,
+        report(QfqMessage("资料交接", "参考资料已准备，开始更新 raw/qfq 短窗口", state="完成", finished=True))
+        return report.run("market", partial(
+            ExecuteQfqDownload, paths, configuration, qfq_configuration,
+            failure_configuration=failure_configuration, report=report,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-            reference=reference,
-            cancel_requested=cancel_requested,
+            reference=reference, cancel_requested=cancel_requested,
             repair_only=fill_missing, sqlite_policy=sqlite_policy, failures=market_failures,
             price_review_budget=price_review_budget,
-        )
+        ))
 
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
         if qfq_configuration is None:
             raise RuntimeError("qfq_configuration_unavailable")
-        with history_progress.keep_alive():
-            return ExecuteHistoryDownload(
-                configuration,
-                qfq_configuration=qfq_configuration,
+        return history_progress.run(partial(
+                ExecuteHistoryDownload, configuration, qfq_configuration=qfq_configuration,
                 shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-                reference=reference,
-                progress=history_progress,
-                cancel_requested=cancel_requested,
-                disk_medium=settings.disk_medium,
-                repair_only=fill_missing, sqlite_policy=sqlite_policy,
-                price_review_budget=price_review_budget,
-            )
+                reference=reference, progress=history_progress,
+                cancel_requested=cancel_requested, disk_medium=settings.disk_medium,
+                repair_only=fill_missing, price_review_budget=price_review_budget, sqlite_policy=sqlite_policy,
+        ))
 
-    return SyncData(
+    return report.command(lambda: SyncData(
         failures=market_failures,
-        prepare=lambda: _prepare_reference(
-            paths.reference,
-            clock.now(),
-            progress,
+        prepare=lambda: report.run("参考", lambda: _prepare_reference(
+            paths.reference, clock.now(), progress,
             report=progress.report_preparation,
             cancel_requested=cancel_requested,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
-        ),
+        )),
         history=sync_history,
         market=sync_market,
-        company=lambda reference: _sync_company_evidence(
+        company=lambda reference: report.run("company", lambda: _sync_company_evidence(
             settings.data_paths,
             progress,
             company_evidence.CompanyEvidenceRequest.from_reference(
@@ -312,9 +307,10 @@ def ExecuteSync(
             cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
             failure_configuration=failure_configuration,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-        ),
+            report=report,
+        )),
         cancelled=cancel_requested,
-    ).execute(target)
+    ).execute(target), monitor=owns_report)
 
 
 def CreateCompanyEligibilityReader(path: Path, event_policy: company_events.CompanyEventPolicy, *, sqlite_policy: SqliteIoPolicy) -> CompanyEligibility:
@@ -332,10 +328,10 @@ def _sync_company_evidence(
     cancel_requested: Callable[[], bool] | None = None, sqlite_policy: SqliteIoPolicy,
     failure_configuration: DownloadFailureConfiguration,
     shutdown_timeout_seconds: float,
+    report: SyncProgress | None = None,
 ) -> company_evidence.CompanyEvidenceSyncResult:
     with ExitStack() as resources:
         resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
-        heartbeat = resources.enter_context(ProgressHeartbeat(progress))
         configuration = request.configuration
         ocr_capability = DetectCompanyOcr(configuration.document_ocr_languages)
         text_capability = DetectCompanyText()
@@ -406,9 +402,11 @@ def _sync_company_evidence(
             cancel_requested=cancel_requested,
             event_policy=request.event_policy,
             listings=request.listings,
-            stock_progress=partial(company_evidence_progress.ReportCompanyStock, heartbeat, request.stock_names), sqlite_policy=sqlite_policy,
+            stock_progress=partial(company_evidence_progress.ReportCompanyStock, progress, request.stock_names)
+                           if progress is not None else None, sqlite_policy=sqlite_policy,
         )
-        failures = DownloadFailureDiagnostics(partial(index.record_failure, configuration=failure_configuration), ShanghaiClock(_utc_now).now)
+        failures = DownloadFailureDiagnostics(partial(index.record_failure, configuration=failure_configuration),
+                                               ShanghaiClock(_utc_now).now, report=report, owner="company")
         dependencies = CompanyEvidenceDependencies(
             index,
             source_factory(
@@ -417,7 +415,7 @@ def _sync_company_evidence(
             ),
             structured,
             time.monotonic,
-            heartbeat,
+            progress,
             cancel_requested,
             request.stock_names,
             document_sources=documents,
@@ -446,7 +444,7 @@ def _prepare_reference(
     if cancel_requested():
         raise RuntimeError("reference_preparation_cancelled")
     universe = LoadCurrentAShareUniverse(
-        partial(FetchSseListings, get=HttpRequestScope(OpenExternalHttp).get), partial(FetchSzseListings, get=HttpRequestScope(OpenExternalHttp).get), 15.0
+        partial(FetchSseListings, get=HttpRequestScope(OpenExternalHttp).get), partial(FetchSzseListings, get=HttpRequestScope(OpenExternalHttp).get), 15.0, report=report,
     )
     workers = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="risk-st-check")
     with ExitStack() as resources, WorkerScope((workers,), timeout_seconds=shutdown_timeout_seconds):
@@ -658,12 +656,13 @@ def ExecuteQfqDownload(
 ) -> QfqUpdateResult:
     """Compose explicit short-window maintenance without building the server."""
     if report is None:
-        report = TerminalDownloadProgress()
+        report = CreateSyncProgress()
     v2 = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy)
     v3 = SQLiteQfqWindowCache(paths.daily_window, "v3", sqlite_policy=sqlite_policy)
     if failures is None:
         failures = DownloadFailureDiagnostics(
             partial(v2.RecordDownloadFailure, configuration=failure_configuration), ShanghaiClock(now).now,
+            report=report,
         )
     prepared_started = time.monotonic()
     if reference is None:

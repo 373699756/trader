@@ -9,6 +9,7 @@ from pathlib import Path
 
 from trader.download.domain.history_sync import HistorySyncProgressStage
 from trader.infra.workers import WorkerResourceRejectedError
+from trader.infra.http_contracts import HttpStatusError
 
 
 class HistorySyncFailureError(RuntimeError):
@@ -26,6 +27,7 @@ class HistoryFailureCause:
     error_number: int | None = None
     sqlite_code: str | None = None
     location: str | None = None
+    http_status_code: int | None = None
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", self.exception_type):
@@ -36,6 +38,8 @@ class HistoryFailureCause:
             raise ValueError("history_failure_sqlite_code_invalid")
         if self.location is not None and not re.fullmatch(r"[0-9A-Za-z_.:-]{1,120}", self.location):
             raise ValueError("history_failure_location_invalid")
+        if self.http_status_code is not None and not 100 <= self.http_status_code <= 599:
+            raise ValueError("history_failure_http_status_invalid")
 
 
 @dataclass(frozen=True)
@@ -123,7 +127,8 @@ def BuildHistoryFailureEvidence(exc: BaseException) -> HistoryFailureEvidence:
                 trace = trace.tb_next
             code = trace.tb_frame.f_code
             location = re.sub(r"[^0-9A-Za-z_.:-]", "_", f"{Path(code.co_filename).name}:{code.co_name}:{trace.tb_lineno}")[:120]
-        causes.append(HistoryFailureCause(name, error_number, sqlite_code, location))
+        causes.append(HistoryFailureCause(name, error_number, sqlite_code, location,
+                                         current.status_code if isinstance(current, HttpStatusError) else None))
         current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
     return HistoryFailureEvidence(tuple(causes))
 
@@ -134,6 +139,8 @@ def _project_cause(cause: HistoryFailureCause, *, include_location: bool) -> str
         value += ":" + cause.sqlite_code
     if cause.error_number is not None:
         value += f":errno_{cause.error_number}"
+    if cause.http_status_code is not None:
+        value += f":HTTP_{cause.http_status_code}"
     if include_location and cause.location is not None:
         value += ":" + cause.location
     return value

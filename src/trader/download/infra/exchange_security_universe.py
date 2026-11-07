@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import cast
+from collections.abc import Callable
+from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
@@ -11,8 +13,12 @@ from trader.infra.market_data.observations import ListingFetcher
 
 
 def LoadCurrentAShareUniverse(
-    sse_fetcher: ListingFetcher, szse_fetcher: ListingFetcher, timeout_seconds: float
+    sse_fetcher: ListingFetcher, szse_fetcher: ListingFetcher, timeout_seconds: float,
+    *, report: Callable[[ProgressMessage], None] | None = None,
 ) -> tuple[BaoStockSecurity, ...]:
+    task = ProgressTask("参考", "universe", "股票总体")
+    if report is not None:
+        report(ProgressMessage((), task=task, state="开始"))
     listings = tuple(sse_fetcher(timeout_seconds)) + tuple(szse_fetcher(timeout_seconds))
     if (
         len(listings) < 4000
@@ -21,6 +27,8 @@ def LoadCurrentAShareUniverse(
         or any(item.board not in ("main", "chinext", "star") for item in listings)
     ):
         raise ValueError("official A-share security universe is incomplete")
+    if report is not None:
+        report(ProgressMessage((ProgressField(f"总体 {len(listings)} 股"),), task=task, state="完成", finished=True))
     return tuple(
         BaoStockSecurity(
             item.code, item.name, cast(BaoStockBoard, item.board), item.listing_date, None, "exchange_security_master"

@@ -222,7 +222,6 @@ class UpdateQfqWindows:
         self, windows: Iterable[PublishedHistoryWindow], identity: str, *, calendar: tuple[date, ...],
         nontrading_observed_on: date | None,
     ) -> QfqUpdateResult:
-        started = self.monotonic()
         changed: set[str] = set()
         rows = 0
         count = 0
@@ -252,7 +251,6 @@ class UpdateQfqWindows:
             if count % 64 == 0:
                 self.report(
                     QfqMessage(
-                        self.monotonic() - started,
                         "历史提取",
                         f"已处理 {count} 只 | 变更文件 {len(changed)}",
                     )
@@ -266,22 +264,19 @@ class UpdateQfqWindows:
 
     @contextmanager
     def _publication_check(self) -> Iterator[None]:
-        started = self.monotonic()
         with self.v2.publication(self.v3):
             yield
-            began = self.monotonic()
-            self.report(QfqMessage(began - started, "数据库文件校验", "开始 | 主文件及WAL整体指纹"))
+            self.report(QfqMessage("数据库文件校验", "主文件及WAL整体指纹", state="开始"))
         self.report(QfqMessage(
-            self.monotonic() - started,
             "数据库文件校验",
-            f"完成 | 阶段耗时 {self.monotonic() - began:.2f} 秒",
+            "主文件及WAL整体指纹已完成", state="完成", finished=True,
         ))
 
     def _execute(
         self, observed_at: datetime
     ) -> tuple[QfqDownloadProgress, Literal["qfq_worker_unavailable"] | None]:
         started = self.monotonic()
-        self.report(QfqMessage(0, "准备", "正在加载沪深股票名单和 Tencent 交易日历"))
+        self.report(QfqMessage("准备", "正在加载沪深股票名单和 Tencent 交易日历", state="开始"))
         try:
             cutoff = self.v2.repair_cutoff() if self.repair_only else None
             context = self.supplier.load_qfq_context(
@@ -293,7 +288,6 @@ class UpdateQfqWindows:
             stage = "已取消" if cancelled else "准备失败"
             self.report(
                 QfqMessage(
-                    self.monotonic() - started,
                     stage,
                     QfqFailureCode(exc),
                     level=ProgressLevel.WARNING if cancelled else ProgressLevel.ERROR,
@@ -301,20 +295,20 @@ class UpdateQfqWindows:
             )
             raise
         source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
+        self.report(QfqMessage("准备", f"总体 {len(context.universe)} 股 | 交易日 {len(context.calendar.open_dates)}日",
+                               state="完成", finished=True))
         progress = QfqDownloadProgress(
             context.calendar.open_dates[-1],
             source,
             len(context.universe),
             self.report,
-            lambda: self.monotonic() - started,
             price_review=QfqPriceReviewSummary(discovery_completed=False),
         )
         allowed_codes = frozenset(security.code for security in context.universe)
         files, changed_rows = self.v2.select_published_codes(self.v3, allowed_codes)
         progress.changed.update(files)
         progress.rows += changed_rows
-        inspection_started = self.monotonic()
-        progress.publish("本地窗口检查", "开始 | 核对两档窗口日期与来源")
+        progress.publish("本地窗口检查", "核对两档窗口日期与来源", state="开始")
         planning = self.v2.planning_snapshot(allowed_codes, batched=self.batch_planning_candidate)
         v2_snapshot = planning.windows
         v3_snapshot = (
@@ -323,10 +317,11 @@ class UpdateQfqWindows:
         )
         progress.publish(
             "本地窗口检查",
-            f"完成 | V2 {len(v2_snapshot.states)} 只 | V3 {len(v3_snapshot.states)} 只 "
-            f"| 阶段耗时 {self.monotonic() - inspection_started:.2f} 秒",
+            f"V2 {len(v2_snapshot.states)} 只 | V3 {len(v3_snapshot.states)} 只",
+            state="完成", finished=True,
         )
-        progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.worker_count}")
+        progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.worker_count}",
+                         state="完成", finished=True)
         if self.repair_only:
             # Older files had no durable issue inventory. Recover absent dates
             # only for locally published stocks; never schedule the whole universe.
@@ -344,9 +339,13 @@ class UpdateQfqWindows:
                 plans, progress, context.calendar.open_dates[-self.configuration.maximum_sessions :]
             )
         if self.repair_supplier is not None and failure_reason is None and not self.cancel_requested():
+            progress.publish("BaoStock补缺", "开始读取当前缺口", state="开始")
             self._repair(context, progress, observed_at.astimezone(ZoneInfo("Asia/Shanghai")).date())
+            progress.publish("BaoStock补缺", "本轮补缺阶段结束，最终覆盖见汇总", state="完成", finished=True)
         if not self.repair_only and failure_reason is None and not self.cancel_requested():
+            progress.publish("停牌复核", "沿用本次请求预算", state="开始")
             progress.price_review = self._review_persisted(context, progress, observed_at.astimezone(ZoneInfo("Asia/Shanghai")).date())
+            progress.publish("停牌复核", "本轮复核结束，未确认事实保留", state="完成", finished=True)
         return progress, failure_reason
 
     def _review_persisted(self, context: HistorySupplierContext, progress: QfqDownloadProgress, observed_on: date) -> QfqPriceReviewSummary:
@@ -620,6 +619,10 @@ class UpdateQfqWindows:
         exhausted = False
         failure_reason: Literal["qfq_worker_unavailable"] | None = None
         last_feedback = last_flush = self.monotonic()
+        finished_normally = False
+        progress.publish("价格更新", f"来源 Tencent | 股票 {progress.total} | 并发 {self.worker_count} "
+                         f"| 单次超时 {self.configuration.source_timeout_seconds}秒 | 重试上限 {self.configuration.source_retries}",
+                         state="开始")
         try:
             while not self.cancel_requested():
                 if writing is not None and writing.done():
@@ -662,8 +665,9 @@ class UpdateQfqWindows:
                     break
                 if self.monotonic() - last_feedback >= 5:
                     progress.publish(
-                        "请求/落库中",
+                        "价格更新",
                         f"网络在途 {len(futures)} | 待写 {len(downloaded)} | 写入 {len(write_batch)} | 已处理 {progress.processed}/{progress.total}",
+                        state="等待",
                     )
                     last_feedback = self.monotonic()
                 if futures or writing is not None:
@@ -675,12 +679,16 @@ class UpdateQfqWindows:
                 downloaded.extend(
                     self._collect_completed({future for future in futures if future.done()}, futures, progress)
                 )
+            finished_normally = True
         finally:
             for future in futures:
                 future.cancel()
             if writing is not None:
                 # Never release the maintenance lock while a paired transaction is still running.
                 writing.result()
+            progress.publish("价格更新", f"已处理 {progress.processed}/{progress.total} | 待重试 {progress.pending}",
+                             state="取消" if self.cancel_requested() else "失败" if failure_reason or not finished_normally else "完成",
+                             finished=True)
         return failure_reason
 
     def _submit_write(

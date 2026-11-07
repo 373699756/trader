@@ -5,12 +5,12 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import json
-import sys
 from concurrent.futures import CancelledError
 from dataclasses import replace
 from pathlib import Path
 
 from trader.download.domain.history_sync import HistorySyncConfiguration
+from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.entrypoints.history_maintenance_projection import ProjectHistoryMaintenanceStatus
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
@@ -23,15 +23,16 @@ def RunDownload(
 ) -> int:
     """Run zero-argument initial or incremental archive maintenance."""
 
-    from trader.bootstrap import ExecuteHistoryDownload
+    from trader.bootstrap import CreateSyncProgress, ExecuteHistoryDownload
 
     runtime = LoadRuntimeSettings(config_path)
     configuration = LoadHistorySyncConfiguration(project_root, runtime.data_paths)
     qfq_configuration = LoadQfqWindowConfiguration(project_root)
-    progress = StderrHistorySyncProgress()
+    report = CreateSyncProgress()
+    progress = StderrHistorySyncProgress(report=report)
     with (
         ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled,
-        progress.keep_alive(),
+        report.keep_alive(),
     ):
         try:
             status = ExecuteHistoryDownload(
@@ -57,9 +58,11 @@ def RunDownload(
     if status.state == "cancelled":
         return 130
     if not ready:
-        print("完整历史尚未完成合法发布或仍有价格缺口。", file=sys.stderr)
+        report(ProgressMessage((ProgressField("完整历史尚未完成合法发布或仍有价格缺口。"),),
+                               task=ProgressTask("history", "readiness", "就绪检查"), state="失败", finished=True))
     elif quiet_success and status.unresolved_price_cells:
-        print("历史仍有价格缺口；按有效样本尝试所选档位训练。", file=sys.stderr)
+        report(ProgressMessage((ProgressField("历史仍有价格缺口；按有效样本尝试所选档位训练。"),),
+                               task=ProgressTask("history", "readiness", "就绪检查"), state="完成", finished=True))
     return 0 if ready else 1
 
 

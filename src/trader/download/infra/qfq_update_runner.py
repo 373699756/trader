@@ -59,7 +59,7 @@ def StopQfqWorkers(
             RuntimeError("qfq_worker_deadline_exceeded"),
         )
         resources.report(QfqMessage(
-            monotonic() - started_at, "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR,
+            "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR,
         ))
 
 
@@ -124,7 +124,6 @@ class QfqUpdateRunner:
                     stage = "local_seed"
                     self.updater.report(
                         QfqMessage(
-                            self.updater.monotonic() - started,
                             "历史提取",
                             f"待提取 {len(needed)} 只",
                         )
@@ -152,7 +151,7 @@ class QfqUpdateRunner:
                 self.failures(DownloadFailureContext(stage, elapsed_seconds=self.updater.monotonic() - started), exc)
             reason = QfqFailureCode(exc)
             self.updater.report(
-                QfqMessage(self.updater.monotonic() - started, "更新失败", reason, level=ProgressLevel.ERROR)
+                QfqMessage("更新失败", reason, level=ProgressLevel.ERROR)
             )
             if result is not None:
                 return replace(

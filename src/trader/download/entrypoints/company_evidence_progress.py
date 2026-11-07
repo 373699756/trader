@@ -9,10 +9,11 @@ from dataclasses import replace
 from math import ceil
 from typing import TextIO
 
-from trader.download.application.progress_message import ProgressDuration, ProgressMessage
+from trader.download.application.progress_message import ProgressDuration, ProgressField, ProgressLevel, ProgressMessage, ProgressTask
+from trader.download.application.sync_progress import SyncProgress
+from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.download.domain.company_evidence import CompanyStockProgress, DisclosurePartition, EvidenceSyncProgress
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
-from trader.download.infra.terminal_progress import RenderProgress
 
 
 def ReportStPreparation(
@@ -55,48 +56,23 @@ class CompanyEvidenceProgress:
         self,
         stream: TextIO | None = None,
         *,
-        command: str = "sync company",
         monotonic: Callable[[], float] = time.monotonic,
+        report: Callable[[ProgressMessage], None] | None = None,
     ) -> None:
         self._stream = stream if stream is not None else sys.stderr
-        self._command = command
-        self._monotonic = monotonic
-        self._started = monotonic()
-        self._component_started = self._started
-        self._last = 0.0
-        self._previous: EvidenceSyncProgress | None = None
+        self._report = report or SyncProgress(TerminalDownloadProgress(self._stream), monotonic)
         self._stocks: dict[str, CompanyStockProgress] = {}
         self._batch = 0
         self._reported_failures: set[str] = set()
 
     def report_preparation(self, message: ProgressMessage) -> None:
         """Flush reference preparation and download handoff feedback under the invoked command."""
-        print(
-            f"{self._command} | {RenderProgress(message)}"
-            f" | 命令累计 {ProgressDuration(self._monotonic() - self._started)}",
-            file=self._stream,
-            flush=True,
-        )
+        self._report(message)
 
     def __call__(self, progress: EvidenceSyncProgress) -> None:
-        now = self._monotonic()
-        previous = self._previous
         self._batch = progress.batch or self._batch
         if progress.component == "facts" and progress.stock is not None:
             self._stocks[progress.stock.code] = progress.stock
-        if previous is None or progress.component != previous.component:
-            self._component_started = now
-        boundary = (
-            previous is None
-            or progress.component != previous.component
-            or progress.status != previous.status
-            or progress.activity != previous.activity
-            or progress.failure != previous.failure
-            or (progress.pending == 0 and previous.pending != 0)
-        )
-        if not boundary and now - self._last < 1:
-            return
-        self._last, self._previous = now, progress
         labels = {
             "resume": "断点恢复",
             "st_eligibility": "ST资格",
@@ -139,8 +115,8 @@ class CompanyEvidenceProgress:
             current_failures = {item for item in failure.split(",") if item}
             failure = ",".join(sorted(current_failures - self._reported_failures))
             self._reported_failures.update(current_failures)
-        print(
-            f"{self._command} | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
+        details = (
+            f"{_counts(progress, units[progress.component])}"
             + (f" | 批次 {self._batch}" if self._batch and progress.component != "complete" else "")
             + _scope(progress)
             + _coverage(progress)
@@ -153,12 +129,19 @@ class CompanyEvidenceProgress:
                 if progress.component == "complete"
                 else ""
             )
-            + f" | 本阶段 {ProgressDuration(now - self._component_started)} | "
-            f"命令累计 {ProgressDuration(now - self._started)} | "
-            f"状态 {status_text}" + (f" | 原因 {_failure_text(failure)}" if failure else "") + _recovery(progress),
-            file=self._stream,
-            flush=True,
+            + f" | 结果 {status_text}" + (f" | 原因 {_failure_text(failure)}" if failure else "") + _recovery(progress)
         )
+        self._report(ProgressMessage(
+            tuple(ProgressField(part, ProgressLevel.WARNING if failure else ProgressLevel.NORMAL)
+                  for part in details.split(" | ")),
+            task=ProgressTask(
+                "参考" if progress.component in {"st_eligibility", "calendar"} else "company",
+                labels[progress.component] if progress.component in {"st_eligibility", "calendar"} else progress.component,
+                labels[progress.component], self._batch,
+            ),
+            state="完成" if status in {"complete", "reused"} else "等待" if status == "deferred" else "处理中",
+            finished=status in {"complete", "reused", "deferred"},
+        ))
 
     def _summary(self, published: int) -> str:
         if not self._stocks:

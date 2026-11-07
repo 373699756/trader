@@ -14,7 +14,7 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, replace
 from datetime import date
-from threading import Event
+from threading import Event, Lock
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
@@ -93,7 +93,7 @@ class _PreparedResult:
 
 @dataclass(frozen=True)
 class _WriteResult:
-    results: tuple[HistoryPriceResult, ...]
+    prepared: tuple[_PreparedResult, ...]
     seconds: float
 
 
@@ -115,6 +115,8 @@ class HistoryDownloadFlow:
         self._reused_codes: set[str] = set()
         self._window_cells: dict[str, int] = {}
         self._stopped = Event()
+        self._write_lock = Lock()
+        self._write_operation = "空闲"
         self._emit(HistorySyncProgress("initializing", "started", 0, 1, "repair_index"))
         self._baostock_codes = HistoryPriceRepair(
             resources.configuration.history_root, sqlite_policy=self._sqlite_policy,
@@ -170,6 +172,8 @@ class HistoryDownloadFlow:
         started = time.monotonic()
         self._check()
         results = tuple(item.price for item in batch)
+        with self._write_lock:
+            self._write_operation = "价格写入"
         self._resources.prices.commit_pipeline(results)
         replacements = tuple(item for item in results if item.replacement is not None)
         if replacements:
@@ -179,6 +183,8 @@ class HistoryDownloadFlow:
                 self._resources.prices.replace_window(self._security(item.task.code), item.replacement, "tencent")
         self._check()
         try:
+            with self._write_lock:
+                self._write_operation = "提交下载断点"
             self._resources.index.finish(
                 tuple(
                     HistoryDownloadCompletion(
@@ -194,16 +200,19 @@ class HistoryDownloadFlow:
             )
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             raise HistorySyncFailureError(exc, "confirming_download") from exc
-        return _WriteResult(results, time.monotonic() - started)
+        with self._write_lock:
+            self._write_operation = "空闲"
+        return _WriteResult(batch, time.monotonic() - started)
 
     def _acknowledge(
         self,
-        results: tuple[HistoryPriceResult, ...],
+        results: tuple[_PreparedResult, ...],
         completed: int,
         total: int,
         pipeline: HistoryPipelineProgress,
     ) -> int:
-        for result in results:
+        for prepared in results:
+            result = prepared.price
             completed += 1
             security = self._security(result.task.code)
             self._emit(
@@ -213,9 +222,15 @@ class HistoryDownloadFlow:
                     completed,
                     total,
                     result.task.code,
-                    supplier_source="tencent" if result.task.dates else None,
-                    requested_sessions=min(2000, len(result.task.dates)) if result.task.dates else None,
+                    supplier_source="tencent" if prepared.dates else None,
+                    requested_sessions=min(2000, len(prepared.dates)) if prepared.dates else None,
                     failure_reason=result.failure,
+                    failure_detail=result.diagnostic[:512] if result.failure and result.diagnostic else None,
+                    requested_from=prepared.dates[0] if prepared.dates else None,
+                    requested_to=prepared.dates[-1] if prepared.dates else None,
+                    stock_download_seconds=prepared.seconds,
+                    stock_read_seconds=prepared.read_seconds,
+                    stock_validation_seconds=prepared.validation_seconds,
                     price_coverage=self._coverage(result),
                     pipeline=pipeline,
                     current_name=security.name,
@@ -470,14 +485,17 @@ class HistoryDownloadFlow:
             return _PreparedResult(price, (), 0.0, read_seconds, time.monotonic() - started)
         started = time.monotonic()
         failure: str | None = None
+        diagnostic: str | None = None
         unusable_qfq_dates: tuple[date, ...] = ()
         try:
             window = self._resources.supplier.fetch_tencent_window(self._security(task.code), dates)
         except HistorySupplierPendingError as exc:
             window, failure = exc.window, exc.reason
+            diagnostic = HistoryFailureDetail(exc)
             unusable_qfq_dates = exc.unusable_qfq_dates
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             failure = DownloadFailure(exc)
+            diagnostic = HistoryFailureDetail(exc)
             if failure in _FATAL:
                 raise
             window = empty
@@ -490,6 +508,8 @@ class HistoryDownloadFlow:
         validation_started = time.monotonic()
         try:
             price = self._tencent_result(_TencentResult(task, dates, previous, window, failure, unusable_qfq_dates))
+            if price.failure and diagnostic is not None:
+                price = replace(price, diagnostic=diagnostic)
         except HistoryQfqBasisError:
             return self._fetch_basis_replacement(task, download_seconds, read_seconds)
         return _PreparedResult(
@@ -534,7 +554,8 @@ class HistoryDownloadFlow:
                 raise
             # Never publish the already-fetched tail after a failed whole-window
             # refresh. Its prices were observed on an incompatible basis.
-            price = self._failed_tencent_result(_TencentResult(full_task, dates, previous, empty), failure)
+            price = replace(self._failed_tencent_result(_TencentResult(full_task, dates, previous, empty), failure),
+                            diagnostic=HistoryFailureDetail(exc))
             validation_seconds = 0.0
         return _PreparedResult(
             price, dates, download_seconds, read_seconds, validation_seconds,
@@ -555,7 +576,7 @@ class HistoryDownloadFlow:
             failure = DownloadFailure(exc)
             if failure in _FATAL:
                 raise
-            return self._failed_tencent_result(result, failure)
+            return replace(self._failed_tencent_result(result, failure), diagnostic=HistoryFailureDetail(exc))
 
     def _failed_tencent_result(self, result: _TencentResult, failure: str) -> HistoryPriceResult:
         previous = result.previous
@@ -586,6 +607,7 @@ class _TencentPipeline:
         self._completed = completed
         self._total = total
         self._downloaded = completed
+        self._network_completed = self._reused = 0
         self._futures: dict[Future[_PreparedResult], HistoryDownloadTask] = {}
         self._dispatched_at: dict[Future[_PreparedResult], float] = {}
         self._buffered: list[_PreparedResult] = []
@@ -597,6 +619,7 @@ class _TencentPipeline:
         self._exhausted = False
         self._writer_closed = False
         self._last_commit = self._last_report = time.monotonic()
+        self._last_confirmed = self._last_report
 
     def run(self) -> None:
         try:
@@ -630,13 +653,14 @@ class _TencentPipeline:
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             raise HistorySyncFailureError(exc, "persisting_partitions") from exc
         self._write_seconds += saved.seconds
+        self._last_confirmed = time.monotonic()
         self._writing = None
         self._write_started = None
         self._writing_cells = self._writing_codes = 0
         if self._exhausted and not self._jobs and not self._futures and not self._buffered:
             self._close_writer()
         self._completed = self._flow._acknowledge(
-            saved.results,
+            saved.prepared,
             self._completed,
             self._total,
             self._pipeline_progress(),
@@ -659,7 +683,10 @@ class _TencentPipeline:
             self._read_seconds += result.read_seconds
             self._validation_seconds += result.validation_seconds
             if not result.dates:
+                self._reused += 1
                 self._flow._reused_codes.add(result.price.task.code)
+            else:
+                self._network_completed += 1
 
     def _dispatch(self) -> bool:
         reserved = self._writing_cells + sum(len(item.price.task.dates) for item in self._buffered)
@@ -717,6 +744,9 @@ class _TencentPipeline:
 
     def _pipeline_progress(self) -> HistoryPipelineProgress:
         now = time.monotonic()
+        oldest = min(self._dispatched_at, key=self._dispatched_at.__getitem__, default=None)
+        with self._flow._write_lock:
+            operation = self._flow._write_operation
         return HistoryPipelineProgress(
             self._downloaded,
             self._writing_codes + len(self._buffered),
@@ -729,6 +759,12 @@ class _TencentPipeline:
             read_seconds=self._read_seconds,
             validation_seconds=self._validation_seconds,
             unconfirmed_write_seconds=0.0 if self._write_started is None else now - self._write_started,
+            network_completed_codes=self._network_completed,
+            reused_codes=self._reused,
+            writing_codes=self._writing_codes,
+            oldest_inflight_code=None if oldest is None else self._futures[oldest].code,
+            seconds_since_commit=now - self._last_confirmed,
+            write_operation=operation,
         )
 
     def _cancel_pending(self) -> None:
