@@ -68,11 +68,15 @@ def test_repair_profile_requires_new_external_directory_and_forwards_scope(tmp_p
             "--repair-profile-year", "2026", "--repair-profile-code", "600039"]
     with pytest.raises(ValueError, match="database-probe-directory"):
         ParseBusinessOptions(ParseToolArguments(args))
-    options = ParseBusinessOptions(ParseToolArguments([*args, "--database-probe-directory", str(tmp_path / "new")]))
+    runtime = tmp_path / "runtime.json"
+    options = ParseBusinessOptions(ParseToolArguments([
+        *args, "--database-probe-directory", str(tmp_path / "new"), "--runtime-config", str(runtime),
+    ]))
     argv = BuildToolCommands(options)[0].argv
     assert argv[argv.index("--repair-profile-year") + 1] == "2026"
     assert argv[argv.index("--repair-profile-code") + 1] == "600039"
     assert "--work-root" in argv
+    assert argv[argv.index("--runtime-config") + 1] == str(runtime)
 
 
 def test_default_audit_help_does_not_import_optional_measurement(monkeypatch: pytest.MonkeyPatch) -> None:

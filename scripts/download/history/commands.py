@@ -191,7 +191,8 @@ def BuildCommands(
         commands = (DiagnosticCommand(
             "price_repair_audit",
             (python_executable, "-m", "scripts.download.history.price_repair_audit", "--history-root", str(options.history_root), *(("--work-root", str(options.database_probe_directory)) if options.database_probe_directory is not None else ()))
-            + (("--repair-profile-year", str(options.repair_profile_year), "--repair-profile-code", str(options.repair_profile_code))
+            + (("--repair-profile-year", str(options.repair_profile_year), "--repair-profile-code", str(options.repair_profile_code),
+                "--runtime-config", str(options.runtime_config))
                if options.repair_profile_year is not None else ()),
             common_timeout,
         ),)
