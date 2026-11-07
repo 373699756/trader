@@ -17,6 +17,7 @@ from trader.download.application.company_evidence import (
     _SyncState,
 )
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
+from trader.download.application.company_operations import CompanyOperations
 from trader.infra.workers import BoundedExecutor, WorkerResourceRejectedError
 
 
@@ -32,7 +33,7 @@ def _announcements(index, source, executor, *, cancelled=None, clock=None, coale
         coalesce_publications=coalesce,
     )
     context = _CompanyRunContext(fixtures.NOW, 0.0, configuration, fixtures.NOW.date())
-    state = _SyncState()
+    state = _SyncState(CompanyOperations(None, dependencies.monotonic, ()), 1)
     run = _AnnouncementRun(dependencies, state, context)
     run.prepare(("600001",))
     return run, state
@@ -133,7 +134,8 @@ def test_publish_deadline_survives_directory_wait(tmp_path):
 def test_document_batch_does_not_reset_oldest_unpublished_time(tmp_path):
     index = fixtures._index(tmp_path)
     source = fixtures.Sources()
-    state = _SyncState(unpublished_documents=1, publication_pending_since=10.0)
+    state = _SyncState(CompanyOperations(None, lambda: 20.0, ()), 1,
+                       unpublished_documents=1, publication_pending_since=10.0)
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 20.0, coalesce_publications=True)
     context = _CompanyRunContext(fixtures.NOW, 0.0, fixtures._TEST_COMPANY_CONFIGURATION, fixtures.NOW.date())
     documents = _DocumentRun(dependencies, ("600001",), state, context)

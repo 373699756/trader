@@ -11,7 +11,7 @@ from tests.helpers.download.configuration import CompanyEventPolicyFixture, Comp
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_evidence import (
-    CompanyDocumentLimits, CompanyDocumentPolicies, CompanyListing, CompanyStockProgress, CompanySyncConfiguration,
+    CompanyDocumentLimits, CompanyDocumentPolicies, CompanyListing, CompanyPublicationProgress, CompanyStockProgress, CompanySyncConfiguration,
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_files import CompanyDocumentFiles
@@ -42,7 +42,7 @@ class SQLiteCompanyEvidenceIndexFixture(SQLiteCompanyEvidenceIndex):
         event_policy: CompanyEventPolicy | None = None,
         sqlite_policy: SqliteIoPolicy | None = None,
         cancel_requested: Callable[[], bool] | None = None,
-        stock_progress: Callable[[CompanyStockProgress], None] | None = None,
+        stock_progress: Callable[[CompanyStockProgress | CompanyPublicationProgress], None] | None = None,
         listings: tuple[CompanyListing, ...] = (),
         raw_files: CompanyRawFiles | None = None,
         batch_publication_reads: bool = False,

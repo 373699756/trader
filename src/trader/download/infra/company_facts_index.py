@@ -130,7 +130,7 @@ class SQLiteCompanyFactsIndex:
         *,
         receipts: Sequence[CompanyInputReceipt] = (),
         field_results: Sequence[CompanyFieldConclusion] | None = None,
-    ) -> None:
+    ) -> tuple[str, ...]:
         prepared_fields = tuple(field_results) if field_results is not None else tuple(
             CompanyFieldConclusion(
                 item.code, item.event_id, cast(CompanyFieldName, item.field),
@@ -150,6 +150,7 @@ class SQLiteCompanyFactsIndex:
                 raise RuntimeError("company_publication_parent_changed")
             before_changes = connection.total_changes
             fact_codes = frozenset(fact.code for fact in facts)
+            changed_codes = set(fact_codes)
             field_codes = tuple(sorted(fact_codes | {item.code for item in prepared_fields}))
             previous_fields = ReadCompanyFieldResults(connection, field_codes)
             for item in facts:
@@ -161,6 +162,7 @@ class SQLiteCompanyFactsIndex:
                                       key=lambda item: (item.event_id, item.field)))
                 if code in fact_codes or tuple(item for item in previous_fields if item.code == code) != values:
                     WriteCompanyFieldResults(connection, code, values)
+                    changed_codes.add(code)
             connection.run_many(
                 "INSERT INTO company_input_receipt VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(source,source_key,code,record_hash,extraction_hash) "
                 "DO UPDATE SET body_hash=excluded.body_hash,published_at=excluded.published_at,outcome=excluded.outcome,policy_id=excluded.policy_id "
@@ -200,6 +202,7 @@ class SQLiteCompanyFactsIndex:
                 )))
                 _write_identity(connection, self.extraction_hash, at, identity)
         self.publish_file()
+        return tuple(sorted(changed_codes))
 
     def read_exclusions(self) -> tuple[CompanyExclusion, ...]:
         if not self.path.exists():

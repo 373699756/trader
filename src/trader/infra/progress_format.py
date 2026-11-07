@@ -52,7 +52,9 @@ def ProgressPrefix(
     *,
     stage_width: int = 52,
 ) -> tuple[str, str, str]:
-    fields = (ProgressDuration(total_seconds), f"{CleanProgressText(task)} {ProgressDuration(stage_seconds)}", CleanProgressText(state))
+    duration = ProgressDuration(stage_seconds)
+    label = ShortProgressText(task, max(0, stage_width - DisplayWidth(duration) - 1))
+    fields = (ProgressDuration(total_seconds), f"{label} {duration}", CleanProgressText(state))
     padded = tuple(PadProgressText(value, width) for value, width in zip(fields, (8, stage_width, 6), strict=True))
     return padded[0], padded[1], padded[2]
 

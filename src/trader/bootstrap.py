@@ -231,7 +231,7 @@ def ExecuteSync(
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
     owns_report, report = report is None, report or CreateSyncProgress()
-    progress = company_evidence_progress.CompanyEvidenceProgress(report=report)
+    progress = company_evidence_progress.CompanyEvidenceProgress(report=report, observe=report.register_observer)
     history_progress = StderrHistorySyncProgress(report=report)
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
     price_review_budget = TencentRequestBudget(configuration.price_review)
@@ -464,7 +464,7 @@ def _prepare_reference(
         )
         dependencies = ReferencePreparationDependencies(
             source.fetch,
-            partial(publication.calendar, observed_at.date(), fetch=calendar, progress=progress),
+            partial(publication.calendar, observed_at.date(), fetch=calendar, progress=progress, source="新浪/Akshare"),
             industry.fetch,
             publication.publish,
             cancel_requested,

@@ -21,6 +21,24 @@ _NOW = datetime(2026, 11, 4, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
 _SOURCES = ReferencePreparationSources("fixture-ST", "fixture-calendar", "fixture-industry")
 
 
+@pytest.mark.parametrize("reused", (False, True))
+def test_calendar_detail_retains_explicit_provider_on_fetch_and_cache_reuse(tmp_path, reused):
+    reference = PreparedFixture(_NOW)
+    index = SQLiteReferenceIndex(tmp_path / "reference.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    events, calls = [], []
+    if reused:
+        index.publish(reference, reference.st_evidence)
+
+    def fetch():
+        calls.append(True)
+        return reference.open_dates
+
+    assert index.calendar(_NOW.date(), fetch=fetch, progress=events.append, source="新浪/Akshare") == reference.open_dates
+    assert events and all(event.sources == ("新浪/Akshare",) for event in events)
+    assert bool(calls) is not reused
+    assert events[-1].status == ("reused" if reused else "complete")
+
+
 def test_incompatible_industry_reports_its_exact_download_scope_without_stopping_price_preparation():
     previous = PreparedFixture(_NOW)
     reports, published = [], []

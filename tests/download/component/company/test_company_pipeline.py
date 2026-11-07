@@ -76,6 +76,7 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
     import json
 
     from trader.download.application.company_evidence import _DocumentRun, _SourceCircuit, _SyncState
+    from trader.download.application.company_operations import CompanyOperations
     from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyOcrDiagnostic
 
     index = fixtures._index(tmp_path)
@@ -84,7 +85,7 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
     run = _DocumentRun.__new__(_DocumentRun)
     run.dependencies = CompanyEvidenceDependencies(index, fixtures.Sources(), fixtures.Sources(), lambda: 0.0)
     run.failed_identities = set()
-    run.state = _SyncState()
+    run.state = _SyncState(CompanyOperations(None, lambda: 0.0, ()), 1)
     run.policies = policies
     run.configuration = fixtures._TEST_COMPANY_CONFIGURATION
     run.observed_at, run.started = NOW, 0.0

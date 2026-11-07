@@ -57,6 +57,8 @@ class SyncProgress:
         task = message.task
         if task is None:
             raise ValueError("sync_progress_task_missing")
+        if message.owner_finished:
+            self._finish_owner(task.owner)
         now = self._monotonic()
         timing = self._tasks.get(task)
         if timing is None:
@@ -69,7 +71,7 @@ class SyncProgress:
         timing.latest = message
         if changed:
             timing.updated = now
-        timing.ended = timing.ended or message.finished
+        timing.ended = timing.ended or message.finished or message.owner_finished
         interval = 5.0 if message.state == "等待" else 1.0
         if immediate or now - timing.emitted >= interval:
             self._emit(task, timing, message, now)
@@ -115,12 +117,15 @@ class SyncProgress:
 
     def finish_owner(self, owner: str) -> None:
         with self._lock:
-            for identity in tuple(self._observers):
-                if identity[0] == owner:
-                    del self._observers[identity]
-            for task, timing in self._tasks.items():
-                if task.owner == owner:
-                    timing.ended = True
+            self._finish_owner(owner)
+
+    def _finish_owner(self, owner: str) -> None:
+        for identity in tuple(self._observers):
+            if identity[0] == owner:
+                del self._observers[identity]
+        for task, timing in self._tasks.items():
+            if task.owner == owner:
+                timing.ended = True
 
     def report_disk(self, text: str) -> None:
         self(ProgressMessage((ProgressField(text),), task=ProgressTask("启动", "disk", "存储检测")))

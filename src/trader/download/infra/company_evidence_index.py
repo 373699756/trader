@@ -31,6 +31,7 @@ from trader.download.domain.company_evidence import (
     CompanyOcrDiagnostic,
     CompanyListing,
     CompanyStockProgress,
+    CompanyPublicationProgress,
     Disclosure,
     DisclosureCoverageMismatch,
     DisclosureMonths,
@@ -65,6 +66,7 @@ from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.company_link_codec import EncodeCompanyLink
 from trader.download.infra.company_supersession import PublishCompanySupersessions
 from trader.download.infra.company_coverage_progress import ReadCompanyCoverageProgress
+from trader.download.infra.company_publication_progress import ReportCompanyVerification
 from trader.download.infra.download_failure_diagnostics import FAILURE_DIAGNOSTICS_SQL, WriteDownloadFailure
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureRecord
 from trader.download.infra.company_evidence_sql import (
@@ -139,7 +141,7 @@ class SQLiteCompanyEvidenceIndex:
         documents: CompanyDocumentFiles,
         cancel_requested: Callable[[], bool] | None = None,
         event_policy: CompanyEventPolicy,
-        stock_progress: Callable[[CompanyStockProgress], None] | None = None,
+        stock_progress: Callable[[CompanyStockProgress | CompanyPublicationProgress], None] | None = None,
         listings: tuple[CompanyListing, ...] = (), sqlite_policy: SqliteIoPolicy,
         raw_files: CompanyRawFiles | None = None,
         batch_publication_reads: bool = False,
@@ -1401,40 +1403,20 @@ class SQLiteCompanyEvidenceIndex:
                                                 row["payload_hash"], observed_at, row["document_failure"], row["retry_policy_id"])
                             for row in rows if row["document_failure"] and not IsTransientCompanyDocumentFailure(row["document_failure"])
                         )
-                        if self._stock_progress is not None:
-                            self._stock_progress(
-                                CompanyStockProgress(
-                                    code,
-                                    processed=len(prepared),
-                                    total=len(requested),
-                                    announcements=len(rows),
-                                    analyzed=sum(bool(row["body_checked"]) for row in rows),
-                                    pending=facts.pending_document_count,
-                                    risks=len(facts.risk_events),
-                                    positives=len(facts.positive_events),
-                                    coverage_complete=all(
-                                        state is CompanyDataState.COMPLETE
-                                        for state in (
-                                            facts.financial_state,
-                                            facts.pledge_state,
-                                            facts.unlock_state,
-                                            facts.announcement_state,
-                                        )
-                                    ),
-                                    reused=facts is prior,
-                                    review_count=len(facts.review_reasons),
-                                )
-                            )
+                        ReportCompanyVerification(self._stock_progress, facts, len(prepared), len(requested),
+                                                  len(rows), sum(bool(row["body_checked"]) for row in rows), facts is prior)
             # A retained read handle prevents the writer's last close from
             # checkpointing WAL before its file fingerprint is published.
             formal_scope.close()
             self._check_cancelled()
+            if self._stock_progress is not None:
+                self._stock_progress(CompanyPublicationProgress("started", requested))
             # Pin the sole collection writer across verification, formal commit and receipt creation.
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                 if source.run("PRAGMA data_version").require_one()[0] != source_version:
                     raise RuntimeError("company_publication_source_changed")
                 RegisterCompanyFieldAttempts(connection, prepared, formal_receipts, self._facts.extraction_hash)
-                self._facts.publish(
+                changed_codes = self._facts.publish(
                     tuple(item for item in prepared if item is not previous_facts.get(item.code)),
                     sources,
                     parent,
@@ -1452,6 +1434,8 @@ class SQLiteCompanyEvidenceIndex:
                     PublishCompanySupersessions(connection, prepared, self._facts.extraction_hash))))
                 MarkCompanyDirty(connection, superseded_codes)
                 ReleasePublishedCompanyMaterial(connection, self._facts.extraction_hash)
+        if self._stock_progress is not None:
+            self._stock_progress(CompanyPublicationProgress("committed", requested, changed_codes))
         self._release_files()
         if superseded_codes:
             self.publish(superseded_codes, observed_at, changed_only=True)

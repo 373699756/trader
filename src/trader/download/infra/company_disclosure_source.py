@@ -52,6 +52,8 @@ _DEFAULT_TEXT_CAPABILITY = CompanyTextCapability("poppler-path", "pdftotext", "p
 
 
 class CninfoMarketDisclosureSource:
+    source = "cninfo"
+
     def __init__(
         self,
         session: HttpTransport,

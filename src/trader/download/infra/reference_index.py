@@ -201,7 +201,10 @@ class SQLiteReferenceIndex:
         *,
         fetch: Callable[[], tuple[date, ...]],
         progress: Callable[[EvidenceSyncProgress], None] | None,
+        source: str | None = None,
     ) -> tuple[date, ...]:
+        if source is not None and not source.strip():
+            raise ValueError("reference_calendar_source_invalid")
         failure = ""
         try:
             reference = self.read()
@@ -220,13 +223,14 @@ class SQLiteReferenceIndex:
                     int(reused),
                     failure,
                     status="reused" if reused else "running",
+                    sources=(source,) if source is not None else (),
                 )
             )
         if reused and reference is not None:
             return reference.open_dates
         dates = fetch()
         if progress is not None:
-            progress(EvidenceSyncProgress("calendar", 1, 0, 0, 0, 0, status="complete"))
+            progress(EvidenceSyncProgress("calendar", 1, 0, 0, 0, 0, status="complete", sources=(source,) if source is not None else ()))
         return dates
 
 

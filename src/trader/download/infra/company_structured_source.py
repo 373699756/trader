@@ -29,6 +29,9 @@ _DATA_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
 
 class EastmoneyCompanySource:
+    source = "eastmoney"
+    news_source = "eastmoney_news"
+
     def __init__(
         self,
         session: HttpTransport,

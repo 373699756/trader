@@ -42,6 +42,9 @@ def _sync_company_evidence(
 
 
 class Sources:
+    source = "fixture"
+    news_source = "eastmoney_news"
+
     def __init__(self):
         self.calls = []
         self.failure = False

@@ -494,6 +494,47 @@ class StructuredCompanyPage:
         return len(self.financials) + len(self.ratios) if self.raw_count is None else self.raw_count
 
 
+CompanyOperationKind = Literal[
+    "prepare", "inventory", "directory", "download", "text", "ocr", "document_commit",
+    "structured", "annual_income", "news", "publication", "collection_commit", "finish",
+]
+
+
+@dataclass(frozen=True)
+class CompanyOperationProgress:
+    """An operation boundary; execution includes pacing and is not physical HTTP time."""
+
+    token: int
+    kind: CompanyOperationKind
+    state: Literal["queued", "running", "completed", "failed", "cancelled"]
+    at: float
+    code: str = ""
+    name: str = ""
+    title: str = ""
+    source: str = "local"
+
+    def __post_init__(self) -> None:
+        if self.token < 1 or not math.isfinite(self.at) or self.at < 0 or not self.source.strip():
+            raise ValueError("company_operation_progress_invalid")
+        if self.code:
+            EvidenceMarket(self.code)
+
+
+@dataclass(frozen=True)
+class CompanyPublicationProgress:
+    """A real formal-publication boundary, independent of per-stock compilation."""
+
+    state: Literal["started", "committed"]
+    codes: tuple[str, ...]
+    changed_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for code in self.codes:
+            EvidenceMarket(code)
+        if len(set(self.codes)) != len(self.codes) or not set(self.changed_codes).issubset(self.codes):
+            raise ValueError("company_publication_progress_invalid")
+
+
 @dataclass(frozen=True)
 class CompanyStockProgress:
     code: str
@@ -555,6 +596,14 @@ class EvidenceSyncProgress:
     discovering_documents: bool = False
     workload: CompanyDocumentWorkload | None = None
     unresolved_document_failures: int = 0
+    operation: CompanyOperationProgress | None = None
+    publication: CompanyPublicationProgress | None = None
+    population: int | None = None
+    failure_document: Disclosure | None = None
+    failure_stage: CompanyOperationKind | None = None
+    unpublished_documents: int | None = None
+    failure_reason: str | None = None
+    sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -698,6 +747,10 @@ def DisclosureMonths(start: date, end: date) -> tuple[tuple[date, date], ...]:
 
 
 __all__ = [
+    "CompanyOperationKind",
+    "CompanyOperationProgress",
+    "CompanyPublicationProgress",
+    "CompanyStockProgress",
     "BuildCompanyDocumentPolicies",
     "CompanyDocumentOutputIdentity",
     "CompanyCoverageWatermark",
