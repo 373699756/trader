@@ -306,7 +306,9 @@ class StderrHistorySyncProgress:
                 task=ProgressTask("history", key, label),
                 state="处理中" if progress.state == "completed" and progress.stage in _COUNT_STAGES and progress.completed_units < progress.total_units
                       else _STATE_LABELS[progress.state],
-                finished=progress.state == "completed" and (progress.stage not in _COUNT_STAGES or progress.completed_units == progress.total_units)
+                immediate=progress.stage == "baostock_repair",
+                finished=progress.stage == "baostock_repair"
+                         or progress.state == "completed" and (progress.stage not in _COUNT_STAGES or progress.completed_units == progress.total_units)
                          or progress.state == "cancelled",
             )
         )

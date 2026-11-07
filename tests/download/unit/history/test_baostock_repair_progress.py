@@ -18,12 +18,18 @@ def test_repair_prints_one_result_per_stock_without_daily_call_heartbeats() -> N
     now[0] = 5.0
     output.heartbeat()
     keys = {message.task.key for message in messages if message.task is not None}
-    assert keys == {"baostock_repair"}
+    assert keys == set()
     progress.publish(HistorySyncProgress("baostock_repair", "failed", 1, 25, "000708", failure_reason="timeout"))
     fields = " | ".join(field.text for field in messages[-1].fields)
     assert "000708" in fields and "25" in fields and "timeout" in fields
     assert "4402" not in fields
     messages.clear()
+    progress.publish(HistorySyncProgress("baostock_repair", "completed", 2, 25, "000709"))
+    progress.publish(HistorySyncProgress("baostock_repair", "completed", 3, 25, "000710"))
+    assert len(messages) == 2
+    assert "000709" in " ".join(field.text for field in messages[0].fields)
+    assert "000710" in " ".join(field.text for field in messages[1].fields)
+    messages.clear()
     now[0] = 10.0
     output.heartbeat()
-    assert all(message.task is None or message.task.key != "supplier_daily_qfq" for message in messages)
+    assert messages == []
