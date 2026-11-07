@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import date
 from math import ceil
 from threading import Lock
-from typing import TextIO
+from typing import Literal, TextIO
 
 from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressNumber, ProgressRow, ProgressTask
 from trader.download.application.sync_progress import SyncProgress
@@ -22,6 +22,8 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
 from trader.download.domain.company_events import CompanyDataState
+from trader.download.domain.download_failure import DownloadFailureObservation
+from trader.download.entrypoints.company_result_feedback import CompanyResultFeedback
 
 
 def ReportStPreparation(
@@ -63,6 +65,13 @@ def ReportCompanyStock(
             completion_scope="batch",
         )
     )
+
+
+def ReportCompanyFailure(
+    report: Callable[[EvidenceSyncProgress], None] | None, observation: DownloadFailureObservation,
+) -> None:
+    if report is not None:
+        report(EvidenceSyncProgress("diagnostic", 0, None, 0, 0, 0, diagnostic=observation))
 
 
 _LABELS = {
@@ -126,6 +135,8 @@ class CompanyEvidenceProgress:
         else:
             self._report = report
         self._lock = Lock()
+        self._output_lock = Lock()
+        self._feedback = CompanyResultFeedback()
         self._stocks: dict[str, CompanyStockProgress] = {}
         self._reported_failures: set[str] = set()
         self._latest: dict[str, EvidenceSyncProgress] = {}
@@ -154,7 +165,19 @@ class CompanyEvidenceProgress:
         with self._lock:
             if self._finished:
                 return
-            if progress.operation is not None:
+            self._feedback.observe_run(progress.run_id)
+            if progress.diagnostic is not None:
+                messages = self._feedback.diagnostic(progress.diagnostic, self._stocks)
+            elif progress.result is not None:
+                result = progress.result
+                messages = self._feedback.result(result)
+                if messages and result.outcome == "downloaded":
+                    self._received_codes.update(result.related_codes)
+                if messages and result.outcome in {"accepted", "empty"} and result.commit_operation_id is not None:
+                    self._last_persisted = self._monotonic()
+            elif progress.recovery is not None:
+                messages = self._feedback.recovery(progress.recovery)
+            elif progress.operation is not None:
                 event = progress.operation
                 if event.state in {"queued", "running"}:
                     if event.token not in self._operations and len(self._operations) >= 160:
@@ -162,16 +185,19 @@ class CompanyEvidenceProgress:
                     self._operations[event.token] = event
                 else:
                     self._operations.pop(event.token, None)
-                    if event.state == "completed" and event.kind == "download":
-                        self._received_codes.update(event.related_codes)
-                    if event.state == "completed" and event.kind == "collection_commit":
-                        self._last_persisted = self._monotonic()
                 return
-            messages = self._update(progress)
+            else:
+                messages = self._update(progress)
         for message in messages:
-            self._report(message)
+            with self._output_lock:
+                with self._lock:
+                    if self._finished and progress.component != "complete":
+                        return
+                self._report(message)
 
     def _update(self, progress: EvidenceSyncProgress) -> tuple[ProgressMessage, ...]:
+        if progress.publication is not None and not self._feedback.is_new_publication(progress.publication):
+            return ()
         if progress.component == "resume":
             progress = replace(progress, status="complete")
         if progress.population is not None:
@@ -221,8 +247,25 @@ class CompanyEvidenceProgress:
         new_failures = set(filter(None, progress.failure.split(","))) - self._reported_failures
         self._reported_failures.update(new_failures)
         messages: list[ProgressMessage] = []
-        if progress.component != "complete" and (new_failures or progress.failure_document is not None):
+        if (progress.component in {"financial", "pledge", "unlock", "announcements", "news"}
+                and progress.completion_scope == "component" and progress.status == "complete" and progress.pending == 0
+                and (progress.component != "announcements" or progress.dates is not None
+                     and progress.dates.completed_days == progress.dates.total_days)):
+            messages.extend(self._feedback.confirm_component(progress.component))
+        reason = progress.failure_reason or next(iter(new_failures), "").partition(":")[2]
+        document = progress.failure_document
+        diagnosed = self._feedback.diagnosed(
+            progress.component, reason, f"{document.source}:{document.identity}" if document is not None else "",
+            document.digest if document is not None else "",
+        )
+        if progress.component != "complete" and not diagnosed and (new_failures or document is not None):
             messages.append(self._failure(progress, ",".join(sorted(new_failures)) or progress.failure))
+        if progress.publication is not None:
+            publishing = tuple(item.token for item in self._operations.values()
+                               if item.kind == "publication" and item.state == "running")
+            messages.extend(self._feedback.publication(
+                progress.publication, self._stocks, operation_id=publishing[0] if len(publishing) == 1 else None,
+            ))
         boundary = (previous is None
                     or progress.completion_scope == "component" and previous.status != progress.status
                     or progress.publication is not None and progress.publication.state == "committed")
@@ -230,6 +273,11 @@ class CompanyEvidenceProgress:
             self._finished = True
             self._operations.clear()
             boundary = True
+            messages.extend(self._feedback.conclude_remaining(incomplete=progress.status == "deferred"))
+        elif progress.completion_scope == "component" and progress.status in {"complete", "reused", "deferred"}:
+            messages.extend(self._feedback.conclude(
+                progress.component, incomplete=progress.status == "deferred" or bool(progress.pending),
+            ))
         now = self._monotonic()
         if boundary or now - self._last_emitted >= 5:
             starting = progress.status == "running" and (previous is None or previous.status != "running")
@@ -257,7 +305,7 @@ class CompanyEvidenceProgress:
             return ProgressMessage(
                 tuple(ProgressField(value) for value in self._overview(progress)),
                 task=ProgressTask("company", progress.component, "总览"),
-                state="取消" if "task:cancelled" in progress.failure.split(",") else "开始" if starting else "等待" if progress.status == "deferred" else "完成" if progress.status in {"complete", "reused"} else "处理中",
+                state=_terminal_result(progress)[1] if progress.component == "complete" else "开始" if starting else "等待" if progress.status == "deferred" else "完成" if progress.status in {"complete", "reused"} else "处理中",
                 finished=progress.status != "running",
                 immediate=immediate,
                 compact=True,
@@ -311,10 +359,12 @@ class CompanyEvidenceProgress:
         parts.append(f"本轮已获取{len(self._received_codes)}股、核验{len(self._stocks)}/{_quantity(self._population)}股、提交{len(self._committed_codes)}股（去重）")
         parts.append(f"已知待补{len(self._waiting_codes)}股；未核验{_quantity(None if self._population is None else max(0, self._population - len(self._stocks)))}股")
         parts.append(f"当前{_LABELS[progress.component]}；来源{_source_label(progress.sources) or '未提供'}")
+        if self._feedback.has_diagnostics:
+            parts.extend(self._feedback.summary()[:1])
         if progress.component in {"prepare", "resume", "complete"} and self._original_coverage is not None:
             parts.append(f"开场已有正式覆盖{self._original_coverage}股（不计本轮提交）")
         if progress.component == "complete":
-            parts.append("取消，待处理数量未核对" if "task:cancelled" in progress.failure.split(",") else "待续传" if progress.status == "deferred" else "本轮结束（含待核实）")
+            parts.append(_terminal_result(progress)[0])
         else:
             pending = "/".join(label for label, state in zip(_GROUP_LABELS, states, strict=True) if state == "待处理")
             if pending:
@@ -370,6 +420,7 @@ class CompanyEvidenceProgress:
                 parts.append(f"质押快照日{stock.pledge_date}")
             if stock.unlock_coverage_end is not None:
                 parts.append(f"解禁核对至{stock.unlock_coverage_end}")
+            parts.append(f"风险{stock.risks}条、利好{stock.positives}条、待核实{stock.review_count}项")
         parts.append(f"资料来源{_source_label(progress.sources) or '未提供'}")
         if progress.status == "reused":
             parts.append("本地复用原来源缓存")
@@ -414,6 +465,8 @@ class CompanyEvidenceProgress:
                 parts.append("目录仍增长，正文总数待发现")
             elif documents.document_eta_seconds is not None:
                 parts.append(f"当前可处理正文队列约{ProgressDuration(documents.document_eta_seconds)}")
+            if documents.next_document_retry_at is not None:
+                parts.append(f"最早重试{documents.next_document_retry_at.isoformat(timespec='seconds')}")
         else:
             parts.append("正文处理尚未开始")
         return tuple(parts)
@@ -444,7 +497,11 @@ class CompanyEvidenceProgress:
     def _summary_message(self, progress: EvidenceSyncProgress) -> ProgressMessage:
         details = _counts(progress, _UNITS[progress.component]) + _coverage(progress)
         if progress.component == "complete":
+            if _terminal_result(progress)[1] == "失败":
+                details = (f"本轮正式提交回执已确认 {len(self._committed_codes)} 股 | 整库正式覆盖未重新核对"
+                           " | 公告及正文待补数量未核对")
             details += self._summary()
+            details += "".join(" | " + part for part in self._feedback.summary())
             documents = self._latest.get("risk_documents")
             if documents is not None:
                 unresolved = progress.workload.unresolved_failures if progress.workload is not None else None
@@ -452,8 +509,11 @@ class CompanyEvidenceProgress:
             details += f" | 冷却 {progress.deferred_documents if progress.deferred_documents is not None else '未核对'} 篇 | OCR分类 {progress.ocr_documents if progress.ocr_documents is not None else '未核对'} 篇"
             details += f" | 本轮成功页 {progress.fetched_pages} | 原始资料变更 {progress.changed_rows} 条（非每股发布行） | 缓存复用 {progress.reused_partitions} 次"
             details += (f" | 原因 {_failure_text(progress.failure)}" if progress.failure else "") + _recovery(progress)
+        result, state = _terminal_result(progress)
+        if progress.component == "complete":
+            details = "结果 " + result + " | " + details
         return ProgressMessage(tuple(ProgressField(part) for part in details.split(" | ")), task=ProgressTask("company", progress.component + "_summary", "本地库存统计" if progress.component == "resume" else "本地结果统计"),
-                               state="完成", finished=True, immediate=True, compact=True)
+                               state=state, finished=True, immediate=True, compact=True, heartbeat=False)
 
     def _failure(self, progress: EvidenceSyncProgress, failure: str) -> ProgressMessage:
         reason = f"risk_documents:{progress.failure_reason}" if progress.failure_reason is not None else failure
@@ -484,6 +544,23 @@ class CompanyEvidenceProgress:
             f" | 风险 {sum(stock.risks for stock in stocks)} 条 | 利好 {sum(stock.positives for stock in stocks)} 条"
             f" | 待核实 {sum(stock.review_count for stock in stocks)} 项"
         )
+
+
+def _terminal_result(progress: EvidenceSyncProgress) -> tuple[str, Literal["完成", "等待", "失败", "取消"]]:
+    if progress.component != "complete":
+        return "阶段完成", "完成"
+    failures = progress.failure.split(",")
+    if "task:cancelled" in failures:
+        return "取消，待处理数量未核对", "取消"
+    if any(item.startswith("task:") for item in failures):
+        return "失败，已确认资料保留", "失败"
+    if progress.status == "deferred" or progress.pending or progress.pending_documents:
+        return ("已发布但待补" if progress.completed else "待续传"), "等待"
+    if progress.pending is None or progress.pending_documents is None:
+        return "结束，待处理数量未核对", "等待"
+    if progress.unextractable_documents:
+        return "完成，存在不可提取或资料未知", "完成"
+    return "完成", "完成"
 
 
 def _coverage(progress: EvidenceSyncProgress) -> str:
@@ -579,4 +656,4 @@ def _recovery(progress: EvidenceSyncProgress) -> str:
     return result
 
 
-__all__ = ["CompanyEvidenceProgress", "ReportCompanyStock", "ReportStPreparation"]
+__all__ = ["CompanyEvidenceProgress", "ReportCompanyStock", "ReportCompanyFailure", "ReportStPreparation"]

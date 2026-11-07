@@ -398,7 +398,7 @@ def _sync_company_evidence(
                            if progress is not None else None, sqlite_policy=sqlite_policy,
         )
         failures = DownloadFailureDiagnostics(partial(index.record_failure, configuration=failure_configuration),
-                                               ShanghaiClock(_utc_now).now, report=report, owner="company")
+            ShanghaiClock(_utc_now).now, report=report, owner="company", observe=partial(company_evidence_progress.ReportCompanyFailure, progress) if progress is not None else None)
         dependencies = CompanyEvidenceDependencies(
             index,
             source_factory(
@@ -416,7 +416,7 @@ def _sync_company_evidence(
             ocr_executor=ocr_workers,
             ocr_identity=ocr_capability.identity,
             text_identity=text_capability.identity,
-            failures=failures,
+            failures=failures, run_id=failures.run_id,
         )
         try:
             return SyncCompanyEvidence(dependencies, request)

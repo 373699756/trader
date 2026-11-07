@@ -160,7 +160,9 @@ def test_snapshot_rows_keep_counts_names_sources_and_publication():
     ReportCompanyStock(report, (), CompanyPublicationProgress("started", ("600001",)))
     ReportCompanyStock(report, (), CompanyPublicationProgress("committed", ("600001",), ("600001",)))
     assert all(message is not None for message in messages)
-    assert all(message.task.label == "总览" and tuple(row.label for row in message.rows) == ("范围", "任务") for message in messages)
+    frames = [message for message in messages if message.task.label == "总览"]
+    assert all(tuple(row.label for row in message.rows) == ("范围", "任务") for message in frames)
+    assert len(messages) == len(frames) + 1 and messages[-2].task.label == "股票发布"
     assert any("600001" in RenderProgress(message) for message in messages)
     assert any("1234567" in RenderProgress(message) for message in messages)
     assert any("来源东财" in RenderProgress(message) and "财务已保存" in RenderProgress(message) for message in messages)

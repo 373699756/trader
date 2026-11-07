@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
+from uuid import uuid4
 
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
@@ -1409,8 +1410,9 @@ class SQLiteCompanyEvidenceIndex:
             # checkpointing WAL before its file fingerprint is published.
             formal_scope.close()
             self._check_cancelled()
+            publication_id = uuid4().hex
             if self._stock_progress is not None:
-                self._stock_progress(CompanyPublicationProgress("started", requested))
+                self._stock_progress(CompanyPublicationProgress("started", requested, publication_id=publication_id))
             # Pin the sole collection writer across verification, formal commit and receipt creation.
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                 if source.run("PRAGMA data_version").require_one()[0] != source_version:
@@ -1435,7 +1437,7 @@ class SQLiteCompanyEvidenceIndex:
                 MarkCompanyDirty(connection, superseded_codes)
                 ReleasePublishedCompanyMaterial(connection, self._facts.extraction_hash)
         if self._stock_progress is not None:
-            self._stock_progress(CompanyPublicationProgress("committed", requested, changed_codes))
+            self._stock_progress(CompanyPublicationProgress("committed", requested, changed_codes, publication_id))
         self._release_files()
         if superseded_codes:
             self.publish(superseded_codes, observed_at, changed_only=True)

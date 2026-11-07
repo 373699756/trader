@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from trader.download.domain.company_annual_income import CompanyAnnualIncome
+    from trader.download.domain.download_failure import DownloadFailureObservation
 
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.prepared_reference import PreparedReference
@@ -540,6 +541,7 @@ class CompanyPublicationProgress:
     state: Literal["started", "committed"]
     codes: tuple[str, ...]
     changed_codes: tuple[str, ...] = ()
+    publication_id: str = ""
 
     def __post_init__(self) -> None:
         for code in self.codes:
@@ -615,6 +617,71 @@ class CompanyStructuredProgress:
             EvidenceMarket(code)
 
 
+CompanyResultOutcome = Literal["accepted", "reused", "rejected", "empty", "downloaded", "split", "ocr_queued", "unchanged"]
+CompanyRecoveryAction = Literal["retry", "cooldown", "unextractable", "source_deferred", "ocr_queued", "recording_failed"]
+
+
+@dataclass(frozen=True)
+class CompanyOperationResult:
+    """A producer-confirmed outcome; operation and commit clocks retain their own identities."""
+
+    operation_id: int
+    kind: CompanyOperationKind
+    source: str
+    object_id: str
+    outcome: CompanyResultOutcome
+    run_id: str = ""
+    code: str = ""
+    name: str = ""
+    related_codes: tuple[str, ...] = ()
+    metadata: Disclosure | None = None
+    revision: str = ""
+    scope: DisclosurePartition | StructuredCompanyQuery | None = None
+    rows: int | None = None
+    queued_seconds: float | None = None
+    call_seconds: float | None = None
+    commit_seconds: float | None = None
+    commit_operation_id: int | None = None
+    method: str | None = None
+    text_chars: int | None = None
+    ocr_completed_pages: int | None = None
+    ocr_total_pages: int | None = None
+    raw_bytes: int | None = None
+    changed_rows: int | None = None
+    component: str = ""
+    endpoint: str = ""
+    original_source: str = ""
+
+    def __post_init__(self) -> None:
+        if self.operation_id < 1 or not self.source or not self.object_id:
+            raise ValueError("company_operation_result_identity_invalid")
+        if any(value is not None and (not math.isfinite(value) or value < 0) for value in (
+            self.queued_seconds, self.call_seconds, self.commit_seconds,
+        )) or any(value is not None and (type(value) is not int or value < 0) for value in (
+            self.rows, self.text_chars, self.ocr_completed_pages, self.ocr_total_pages, self.raw_bytes, self.changed_rows,
+        )):
+            raise ValueError("company_operation_result_measurement_invalid")
+
+
+@dataclass(frozen=True)
+class CompanyRecoveryDecision:
+    operation_id: int | None
+    kind: CompanyOperationKind | None
+    source: str
+    object_id: str
+    decision: CompanyRecoveryAction
+    reason: str
+    run_id: str = ""
+    code: str = ""
+    metadata: Disclosure | None = None
+    revision: str = ""
+    scope: DisclosurePartition | StructuredCompanyQuery | None = None
+    retry_at: datetime | None = None
+    secondary: str = ""
+    component: str = ""
+    endpoint: str = ""
+
+
 @dataclass(frozen=True)
 class EvidenceSyncProgress:
     component: str
@@ -656,6 +723,10 @@ class EvidenceSyncProgress:
     structured: CompanyStructuredProgress | None = None
     market_dates: tuple[tuple[Market, CompanyDateProgress], ...] = ()
     existing_published_codes: int | None = None
+    result: CompanyOperationResult | None = None
+    recovery: CompanyRecoveryDecision | None = None
+    diagnostic: DownloadFailureObservation | None = None
+    run_id: str = ""
 
     def __post_init__(self) -> None:
         markets = tuple(market for market, _dates in self.market_dates)
@@ -819,6 +890,10 @@ __all__ = [
     "CompanyPublicationProgress",
     "CompanyStockProgress",
     "CompanyStructuredProgress",
+    "CompanyOperationResult",
+    "CompanyRecoveryDecision",
+    "CompanyResultOutcome",
+    "CompanyRecoveryAction",
     "BuildCompanyDocumentPolicies",
     "CompanyDocumentOutputIdentity",
     "CompanyCoverageWatermark",

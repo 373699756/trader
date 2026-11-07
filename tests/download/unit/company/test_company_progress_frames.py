@@ -18,7 +18,9 @@ from trader.download.application.progress_message import (
     ProgressTask,
     WithProgressTime,
 )
-from trader.download.domain.company_evidence import CompanyOperationKind, CompanyStockProgress, EvidenceSyncProgress
+from trader.download.domain.company_evidence import (
+    CompanyOperationKind, CompanyOperationResult, CompanyStockProgress, EvidenceSyncProgress,
+)
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportCompanyStock
 from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 
@@ -194,7 +196,7 @@ def test_row_only_change_refreshes_the_generic_heartbeat_fact_age() -> None:
 
 
 @pytest.mark.parametrize(("component", "commit_kind"), [("annual_income", "collection_commit"), ("news", "collection_commit")])
-def test_successful_commit_operations_refresh_persistence_age_without_worker_output(
+def test_confirmed_business_results_refresh_persistence_age_without_worker_output(
     component: str, commit_kind: CompanyOperationKind,
 ) -> None:
     clock = [0.0]
@@ -205,6 +207,11 @@ def test_successful_commit_operations_refresh_persistence_age_without_worker_out
     operations = CompanyOperations(report, lambda: clock[0], ())
     clock[0] = 5.0
     operations.call(commit_kind, lambda: None)
+    assert len(messages) == count
+    report(EvidenceSyncProgress("result", 0, None, 0, 0, 0, result=CompanyOperationResult(
+        1, "annual_income" if component == "annual_income" else "news", "eastmoney", component, "accepted",
+        component=component, commit_operation_id=2,
+    )))
     clock[0] = 6.0
     pending = operations.queued(commit_kind)
     clock[0] = 7.0
@@ -214,7 +221,7 @@ def test_successful_commit_operations_refresh_persistence_age_without_worker_out
     operations.call("inventory", lambda: None)
     clock[0] = 9.0
     operations.call("publication", lambda: None)
-    assert len(messages) == count
+    assert len(messages) == count + 1
     clock[0] = 10.0
     snapshot = report.heartbeat_message()
     assert snapshot is not None and "距持久推进00:00:05" in _frame_text(snapshot)

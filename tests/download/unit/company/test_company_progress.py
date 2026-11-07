@@ -280,9 +280,10 @@ def test_last_stock_closes_verification_without_claiming_a_publication():
     ReportCompanyStock(report, (), CompanyPublicationProgress("committed", ("600001",), ("600001",)))
     report(EvidenceSyncProgress("publish", 1, 0, 2, 3, 0, status="complete"))
     report(EvidenceSyncProgress("news", 0, 0, 2, 3, 0, status="complete"))
-    facts, pending, published, finished, news = _messages(stream.getvalue())
+    facts, pending, stock_result, published, finished, news = _messages(stream.getvalue())
     assert "来源本地" in facts and "600001-示例" in facts
     assert "正式提交中，尚未发布" in pending
+    assert "已提交，部分覆盖" in stock_result and "正式提交回执 已确认" in stock_result
     assert "本批提交1股" in published and "本批已提交" in published
     assert "正式覆盖" in finished and "本轮提交1股" in finished
     assert "无候选，未抓取新闻" in news and "本轮未覆盖" in news

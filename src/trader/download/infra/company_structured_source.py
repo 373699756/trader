@@ -20,6 +20,7 @@ from trader.download.domain.company_evidence import (
     EvidenceMarket,
 )
 from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
+from trader.download.domain.download_failure import DownloadValidationFailure
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.infra.http_contracts import HttpCancelled, HttpTransport
 from trader.infra.serialization.canonical_codec import CanonicalDigest
@@ -31,6 +32,16 @@ _DATA_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 class EastmoneyCompanySource:
     source = "eastmoney"
     news_source = "eastmoney_news"
+
+    def request_endpoint(self, component: str) -> str:
+        """Describe the configured request route without parameters or initiating a request."""
+        return {
+            "financial": "https://datacenter.eastmoney.com/securities/api/data/get",
+            "pledge": _DATA_URL,
+            "unlock": _DATA_URL,
+            "news": "https://search-api-web.eastmoney.com/search/jsonp",
+            "annual_income": "Eastmoney.F10.NewFinanceAnalysis.interface_family",
+        }.get(component, "")
 
     def __init__(
         self,
@@ -60,9 +71,12 @@ class EastmoneyCompanySource:
         )
         self._check_cancelled()
         CheckCompanyResponse(response)
-        payload = response.json()
+        try:
+            payload = response.json()
+        except json.JSONDecodeError as exc:
+            raise DownloadValidationFailure("company_source_json_invalid", "json", "valid_json", f"line_{exc.lineno}_column_{exc.colno}") from exc
         if not isinstance(payload, Mapping):
-            raise ValueError("company_source_schema_invalid")
+            raise DownloadValidationFailure("company_source_schema_invalid", "root", "mapping", type(payload).__name__)
         return payload
 
     def _check_cancelled(self) -> None:
@@ -116,7 +130,7 @@ class EastmoneyCompanySource:
             updated = _income_time(row.get("UPDATE_DATE"))
             if updated.date() < observed_at.date() - timedelta(days=365):
                 raise ValueError("company_annual_income_outside_window")
-            revenue = _number(row.get("OPERATE_INCOME"))
+            revenue = _number(row.get("OPERATE_INCOME"), field="OPERATE_INCOME")
             version = CanonicalDigest((request.code, report_date, disclosed, updated, currency, revenue))
             incomes.append(CompanyAnnualIncome(
                 request.code,
@@ -153,9 +167,9 @@ class EastmoneyCompanySource:
             raise ValueError("pledge_snapshot_unavailable")
         day = _day(rows[0].get("TRADE_DATE"))
         if day > observed_at.date():
-            raise ValueError("pledge_snapshot_future")
+            raise DownloadValidationFailure("pledge_snapshot_future", "TRADE_DATE", f"{window_start}..{observed_at.date()}", day.isoformat())
         if day < window_start:
-            raise ValueError("pledge_snapshot_outside_window")
+            raise DownloadValidationFailure("pledge_snapshot_outside_window", "TRADE_DATE", f"{window_start}..{observed_at.date()}", day.isoformat())
         return day
 
     def fetch(self, query: StructuredCompanyQuery, *, observed_at: datetime) -> StructuredCompanyPage:
@@ -196,24 +210,33 @@ class EastmoneyCompanySource:
                 },
             )
         rows, pages, total = _result(payload)
-        if pages > 256 or page > pages:
-            raise ValueError("company_source_page_limit")
+        if pages > 256:
+            raise DownloadValidationFailure("company_source_page_limit", "pages", "1..256", pages)
+        if page > pages:
+            raise DownloadValidationFailure("company_source_page_limit", "page", f"1..{pages}", page)
         if component == "financial":
             reports = tuple(_financial(row) for row in rows if _is_a_share(row))
-            if any(not start <= item.published_at.date() <= end for item in reports):
-                raise ValueError("financial_date_filter_ignored")
+            for item in reports:
+                if not start <= item.published_at.date() <= end:
+                    raise DownloadValidationFailure("financial_date_filter_ignored", "NOTICE_DATE", f"{start}..{end}", item.published_at.date().isoformat())
             return StructuredCompanyPage(component, page, pages, total, financials=reports, raw_count=len(rows))
         ratios: list[CompanyRatio] = []
         for row in rows:
             code = _code(row)
-            day = _day(row.get("TRADE_DATE" if component == "pledge" else "FREE_DATE"))
-            ratio = _number(row.get("PLEDGE_RATIO" if component == "pledge" else "TOTAL_RATIO"))
-            if ratio is None or not start <= day <= end:
-                raise ValueError("company_ratio_invalid")
+            date_field = "TRADE_DATE" if component == "pledge" else "FREE_DATE"
+            day = _day(row.get(date_field))
+            ratio_field = "PLEDGE_RATIO" if component == "pledge" else "TOTAL_RATIO"
+            ratio = _number(row.get(ratio_field), field=ratio_field)
+            if ratio is None:
+                raise DownloadValidationFailure("company_ratio_invalid", ratio_field, "number", "null")
+            if not start <= day <= end:
+                raise DownloadValidationFailure("company_ratio_invalid", date_field, f"{start}..{end}", day.isoformat())
+            raw_ratio = ratio
             if component == "unlock":
                 ratio *= 100.0
             if not 0 <= ratio <= 100:
-                raise ValueError("company_ratio_out_of_range")
+                expected = "0..1_fraction" if component == "unlock" else "0..100_percent"
+                raise DownloadValidationFailure("company_ratio_out_of_range", ratio_field, expected, str(raw_ratio))
             ratios.append(CompanyRatio(code, day, ratio))
         return StructuredCompanyPage(component, page, pages, total, ratios=tuple(ratios))
 
@@ -251,7 +274,10 @@ class EastmoneyCompanySource:
         text = response.text.strip()
         if not text.startswith("company("):
             raise ValueError("news_schema_invalid")
-        raw = json.loads(text[len("company(") :].rstrip(";)").strip())
+        try:
+            raw = json.loads(text[len("company(") :].rstrip(";)").strip())
+        except json.JSONDecodeError as exc:
+            raise DownloadValidationFailure("news_schema_invalid", "json", "valid_json", f"line_{exc.lineno}_column_{exc.colno}") from exc
         if not isinstance(raw, Mapping):
             raise ValueError("news_schema_invalid")
         result = raw.get("result")
@@ -285,19 +311,27 @@ class EastmoneyCompanySource:
 def _result(payload: Mapping[str, object]) -> tuple[tuple[Mapping[str, object], ...], int, int]:
     result = payload.get("result")
     if not isinstance(result, Mapping):
-        raise ValueError("structured_source_result_missing")
+        raise DownloadValidationFailure("structured_source_result_missing", "result", "mapping", type(result).__name__)
     count, pages, rows = result.get("count"), result.get("pages"), result.get("data")
     if count == 0 and rows is None:
         rows = []
-    if type(count) is not int or count < 0 or type(pages) is not int or pages < 0 or not isinstance(rows, list):
-        raise ValueError("structured_source_pagination_invalid")
-    if any(not isinstance(row, Mapping) for row in rows):
-        raise ValueError("structured_source_rows_invalid")
+    for field, value in (("count", count), ("pages", pages)):
+        if type(value) is not int or value < 0:
+            raise DownloadValidationFailure("structured_source_pagination_invalid", field, "nonnegative_integer", value if type(value) is int else type(value).__name__)
+    if not isinstance(rows, list):
+        raise DownloadValidationFailure("structured_source_pagination_invalid", "data", "list", type(rows).__name__)
+    for position, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            raise DownloadValidationFailure("structured_source_rows_invalid", f"data.{position}", "mapping", type(row).__name__)
+    assert isinstance(count, int) and isinstance(pages, int)
     return tuple(rows), max(1, pages), count
 
 
 def _day(value: object) -> date:
-    return date.fromisoformat(str(value)[:10])
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError as exc:
+        raise DownloadValidationFailure("company_source_date_invalid", "date", "ISO_date", type(value).__name__) from exc
 
 
 def _income_time(value: object) -> datetime:
@@ -310,18 +344,21 @@ def _income_time(value: object) -> datetime:
 def _code(row: Mapping[str, object]) -> str:
     code = str(row.get("SECURITY_CODE") or row.get("SECUCODE") or "").split(".")[0]
     if len(code) != 6 or not code.isdigit():
-        raise ValueError("company_source_code_invalid")
+        raise DownloadValidationFailure("company_source_code_invalid", "security_code", "six_digits", f"length_{len(code)}")
     return code
 
 
-def _number(value: object) -> float | None:
+def _number(value: object, *, field: str = "number") -> float | None:
     if value is None or value in ("", "-", "--"):
         return None
     if not isinstance(value, (str, float, int)) or isinstance(value, bool):
-        raise ValueError("company_number_invalid")
-    number = float(value)
+        raise DownloadValidationFailure("company_number_invalid", field, "number_or_null", type(value).__name__)
+    try:
+        number = float(value)
+    except (ValueError, OverflowError) as exc:
+        raise DownloadValidationFailure("company_number_invalid", field, "number_or_null", f"{type(value).__name__}_not_numeric") from exc
     if not math.isfinite(number):
-        raise ValueError("company_number_nonfinite")
+        raise DownloadValidationFailure("company_number_nonfinite", field, "finite_number", "nonfinite")
     return number
 
 
@@ -330,14 +367,14 @@ def _financial(row: Mapping[str, object]) -> CompanyFinancial:
         _code({"SECUCODE": row["SECUCODE"]}),
         _day(row.get("REPORT_DATE")),
         datetime.combine(_day(row.get("NOTICE_DATE")), time.min, _SHANGHAI),
-        _number(row.get("EPSJB")),
-        _number(row.get("BPS")),
-        _number(row.get("TOTALOPERATEREVETZ")),
-        _number(row.get("PARENTNETPROFITTZ")),
-        _number(row.get("KCFJCXSYJLRTZ")),
-        _number(row.get("ROEJQ")),
-        _number(row.get("PARENTNETPROFIT")),
-        _number(row.get("KCFJCXSYJLR")),
+        _number(row.get("EPSJB"), field="EPSJB"),
+        _number(row.get("BPS"), field="BPS"),
+        _number(row.get("TOTALOPERATEREVETZ"), field="TOTALOPERATEREVETZ"),
+        _number(row.get("PARENTNETPROFITTZ"), field="PARENTNETPROFITTZ"),
+        _number(row.get("KCFJCXSYJLRTZ"), field="KCFJCXSYJLRTZ"),
+        _number(row.get("ROEJQ"), field="ROEJQ"),
+        _number(row.get("PARENTNETPROFIT"), field="PARENTNETPROFIT"),
+        _number(row.get("KCFJCXSYJLR"), field="KCFJCXSYJLR"),
     )
 
 

@@ -1,6 +1,7 @@
 """Publication feedback follows the real formal transaction, including failure paths."""
 
 import pytest
+from dataclasses import replace
 
 from trader.download.domain.company_evidence import CompanyPublicationProgress, CompanyStockProgress
 from tests.helpers.download.company.company_pipeline import NOW, _seed
@@ -24,8 +25,9 @@ def test_formal_receipt_follows_verification_and_visible_commit(tmp_path):
     assert index.publish(("600001",), NOW) == 1
     verified, started, committed = events
     assert isinstance(verified, CompanyStockProgress) and not verified.published
-    assert started == CompanyPublicationProgress("started", ("600001",))
-    assert committed == CompanyPublicationProgress("committed", ("600001",), ("600001",))
+    assert started.publication_id and started.publication_id == committed.publication_id
+    assert replace(started, publication_id="") == CompanyPublicationProgress("started", ("600001",))
+    assert replace(committed, publication_id="") == CompanyPublicationProgress("committed", ("600001",), ("600001",))
     events.clear()
     assert index.publish(("600001",), NOW, changed_only=True) == 0
     assert events == []

@@ -10,12 +10,11 @@ from trader.download.application.company_evidence import (
     CompanyEvidenceDependencies,
     _AnnouncementRun,
     _CompanyRunContext,
-    _DocumentRun,
-    _report,
-    _structured,
     _SyncState,
 )
 from trader.download.application.company_operations import CompanyOperations
+from trader.download.application.company_progress import ReportCompanyProgress
+from trader.download.application.company_structured import CollectCompanyStructured
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import (
     CompanyFinancial,
@@ -60,7 +59,7 @@ def test_structured_detail_follows_commit_and_filters_only_progress_population(t
         return commit(query, page, observed_at)
 
     monkeypatch.setattr(index, "commit_structured", commit_page)
-    _structured(dependencies, "financial", NOW, state)
+    CollectCompanyStructured(dependencies, "financial", NOW, state)
     persisted = [event.structured for event in events if event.structured is not None and event.structured.page_rows]
     # The final component event repeats the last committed page, not another page commit.
     if not fail_second:
@@ -121,7 +120,7 @@ def test_structured_resume_and_restart_describe_current_query_not_old_coverage(t
     source = Source()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
     state = _SyncState(CompanyOperations(events.append, lambda: 0, ()), 1, population_codes=frozenset({"600001"}))
-    _structured(dependencies, "financial", NOW, state)
+    CollectCompanyStructured(dependencies, "financial", NOW, state)
     reports = [event for event in events if event.structured is not None]
     assert reports[0].structured.resumed and reports[0].structured.persisted_rows == 1
     final = reports[-1]
@@ -138,14 +137,14 @@ def test_existing_publication_baseline_and_finish_use_real_boundaries(tmp_path, 
     index, source = _index(tmp_path), Sources()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
     finish = index.finish
-    inventory = _DocumentRun.workload
+    inventory = index.document_workload
 
-    def workload(run, *, include_attempted=False):
+    def workload(*args, **kwargs):
         if not any(event.component == "resume" for event in events):
             preparation = [event for event in events if event.component == "prepare"]
             assert preparation[-1].status == "running"
             assert events[-1].operation.kind == "inventory" and events[-1].operation.state == "running"
-        return inventory(run, include_attempted=include_attempted)
+        return inventory(*args, **kwargs)
 
     def finish_index(observed_at):
         reports = [event for event in events if event.component == "finish"]
@@ -153,7 +152,7 @@ def test_existing_publication_baseline_and_finish_use_real_boundaries(tmp_path, 
         finish(observed_at)
 
     monkeypatch.setattr(index, "finish", finish_index)
-    monkeypatch.setattr(_DocumentRun, "workload", workload)
+    monkeypatch.setattr(index, "document_workload", workload)
     for expected in (0, 1):
         events.clear()
         result = _sync_company_evidence(dependencies, ("600001",), NOW)
@@ -170,9 +169,9 @@ def test_local_batch_completion_is_not_component_completion(tmp_path, component)
     index, source = _index(tmp_path), Sources()
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
     state = _SyncState(CompanyOperations(events.append, lambda: 0, ()), 1)
-    _report(dependencies, component, state, 0, completed=1, status="complete")
+    ReportCompanyProgress(dependencies, component, state, 0, completed=1, status="complete")
     assert events[-1].status == "complete" and events[-1].completion_scope == "batch"
-    _report(dependencies, "complete", state, 0, completed=1, status="complete")
+    ReportCompanyProgress(dependencies, "complete", state, 0, completed=1, status="complete")
     assert events[-1].completion_scope == "component"
 
 

@@ -7,6 +7,7 @@ import pytest
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_sources import Session
 from trader.download.application.company_evidence import CompanyEvidenceDependencies
+from trader.download.application.company_documents import CompanyDocumentRun
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex
 from tests.helpers.download.company_resources import EastmoneyCompanySourceFixture as EastmoneyCompanySource
@@ -123,11 +124,9 @@ def test_cancellation_during_document_batch_preserves_commits_without_final_inve
 
 
 def test_cancellation_during_final_inventory_read_returns_unknown_counts_and_keeps_published_count(tmp_path, monkeypatch):
-    from trader.download.application import company_evidence as application
-
     index = fixtures._index(tmp_path)
     cancelled = Event()
-    inventory = application._DocumentRun.workload
+    inventory = CompanyDocumentRun.workload
 
     def interrupted_inventory(documents, *, include_attempted=False):
         if include_attempted:
@@ -135,7 +134,7 @@ def test_cancellation_during_final_inventory_read_returns_unknown_counts_and_kee
             raise InterruptedError("company_sync_cancelled")
         return inventory(documents, include_attempted=include_attempted)
 
-    monkeypatch.setattr(application._DocumentRun, "workload", interrupted_inventory)
+    monkeypatch.setattr(CompanyDocumentRun, "workload", interrupted_inventory)
     source = fixtures.Sources()
     result = fixtures._sync_company_evidence(
         CompanyEvidenceDependencies(index, source, source, lambda: 0, cancel_requested=cancelled.is_set),

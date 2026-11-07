@@ -17,6 +17,8 @@ from trader.download.domain.company_evidence import (
 from tests.helpers.download.company_resources import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource, EastmoneyCompanySourceFixture as EastmoneyCompanySource
 
 from trader.infra.http_contracts import HttpResponse, HttpResponseTooLarge
+from trader.download.domain.download_failure import DownloadFailureContext, DownloadValidationFailure
+from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
 
 from tests.helpers.download.company.company_sources import (
     NOW,
@@ -323,3 +325,63 @@ def test_broken_empty_payload_is_not_a_successful_zero_snapshot():
     source = EastmoneyCompanySource(Session({"result": None}), monotonic=lambda: 0)
     with pytest.raises(ValueError, match="result_missing"):
         source.fetch(StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), observed_at=NOW)
+
+
+@pytest.mark.parametrize("supplier", ["eastmoney", "cninfo"])
+def test_invalid_json_keeps_decode_location_without_exposing_supplier_content(supplier):
+    class Raw(Session):
+        def post(self, url, **kwargs):
+            return HttpResponse(200, b"private-payload /private/source.html")
+
+        get = post
+
+    session = Raw({})
+    if supplier == "eastmoney":
+        source = EastmoneyCompanySource(session, monotonic=lambda: 0)
+        call = lambda: source.fetch(StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), observed_at=NOW)
+    else:
+        source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda value: None)
+        call = lambda: source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date()))
+    with pytest.raises(DownloadValidationFailure) as caught:
+        call()
+    failure = caught.value
+    assert failure.field == "json" and failure.expected == "valid_json" and failure.actual == "line_1_column_1"
+    records = []
+    DownloadFailureDiagnostics(records.append, lambda: NOW)(DownloadFailureContext("company_directory"), failure)
+    assert "JSONDecodeError" in records[0].diagnostic and "field=json" in records[0].diagnostic
+    assert "private-payload" not in records[0].diagnostic and "/private/" not in records[0].diagnostic
+
+
+def test_invalid_pagination_names_the_exact_field_and_safe_actual_type():
+    source = EastmoneyCompanySource(Session({"result": {"count": "private-remote-value", "pages": 1, "data": []}}), monotonic=lambda: 0)
+    with pytest.raises(DownloadValidationFailure) as caught:
+        source.fetch(StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), observed_at=NOW)
+    assert (caught.value.field, caught.value.expected, caught.value.actual) == ("count", "nonnegative_integer", "str")
+
+
+def test_unlock_validation_reports_the_actual_supplier_fraction_before_conversion():
+    source = EastmoneyCompanySource(Session({"result": {"count": 1, "pages": 1, "data": [{
+        "SECURITY_CODE": "600001", "FREE_DATE": NOW.date().isoformat(), "TOTAL_RATIO": 1.1,
+    }]}}), monotonic=lambda: 0)
+    with pytest.raises(DownloadValidationFailure, match="company_ratio_out_of_range") as caught:
+        source.fetch(StructuredCompanyQuery("unlock", NOW.date(), NOW.date()), observed_at=NOW)
+    assert (caught.value.field, caught.value.expected, caught.value.actual) == ("TOTAL_RATIO", "0..1_fraction", "1.1")
+
+
+def test_request_endpoint_descriptors_match_real_routes_without_requests_or_dynamic_parameters():
+    session = Session({})
+    eastmoney = EastmoneyCompanySource(session, monotonic=lambda: 0)
+    cninfo = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda value: None)
+    assert eastmoney.request_endpoint("financial") == "https://datacenter.eastmoney.com/securities/api/data/get"
+    assert eastmoney.request_endpoint("pledge") == eastmoney.request_endpoint("unlock") == "https://datacenter-web.eastmoney.com/api/data/v1/get"
+    assert eastmoney.request_endpoint("news") == "https://search-api-web.eastmoney.com/search/jsonp"
+    assert eastmoney.request_endpoint("annual_income") == "Eastmoney.F10.NewFinanceAnalysis.interface_family"
+    assert cninfo.request_endpoint("directory") == "https://www.cninfo.com.cn/new/hisAnnouncement/query"
+    assert cninfo.request_endpoint("download") == "https://static.cninfo.com.cn/finalpage/"
+    assert cninfo.request_endpoint("text") == "local_pdf_text_extraction"
+    assert cninfo.request_endpoint("ocr") == "local_pdf_ocr"
+    assert eastmoney.request_endpoint("unknown") == cninfo.request_endpoint("unknown") == ""
+    assert session.requests == []
+    assert all(token not in endpoint for endpoint in (
+        eastmoney.request_endpoint("news"), cninfo.request_endpoint("download"),
+    ) for token in ("?", "#", "@", "600001", "private"))

@@ -13,11 +13,11 @@ from trader.download.application.company_evidence import (
     SyncCompanyEvidence,
     _AnnouncementRun,
     _CompanyRunContext,
-    _DocumentRun,
     _SyncState,
 )
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.download.application.company_operations import CompanyOperations
+from trader.download.application.company_documents import CompanyDocumentRun
 from trader.infra.workers import BoundedExecutor, WorkerResourceRejectedError
 
 
@@ -138,7 +138,8 @@ def test_document_batch_does_not_reset_oldest_unpublished_time(tmp_path):
                        unpublished_documents=1, publication_pending_since=10.0)
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 20.0, coalesce_publications=True)
     context = _CompanyRunContext(fixtures.NOW, 0.0, fixtures._TEST_COMPANY_CONFIGURATION, fixtures.NOW.date())
-    documents = _DocumentRun(dependencies, ("600001",), state, context)
+    documents = CompanyDocumentRun(dependencies, ("600001",), state, context,
+                                   publish=lambda: pytest.fail("unexpected_document_publication"))
     documents.run_batch()
     documents.run_batch()
     assert state.unpublished_documents == 1 and state.publication_pending_since == 10.0

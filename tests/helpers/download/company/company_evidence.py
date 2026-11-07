@@ -45,6 +45,9 @@ class Sources:
     source = "fixture"
     news_source = "eastmoney_news"
 
+    def request_endpoint(self, component):
+        return f"fixture:{component}"
+
     def __init__(self):
         self.calls = []
         self.failure = False

@@ -75,21 +75,23 @@ def test_input_recovery_reopens_legacy_failure_and_keeps_successful_body(tmp_pat
 def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_path):
     import json
 
-    from trader.download.application.company_evidence import _DocumentRun, _SourceCircuit, _SyncState
+    from trader.download.application.company_evidence import _SyncState
+    from trader.download.application.company_documents import CompanyDocumentRun
+    from trader.download.application.company_failures import CompanySourceCircuit
     from trader.download.application.company_operations import CompanyOperations
     from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyOcrDiagnostic
 
     index = fixtures._index(tmp_path)
     item = _seed(index, 1)[0]
     policies = fixtures._TEST_DOCUMENT_POLICIES
-    run = _DocumentRun.__new__(_DocumentRun)
+    run = CompanyDocumentRun.__new__(CompanyDocumentRun)
     run.dependencies = CompanyEvidenceDependencies(index, fixtures.Sources(), fixtures.Sources(), lambda: 0.0)
     run.failed_identities = set()
     run.state = _SyncState(CompanyOperations(None, lambda: 0.0, ()), 1)
     run.policies = policies
     run.configuration = fixtures._TEST_COMPANY_CONFIGURATION
     run.observed_at, run.started = NOW, 0.0
-    run.circuit = _SourceCircuit()
+    run.circuit = CompanySourceCircuit()
     diagnostic = CompanyOcrDiagnostic("recognition", 2, 3, 91, 24.0, 3)
     failure = CompanyDocumentFailure("disclosure_document_ocr_timeout", payload_hash=b"a" * 32, diagnostic=diagnostic)
     run.failed(item, failure)

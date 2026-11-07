@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import os
 import re
 import sys
@@ -30,6 +31,7 @@ from trader.download.domain.company_evidence import (
     DocumentRoute,
 )
 from trader.download.infra.company_document_ocr import CompanyOcrEngine
+from trader.download.domain.download_failure import DownloadValidationFailure
 from trader.download.infra.company_document_parser import CompanyTextCapability
 from trader.download.infra.company_document_process import CaptureDocumentTool
 from trader.download.infra.company_raw_files import CompanyLocalDocument, CompanyRawFiles
@@ -53,6 +55,17 @@ _DEFAULT_TEXT_CAPABILITY = CompanyTextCapability("poppler-path", "pdftotext", "p
 
 class CninfoMarketDisclosureSource:
     source = "cninfo"
+
+    def request_endpoint(self, component: str) -> str:
+        """Expose stable public routes and local processing names without a document URL."""
+        return {
+            "announcements": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+            "directory": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+            "download": "https://static.cninfo.com.cn/finalpage/",
+            "risk_documents": "https://static.cninfo.com.cn/finalpage/",
+            "text": "local_pdf_text_extraction",
+            "ocr": "local_pdf_ocr",
+        }.get(component, "")
 
     def __init__(
         self,
@@ -101,7 +114,7 @@ class CninfoMarketDisclosureSource:
         if partition.page > 100:
             raise ValueError("cninfo_page_limit")
         response = self._request(partial(self._fetch_page, partition, order=order))
-        return _parse_page(response.json(), partition)
+        return _parse_page(_response_json(response), partition)
 
     def _fetch_page(self, partition: DisclosurePartition, *, order: str = "") -> HttpResponse:
         return self._session.post(
@@ -156,7 +169,7 @@ class CninfoMarketDisclosureSource:
                     cancel_requested=self._cancel_requested,
                 ),
             )
-            payload = response.json()
+            payload = _response_json(response)
             rows = payload.get("stockList") if isinstance(payload, Mapping) else None
             if not isinstance(rows, list) or not rows:
                 raise ValueError("cninfo_security_list_invalid")
@@ -200,7 +213,7 @@ class CninfoMarketDisclosureSource:
                 for order in tuple(orders):
                     sample = replace(partition, query=DisclosureQuery(plate), page=number)
                     response = self._request(partial(self._fetch_page, sample, order=order))
-                    payload = response.json()
+                    payload = _response_json(response)
                     page = _parse_page(payload, sample)
                     if report is not None:
                         report(replace(sample, expected_rows=page.total))
@@ -509,15 +522,26 @@ def _repair_groups(members: list[DisclosureSecurity]) -> tuple[DisclosureQuery, 
     return tuple(queries)
 
 
+def _response_json(response: HttpResponse) -> object:
+    try:
+        return response.json()
+    except json.JSONDecodeError as exc:
+        raise DownloadValidationFailure("cninfo_schema_invalid", "json", "valid_json", f"line_{exc.lineno}_column_{exc.colno}") from exc
+
+
 def _parse_page(payload: object, partition: DisclosurePartition) -> DisclosurePage:
     if not isinstance(payload, Mapping):
-        raise ValueError("cninfo_schema_invalid")
+        raise DownloadValidationFailure("cninfo_schema_invalid", "root", "mapping", type(payload).__name__)
     total, more = payload.get("totalRecordNum"), payload.get("hasMore")
     rows = payload.get("announcements")
     if rows is None and total == 0:
         rows = []
-    if type(total) is not int or total < 0 or type(more) is not bool or not isinstance(rows, list):
-        raise ValueError("cninfo_pagination_invalid")
+    if type(total) is not int or total < 0:
+        raise DownloadValidationFailure("cninfo_pagination_invalid", "totalRecordNum", "nonnegative_integer", total if type(total) is int else type(total).__name__)
+    if type(more) is not bool:
+        raise DownloadValidationFailure("cninfo_pagination_invalid", "hasMore", "bool", type(more).__name__)
+    if not isinstance(rows, list):
+        raise DownloadValidationFailure("cninfo_pagination_invalid", "announcements", "list", type(rows).__name__)
     result: list[Disclosure] = []
     query = partition.query
     selected = {security.code for security in query.securities} if query else set()
@@ -529,16 +553,16 @@ def _parse_page(payload: object, partition: DisclosurePartition) -> DisclosurePa
             if (selected and not selected.intersection(item.codes) and str(raw.get("orgId") or "") not in issuers) or (
                 not selected and any(_plate(code) != query.plate for code in item.codes)
             ):
-                raise ValueError("cninfo_query_filter_ignored")
+                raise DownloadValidationFailure("cninfo_query_filter_ignored", "issuer", "matching_query", "outside_query")
         result.append(item)
     if more and not result:
-        raise ValueError("cninfo_empty_nonterminal_page")
+        raise DownloadValidationFailure("cninfo_empty_nonterminal_page", "announcements.length", "nonempty_when_hasMore", 0)
     return DisclosurePage(tuple(result), total, more)
 
 
 def _parse_disclosure(row: object, partition: DisclosurePartition) -> Disclosure:
     if not isinstance(row, Mapping):
-        raise ValueError("cninfo_row_invalid")
+        raise DownloadValidationFailure("cninfo_row_invalid", "announcement", "mapping", type(row).__name__)
     identity = str(row.get("announcementId") or "")
     codes = tuple(sorted(set(str(row.get("secCode") or "").split(","))))
     title = html.unescape(re.sub(r"<[^>]+>", "", str(row.get("announcementTitle") or ""))).strip()
@@ -550,12 +574,14 @@ def _parse_disclosure(row: object, partition: DisclosurePartition) -> Disclosure
         or not isinstance(stamp, (int, float))
         or any(len(code) != 6 or not code.isdigit() for code in codes)
     ):
-        raise ValueError("cninfo_identity_invalid")
+        field = "announcementId" if not identity else "announcementTitle" if not title else "announcementTime" if not isinstance(stamp, (int, float)) else "secCode"
+        actual = "empty" if field in {"announcementId", "announcementTitle"} else type(stamp).__name__ if field == "announcementTime" else "invalid_security_code"
+        raise DownloadValidationFailure("cninfo_identity_invalid", field, "valid_announcement_identity", actual)
     published = datetime.fromtimestamp(stamp / 1000, _SHANGHAI)
     if not partition.start <= published.date() <= partition.end:
-        raise ValueError("cninfo_date_filter_ignored")
+        raise DownloadValidationFailure("cninfo_date_filter_ignored", "announcementTime", f"{partition.start}..{partition.end}", published.date().isoformat())
     if adjunct and (not adjunct.startswith("finalpage/") or ".." in adjunct):
-        raise ValueError("cninfo_document_path_invalid")
+        raise DownloadValidationFailure("cninfo_document_path_invalid", "adjunctUrl", "relative_finalpage_path", "unexpected_path_shape")
     digest = hashlib.sha256(
         f"{identity}\n{title}\n{published.isoformat()}\n{adjunct}\n{row.get('adjunctSize')}\n{row.get('adjunctType')}".encode()
     ).hexdigest()
