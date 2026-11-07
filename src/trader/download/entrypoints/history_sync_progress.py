@@ -205,6 +205,8 @@ class StderrHistorySyncProgress:
         self._lock = Lock()
         self._output = report or SyncProgress(TerminalDownloadProgress(), monotonic)
         self._stock_counts: tuple[int, int] | None = None
+        self._repair_counts: tuple[int, int] | None = None
+        self._daily_stage: HistorySyncProgressStage | None = None
         self._last_progress: tuple[HistorySyncProgressStage, str | None] | None = None
         self._specific_failure: tuple[HistorySyncProgressStage, str | None] | None = None
         self._route: HistorySyncProgress | None = None
@@ -229,6 +231,16 @@ class StderrHistorySyncProgress:
             self._output.finish_owner("history")
 
     def _publish(self, progress: HistorySyncProgress) -> None:
+        if progress.stage == "baostock_repair":
+            self._repair_counts = (progress.completed_units, progress.total_units)
+            if progress.current_item is not None or progress.state == "completed":
+                self._finish_daily_stage()
+        if progress.stage in _DAILY_STAGES and self._repair_counts is not None:
+            return
+        if progress.stage in _DAILY_STAGES:
+            if self._daily_stage != progress.stage:
+                self._finish_daily_stage()
+            self._daily_stage = progress.stage
         if (
             progress.stage == "persisting_partitions" and progress.state == "waiting"
             and progress.current_item is None and progress.completed_units == 0 and progress.total_units == 1
@@ -373,6 +385,11 @@ class StderrHistorySyncProgress:
             progress.stage == "loading_context" and progress.state == "failed"
             and self._specific_failure is not None
         )
+
+    def _finish_daily_stage(self) -> None:
+        if self._daily_stage is not None:
+            self._output.finish(ProgressTask("history", self._daily_stage, _STAGE_LABELS[self._daily_stage]))
+            self._daily_stage = None
 
     def _progress_parts(self, progress: HistorySyncProgress) -> list[str]:
         parts: list[str] = []
