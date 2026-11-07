@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from trader.download.domain.company_annual_income import CompanyAnnualIncome
 
-from trader.download.domain.company_events import CompanyEventPolicy
+from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.prepared_reference import PreparedReference
 
 Market = Literal["sse", "szse", "bse"]
@@ -512,12 +512,25 @@ class CompanyOperationProgress:
     name: str = ""
     title: str = ""
     source: str = "local"
+    completed_units: int | None = None
+    total_units: int | None = None
+    unit: Literal["pages"] | None = None
+    related_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.token < 1 or not math.isfinite(self.at) or self.at < 0 or not self.source.strip():
             raise ValueError("company_operation_progress_invalid")
         if self.code:
             EvidenceMarket(self.code)
+        if self.related_codes != tuple(sorted(set(self.related_codes))):
+            raise ValueError("company_operation_related_codes_invalid")
+        for related_code in self.related_codes:
+            EvidenceMarket(related_code)
+        if any(value is not None for value in (self.completed_units, self.total_units, self.unit)) and (
+            type(self.completed_units) is not int or type(self.total_units) is not int
+            or self.unit != "pages" or not 0 <= self.completed_units <= self.total_units
+        ):
+            raise ValueError("company_operation_units_invalid")
 
 
 @dataclass(frozen=True)
@@ -550,6 +563,14 @@ class CompanyStockProgress:
     coverage_complete: bool = False
     reused: bool = False
     review_count: int = 0
+    financial_state: CompanyDataState | None = None
+    pledge_state: CompanyDataState | None = None
+    unlock_state: CompanyDataState | None = None
+    announcement_state: CompanyDataState | None = None
+    financial_report_date: date | None = None
+    financial_disclosed_at: datetime | None = None
+    pledge_date: date | None = None
+    unlock_coverage_end: date | None = None
 
 
 @dataclass(frozen=True)
@@ -565,6 +586,33 @@ class CompanyDateProgress:
     @property
     def total_days(self) -> int:
         return (self.window_end - self.window_start).days + 1
+
+
+@dataclass(frozen=True)
+class CompanyStructuredProgress:
+    """Rows committed for one supplier query; page codes belong to this run's population."""
+
+    query: StructuredCompanyQuery
+    persisted_rows: int
+    page_rows: int = 0
+    qualified_codes: tuple[str, ...] = ()
+    first_date: date | None = None
+    last_date: date | None = None
+    resumed: bool = False
+    restarted: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.persisted_rows) is not int or type(self.page_rows) is not int
+            or not 0 <= self.page_rows <= self.persisted_rows
+            or self.qualified_codes != tuple(sorted(set(self.qualified_codes)))
+            or (self.first_date is None) != (self.last_date is None)
+            or self.first_date is not None and self.last_date is not None
+            and not self.query.start <= self.first_date <= self.last_date <= self.query.end
+        ):
+            raise ValueError("company_structured_progress_invalid")
+        for code in self.qualified_codes:
+            EvidenceMarket(code)
 
 
 @dataclass(frozen=True)
@@ -604,6 +652,25 @@ class EvidenceSyncProgress:
     unpublished_documents: int | None = None
     failure_reason: str | None = None
     sources: tuple[str, ...] = ()
+    completion_scope: Literal["component", "batch"] = "component"
+    structured: CompanyStructuredProgress | None = None
+    market_dates: tuple[tuple[Market, CompanyDateProgress], ...] = ()
+    existing_published_codes: int | None = None
+
+    def __post_init__(self) -> None:
+        markets = tuple(market for market, _dates in self.market_dates)
+        if (
+            self.completion_scope not in {"component", "batch"}
+            or len(set(markets)) != len(markets)
+            or any(market not in {"sse", "szse", "bse"} for market in markets)
+            or self.structured is not None and self.structured.query.component != self.component
+            or self.existing_published_codes is not None and (
+                self.component not in {"resume", "complete"} or type(self.existing_published_codes) is not int
+                or self.existing_published_codes < 0
+                or self.population is not None and self.existing_published_codes > self.population
+            )
+        ):
+            raise ValueError("company_progress_scope_invalid")
 
 
 @dataclass(frozen=True)
@@ -751,6 +818,7 @@ __all__ = [
     "CompanyOperationProgress",
     "CompanyPublicationProgress",
     "CompanyStockProgress",
+    "CompanyStructuredProgress",
     "BuildCompanyDocumentPolicies",
     "CompanyDocumentOutputIdentity",
     "CompanyCoverageWatermark",

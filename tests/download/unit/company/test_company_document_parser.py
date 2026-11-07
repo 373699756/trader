@@ -103,8 +103,10 @@ def test_poppler_capability_is_versioned_and_parser_timeout_falls_back_to_ocr(mo
             return HttpResponse(200, _pdf())
 
     class Ocr:
-        def extract(self, payload, payload_hash):
+        def extract(self, payload, payload_hash, *, page_progress=None):
             assert payload and len(payload_hash) == 32
+            if page_progress is not None:
+                page_progress(1, 1)
             return "OCR recovered announcement evidence. " * 4, 88.0
 
     source = CninfoMarketDisclosureSource(
@@ -125,8 +127,10 @@ def test_poppler_capability_is_versioned_and_parser_timeout_falls_back_to_ocr(mo
     source.download_document(item)
     with pytest.raises(CompanyDocumentFailure, match="disclosure_document_ocr_required"):
         source.extract_document(item)
-    extraction = source.extract_document(item, route="ocr")
+    progress = []
+    extraction = source.extract_document(item, route="ocr", page_progress=lambda done, total: progress.append((done, total)))
     assert extraction.method == "ocr" and extraction.quality == 88.0
+    assert progress == [(1, 1)]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="signal-based parser termination probe")

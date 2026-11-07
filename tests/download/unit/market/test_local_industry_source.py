@@ -386,10 +386,14 @@ def test_feedback_reports_effective_budget_real_batches_and_exclusive_operation_
     source = replace(source, monotonic=monotonic, report=messages.append)
     _fetch(source, codes=("600001", "600002"))
     first = " | ".join(field.text for field in messages[0].fields)
-    assert "有效单批上限 64股" in first and "正文合计上限 2097152字节" in first
+    assert "有效单批上限" not in first and "正文合计上限" not in first
+    assert "行业归属核验范围" in first and "公共参考，非公司资料披露窗口" in first
+    assert "累计" not in first and "已收到个股原件" not in first
     assert "来源 巨潮" in first
     final = " | ".join(field.text for field in messages[-1].fields)
     assert messages[-1].state == "完成"
+    assert "结束诊断" in final and "有效单批上限 64股" in final
+    assert "正文合计上限 2097152字节" in final
     assert "接口获取（含解析）累计 3.000秒" in final
     assert "原件保存累计 2.000秒" in final
     assert "完整发布累计 1.000秒" in final
@@ -450,7 +454,8 @@ def test_waiting_feedback_names_current_stock_without_confirming_uncommitted_ori
         output.heartbeat()
         line = " | ".join(part.strip() for part in stream.getvalue().splitlines()[-1].split(" | "))
         assert "等待 | 操作 获取个股行业 | 当前股票 600001" in line
-        assert "已确认 0/1股" in line and "已保存个股原件 0份" in line
+        assert "已确认 0/1股" in line and "已保存个股原件" not in line
+        assert "原件已保存" not in line
         assert "原件缓存未复用 无原件" in line
         assert "来源 巨潮" in line
         return fetch(client, code, start, end, cancel_requested=cancel_requested)

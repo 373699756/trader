@@ -66,7 +66,7 @@ class Sources:
     def download_document(self, item):
         return None
 
-    def extract_document(self, item, *, route="standard"):
+    def extract_document(self, item, *, route="standard", page_progress=None):
         return self.document(item) if route == "standard" else self.document(item, route=route)
 
     def split_queries(self, partition):

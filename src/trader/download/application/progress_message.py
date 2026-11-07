@@ -42,6 +42,16 @@ class ProgressField:
 
 
 @dataclass(frozen=True)
+class ProgressRow:
+    label: str
+    fields: tuple[ProgressField, ...]
+
+    def __post_init__(self) -> None:
+        if not self.label.strip():
+            raise ValueError("progress_row_label_missing")
+
+
+@dataclass(frozen=True)
 class ProgressMessage:
     fields: tuple[ProgressField, ...]
     stock_failure_code: str | None = None
@@ -52,6 +62,7 @@ class ProgressMessage:
     compact: bool = False
     owner_finished: bool = False
     heartbeat: bool = True
+    rows: tuple[ProgressRow, ...] = ()
 
 
 def FormatProgressField(text: str, width: int = 0, *, level: ProgressLevel = ProgressLevel.NORMAL) -> ProgressField:
@@ -70,10 +81,20 @@ def WithProgressTime(message: ProgressMessage, total_seconds: float, stage_secon
             total_seconds, f"{message.task.owner}·{message.task.label}", stage_seconds, message.state,
             stage_width=30 if message.compact else 52,
         )
+    rows: list[ProgressRow] = []
+    for row in message.rows:
+        row_prefix = progress_format.ProgressPrefix(
+            total_seconds, f"{message.task.owner}·{row.label}", stage_seconds, message.state,
+            stage_width=30 if message.compact else 52,
+        )
+        rows.append(replace(row, fields=(
+            *(ProgressField(part) for part in (row_prefix[:2] if message.compact else row_prefix)),
+            *row.fields,
+        )))
     return replace(message, fields=(
         *(ProgressField(part) for part in (prefix[:2] if message.compact else prefix)),
         *message.fields,
-    ))
+    ), rows=tuple(rows))
 
 
 __all__ = [
@@ -83,6 +104,7 @@ __all__ = [
     "ProgressField",
     "ProgressLevel",
     "ProgressMessage",
+    "ProgressRow",
     "HighestProgressLevel",
     "FormatProgressField",
     "ProgressNumber",

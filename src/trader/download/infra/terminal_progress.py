@@ -9,14 +9,20 @@ import sys
 from threading import Lock
 from typing import TextIO
 
-from trader.download.application.progress_message import ProgressLevel, ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
 
 _COLORS = {ProgressLevel.SUCCESS: "32", ProgressLevel.WARNING: "33", ProgressLevel.ERROR: "31"}
 
 
 def RenderProgress(message: ProgressMessage, *, color: bool = False) -> str:
+    return "\n".join(
+        _render_fields(fields, color=color) for fields in (message.fields, *(row.fields for row in message.rows))
+    )
+
+
+def _render_fields(fields: tuple[ProgressField, ...], *, color: bool) -> str:
     parts = []
-    for field in message.fields:
+    for field in fields:
         value = CleanProgressText(field.text)
         if color and field.level in _COLORS:
             content = value.rstrip(" ")

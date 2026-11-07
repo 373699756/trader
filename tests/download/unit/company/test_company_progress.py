@@ -26,6 +26,18 @@ from trader.download.entrypoints.company_evidence_progress import CompanyEvidenc
 from trader.entrypoints.cli import Main
 
 
+def _messages(text: str) -> list[str]:
+    """Group one atomic company frame while preserving standalone diagnostics."""
+    lines = text.splitlines()
+    messages = []
+    index = 0
+    while index < len(lines):
+        size = 3 if "company·总览" in lines[index] else 1
+        messages.append("\n".join(lines[index:index + size]))
+        index += size
+    return messages
+
+
 @pytest.mark.parametrize(
     ("result", "expected"),
     (
@@ -63,11 +75,11 @@ def test_elapsed_hms_and_final_progress_are_printed_even_inside_throttle_window(
     )
     clock[0] += 0.1
     report(EvidenceSyncProgress("risk_documents", 147, 0, 425, 40325, 0, status="complete", attempted_documents=147))
-    first, final = stream.getvalue().splitlines()
-    assert "已入库 1 待 146篇" in " ".join(first.split())
-    assert "当前正文股票" not in first and "已分析 0" not in first and "待分析 0" not in first
-    assert first.startswith("00:09:51 | company·正文") and "591.1秒" not in first
-    assert "已入库 147 待 0篇" in " ".join(final.split()) and "本批结束" in final
+    first, final = _messages(stream.getvalue())
+    assert "正文已入库1篇，可处理待补146篇" in first
+    assert "当前股票600001-示例" in first and "已分析0/0篇" in first
+    assert first.startswith("00:09:51 | company·总览") and "591.1秒" not in first
+    assert "正文已入库147篇，可处理待补0篇" in final and "阶段完成" in final
 
 
 def test_reference_progress_uses_the_shared_prefix_and_flushes_each_stage():
@@ -89,8 +101,8 @@ def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
     report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
     report(EvidenceSyncProgress("financial", 0, None, 0, 0, 0))
     report(EvidenceSyncProgress("financial", 0, 0, 0, 0, 1, status="reused"))
-    unknown, reused = stream.getvalue().splitlines()
-    assert "持久页 0/ ?" in " ".join(unknown.split())
+    unknown, reused = _messages(stream.getvalue())
+    assert "财务已保存0/待发现页" in unknown
     assert "本地复用原来源缓存" in reused and "100.00%" not in reused
 
 
@@ -125,14 +137,14 @@ def test_batch_announcement_progress_uses_dates_and_fact_verification_uses_stock
             dates=CompanyDateProgress(day, day, 0),
         )
     )
-    output = stream.getvalue().splitlines()[-1]
-    assert "全市场日 0/ 1" in " ".join(output.split())
-    assert "上交所 10-24 3/ 4页" in " ".join(output.split())
+    output = _messages(stream.getvalue())[-1]
+    assert "全市场日期闭合0/1天" in output
+    assert "上交所 当前第3/4页" in output
     assert "4401" not in output and "600001" not in output
     assert "原始资料变更" not in output and "变更行" not in output
     assert "已分析" not in output and "待分析" not in output and "事件待核验" not in output
     assert "证券组" not in output and "分片" not in output
-    assert output.startswith("00:35:10 | company·目录")
+    assert output.startswith("00:35:10 | company·总览") and "当前目录" in output
     report(
         EvidenceSyncProgress(
             "facts",
@@ -146,8 +158,8 @@ def test_batch_announcement_progress_uses_dates_and_fact_verification_uses_stock
             ),
         )
     )
-    published = stream.getvalue().splitlines()[-1]
-    assert "核验 2/ 4401股" in " ".join(published.split())
+    published = _messages(stream.getvalue())[-1]
+    assert "本批核验2/4401股" in published
     assert "600001-示例" in published and "核验未发布" in published
     assert "| 已发布" not in published
 
@@ -173,11 +185,11 @@ def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end()
         )
     )
 
-    first, second, third, fourth, final = stream.getvalue().splitlines()
+    first, second, third, fourth, final = _messages(stream.getvalue())
     assert "原因 公告正文：PDF无法解析" in first
-    assert "已入库 151 待" in " ".join(second.split())
+    assert "正文已入库151篇，可处理待补1095篇" in second
     assert "原因 公告正文：PDF超过扩展大小上限" in third and "PDF无法解析" not in third
-    assert "已入库 156 待" in " ".join(fourth.split()) and "原因" not in fourth
+    assert "正文已入库156篇，可处理待补1090篇" in fourth and "原因" not in fourth
     assert "待续传" in final
 
 
@@ -268,11 +280,11 @@ def test_last_stock_closes_verification_without_claiming_a_publication():
     ReportCompanyStock(report, (), CompanyPublicationProgress("committed", ("600001",), ("600001",)))
     report(EvidenceSyncProgress("publish", 1, 0, 2, 3, 0, status="complete"))
     report(EvidenceSyncProgress("news", 0, 0, 2, 3, 0, status="complete"))
-    facts, pending, published, finished, news = stream.getvalue().splitlines()
-    assert "本地核验" in facts and "600001-示例" in facts
+    facts, pending, published, finished, news = _messages(stream.getvalue())
+    assert "来源本地" in facts and "600001-示例" in facts
     assert "正式提交中，尚未发布" in pending
-    assert "本批提交 1股" in " ".join(published.split()) and "本批已提交" in published
-    assert "正式覆盖" in finished and "正式提交完成" in finished
+    assert "本批提交1股" in published and "本批已提交" in published
+    assert "正式覆盖" in finished and "本轮提交1股" in finished
     assert "无候选，未抓取新闻" in news and "本轮未覆盖" in news
 
 

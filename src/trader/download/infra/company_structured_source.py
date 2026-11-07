@@ -133,6 +133,7 @@ class EastmoneyCompanySource:
         return tuple(incomes)
 
     def pledge_day(self, observed_at: datetime) -> date:
+        window_start = observed_at.date() - timedelta(days=365)
         payload = self._json(
             _DATA_URL,
             {
@@ -144,7 +145,7 @@ class EastmoneyCompanySource:
                 "pageSize": "1",
                 "source": "WEB",
                 "client": "WEB",
-                "filter": f"(TRADE_DATE<='{observed_at.date().isoformat()}')",
+                "filter": f"(TRADE_DATE>='{window_start.isoformat()}')(TRADE_DATE<='{observed_at.date().isoformat()}')",
             },
         )
         rows, _, _ = _result(payload)
@@ -153,18 +154,21 @@ class EastmoneyCompanySource:
         day = _day(rows[0].get("TRADE_DATE"))
         if day > observed_at.date():
             raise ValueError("pledge_snapshot_future")
+        if day < window_start:
+            raise ValueError("pledge_snapshot_outside_window")
         return day
 
     def fetch(self, query: StructuredCompanyQuery, *, observed_at: datetime) -> StructuredCompanyPage:
         component, start, end, page = query.component, query.start, query.end, query.page
         if component == "financial":
+            start = max(start, observed_at.date() - timedelta(days=365))
             payload = self._json(
                 "https://datacenter.eastmoney.com/securities/api/data/get",
                 {
                     "type": "RPT_F10_FINANCE_MAINFINADATA",
                     "sty": "SECUCODE,REPORT_DATE,NOTICE_DATE,EPSJB,BPS,TOTALOPERATEREVETZ,PARENTNETPROFITTZ,KCFJCXSYJLRTZ,ROEJQ,PARENTNETPROFIT,KCFJCXSYJLR",
                     "quoteColumns": "",
-                    "filter": f"(NOTICE_DATE>='{max(start, observed_at.date() - timedelta(days=365)).isoformat()}')(NOTICE_DATE<='{end.isoformat()}')",
+                    "filter": f"(NOTICE_DATE>='{start.isoformat()}')(NOTICE_DATE<='{end.isoformat()}')",
                     "p": str(page),
                     "ps": "500",
                     "sr": "-1,1,-1",

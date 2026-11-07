@@ -358,7 +358,8 @@ class CninfoMarketDisclosureSource:
         return response
 
     def extract_document(
-        self, item: Disclosure, *, route: DocumentRoute = "standard"
+        self, item: Disclosure, *, route: DocumentRoute = "standard",
+        page_progress: Callable[[int, int], None] | None = None,
     ) -> CompanyDocumentExtraction:
         if self._raw_files is None:
             raise RuntimeError("company_raw_files_required")
@@ -374,17 +375,20 @@ class CninfoMarketDisclosureSource:
         if reserve is None:
             raise ValueError("company_document_reservations_required")
         with self._raw_files.reserve(local.directory, reserve, analysis=True):
-            result = self._analyze_document(local, route)
+            result = self._analyze_document(local, route, page_progress=page_progress)
             self._raw_files.save_result(item, result)
             return result
 
-    def _analyze_document(self, local: CompanyLocalDocument, route: DocumentRoute) -> CompanyDocumentExtraction:
+    def _analyze_document(
+        self, local: CompanyLocalDocument, route: DocumentRoute, *,
+        page_progress: Callable[[int, int], None] | None = None,
+    ) -> CompanyDocumentExtraction:
         limits = self._extended_document_limits if route == "limits" or local.size > self._document_limits.max_bytes else self._document_limits
         if limits is self._extended_document_limits and route == "standard":
             route = "limits"
         payload, payload_hash = local.path, local.payload_hash
         if route == "ocr":
-            return self._ocr(payload, payload_hash)
+            return self._ocr(payload, payload_hash, page_progress=page_progress)
         try:
             text = self._parse_document(payload, limits)
         except CompanyDocumentFailure as exc:
@@ -417,10 +421,13 @@ class CninfoMarketDisclosureSource:
                 raise
         return CompanyDocumentExtraction(text, "text", payload_hash, self._document_policies.for_route(route))
 
-    def _ocr(self, payload: Path, payload_hash: bytes) -> CompanyDocumentExtraction:
+    def _ocr(
+        self, payload: Path, payload_hash: bytes, *,
+        page_progress: Callable[[int, int], None] | None = None,
+    ) -> CompanyDocumentExtraction:
         if self._ocr_engine is None:
             raise CompanyDocumentFailure("disclosure_document_ocr_unavailable", payload_hash=payload_hash)
-        text, quality = self._ocr_engine.extract(payload, payload_hash)
+        text, quality = self._ocr_engine.extract(payload, payload_hash, page_progress=page_progress)
         return CompanyDocumentExtraction(text, "ocr", payload_hash, self._document_policies.ocr, quality)
 
     def _parse_document(self, payload: Path, limits: CompanyDocumentLimits | None = None) -> str:

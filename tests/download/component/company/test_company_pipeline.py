@@ -228,7 +228,7 @@ def test_text_to_ocr_handoff_counts_one_attempted_document(tmp_path, monkeypatch
     events, routes = [], []
 
     class Source(fixtures.Sources):
-        def extract_document(self, item, *, route="standard"):
+        def extract_document(self, item, *, route="standard", page_progress=None):
             routes.append(route)
             if route == "standard":
                 raise CompanyDocumentFailure("disclosure_document_ocr_required")

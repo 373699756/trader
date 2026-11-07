@@ -92,12 +92,14 @@ class CurrentIndustryPublication:
             raise ValueError("current_industry_population_invalid")
         self._check()
         index = SQLiteIndustryQueryIndex(self.path, _CONTRACT, "current_industry_query", sqlite_policy=self.sqlite_policy)
-        feedback = _IndustryProgress(self.report, self.monotonic, len(codes))
-        feedback.emit("准备行业下载", state="开始", details=(
+        feedback = _IndustryProgress(self.report, self.monotonic, len(codes), diagnostics=(
             f"配置单批上限 {self.source_batch_rows}股",
             f"SQLite行预算 {self.sqlite_policy.transaction_batch_rows}",
             f"有效单批上限 {min(self.source_batch_rows, index.source_batch_rows)}股",
-            f"正文合计上限 {index.source_batch_bytes}字节", f"所需窗口 {calendar[0]}～{day}",
+            f"正文合计上限 {index.source_batch_bytes}字节",
+        ))
+        feedback.emit("准备公共行业参考", state="开始", details=(
+            f"行业归属核验范围 {calendar[0]}～{day}（公共参考，非公司资料披露窗口）",
         ))
         feedback.measure("缓存准备/读取", "准备行业下载库", index.prepare)
         cut = max(observed_at, _aware(self.clock()))
@@ -251,6 +253,7 @@ class _IndustryProgress:
     report: Callable[[ProgressMessage], None] | None
     monotonic: Callable[[], float]
     total: int
+    diagnostics: tuple[str, ...] = ()
     confirmed: int = 0
     cached: int = 0
     publication_reused: int = 0
@@ -274,8 +277,17 @@ class _IndustryProgress:
         finally:
             self.seconds[phase] = self.seconds.get(phase, 0.0) + max(0.0, self.monotonic() - started)
 
-    def _details(self) -> tuple[ProgressField, ...]:
+    def _details(self, *, final: bool = False) -> tuple[ProgressField, ...]:
+        if not final:
+            return tuple(ProgressField(value) for value in (
+                f"已确认 {self.confirmed}/{self.total}股",
+                *((f"发布缓存复用 {self.publication_reused}股",) if self.publication_reused else ()),
+                *((f"原件缓存复用 {self.cached}股",) if self.cached else ()),
+                *((f"接口调用 {self.source_calls}次（含目录）",) if self.source_calls else ()),
+                *((f"原件已保存 {self.saved}/{self.received}份",) if self.received else ()),
+            ))
         return tuple(ProgressField(value) for value in (
+            "结束诊断", *self.diagnostics,
             f"已确认 {self.confirmed}/{self.total}股", f"发布缓存复用 {self.publication_reused}股",
             f"原件缓存复用 {self.cached}股",
             f"接口调用 {self.source_calls}次（含目录）", f"已收到个股原件 {self.received}份",
@@ -290,7 +302,8 @@ class _IndustryProgress:
         if self.report is not None:
             self.report(ProgressMessage((
                 ProgressField(f"操作 {operation}"), *((ProgressField(f"当前股票 {code}"),) if code else ()),
-                *(ProgressField(value) for value in details), ProgressField("来源 巨潮"), *self._details(),
+                *(ProgressField(value) for value in details), ProgressField("来源 巨潮"),
+                *self._details(final=state == "完成"),
             ), task=ProgressTask("参考", "当前行业", "当前行业"), state=state))
 
     def stock(self, code: str, completed: int, *, cached: bool, missing: bool, reason: str | None = None) -> None:

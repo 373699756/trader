@@ -330,11 +330,15 @@ def test_ocr_pages_resume_after_timeout_without_repeating_successful_pages(tmp_p
 
     monkeypatch.setattr(engine, "_run", run)
     monkeypatch.setattr(engine, "_recognize", recognize)
+    progress = []
     with pytest.raises(CompanyDocumentFailure, match="ocr_timeout"):
-        engine.extract(path, digest)
+        engine.extract(path, digest, page_progress=lambda completed, total: progress.append((completed, total)))
     assert len(tuple(tmp_path.rglob("*.json"))) == 21
+    assert progress == [(page, 32) for page in range(22)]
     fail[0] = False
-    result, quality = engine.extract(path, digest)
+    progress.clear()
+    result, quality = engine.extract(path, digest, page_progress=lambda completed, total: progress.append((completed, total)))
     assert quality == 90 and "page 32" in result
+    assert progress == [(page, 32) for page in range(33)]
     assert pages == [*range(1, 23), *range(22, 33)]
     assert not tuple(tmp_path.rglob("page.png"))

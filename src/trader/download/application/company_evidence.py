@@ -26,6 +26,7 @@ from trader.download.domain.company_evidence import (
     CompanyEvidenceSyncResult,
     CompanySourceFailure,
     CompanyStockProgress,
+    CompanyStructuredProgress,
     CompanySyncConfiguration,
     Disclosure,
     DisclosureCoverageMismatch,
@@ -138,7 +139,10 @@ class CompanyDisclosureSource(Protocol):
     def fetch(self, partition: DisclosurePartition) -> DisclosurePage: ...
     def document_ready(self, item: Disclosure) -> bool: ...
     def download_document(self, item: Disclosure) -> None: ...
-    def extract_document(self, item: Disclosure, *, route: Literal["standard", "ocr", "limits"] = "standard") -> CompanyDocumentExtraction: ...
+    def extract_document(
+        self, item: Disclosure, *, route: Literal["standard", "ocr", "limits"] = "standard",
+        page_progress: Callable[[int, int], None] | None = None,
+    ) -> CompanyDocumentExtraction: ...
     def split_queries(self, partition: DisclosurePartition) -> tuple[DisclosureQuery, ...]: ...
     def repair_queries(
         self,
@@ -187,6 +191,8 @@ class CompanyEvidenceDependencies:
 class _SyncState:
     operations: CompanyOperations
     population: int
+    population_codes: frozenset[str] = frozenset()
+    existing_published_codes: int | None = None
     pages: int = 0
     changes: int = 0
     reused: int = 0
@@ -241,7 +247,10 @@ def SyncCompanyEvidence(
     started = dependencies.monotonic()
     index = dependencies.index
     population = _validated_population(codes)
-    state = _SyncState(CompanyOperations(dependencies.progress, dependencies.monotonic, dependencies.stock_names), len(population))
+    state = _SyncState(
+        CompanyOperations(dependencies.progress, dependencies.monotonic, dependencies.stock_names, population=population), len(population),
+        population_codes=frozenset(population),
+    )
     start_date = observed_at.date() - timedelta(days=365)
     context = _CompanyRunContext(observed_at, started, configuration, start_date)
     documents = _DocumentRun(dependencies, population, state, context)
@@ -251,8 +260,12 @@ def SyncCompanyEvidence(
         if not _cancelled(dependencies):
             state.operations.call("prepare", partial(index.prepare_publication, population, observed_at))
         if not _cancelled(dependencies):
-            _report(dependencies, "prepare", state, 0, completed=1, status="complete")
-            _report(dependencies, "resume", state, None, workload=documents.workload(), status="complete")
+            state.existing_published_codes = state.operations.call("inventory", partial(index.published_count, population))
+        if not _cancelled(dependencies):
+            workload = state.operations.call("inventory", documents.workload)
+            if not _cancelled(dependencies):
+                _report(dependencies, "prepare", state, 0, completed=1, status="complete")
+                _report(dependencies, "resume", state, None, workload=workload, status="complete")
     news_population = tuple(sorted(set(news_codes).intersection(population))) if not request.fill_missing else ()
     components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
     for component in components:
@@ -296,7 +309,10 @@ def SyncCompanyEvidence(
         document_workload = None
     pending_documents = document_workload.due + document_workload.cooling if document_workload is not None else None
     if not _cancelled(dependencies):
+        _report(dependencies, "finish", state, 1, completed=0)
         state.operations.call("finish", partial(index.finish, observed_at))
+        if not _cancelled(dependencies):
+            _report(dependencies, "finish", state, 0, completed=1, status="complete")
     if pending_documents:
         state.failures += ("risk_documents:pending",)
     result_failures = tuple(sorted({failure for failure in state.failures if _failure_requires_retry(failure)}))
@@ -491,6 +507,7 @@ class _AnnouncementRun:
         self._circuit = _SourceCircuit()
         self._stopped = False
         self._prefetch: tuple[DisclosurePartition, bool, Future[DisclosurePage]] | None = None
+        self._markets: tuple[Market, ...] = ()
 
     def prepare(self, population: tuple[str, ...]) -> None:
         self._population = population
@@ -499,6 +516,7 @@ class _AnnouncementRun:
         if _cancelled(dependencies):
             return
         markets = tuple(sorted({EvidenceMarket(code) for code in population}))
+        self._markets = markets
         self._queue = deque(self._index.partitions(markets, self._context.observed_at))
         state.reused += self._index.reusable_partitions(markets, self._context.observed_at)
         self._report()
@@ -625,6 +643,13 @@ class _AnnouncementRun:
             _pending_count(self._queue, self._deferred, current),
             scope=partition,
             dates=_date_progress(self._context.observed_at.date(), self._queue, self._deferred, current, self._context.start_date),
+            market_dates=tuple((market, _date_progress(
+                self._context.observed_at.date(),
+                deque(item for item in self._queue if item.market == market),
+                {item for item in self._deferred if item[0] == market},
+                current if current is not None and current.market == market else None,
+                self._context.start_date,
+            )) for market in self._markets),
             status=status,
             activity=activity,
             known_pages=sum(
@@ -1059,6 +1084,11 @@ class _DocumentRun:
     def _submit(
         self, source: CompanyDisclosureSource, task: CompanyDocumentTask, stage: Literal["download", "text", "ocr"], executor: WorkerExecutor | None
     ) -> Future[CompanyDocumentExtraction | None]:
+        if stage == "ocr":
+            return self.state.operations.submit_pages(
+                lambda report: source.extract_document(task.disclosure, route="ocr", page_progress=report),
+                executor, document=task.disclosure,
+            )
         function: Callable[[Disclosure], CompanyDocumentExtraction | None] = (
             source.download_document if stage == "download" else partial(source.extract_document, route=task.route)
         )
@@ -1222,22 +1252,27 @@ def _structured(
     completed = 0
     pending: int | None = None
     query: StructuredCompanyQuery | None = None
+    detail: CompanyStructuredProgress | None = None
     try:
         if _cancelled(dependencies):
             return
         if component == "financial":
             start, end = index.component_since(component, "market", now), now.date()
         elif component == "pledge":
-            start = end = dependencies.structured.pledge_day(now)
+            start = end = state.operations.call("structured", partial(dependencies.structured.pledge_day, now), source=dependencies.structured.source)
         else:
             start, end = now.date(), now.date() + timedelta(days=180)
         requested = StructuredCompanyQuery(component, start, end)
         query = index.structured_cursor(requested)
+        resumed, restarted = query.page > 1, False
         if component == "financial" and query.start > requested.start:
             query = requested
+            resumed, restarted = False, True
         while not _cancelled(dependencies):
             completed = query.page - 1
-            _report(dependencies, component, state, pending, completed=completed, scope=query)
+            detail = CompanyStructuredProgress(query, query.received_rows, resumed=resumed, restarted=restarted)
+            _report(dependencies, component, state, pending, completed=completed, scope=query, structured=detail)
+            restarted = False
             if _cancelled(dependencies):
                 break
             page = state.operations.call("structured", partial(dependencies.structured.fetch, query, observed_at=now), source=dependencies.structured.source)
@@ -1245,29 +1280,51 @@ def _structured(
             state.changes += state.operations.call("collection_commit", partial(index.commit_structured, query, page, now))
             _mark_publication_pending(dependencies, state)
             completed, pending = page.page, page.pages - page.page
-            _report(dependencies, component, state, pending, completed=completed, scope=query)
+            page_codes = tuple(sorted(
+                ({item.code for item in page.financials} | {item.code for item in page.ratios}) & state.population_codes
+            ))
+            page_dates = tuple(item.published_at.date() for item in page.financials) + tuple(item.day for item in page.ratios)
+            detail = CompanyStructuredProgress(
+                query,
+                query.received_rows + page.row_count,
+                page.row_count,
+                page_codes,
+                min(page_dates) if page_dates else None,
+                max(page_dates) if page_dates else None,
+                resumed=resumed,
+                restarted=restarted,
+            )
+            _report(dependencies, component, state, pending, completed=completed, scope=query, structured=detail)
             if page.page == page.pages:
                 remaining = _remaining_query(index, query, requested, now)
                 if remaining is None:
-                    _report(dependencies, component, state, 0, completed=completed, status="complete", scope=query)
+                    _report(dependencies, component, state, 0, completed=completed, status="complete", scope=query, structured=detail)
                     return
                 query = remaining
+                resumed, restarted = False, True
                 pending = None
                 continue
             query = replace(
                 query, received_rows=query.received_rows + page.row_count, expected_rows=page.total, page=page.page + 1
             )
-        _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query)
+        _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query, structured=detail)
     except (OSError, RuntimeError, ValueError) as exc:
         if _cancelled(dependencies):
-            _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query)
+            _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query, structured=detail)
             return
         failure = _failure(exc)
         index.component_failure(component, "market", failure)
         if dependencies.failures is not None:
             dependencies.failures(DownloadFailureContext(f"company_{component}", supplier="eastmoney"), exc)
         state.failures += (f"{component}:{failure}",)
-        _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query)
+        if detail is not None and failure in {
+            "structured_count_changed", "structured_pages_incomplete", "structured_pages_inconsistent",
+            "structured_duplicate_page_rows",
+        }:
+            query = replace(detail.query, page=1, received_rows=0, expected_rows=None)
+            detail = CompanyStructuredProgress(query, 0, restarted=True)
+            completed, pending = 0, None
+        _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query, structured=detail)
 
 
 def _remaining_query(
@@ -1348,6 +1405,9 @@ def _report(
     failure_stage: CompanyOperationKind | None = None,
     failure_reason: str | None = None,
     sources: tuple[str, ...] | None = None,
+    completion_scope: Literal["component", "batch"] | None = None,
+    structured: CompanyStructuredProgress | None = None,
+    market_dates: tuple[tuple[Market, CompanyDateProgress], ...] = (),
 ) -> None:
     if dependencies.progress is not None:
         failures = tuple(
@@ -1390,6 +1450,12 @@ def _report(
                 failure_document=failure_document,
                 failure_stage=failure_stage,
                 failure_reason=failure_reason,
+                completion_scope=completion_scope or (
+                    "batch" if component in {"risk_documents", "facts", "publish", "annual_income"} else "component"
+                ),
+                structured=structured,
+                market_dates=market_dates,
+                existing_published_codes=state.existing_published_codes if component in {"resume", "complete"} else None,
                 sources=(sources if sources is not None else (dependencies.disclosures.source,)
                          if component == "announcements" else (dependencies.structured.source,)
                          if component in {"financial", "pledge", "unlock", "annual_income"}

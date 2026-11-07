@@ -103,7 +103,11 @@ class CompanyOcrEngine:
         self._monotonic = monotonic
         self._retry_each_page = retry_each_page
 
-    def extract(self, payload: Path, payload_hash: bytes) -> tuple[str, float]:
+    def extract(
+        self, payload: Path, payload_hash: bytes, *,
+        page_progress: Callable[[int, int], None] | None = None,
+    ) -> tuple[str, float]:
+        """Observe completed pages, including reused checkpoints, before document qualification."""
         diagnostic = CompanyOcrDiagnostic("metadata", 0, 0, 0, None, 6)
         if not self.capability.available:
             raise CompanyDocumentFailure(self.capability.failure or "disclosure_document_ocr_unavailable", payload_hash=payload_hash)
@@ -127,6 +131,8 @@ class CompanyOcrEngine:
                 diagnostic = CompanyOcrDiagnostic("metadata", 0, int(pages), 0, None, 6)
                 if int(pages) > self._max_pages:
                     raise CompanyDocumentFailure("disclosure_document_ocr_page_limit", payload_hash=payload_hash)
+                if page_progress is not None:
+                    page_progress(0, int(pages))
                 edges = _render_edges(metadata, int(pages), self._dpi, payload_hash)
                 texts: list[str] = []
                 confidence_sum = 0.0
@@ -152,6 +158,8 @@ class CompanyOcrEngine:
                         fallback_used = saved.fallback_used
                         if characters > _MAX_TEXT_CHARACTERS:
                             raise CompanyDocumentFailure("disclosure_document_ocr_resource_limit", payload_hash=payload_hash)
+                        if page_progress is not None:
+                            page_progress(page, int(pages))
                         continue
                     page_deadline = min(deadline, self._monotonic() + self._page_timeout_seconds)
                     diagnostic = CompanyOcrDiagnostic("render", page, int(pages), characters, None, 6)
@@ -231,6 +239,8 @@ class CompanyOcrEngine:
                     page_value = {"text": text, "sum": sum(confidence), "count": len(confidence), "fallback": fallback_used}
                     page_value["checksum"] = hashlib.sha256(json.dumps(page_value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
                     AtomicWriteJson(checkpoint, page_value)
+                    if page_progress is not None:
+                        page_progress(page, int(pages))
             result = "\n".join(texts).strip()
             quality = confidence_sum / confidence_count if confidence_count else 0.0
             diagnostic = CompanyOcrDiagnostic(

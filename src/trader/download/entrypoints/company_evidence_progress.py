@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from trader.infra.progress_format import PadProgressText, ProgressDuration, ShortProgressText
+from trader.infra.progress_format import ProgressDuration, ShortProgressText
 
 import sys
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import date
 from math import ceil
 from threading import Lock
 from typing import TextIO
 
-from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressNumber, ProgressTask
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressNumber, ProgressRow, ProgressTask
 from trader.download.application.sync_progress import SyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.download.domain.company_evidence import (
@@ -20,6 +21,7 @@ from trader.download.domain.company_evidence import (
     DisclosurePartition, EvidenceSyncProgress,
 )
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
+from trader.download.domain.company_events import CompanyDataState
 
 
 def ReportStPreparation(
@@ -50,7 +52,7 @@ def ReportCompanyStock(
 ) -> None:
     if isinstance(stock, CompanyPublicationProgress):
         report(EvidenceSyncProgress("publish", 0, None, 0, 0, 0, publication=stock,
-                                    sources=("local",)))
+                                    sources=("local",), completion_scope="batch"))
         return
     name = next((name for code, name in names if code == stock.code), "")
     report(
@@ -58,6 +60,7 @@ def ReportCompanyStock(
             "facts", stock.processed, stock.total - stock.processed, 0, 0, 0, stock=replace(stock, name=name),
             status="complete" if stock.total and stock.processed == stock.total else "running",
             sources=("local",),
+            completion_scope="batch",
         )
     )
 
@@ -66,12 +69,12 @@ _LABELS = {
     "prepare": "准备资料", "resume": "断点恢复", "st_eligibility": "ST资格", "calendar": "交易日历",
     "financial": "财务", "annual_income": "年度营收", "pledge": "质押", "unlock": "解禁",
     "announcements": "目录", "risk_documents": "正文", "news": "新闻", "facts": "核验",
-    "publish": "正式发布", "complete": "结果汇总",
+    "publish": "正式发布", "finish": "收尾", "complete": "结果汇总",
 }
 _UNITS = {
     "prepare": "项", "resume": "篇", "st_eligibility": "股", "calendar": "份", "financial": "页",
     "annual_income": "组", "pledge": "页", "unlock": "页", "announcements": "范围",
-    "risk_documents": "篇", "news": "股", "facts": "股", "publish": "股", "complete": "股",
+    "risk_documents": "篇", "news": "股", "facts": "股", "publish": "股", "finish": "项", "complete": "股",
 }
 _OPERATIONS: dict[CompanyOperationKind, str] = {
     "prepare": "准备", "inventory": "核对库存", "directory": "目录查询", "download": "下载",
@@ -80,24 +83,29 @@ _OPERATIONS: dict[CompanyOperationKind, str] = {
     "collection_commit": "资料入库", "finish": "收尾",
 }
 _SOURCES = {"cninfo": "巨潮", "eastmoney": "东财", "eastmoney_news": "东财", "eastmoney_annual_income": "东财", "local": "本地"}
+_TASK_GROUPS = (
+    ("prepare", "resume"), ("financial",), ("pledge",), ("unlock",), ("announcements",),
+    ("risk_documents",), ("facts", "publish"), ("annual_income", "news"), ("finish",),
+)
+_GROUP_LABELS = ("准备恢复", "财务", "质押", "解禁", "目录", "正文", "核验发布", "营收新闻", "收尾")
 
 
 def _source_label(sources: tuple[str, ...]) -> str:
     return "/".join(dict.fromkeys(_SOURCES.get(source, source) for source in sources))
 
 
-def _display_number(value: int | None, width: int = 6) -> str:
-    """Keep exact counters when they fit; mark compact quantities as approximate."""
-    if value is None:
-        return "?".rjust(width)
-    exact = str(value)
-    if len(exact) <= width:
-        return exact.rjust(width)
-    exponent = len(exact) - 1
-    compact = f"≈{exact[0]}.{exact[1]}e{exponent}"
-    if len(compact) > width:
-        compact = f"≈{exact[0]}e{exponent}"
-    return compact.rjust(width)
+def _quantity(value: int | None) -> str:
+    return "未核对" if value is None else str(value)
+
+
+def _market_label(market: str) -> str:
+    return {"sse": "上交所", "szse": "深交所", "bse": "北交所"}[market]
+
+
+def _data_state(state: CompanyDataState | None) -> str:
+    return "待核验" if state is None else {
+        CompanyDataState.COMPLETE: "完整", CompanyDataState.PARTIAL: "部分", CompanyDataState.UNAVAILABLE: "缺失",
+    }[state]
 
 
 class CompanyEvidenceProgress:
@@ -124,6 +132,13 @@ class CompanyEvidenceProgress:
         self._operations: dict[int, CompanyOperationProgress] = {}
         self._changed_codes: set[str] = set()
         self._unpublished_codes: set[str] = set()
+        self._received_codes: set[str] = set()
+        self._committed_codes: set[str] = set()
+        self._waiting_codes: set[str] = set()
+        self._component_codes: dict[str, set[str]] = {}
+        self._query_bases: dict[tuple[str, date, date], int] = {}
+        self._last_persisted: float | None = None
+        self._original_coverage: int | None = None
         self._last_emitted = float("-inf")
         self._foreground: str | None = None
         self._finished = False
@@ -137,33 +152,62 @@ class CompanyEvidenceProgress:
 
     def __call__(self, progress: EvidenceSyncProgress) -> None:
         with self._lock:
+            if self._finished:
+                return
             if progress.operation is not None:
                 event = progress.operation
-                if self._finished:
-                    return
                 if event.state in {"queued", "running"}:
                     if event.token not in self._operations and len(self._operations) >= 160:
                         raise ValueError("company_progress_operation_limit")
                     self._operations[event.token] = event
                 else:
                     self._operations.pop(event.token, None)
+                    if event.state == "completed" and event.kind == "download":
+                        self._received_codes.update(event.related_codes)
+                    if event.state == "completed" and event.kind == "collection_commit":
+                        self._last_persisted = self._monotonic()
                 return
             messages = self._update(progress)
         for message in messages:
             self._report(message)
 
     def _update(self, progress: EvidenceSyncProgress) -> tuple[ProgressMessage, ...]:
+        if progress.component == "resume":
+            progress = replace(progress, status="complete")
         if progress.population is not None:
             self._population = progress.population
+        if progress.existing_published_codes is not None:
+            self._original_coverage = progress.existing_published_codes
         if progress.component == "facts" and progress.stock is not None:
             self._stocks[progress.stock.code] = progress.stock
             self._unpublished_codes.add(progress.stock.code)
+            if progress.stock.coverage_complete and progress.stock.pending == 0:
+                self._waiting_codes.discard(progress.stock.code)
+            else:
+                self._waiting_codes.add(progress.stock.code)
         previous = self._latest.get(progress.component)
         self._latest[progress.component] = progress
+        structured = progress.structured
+        if structured is not None:
+            codes = self._component_codes.setdefault(progress.component, set())
+            if structured.restarted:
+                codes.clear()
+            codes.update(structured.qualified_codes)
+            self._received_codes.update(structured.qualified_codes)
+            query = structured.query
+            key = (progress.component, query.start, query.end)
+            if key not in self._query_bases or structured.restarted:
+                self._query_bases[key] = max(0, progress.completed - (1 if structured.page_rows else 0))
+        if progress.component in {"financial", "pledge", "unlock", "announcements", "risk_documents"}:
+            if previous is not None and progress.completed > previous.completed:
+                if structured is None or progress.completed == structured.query.page:
+                    self._last_persisted = self._monotonic()
         if progress.publication is not None:
-            self._changed_codes.update(progress.publication.changed_codes)
             if progress.publication.state == "committed":
+                self._changed_codes.update(progress.publication.changed_codes)
                 self._unpublished_codes.difference_update(progress.publication.codes)
+                self._committed_codes.update(progress.publication.codes)
+                self._last_persisted = self._monotonic()
         if progress.component == "publish":
             facts = self._latest.get("facts")
             if facts is not None and facts.status == "running":
@@ -171,16 +215,17 @@ class CompanyEvidenceProgress:
         if progress.component in {"st_eligibility", "calendar"}:
             return (self._message(progress, immediate=True),)
         if progress.component == "resume":
-            snapshot = replace(progress, status="complete")
-            return (self._message(snapshot, immediate=True), self._summary_message(snapshot))
+            self._last_emitted = self._monotonic()
+            return (self._message(progress, immediate=True), self._summary_message(progress))
         self._foreground = progress.component
         new_failures = set(filter(None, progress.failure.split(","))) - self._reported_failures
         self._reported_failures.update(new_failures)
         messages: list[ProgressMessage] = []
         if progress.component != "complete" and (new_failures or progress.failure_document is not None):
             messages.append(self._failure(progress, ",".join(sorted(new_failures)) or progress.failure))
-        boundary = (previous is None or previous.status != progress.status
-                    or progress.publication is not None and previous.publication != progress.publication)
+        boundary = (previous is None
+                    or progress.completion_scope == "component" and previous.status != progress.status
+                    or progress.publication is not None and progress.publication.state == "committed")
         if progress.component == "complete":
             self._finished = True
             self._operations.clear()
@@ -210,13 +255,18 @@ class CompanyEvidenceProgress:
     def _message(self, progress: EvidenceSyncProgress, *, immediate: bool, starting: bool = False) -> ProgressMessage:
         if progress.component not in {"st_eligibility", "calendar"}:
             return ProgressMessage(
-                tuple(ProgressField(value) for value in self._columns(progress, starting=starting)),
-                task=ProgressTask("company", progress.component, _source_label(progress.sources) + _LABELS[progress.component]),
+                tuple(ProgressField(value) for value in self._overview(progress)),
+                task=ProgressTask("company", progress.component, "总览"),
                 state="取消" if "task:cancelled" in progress.failure.split(",") else "开始" if starting else "等待" if progress.status == "deferred" else "完成" if progress.status in {"complete", "reused"} else "处理中",
                 finished=progress.status != "running",
                 immediate=immediate,
                 compact=True,
                 owner_finished=progress.component == "complete",
+                heartbeat=False,
+                rows=(
+                    ProgressRow("范围", tuple(ProgressField(value) for value in self._scope_fields(progress))),
+                    ProgressRow("任务", tuple(ProgressField(value) for value in self._task_fields(progress, starting=starting))),
+                ),
             )
         statuses = {"running": "进行中", "complete": "完成", "reused": "本地复用", "deferred": "待续传"}
         status = "complete" if progress.component == "st_eligibility" and progress.pending == 0 else progress.status
@@ -237,98 +287,159 @@ class CompanyEvidenceProgress:
             compact=progress.component not in {"st_eligibility", "calendar"},
         )
 
-    def _columns(self, progress: EvidenceSyncProgress, *, starting: bool) -> tuple[str, str, str, str]:
+    def _group_state(self, group: tuple[str, ...]) -> str:
+        events = tuple(self._latest[key] for key in group if key in self._latest)
+        if not events:
+            return "待处理"
+        if any(item.status == "deferred" for item in events):
+            return "待续传"
+        terminal = self._latest.get("complete")
+        unfinished = any(item.status == "running" or item.completion_scope == "batch" for item in events)
+        if terminal is not None:
+            if terminal.status == "deferred" or terminal.pending is None:
+                return "待续传" if unfinished else "完成"
+            return "完成"
+        if group == _TASK_GROUPS[0] and "resume" not in self._latest:
+            return "进行"
+        if unfinished:
+            return "进行"
+        return "完成"
+
+    def _overview(self, progress: EvidenceSyncProgress) -> tuple[str, ...]:
+        states = tuple(self._group_state(group) for group in _TASK_GROUPS)
+        parts = ["事项9项：" + "、".join(f"{label}{states.count(label)}" for label in ("完成", "进行", "待处理", "待续传"))]
+        parts.append(f"本轮已获取{len(self._received_codes)}股、核验{len(self._stocks)}/{_quantity(self._population)}股、提交{len(self._committed_codes)}股（去重）")
+        parts.append(f"已知待补{len(self._waiting_codes)}股；未核验{_quantity(None if self._population is None else max(0, self._population - len(self._stocks)))}股")
+        parts.append(f"当前{_LABELS[progress.component]}；来源{_source_label(progress.sources) or '未提供'}")
+        if progress.component in {"prepare", "resume", "complete"} and self._original_coverage is not None:
+            parts.append(f"开场已有正式覆盖{self._original_coverage}股（不计本轮提交）")
+        if progress.component == "complete":
+            parts.append("取消，待处理数量未核对" if "task:cancelled" in progress.failure.split(",") else "待续传" if progress.status == "deferred" else "本轮结束（含待核实）")
+        else:
+            pending = "/".join(label for label, state in zip(_GROUP_LABELS, states, strict=True) if state == "待处理")
+            if pending:
+                parts.append("待办" + pending)
+        return tuple(parts)
+
+    def _oldest_operation(self) -> CompanyOperationProgress | None:
         running = tuple(item for item in self._operations.values() if item.state == "running")
-        queued = sum(item.state == "queued" for item in self._operations.values())
-        documents = self._latest.get("risk_documents")
-        pending = documents.unpublished_documents if documents is not None else None
-        counts = f"下载{sum(item.kind == 'download' for item in running):2} 文本{sum(item.kind == 'text' for item in running):2} OCR{sum(item.kind == 'ocr' for item in running):2} 待发{_display_number(pending)}"
-        context = self._context(progress)
-        waiting = f"排队{queued:2} 队列估算中" if queued else "暂无活动操作"
-        if running:
-            oldest = min(running, key=lambda item: item.at)
-            if progress.publication is None or progress.publication.state != "committed":
-                context = self._operation_context(oldest) if oldest.code or progress.scope is None else self._context(progress)
-            waiting = f"操作等待{ProgressDuration(self._monotonic() - oldest.at)}"
-        elif queued:
-            oldest = min(self._operations.values(), key=lambda item: item.at)
-            context = self._operation_context(oldest)
-            waiting = f"排队等待{ProgressDuration(self._monotonic() - oldest.at)}"
-        if documents is not None:
-            if documents.discovering_documents:
-                waiting += " 目录仍增长"
-            elif documents.deferred_documents:
-                waiting += f" 冷却{_display_number(documents.deferred_documents).strip()}篇"
-            elif documents.document_eta_seconds is not None:
-                waiting += f" 队列约{ProgressDuration(documents.document_eta_seconds)}"
-            elif documents.unresolved_document_failures and not running and not queued:
-                waiting = f"未解决失败{documents.unresolved_document_failures}篇"
-        if progress.status == "reused":
-            waiting = "本地复用原来源缓存"
-        elif progress.status == "deferred":
-            waiting = "待续传"
-        elif progress.status == "complete":
-            waiting = "本批结束" if progress.component == "risk_documents" else "核验结束，尚未发布" if progress.component == "facts" else "正式提交完成" if progress.component == "publish" else "阶段完成"
-        elif starting and not self._operations and waiting == "暂无活动操作":
-            waiting = "开始，等待阶段操作"
-        if progress.component == "news" and progress.completed == progress.pending == 0:
-            waiting = "无候选，本轮未覆盖"
-        if progress.component == "prepare" and progress.status == "running":
-            waiting = "东财=东方财富 巨潮=巨潮资讯"
-        elif progress.component == "complete":
-            counts = f"目录待补{_display_number(progress.pending)} 正文{_display_number(progress.pending_documents)}"
-            context = f"本轮变更{_display_number(len(self._changed_codes))}股（去重）"
-            waiting = "待处理数量未核对" if progress.pending is None or progress.pending_documents is None else "待续传" if progress.status == "deferred" else "完成（含待核实）"
-        return (PadProgressText(self._count_column(progress), 24), PadProgressText(context, 34),
-                PadProgressText(counts, 32), PadProgressText(waiting, 32))
+        return min(running or tuple(self._operations.values()), key=lambda item: item.at, default=None)
 
-    def _count_column(self, progress: EvidenceSyncProgress) -> str:
-        completed = _display_number(progress.completed)
-        total = _display_number(None if progress.pending is None else progress.completed + progress.pending)
-        if progress.component in {"financial", "pledge", "unlock"}:
-            return f"持久页{completed}/{total}"
-        if progress.component == "announcements":
-            dates = progress.dates
-            return "规划目录日期" if dates is None else f"全市场日{_display_number(dates.completed_days)}/{_display_number(dates.total_days)}"
-        if progress.component == "risk_documents":
-            due = (max(0, progress.pending - progress.deferred_documents - progress.unextractable_documents)
-                   if progress.pending is not None and progress.deferred_documents is not None
-                   and progress.unextractable_documents is not None else None)
-            return f"已入库{_display_number(progress.completed, 7)} 待{_display_number(due)}篇"
-        if progress.component == "facts":
-            return f"核验{completed}/{total}股"
-        if progress.component == "publish" and progress.publication is not None:
-            return f"本批{'提交' if progress.publication.state == 'committed' else '待发'}{_display_number(len(progress.publication.codes))}股"
-        if progress.component in {"publish", "complete"}:
-            return f"正式覆盖{completed}/{_display_number(self._population)}股"
-        if progress.component == "news":
-            return "无候选，未抓取新闻" if progress.completed == progress.pending == 0 else f"处理{completed}/{total}股"
-        if progress.component == "annual_income":
-            return f"持久组{completed}/{total}"
-        return "断点库存快照" if progress.component == "resume" else "公司资料准备"
-
-    def _context(self, progress: EvidenceSyncProgress) -> str:
+    def _scope_fields(self, progress: EvidenceSyncProgress) -> tuple[str, ...]:
+        parts: list[str] = []
         scope = progress.scope
-        if isinstance(scope, DisclosurePartition):
-            market = {"sse": "上交所", "szse": "深交所", "bse": "北交所"}[scope.market]
-            dates = scope.start.strftime("%m-%d") + ("~" + scope.end.strftime("%m-%d") if scope.start != scope.end else "")
-            pages = None if scope.expected_rows is None or scope.expected_rows > 3000 else ceil(scope.expected_rows / scope.page_size) or 1
-            return f"{market} {dates} {_display_number(scope.page)}/{_display_number(pages)}页"
         if scope is not None:
-            return str(scope.start) if scope.start == scope.end else f"{scope.start}~{scope.end}"
-        if progress.stock is not None:
-            stock = progress.stock
-            return f"{stock.code}-{ShortProgressText(stock.name, 12)}" + (" 核验未发布" if progress.component == "facts" else "")
-        if progress.publication is not None:
-            return "发布收尾（本批已提交）" if progress.publication.state == "committed" else "正式提交中，尚未发布"
-        return "本地复用" if progress.status == "reused" else "本地资料" if progress.sources == ("local",) else "等待阶段操作"
+            meaning = {"financial": "披露窗口", "pledge": "所选质押快照日", "unlock": "未来解禁窗口", "announcements": "当前目录日期"}.get(progress.component, "日期窗口")
+            parts.append(f"{meaning}{scope.start}～{scope.end}")
+            if progress.component == "pledge":
+                parts.append("快照查找限定本轮截止日前365天内")
+        structured = progress.structured
+        if structured is not None:
+            if structured.first_date is not None:
+                parts.append(f"本页资料日期{structured.first_date}～{structured.last_date}")
+            parts.append(f"合格股票已获取{len(self._component_codes.get(progress.component, set()))}/{_quantity(self._population)}股（本查询已见，非覆盖）")
+            parts.append("批量接口，无单一当前股票")
+        if isinstance(scope, DisclosurePartition):
+            pages = None if scope.expected_rows is None or scope.expected_rows > 3000 else max(1, ceil(scope.expected_rows / scope.page_size))
+            parts.append(f"{_market_label(scope.market)} 当前第{scope.page}/{pages if pages is not None else '待发现'}页")
+        directory = progress if progress.component == "announcements" else self._latest.get("announcements")
+        if directory is not None:
+            dates = directory.dates
+            parts.append("全市场目录日期待规划" if dates is None else f"目录窗口{dates.window_start}～{dates.window_end}；全市场日期闭合{dates.completed_days}/{dates.total_days}天")
+            parts.extend(f"{_market_label(market)}{dates.completed_days}/{dates.total_days}天" for market, dates in directory.market_dates)
+        operation = self._oldest_operation()
+        stock = progress.stock
+        if operation is not None and operation.code:
+            stock = self._stocks.get(operation.code)
+            parts.append(f"当前股票{operation.code}-{ShortProgressText(operation.name, 16)}；{ShortProgressText(operation.title, 36)}")
+            if stock is None:
+                parts.append("股票资料：财务待核验、质押待核验、解禁待核验、公告待核验")
+        elif stock is not None and progress.component != "announcements":
+            parts.append(f"当前股票{stock.code}-{ShortProgressText(stock.name, 16)}")
+        if stock is not None and progress.component != "announcements":
+            parts.append("股票资料：" + "、".join(
+                f"{label}{_data_state(state)}" for label, state in (
+                    ("财务", stock.financial_state), ("质押", stock.pledge_state),
+                    ("解禁", stock.unlock_state), ("公告", stock.announcement_state),
+                )
+            ))
+            parts.append(f"该股正文已分析{stock.analyzed}/{stock.announcements}篇，待补{stock.pending}篇")
+            if stock.financial_report_date is not None:
+                parts.append(f"财务报告期{stock.financial_report_date}，披露日{stock.financial_disclosed_at.date() if stock.financial_disclosed_at else '未核对'}")
+            if stock.pledge_date is not None:
+                parts.append(f"质押快照日{stock.pledge_date}")
+            if stock.unlock_coverage_end is not None:
+                parts.append(f"解禁核对至{stock.unlock_coverage_end}")
+        parts.append(f"资料来源{_source_label(progress.sources) or '未提供'}")
+        if progress.status == "reused":
+            parts.append("本地复用原来源缓存")
+        elif progress.sources == ("local",):
+            parts.append("本地处理")
+        return tuple(parts)
 
-    def _operation_context(self, operation: CompanyOperationProgress) -> str:
-        kind = {"download": "下载", "text": "文本", "ocr": "OCR", "document_commit": "入库", "annual_income": "营收", "news": "新闻"}.get(operation.kind)
-        if operation.code and kind is not None:
-            source = ShortProgressText(_source_label((operation.source,)), 4)
-            return f"{source}{kind} {operation.code}-{ShortProgressText(operation.name, 12)} {ShortProgressText(operation.title, 4)}"
-        return _OPERATIONS[operation.kind] + "（操作最久）"
+    def _task_fields(self, progress: EvidenceSyncProgress, *, starting: bool) -> tuple[str, ...]:
+        parts = [self._task_count(progress), f"资料来源{_source_label(progress.sources) or '未提供'}"]
+        structured = progress.structured
+        if structured is not None:
+            key = (progress.component, structured.query.start, structured.query.end)
+            baseline = self._query_bases[key]
+            parts.append(f"本次续传新保存{max(0, progress.completed - baseline)}页，当前查询累计{structured.persisted_rows}原始行")
+            parts.append("查询重开，原页进度已清零" if structured.restarted else "接续已保存分页" if structured.resumed else "当前查询")
+        operation = self._oldest_operation()
+        if operation is not None:
+            parts.append(f"{'排队等待' if operation.state == 'queued' else '正在'}{_OPERATIONS[operation.kind]}；来源{_source_label((operation.source,))}")
+            parts.append(f"{'排队等待' if operation.state == 'queued' else '本操作'}{ProgressDuration(self._monotonic() - operation.at)}")
+            if operation.completed_units is not None:
+                parts.append(f"OCR已处理{operation.completed_units}/{operation.total_units}页（含有效页缓存）")
+        elif starting:
+            parts.append("开始，等待阶段操作")
+        if progress.publication is not None:
+            parts.append("发布收尾（本批已提交）" if progress.publication.state == "committed" else "正式提交中，尚未发布")
+        elif progress.component == "facts":
+            parts.append("核验未发布")
+        elif progress.status == "deferred":
+            parts.append("待续传")
+        elif progress.status == "complete":
+            parts.append("本批结束" if progress.completion_scope == "batch" else "阶段完成")
+        if self._last_persisted is not None:
+            parts.append(f"距持久推进{ProgressDuration(self._monotonic() - self._last_persisted)}")
+        else:
+            parts.append("本轮尚无新的持久推进")
+        documents = self._latest.get("risk_documents")
+        if documents is not None:
+            running = tuple(item for item in self._operations.values() if item.state == "running")
+            parts.append(f"执行中：下载{sum(item.kind == 'download' for item in running)}、文本{sum(item.kind == 'text' for item in running)}、OCR{sum(item.kind == 'ocr' for item in running)}；排队{sum(item.state == 'queued' for item in self._operations.values())}")
+            parts.append(f"正文冷却{_quantity(documents.deferred_documents)}篇、不可提取{_quantity(documents.unextractable_documents)}篇、未解决失败{documents.unresolved_document_failures}篇、已分析待发{_quantity(documents.unpublished_documents)}篇")
+            if documents.discovering_documents:
+                parts.append("目录仍增长，正文总数待发现")
+            elif documents.document_eta_seconds is not None:
+                parts.append(f"当前可处理正文队列约{ProgressDuration(documents.document_eta_seconds)}")
+        else:
+            parts.append("正文处理尚未开始")
+        return tuple(parts)
+
+    def _task_count(self, progress: EvidenceSyncProgress) -> str:
+        total = "待发现" if progress.pending is None else str(progress.completed + progress.pending)
+        if progress.status == "reused":
+            return f"{_LABELS[progress.component]}复用有效缓存；本轮网络0页" if progress.component in {"financial", "pledge", "unlock"} else f"{_LABELS[progress.component]}复用有效缓存"
+        if progress.component in {"financial", "pledge", "unlock"}:
+            return f"{_LABELS[progress.component]}已保存{progress.completed}/{total}页" + (f"，{progress.completed / (progress.completed + progress.pending) * 100:.1f}%" if progress.pending is not None and progress.completed + progress.pending else "")
+        if progress.component == "risk_documents":
+            due = max(0, progress.pending - progress.deferred_documents - progress.unextractable_documents) if progress.pending is not None and progress.deferred_documents is not None and progress.unextractable_documents is not None else None
+            return f"正文已入库{progress.completed}篇，可处理待补{_quantity(due)}篇；本轮失败{progress.failed_documents}篇"
+        if progress.component == "facts":
+            return f"本批核验{progress.completed}/{total}股；本轮去重核验{len(self._stocks)}股"
+        if progress.publication is not None:
+            return f"本批{'提交' if progress.publication.state == 'committed' else '待发'}{len(progress.publication.codes)}股；本轮去重提交{len(self._committed_codes)}股"
+        if progress.component == "publish":
+            return f"正式覆盖{progress.completed}/{_quantity(self._population)}股；本轮提交{len(self._committed_codes)}股"
+        if progress.component == "announcements":
+            return f"目录已持久推进{progress.completed}个范围，已知待补{_quantity(progress.pending)}个范围（可继续细分）；已知待取{progress.known_pages}页、待发现页数的查询{progress.unknown_queries}个"
+        if progress.component == "news" and progress.completed == progress.pending == 0:
+            return "无候选，未抓取新闻；本轮未覆盖"
+        if progress.component == "complete":
+            return f"目录待补{_quantity(progress.pending)}个范围；正文待补{_quantity(progress.pending_documents)}篇；本轮变更{len(self._changed_codes)}股（去重）"
+        return f"{_LABELS[progress.component]}{progress.completed}/{total}{_UNITS[progress.component]}"
 
     def _summary_message(self, progress: EvidenceSyncProgress) -> ProgressMessage:
         details = _counts(progress, _UNITS[progress.component]) + _coverage(progress)

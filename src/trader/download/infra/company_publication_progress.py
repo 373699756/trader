@@ -33,6 +33,14 @@ def ReportCompanyVerification(
             )),
             reused=reused,
             review_count=len(facts.review_reasons),
+            financial_state=facts.financial_state,
+            pledge_state=facts.pledge_state,
+            unlock_state=facts.unlock_state,
+            announcement_state=facts.announcement_state,
+            financial_report_date=facts.financial.report_date if facts.financial is not None else None,
+            financial_disclosed_at=facts.financial.published_at if facts.financial is not None else None,
+            pledge_date=facts.pledge.day if facts.pledge is not None else None,
+            unlock_coverage_end=facts.unlock_coverage_end,
         ))
 
 

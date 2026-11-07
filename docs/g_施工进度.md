@@ -44,7 +44,11 @@
 
 验证：最终7文件训练／共享进度／取消／关闭及列宽182项通过（`/tmp/trader-356-delivery-training-status-final.xml`），含成功、失败、取消run叠加日志关闭I/O失败／未完成／关闭中取消；此前15项controller/server消费者及16项train/sync入口通过。16个源码mypy、全部受影响Python Ruff、shell语法、完整diff与独立Review通过。较早113／123项报告仍只保留原版本证据；本批不运行格式、真实训练／下载／性能，不改变V5当前10轮、评分、资格或模型发布。353整阶段、292真实覆盖及质量性能欠项保持；此前共享未提交及推送被拒属于历史状态，本次与最新上游按功能独立整合交付。
 
-### sync日志统一与阶段诊断（355，2026-11-07，completed，history／company及来源日志已交付）
+### sync日志统一与阶段诊断（355，2026-11-07，completed，company日期／股票／任务及实际来源已交付）
+
+company分层接续（2026-11-07，completed）：按用户批准方案及“日志显示实际来源”的澄清，保留批量采集与目录／正文交错，五秒三行原子输出总览／范围／任务，共享时钟及一次终端写入。九项任务区分批次与整项完成；本轮获取、去重核验、去重提交、已知待补及未核验分别计数，开场旧正式覆盖只盘点一次。财务披露范围／本页日期／续传基数及重开、目录全市场与各市场日期闭合／已知页／待发现查询、逐股四类事实状态及日期分别展示；共享公告按显式合格总体取交集，不依赖可选简称。OCR页来自实际处理及有效检查点复用，失败不伪造篇级成功，正常拒收旧修订正文不计持久推进。准备／库存核对及质押快照发现也纳入当前操作观察，恢复库存读完才结束准备。每层及当前操作标实际来源，缓存保留原来源；行业公共参考范围另列，预算及详细累计留末尾诊断。质押发现补齐近365天下界并拒绝过旧响应，财务响应校验实际一年下界，解禁仍未来180天；未改数据库结构、结果JSON、调度策略或清除资料。
+
+验证：最终7文件97项单元用例全部通过（`/tmp/trader-company-final-unit.xml`），公司真实SQLite发布／新应用边界及history、训练日志消费者145项通过（`/tmp/trader-company-progress-consumers-final.xml`）；既有财务／取消／第二轮19项通过（`/tmp/trader-company-existing-boundaries.xml`）。正文下载→文本→OCR交接、32页超时续传及来源接线3项通过（`/tmp/trader-company-ocr-handoff-final.xml`），行业普通／末尾及等待2项通过（`/tmp/trader-company-industry-frame-final.xml`），最后准备库存观察专项1项通过（`/tmp/trader-company-preparation-inventory-final.xml`）。独立Review发现的持久时钟、旧正文拒收及无序共享代码已修，并有12项frame专项覆盖（`/tmp/trader-company-progress-frames-final-20261107.xml`，已含在97项中）；早期未完成大集及自造重复键fixture失败不当通过，后者修复后已在145项复验。12源码mypy及受影响Python的Ruff E9/F/UP通过，最后应用改动另复验mypy；完整diff及独立Review无已知发现。扩展B023检查在行业原有同步即时lambda处仍有4条，HEAD同规则复现，未放宽规则或改无关执行。本批不运行格式脚本、真实同步、训练或性能，不占用业务同步锁；357落库及其它原欠项独立保留。并行history校验／终态切片已独立交付，不混入本批。
 
 校验阶段进度触发（2026-11-07，completed）：按用户要求，仅发布分区检查／数据库文件校验关闭定时等待，首次开始、真实计数变化及最终完成即时报告，避免普通一秒节流丢进度；同计数换对象或重复等待不输出，失败／重试／取消及零项完成保留。消息级心跳开关默认开启，其它阶段保持原行为，SQLite activity与取消检查未改。定向history／共享进度／company观察120项通过（`/tmp/trader-355-verification-counts-final.xml`），3源码mypy、受影响Ruff及完整diff／独立Review通过；未启动或停止用户同步。
 

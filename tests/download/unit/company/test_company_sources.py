@@ -1,6 +1,6 @@
 import json
 
-from datetime import date
+from datetime import date, timedelta
 
 
 import pytest
@@ -264,6 +264,38 @@ def test_financial_non_a_shares_are_excluded_without_corrupting_raw_page_count()
     assert len(page.financials) == 1
     assert page.financials[0].parent_net_profit == -2
     assert page.financials[0].code == "600001"
+
+
+def test_financial_date_validation_keeps_the_one_year_floor_when_caller_is_older():
+    lower = NOW.date() - timedelta(days=365)
+    session = Session({"result": {"count": 1, "pages": 1, "data": [{
+        "SECUCODE": "600001.SH", "REPORT_DATE": "2024-12-31",
+        "NOTICE_DATE": (lower - timedelta(days=1)).isoformat(),
+        "PARENTNETPROFIT": 1, "KCFJCXSYJLR": 1,
+    }]}})
+    source = EastmoneyCompanySource(session, monotonic=lambda: 0)
+    with pytest.raises(ValueError, match="financial_date_filter_ignored"):
+        source.fetch(StructuredCompanyQuery("financial", date(2024, 1, 1), NOW.date()), observed_at=NOW)
+    assert session.requests[0]["params"]["filter"] == (
+        f"(NOTICE_DATE>='{lower}')(NOTICE_DATE<='{NOW.date()}')"
+    )
+
+
+@pytest.mark.parametrize("age,reason", [(365, None), (366, "outside_window"), (-1, "future")])
+def test_pledge_day_never_requests_or_accepts_a_snapshot_older_than_one_year(age, reason):
+    day = NOW.date() - timedelta(days=age)
+    session = Session({"result": {"count": 1, "pages": 1, "data": [{"TRADE_DATE": day.isoformat()}]}})
+    source = EastmoneyCompanySource(session, monotonic=lambda: 0)
+    if reason is None:
+        assert source.pledge_day(NOW) == day
+    else:
+        with pytest.raises(ValueError, match=f"pledge_snapshot_{reason}"):
+            source.pledge_day(NOW)
+    lower = NOW.date() - timedelta(days=365)
+    assert session.requests[0]["params"]["filter"] == (
+        f"(TRADE_DATE>='{lower}')(TRADE_DATE<='{NOW.date()}')"
+    )
+    assert len(session.requests) == 1
 
 
 def test_unlock_source_converts_fraction_to_percentage():

@@ -279,8 +279,10 @@ def test_sync_company_composition_uses_one_global_observer_for_real_operation_up
                         lambda **kwargs: CompanyEvidenceProgress(monotonic=lambda: clock[0], **kwargs))
     result = ExecuteSync(settings.config_path, "company", report=shared)
     assert result.exit_code == 0
-    assert len(snapshots) == 1 and "600001-测试股份" in snapshots[0]
-    assert "下载 1" in " ".join(snapshots[0].split()) and "东财财务" not in snapshots[0]
+    assert len(snapshots) == 3
+    assert "company·总览" in snapshots[0] and "company·范围" in snapshots[1] and "company·任务" in snapshots[2]
+    assert "600001-测试股份" in snapshots[1] and "下载1" in snapshots[2]
+    assert "来源巨潮" in snapshots[2] and "东财财务" not in "".join(snapshots)
     before = stream.getvalue()
     clock[0] += 5
     shared.heartbeat()

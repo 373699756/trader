@@ -28,8 +28,11 @@ class CompanyOperations:
         report: Callable[[EvidenceSyncProgress], None] | None,
         monotonic: Callable[[], float],
         names: tuple[tuple[str, str], ...],
+        *,
+        population: tuple[str, ...] = (),
     ) -> None:
         self._report, self._monotonic, self._names = report, monotonic, names
+        self._codes = frozenset(population)
         self._lock = Lock()
         self._next = 0
 
@@ -52,22 +55,30 @@ class CompanyOperations:
             next((name for candidate, name in self._names if candidate == code), ""),
             document.title if document is not None else "",
             source,
+            related_codes=tuple(sorted(set(document.codes).intersection(self._codes))) if document is not None else (),
         )
         self._emit(event)
         return event
 
     @contextmanager
-    def running(self, event: CompanyOperationProgress) -> Iterator[None]:
-        self._emit(replace(event, state="running", at=self._monotonic()))
+    def running(self, event: CompanyOperationProgress) -> Iterator[Callable[[int, int], None]]:
+        current = replace(event, state="running", at=self._monotonic())
+        self._emit(current)
+
+        def page_progress(completed: int, total: int) -> None:
+            nonlocal current
+            current = replace(current, completed_units=completed, total_units=total, unit="pages")
+            self._emit(current)
+
         state: Literal["completed", "failed", "cancelled"] = "failed"
         try:
-            yield
+            yield page_progress
             state = "completed"
         except InterruptedError:
             state = "cancelled"
             raise
         finally:
-            self._emit(replace(event, state=state, at=self._monotonic()))
+            self._emit(replace(current, state=state, at=self._monotonic()))
 
     def call(
         self,
@@ -101,6 +112,27 @@ class CompanyOperations:
             with self.running(event):
                 return operation()
 
+        return self._submit(event, execute, executor)
+
+    def submit_pages(
+        self,
+        operation: Callable[[Callable[[int, int], None]], _Result],
+        executor: WorkerExecutor | None,
+        *,
+        document: Disclosure,
+    ) -> Future[_Result]:
+        event = self.queued("ocr", document=document)
+
+        def execute() -> _Result:
+            with self.running(event) as page_progress:
+                return operation(page_progress)
+
+        return self._submit(event, execute, executor)
+
+    def _submit(
+        self, event: CompanyOperationProgress, execute: Callable[[], _Result],
+        executor: WorkerExecutor | None,
+    ) -> Future[_Result]:
         if executor is None:
             future: Future[_Result] = Future()
             try:

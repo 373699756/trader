@@ -67,7 +67,7 @@ class SyncProgress:
         elif message.state == "开始":
             timing.ended = False
         immediate = message.immediate or message.state in {"开始", "完成", "失败", "重试", "取消"} or message.finished or message.stock_failure_code is not None
-        changed = message.fields != timing.latest.fields
+        changed = message.fields != timing.latest.fields or message.rows != timing.latest.rows
         timing.latest = message
         if changed:
             timing.updated = now
