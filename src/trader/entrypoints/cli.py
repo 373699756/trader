@@ -191,11 +191,13 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
             print(json.dumps({"status": "failed", "failure": "sync_input_invalid", "category": type(exc).__name__}))
             return 2
     _report_sync_failure(result, progress)
-    progress(ProgressMessage(tuple(ProgressField(f"{task.task} {task.status} 原因 {task.reason or '无'}") for task in result.tasks)
-                             + (ProgressField(f"前置失败 {result.failure or '无'}"),),
+    summary = ProjectSyncResult(result)
+    progress(ProgressMessage(tuple(ProgressField(f"{task.task} {'待补齐' if task.status == 'pending' else task.status} 原因 {task.reason or '无'}") for task in result.tasks)
+                             + ((ProgressField(f"前置失败 {result.failure}"),) if result.failure is not None else ()),
                              task=ProgressTask("sync", "result", "结果汇总"),
-                             state="取消" if result.cancelled else "完成" if result.exit_code == 0 else "失败", finished=True))
-    print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True, indent=2))
+                             state="取消" if summary["status"] == "cancelled" else "失败" if summary["status"] == "failed"
+                             else "完成" if summary["status"] == "completed" else "等待", finished=True))
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2))
     return result.exit_code
 
 

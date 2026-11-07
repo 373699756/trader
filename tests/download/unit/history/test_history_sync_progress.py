@@ -12,6 +12,7 @@ from datetime import date
 import pytest
 
 from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
+from trader.download.application.sync_progress import SyncProgress
 from trader.infra.progress_format import DisplayWidth
 
 from trader.download.application.qfq_download_progress import QfqDownloadProgress
@@ -25,6 +26,7 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 
 from trader.download.domain.history_sync import (
+    HistoryIndustryReadiness,
     HistoryPipelineProgress,
     HistoryStEligibilitySummary,
     HistorySyncProgress,
@@ -108,11 +110,33 @@ def test_industry_retry_and_incomplete_publication_are_explicit(capsys):
         )
     )
     progress.publish_result(
-        replace(_failed_status("fixture"), state="completed", reason=None, unresolved_price_cells=2000)
+        replace(_failed_status("fixture"), state="completed", reason="history_price_gaps_remaining",
+                snapshot_hash="a" * 64, unresolved_price_cells=2000)
     )
     lines = _compact_log(capsys.readouterr().err).splitlines()
     assert "0/45" in lines[0] and "尝试 2/3" in lines[0]
-    assert "同步完成 | 价格缺口待补 | 未修复价格缺口 2000 股日" in lines[1]
+    assert "等待 | 历史已发布 | 价格缺口待补 | 未修复价格缺口 2000 股日" in lines[1]
+
+
+@pytest.mark.parametrize("failure", (None, "supplier_industry_timeout"))
+def test_industry_window_diagnostic_does_not_turn_published_prices_into_pending(failure) -> None:
+    messages: list[ProgressMessage] = []
+    reporter = StderrHistorySyncProgress(monotonic=lambda: 0.0, report=SyncProgress(messages.append, lambda: 0.0))
+    status = replace(
+        _failed_status("fixture"), state="completed", reason=None, snapshot_hash="a" * 64,
+        industry_readiness=HistoryIndustryReadiness(4402, 4402, 0, failure_category=failure),
+    )
+    reporter.publish_result(status)
+
+    output = _compact_log(RenderProgress(messages[-1], color=False))
+    assert "完成 | 同步完成 | 历史行业整窗覆盖 0/4402 股" in output
+    assert "训练行业未就绪" not in output
+    assert not status.needs_retry
+    assert ("行业核验异常" in output) is (failure is not None)
+    if failure is not None:
+        assert f"行业核验异常 {failure}" in output
+    assert all(field.level is ProgressLevel.WARNING for field in messages[-1].fields
+               if field.text.startswith(("历史行业整窗覆盖 ", "行业核验异常 ")))
 
 
 def test_legacy_resume_progress_is_visible_with_counts_and_month(capsys):

@@ -94,7 +94,8 @@ class SyncData:
             stopped = history.state == "cancelled" or self.cancelled()
             ready = not history.needs_retry
             return SyncTaskResult(
-                task, "cancelled" if stopped else "completed" if ready else "pending", history=history
+                task, "cancelled" if stopped else "failed" if history.state in {"failed", "blocked"}
+                else "completed" if ready else "pending", reason=history.reason, history=history
             )
         if task == "market":
             market = self.market(reference)

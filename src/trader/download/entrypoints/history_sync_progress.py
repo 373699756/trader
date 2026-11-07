@@ -472,6 +472,8 @@ class StderrHistorySyncProgress:
 
     def _result_parts(self, status: HistoryMaintenanceStatus) -> list[str]:
         parts = [_RESULT_LABELS[status.state]]
+        if status.state in {"completed", "already_current"} and status.unresolved_price_cells:
+            parts[0] = "历史已发布" if status.published else "同步结束"
         if status.state == "failed":
             location = self._specific_failure
             if location is not None:
@@ -495,8 +497,10 @@ class StderrHistorySyncProgress:
                 parts.append(f"涉及 {summary.stocks} 股 | 日期 {summary.first_date}～{summary.last_date}")
                 parts.extend(f"{item.reason} {item.cells} 股日" for item in summary.reasons)
         if status.industry_readiness is not None and not status.industry_readiness.ready:
-            parts.append(f"历史行业待核 {status.industry_readiness.requested_codes - status.industry_readiness.point_in_time_codes} 股")
-            parts.append("训练行业未就绪")
+            readiness = status.industry_readiness
+            parts.append(f"历史行业整窗覆盖 {readiness.point_in_time_codes}/{readiness.requested_codes} 股")
+            if readiness.failure_category is not None:
+                parts.append(f"行业核验异常 {readiness.failure_category}")
         return parts
 
     def publish_result(self, status: HistoryMaintenanceStatus) -> None:
@@ -511,7 +515,9 @@ class StderrHistorySyncProgress:
                 tuple(
                     FormatProgressField(
                         part,
-                        level=level
+                        level=ProgressLevel.WARNING
+                        if part.startswith(("历史行业整窗覆盖 ", "行业核验异常 "))
+                        else level
                         if index == 1
                         or index == len(parts) - 1
                         or part == f"错误 {status.reason}"
@@ -522,7 +528,8 @@ class StderrHistorySyncProgress:
                     for index, part in enumerate(parts)
                 ),
                 task=ProgressTask("history", "result", "结果汇总"),
-                state="失败" if status.state in {"failed", "blocked"} else "取消" if status.state == "cancelled" else "完成",
+                state="失败" if status.state in {"failed", "blocked"} else "取消" if status.state == "cancelled"
+                else "等待" if status.needs_retry else "完成",
                 finished=True,
             )
         )
