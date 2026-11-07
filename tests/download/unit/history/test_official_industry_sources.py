@@ -360,12 +360,13 @@ def test_public_tool_rejects_checkout_as_official_work_root():
 
 
 def test_worker_official_mode_closes_transport_without_opening_runtime_or_history(tmp_path, parser, monkeypatch):
+    import trader.bootstrap as bootstrap
     import trader.infra.settings as settings_module
     from scripts.download.history import history_industry_preparation as worker
 
     transport = _transport()
     reports = []
-    monkeypatch.setattr(worker, "RequestsHttpTransport", lambda: transport)
+    monkeypatch.setattr(bootstrap, "OpenExternalHttp", lambda **kwargs: transport)
     monkeypatch.setattr(
         settings_module, "LoadRuntimeSettings", lambda *args: pytest.fail("official mode must not read runtime data"),
     )

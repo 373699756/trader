@@ -190,11 +190,13 @@ def test_per_stock_progress_reports_request_cache_and_missing_classification(fix
     messages = []
     source = replace(source, report=messages.append)
     _fetch(source, codes=("600001", "600002"))
+    messages = [message for message in messages if message.fields[0].text.split("/", 1)[0].isdigit()]
     assert [message.fields[0].text for message in messages] == ["1/2股", "2/2股"]
     assert messages[0].fields[1].text == "代码 600001"
     assert messages[0].fields[2].text == "缓存复用"
     assert messages[1].fields[2].text == "接口获取"
     assert messages[1].fields[3].level is ProgressLevel.WARNING
+    assert messages[1].fields[4].text == "原件缓存未复用 无原件"
 
 
 def test_late_received_time_is_preserved_instead_of_replaced_by_query_start(fixture):
@@ -285,6 +287,8 @@ def test_original_batches_are_bounded_and_progress_requires_committed_bytes(fixt
         save(self, documents)
 
     def progress(message):
+        if not message.fields[0].text.split("/", 1)[0].isdigit():
+            return
         code = message.fields[1].text.removeprefix("代码 ")
         assert index.read_source_document("cninfo:p_stock2110:" + code, _AT) is not None
         completed.append(code)
@@ -335,7 +339,8 @@ def test_failed_batch_is_not_retried_or_reported_complete_by_final_flush(fixture
     with pytest.raises(RuntimeError, match="fixture_commit_failed"):
         _fetch(replace(source, report=progress.append), codes=("600001", "600002", "600003"))
     assert len(attempts) == 1 and len(attempts[0]) == 2
-    assert progress == []
+    assert not any(message.fields[0].text.split("/", 1)[0].isdigit() for message in progress)
+    assert not any(message.state == "完成" for message in progress)
     index = SQLiteIndustryQueryIndex(source.path, "cninfo_industry_queries", sqlite_policy=source.sqlite_policy)
     assert index.read_source_document("cninfo:p_stock2110:600001", _AT) is None
     assert CurrentIndustryCache(source.path, sqlite_policy=source.sqlite_policy).load(_AT) == ()
@@ -363,3 +368,88 @@ def test_invalid_batch_budget_is_rejected_at_construction(fixture, rows):
     source, _now, _calls, _outcomes = fixture
     with pytest.raises(ValueError, match="batch_rows_invalid"):
         replace(source, source_batch_rows=rows)
+
+
+def test_feedback_reports_effective_budget_real_batches_and_exclusive_operation_totals(fixture):
+    from dataclasses import replace
+
+    source, _now, calls, _outcomes = fixture
+    clock = [0.0]
+    messages = []
+
+    def monotonic():
+        clock[0] += 1
+        return clock[0]
+
+    source = replace(source, monotonic=monotonic, report=messages.append)
+    _fetch(source, codes=("600001", "600002"))
+    first = " | ".join(field.text for field in messages[0].fields)
+    assert "有效单批上限 64股" in first and "正文合计上限 2097152字节" in first
+    final = " | ".join(field.text for field in messages[-1].fields)
+    assert messages[-1].state == "完成"
+    assert "接口获取（含解析）累计 3.000秒" in final
+    assert "原件保存累计 2.000秒" in final
+    assert "完整发布累计 1.000秒" in final
+    assert "已收到个股原件 2份" in final and "已保存个股原件 2份" in final
+    assert "未保存个股原件 0份" in final and "本轮最大个股批次 2份" in final
+    assert "发布缓存未复用 无完整发布" in " | ".join(field.text for message in messages for field in message.fields)
+
+    calls.clear()
+    messages.clear()
+    _fetch(source, codes=("600001", "600002"))
+    assert calls == []
+    reused = " | ".join(field.text for field in messages[-1].fields)
+    assert "当前发布缓存复用 2 股" in reused and "接口调用 0次" in reused
+    assert "已保存个股原件 0份" in reused
+    assert "发布缓存复用 2股" in reused and "原件缓存复用 0股" in reused
+
+
+def test_cancellation_during_publication_cache_read_never_reports_industry_completed(fixture, monkeypatch):
+    from dataclasses import replace
+
+    source, _now, calls, _outcomes = fixture
+    before = _fetch(source)
+    cancelled = [False]
+    latest = CurrentIndustryCache.latest
+    messages = []
+
+    def read(cache, at):
+        result = latest(cache, at)
+        cancelled[0] = True
+        return result
+
+    monkeypatch.setattr(CurrentIndustryCache, "latest", read)
+    calls.clear()
+    source = replace(source, report=messages.append, cancel_requested=lambda: cancelled[0])
+    with pytest.raises(HttpCancelled):
+        _fetch(source)
+    assert calls == [] and not any(message.state == "完成" for message in messages)
+    assert CurrentIndustryCache(source.path, sqlite_policy=source.sqlite_policy).load(_AT) == before
+
+
+def test_waiting_feedback_names_current_stock_without_confirming_uncommitted_original(fixture, monkeypatch):
+    from dataclasses import replace
+    from io import StringIO
+
+    from trader.download.application.sync_progress import SyncProgress
+    from trader.download.infra.terminal_progress import TerminalDownloadProgress
+
+    source, _now, _calls, _outcomes = fixture
+    clock = [0.0]
+    stream = StringIO()
+    output = SyncProgress(TerminalDownloadProgress(stream), lambda: clock[0])
+    source = replace(source, monotonic=lambda: clock[0], report=output)
+    fetch = CninfoIndustryClient.fetch_changes
+
+    def waiting(client, code, start, end, *, cancel_requested):
+        clock[0] += 6
+        output.heartbeat()
+        line = stream.getvalue().splitlines()[-1]
+        assert "等待 | 操作 获取个股行业 | 当前股票 600001" in line
+        assert "已确认 0/1股" in line and "已保存个股原件 0份" in line
+        assert "原件缓存未复用 无原件" in line
+        return fetch(client, code, start, end, cancel_requested=cancel_requested)
+
+    monkeypatch.setattr(CninfoIndustryClient, "fetch_changes", waiting)
+    _fetch(source)
+    assert "接口获取（含解析）累计 6.000秒" in stream.getvalue().splitlines()[-1]

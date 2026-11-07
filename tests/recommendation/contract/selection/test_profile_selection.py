@@ -126,11 +126,18 @@ def test_training_selection_uses_local_history_and_runs_only_selected_profiles(
     monkeypatch.setattr(bootstrap, "ExecuteHistoryDownload", download)
     monkeypatch.setattr(commands, "ConfigureTrainingResources", lambda *_args: calls.append("resources"))
 
-    def train(runtime, selected, *, executor, memory_admission, cpu_budget, fanout_settings, paths, sqlite_policy):
+    def train(
+        runtime, selected, *, executor, memory_admission, cpu_budget, fanout_settings,
+        sample_settings, paths, sqlite_policy, prepare_training, memory_capacity_bytes,
+    ):
         assert executor.status().workers == len(selected)
         assert sqlite_policy == bootstrap.BuildSqlitePolicy(runtime)
         assert cpu_budget.capacity <= cpu_budget.available_cpus
         assert fanout_settings.batch_rows > 0 and fanout_settings.queue_batches > 0
+        assert sample_settings.sqlite_cache_bytes > 0 and sample_settings.v1_batch_rows > 0
+        assert paths.history == runtime.data_paths.history
+        assert paths.models == runtime.data_paths.models and paths.samples == runtime.data_paths.samples
+        assert callable(prepare_training) and memory_capacity_bytes == memory_admission.capacity_bytes
         calls.extend(selected)
         return 0
 

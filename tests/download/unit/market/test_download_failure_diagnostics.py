@@ -134,6 +134,7 @@ def test_retention_and_read_only_missing_table(tmp_path):
             "elapsed_seconds,timeout_seconds,reason,causes,diagnostic,window_start,window_end,endpoint "
             "FROM download_failure WHERE id=1", ((index,) for index in range(2, 10)),
         )
+    SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture()).publish_file()
     recorder(DownloadFailureContext("latest_validation"), ValueError("latest"))
     report = _read(path, retention_limit=7, query_limit=2)
     assert report["total"] == report["retention_limit"] == 7

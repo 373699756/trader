@@ -83,8 +83,8 @@ def test_numpy_dependency_upper_bound_keeps_supported_mypy_stub_syntax() -> None
 
 def test_http_api_type_resource_and_business_entrypoints_are_packaged() -> None:
     project = Path(__file__).parents[3]
-    project = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
-    package_data = project["tool"]["setuptools"]["package-data"]
+    configuration = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = configuration["tool"]["setuptools"]["package-data"]
 
     assert package_data["trader.http_api"] == ["py.typed"]
     assert (project / "src/trader/http_api/py.typed").is_file()

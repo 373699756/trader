@@ -9,9 +9,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from time import monotonic as _monotonic
+from typing import Literal, TypeVar
 from zoneinfo import ZoneInfo
 
-from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressTask
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressState, ProgressTask
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError
 from trader.download.domain.current_industry import CurrentIndustryReference
@@ -34,6 +36,9 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _REFRESH_AGE = timedelta(days=7)
 _TAXONOMY_KEY = "cninfo:p_public0002:008001"
 _MAX_ROWS = 12_000
+_Result = TypeVar("_Result")
+_IndustryOperation = Literal["缓存准备/读取", "接口获取（含解析）", "原件保存", "完整发布"]
+_INDUSTRY_OPERATIONS: tuple[_IndustryOperation, ...] = ("缓存准备/读取", "接口获取（含解析）", "原件保存", "完整发布")
 
 
 class CurrentIndustryDatabaseIncompatibleError(IndustryDatabaseIncompatibleError):
@@ -60,6 +65,7 @@ class CurrentIndustryPublication:
     clock: Callable[[], datetime] = field(default=_now, kw_only=True)
     report: Callable[[ProgressMessage], None] | None = field(default=None, kw_only=True)
     source_batch_rows: int = field(default=1, kw_only=True)
+    monotonic: Callable[[], float] = field(default=_monotonic, kw_only=True)
 
     def __post_init__(self) -> None:
         if type(self.source_batch_rows) is not int or not 1 <= self.source_batch_rows <= 64:
@@ -68,14 +74,6 @@ class CurrentIndustryPublication:
     def _check(self) -> None:
         if self.cancel_requested():
             raise HttpCancelled("cninfo_industry_cancelled")
-
-    def _progress(self, code: str, completed: int, total: int, *, cached: bool, missing: bool = False) -> None:
-        if self.report is not None:
-            self.report(ProgressMessage((
-                ProgressField(f"{completed}/{total}股"),
-                ProgressField(f"代码 {code}"), ProgressField("缓存复用" if cached else "接口获取"),
-                ProgressField("分类缺失" if missing else "完成", ProgressLevel.WARNING if missing else ProgressLevel.SUCCESS),
-            ), task=ProgressTask("参考", "当前行业", "当前行业")))
 
     def fetch(
         self,
@@ -94,10 +92,17 @@ class CurrentIndustryPublication:
             raise ValueError("current_industry_population_invalid")
         self._check()
         index = SQLiteIndustryQueryIndex(self.path, _CONTRACT, "current_industry_query", sqlite_policy=self.sqlite_policy)
-        index.prepare()
+        feedback = _IndustryProgress(self.report, self.monotonic, len(codes))
+        feedback.emit("准备行业下载", state="开始", details=(
+            f"配置单批上限 {self.source_batch_rows}股",
+            f"SQLite行预算 {self.sqlite_policy.transaction_batch_rows}",
+            f"有效单批上限 {min(self.source_batch_rows, index.source_batch_rows)}股",
+            f"正文合计上限 {index.source_batch_bytes}字节", f"所需窗口 {calendar[0]}～{day}",
+        ))
+        feedback.measure("缓存准备/读取", "准备行业下载库", index.prepare)
         cut = max(observed_at, _aware(self.clock()))
         cache = CurrentIndustryCache(self.path, self.minimum_rows, sqlite_policy=self.sqlite_policy)
-        previous = cache.latest(cut)
+        previous = feedback.measure("缓存准备/读取", "读取完整发布缓存", lambda: cache.latest(cut))
         if previous is not None:
             payload = _payload(previous)
             if (
@@ -106,19 +111,34 @@ class CurrentIndustryPublication:
                 and date.fromisoformat(_text(payload, "requested_to")) <= day
                 and cut < _timestamp(payload, "refresh_after")
             ):
-                if self.report is not None:
-                    self.report(ProgressMessage((ProgressField(f"当前发布缓存复用 {len(codes)} 股"),),
-                                                task=ProgressTask("参考", "当前行业", "当前行业")))
-                return _query_observations(previous, as_of=cut)
-        taxonomy_document = index.read_source_document(_TAXONOMY_KEY, cut)
+                result = _query_observations(previous, as_of=cut)
+                self._check()
+                feedback.confirmed = len(codes)
+                feedback.publication_reused = len(codes)
+                feedback.emit("当前发布缓存复用", state="完成", details=(
+                    f"当前发布缓存复用 {len(codes)} 股", f"有效分类 {len(result)}股", f"缺分类 {len(codes) - len(result)}股",
+                ))
+                return result
+            reasons = tuple(reason for rejected, reason in (
+                (payload["universe"] != list(codes), "总体变化"),
+                (date.fromisoformat(_text(payload, "requested_from")) > calendar[0], "起始窗口不足"),
+                (date.fromisoformat(_text(payload, "requested_to")) > day, "缓存窗口晚于观察日"),
+                (cut >= _timestamp(payload, "refresh_after"), "超过刷新期限"),
+            ) if rejected)
+        else:
+            reasons = ("无完整发布",)
+        feedback.emit("重新准备行业", details=(f"发布缓存未复用 {'、'.join(reasons)}",))
+        taxonomy_document = feedback.measure("缓存准备/读取", "读取分类目录原件", lambda: index.read_source_document(_TAXONOMY_KEY, cut))
         if taxonomy_document is not None and taxonomy_document.requested_to > day:
             raise ValueError("current_industry_source_window_in_future")
         if taxonomy_document is None or cut - taxonomy_document.received_at >= _REFRESH_AGE:
-            taxonomy = self.client.fetch_taxonomy(cancel_requested=self.cancel_requested)
+            feedback.source_calls += 1
+            taxonomy = feedback.measure("接口获取（含解析）", "获取分类目录", lambda: self.client.fetch_taxonomy(cancel_requested=self.cancel_requested))
             self._check()
             start = min(calendar[0], taxonomy_document.requested_from) if taxonomy_document is not None else calendar[0]
             taxonomy_document = IndustrySourceDocument(_TAXONOMY_KEY, start, day, _aware(self.clock()), taxonomy.response_content)
-            index.save_source_documents((taxonomy_document,))
+            feedback.measure("原件保存", "保存分类目录原件", lambda: index.save_source_documents((taxonomy_document,)))
+            feedback.saved_batches += 1
         else:
             taxonomy = ParseCninfoIndustryTaxonomy(taxonomy_document.content)
         rows: list[dict[str, object]] = []
@@ -137,24 +157,35 @@ class CurrentIndustryPublication:
             pending.clear()
             pending_progress.clear()
             pending_bytes = 0
-            index.save_source_documents(batch)
+            feedback.measure("原件保存", "保存个股原件", lambda: index.save_source_documents(batch),
+                             details=(f"本批 {len(batch)}份", f"本批正文 {sum(len(item.content) for item in batch)}字节"))
+            feedback.saved += len(batch)
+            feedback.saved_batches += 1
+            feedback.last_batch_rows = len(batch)
+            feedback.last_batch_bytes = sum(len(item.content) for item in batch)
+            feedback.maximum_batch_rows = max(feedback.maximum_batch_rows, len(batch))
             for item in committed:
-                self._progress(item.code, item.completed, len(codes), cached=False, missing=item.missing)
+                feedback.stock(item.code, item.completed, cached=False, missing=item.missing, reason=item.cache_reason)
+            feedback.emit("个股原件保存完成")
 
         try:
             for completed, code in enumerate(codes, 1):
                 self._check()
                 key = "cninfo:p_stock2110:" + code
                 cut = max(cut, _aware(self.clock()))
-                document = index.read_source_document(key, cut)
+                document = feedback.measure("缓存准备/读取", "读取个股原件", lambda: index.read_source_document(key, cut), code=code)
                 if document is not None and document.requested_to > day:
                     raise ValueError("current_industry_source_window_in_future")
                 cached = document is not None and document.requested_from <= calendar[0] and cut - document.received_at < _REFRESH_AGE
                 if document is None or not cached:
+                    cache_reason = "无原件" if document is None else "起始窗口不足" if document.requested_from > calendar[0] else "超过7天"
                     start = min(calendar[0], document.requested_from) if document is not None else calendar[0]
-                    changes = self.client.fetch_changes(code, start, day, cancel_requested=self.cancel_requested)
+                    feedback.source_calls += 1
+                    changes = feedback.measure("接口获取（含解析）", "获取个股行业", lambda: self.client.fetch_changes(code, start, day, cancel_requested=self.cancel_requested),
+                                               code=code, details=(f"原件缓存未复用 {cache_reason}", f"请求窗口 {start}～{day}"))
                     self._check()
                     document = IndustrySourceDocument(key, start, day, _aware(self.clock()), changes.response_content)
+                    feedback.received += 1
                     if pending_bytes + len(document.content) > index.source_batch_bytes:
                         flush()
                     pending.append(document)
@@ -165,8 +196,8 @@ class CurrentIndustryPublication:
                 supported = tuple(item for item in changes.rows if item.is_current_standard and item.is_latest and item.changed_on <= day)
                 missing = not supported
                 if missing:
-                    reason = "current_latest_record_absent" if any(item.is_current_standard for item in changes.rows) else "current_standard_absent"
-                    gaps.append({"code": code, "reason": reason if changes.rows else "industry_records_empty"})
+                    gap_reason = "current_latest_record_absent" if any(item.is_current_standard for item in changes.rows) else "current_standard_absent"
+                    gaps.append({"code": code, "reason": gap_reason if changes.rows else "industry_records_empty"})
                 else:
                     change = max(supported, key=lambda item: item.changed_on)
                     category = ResolveCninfoIndustryCategory(taxonomy, change)
@@ -175,9 +206,10 @@ class CurrentIndustryPublication:
                     rows.append(_row_payload(change, category.code, category.name, document))
                 if cached:
                     flush()
-                    self._progress(code, completed, len(codes), cached=True, missing=missing)
+                    feedback.cached += 1
+                    feedback.stock(code, completed, cached=True, missing=missing)
                 else:
-                    pending_progress.append(_PendingIndustryProgress(code, completed, missing))
+                    pending_progress.append(_PendingIndustryProgress(code, completed, missing, cache_reason))
                     if len(pending) >= min(self.source_batch_rows, index.source_batch_rows):
                         flush()
         finally:
@@ -201,7 +233,8 @@ class CurrentIndustryPublication:
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         query = index.build_query(_SOURCE, day, completed_at.date(), encoded)
         result = _query_observations(query, as_of=max(completed_at, _aware(self.clock())))
-        index.save(_SOURCE, day, completed_at.date(), encoded)
+        feedback.measure("完整发布", "保存完整行业发布", lambda: index.save(_SOURCE, day, completed_at.date(), encoded))
+        feedback.emit("行业准备完成", state="完成", details=(f"有效分类 {len(rows)}股", f"缺分类 {len(gaps)}股"))
         return result
 
 
@@ -210,6 +243,65 @@ class _PendingIndustryProgress:
     code: str
     completed: int
     missing: bool
+    cache_reason: str
+
+
+@dataclass
+class _IndustryProgress:
+    report: Callable[[ProgressMessage], None] | None
+    monotonic: Callable[[], float]
+    total: int
+    confirmed: int = 0
+    cached: int = 0
+    publication_reused: int = 0
+    source_calls: int = 0
+    received: int = 0
+    saved: int = 0
+    saved_batches: int = 0
+    last_batch_rows: int = 0
+    last_batch_bytes: int = 0
+    maximum_batch_rows: int = 0
+    seconds: dict[_IndustryOperation, float] = field(default_factory=dict)
+
+    def measure(
+        self, phase: _IndustryOperation, operation: str, call: Callable[[], _Result], *,
+        code: str | None = None, details: tuple[str, ...] = (),
+    ) -> _Result:
+        self.emit(operation, code=code, details=details)
+        started = self.monotonic()
+        try:
+            return call()
+        finally:
+            self.seconds[phase] = self.seconds.get(phase, 0.0) + max(0.0, self.monotonic() - started)
+
+    def _details(self) -> tuple[ProgressField, ...]:
+        return tuple(ProgressField(value) for value in (
+            f"已确认 {self.confirmed}/{self.total}股", f"发布缓存复用 {self.publication_reused}股",
+            f"原件缓存复用 {self.cached}股",
+            f"接口调用 {self.source_calls}次（含目录）", f"已收到个股原件 {self.received}份",
+            f"已保存个股原件 {self.saved}份", f"未保存个股原件 {self.received - self.saved}份",
+            f"保存批次 {self.saved_batches}次（含目录）",
+            f"最近个股批次 {self.last_batch_rows}份/{self.last_batch_bytes}字节",
+            f"本轮最大个股批次 {self.maximum_batch_rows}份",
+            *(f"{phase}累计 {self.seconds.get(phase, 0.0):.3f}秒" for phase in _INDUSTRY_OPERATIONS),
+        ))
+
+    def emit(self, operation: str, *, code: str | None = None, details: tuple[str, ...] = (), state: ProgressState = "处理中") -> None:
+        if self.report is not None:
+            self.report(ProgressMessage((
+                ProgressField(f"操作 {operation}"), *((ProgressField(f"当前股票 {code}"),) if code else ()),
+                *(ProgressField(value) for value in details), *self._details(),
+            ), task=ProgressTask("参考", "当前行业", "当前行业"), state=state))
+
+    def stock(self, code: str, completed: int, *, cached: bool, missing: bool, reason: str | None = None) -> None:
+        self.confirmed = completed
+        if self.report is not None:
+            self.report(ProgressMessage((
+                ProgressField(f"{completed}/{self.total}股"), ProgressField(f"代码 {code}"),
+                ProgressField("缓存复用" if cached else "接口获取"),
+                ProgressField("分类缺失" if missing else "完成", ProgressLevel.WARNING if missing else ProgressLevel.SUCCESS),
+                *((ProgressField(f"原件缓存未复用 {reason}"),) if reason else ()), *self._details(),
+            ), task=ProgressTask("参考", "当前行业", "当前行业")))
 
 
 def _row_payload(change: CninfoIndustryChange, category_code: str, category_name: str, document: IndustrySourceDocument) -> dict[str, object]:

@@ -25,6 +25,7 @@ _MEASUREMENT_FIELDS = (
 _DATABASE_FIELDS = (
     "wall_seconds", "cpu_seconds", "connections", "statements", "transactions", "commits",
     "sqlite_call_seconds", "commit_seconds", "physical_read_bytes", "physical_write_bytes",
+    "connection_open_seconds", "connection_close_seconds",
     "sampled_wal_peak_bytes", "wal_sampling_enabled", "wal_sampling_failed", "process_peak_rss_bytes", "completed",
 )
 
@@ -55,7 +56,10 @@ def _read_measurement(path: Path) -> dict[str, object]:
     payload["database"] = {name: database[name] for name in _DATABASE_FIELDS if name in database}
     operations = raw.get("operations")
     payload["operations"] = [
-        {name: row.get(name) for name in ("operation", "calls", "wall_seconds", "thread_cpu_seconds")} | {
+        {name: row.get(name) for name in (
+            "operation", "calls", "wall_seconds", "thread_cpu_seconds", "inflight_calls",
+            "oldest_inflight_seconds", "inflight_duration_complete", "untracked_inflight_calls",
+        )} | {
             "failures": [
                 {name: failure.get(name) for name in ("category", "calls")}
                 for failure in (row.get("failures", [])[:32] if isinstance(row.get("failures"), list) else [])

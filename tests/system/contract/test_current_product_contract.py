@@ -48,7 +48,7 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
         assert "/api/v2/" not in content
         assert "trader-cli perf-check" not in content
     assert "scripts/tools.py" in readme
-    assert "scripts/tools.py" in (ROOT / "docs/new/b_系统设计.md").read_text(encoding="utf-8")
+    assert "scripts/tools.py" in (ROOT / "docs/b_系统设计.md").read_text(encoding="utf-8")
     assert "GET /api/status" in operations
     assert "chokepoint/future_growth/low_price_potential" in operations
     download_design = (ROOT / "docs/d_下载设计.md").read_text(encoding="utf-8")

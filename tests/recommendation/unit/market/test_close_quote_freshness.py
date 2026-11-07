@@ -6,6 +6,7 @@ import pytest
 
 from tests.helpers.recommendation.runtime.long_runtime import _Quotes, _runtime
 from tests.helpers.recommendation.market.market_data_merge import _observation
+from tests.helpers.recommendation.configuration import HardFilterPolicyFixture
 from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import DynamicSourceHealth
@@ -30,7 +31,8 @@ def test_same_day_close_survives_merge_and_scoring_filters(application_feature_f
     assert quote.source_time == _CLOSE
     assert quote.age_seconds(now) == (now - _CLOSE).total_seconds()
     feature = replace(application_feature_factory("600001", now), quote=quote)
-    rule = next(rule for rule in LevelOneFilterRules(max_age_seconds=30) if rule.name == "invalid_quote_time")
+    rules = LevelOneFilterRules(max_age_seconds=30, policy=HardFilterPolicyFixture())
+    rule = next(rule for rule in rules if rule.name == "invalid_quote_time")
     assert rule.predicate(feature, now) is None
     health = DynamicSourceHealth((feature,), now)
     assert health.healthy_source_count == 1

@@ -8,7 +8,7 @@ from trader.recommendation.application.ports.loaded_profile import ModelPredicti
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.infra.performance.fixtures import BuildPerformanceFixtures
 from trader.recommendation.infra.performance.model_workload import PerformanceProfileWorkload
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 
 
 class _Predictor:
@@ -46,5 +46,5 @@ def _workload(profile_id):
     _, _, features = BuildPerformanceFixtures(
         _budgets(), profile, history_sessions=_history_sessions(profile_id)
     )
-    policy = _recommendation_policy(LoadStrategySettings(Path("config/strategy.json"), scoring_profile=profile_id))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(Path("config/strategy.json"), scoring_profile=profile_id))
     return PerformanceProfileWorkload(profile, policy, features, "fixture-config", ExecutionCostPolicy(0.002, 1.0))

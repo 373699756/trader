@@ -22,6 +22,7 @@ from trader.download.domain.qfq_planning import QfqNonTradingFact
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_request_budget import TencentRequestBudget
 from trader.infra.sqlite_codec import EncodeDate
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions, SqliteTransaction
 
 _DAYS = tuple(date(2025, 1, 1) + timedelta(days=offset) for offset in range(25))
 _VERSIONS = BaoStockSourceVersions("fixture", "3.11", ())
@@ -404,20 +405,21 @@ def test_review_lock_contention_uses_one_millisecond_busy_wait_and_keeps_window(
         return connection
 
     monkeypatch.setattr(module, "OpenSqliteConnection", observe_open)
-    locker = sqlite3.connect(updater.v2.path, timeout=0, isolation_level=None)
+    locker = OpenSqliteConnection(updater.v2.path, SqliteConnectionOptions(timeout_seconds=0))
+    transaction = SqliteTransaction(locker, immediate=True)
 
     class _LockedSupplier(_Supplier):
         def fetch_window(self, security, dates, *, request_budget=None):
             result = super().fetch_window(security, dates, request_budget=request_budget)
             if request_budget is not None:
-                locker.execute("BEGIN IMMEDIATE")
+                transaction.begin()
             return result
 
     locked = _LockedSupplier(days=supplier.days, inferred_on=_DAYS[10], resolve_on_review=True)
     try:
         result = replace(updater, supplier=locked, price_review_budget=TencentRequestBudget(monotonic=lambda: 0.0)).execute(_observed(_DAYS[19]))
     finally:
-        locker.rollback()
+        transaction.rollback()
         locker.close()
     assert result.completed_codes == 1 and result.pending_codes == 0
     review_opens = tuple((policy, busy_ms) for configured, policy, busy_ms in opened_timeouts if configured == 0.001)

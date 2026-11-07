@@ -150,7 +150,7 @@ def _construct_samples(
             code,
             day,
             "main",
-            "fixture",
+            "capco:J66货币金融服务",
             HistoryTrainingPoint(
                 day,
                 10.0 + stock + number * 0.01,

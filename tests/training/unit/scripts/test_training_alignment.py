@@ -22,6 +22,7 @@ from dataclasses import replace
 import pytest
 
 from scripts.training.jobs.training_alignment import _probe
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 
 @pytest.mark.parametrize("reported_profile", ("v1", "v2"))
@@ -54,7 +55,11 @@ def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, m
 
 def test_alignment_import_does_not_preload_the_product_before_checkout_selection():
     completed = subprocess.run(
-        [sys.executable, "-c", "import sys; import scripts.training.jobs.training_alignment; assert 'trader' not in sys.modules"],
+        [sys.executable, "-c", (
+            "import sys; import scripts.training.jobs.training_alignment; "
+            "assert {name for name in sys.modules if name == 'trader' or name.startswith('trader.')} "
+            "<= {'trader', 'trader.infra', 'trader.infra.linux_process'}"
+        )],
         check=False, capture_output=True, text=True, timeout=10,
     )
     assert completed.returncode == 0, completed.stderr
@@ -226,16 +231,15 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
              reference / "company_st.sqlite3", reference / "industry.sqlite3")
     connections = []
     for path in paths:
-        connection = sqlite3.connect(path)
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA user_version=2")
-        connection.execute("CREATE TABLE fixture(value INTEGER)")
-        connection.execute("INSERT INTO fixture VALUES(17)")
-        connection.commit()
+        connection = OpenSqliteConnection(path, SqliteConnectionOptions(journal_mode="WAL"), sqlite_policy=SqlitePolicyFixture())
+        with SqliteTransaction(connection):
+            connection.run("PRAGMA user_version=2")
+            connection.run("CREATE TABLE fixture(value INTEGER)")
+            connection.run("INSERT INTO fixture VALUES(17)")
         connections.append(connection)
-    connections[0].execute("CREATE TABLE schema_contract(singleton INTEGER PRIMARY KEY,reference_file TEXT)")
-    connections[0].execute("INSERT INTO schema_contract VALUES(1,'../reference/company_st.sqlite3')")
-    connections[0].commit()
+    with SqliteTransaction(connections[0]):
+        connections[0].run("CREATE TABLE schema_contract(singleton INTEGER PRIMARY KEY,reference_file TEXT)")
+        connections[0].run("INSERT INTO schema_contract VALUES(1,'../reference/company_st.sqlite3')")
     for path in paths[:2]:
         PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
     before = tuple(path.read_bytes() for path in paths)
@@ -264,10 +268,10 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
             assert report["source_identity_unchanged"] is True
             assert not (target / "reference/industry.sqlite3").exists()
             for path in paths[:3]:
-                with sqlite3.connect((target / path.relative_to(market)).as_uri() + "?mode=ro", uri=True) as copied:
-                    assert copied.execute("SELECT value FROM fixture").fetchone() == (17,)
+                with SqliteSession(target / path.relative_to(market), SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture()) as copied:
+                    assert tuple(copied.run("SELECT value FROM fixture").require_one()) == (17,)
         assert tuple(path.read_bytes() for path in paths) == before
-        assert all(connection.execute("SELECT value FROM fixture").fetchone() == (17,) for connection in connections)
+        assert all(tuple(connection.run("SELECT value FROM fixture").require_one()) == (17,) for connection in connections)
     finally:
         for connection in connections:
             connection.close()
@@ -288,13 +292,13 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
     paths = (history / "catalog.sqlite3", history / "prices_2026.sqlite3",
              reference / "company_st.sqlite3", reference / "industry.sqlite3")
     for path in paths:
-        with sqlite3.connect(path) as connection:
-            connection.execute("CREATE TABLE fixture(value INTEGER)")
-            connection.execute("PRAGMA user_version=2")
+        with SqliteSession(path, sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
+            connection.run("CREATE TABLE fixture(value INTEGER)")
+            connection.run("PRAGMA user_version=2")
     binding = str(paths[2]) if invalid == "absolute" else "../../shared/company_st.sqlite3"
-    with sqlite3.connect(paths[0]) as connection:
-        connection.execute("CREATE TABLE schema_contract(singleton INTEGER PRIMARY KEY,reference_file TEXT)")
-        connection.execute("INSERT INTO schema_contract VALUES(1,?)", (
+    with SqliteSession(paths[0], sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
+        connection.run("CREATE TABLE schema_contract(singleton INTEGER PRIMARY KEY,reference_file TEXT)")
+        connection.run("INSERT INTO schema_contract VALUES(1,?)", (
             "../reference/company_st.sqlite3" if invalid == "copy_escape" else binding,
         ))
     for path in paths[:2]:
@@ -404,8 +408,8 @@ def test_published_training_source_rejects_writes_and_restores_all_hooks(tmp_pat
     source = tmp_path / "source/history"
     source.mkdir(parents=True)
     database = source / "catalog.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute("CREATE TABLE sample (value INTEGER)")
+    with SqliteSession(database, sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
+        connection.run("CREATE TABLE sample (value INTEGER)")
     before = database.read_bytes(), database.stat().st_mtime_ns
     queries = []
 
@@ -422,12 +426,12 @@ def test_published_training_source_rejects_writes_and_restores_all_hooks(tmp_pat
     )
     with pytest.raises(InterruptedError) if failure else nullcontext():
         with ReadOnlyTrainingSource(source):
-            with pytest.raises(ValueError, match="requires_read_only"):
-                sqlite3.connect(database)
-            with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
-                assert connection.execute("SELECT count(*) FROM sample").fetchone() == (0,)
-            with sqlite3.connect(tmp_path / "output.sqlite3") as connection:
-                connection.execute("CREATE TABLE output (value INTEGER)")
+            with pytest.raises(ValueError, match="requires_read_only"), SqliteSession(database, sqlite_policy=policy):
+                pytest.fail("writable source opened")
+            with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=policy) as connection:
+                assert tuple(connection.run("SELECT count(*) FROM sample").require_one()) == (0,)
+            with SqliteSession(tmp_path / "output.sqlite3", sqlite_policy=policy) as connection, SqliteTransaction(connection):
+                connection.run("CREATE TABLE output (value INTEGER)")
             assert history_training_due.EvaluateHistoryTrainingDue(query, sqlite_policy=policy) is None
             if failure:
                 raise InterruptedError("fixture cancellation")

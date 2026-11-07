@@ -19,7 +19,7 @@ from trader.download.application.company_evidence import CompanyEvidenceDependen
 
 from trader.download.domain.company_events import CompanyDataState
 
-from trader.download.domain.company_evidence import CompanyRatio, CompanySourceFailure, DisclosurePage, DisclosurePartition, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyFinancial, CompanyRatio, CompanySourceFailure, DisclosurePage, DisclosurePartition, StructuredCompanyPage, StructuredCompanyQuery
 
 
 from trader.infra.http_contracts import HttpResponse, HttpTimeout
@@ -60,6 +60,174 @@ def test_second_run_reuses_baseline_without_redownloading(tmp_path):
     snapshot = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
     assert snapshot.announcement_state is CompanyDataState.COMPLETE
     assert snapshot.announcement_coverage_start == NOW.date() - timedelta(days=365)
+
+
+class _FinancialSnapshotSource(Sources):
+    def __init__(self, financials):
+        super().__init__()
+        self.financials = financials
+        self.financial_failure = False
+
+    def fetch(self, first, *args, **kwargs):
+        if isinstance(first, StructuredCompanyQuery) and first.component == "financial":
+            self.calls.append(first)
+            if self.financial_failure:
+                raise TimeoutError("fixture")
+            # Model the supplier's NOTICE_DATE filter, including unchanged old notices.
+            financials = tuple(
+                item for item in self.financials if first.start <= item.published_at.date() <= first.end
+            )
+            return StructuredCompanyPage("financial", first.page, 1, len(financials), financials=financials)
+        return super().fetch(first, *args, **kwargs)
+
+
+def test_financial_refresh_corrects_values_with_unchanged_notice_older_than_overlap(tmp_path, monkeypatch):
+    index = _index(tmp_path)
+    monkeypatch.setattr(index, "partitions", lambda *args: ())
+    financial = CompanyFinancial(
+        "600001", NOW.date() - timedelta(days=120), NOW - timedelta(days=90), 1, 2, 3, 4, 5, 6, 7, 8
+    )
+    source = _FinancialSnapshotSource((financial,))
+    dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0)
+    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path)
+    assert not _sync_company_evidence(dependencies, ("600001",), NOW).needs_retry
+    assert reader.read(("600001",))[0].financial == financial
+    for component in ("pledge", "unlock"):
+        assert index.component_since(component, "market", NOW) == NOW.date() - timedelta(days=7)
+
+    corrected = replace(financial, basic_eps=9, parent_net_profit=70)
+    source.financials = (corrected,)
+    source.calls.clear()
+    before_due = _sync_company_evidence(dependencies, ("600001",), NOW + timedelta(minutes=15, seconds=-1))
+    assert before_due.fetched_pages == 0 and not source.calls
+    assert reader.read(("600001",))[0].financial == financial
+
+    refreshed_at = NOW + timedelta(minutes=15)
+    refreshed = _sync_company_evidence(dependencies, ("600001",), refreshed_at)
+    queries = [item for item in source.calls if isinstance(item, StructuredCompanyQuery)]
+    assert queries == [StructuredCompanyQuery("financial", refreshed_at.date() - timedelta(days=365), NOW.date())]
+    assert not refreshed.needs_retry
+    with SqliteSession(index.path) as connection:
+        row = connection.run("SELECT published_at,eps,parent_profit FROM financials WHERE code='600001'").require_one()
+    assert tuple(row) == (financial.published_at.isoformat(), 9, 70)
+    snapshot = reader.read(("600001",))[0]
+    assert snapshot.financial == corrected
+    assert snapshot.financial.published_at == financial.published_at
+    assert snapshot.financial_state is CompanyDataState.COMPLETE
+
+
+def test_financial_refresh_failure_keeps_previous_formal_values_and_failure(tmp_path, monkeypatch):
+    index = _index(tmp_path)
+    monkeypatch.setattr(index, "partitions", lambda *args: ())
+    financial = CompanyFinancial(
+        "600001", NOW.date() - timedelta(days=120), NOW - timedelta(days=90), 1, 2, 3, 4, 5, 6, 7, 8
+    )
+    source = _FinancialSnapshotSource((financial,))
+    dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0)
+    assert not _sync_company_evidence(dependencies, ("600001",), NOW).needs_retry
+    source.financials = (replace(financial, basic_eps=9),)
+    source.financial_failure = True
+    failed = _sync_company_evidence(dependencies, ("600001",), NOW + timedelta(minutes=15))
+    assert failed.needs_retry and "financial:timeout" in failed.failures
+    snapshot = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
+    assert snapshot.financial == financial
+    assert snapshot.financial_state is CompanyDataState.PARTIAL
+    assert any(item.scope == "financial" and item.reason_code == "timeout" for item in snapshot.review_reasons)
+    assert index.component_due("financial", "market", NOW + timedelta(minutes=15))
+
+
+@pytest.mark.parametrize(
+    "cursor_days,end_days_ago,interruption",
+    ((7, 0, None), (365, 0, None), (365, 1, None), (7, 0, "cancel"), (7, 0, "failure")),
+)
+def test_financial_resume_requeries_incomplete_notice_window_and_preserves_accepted_values(
+    tmp_path, monkeypatch, cursor_days, end_days_ago, interruption
+):
+    original_index = _index(tmp_path)
+    cancelled = False
+    resumed = False
+
+    def cancel_requested():
+        return cancelled
+
+    index = SQLiteCompanyEvidenceIndex(
+        original_index.path,
+        facts_path=original_index.facts_path,
+        documents=CompanyDocumentFiles(tmp_path / "text"),
+        cancel_requested=cancel_requested,
+    )
+    monkeypatch.setattr(index, "partitions", lambda *args: ())
+    recent = CompanyFinancial(
+        "600001", NOW.date() - timedelta(days=15), NOW - timedelta(days=2), 1, 2, 3, 4, 5, 6, 7, 8
+    )
+    middle = replace(recent, report_date=NOW.date() - timedelta(days=45), published_at=NOW - timedelta(days=3))
+    prefix = replace(recent, report_date=NOW.date() - timedelta(days=120), published_at=NOW - timedelta(days=90))
+    old_query = StructuredCompanyQuery(
+        "financial", NOW.date() - timedelta(days=cursor_days), NOW.date() - timedelta(days=end_days_ago)
+    )
+    index.commit_structured(old_query, StructuredCompanyPage("financial", 1, 2, 2, financials=(recent,)), NOW)
+    full_query = StructuredCompanyQuery("financial", NOW.date() - timedelta(days=365), NOW.date())
+    has_full_window = cursor_days == 365 and end_days_ago == 0
+
+    def progress(event):
+        nonlocal cancelled
+        if (interruption == "cancel" and not resumed and event.component == "financial"
+                and event.scope == full_query and event.status == "running"):
+            cancelled = True
+
+    class ResumedFinancials(Sources):
+        def fetch(self, first, *args, **kwargs):
+            if isinstance(first, StructuredCompanyQuery) and first.component == "financial":
+                self.calls.append(first)
+                if first.page == 2:
+                    assert cursor_days == 365
+                    assert first.start == old_query.start and first.end == old_query.end
+                    assert first.expected_rows == 2 and first.received_rows == 1
+                    return StructuredCompanyPage("financial", 2, 2, 2, financials=(prefix,))
+                assert not has_full_window and first == full_query
+                # Restarting the query must keep values accepted before interruption.
+                with SqliteSession(index.path) as connection:
+                    rows = connection.run("SELECT report_date,eps FROM financials ORDER BY report_date").fetchall()
+                accepted = (recent, prefix) if cursor_days == 365 else (recent,)
+                assert [tuple(row) for row in rows] == sorted(
+                    (item.report_date.isoformat(), item.basic_eps) for item in accepted
+                )
+                if interruption == "failure" and not resumed:
+                    raise TimeoutError("fixture")
+                return StructuredCompanyPage("financial", 1, 1, 3, financials=(recent, middle, prefix))
+            return super().fetch(first, *args, **kwargs)
+
+    source = ResumedFinancials()
+    dependencies = CompanyEvidenceDependencies(
+        index, source, source, lambda: 0.0, progress, cancel_requested
+    )
+    result = _sync_company_evidence(dependencies, ("600001",), NOW)
+    if interruption is not None:
+        if interruption == "cancel":
+            assert result.failures == ("task:cancelled",)
+            assert source.calls == []
+        else:
+            assert result.needs_retry and "financial:timeout" in result.failures
+            snapshot = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0]
+            assert snapshot.financial == recent
+            assert snapshot.financial_state is CompanyDataState.PARTIAL
+        cancelled, resumed = False, True
+        assert index.component_due("financial", "market", NOW)
+        cursor = index.structured_cursor(full_query)
+        assert (cursor.start, cursor.end, cursor.page) == (old_query.start, old_query.end, 2)
+        with SqliteSession(index.path) as connection:
+            assert connection.run("SELECT count(*) FROM financials").require_one()[0] == 1
+        result = _sync_company_evidence(dependencies, ("600001",), NOW)
+    queries = [item for item in source.calls if isinstance(item, StructuredCompanyQuery) and item.component == "financial"]
+    expected_pages = [2] if has_full_window else [2, 1] if cursor_days == 365 else [1, 1] if interruption == "failure" else [1]
+    assert [item.page for item in queries] == expected_pages
+    assert not result.needs_retry and result.published_codes == 1
+    with SqliteSession(index.path) as connection:
+        dates = connection.run("SELECT report_date FROM financials ORDER BY report_date").fetchall()
+    expected = (recent, prefix) if has_full_window else (recent, middle, prefix)
+    assert [row[0] for row in dates] == sorted(item.report_date.isoformat() for item in expected)
+    assert not index.component_due("financial", "market", NOW)
+    assert SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].financial == recent
 
 
 def test_compact_reader_binds_rule_identity_and_links_remain_issuer_scoped(tmp_path):

@@ -30,6 +30,7 @@ from trader.bootstrap import ExecuteHistorySync
 from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.tencent_request_budget import TencentRequestBudget
 from trader.infra.sqlite_codec import DecodeDate
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 DAYS = tuple(date(2026, 9, 1) + timedelta(days=offset) for offset in range(10))
 
@@ -78,8 +79,8 @@ def _budget():
 
 def _legacy_metadata(root):
     # The old released format already contains inferred facts but no inventory.
-    with sqlite3.connect(root / "catalog.sqlite3") as connection:
-        connection.execute("DELETE FROM download_inferred_suspension")
+    with SqliteSession(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
+        connection.run("DELETE FROM download_inferred_suspension")
     HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_file()
 
 
@@ -192,8 +193,8 @@ def test_discovery_deadline_leaves_cursor_for_next_command(tmp_path, monkeypatch
     monkeypatch.setattr(prices, "read_for_review", expired)
     budget = _budget()
     assert index.plan(context, prices, 1, PriceReviewConfiguration(), budget, lambda: False) == ()
-    with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT after_code FROM download_inferred_cursor").fetchall() == []
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture()) as connection:
+        assert connection.run("SELECT after_code FROM download_inferred_cursor").fetchall() == []
     assert budget.reviewed_codes == ("600001",)
 
 
@@ -234,8 +235,8 @@ def test_only_successful_requested_inferred_dates_refresh_review_age(tmp_path):
     for sequence, cutoff, reviewed in ((1, DAYS[4], ()), (2, DAYS[-1], ()), (3, DAYS[-1], (DAYS[0],))):
         index.begin(HistoryDownloadBatch(sequence, "a" * 64, "b" * 64, "c" * 64, cutoff), (task,))
         index.finish((HistoryDownloadCompletion(task, (), None, inferred_suspended_dates=(DAYS[0],), reviewed_dates=reviewed),))
-        with sqlite3.connect(path) as connection:
-            checked = connection.execute("SELECT checked_cutoff FROM download_inferred_suspension").fetchone()[0]
+        with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture()) as connection:
+            checked = connection.run("SELECT checked_cutoff FROM download_inferred_suspension").require_one()[0]
         assert DecodeDate(checked) == (DAYS[-1] if reviewed else DAYS[4])
     with pytest.raises(ValueError, match="history_download_completion_invalid"):
         HistoryDownloadCompletion(task, (), "tencent_history_pending", reviewed_dates=(DAYS[0],))
@@ -451,9 +452,9 @@ def test_auxiliary_cancellation_reseals_old_public_snapshot(tmp_path, monkeypatc
 def test_context_failure_does_not_upgrade_or_invalidate_legacy_review_metadata(tmp_path):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
-        connection.execute("DROP TABLE download_inferred_suspension")
-        connection.execute("DROP TABLE download_inferred_cursor")
+    with SqliteSession(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
+        connection.run("DROP TABLE download_inferred_suspension")
+        connection.run("DROP TABLE download_inferred_cursor")
     HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_file()
     _assert_public_snapshot(tmp_path, before)
 
@@ -464,16 +465,16 @@ def test_context_failure_does_not_upgrade_or_invalidate_legacy_review_metadata(t
     status = _run(tmp_path, FailedContext(), budget=_budget())
     assert status.state == "failed"
     _assert_public_snapshot(tmp_path, before)
-    with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
-        assert connection.execute("SELECT name FROM sqlite_master WHERE name='download_inferred_suspension'").fetchall() == []
+    with SqliteSession(tmp_path / "catalog.sqlite3", SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture()) as connection:
+        assert connection.run("SELECT name FROM sqlite_master WHERE name='download_inferred_suspension'").fetchall() == []
 
 
 def test_incomplete_review_schema_requires_redownload_without_altering_the_file(tmp_path):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
-        connection.execute("DROP TABLE download_inferred_suspension")
-        connection.execute("DROP TABLE download_inferred_cursor")
+    with SqliteSession(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
+        connection.run("DROP TABLE download_inferred_suspension")
+        connection.run("DROP TABLE download_inferred_cursor")
     HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_file()
     before_bytes = (tmp_path / "catalog.sqlite3").read_bytes()
     status = _run(tmp_path, _InferredSupplier(inferred=False), budget=_budget())

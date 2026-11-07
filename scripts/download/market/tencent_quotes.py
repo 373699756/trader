@@ -19,9 +19,7 @@ from scripts.core.reporting import summarize_latency_ms
 PROJECT_ROOT = TOOL_ROOT
 
 from trader.infra.http_contracts import HttpAttempt, HttpError, HttpTransport  # noqa: E402
-from trader.infra.http_transport import RequestsHttpTransport  # noqa: E402
-from trader.infra.isolated_http import IsolatedHttpExecutor  # noqa: E402
-from trader.infra.workers import BoundedExecutor  # noqa: E402
+from trader.infra.shutdown import ShutdownDeadline  # noqa: E402
 from trader.recommendation.domain.market.models import MarketQuote  # noqa: E402
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient  # noqa: E402
 
@@ -103,6 +101,7 @@ def _collect(codes: tuple[str, ...], args: argparse.Namespace) -> dict[str, obje
 
 
 def _audit_transport(args: argparse.Namespace, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+    from trader.bootstrap import BuildHttpExecutor, BuildPerformanceExecutor, OpenExternalHttp
     from trader.infra.settings import LoadRuntimeSettings
     from scripts.download.market.market_factor_inputs import ReadReferences
 
@@ -110,16 +109,16 @@ def _audit_transport(args: argparse.Namespace, *, sqlite_policy: SqliteIoPolicy)
     references = ReadReferences(settings.data_paths.reference, datetime.now(_SHANGHAI), sqlite_policy=sqlite_policy)
     codes = tuple(sorted({row.subject_key for row in references.observations}))
     rows: list[dict[str, object]] = []
-    pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="tencent-audit")
+    pool = BuildPerformanceExecutor(3)
+    executor = BuildHttpExecutor(3)
     pool.start()
-    executor = IsolatedHttpExecutor(worker_count=3, transport_factory=RequestsHttpTransport)
-    executor.start()
     try:
+        executor.start()
         for isolated in (False, True):
             attempts: list[HttpAttempt] = []
 
             def open_transport(*, attempts: list[HttpAttempt] = attempts, isolated: bool = isolated) -> HttpTransport:
-                return RequestsHttpTransport(
+                return OpenExternalHttp(
                     observe=attempts.append,
                     execute_request=executor.execute if isolated else None,
                 )
@@ -147,8 +146,13 @@ def _audit_transport(args: argparse.Namespace, *, sqlite_policy: SqliteIoPolicy)
                 "error": error,
             })
     finally:
-        pool.stop(wait=True, cancel_futures=True)
-        executor.stop()
+        deadline = ShutdownDeadline.start(settings.pipeline.shutdown_timeout_seconds)
+        try:
+            workers_stopped = pool.stop(wait=True, cancel_futures=True, deadline=deadline)
+        finally:
+            http_stopped = executor.stop(deadline=deadline)
+        if not workers_stopped.completed or not http_stopped.completed:
+            raise RuntimeError("tencent_audit_shutdown_incomplete")
     return {
         "schema_version": "tencent-transport-audit",
         "status": "degraded" if any(row["error"] or row["returned"] != row["requested"] for row in rows) else "passed",

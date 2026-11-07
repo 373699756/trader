@@ -186,9 +186,11 @@ def OpenExternalHttp(
     observe: Callable[[HttpAttempt], None] | None = None,
     inspect_response: Callable[[HttpRequest, HttpResponse], None] | None = None,
     identity_content_encodings: tuple[str, ...] = (),
+    execute_request: Callable[[HttpRequest], HttpResponse] | None = None,
 ) -> HttpTransport:
     return RequestsHttpTransport(
         observe=observe, inspect_response=inspect_response, identity_content_encodings=identity_content_encodings,
+        execute_request=execute_request,
     )
 
 
@@ -209,6 +211,10 @@ def BuildIndustrySource(
 
 def BuildPerformanceExecutor(workers: int) -> BoundedExecutor:
     return BoundedExecutor(worker_count=workers, queue_capacity=workers, thread_name_prefix="performance-models")
+
+
+def BuildHttpExecutor(workers: int) -> IsolatedHttpExecutor:
+    return IsolatedHttpExecutor(worker_count=workers, transport_factory=RequestsHttpTransport)
 
 
 def CreateSyncProgress(started_at: float | None = None) -> SyncProgress:
@@ -493,18 +499,12 @@ def ExecuteSelectedTraining(
     cpu_budget = TrainingCpuBudget(AvailableTrainingCpus(), resources.cpu)
     ConfigureTrainingResources(cpu_budget.native_threads)
 
-    from trader.training.application.selected_training import TrainingLocations
     from trader.training.entrypoints.selected_training import RunSelectedTraining
-    from trader.training.infra.selected_training import SelectedTrainingAdapter
+    from trader.training.infra.selected_training import ResolveTrainingLocations, SelectedTrainingAdapter
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
 
     if history_root is not None or training_root is not None:
         ConfigureDisk(runtime, additional_paths=tuple(path for path in (history_root, training_root) if path))
-    paths = TrainingLocations(
-        history_root or runtime.data_paths.history,
-        training_root / "models" if training_root else runtime.data_paths.models,
-        training_root / "samples" if training_root else runtime.data_paths.samples,
-    )
     memory_budget = TrainingMemoryBudget(FittingMemoryCapacity(resources.memory))
     sqlite_policy = BuildSqlitePolicy(runtime)
     return RunSelectedTraining(
@@ -517,7 +517,7 @@ def ExecuteSelectedTraining(
         cpu_budget=cpu_budget,
         fanout_settings=resources.fanout,
         sample_settings=resources.samples,
-        paths=paths, sqlite_policy=sqlite_policy,
+        paths=ResolveTrainingLocations(runtime.data_paths, history_root, training_root), sqlite_policy=sqlite_policy,
         prepare_training=partial(SelectedTrainingAdapter, sqlite_policy=sqlite_policy),
         memory_capacity_bytes=memory_budget.capacity_bytes,
     )

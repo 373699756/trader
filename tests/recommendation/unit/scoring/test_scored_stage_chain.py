@@ -168,7 +168,14 @@ def test_real_scored_handoffs_measure_operations_and_match_selected_freeze(appli
     assert tuple(item.code for item in stages.action_publish.records) == tuple(
         item.code for item in sorted(projection.local.items, key=lambda item: item.rank) if item.selected
     )
-    assert all(snapshot.latency_ms == 1000 for snapshot in stages.snapshots)
+    assert all(
+        snapshot.latency_ms == 1000
+        for snapshot in stages.snapshots if snapshot is not stages.local_score.snapshot
+    )
+    scoring = stages.local_score.snapshot
+    assert scoring.latency_ms is not None and scoring.latency_ms > 1000
+    assert scoring.operation_durations and all(elapsed == 1000 for _, elapsed in scoring.operation_durations)
+    assert scoring.latency_ms >= sum(elapsed for _, elapsed in scoring.operation_durations)
     assert all(snapshot.rejected_count == 0 for snapshot in stages.snapshots)
     assert all(
         output.business_rejections is None

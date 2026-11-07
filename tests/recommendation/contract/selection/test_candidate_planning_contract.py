@@ -11,15 +11,15 @@ def _read(relative: str) -> str:
 
 
 def test_candidate_planning_contract_is_synchronized_across_authoritative_documents() -> None:
-    strategy = _read("docs/1_评分逻辑.md")
-    design = _read("docs/2_工程设计.md")
-    work = _read("docs/3_工程实施.md")
+    strategy = _read("docs/c_评分设计.md")
+    design = _read("docs/b_系统设计.md")
+    work = _read("docs/g_施工进度.md")
 
     compact_strategy = "".join(strategy.split())
     assert "每轮每股只请求一次" in compact_strategy
     assert "不维护按候选分排序的储备或失败补位" in compact_strategy
-    assert "不设720只并集上限" in design
-    assert "`ScoredNativeInput.requested_codes` 与特征按策略隔离" in design
+    assert "不恢复每板120只或720只并集上限" in design
+    assert "两策略分别保留完整合格集合，物理报价请求取去重并集" in compact_strategy
     assert "candidate_eligibility_before_board_cap" not in work
 
 

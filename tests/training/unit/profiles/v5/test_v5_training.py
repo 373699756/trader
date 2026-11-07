@@ -134,7 +134,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
         }
         assert {item.phase for item in final} == {"preparation", "normalization", "training", "completed"}
         for details in (diagnostic, final):
-            assert all(item.industry == "bank" and item.training_rows == head.training_rows for item in details)
+            assert all(item.industry == "capco:J66货币金融服务" and item.training_rows == head.training_rows for item in details)
             for epoch in (1, 2):
                 trained = [item for item in details if item.phase == "training" and item.epoch == epoch]
                 assert trained[0].completed_batches == 0
@@ -164,12 +164,12 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
         source_identity="fixture",
     )
     for strategy, width in ((Strategy.TOMORROW, 6), (Strategy.D25, 5)):
-        inputs = (ModelInput("600000", (0.1,) * width, "bank", sequence),)
+        inputs = (ModelInput("600000", (0.1,) * width, "capco:J66货币金融服务", sequence),)
         first = loaded.heads[strategy].predictor.predict(inputs)[0].predicted_excess_return
         second = LoadScoringProfile("v5", training_root=models).heads[strategy].predictor.predict(inputs)[0]
         np.testing.assert_allclose(first, second.predicted_excess_return, rtol=1e-10, atol=1e-12)
         with pytest.raises(ValueError, match="sequence"):
-            loaded.heads[strategy].predictor.predict((ModelInput("600000", (0.1,) * width, "bank"),))
+            loaded.heads[strategy].predictor.predict((ModelInput("600000", (0.1,) * width, "capco:J66货币金融服务"),))
     original = {p: p.read_bytes() for p in models.rglob("*.json")}
     rejected = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=1000000))
     failed = RunV5Training(history.history_root, models, sample_root=tmp_path / "samples", settings=rejected, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())

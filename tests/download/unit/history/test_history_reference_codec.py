@@ -485,6 +485,8 @@ def test_sync_recovers_missing_reference_binding_without_redownloading_prices(tm
             connection.run("DELETE FROM reference_binding")
         else:
             connection.run("UPDATE reference_binding SET publication_id='missing'")
+    # Exercise the binding contract after sealing the deliberately changed bytes.
+    HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_file()
     assert InspectHistorySnapshot(root, verify_partitions=True, sqlite_policy=SqlitePolicyFixture()).reason == "history_reference_unavailable"
     supplier.calls.clear()
     result = RunHistoryFixture(config, supplier, clock=lambda: NOW)

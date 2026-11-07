@@ -12,7 +12,7 @@ MODELS = ROOT / "src/trader/recommendation/domain/outcomes/models.py"
 APPLICATION = ROOT / "src/trader/recommendation/application/outcome_settlement.py"
 PERSISTENCE = ROOT / "src/trader/recommendation/infra/persistence/outcome_evidence_index.py"
 HISTORY = ROOT / "src/trader/recommendation/infra/market_data/published_history_cache.py"
-WORK = ROOT / "docs/3_工程实施.md"
+WORK = ROOT / "docs/g_施工进度.md"
 
 
 def test_d25_horizons_have_one_domain_owner_and_include_t4() -> None:

@@ -197,7 +197,14 @@ def test_input_conflicts_never_produce_new_target_results(tmp_path, case):
         with pytest.raises(ValueError, match="unknown keys"):
             ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
     else:
-        if case in {"profile", "cost_reference"}:
+        if case == "profile":
+            (root / "rows.jsonl").unlink()
+            execution = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+            assert execution.report.status == "historical_data_insufficient"
+            assert execution.report.failure_reasons == ("selection_experiment_parent_mismatch",)
+            assert execution.report.results == ()
+            return
+        if case == "cost_reference":
             (root / "rows.jsonl").unlink()
             with pytest.raises(ValueError, match="configured research plan"):
                 ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))

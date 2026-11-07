@@ -93,6 +93,12 @@ Web health支持可重复的`--strategy tomorrow|d25`，连续空结果阈值`--
 .venv/bin/python3 scripts/tools.py --business download --module company --action live-sync -- --help
 ```
 
+计量工件每30秒由定时线程刷新，长操作尚未返回时也报告在途调用数和最长持续时间；`calls`及累计耗时只统计已结束调用，两者不可相加。固定操作类别和开始时点有内存上限，超限时显式报告持续时间不完整。运行中数据库统计只读计数器和进程I/O，不查询业务库或扫描目录；区分连接建立、语句、取数、提交及关闭等待。连接建立计量覆盖`SqliteSession`调用的唯一模块owner，不覆盖其它模块预先导入的连接函数别名。运行中`database_statistics_final=false`，正常收尾先停止并等待心跳，再写最终报告；写报告失败不改变同步结果。等待已开始的文件写入仍可能受磁盘争用影响，此工具不证明取消收尾时限。
+
+所有分段耗时包含嵌套和并发，不能累加为总墙钟；物理I/O包含计量报告自身写入。CLI成功不证明各字段最新或覆盖完整，须另核来源修订、逐字段结论与正式采用凭证。
+
+`download/company/sources --codes 000001 --financial-revision-period 2026-09-30`只读探测生产八指标接口的单股单报告期，支持季度末。该模式与年度营收及其它来源模式互斥，最多3次物理请求、每次最多1MiB，并沿用同一任务期限。原`NOTICE_DATE`和供应商`UPDATE_DATE`分别投影，以包含和排除修订日的查询互证过滤。供应商拒绝含修订列的请求时，最多补一次明确标记的原生产11列对照；对照结果不提供修订时间，不升级失败或改用对照值发布。成功样本仍为`degraded`，不验证单行排序、全市场最新、字段语义或历史修订完整性。外层命令超时而未得到原生报告时，实际请求次数未知，只能按上限保守计数。
+
 ## 显式生成与维护动作
 
 全部生成和维护能力也由统一入口选择。以下仅展示帮助，不执行写入：
@@ -284,13 +290,13 @@ assets/consistency只读核对，assets/generate显式重建打包JS资源；公
 | `recommendation/web/reporting.py` | Read-only Web and browser diagnostic projections. | 所选业务状态/字段投影；无独立I/O | `core/catalog.py`、`tooling/unit/scripts/test_check_entrypoint.py` |
 | `training/reporting.py` | Training diagnostic evidence and benchmark completion projections. | 所选业务状态/字段投影；无独立I/O | `core/catalog.py` |
 
-| `download/company/live_sync.py` | Explicit foreground measurement of the existing company sync against current data. | 显式前台真实同步及外部计量工件；本轮只mock验证 | `core/catalog.py`、`download/unit/scripts/test_company_live_sync_tool.py` |
+| `download/company/live_sync.py` | Explicit foreground measurement of the existing company sync against current data. | 显式真实同步及外部计量工件；不自动启动 | `core/catalog.py`、`download/unit/scripts/test_company_live_sync_tool.py` |
 
 | `training/output_paths.py` | Keep diagnostic outputs separate from every selected product checkout. | 路径隔离预检；不创建或清理目录 | `training/cli.py`、`training/samples/sample_comparison_worker.py`、`training/samples/training_samples.py`、`training/jobs/training_performance.py`、`training/jobs/training_alignment.py`、`training/unit/scripts/test_training_output_isolation.py` |
 
 | `download/company/output_paths.py` | Reject company replay outputs that overlap protected runtime locations. | 路径隔离预检；不创建或清理目录 | `download/company/company_resume.py`、`download/company/commands.py`、`download/unit/scripts/test_company_output_isolation.py` |
 
-代码之外，Makefile的lint、long-watchlist-check、test-release、performance-check、browser-performance-check及diagnose-list/local均调用唯一入口；根README、两平台启动帮助、启用Python skill和测试同步使用新命令。产品CLI仍拥有产品配置、状态和性能用例，工具复用它们，不从产品包反向导入scripts。pytest只切换消费者与相应命名清单，不添加全局路径注入或新的收集钩子。进度与实际验证只记docs/new/g_施工进度.md原阶段338。
+代码之外，Makefile的lint、long-watchlist-check、test-release、performance-check、browser-performance-check及diagnose-list/local均调用唯一入口；根README、两平台启动帮助、启用Python skill和测试同步使用新命令。产品CLI仍拥有产品配置、状态和性能用例，工具复用它们，不从产品包反向导入scripts。pytest只切换消费者与相应命名清单，不添加全局路径注入或新的收集钩子。进度与实际验证只记docs/g_施工进度.md原阶段338。
 
 ## 荐股准备、预载与V5行业的离线候选
 

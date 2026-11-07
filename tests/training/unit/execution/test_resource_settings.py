@@ -6,7 +6,6 @@ from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
-from queue import Queue
 
 import pytest
 
@@ -155,17 +154,18 @@ def test_nondefault_batch_and_queue_limits_preserve_all_rows_and_order(monkeypat
     from trader.training.application import selected_training
 
     queue_limits, batches = [], []
+    original_queue = selected_training._TrainingQueue
     original = selected_training._TrainingFanout._dispatch
 
-    def queue(*, maxsize):
-        queue_limits.append(maxsize)
-        return Queue(maxsize=maxsize)
+    def queue(batches, profile, observer):
+        queue_limits.append(batches)
+        return original_queue(batches, profile, observer)
 
     def dispatch(self, rows):
         batches.append(len(rows))
         return original(self, rows)
 
-    monkeypatch.setattr(selected_training, "Queue", queue)
+    monkeypatch.setattr(selected_training, "_TrainingQueue", queue)
     monkeypatch.setattr(selected_training._TrainingFanout, "_dispatch", dispatch)
     day = date(2026, 1, 5)
     rows = tuple(HistoryTrainingRow(f"{number:06d}", day, "main", "bank", None) for number in range(11))

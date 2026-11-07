@@ -12,12 +12,14 @@ from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
 from datetime import date
 from functools import partial
+from pathlib import Path
 from threadpoolctl import ThreadpoolController
 
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.settings import RuntimeSettings
+from trader.infra.settings.data_paths import DataPaths
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.resources import TrainingExecutionObserver, TrainingFanoutSettings, TrainingMemoryAdmission, TrainingSampleSettings
@@ -45,6 +47,18 @@ from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
+
+
+def ResolveTrainingLocations(
+    paths: DataPaths, history_root: Path | None, training_root: Path | None,
+) -> TrainingLocations:
+    """Project configured paths and explicit CLI overrides into the training plan."""
+    return TrainingLocations(
+        history_root or paths.history,
+        training_root / "models" if training_root else paths.models,
+        training_root / "samples" if training_root else paths.samples,
+    )
+
 
 def _run_v1(execute: Callable[..., V1TrainingResult], rows: Iterator[HistoryTrainingRow]) -> V1TrainingResult:
     return execute(aligned_rows=rows)

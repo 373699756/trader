@@ -21,6 +21,7 @@ from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.settings import LoadRuntimeSettings
 from scripts.download.company.company_structured_field_audit import AuditCompanyAnnualIncome
 from scripts.download.company.company_structured_field_audit import AuditCompanyStructuredSources
+from scripts.download.company.company_structured_field_audit import AuditCompanyFinancialRevision, CompanyFinancialRevisionRequest
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -197,15 +198,17 @@ def Collect(args: argparse.Namespace, *, project_root: Path) -> dict[str, object
 def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--codes", nargs="+", default=(), help="one security for --annual-income-period only; rejected by other modes")
+    parser.add_argument("--codes", nargs="+", default=(), help="one security for an explicit annual-income or financial-revision period; rejected by market-wide modes")
     parser.add_argument("--timeout-seconds", type=float, default=8)
     parser.add_argument("--source-loop-seconds", type=float, default=120)
     parser.add_argument("--task-seconds", type=float, default=180)
-    parser.add_argument("--field-sources-only", action="store_true", help="Read one bounded page of structured company field alternatives; no database writes.")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--field-sources-only", action="store_true", help="Read one bounded page of structured company field alternatives; no database writes.")
     parser.add_argument("--field-source-rows", type=int, default=5, help="Rows per structured field sample (1..500); requires --field-sources-only.")
     parser.add_argument("--field-source-schema", action="store_true", help="Discover column names from exactly one row per source; requires --field-sources-only and --field-source-rows 1. Values remain projected.")
     parser.add_argument("--field-source-identities", action="store_true", help="Project at most five bounded source identities and measurements; requires --field-sources-only.")
-    parser.add_argument("--annual-income-period", type=date.fromisoformat, help="Read one explicit annual period with the production F10 decoder; requires exactly one --codes value.")
+    modes.add_argument("--annual-income-period", type=date.fromisoformat, help="Read one explicit annual period with the production F10 decoder; requires exactly one --codes value.")
+    modes.add_argument("--financial-revision-period", type=date.fromisoformat, help="Read-only eight-metric UPDATE_DATE filter diagnostic for one code and one quarter end; at most three requests.")
     args = parser.parse_args()
     if not (0 < args.timeout_seconds <= 30 and 0 < args.source_loop_seconds <= 120 and 0 < args.task_seconds <= 600):
         parser.error("diagnostic budgets exceed the bounded source/task limits")
@@ -217,11 +220,25 @@ def Main() -> int:
         parser.error("--field-source-identities requires --field-sources-only and at most five rows")
     if args.annual_income_period is not None and (args.field_sources_only or len(args.codes) != 1):
         parser.error("--annual-income-period requires one code and cannot be combined with --field-sources-only")
-    if args.annual_income_period is None and args.codes:
-        parser.error("--codes selects securities only with --annual-income-period")
+    if args.financial_revision_period is not None and len(args.codes) != 1:
+        parser.error("--financial-revision-period requires one code")
+    revision_request = None
+    if args.financial_revision_period is not None:
+        try:
+            revision_request = CompanyFinancialRevisionRequest(args.codes[0], args.financial_revision_period)
+        except ValueError:
+            parser.error("financial revision requires an A-share code and a quarter-end period")
+    if args.annual_income_period is None and args.financial_revision_period is None and args.codes:
+        parser.error("--codes selects securities only with --annual-income-period or --financial-revision-period")
     runtime = LoadRuntimeSettings(args.config)
     runtime_hash = hashlib.sha256(Path(args.config).expanduser().resolve().read_bytes()).hexdigest()
-    if args.annual_income_period is not None:
+    if revision_request is not None:
+        with OpenExternalHttp() as session:
+            report = AuditCompanyFinancialRevision(
+                session, revision_request, observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
+                deadline=time.monotonic() + args.task_seconds,
+            )
+    elif args.annual_income_period is not None:
         try:
             request = CompanyAnnualIncomeRequest(args.codes[0], (args.annual_income_period,))
         except ValueError:
@@ -246,4 +263,4 @@ def Main() -> int:
         report = Collect(args, project_root=runtime.project_root)
     report["runtime_configuration_sha256"] = runtime_hash
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
+    return 1 if revision_request is not None and report.get("status") == "failed" else 0
