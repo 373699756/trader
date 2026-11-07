@@ -43,6 +43,8 @@ def BuildParser(
         history_root=None,
         download_sizes=(10, 50, 100),
         database_probe_directory=None,
+        repair_profile_year=None,
+        repair_profile_code=None,
         sqlite_page_sample_count=1,
         sqlite_query_rounds=3,
         sqlite_revision_write_sample_count=512,
@@ -106,6 +108,9 @@ def BuildParser(
         parser.add_argument('--download-sizes', nargs='+', type=int, default=(10, 50, 100), help='Tencent updater sample sizes')
     if action_identity in ("history-sqlite","price-repair-audit","history-write","download-performance",):
         parser.add_argument('--database-probe-directory', type=Path, help='new external directory for SQLite benchmarks')
+    if action_identity == "price-repair-audit":
+        parser.add_argument('--repair-profile-year', type=int, help='profile one annual replacement on a complete isolated copy; no network')
+        parser.add_argument('--repair-profile-code', help='six-digit code with an unpublished repair journal candidate')
     if action_identity in ("history-sqlite",):
         parser.add_argument('--sqlite-page-sample-count', type=int, default=1, help='annual files sampled for expensive dbstat page classification')
     if action_identity in ("history-sqlite",):
@@ -173,6 +178,8 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         history_root=args.history_root.expanduser().resolve() if args.history_root is not None else None,
         download_sizes=tuple(args.download_sizes),
         database_probe_directory=ExternalPath(args.database_probe_directory, "--database-probe-directory"),
+        repair_profile_year=args.repair_profile_year,
+        repair_profile_code=args.repair_profile_code,
         sqlite_page_sample_count=args.sqlite_page_sample_count,
         sqlite_query_rounds=args.sqlite_query_rounds,
         sqlite_revision_write_sample_count=args.sqlite_revision_write_sample_count,
@@ -256,6 +263,11 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         raise ValueError("--sqlite-revision-write-sample-count must be within 1..5000")
     if not 0 <= options.history_resume_samples <= 8:
         raise ValueError("--history-resume-samples must be within 0..8")
+    if options.repair_profile_year is not None or options.repair_profile_code is not None:
+        if (options.repair_profile_year is None or not 1990 <= options.repair_profile_year <= 2100
+            or options.repair_profile_code is None or re.fullmatch(r"[0-9]{6}", options.repair_profile_code) is None
+            or options.database_probe_directory is None or options.database_probe_directory.exists()):
+            raise ValueError("repair profile requires valid year, six-digit code and a new --database-probe-directory")
     if options.history_preload_context_candidate != "baseline" and not options.history_preload_audit:
         raise ValueError("--history-preload-context-candidate requires the history preload audit")
     if (options.history_preload_cpu_profile or options.history_preload_feature_audit) and not options.history_preload_audit:

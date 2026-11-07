@@ -125,6 +125,7 @@ _DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[st
     "history_daily_capability": _history_daily_capability_details,
     "baostock_concurrency": _baostock_concurrency_details,
     "history_publication_audit": ProjectSummaryWithFindings,
+    "price_repair_audit": ProjectSummary,
     "baostock_qfq_shadow": _baostock_qfq_shadow_details,
 }
 

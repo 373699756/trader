@@ -24,6 +24,8 @@
 
 BaoStock慢补缺沿既有`download/history/concurrency`诊断，不另建临时下载器。显式选择`--baostock-serial-only --baostock-sizes 1 --codes 000708 --baostock-sessions 2000`，先取交易日历，再对精确2000交易日分别计首响应、读取、尾部空页和日期一致性校验；`network_ms`不含节流，读取总耗时包含翻页，不能再次相加。加`--baostock-production`则使用当前`config/download.json`和真实供应商子进程／Gateway，核对完整配对及每日事实，命令中的SDK超时／候选间隔不覆盖生产配置；该模式只准一个样本规模、一轮及一个间隔。两种模式均只输出白名单计时、行数及安全供应商错误编号，不保存价格载荷或打开活动历史库；生产模式的证券上市日期是假定在窗口前的显式诊断元数据，不能签真实资格或全市场性能。
 
+补缺落库的Linux分段诊断沿`download/history/repair`，显式选择`--history-root`、`--repair-profile-year 2026 --repair-profile-code 601699`及全新仓库外`--database-probe-directory`。它要求该股已有完整、未发布的恢复候选，源库须保持静止；仅只读备份所选年度完整文件，在副本调用现行替换方法，零网络，报告筛变／写入／提交／关闭、实际变更行数与I/O。年度文件上限700MiB且先核空间，源catalog／年度库及WAL的身份、大小、修改时间须前后一致，源变化明确失败。无目标年或零变更为empty，不签有效性能；备份不计业务耗时，嵌套阶段不可相加，复制后的缓存未经控制，不能冒充冷HDD基线。默认repair审计不加载此可选计量依赖。
+
 荐股公共原始因子复用候选只在显式连续回放中选择，默认`baseline`，不修改生产服务。D在冻结版本上使用相同配置、模型、股票数和tick数分别运行基线及下列候选；删去`--performance-factor-candidate raw_factor_reuse`即为基线。它使用现有共享`quote_factor_inputs`容量和`feature_batches`字节预算，合并完全相同的报价、日线、历史摘要、horizons和基础配置；命中后返回独立可变副本，风险/证据/分钟及模型组装仍走原流程。非有限输入不写此候选缓存，交原计算处理，原异常也继续传播。`raw_factor_computations`仅统计可规范序列化输入的候选原计算完成次数（包括缓存拒写），基线为null；不把缓存命中计数当作省下的函数调用。`feature_group_max_bytes`包含基础、候选和横截面的整个特征组，仍需另看实际RSS。
 
 ```bash
