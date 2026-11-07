@@ -1587,7 +1587,7 @@ assert.doesNotMatch(unknownRow, /<\/b>本地|<\/b>风险复核|<\/b>最终/);
 assert.doesNotMatch(unknownRow, /<td class="action-cell">/);
 const classifiedRow = state.tableRows([{ ...unknownResearchItem,
   classified_industry: "D44电力、热力生产和供应业" }], getPayload);
-assert.match(classifiedRow, /<td class="board-industry-cell"><span class="stock-name">主板<\/span><span class="stock-code">证监会行业 D44电力、热力生产和供应业/);
+assert.match(classifiedRow, /<td class="board-industry-cell"><span class="stock-name">主板<\/span><span class="stock-code">中上协行业 D44电力、热力生产和供应业/);
 assert.doesNotMatch(state.drawer(unknownResearchItem, getPayload), /公司风险研究|风险研究：/);
 assert.match(state.drawer(unknownResearchItem, getPayload), /未进入本次 DeepSeek 复核候选/);
 assert.match(state.tableRows([{ ...unknownResearchItem, pct_change: -1.2 }], getPayload),

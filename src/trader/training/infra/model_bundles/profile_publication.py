@@ -28,7 +28,7 @@ class ProfilePublicationBusyError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class _ProfileWorkspace:
+class ProfileWorkspace:
     has_pair: bool
     staging: tuple[Path, ...]
 
@@ -63,7 +63,7 @@ def RecoverProfilePublication(
         return
     with ProfilePublicationLock(profile_root, timeout_seconds):
         if profile_root.exists() or profile_root.is_symlink():
-            _inspect_owned_workspace(profile_root, allow_partial_heads=True)
+            InspectProfileWorkspace(profile_root, allow_partial_heads=True)
             return
         previous = tuple(profile_root.parent.glob(f".{profile_root.name}.previous.*"))
         if not previous:
@@ -74,7 +74,7 @@ def RecoverProfilePublication(
         suffix = candidate.name.removeprefix(f".{profile_root.name}.previous.")
         if len(suffix) != 32 or any(character not in "0123456789abcdef" for character in suffix):
             raise ValueError("model publication recovery has an unrecognized previous directory")
-        workspace = _inspect_owned_workspace(candidate)
+        workspace = InspectProfileWorkspace(candidate)
         if workspace.has_pair:
             validate(candidate)
         os.replace(candidate, profile_root)
@@ -93,7 +93,7 @@ def RecoverProfileBundles(
 def ClearProfileStaging(profile_root: Path, *, timeout_seconds: float = 2.0) -> None:
     """Remove only current owned staging after validating the entire profile tree."""
     with ProfilePublicationLock(profile_root, timeout_seconds):
-        workspace = _inspect_owned_workspace(profile_root, allow_partial_heads=True)
+        workspace = InspectProfileWorkspace(profile_root, allow_partial_heads=True)
         for staging in workspace.staging:
             shutil.rmtree(staging)
 
@@ -142,7 +142,7 @@ def PublishProfileBundles(
         _require_recent_diagnostics(head.model for head in heads)
         with ProfilePublicationLock(profile_root, timeout_seconds):
             if profile_root.exists() or profile_root.is_symlink():
-                _inspect_owned_workspace(profile_root, allow_partial_heads=True)
+                InspectProfileWorkspace(profile_root, allow_partial_heads=True)
                 os.replace(profile_root, previous)
                 old_moved = True
             new_moved = False
@@ -159,14 +159,14 @@ def PublishProfileBundles(
                 raise
         if old_moved:
             try:
-                _inspect_owned_workspace(previous, allow_partial_heads=True)
+                InspectProfileWorkspace(previous, allow_partial_heads=True)
                 shutil.rmtree(previous)
-            except OSError:
+            except (OSError, ValueError):
                 _LOGGER.warning("trained_profile_previous_cleanup_failed")
         return tuple(replace(head, model_path=profile_root / head.strategy.value / "model.json") for head in heads)
     finally:
         if publication.exists() or publication.is_symlink():
-            _inspect_owned_workspace(publication, allow_partial_heads=True)
+            InspectProfileWorkspace(publication, allow_partial_heads=True)
             shutil.rmtree(publication)
 
 
@@ -198,7 +198,8 @@ def _inspect_profile_directory(
     return heads
 
 
-def _inspect_owned_workspace(profile_root: Path, *, allow_partial_heads: bool = False) -> _ProfileWorkspace:
+def InspectProfileWorkspace(profile_root: Path, *, allow_partial_heads: bool = False) -> ProfileWorkspace:
+    """Reject any unowned entry before a publisher moves or removes a whole tree."""
     # Writers may replace owned incomplete heads; restoring an old generation
     # additionally requires a complete pair and its caller's content validation.
     if profile_root.is_symlink() or not profile_root.is_dir():
@@ -232,7 +233,7 @@ def _inspect_owned_workspace(profile_root: Path, *, allow_partial_heads: bool = 
             raise ValueError("model publication recovery file is invalid")
     # A first installation has only owned staging directories, never a published
     # pair. Restore that workspace so training can rebuild, without reusing a head.
-    return _ProfileWorkspace(heads == {"tomorrow", "d25"}, tuple(staging))
+    return ProfileWorkspace(heads == {"tomorrow", "d25"}, tuple(staging))
 
 
 def _validate_profile_pair(heads: tuple[LoadedPublishedHeadBundle, ...]) -> None:
@@ -263,8 +264,10 @@ def _fsync_directory(path: Path) -> None:
 __all__ = [
     "ClearProfileStaging",
     "InspectPublishedProfileBundles",
+    "InspectProfileWorkspace",
     "ProfilePublicationBusyError",
     "ProfilePublicationLock",
+    "ProfileWorkspace",
     "PublishProfileBundles",
     "RecoverProfileBundles",
     "RecoverProfilePublication",

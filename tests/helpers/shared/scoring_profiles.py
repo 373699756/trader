@@ -15,6 +15,7 @@ _PROFILE_DIRECTORY_OWNERS = frozenset(
         "tests/training/unit/profiles",
         "tests/helpers/training/profiles",
         "tests/recommendation/unit/scoring",
+        "tests/recommendation/unit/runtime",
     }
 )
 
@@ -24,6 +25,8 @@ def IsScoringProfilePath(relative: Path) -> bool:
         if part in SCORING_PROFILE_IDS and Path(*relative.parts[:index]).as_posix() in _PROFILE_DIRECTORY_OWNERS:
             return True
     if relative.parts[0] == "tests":
+        if relative.parent.as_posix() == "tests/helpers/recommendation/selection":
+            return any(relative.name.startswith(f"{profile}_") for profile in SCORING_PROFILE_IDS)
         return any(relative.name.startswith(f"test_{profile}_") for profile in SCORING_PROFILE_IDS)
     if relative.parent.as_posix() in {"scripts/training/models", "scripts/training/samples"}:
         return any(relative.name.startswith(f"{profile}_") for profile in SCORING_PROFILE_IDS)

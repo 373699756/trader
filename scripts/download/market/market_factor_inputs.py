@@ -108,7 +108,7 @@ def LoadFactorInputs(
     config: Path, qfq_database: Path, profile: ScoringProfileId, codes: tuple[str, ...], at: datetime, *, sqlite_policy: SqliteIoPolicy
 ) -> FactorInputs:
     if profile not in ("v2", "v3"):
-        raise ValueError("market_factor_inputs_require_v2_or_v3")
+        raise ValueError("market_factor_inputs_unsupported_profile")
     started = time.monotonic()
     settings = LoadRuntimeSettings(config)
     strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile)

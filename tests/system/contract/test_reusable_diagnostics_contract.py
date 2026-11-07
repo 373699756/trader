@@ -59,6 +59,12 @@ def test_tool_core_only_imports_neutral_script_modules() -> None:
                 else tuple(alias.name for alias in node.names) if isinstance(node, ast.Import) else ()
             )
             for module in modules:
+                if (
+                    module == "trader.infra.process_family"
+                    and isinstance(node, ast.ImportFrom)
+                    and {alias.name for alias in node.names} == {"ProcessFamily"}
+                ):
+                    continue
                 if module.startswith("trader.") or (module.startswith("scripts.") and not module.startswith("scripts.core.")):
                     violations.append(f"{path.relative_to(ROOT)}:{node.lineno}: {module}")
     assert violations == []

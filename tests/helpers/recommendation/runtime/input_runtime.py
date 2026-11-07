@@ -10,7 +10,7 @@ from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
@@ -163,4 +163,4 @@ def _prime_scoring_cache(adapter: CycleFixture, observed_at: datetime) -> None:
 
 
 def _policy():
-    return _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    return BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))

@@ -385,7 +385,7 @@ def test_resolution_title_does_not_create_and_resolve_a_duplicate_risk_cycle() -
             "关于控股股东提前终止减持计划的公告",
             NOW,
             "official:reduction-end",
-            body="本公司控股股东提前终止减持计划〔2026〕减持1号。",
+            body="本公司控股股东提前终止减持计划，涉及减持计划〔2026〕减持1号。",
             body_checked=True,
         ),
         ResearchAnnouncement(

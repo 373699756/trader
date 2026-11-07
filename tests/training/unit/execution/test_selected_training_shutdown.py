@@ -1,0 +1,149 @@
+"""Selected training reports cleanup separately from committed profile results."""
+
+from contextlib import contextmanager
+from dataclasses import replace
+import signal
+import threading
+
+import pytest
+
+from scripts.core.reporting import ReadJsonReports
+from tests.helpers.shared.configuration import RuntimeSettingsFixture, SqlitePolicyFixture
+from tests.helpers.training.training_resources import TrainingResourceSettingsFixture, TrainingSampleSettingsFixture
+from trader.infra import signal_cancellation
+from trader.infra.shutdown import ShutdownDeadline
+from trader.infra.workers import BoundedExecutor
+from trader.training.application.learned_rank_training import V1TrainingResult
+from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingOutcome, SelectedTrainingRun, SelectedTrainingTask, TrainingLocations
+from trader.training.entrypoints import selected_training
+from trader.training.infra.cpu_admission import TrainingCpuBudget
+from trader.training.infra.memory_admission import TrainingMemoryBudget
+from trader.training.infra.selected_training import SelectedTrainingAdapter
+
+
+@pytest.mark.parametrize(("execution", "cleanup", "watchdog_fails"), (
+    *((execution, cleanup, False) for execution in ("ready", "failure", "cancelled")
+      for cleanup in ("complete", "incomplete", "exception")),
+    ("ready", "complete", True),
+    ("ready", "incomplete", True),
+    ("ready", "exception", True),
+    ("notification_scope_failure", "exception", False),
+))
+def test_final_result_follows_shutdown_and_preserves_training_outcome(tmp_path, monkeypatch, capsys, execution, cleanup, watchdog_fails):
+    runtime = RuntimeSettingsFixture()
+    resources = TrainingResourceSettingsFixture()
+    pool = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="selected-shutdown-fixture")
+    stop_workers = pool.stop
+    controllers = []
+    forced = []
+    previous_controller = signal_cancellation.ShutdownSignalController
+    previous_cancellation = signal_cancellation.ManualCancellation
+    start_thread = threading.Thread.start
+    publish_result = selected_training.StderrTomorrowTrainingProgress.publish_result
+    before_shutdown = []
+    stop_deadlines = []
+    published = tmp_path / "committed-model.json"
+    published.write_bytes(b"committed model fixture")
+
+    def controller(**options):
+        created = previous_controller(**options)
+        controllers.append(created)
+        return created
+
+    @contextmanager
+    def cancellation(**options):
+        with previous_cancellation(**options, force_exit=forced.append) as scope:
+            yield scope
+
+    def start(thread):
+        if watchdog_fails and thread.name == "trader-shutdown-watchdog":
+            raise RuntimeError("private watchdog startup detail")
+        return start_thread(thread)
+
+    def notify(progress, *args):
+        if execution == "notification_scope_failure":
+            raise BrokenPipeError("private notification detail")
+        return publish_result(progress, *args)
+
+    def train(operations, executor):
+        result = V1TrainingResult("engineering_ready", "committed-run", "a" * 64, 0)
+        outcome = SelectedTrainingOutcome("v1", result)
+        if execution == "notification_scope_failure":
+            @contextmanager
+            def broken_scope():
+                yield
+                raise OSError("private source scope detail")
+
+            with broken_scope():
+                return RunSelectedTrainingTasks(
+                    (SelectedTrainingTask("v1", frozenset(), lambda _rows: result),),
+                    lambda _dates: pytest.fail("committed result must not open history"),
+                    executor, lambda: False, settings=resources.fanout,
+                    on_outcome=operations.request.on_outcome,
+                )
+        operations.request.on_outcome(outcome)
+        if execution == "cancelled":
+            signal.raise_signal(signal.SIGTERM)
+            raise RuntimeError("private cancelled work detail")
+        if execution == "failure":
+            raise ValueError("fixture_training_failed")
+        return SelectedTrainingRun((outcome,), 1, 123)
+
+    def stop(**options):
+        before_shutdown.append(capsys.readouterr().out)
+        assert '"schema_version": "selected_training_result"' not in before_shutdown[-1]
+        deadline = options["deadline"]
+        stop_deadlines.append(deadline)
+        assert deadline is controllers[0].deadline
+        assert options["wait"] and options["cancel_futures"]
+        report = stop_workers(**options)
+        assert report.completed
+        if cleanup == "exception":
+            raise OSError("private shutdown detail")
+        return report if cleanup == "complete" else replace(report, completed=False, timed_out=True, detail="private pending resource detail")
+
+    monkeypatch.setattr(signal_cancellation, "ShutdownSignalController", controller)
+    monkeypatch.setattr(selected_training, "ManualCancellation", cancellation)
+    monkeypatch.setattr(selected_training, "TrainSelectedProfiles", train)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(selected_training.StderrTomorrowTrainingProgress, "publish_result", notify)
+    monkeypatch.setattr(pool, "stop", stop)
+    try:
+        code = selected_training.RunSelectedTraining(
+            runtime, ("v1",), executor=pool, memory_admission=TrainingMemoryBudget(1024),
+            cpu_budget=TrainingCpuBudget(2, settings=resources.cpu), fanout_settings=resources.fanout,
+            sample_settings=TrainingSampleSettingsFixture(), paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
+            sqlite_policy=SqlitePolicyFixture(),
+            prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()),
+        )
+        reports = ReadJsonReports("".join(before_shutdown) + capsys.readouterr().out)
+        summary = reports[-1]
+        assert summary["schema_version"] == "selected_training_result"
+        assert sum(item["schema_version"] == "selected_training_result" for item in reports) == 1
+        assert code == (130 if execution == "cancelled" else int(execution != "ready" or cleanup != "complete" or watchdog_fails))
+        assert summary["status"] == ("cancelled" if execution == "cancelled" else "failed" if code else "completed")
+        assert summary["training_status"] == ("completed" if execution == "ready" else "cancelled" if execution == "cancelled" else "failed")
+        assert summary["shutdown"]["completed"] is (cleanup == "complete")
+        assert set(summary["shutdown"]) == {"name", "completed", "timed_out", "cancelled_count", "failure", "watchdog_started", "watchdog_failure"}
+        assert summary["shutdown"]["watchdog_started"] is not watchdog_fails
+        assert summary["shutdown"]["watchdog_failure"] == ("ShutdownWatchdogStartError" if watchdog_fails else None)
+        if cleanup == "exception":
+            assert summary["shutdown"]["failure"] == "OSError"
+        assert reports[0]["status"] == "engineering_ready"
+        assert reports[0]["run_id"] == "committed-run"
+        assert summary["results"][0]["exit_code"] == 0
+        if execution == "notification_scope_failure":
+            assert summary["failure"] == "OSError"
+            expected_issue = {"stage": "outcome_notification", "error_type": "BrokenPipeError", "cause_type": None}
+            assert reports[0]["delivery_issues"] == [expected_issue]
+            assert summary["results"][0]["delivery_issues"] == [expected_issue]
+        elif execution != "ready":
+            assert summary["failure"] == ("RuntimeError" if execution == "cancelled" else "fixture_training_failed")
+        assert published.read_bytes() == b"committed model fixture"
+        assert len(stop_deadlines) == 1 and not pool.status().running
+        assert forced == ([2] if watchdog_fails and cleanup != "complete" else [])
+        assert "private" not in str(reports)
+    finally:
+        for current in controllers:
+            current.mark_completed()
+        stop_workers(cancel_futures=True, deadline=ShutdownDeadline.start(2))

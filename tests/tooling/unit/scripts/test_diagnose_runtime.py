@@ -396,7 +396,10 @@ def test_history_layout_comparison_requires_explicit_external_baseline(tmp_path)
     )
     options = ParseBusinessOptions(args)
     command = BuildToolCommands(options)[0]
-    assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path))
+    assert command.argv.count("--baseline-checkout") == 1
+    assert command.argv[command.argv.index("--baseline-checkout") + 1] == str(tmp_path)
+    assert command.argv.count("--comparison-rounds") == 1
+    assert command.argv[command.argv.index("--comparison-rounds") + 1] == "5"
     assert command.argv[command.argv.index("--size") + 1] == "5000"
     with pytest.raises(SystemExit) as error:
         ParseToolArguments([*SelectionArguments('snapshot'), "--baseline-checkout", str(tmp_path)])

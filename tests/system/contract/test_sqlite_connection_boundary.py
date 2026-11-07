@@ -5,8 +5,14 @@ from pathlib import Path
 
 from tests.helpers.shared.python_source import source_tree
 
+_DRIVER_OBSERVERS = {
+    "scripts/training/jobs/training_source_guard.py": frozenset({"ReadOnlyTrainingSource"}),
+    "tests/download/unit/history/test_history_download_index.py": frozenset({"test_selected_population_loads_with_999_sqlite_variable_limit"}),
+    "tests/training/unit/scripts/test_training_alignment.py": frozenset({"test_published_training_source_rejects_writes_and_restores_all_hooks"}),
+}
 
-def _raw_connection_lines(tree: ast.AST) -> tuple[int, ...]:
+
+def _raw_connection_lines(tree: ast.AST, *, observers: frozenset[str] = frozenset()) -> tuple[int, ...]:
     modules = {
         alias.asname or alias.name.split(".")[0]
         for node in ast.walk(tree)
@@ -14,6 +20,16 @@ def _raw_connection_lines(tree: ast.AST) -> tuple[int, ...]:
         for alias in node.names
         if alias.name in {"sqlite3", "sqlite3.dbapi2"}
     }
+    # These exact scopes intercept or compare the existing driver factory. Even
+    # there, calling its constructor directly remains a boundary violation.
+    observed = {
+        id(node)
+        for function in ast.walk(tree)
+        if isinstance(function, ast.FunctionDef) and function.name in observers
+        for node in ast.walk(function)
+        if isinstance(node, ast.Attribute)
+    }
+    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
     violations = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in {"sqlite3", "sqlite3.dbapi2"}:
@@ -21,6 +37,8 @@ def _raw_connection_lines(tree: ast.AST) -> tuple[int, ...]:
                 violations.append(node.lineno)
             modules.update(alias.asname or alias.name for alias in node.names if alias.name == "dbapi2")
         if isinstance(node, ast.Attribute) and node.attr == "connect":
+            if id(node) in observed and id(node) not in called:
+                continue
             owner = node.value
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "Connection":
             owner = node.func.value
@@ -30,7 +48,7 @@ def _raw_connection_lines(tree: ast.AST) -> tuple[int, ...]:
             owner = owner.value
         if isinstance(owner, ast.Name) and owner.id in modules:
             violations.append(node.lineno)
-    return tuple(violations)
+    return tuple(sorted(violations))
 
 
 def test_all_python_consumers_use_the_shared_sqlite_connection_boundary():
@@ -44,7 +62,10 @@ def test_all_python_consumers_use_the_shared_sqlite_connection_boundary():
         if path == owner:
             continue
         tree = source_tree(path)
-        failures.extend(f"{path.relative_to(root)}:{line}" for line in _raw_connection_lines(tree))
+        relative = path.relative_to(root).as_posix()
+        failures.extend(f"{relative}:{line}" for line in _raw_connection_lines(
+            tree, observers=_DRIVER_OBSERVERS.get(relative, frozenset()),
+        ))
         # Include embedded Python executed by subprocesses in crash tests.
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and "import sqlite3" in node.value:
@@ -55,6 +76,18 @@ def test_all_python_consumers_use_the_shared_sqlite_connection_boundary():
                 if lines:
                     failures.append(f"{path.relative_to(root)}:{node.lineno}:embedded")
     assert failures == []
+
+
+def test_driver_observers_cannot_construct_connections_or_exempt_other_scopes():
+    tree = ast.parse("\n".join((
+        "import sqlite3",
+        "def observe():",
+        "    original = sqlite3.connect",
+        "    sqlite3.connect(':memory:')",
+        "def other():",
+        "    original = sqlite3.connect",
+    )))
+    assert _raw_connection_lines(tree, observers=frozenset({"observe"})) == (4, 6)
 
 
 def test_business_code_uses_explicit_transactions_and_has_no_driver_import_in_application():

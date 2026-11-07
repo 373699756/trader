@@ -80,8 +80,8 @@ def test_h1_reader_rejects_unsupported_schema_without_writing(tmp_path):
     spec = H1PointInTimeSpec("tomorrow")
     snapshot.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
-    with SqliteSession(database) as connection:
-        connection.run("PRAGMA user_version=0")
+    with SqliteSession(database) as connection, SqliteTransaction(connection):
+        connection.run("ALTER TABLE h1_universe ADD COLUMN unexpected TEXT")
     before = database.read_bytes()
 
     with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):

@@ -185,6 +185,33 @@ def test_publisher_keeps_a_complete_valid_old_pair_with_managed_staging_replacea
     assert not tuple(tmp_path.glob(".v3.previous.*"))
 
 
+def test_unknown_content_in_previous_directory_preserves_it_without_failing_the_committed_pair(tmp_path, monkeypatch, caplog):
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
+    root = tmp_path / "v3"
+    expected = InspectPublishedProfileBundles(root, V3_TRAINING_PROFILE)
+    rename = profile_publication.os.replace
+    previous_contents = []
+
+    def add_operator_file_after_commit(source, destination):
+        rename(source, destination)
+        if destination == root:
+            previous, = tmp_path.glob(".v3.previous.*")
+            (previous / "operator.txt").write_text("preserve operator content", encoding="utf-8")
+            previous_contents.append((previous, _snapshot(previous)))
+
+    monkeypatch.setattr(profile_publication.os, "replace", add_operator_file_after_commit)
+
+    published = PublishProfileBundles(root, V3_TRAINING_PROFILE, _staged(tmp_path))
+
+    assert published == expected
+    assert InspectPublishedProfileBundles(root, V3_TRAINING_PROFILE) == published
+    assert len(previous_contents) == 1
+    previous, contents = previous_contents[0]
+    assert _snapshot(previous) == contents
+    assert "trained_profile_previous_cleanup_failed" in caplog.text
+    assert not _publication_candidates(tmp_path)
+
+
 @pytest.mark.parametrize("missing", ("file", "head", "both_heads"))
 def test_owned_incomplete_models_can_still_be_cleaned_and_replaced_without_promoting_them(tmp_path, missing):
     _publish_profile(tmp_path, V3_TRAINING_PROFILE)

@@ -40,13 +40,13 @@ from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.market_data.providers.eastmoney_spot import ParseEastmoneySpotQuote
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 
 AT = datetime.fromisoformat("2026-10-15T14:30:00+08:00")
 
 
 def test_factor_score_builds_current_native_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
-    policy = _recommendation_policy(LoadStrategySettings(Path("config/strategy.json")))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(Path("config/strategy.json")))
     models = SimpleNamespace(
         uses_model=lambda strategy: False,
         history_required_sessions=lambda strategy: 20,
@@ -159,7 +159,7 @@ def test_supplementation_uses_local_industry_without_network_gap_fill() -> None:
 
 
 def test_factor_audit_counts_only_requested_histories_and_derived_local_factors() -> None:
-    policy = _recommendation_policy(LoadStrategySettings(Path("config/strategy.json")))
+    policy = BuildRecommendationPolicy(LoadStrategySettings(Path("config/strategy.json")))
     inputs = SimpleNamespace(
         profile="v3",
         policy=policy,

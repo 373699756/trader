@@ -1,6 +1,5 @@
 """Company preload diagnostics preserve native codes without exposing query values."""
 
-from contextlib import closing
 import json
 import sqlite3
 import sys
@@ -10,6 +9,7 @@ import pytest
 from tests.helpers.recommendation.market_data import NOW
 from tests.helpers.recommendation.company_research import PublishedCompanyResearchFixture
 from trader.infra.settings.models import CompanyPreloadSettings
+from trader.infra.sqlite_connection import SqliteSession
 
 
 class _FailedReader:
@@ -22,8 +22,8 @@ class _FailedReader:
     def _fail(self):
         try:
             if self.failure == "native":
-                with closing(sqlite3.connect(":memory:")) as connection:
-                    connection.execute("SELECT * FROM private_company_payload")
+                with SqliteSession(":memory:") as connection:
+                    connection.run("SELECT * FROM private_company_payload")
             else:
                 raise sqlite3.DatabaseError(self.failure)
         except sqlite3.Error as exc:

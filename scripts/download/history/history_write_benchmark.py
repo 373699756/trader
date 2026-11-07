@@ -83,7 +83,7 @@ class HistoryFixtureSupplier:
             BaoStockCalendar(self.days[-sessions:]),
             universe,
             BaoStockSourceVersions("fixture", "3.10", ()),
-            tuple(BaoStockIndustryInterval(item.code, self.days[0], None, "fixture", "fixture") for item in universe)
+            tuple(BaoStockIndustryInterval(item.code, self.days[0], None, "capco:J66货币金融服务", "fixture") for item in universe)
             if self.varying_prices
             else (),
             tuple(HistoryStEvidence(item.code, as_of, "clear") for item in universe),

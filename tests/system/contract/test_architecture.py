@@ -573,12 +573,12 @@ def test_history_sync_progress_stays_typed_until_the_entrypoint_projection() -> 
     contract = source_text(SOURCE_ROOT / "download/domain/history_sync.py")
     supplier = source_text(SOURCE_ROOT / "download/infra/baostock_sync_supplier.py")
     runtime = source_text(SOURCE_ROOT / "download/application/download_history.py")
-    storage = source_text(SOURCE_ROOT / "download/infra/history_sync_io.py")
+    io_source = source_text(SOURCE_ROOT / "download/infra/history_sync_io.py")
     projection = source_text(SOURCE_ROOT / "download/entrypoints/history_sync_progress.py")
 
     assert "class HistorySyncProgress:" in contract
     assert "class HistorySyncProgressPort(Protocol):" in contract
-    assert all("import json" not in source for source in (contract, supplier, runtime, storage))
+    assert all("import json" not in source for source in (contract, supplier, runtime, io_source))
     assert "import json" not in projection
     assert "def publish_result(" in projection
     assert "总进度" in projection
@@ -604,6 +604,7 @@ def test_download_business_has_one_owner_and_no_legacy_history_paths() -> None:
         "history_prices.py",
     )
     assert not any((SOURCE_ROOT / "infra" / "research" / name).exists() for name in retired)
+    assert not (download / "infra" / "baostock_gap_supplier.py").exists()
     assert not (download / "infra" / "history_sync_runner.py").exists()
     assert not (download / "infra" / "history_sync_gateway.py").exists()
 

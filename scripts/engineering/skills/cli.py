@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts.core.paths import PROJECT_ROOT
 from scripts.engineering.skills.cases import Cases
 from scripts.engineering.skills.contracts import CaseResult
 from scripts.engineering.skills.contracts import ProcessResult
@@ -20,7 +21,6 @@ from scripts.engineering.skills.reports import ExitCode
 from scripts.engineering.skills.reports import WriteReport
 from scripts.engineering.skills.scoring import ScoreCase
 from scripts.engineering.skills.trace import ParseTrace
-from scripts.engineering.skills.workspace import REPOSITORY_ROOT
 from scripts.engineering.skills.workspace import ChildEnvironment
 from scripts.engineering.skills.workspace import ExternalPath
 from scripts.engineering.skills.workspace import PrepareWorkspace
@@ -138,7 +138,7 @@ def Main() -> int:
     run.add_argument(
         "--skill-source",
         type=Path,
-        default=REPOSITORY_ROOT / ".agents/skills",
+        default=PROJECT_ROOT / ".agents/skills",
         help="read skill inputs from a saved snapshot instead of the checkout",
     )
     compare = commands.add_parser("compare", help="compare existing reports without a model request", allow_abbrev=False)

@@ -81,6 +81,10 @@ flowchart TD
 
 服务关闭使用同一总期限；业务stop返回后线程看门狗继续保持，不能提前取消后无限等待非daemon线程。这一线程机制尚不能证明进程实际退出已受硬截止约束：阶段281保留内部业务返回约0.319秒、外部观察进程33.09秒才退出的反例，30秒门保持未完成。内部期限从Python信号处理器实际执行时开始，须先将该起点与外部发信号及pidfd退出观察对齐，不能把两者差值全部归因于解释器退出尾；本HDD缺旧PC原报告，信号前段与退出尾均待定位。BoundedExecutor通过启动时登记的真实工作线程按剩余期限join，任务计数归零或Future完成不代表后续完成回调已结束；再次stop继续检查原线程。关闭诊断保留有界的开始/结束时间线及线程栈投影，在独立daemon线程输出，不作为清理完成或实际退出的证明。真实信号验收须绑定同一进程出生身份，核对进程退出事件、退出码与资源报告。
 
+手工所选档位训练使用同一`ManualCancellationScope`持有取消事件和关闭期限：已有首次信号时沿用原期限，正常结束时才建立关闭期限；正常清理期间首次信号仍只请求取消，再次信号才强退。最终`selected_training_result`在消费executor的真实`ShutdownStep`后形成，`training_status`保留关闭前作业结果，`status`反映整作业终态；逐档已提交模型和原失败／取消及通知问题分别保留。关闭不完整或watchdog启动失败使原成功作业返回非0；取消仍为130，无法保持异步保护且资源未关时明确强退，正常失败为2、取消为130，不返回后无限等待。
+
+训练汇总的`shutdown`只投影`name/completed/timed_out/cancelled_count/failure/watchdog_started/watchdog_failure`，失败只给安全类型，不公开原异常文本。尚未取得关闭报告及明确未完成时保留原watchdog；watchdog启动失败仍用已建立的同一期限执行资源关闭并报告能力失败。以上是CLI工程合同，不替代281真实服务30秒或平台验收。
+
 同一线程池内的任务不能同步等待自己再次提交的任务，避免池满后互等。资源上限说明实际是软件预约/观察门，还是宿主进程/系统硬隔离，不把RSS采样写成保证不会被系统杀进程。
 
 ## 4. 数据发布与读写隔离
@@ -419,7 +423,7 @@ flowchart TD
 
 #### research.json
 
-来源：`config/research.json`。`training/infra/training_settings.LoadResearchExperimentSettings` → 离线研究/终端留出及消融合同；与`training.json`正式拟合设置分开。跨度/隔离为正交易日，profile为已支持档位，arms为显式有序方案名；研究身份消费，不注入在线数值评分。
+来源：`config/research.json`。`training/infra/research_settings.LoadResearchSettings` → 离线研究/终端留出及消融合同；与`training.json`正式拟合设置分开。跨度/隔离为正交易日，profile为已支持档位，arms为显式有序方案名；研究身份消费，不注入在线数值评分。
 
 | 字段路径 | 中文作用 | 当前值 | 类型/单位 |
 | --- | --- | --- | --- |

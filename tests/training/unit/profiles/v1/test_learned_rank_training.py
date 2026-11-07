@@ -73,6 +73,50 @@ from tests.helpers.training.profiles.v1.learned_rank_training import (
 )
 
 
+@pytest.mark.parametrize("phase", ("previous", "staging"))
+def test_v1_publication_cleanup_preserves_unknown_content(tmp_path, monkeypatch, caplog, reusable_pair, phase):
+    from trader.training.infra.profile.v1 import models
+
+    source, _ = reusable_pair
+    root = tmp_path / "models"
+    shutil.copytree(source, root)
+    pair = ReadLearnedRankPair(root)
+    preserved = []
+
+    def remember(directory):
+        (directory / "operator.txt").write_text("keep operator content", encoding="utf-8")
+        preserved.append((directory, {path.relative_to(directory): path.read_bytes() for path in directory.rglob("*") if path.is_file()}))
+
+    if phase == "previous":
+        rename = models.os.replace
+
+        def commit(source, destination):
+            rename(source, destination)
+            if Path(destination) == root / "v1":
+                previous, = root.glob(".v1.previous.*")
+                remember(previous)
+
+        monkeypatch.setattr(models.os, "replace", commit)
+        PublishLearnedRankPair(root, pair)
+        assert "V1 previous model directory cleanup failed" in caplog.text
+    else:
+        write = models.AtomicWriteJson
+
+        def interrupt(path, value):
+            write(path, value)
+            remember(Path(path).parent.parent)
+            raise OSError("controlled copy failure")
+
+        monkeypatch.setattr(models, "AtomicWriteJson", interrupt)
+        with pytest.raises(ValueError, match="model publication recovery"):
+            PublishLearnedRankPair(root, pair)
+
+    assert ReadLearnedRankPair(root) == pair
+    assert len(preserved) == 1
+    directory, expected = preserved[0]
+    assert {path.relative_to(directory): path.read_bytes() for path in directory.rglob("*") if path.is_file()} == expected
+
+
 def test_matching_v1_pair_reuses_without_scanning_fitting_or_republishing(tmp_path, monkeypatch, reusable_pair):
     root, original = reusable_pair
     model_root = tmp_path / "models"
@@ -885,7 +929,7 @@ def test_v1_directory_publication_failure_preserves_previous_pair(
     retired_path = retired_root / "v1/model.json"
     retired_path.parent.mkdir(parents=True)
     retired_path.write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match="retired V1"):
+    with pytest.raises(ValueError, match="model publication recovery"):
         PublishLearnedRankPair(retired_root, pair)
     assert retired_path.read_text(encoding="utf-8") == "{}"
     sample_root = tmp_path / "retired_samples"
@@ -989,7 +1033,7 @@ def test_publication_recovers_damaged_owned_files_but_preserves_unknown_entries(
     assert ReadLearnedRankPair(model_root) == pair
     for path in (model_root / "v1/notes", model_root / "v1/d25/notes"):
         path.write_text("unowned", encoding="utf-8")
-        with pytest.raises(ValueError, match="unexpected entries"):
+        with pytest.raises(ValueError, match="model publication recovery"):
             PublishLearnedRankPair(model_root, pair)
         assert path.read_text(encoding="utf-8") == "unowned"
         path.unlink()
@@ -997,7 +1041,7 @@ def test_publication_recovers_damaged_owned_files_but_preserves_unknown_entries(
     target = tmp_path / "outside.json"
     target.write_text("unowned", encoding="utf-8")
     metadata.symlink_to(target)
-    with pytest.raises(ValueError, match="unexpected entries"):
+    with pytest.raises(ValueError, match="model publication recovery"):
         PublishLearnedRankPair(model_root, pair)
     assert metadata.is_symlink() and target.read_text(encoding="utf-8") == "unowned"
     assert not any(path.is_dir() for path in model_root.glob(".v1.publication.*"))

@@ -9,7 +9,6 @@ from pathlib import Path
 from scripts.core.reporting import emit_report
 from scripts.download.history.cninfo_industry_probe import CninfoIndustryProbeRequest, ProbeCninfoIndustryQueries
 from scripts.download.history.official_industry import AuditOfficialIndustrySources, OfficialIndustryAuditRequest
-from trader.infra.http_transport import RequestsHttpTransport
 
 
 def Main() -> int:
@@ -53,7 +52,7 @@ def Main() -> int:
                     transport,
                 )
         else:
-            with RequestsHttpTransport() as transport:
+            with OpenExternalHttp() as transport:
                 report = AuditOfficialIndustrySources(
                     OfficialIndustryAuditRequest(
                         tuple(args.official_announcements), args.industry_work_root,

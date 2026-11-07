@@ -53,7 +53,8 @@ def st_sources(monkeypatch):
             pass
 
     class Session:
-        def __init__(self):
+        def __init__(self, *, identity_content_encodings=()):
+            assert identity_content_encodings in ((), ("normal",))
             self.closed = False
             sessions.append(self)
 
@@ -123,7 +124,8 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     if not existing_cache:
         expected_queries |= {"600001", "600003"}
 
-    def download(root, progress, request, *, cancel_requested, sqlite_policy, failure_configuration):
+    def download(root, progress, request, *, cancel_requested, sqlite_policy, failure_configuration, shutdown_timeout_seconds):
+        assert shutdown_timeout_seconds == settings.pipeline.shutdown_timeout_seconds
         codes, observed_at = request.codes, request.observed_at
         assert request.configuration.source_timeout_seconds == 8.0
         assert set(calls) == expected_queries

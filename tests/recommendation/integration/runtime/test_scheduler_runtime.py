@@ -143,12 +143,14 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
         operation = "freeze_event" if failure == "event" else "observer_enqueue"
     payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
     assert payload["health"]["issue_count"] > 0
-    index = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    index.initialize()
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), index, clock)
+    records = SQLiteFreezeRecords((tmp_path) / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    records.initialize()
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), records, clock)
     stream = UnifiedFreezeEventStream()
     client = CreateApp(services=UnifiedWebServices(queries, stream, lambda: payload)).test_client()
-    response = client.get("/api/status").get_json()
+    status_response = client.get("/api/status")
+    assert status_response.status_code == 200
+    response = status_response.get_json()
     receipt = next(item for item in response["scheduler"]["publication_io"] if item["operation"] == operation)
     assert receipt["input_count"] == receipt["failed_count"] == 1
     assert receipt["rejected_count"] == receipt["output_count"] == 0
@@ -156,7 +158,9 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
     assert receipt["count_unit"] == "operation" and "rejection_rate" not in receipt
     assert "secret" not in str(receipt) and "items" not in receipt
     assert current.content_hash == freeze().content_hash
-    visible = client.get("/api/freezes/tomorrow/current").get_json()
+    visible_response = client.get("/api/freezes/tomorrow/current")
+    assert visible_response.status_code == 200
+    visible = visible_response.get_json()
     expected = current if failure in {"overlay", "cas"} else candidate
     assert visible["freeze_version"] == expected.version
     assert visible["content_hash"] is None

@@ -5,6 +5,7 @@ from tests.helpers.training.training_resources import TrainingSampleSettingsFixt
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.shared.module_boundaries import SourceImportTargets
 
 from datetime import date, timedelta
 from pathlib import Path
@@ -87,14 +88,18 @@ def test_profile_windows_algorithms_costs_and_research_arms_have_typed_configura
 
 
 def test_profile_training_modules_do_not_import_each_other() -> None:
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[4] / "src" / "trader" / "infra" / "scoring" / "profiles"
-    v2 = "\n".join(path.read_text(encoding="utf-8") for path in (root / "v2").glob("*.py"))
-    v3 = "\n".join(path.read_text(encoding="utf-8") for path in (root / "v3").glob("*.py"))
-
-    assert "profiles.v3" not in v2
-    assert "profiles.v2" not in v3
+    root = PROJECT_ROOT / "src" / "trader"
+    for profile, other in (("v2", "v3"), ("v3", "v2")):
+        files = tuple((root / "training" / "infra" / "profile" / profile).rglob("*.py"))
+        assert {"contracts.py", "training.py"} <= {path.name for path in files}
+        foreign_owner = f"trader.training.infra.profile.{other}"
+        violations = {
+            str(path.relative_to(root)): imported
+            for path in files
+            for imported in SourceImportTargets(path, root)
+            if imported == foreign_owner or imported.startswith(foreign_owner + ".")
+        }
+        assert violations == {}
 
 
 def test_profile_training_request_rejects_a_head_owned_by_another_profile(tmp_path: Path) -> None:

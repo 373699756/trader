@@ -117,3 +117,30 @@ def test_nonannual_source_modes_have_no_default_or_worker_security_selection(arg
 def test_annual_income_mode_requires_an_explicit_security():
     with pytest.raises(ValueError, match="requires one code"):
         _parse(["--annual-income-period", "2025-12-31"])
+
+
+@pytest.mark.parametrize("period", ("2026-03-31", "2026-06-30", "2026-09-30", "2025-12-31"))
+def test_financial_revision_mode_accepts_one_stock_and_all_quarter_ends(period):
+    options = _parse(["--codes", "600001", "--financial-revision-period", period])
+    assert options.financial_revision_period == date.fromisoformat(period)
+    command, = BuildCommands(options)
+    assert command.argv[-4:] == ("--codes", "600001", "--financial-revision-period", period)
+    assert "--annual-income-period" not in command.argv and "--field-sources-only" not in command.argv
+
+
+@pytest.mark.parametrize("arguments", (
+    ["--financial-revision-period", "2026-06-30"],
+    ["--codes", "600001", "000001", "--financial-revision-period", "2026-06-30"],
+    ["--codes", "60001", "--financial-revision-period", "2026-06-30"],
+    ["--codes", "600001", "--financial-revision-period", "2026-06-29"],
+    ["--codes", "600001", "--financial-revision-period", "2026-06-30", "--field-source-schema"],
+))
+def test_financial_revision_mode_refuses_ambiguous_or_invalid_selection(arguments):
+    with pytest.raises(ValueError):
+        _parse(arguments)
+
+
+@pytest.mark.parametrize("other", (["--field-sources-only"], ["--annual-income-period", "2025-12-31"]))
+def test_financial_revision_mode_is_mutually_exclusive_with_all_other_source_modes(other):
+    with pytest.raises(SystemExit):
+        _parse(["--codes", "600001", "--financial-revision-period", "2026-06-30", *other])

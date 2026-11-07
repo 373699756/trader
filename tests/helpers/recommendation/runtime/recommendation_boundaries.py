@@ -21,7 +21,7 @@ from trader.recommendation.application.ports.loaded_profile import ModelScoringC
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.policy_settings import _recommendation_policy
+from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 
 
 def _features(factory) -> tuple[FeatureSnapshot, ...]:
@@ -134,4 +134,4 @@ class _RecordingModelCapability:
 
 
 def _runtime_policy() -> RecommendationPolicy:
-    return _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    return BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))

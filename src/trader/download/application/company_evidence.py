@@ -1212,6 +1212,8 @@ def _structured(
             start, end = now.date(), now.date() + timedelta(days=180)
         requested = StructuredCompanyQuery(component, start, end)
         query = index.structured_cursor(requested)
+        if component == "financial" and query.start > requested.start:
+            query = requested
         while not _cancelled(dependencies):
             completed = query.page - 1
             _report(dependencies, component, state, pending, completed=completed, scope=query)

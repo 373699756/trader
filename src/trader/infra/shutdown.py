@@ -166,6 +166,14 @@ def SignalExitCode(signum: int) -> int:
     return 130
 
 
+class ShutdownWatchdogStartError(RuntimeError):
+    """The shutdown deadline exists, but its hard-exit watchdog could not start."""
+
+    def __init__(self, deadline: ShutdownDeadline) -> None:
+        super().__init__("shutdown_watchdog_start_failed")
+        self.deadline = deadline
+
+
 class ShutdownSignalController:
     """Translate the first signal into graceful shutdown and the second into hard exit."""
 
@@ -188,6 +196,8 @@ class ShutdownSignalController:
         self._first_signal: int | None = None
         self._previous: dict[int, SignalHandler] = {}
         self._completed = threading.Event()
+        self._watchdog_started = False
+        self._watchdog_failure: ShutdownWatchdogStartError | None = None
 
     @property
     def deadline(self) -> ShutdownDeadline | None:
@@ -199,33 +209,79 @@ class ShutdownSignalController:
         with self._lock:
             return SignalExitCode(self._first_signal) if self._first_signal is not None else 0
 
+    @property
+    def watchdog_started(self) -> bool:
+        with self._lock:
+            return self._watchdog_started
+
+    @property
+    def watchdog_failure(self) -> ShutdownWatchdogStartError | None:
+        with self._lock:
+            return self._watchdog_failure
+
+    def begin_shutdown(self) -> ShutdownDeadline:
+        """Reuse the first signal's budget, or start one bounded normal cleanup."""
+        with self._lock:
+            if self._deadline is None:
+                self._deadline = ShutdownDeadline.start(self._timeout_seconds, monotonic=self._monotonic)
+            deadline = self._deadline
+        self._start_watchdog(deadline)
+        return deadline
+
     def handle(self, signum: int, _frame: object | None = None) -> None:
         received = self._monotonic()
         with self._lock:
-            if self._deadline is not None:
+            if self._first_signal is not None:
                 exit_code = SignalExitCode(self._first_signal or signum)
                 force = True
                 deadline = self._deadline
             else:
-                deadline = ShutdownDeadline(received, self._timeout_seconds, monotonic=self._monotonic)
-                self._deadline = deadline
+                if self._deadline is None:
+                    self._deadline = ShutdownDeadline(received, self._timeout_seconds, monotonic=self._monotonic)
+                deadline = self._deadline
                 self._first_signal = signum
                 exit_code = SignalExitCode(signum)
                 force = False
         if force:
             self._force_exit(exit_code)
             return
-        token = deadline._progress.begin("signal_received", 0.0)
-        deadline._progress.finish(token, 0.0)
+        if deadline is None:
+            raise RuntimeError("shutdown signal has no deadline")
+        RecordShutdownEvent(deadline, "signal_received")
+        try:
+            self._start_watchdog(deadline)
+        finally:
+            self._on_first_signal(deadline)
+
+    def _start_watchdog(self, deadline: ShutdownDeadline) -> None:
+        with self._lock:
+            if self._watchdog_started:
+                return
+            self._watchdog_started = True
         RecordShutdownEvent(deadline, "deadline_created")
-        threading.Thread(
-            target=self._force_when_expired,
-            args=(deadline,),
-            name="trader-shutdown-watchdog",
-            daemon=True,
-        ).start()
+        started = False
+        try:
+            threading.Thread(
+                target=self._force_when_expired,
+                args=(deadline,),
+                name="trader-shutdown-watchdog",
+                daemon=True,
+            ).start()
+            started = True
+        except RuntimeError as exc:
+            failure = ShutdownWatchdogStartError(deadline)
+            with self._lock:
+                self._watchdog_failure = failure
+            raise failure from exc
+        finally:
+            if not started:
+                with self._lock:
+                    self._watchdog_started = False
         RecordShutdownEvent(deadline, "watchdog_started")
-        self._on_first_signal(deadline)
+
+    def force_shutdown(self) -> None:
+        """Fail immediately when owned cleanup remains without a working watchdog."""
+        self._force_exit(self.exit_code or 2)
 
     def mark_completed(self) -> None:
         if self._deadline is not None:
@@ -273,5 +329,6 @@ __all__ = [
     "ShutdownSignalController",
     "ShutdownSpan",
     "ShutdownStep",
+    "ShutdownWatchdogStartError",
     "SignalExitCode",
 ]

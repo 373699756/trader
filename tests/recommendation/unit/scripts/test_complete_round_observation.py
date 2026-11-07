@@ -420,12 +420,16 @@ def test_real_http_stream_deadline_returns_partial_round_evidence_through_native
     thread.start()
     try:
         started = time.monotonic()
-        result = RunBoundedCommand(WorkerArguments((
-            sys.executable, "-m", "scripts.recommendation.web.web_health", "--base-url",
-            f"http://127.0.0.1:{server.server_port}", "--complete-rounds", "1",
-            "--observation-seconds", "3", "--interval-seconds", "15", "--timeout-seconds", "1",
-        )), timeout=25, environment=dict(os.environ))
-        elapsed = time.monotonic() - started
+        try:
+            result = RunBoundedCommand(WorkerArguments((
+                sys.executable, "-m", "scripts.recommendation.web.web_health", "--base-url",
+                f"http://127.0.0.1:{server.server_port}", "--complete-rounds", "1",
+                "--observation-seconds", "3", "--interval-seconds", "15", "--timeout-seconds", "1",
+            )), timeout=25, environment=dict(os.environ))
+        finally:
+            elapsed = time.monotonic() - started
+            record_property("process_elapsed_seconds", elapsed)
+            record_property("http_requests", [(path, at - started) for path, at in request_times])
         assert result.stdout, result.stderr
         report = json.loads(result.stdout)
         assert result.returncode == 1 and report["status"] == "failed"
@@ -434,7 +438,6 @@ def test_real_http_stream_deadline_returns_partial_round_evidence_through_native
         assert len(report["rounds"]) == 1
         assert any(path.startswith("/api/events") for path, _at in request_times)
         first_request_after = request_times[0][1] - started
-        record_property("process_elapsed_seconds", elapsed)
         record_property("first_http_after_start_seconds", first_request_after)
         record_property("http_observation_elapsed_seconds", elapsed - first_request_after)
         assert elapsed - first_request_after < 5

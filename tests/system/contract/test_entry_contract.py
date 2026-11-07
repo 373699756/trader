@@ -98,7 +98,11 @@ def test_cli_exposes_current_maintenance_and_explicit_offline_research_commands(
 
 
 def test_cli_module_does_not_eagerly_load_research_implementations() -> None:
-    assert _research_modules_loaded_by("trader.entrypoints.cli") == set()
+    # Immutable command values belong to application; execution remains lazy.
+    assert _research_modules_loaded_by("trader.entrypoints.cli") <= {
+        "trader.training.application",
+        "trader.training.application.research_commands",
+    }
 
 
 def test_server_module_loads_only_authorized_background_research_consumers() -> None:

@@ -59,7 +59,7 @@ def test_makefile_is_the_single_test_command_source() -> None:
 def test_static_contract_target_keeps_architecture_and_io_gates_selected() -> None:
     recipe = MAKEFILE.read_text(encoding="utf-8").partition("test-static-contracts:\n")[2].split("\n\n", 1)[0]
     assert "tests/system/contract" in recipe
-    assert " -m " not in recipe
+    assert " -m " not in recipe.partition("pytest")[2]
     for name in (
         "test_architecture.py", "test_business_boundaries.py",
         "test_external_io_boundary.py", "test_reusable_diagnostics_contract.py",

@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -25,6 +25,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra import company_evidence_index
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
@@ -60,6 +61,7 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     pacer = object.__new__(CompanyRequestPacer)
     collection = object.__new__(SQLiteCompanyEvidenceIndex)
     facts = object.__new__(SQLiteCompanyFactsIndex)
+    text_files = object.__new__(CompanyDocumentFiles)
     local = CompanyLocalDocument(tmp_path, tmp_path / "private.pdf", b"a" * 32, 10)
     text = "本公司已核实的结构化公告文字。" * 10
     extraction = CompanyDocumentExtraction(text, "text", b"a" * 32, "fixture")
@@ -108,6 +110,11 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     monkeypatch.setattr(SQLiteCompanyFactsIndex, "publish_file", lambda *args: None)
     monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "_release_files", lambda *args: None)
     monkeypatch.setattr(CompanyRawFiles, "_reservation_usage", lambda *args: (0, 0, 0))
+    monkeypatch.setattr(CompanyDocumentFiles, "read", lambda *args: text)
+    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "commit_document", lambda *args: True)
+    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "document_stage", lambda *args: None)
+    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "commit_structured", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "_repair_pending_files", lambda *args: None)
     original_digest, original_run = CompanyRawFiles.digest, SqliteConnection.run
 
     def main(argv):
@@ -133,6 +140,14 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
         facts.publish_file()
         collection._release_files()
         assert raw._reservation_usage(tmp_path) == (0, 0, 0)
+        assert text_files.read(b"a" * 32) == text
+        assert collection.commit_document(_disclosure(), extraction, _NOW)
+        collection.document_stage(_disclosure(), "downloaded")
+        collection.commit_structured(
+            StructuredCompanyQuery("financial", _NOW.date(), _NOW.date()),
+            StructuredCompanyPage("financial", 1, 1, 0), _NOW,
+        )
+        collection._repair_pending_files()
         with SqliteSession(tmp_path / "fixture.sqlite3") as connection, SqliteTransaction(connection):
             connection.run("CREATE TABLE fixture(value INTEGER)")
             connection.run("INSERT INTO fixture VALUES(1)")
@@ -179,6 +194,11 @@ def test_publication_phase_failure_restores_all_new_owners_and_keeps_only_failur
         (SQLiteCompanyFactsIndex, "publish_file"),
         (SQLiteCompanyEvidenceIndex, "_release_files"),
         (CompanyRawFiles, "_reservation_usage"),
+        (CompanyDocumentFiles, "read"),
+        (SQLiteCompanyEvidenceIndex, "commit_document"),
+        (SQLiteCompanyEvidenceIndex, "document_stage"),
+        (SQLiteCompanyEvidenceIndex, "commit_structured"),
+        (SQLiteCompanyEvidenceIndex, "_repair_pending_files"),
     )
     originals = tuple(getattr(owner, name) for owner, name in owners)
     with pytest.raises(RuntimeError) as raised:
@@ -260,6 +280,7 @@ def test_operation_failure_categories_remain_bounded_when_the_known_taxonomy_gro
     (CompanyDocumentFailure("disclosure_document_ocr_required"), "disclosure_document_ocr_required"),
     (CompanyDocumentFailure("disclosure_document_private_payload"), "document_other"),
     (HttpTimeout("private-transport-payload"), "timeout"),
+    (InterruptedError("private-cancellation-payload"), "interrupted"),
     (CompanySourceFailure("timeout"), "timeout"),
     (CompanySourceFailure("schema_invalid"), "schema_invalid"),
     (CompanySourceFailure("private-unknown-category"), "source_other"),
@@ -268,37 +289,56 @@ def test_measurement_keeps_known_failure_categories_and_hides_unknown_payload(er
     assert company_pipeline_audit._failure_category(error) == category
 
 
-def test_running_snapshots_use_the_injected_clock_and_write_outside_the_counter_lock():
+def test_running_heartbeat_observes_an_unfinished_operation_without_waiting_for_completion():
     clock = [0.0]
-    measurement = company_pipeline_audit._CompanySyncMeasurement(monotonic=lambda: clock[0])
+    measurement = company_pipeline_audit._CompanySyncMeasurement(monotonic=lambda: clock[0], snapshot_interval_seconds=0.01)
     snapshots = []
+    entered, release, observed = Event(), Event(), Event()
 
     def snapshot():
         assert measurement._lock.acquire(blocking=False)
         measurement._lock.release()
-        snapshots.append(next(row["calls"] for row in measurement.report() if row["operation"] == "raw_usage"))
+        snapshots.append(next(row for row in measurement.report() if row["operation"] == "raw_usage"))
+        observed.set()
 
-    measurement.set_snapshot_writer(snapshot)
-    counted = measurement.wrap("raw_usage", lambda: 7)
-    for observed in (29.0, 30.0, 59.0, 60.0):
-        clock[0] = observed
-        assert counted() == 7
-    assert snapshots == [2, 4]
-    measurement.close_snapshots()
-    clock[0] = 100.0
-    assert counted() == 7 and snapshots == [2, 4]
+    def business():
+        entered.set()
+        assert release.wait(timeout=5)
+        return 7
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        pending = workers.submit(measurement.wrap("raw_usage", business))
+        try:
+            assert entered.wait(timeout=5)
+            clock[0] = 45.0
+            measurement.set_snapshot_writer(snapshot)
+            assert observed.wait(timeout=5)
+            assert not pending.done()
+            assert snapshots[0]["calls"] == 0 and snapshots[0]["inflight_calls"] == 1
+            assert snapshots[0]["oldest_inflight_seconds"] == 45.0
+            assert snapshots[0]["inflight_duration_complete"]
+        finally:
+            release.set()
+            assert pending.result(timeout=5) == 7
+            measurement.close_snapshots()
+    assert measurement._snapshot_thread is not None and not measurement._snapshot_thread.is_alive()
+    final = next(row for row in measurement.report() if row["operation"] == "raw_usage")
+    assert final["calls"] == 1 and final["inflight_calls"] == 0
+    assert final["oldest_inflight_seconds"] == 0
 
 
 @pytest.mark.parametrize("business_fails", (False, True))
-def test_running_snapshot_failure_is_disabled_once_without_changing_the_business_outcome(capsys, business_fails):
-    clock = [0.0]
-    measurement = company_pipeline_audit._CompanySyncMeasurement(monotonic=lambda: clock[0])
+@pytest.mark.parametrize("report_error", (OSError("private-report-path"), ValueError("private-json-payload")))
+def test_running_snapshot_failure_is_disabled_once_without_changing_the_business_outcome(capsys, business_fails, report_error):
+    measurement = company_pipeline_audit._CompanySyncMeasurement(snapshot_interval_seconds=0.01)
     attempts = []
     original = RuntimeError("private-business-error")
+    attempted = Event()
 
     def failed_snapshot():
         attempts.append(True)
-        raise OSError("private-report-path")
+        attempted.set()
+        raise report_error
 
     def business():
         if business_fails:
@@ -306,14 +346,14 @@ def test_running_snapshot_failure_is_disabled_once_without_changing_the_business
         return 42
 
     measurement.set_snapshot_writer(failed_snapshot)
-    clock[0] = 30.0
+    assert attempted.wait(timeout=5)
+    measurement.close_snapshots()
     if business_fails:
         with pytest.raises(RuntimeError) as raised:
             measurement.wrap("raw_usage", business)()
         assert raised.value is original
     else:
         assert measurement.wrap("raw_usage", business)() == 42
-    clock[0] = 90.0
     assert measurement.wrap("raw_usage", lambda: 1)() == 1
     assert measurement.snapshot_failed and attempts == [True]
     measurement.close_snapshots()
@@ -322,14 +362,13 @@ def test_running_snapshot_failure_is_disabled_once_without_changing_the_business
 
 
 def test_closing_snapshots_waits_for_the_inflight_writer_before_the_final_report():
-    clock = [0.0]
-    measurement = company_pipeline_audit._CompanySyncMeasurement(monotonic=lambda: clock[0])
+    measurement = company_pipeline_audit._CompanySyncMeasurement(snapshot_interval_seconds=0.01)
     started, release, close_started = Event(), Event(), Event()
     publications = []
 
     def snapshot():
         started.set()
-        assert release.wait(timeout=2)
+        assert release.wait(timeout=5)
         publications.append("running")
 
     def final():
@@ -338,35 +377,50 @@ def test_closing_snapshots_waits_for_the_inflight_writer_before_the_final_report
         publications.append("final")
 
     measurement.set_snapshot_writer(snapshot)
-    clock[0] = 30.0
-    with ThreadPoolExecutor(max_workers=2) as workers:
-        operation = workers.submit(measurement.wrap("raw_usage", lambda: 1))
-        assert started.wait(timeout=2)
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        assert started.wait(timeout=5)
         finished = workers.submit(final)
-        assert close_started.wait(timeout=2)
+        assert close_started.wait(timeout=5)
+        assert not finished.done()
         release.set()
-        assert operation.result(timeout=2) == 1
-        finished.result(timeout=2)
+        finished.result(timeout=5)
     assert publications == ["running", "final"]
+    assert measurement._snapshot_thread is not None and not measurement._snapshot_thread.is_alive()
 
 
 def test_live_measurement_refreshes_running_reports_and_finalizes_the_same_schema(tmp_path, monkeypatch):
     configuration, report = _paths(tmp_path)
     clock = [0.0]
-    measurement = company_pipeline_audit._CompanySyncMeasurement(monotonic=lambda: clock[0])
+    measurement = company_pipeline_audit._CompanySyncMeasurement(monotonic=lambda: clock[0], snapshot_interval_seconds=0.01)
     monkeypatch.setattr(company_pipeline_audit, "_CompanySyncMeasurement", lambda: measurement)
     source = object.__new__(CninfoMarketDisclosureSource)
-    monkeypatch.setattr(CninfoMarketDisclosureSource, "fetch", lambda *args, **kwargs: DisclosurePage((), 0, False))
     observed = []
+    updated = Event()
+    write = company_pipeline_audit.AtomicWriteJson
+
+    def report_writer(path, payload, *, indent):
+        write(path, payload, indent=indent)
+        if payload["status"] == "running" and any(
+            row["operation"] == "directory_fetch" and row["inflight_calls"]
+            for row in payload["operations"]
+        ):
+            updated.set()
+
+    def fetch(*args, **kwargs):
+        clock[0] = 60.0
+        assert updated.wait(timeout=5)
+        observed.append(json.loads(report.read_text(encoding="utf-8")))
+        return DisclosurePage((), 0, False)
+
+    monkeypatch.setattr(CninfoMarketDisclosureSource, "fetch", fetch)
+    monkeypatch.setattr(company_pipeline_audit, "AtomicWriteJson", report_writer)
 
     def main(argv):
         initial = json.loads(report.read_text(encoding="utf-8"))
         assert initial["status"] == "running" and not initial["database_statistics_final"]
-        assert initial["database"] == {} and initial["snapshot_interval_seconds"] == 30.0
-        for instant in (30.0, 60.0):
-            clock[0] = instant
-            source.fetch(DisclosurePartition("sse", _NOW.date(), _NOW.date()))
-            observed.append(json.loads(report.read_text(encoding="utf-8")))
+        assert initial["database"] == {} and initial["snapshot_trigger"] == "periodic_timer"
+        assert initial["snapshot_interval_seconds"] == 0.01
+        source.fetch(DisclosurePartition("sse", _NOW.date(), _NOW.date()))
         return 0
 
     monkeypatch.setattr(cli, "Main", main)
@@ -374,33 +428,36 @@ def test_live_measurement_refreshes_running_reports_and_finalizes_the_same_schem
     final = json.loads(report.read_text(encoding="utf-8"))
     assert final["status"] == "passed" and final["database_statistics_final"]
     assert not final["snapshot_failed"] and final["database"]["completed"]
-    for expected, snapshot in enumerate(observed, start=1):
+    for snapshot in observed:
         assert set(snapshot) == set(final) and snapshot["status"] == "running"
-        assert not snapshot["database_statistics_final"] and snapshot["database"] == {}
+        assert not snapshot["database_statistics_final"] and snapshot["database"]["completed"] is False
         operation = next(row for row in snapshot["operations"] if row["operation"] == "directory_fetch")
-        assert operation["calls"] == expected
+        assert operation["calls"] == 0 and operation["inflight_calls"] == 1
+        assert operation["oldest_inflight_seconds"] == 60.0
+    assert measurement._snapshot_thread is not None and not measurement._snapshot_thread.is_alive()
 
 
 def test_failed_running_report_is_marked_in_the_successful_final_report(tmp_path, monkeypatch, capsys):
     configuration, report = _paths(tmp_path)
     clock = [0.0]
-    measurement = company_pipeline_audit._CompanySyncMeasurement(monotonic=lambda: clock[0])
+    measurement = company_pipeline_audit._CompanySyncMeasurement(monotonic=lambda: clock[0], snapshot_interval_seconds=0.01)
     monkeypatch.setattr(company_pipeline_audit, "_CompanySyncMeasurement", lambda: measurement)
     source = object.__new__(CninfoMarketDisclosureSource)
     monkeypatch.setattr(CninfoMarketDisclosureSource, "fetch", lambda *args, **kwargs: DisclosurePage((), 0, False))
     write = company_pipeline_audit.AtomicWriteJson
     statuses = []
+    attempted = Event()
 
     def report_writer(path, payload, *, indent):
         statuses.append(payload["status"])
         if payload["status"] == "running":
+            attempted.set()
             raise OSError("private-snapshot-error")
         write(path, payload, indent=indent)
 
     def main(argv):
-        for instant in (30.0, 60.0):
-            clock[0] = instant
-            source.fetch(DisclosurePartition("sse", _NOW.date(), _NOW.date()))
+        source.fetch(DisclosurePartition("sse", _NOW.date(), _NOW.date()))
+        assert attempted.wait(timeout=5)
         return 0
 
     monkeypatch.setattr(company_pipeline_audit, "AtomicWriteJson", report_writer)
@@ -411,6 +468,59 @@ def test_failed_running_report_is_marked_in_the_successful_final_report(tmp_path
     assert statuses == ["running", "passed"]
     errors = capsys.readouterr().err
     assert errors.count("running_report_write_failed") == 1 and "private" not in errors
+
+
+def test_inflight_duration_tracking_is_bounded_without_losing_call_counts(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(company_pipeline_audit, "_MAX_PENDING_STARTS_PER_OPERATION", 2)
+    measurement = company_pipeline_audit._CompanySyncMeasurement(monotonic=lambda: clock[0])
+    with ExitStack() as operations:
+        for instant in (0.0, 1.0, 2.0):
+            clock[0] = instant
+            operations.enter_context(measurement.operation("facts_compile"))
+        clock[0] = 12.0
+        row = next(row for row in measurement.report() if row["operation"] == "facts_compile")
+        assert row["inflight_calls"] == 3 and row["untracked_inflight_calls"] == 1
+        assert not row["inflight_duration_complete"] and row["oldest_inflight_seconds"] is None
+    row = next(row for row in measurement.report() if row["operation"] == "facts_compile")
+    assert row["calls"] == 3 and row["inflight_calls"] == 0 and row["inflight_duration_complete"]
+
+
+def test_thread_start_failure_is_reported_without_starting_or_changing_business(capsys, monkeypatch):
+    class UnstartedThread(Thread):
+        def start(self):
+            raise RuntimeError("private-thread-start-error")
+
+    monkeypatch.setattr(company_pipeline_audit, "Thread", UnstartedThread)
+    measurement = company_pipeline_audit._CompanySyncMeasurement()
+    measurement.set_snapshot_writer(lambda: pytest.fail("failed start must not publish"))
+    assert measurement.wrap("raw_usage", lambda: 42)() == 42
+    measurement.close_snapshots()
+    assert measurement.snapshot_failed
+    assert "running_report_thread_start_failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("starts_thread", (False, True))
+def test_cancellation_during_heartbeat_start_preserves_original_and_reclaims_thread(tmp_path, monkeypatch, starts_thread):
+    configuration, report = _paths(tmp_path)
+    original = KeyboardInterrupt()
+
+    class InterruptedThread(Thread):
+        def start(self):
+            if starts_thread:
+                super().start()
+            raise original
+
+    measurement = company_pipeline_audit._CompanySyncMeasurement()
+    monkeypatch.setattr(company_pipeline_audit, "Thread", InterruptedThread)
+    monkeypatch.setattr(company_pipeline_audit, "_CompanySyncMeasurement", lambda: measurement)
+    monkeypatch.setattr(cli, "Main", lambda argv: pytest.fail("startup cancellation must not call the CLI"))
+    with pytest.raises(KeyboardInterrupt) as raised:
+        company_pipeline_audit.MeasureCompanySync(configuration, report)
+    assert raised.value is original
+    assert measurement._snapshot_thread is not None and not measurement._snapshot_thread.is_alive()
+    final = json.loads(report.read_text(encoding="utf-8"))
+    assert final["cancelled"] and final["status"] == "degraded"
 
 
 @pytest.mark.parametrize("error", (RuntimeError("private-payload-https://secret"), KeyboardInterrupt()))

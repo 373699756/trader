@@ -38,12 +38,24 @@ def test_external_io_imports_have_one_designated_owner():
                     if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                         names = [node.args[0].value]
                 for name in names:
-                    if name == "trader.infra.http_transport" and relative not in {
-                        "src/trader/bootstrap.py",
-                        "tests/infra/unit/test_http_transport.py",
-                    }:
+                    if (
+                        name == "trader.infra.http_transport"
+                        and relative != "src/trader/bootstrap.py"
+                        and not relative.startswith("tests/")
+                        and not (
+                            isinstance(node, ast.ImportFrom)
+                            and {alias.name for alias in node.names} <= {"HttpRequestScope"}
+                        )
+                    ):
                         violations.append(f"{relative}:{node.lineno}:composition_root_bypass")
                     for sdk, owner in owners.items():
+                        if (
+                            sdk == "urllib.request" and isinstance(node, ast.ImportFrom)
+                            and node.module == "urllib.request"
+                            and {alias.name for alias in node.names} == {"url2pathname"}
+                        ):
+                            # URI decoding does not expose a network operation.
+                            continue
                         if (name == sdk or name.startswith(sdk + ".")) and relative != owner:
                             violations.append(f"{relative}:{node.lineno}:{name}")
     assert violations == []

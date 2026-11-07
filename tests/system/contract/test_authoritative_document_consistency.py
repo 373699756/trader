@@ -27,7 +27,7 @@ def test_freeze_contract_has_one_boundary_for_each_strategy() -> None:
     strategy = source_text(STRATEGY)
 
     assert "只保留15:00作为荐股封口控制节点" in design
-    assert "15:00冻结独立唤醒和执行" in design
+    assert "15:00冻结独立优先，不能被本轮等待阻塞" in design
     assert "有效 14:49:50 检查点" not in design
     assert "Tomorrow/D25 15:00 后" in strategy
     assert "Long：不冻结、不写推荐历史" in strategy
@@ -59,7 +59,7 @@ def test_authoritative_docs_keep_algorithm_and_product_ownership_separate() -> N
     assert "GET /api/status" in design
     assert "GET /api/status" not in strategy
     assert "DeepSeek 单次网络 timeout 20 秒" in _compact(design)
-    assert "单次网络 timeout 为 20 秒" in strategy
+    assert "单次网络timeout当前为20秒" in strategy
 
 
 def test_scoring_contract_preserves_strict_qfq_equivalence_boundary() -> None:
@@ -132,24 +132,24 @@ def test_each_document_has_one_explicit_responsibility(name: str) -> None:
 
 
 def test_retired_blueprints_are_removed_without_forwarding_stubs() -> None:
-    for name in ("项目重构大纲.md", "项目重构详细.md", "04_策略回溯.md", "1.md", "2.md", "todo.md", "company.md"):
+    for name in ("项目重构大纲.md", "项目重构详细.md", "04_策略回溯.md", "1.md", "2.md", "todo.md"):
         assert not (DOCS / name).exists()
+    # The current rewrite explicitly retains old documents for manual comparison.
+    assert (DOCS / "company.md").is_file()
 
 
 def test_current_document_links_resolve() -> None:
     paths = [
-        ROOT / "AGENTS.md",
         ROOT / "README.md",
         ROOT / "scripts/README.md",
-        *sorted(DOCS.glob("*.md")),
+        DOCS / "README.md",
+        *sorted((DOCS / "new").glob("*.md")),
         *(ROOT / ".agents/skills/python-engineering-guide").rglob("*.md"),
     ]
     failures = []
     for path in paths:
         content = source_text(path)
-        if path.name == "g_实施进度.md":
-            # Historical evidence is immutable context, not a current filesystem promise.
-            content = content.split("## 历史回溯索引", 1)[0]
+        # Old documents and their pre-rename links remain read-only evidence.
         for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", content):
             if target.startswith(("http:", "https:", "#", "mailto:")):
                 continue
@@ -164,7 +164,7 @@ def test_current_document_links_resolve() -> None:
     assert failures == []
 
 
-def test_normative_tables_and_latest_wins_have_one_definition() -> None:
+def test_normative_tables_and_round_deadline_have_one_definition() -> None:
     design = source_text(DESIGN)
     for table in (
         "表 R：资源所有权唯一规范",
@@ -174,10 +174,10 @@ def test_normative_tables_and_latest_wins_have_one_definition() -> None:
     ):
         assert design.count(table) == 1
     for rule in (
-        "尚未开始的旧 pending 可以被最新输入替换",
-        "已经开始纯本地评分的旧任务必须完成并可先发布 local",
-        "若已有更新 pending，旧任务跳过 DeepSeek",
-        "新 local 随后通过 sequence/CAS 替换临时 current",
+        "RecommendationRounds拥有整轮状态",
+        "达到第120秒即失去提交资格",
+        "任一档拒绝或到期均不改变任一档current",
+        "15:00冻结独立优先，不能被本轮等待阻塞",
     ):
         assert design.count(rule) == 1
 
