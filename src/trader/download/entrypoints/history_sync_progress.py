@@ -67,7 +67,7 @@ _STATE_LABELS: dict[HistorySyncProgressState, ProgressState] = {
 _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "disk_profile": "类型",
     "supplier_calendar": "日期范围",
-    "supplier_industry": "日期",
+    "supplier_industry": "股票代码",
     "supplier_daily_raw": "股票",
     "supplier_daily_qfq": "股票",
     "downloading_codes": "股票",
@@ -410,8 +410,9 @@ class StderrHistorySyncProgress:
         if progress.current_item is not None and not compact_pipeline and not (
             progress.stage == "initializing" and progress.current_item in _LOCAL_PREPARATION_LABELS
         ):
-            item_label = _ITEM_LABELS.get(progress.stage, "当前")
-            parts.append(f"{item_label} {progress.current_item}")
+            description = _item_description(progress.stage, progress.current_item)
+            if description is not None:
+                parts.append(description)
         if not compact_pipeline:
             parts.extend(_price_coverage_parts(progress))
         parts.extend(_summary_parts(progress))
@@ -457,7 +458,9 @@ class StderrHistorySyncProgress:
                 stage, current_item = location
                 parts.append(_STAGE_LABELS[stage])
                 if current_item is not None:
-                    parts.append(f"{_ITEM_LABELS.get(stage, '当前')} {current_item}")
+                    description = _item_description(stage, current_item)
+                    if description is not None:
+                        parts.append(description)
             else:
                 parts.append("故障位置未知")
         if status.state in {"failed", "blocked"}:
@@ -503,6 +506,12 @@ class StderrHistorySyncProgress:
                 finished=True,
             )
         )
+
+
+def _item_description(stage: HistorySyncProgressStage, item: str) -> str | None:
+    if stage == "supplier_industry" and item == "capco":
+        return None
+    return f"{_ITEM_LABELS.get(stage, '当前')} {item}"
 
 
 def _format_count(completed: int, total: int) -> str:

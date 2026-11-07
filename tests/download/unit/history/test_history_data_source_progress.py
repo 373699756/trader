@@ -8,6 +8,44 @@ from trader.download.application.sync_progress import SyncProgress
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
+from tests.helpers.download.history.history_sync_progress import _failed_status
+
+
+@pytest.mark.parametrize("code", ("301548", "689009"))
+def test_industry_candidate_cache_labels_stock_codes_without_a_date(code):
+    stream = StringIO()
+    reporter = StderrHistorySyncProgress(
+        report=SyncProgress(TerminalDownloadProgress(stream), lambda: 0.0), monotonic=lambda: 0.0,
+    )
+    reporter.publish(HistorySyncProgress("supplier_industry", "completed", 4402, 4402, code,
+                                         cache_hit=True, data_source="本地（巨潮原件）"))
+    assert f"股票代码 {code}" in stream.getvalue()
+    assert "日期" not in stream.getvalue() and "来源 本地（巨潮原件）" in stream.getvalue()
+
+
+@pytest.mark.parametrize("state", ("started", "waiting", "completed", "failed"))
+def test_industry_summary_and_failure_hide_internal_marker_instead_of_inventing_a_date(state):
+    stream = StringIO()
+    reporter = StderrHistorySyncProgress(
+        report=SyncProgress(TerminalDownloadProgress(stream), lambda: 0.0), monotonic=lambda: 0.0,
+    )
+    source = "本地（中上协证据）" if state == "completed" else "中上协"
+    reporter.publish(HistorySyncProgress("supplier_industry", state, 4402 if state == "completed" else 0,
+                                         4402, "capco", data_source=source))
+    if state == "failed":
+        reporter.publish_result(_failed_status("history_fixture_failed"))
+    output = stream.getvalue()
+    assert f"来源 {source}" in output
+    assert "capco" not in output and "日期" not in output
+
+
+def test_calendar_keeps_its_real_date_range_label():
+    stream = StringIO()
+    reporter = StderrHistorySyncProgress(
+        report=SyncProgress(TerminalDownloadProgress(stream), lambda: 0.0), monotonic=lambda: 0.0,
+    )
+    reporter.publish(HistorySyncProgress("supplier_calendar", "started", 0, 1, "2021-01-01:2026-09-11"))
+    assert "日期范围 2021-01-01:2026-09-11" in stream.getvalue()
 
 
 @pytest.mark.parametrize(

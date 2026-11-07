@@ -102,7 +102,7 @@ def test_industry_retry_and_incomplete_publication_are_explicit(capsys):
             "retrying",
             0,
             45,
-            "2026-09-09",
+            "301548",
             attempt=2,
             max_attempts=3,
         )
@@ -161,7 +161,7 @@ def test_supplier_preparation_waiting_and_retry_are_reported(capsys) -> None:
             "waiting",
             0,
             1,
-            current_item="2021-01-04",
+            current_item="301548",
             attempt=3,
             max_attempts=3,
             call_elapsed_seconds=10.849,
@@ -175,7 +175,7 @@ def test_supplier_preparation_waiting_and_retry_are_reported(capsys) -> None:
             "retrying",
             0,
             1,
-            current_item="2021-01-04",
+            current_item="301548",
             attempt=3,
             max_attempts=3,
         )
@@ -183,18 +183,18 @@ def test_supplier_preparation_waiting_and_retry_are_reported(capsys) -> None:
 
     assert (
         _compact_log(capsys.readouterr().err)
-        == "00:14:38 | history·行业快照 00:00:00 | 重试 | 0/1 (0.00%) | 日期 2021-01-04 | 尝试 3/3\n"
+        == "00:14:38 | history·行业快照 00:00:00 | 重试 | 0/1 (0.00%) | 股票代码 301548 | 尝试 3/3\n"
     )
 
 
-def test_industry_progress_reports_date_counts_and_cache_without_duplicate_starts(capsys) -> None:
+def test_industry_progress_reports_stock_counts_and_cache_without_duplicate_starts(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=_Clock(0, 1, 1, 1, 2, 3))
-    started = HistorySyncProgress("supplier_industry", "started", 4, 18, "2020-07-01")
+    started = HistorySyncProgress("supplier_industry", "started", 4, 18, "301548")
     progress.publish(started)
     progress.publish(started)
-    progress.publish(HistorySyncProgress("supplier_industry", "waiting", 4, 18, "2020-07-01", call_elapsed_seconds=1))
-    progress.publish(HistorySyncProgress("supplier_industry", "waiting", 4, 18, "2020-07-01", call_elapsed_seconds=5))
-    progress.publish(HistorySyncProgress("supplier_industry", "completed", 5, 18, "2020-07-01", cache_hit=True))
+    progress.publish(HistorySyncProgress("supplier_industry", "waiting", 4, 18, "301548", call_elapsed_seconds=1))
+    progress.publish(HistorySyncProgress("supplier_industry", "waiting", 4, 18, "301548", call_elapsed_seconds=5))
+    progress.publish(HistorySyncProgress("supplier_industry", "completed", 5, 18, "301548", cache_hit=True))
     lines = _compact_log(capsys.readouterr().err).splitlines()
     assert "开始 | 4/18" in lines[0]
     assert "处理中 | 5/18" in lines[-1] and "缓存复用" in lines[-1]
@@ -461,7 +461,7 @@ def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) 
             "failed",
             0,
             1,
-            current_item="2021-01-04",
+            current_item="301548",
             attempt=3,
             max_attempts=3,
             call_elapsed_seconds=45.0,
@@ -473,7 +473,7 @@ def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) 
 
     line = _compact_log(capsys.readouterr().err).splitlines()[-1]
     assert "history·结果汇总" in line and "失败" in line
-    assert "行业快照" in line and "日期 2021-01-04" in line
+    assert "行业快照" in line and "股票代码 301548" in line
     assert "supplier_industry_timeout" in line
 
 
@@ -491,7 +491,7 @@ def test_successful_supplier_retry_clears_the_transient_failure_location(capsys)
             call_elapsed_seconds=10.0,
         )
     )
-    progress.publish(HistorySyncProgress("supplier_industry", "completed", 1, 1, current_item="2026-09-11"))
+    progress.publish(HistorySyncProgress("supplier_industry", "completed", 1, 1, current_item="capco"))
     progress.publish(HistorySyncProgress("loading_context", "failed", 0, 1))
 
     progress.publish_result(_failed_status("history_sync_failed"))
