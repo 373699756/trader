@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager, closing, nullcontext
 from dataclasses import asdict, dataclass, replace
-from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 import lightgbm as lgb
@@ -16,6 +14,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TrainingFitDetail,
+    TrainingValidationProgress,
 )
 from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan
@@ -90,6 +89,7 @@ class _FitProgress:
     total_units: int
     produced_units: int = 0
     fit_detail: TrainingFitDetail | None = None
+    validation: TrainingValidationProgress | None = None
 
 
 @dataclass
@@ -138,9 +138,6 @@ def FitIndustryModels(
         if progress is not None:
             progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=state.contract.strategy))
         _publish(progress, state.contract, _FitProgress("started", 0, len(state.workloads)))
-        if isinstance(parameters, TcnFittingParameters):
-            for counts in state.workloads:
-                logging.getLogger(__name__).warning("V5行业预检 | %s | %s | 训练样本 %s | %s", state.contract.strategy.value, counts.industry, counts.training, IndustryCoverageFailure(counts, parameters) or "合格")
     industries = tuple(dict.fromkeys(counts.industry for state in states for counts in state.workloads))
     for industry in industries:
         reader = next(((state, counts) for state in states for counts in state.workloads if counts.industry == industry and not IndustryCoverageFailure(counts, parameters)), None)
@@ -284,10 +281,22 @@ def _finish_head_fit(
     *, evaluation: tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]] | None = None,
 ) -> IndustryFitResult:
     contract, workloads, models, failures = state.contract, state.workloads, state.models, state.failures
-    heartbeat = partial(_publish, progress, contract, _FitProgress("running", len(workloads), len(workloads), len(models)))
+    total_rows = sum(item.validation for item in workloads)
+    observed_rows = 0
+
+    def report_rows(rows: int = 0) -> None:
+        nonlocal observed_rows
+        observed_rows += rows
+        _publish(progress, contract, _FitProgress(
+            "running", len(workloads), len(workloads), len(models),
+            validation=TrainingValidationProgress(observed_rows, total_rows),
+        ))
+
     if models:
+        if evaluation is None:
+            report_rows()
         metrics, industry_metrics = (
-            _evaluate_validation(samples, contract, tuple(models), heartbeat, compute_threads)
+            _evaluate_validation(samples, contract, tuple(models), report_rows, compute_threads, on_rows=report_rows)
             if evaluation is None else evaluation
         )
         expected = {item.industry: item.validation for item in workloads}
@@ -296,7 +305,10 @@ def _finish_head_fit(
     else:
         metrics = PredictionMetrics(sum(item.validation for item in workloads), 0, 0, 0, 0, None, None, None, 0)
         industry_metrics = ()
-    _publish(progress, contract, _FitProgress("completed", len(workloads), len(workloads), len(models)))
+    _publish(progress, contract, _FitProgress(
+        "completed", len(workloads), len(workloads), len(models),
+        validation=TrainingValidationProgress(metrics.input_rows, total_rows) if models else None,
+    ))
     return IndustryFitResult(tuple(models), tuple(failures), metrics, industry_metrics, sum(item.training for item in workloads), sum(item.holdout for item in workloads))
 
 
@@ -352,6 +364,8 @@ def _publish(
                 update.produced_units,
                 strategy=contract.strategy,
                 fit_detail=update.fit_detail,
+                count_unit="industries",
+                validation=update.validation,
             )
         )
 
@@ -447,11 +461,14 @@ def _evaluate_validation(
     models: tuple[FittedIndustryModel, ...],
     heartbeat: Callable[[], None],
     compute_threads: int,
+    *, on_rows: Callable[[int], None] | None = None,
 ) -> tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]]:
     evaluation = _ValidationEvaluation(models, compute_threads)
     for batch in samples.iter_validation_batches(contract):
         heartbeat()
         evaluation.add_batch(batch)
+        if on_rows is not None:
+            on_rows(len(batch.codes))
     return evaluation.finish()
 
 
@@ -497,13 +514,23 @@ def _evaluate_validation_pairs(
     evaluations = tuple(_ValidationEvaluation(tuple(state.models), compute_threads) for _position, state in selected)
     if not selected:
         return (None,) * len(states)
+    observed_rows = [0] * len(selected)
+
+    def report_rows(head: int, rows: int = 0) -> None:
+        state = selected[head][1]
+        observed_rows[head] += rows
+        _publish(progress, state.contract, _FitProgress(
+            "running", len(state.workloads), len(state.workloads), len(state.models),
+            validation=TrainingValidationProgress(observed_rows[head], sum(item.validation for item in state.workloads)),
+        ))
+
+    for head in range(len(selected)):
+        report_rows(head)
     with closing(samples.iter_validation_pairs(tuple(state.contract for _position, state in selected))) as batches:
         for head, batch in batches:
-            state = selected[head][1]
-            _publish(progress, state.contract, _FitProgress(
-                "running", len(state.workloads), len(state.workloads), len(state.models)
-            ))
+            report_rows(head)
             evaluations[head].add_batch(batch)
+            report_rows(head, len(batch.codes))
     completed = {position: evaluation.finish() for (position, _state), evaluation in zip(selected, evaluations, strict=True)}
     return tuple(completed.get(position) for position in range(len(states)))
 

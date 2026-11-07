@@ -987,6 +987,14 @@ def test_retraining_replaces_obsolete_contract_and_reports_actual_fit_and_public
     assert ReadLearnedRankPair(model_root).heads == result.heads
     fitted = [event for event in events if event.stage == "model_fit" and event.state == "completed"]
     assert [event.produced_units for event in fitted] == [1, 1]
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
+        validation = [event for event in events if event.strategy is strategy and event.validation is not None]
+        assert len(validation) == 2
+        assert validation[0].state == validation[1].state == "running"
+        assert validation[0].validation.completed_rows == 0
+        assert validation[1].validation.completed_rows == validation[1].validation.total_rows > 0
+        completion = next(event for event in fitted if event.strategy is strategy)
+        assert events.index(validation[-1]) < events.index(completion)
     refitted = [event for event in events if event.stage == "final_model_refit" and event.state == "completed"]
     assert [event.strategy for event in refitted] == [Strategy.TOMORROW, Strategy.D25]
     assert [event.produced_units for event in refitted] == [1, 1]

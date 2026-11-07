@@ -27,14 +27,14 @@ from trader.infra.settings.data_paths import DataPaths
 from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
 
 
-def test_shell_history_and_longest_training_stage_share_separator_positions(monkeypatch):
+def test_commands_keep_their_own_fixed_columns_and_share_elapsed_time_and_cleaning(monkeypatch):
     from trader.recommendation.domain.publication.models import Strategy
     from trader.training.application.tomorrow_training import TomorrowTrainingProgress
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 
     source = Path(__file__).resolve().parents[4] / "src/trader/infra/progress_format.py"
     prepared = subprocess.run(
-        [sys.executable, str(source), "--pipe"], input="准备环境\n", text=True,
+        [sys.executable, str(source), "--pipe"], input="准备环境|检查\n读取配置\n", text=True,
         capture_output=True, timeout=10,
         env={**os.environ, "TRADER_COMMAND_STARTED_MONOTONIC": str(time.monotonic())},
     )
@@ -42,16 +42,24 @@ def test_shell_history_and_longest_training_stage_share_separator_positions(monk
     stream = StringIO()
     report = SyncProgress(TerminalDownloadProgress(stream), lambda: 0.0)
     report(ProgressMessage((ProgressField("确认 9/4402"),), task=ProgressTask("history", "prices", "Tencent下载")))
+    report(ProgressMessage((ProgressField("确认 99/4402"),), task=ProgressTask("history", "prices", "Tencent下载"), state="等待", immediate=True))
+    history_lines = stream.getvalue().splitlines()
+    stream.seek(0)
+    stream.truncate()
     monkeypatch.setattr(sys, "stderr", stream)
     output = StderrTomorrowTrainingProgress(monotonic=lambda: 0.0, command_label="train·V5")
     output.publish(TomorrowTrainingProgress("history_conversion", "started", 0, 1, strategy=Strategy.TOMORROW))
-    lines = [prepared.stderr.splitlines()[0], *stream.getvalue().splitlines()]
-    positions = [
-        tuple(DisplayWidth(" | ".join(line.split(" | ")[:index])) + 1 for index in (1, 2, 3))
-        for line in lines
-    ]
-    assert positions[0] == positions[1] == positions[2]
-    assert "train·V5·tomorrow·历史读取与训练样本生成" in lines[-1]
+    output.publish(TomorrowTrainingProgress("cross_section_conversion", "completed", 99999, 99999, 99999))
+    training_lines = stream.getvalue().splitlines()
+    for lines in (prepared.stderr.splitlines(), history_lines, training_lines):
+        positions = [
+            tuple(DisplayWidth(" | ".join(line.split(" | ")[:index])) + 1 for index in (1, 2, 3))
+            for line in lines
+        ]
+        assert len(lines) == 2 and positions[0] == positions[1]
+        assert all(line.startswith("00:00:00 | ") for line in lines)
+    assert "准备环境 检查" in prepared.stderr
+    assert "train·V5·明日·样本构建" in training_lines[0]
 
 
 def test_shared_clock_survives_interleaved_stocks_months_and_task_restarts():

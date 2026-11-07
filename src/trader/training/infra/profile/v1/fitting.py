@@ -23,6 +23,7 @@ from trader.training.domain.v1.learned_rank import (
 )
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.infra.profile.v1.samples import CheckV1Cancellation, LearnedRankMatrix
+from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort, TrainingValidationProgress
 
 _CHUNK_ROWS = 8192
 
@@ -43,6 +44,7 @@ def FitLearnedRankHead(
     *,
     compute_threads: int,
     cancel_requested: Callable[[], bool] | None = None,
+    progress: TomorrowTrainingProgressPort | None = None,
 ) -> LearnedRankHead:
     """Read validation only after fitting, early stopping and past calibration finish."""
 
@@ -84,9 +86,19 @@ def FitLearnedRankHead(
     covariance = float(np.average(centered * (calibration.targets - y_mean), weights=calibration_weights))
     slope = covariance / (variance + 1e-12)
     calibration_intercept = y_mean - slope * x_mean
+    if progress is not None:
+        progress.publish(TomorrowTrainingProgress(
+            "model_fit", "running", 0, 1, strategy=strategy,
+            validation=TrainingValidationProgress(0, len(validation.targets)),
+        ))
     predicted = calibration_intercept + slope * (intercept + validation.features @ coefficients)
     rank_raw = np.asarray(booster.predict(validation.features, num_threads=compute_threads), dtype=np.float64)
     metrics = _metrics(validation, predicted, rank_raw)
+    if progress is not None:
+        progress.publish(TomorrowTrainingProgress(
+            "model_fit", "running", 0, 1, strategy=strategy,
+            validation=TrainingValidationProgress(len(validation.targets), len(validation.targets)),
+        ))
     return LearnedRankHead(
         strategy,
         LearnedRankContractHash(settings),

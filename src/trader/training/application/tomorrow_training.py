@@ -72,6 +72,19 @@ class TrainingFitDetail:
 
 
 @dataclass(frozen=True)
+class TrainingValidationProgress:
+    completed_rows: int
+    total_rows: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.completed_rows) is not int or type(self.total_rows) is not int
+            or not 0 <= self.completed_rows <= self.total_rows
+        ):
+            raise ValueError("training_validation_progress_invalid")
+
+
+@dataclass(frozen=True)
 class TomorrowTrainingProgress:
     stage: TomorrowTrainingStage
     state: TomorrowTrainingProgressState
@@ -81,12 +94,18 @@ class TomorrowTrainingProgress:
     strategy: Strategy | None = None
     sample_diagnostics: TrainingSampleDiagnostics | None = None
     fit_detail: TrainingFitDetail | None = None
+    total_is_exact: bool = field(default=True, kw_only=True)
+    count_unit: Literal["tasks", "industries"] = field(default="tasks", kw_only=True)
+    validation: TrainingValidationProgress | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if (
             min(self.completed_units, self.total_units, self.produced_units) < 0
             or self.completed_units > self.total_units
             or self.strategy is Strategy.LONG
+            or type(self.total_is_exact) is not bool
+            or self.count_unit not in {"tasks", "industries"}
+            or self.validation is not None and not isinstance(self.validation, TrainingValidationProgress)
         ):
             raise ValueError("Tomorrow V3 training progress counts are invalid")
 
@@ -177,4 +196,5 @@ __all__ = [
     "ProductionTrainingWindow",
     "TrainingFitDetail",
     "TrainingFitPhase",
+    "TrainingValidationProgress",
 ]

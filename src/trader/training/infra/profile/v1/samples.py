@@ -394,7 +394,8 @@ def BuildLearnedRankSamples(
             if progress is not None:
                 progress.publish(
                     TomorrowTrainingProgress(
-                        "history_conversion", "running", source_rows, max(source_rows, total), converted
+                        "history_conversion", "running", source_rows, max(source_rows, total), converted,
+                        total_is_exact=False,
                     )
                 )
         key = (row.trade_date, row.code)

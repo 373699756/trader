@@ -243,6 +243,7 @@ class _LearnedRankFitter:
             return FitLearnedRankHead(
                 strategy, split, LearnedRankPartitions(*matrices), self.adapter.settings,
                 cancel_requested=self.adapter.cancel_requested, compute_threads=self.compute_threads,
+                progress=self.adapter.progress,
             )
 
     def refit(self, diagnostic: LearnedRankHead, plan: FinalFitDatePlan) -> LearnedRankFinalHead:

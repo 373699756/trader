@@ -6,51 +6,48 @@ import sys
 import math
 import threading
 import time
+from collections import Counter, deque
 from collections.abc import Callable
-from dataclasses import replace
 from types import TracebackType
 from typing import Literal
 
-from trader.infra.progress_format import CleanProgressText, ProgressDuration, ProgressPrefix
+from trader.infra.progress_format import CleanProgressText, PadProgressText, ProgressDuration, ProgressPrefix, ShortProgressText
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.shutdown import ShutdownStep
 from trader.infra.signal_cancellation import ManualCancellationScope
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import (
-    TOMORROW_TRAINING_PEAK_RSS_MIB,
     TomorrowTrainingProgress,
     TomorrowTrainingStage,
     TrainingFitPhase,
+    TrainingFitDetail,
+    TrainingSampleDiagnostics,
 )
 
 _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "resource_preflight": "资源预检",
-    "input_read": "读取训练输入",
+    "input_read": "输入检查",
     "training_preparation": "训练准备",
-    "history_conversion": "历史读取与训练样本生成",
-    "cross_section_conversion": "横截面转换",
+    "history_conversion": "样本构建",
+    "cross_section_conversion": "生成样本",
     "sample_index": "样本索引",
-    "sample_cache": "完整样本缓存",
-    "sample_cache_check": "样本缓存完整性校验",
-    "sample_cache_seal": "样本缓存封存",
+    "sample_cache": "样本缓存",
+    "sample_cache_check": "缓存检查",
+    "sample_cache_seal": "缓存封存",
     "target_statistics": "标签统计",
     "industry_statistics": "行业统计",
-    "model_fit": "行业模型",
-    "final_model_refit": "最新成熟数据重拟合",
-    "artifact_publish": "工件发布",
+    "model_fit": "拟合",
+    "final_model_refit": "重拟合",
+    "artifact_publish": "模型发布",
 }
 _STATE_LABELS = {"started": "开始", "running": "处理中", "completed": "完成"}
 _FIT_PHASE_LABELS: dict[TrainingFitPhase, str] = {
-    "preparation": "样本检查",
-    "batch_cache": "行业样本缓存",
-    "normalization": "标准化统计",
-    "training": "训练",
-    "early_stopping": "早停验证",
-    "calibration": "独立校准",
-    "completed": "行业拟合完成",
-    "skipped": "行业跳过",
+    "preparation": "检查", "batch_cache": "缓存", "normalization": "标准化",
+    "training": "训练", "early_stopping": "早停", "calibration": "校准",
+    "completed": "完成", "skipped": "跳过",
 }
-_PROGRESS_INTERVAL_SECONDS = 1.0
+_HEAD_LABELS = {Strategy.TOMORROW: "明日", Strategy.D25: "D25"}
+_PROGRESS_INTERVAL_SECONDS = 5.0
 _HEARTBEAT_INTERVAL_SECONDS = 5.0
 TomorrowTrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready", "failed"]
 _RESULT_LABELS: dict[TomorrowTrainingCommandStatus, str] = {
@@ -86,13 +83,16 @@ class StderrTomorrowTrainingProgress:
         self._stage_started_at: dict[tuple[TomorrowTrainingStage, Strategy | None], float] = {}
         self._completed_stages: set[tuple[TomorrowTrainingStage, Strategy | None]] = set()
         self._stage_durations: dict[TomorrowTrainingStage, float] = {}
-        self._display_started: dict[tuple[TomorrowTrainingStage, Strategy | None], float] = {}
-        self._latest_by_stage: dict[tuple[TomorrowTrainingStage, Strategy | None], TomorrowTrainingProgress] = {}
-        self._advanced_at: dict[tuple[TomorrowTrainingStage, Strategy | None], float] = {}
-        self._emitted_at: dict[tuple[TomorrowTrainingStage, Strategy | None], float] = {}
+        self._display_started: dict[tuple[str, Strategy | None], float] = {}
+        self._advanced_at = now
+        self._emitted_at = float("-inf")
         self._notice_started: dict[str, float] = {}
-        self._notice_active: dict[str, tuple[str, float]] = {}
-        self._notice_emitted: dict[str, float] = {}
+        self._current_notice: tuple[str, str, float] | None = None
+        self._eta_key: tuple[TomorrowTrainingStage, Strategy | None, str, TrainingFitPhase, int] | None = None
+        self._eta_samples: deque[tuple[float, int]] = deque(maxlen=32)
+        self._skipped: set[tuple[TomorrowTrainingStage, Strategy | None, str]] = set()
+        self._skip_reasons: Counter[str] = Counter()
+        self._sample_diagnostics: TrainingSampleDiagnostics | None = None
         self._lock = threading.Lock()
         self._heartbeat = ProgressHeartbeat[bool](lambda _tick: self._emit_heartbeat(self._monotonic()), interval_seconds=1)
 
@@ -131,13 +131,10 @@ class StderrTomorrowTrainingProgress:
         now = self._monotonic()
         with self._lock:
             started = self._notice_started.setdefault(stage, now)
-            prefix = ProgressPrefix(now - self._started_at, f"{self._command_label}·{stage}", now - started, state)
+            prefix = ProgressPrefix(now - self._started_at, f"{self._command_label}·{stage}", now - started, state, stage_width=36)
             _write_line(" | ".join((*prefix, CleanProgressText(details))))
-            self._notice_emitted[stage] = now
-            if state in {"完成", "失败", "取消"}:
-                self._notice_active.pop(stage, None)
-            else:
-                self._notice_active[stage] = (details, now)
+            self._emitted_at = now
+            self._current_notice = None if state in {"完成", "失败", "取消"} else (stage, details, now)
 
     def report_disk(self, text: str) -> None:
         self.report_notice("存储检测", text)
@@ -146,11 +143,15 @@ class StderrTomorrowTrainingProgress:
         now = self._monotonic()
         with self._lock:
             key = (progress.stage, progress.strategy)
-            self._display_started.setdefault(key, now)
-            previous_progress = self._latest_by_stage.get(key)
-            if previous_progress != progress:
-                self._advanced_at[key] = now
-            self._latest_by_stage[key] = progress
+            if progress.state == "completed" and key in self._completed_stages:
+                return
+            display_key = _display_key(progress)
+            validation_started = progress.validation is not None and (
+                display_key not in self._display_started or self._latest is None or self._latest.validation is None
+            )
+            self._display_started.setdefault(display_key, now)
+            if _has_advanced(self._latest, progress):
+                self._advanced_at = now
             if progress.state == "started" or key not in self._stage_started_at:
                 self._stage_started_at[key] = now
                 self._completed_stages.discard(key)
@@ -158,17 +159,19 @@ class StderrTomorrowTrainingProgress:
                 duration = now - self._stage_started_at[key]
                 self._stage_durations[progress.stage] = self._stage_durations.get(progress.stage, 0.0) + duration
                 self._completed_stages.add(key)
-            boundary = progress.state in {"started", "completed"}
-            if progress.fit_detail is not None:
-                previous = self._latest.fit_detail if self._latest is not None else None
-                boundary = boundary or (
-                    previous is None
-                    or previous.industry != progress.fit_detail.industry
-                    or (progress.fit_detail.phase in {"skipped", "completed"} and previous != progress.fit_detail)
-                )
+            if progress.sample_diagnostics is not None:
+                self._sample_diagnostics = progress.sample_diagnostics
+            detail = progress.fit_detail
+            if detail is not None and detail.phase == "skipped":
+                skipped = (progress.stage, progress.strategy, detail.industry)
+                if skipped not in self._skipped:
+                    self._skipped.add(skipped)
+                    self._skip_reasons[detail.failure_reason or "unknown"] += 1
             self._latest = progress
-            due = key not in self._emitted_at or now - self._emitted_at[key] >= _PROGRESS_INTERVAL_SECONDS
-            if boundary or due:
+            self._current_notice = None
+            self._observe_epoch(progress, now)
+            boundary = progress.state in {"started", "completed"} or validation_started
+            if boundary or now - self._emitted_at >= _PROGRESS_INTERVAL_SECONDS:
                 self._emit(progress, now)
 
     @property
@@ -180,97 +183,165 @@ class StderrTomorrowTrainingProgress:
         now = self._monotonic()
         with self._lock:
             latest = self._latest
-            self._latest = None
-            self._latest_by_stage.clear()
-            self._notice_active.clear()
-            stage_started = self._notice_started.setdefault("结果汇总", now)
-            parts = [*ProgressPrefix(now - self._started_at, f"{self._command_label}·结果汇总", now - stage_started, "取消")]
+            details = []
             if latest is not None:
-                parts.append(f"最后阶段 {_STAGE_LABELS[latest.stage]} {latest.completed_units}/{latest.total_units}")
-            _write_line(" | ".join(parts))
+                details.append(f"最后阶段 {self._stage_label(latest)} {self._count(latest)}")
+            self._finish(now, "取消", details)
 
     def publish_result(self, status: TomorrowTrainingCommandStatus, failure_reason: str | None) -> None:
         now = self._monotonic()
         with self._lock:
-            stage_started = self._notice_started.setdefault("结果汇总", now)
-            parts = [
-                *ProgressPrefix(now - self._started_at, f"{self._command_label}·结果汇总", now - stage_started, _RESULT_LABELS[status]),
-                f"状态 {status}",
-            ]
+            details = [f"状态 {status}"]
             if failure_reason is not None:
-                parts.append(f"错误 {CleanProgressText(failure_reason)}")
-            self._latest = None
-            self._latest_by_stage.clear()
-            self._notice_active.clear()
-            _write_line(" | ".join(parts))
+                details.append(f"错误 {CleanProgressText(failure_reason)}")
+            self._finish(now, _RESULT_LABELS[status], details)
+
+    def _finish(self, now: float, state: str, details: list[str]) -> None:
+        started = self._notice_started.setdefault("结果汇总", now)
+        prefix = ProgressPrefix(now - self._started_at, f"{self._command_label}·结果汇总", now - started, state, stage_width=36)
+        if self._skip_reasons:
+            details.append(f"跳过 {sum(self._skip_reasons.values())}项")
+        details.extend(f"{CleanProgressText(reason)} {count}项" for reason, count in self._skip_reasons.most_common(8))
+        if self._stage_durations:
+            details.append("累计耗时 " + "，".join(
+                f"{_STAGE_LABELS[stage]} {ProgressDuration(seconds)}" for stage, seconds in self._stage_durations.items()
+            ))
+        diagnostic = self._sample_diagnostics
+        if diagnostic is not None:
+            details.append(
+                f"样本诊断 缺行业{diagnostic.missing_industry} 缺价格{diagnostic.missing_prices} "
+                f"窗口不足{diagnostic.short_window} 特征无效{diagnostic.invalid_features} 标签不足{diagnostic.missing_labels} "
+                f"停牌{diagnostic.suspended_sessions} 估算缺行{diagnostic.estimated_sessions} "
+                f"T+1缺失{diagnostic.missing_t1} D25缺失{diagnostic.missing_d25}"
+            )
+        self._latest = None
+        self._current_notice = None
+        self._eta_key = None
+        self._eta_samples.clear()
+        _write_line(" | ".join((*prefix, *details)))
 
     def _emit_heartbeat(self, now: float) -> None:
         with self._lock:
-            for stage, (details, updated) in self._notice_active.items():
-                if now - self._notice_emitted[stage] >= _HEARTBEAT_INTERVAL_SECONDS:
-                    prefix = ProgressPrefix(now - self._started_at, f"{self._command_label}·{stage}", now - self._notice_started[stage], "等待")
-                    _write_line(" | ".join((*prefix, CleanProgressText(details), f"距上次阶段更新 {ProgressDuration(now - updated)}")))
-                    self._notice_emitted[stage] = now
-            for key, latest in self._latest_by_stage.items():
-                if latest.state != "completed" and now - self._emitted_at[key] >= _HEARTBEAT_INTERVAL_SECONDS:
-                    self._emit(replace(latest, state="running"), now, waiting=True)
+            if now - self._emitted_at < _HEARTBEAT_INTERVAL_SECONDS:
+                return
+            notice = self._current_notice
+            if notice is not None:
+                stage, details, updated = notice
+                prefix = ProgressPrefix(now - self._started_at, f"{self._command_label}·{stage}",
+                                        now - self._notice_started[stage], "等待", stage_width=36)
+                _write_line(" | ".join((*prefix, CleanProgressText(details),
+                                       f"距上次阶段更新 {ProgressDuration(now - updated)}")))
+                self._emitted_at = now
+            elif self._latest is not None and self._latest.state != "completed":
+                self._emit(self._latest, now, waiting=True)
+
+    def _stage_label(self, progress: TomorrowTrainingProgress) -> str:
+        return "验证" if progress.validation is not None else _STAGE_LABELS[progress.stage]
+
+    def _count(self, progress: TomorrowTrainingProgress) -> str:
+        validation = progress.validation
+        if validation is not None:
+            return f"验证 {validation.completed_rows:>7}/{validation.total_rows:>7}行"
+        if progress.stage == "history_conversion":
+            return f"扫描 {progress.completed_units:>9}行"
+        if progress.stage == "cross_section_conversion":
+            return f"生成 {progress.produced_units:>9}样本行"
+        if progress.stage in {"sample_cache_check", "sample_cache_seal"}:
+            if not progress.total_is_exact or progress.total_units == 0:
+                return f"已处理 {progress.completed_units / 1024**2:.1f}MiB"
+            return f"{progress.completed_units / 1024**2:.1f}/{progress.total_units / 1024**2:.1f}MiB"
+        label = "行业" if progress.count_unit == "industries" else "任务"
+        if not progress.total_is_exact or progress.total_units == 0:
+            return f"{label}已处理 {progress.completed_units}"
+        return f"{label} {progress.completed_units:>6}/{progress.total_units:<6}"
+
+    def _observe_epoch(self, progress: TomorrowTrainingProgress, now: float) -> None:
+        detail = progress.fit_detail
+        if (
+            progress.validation is not None or detail is None or detail.phase != "training"
+            or detail.epoch == 0 or detail.total_batches == 0
+        ):
+            self._eta_key = None
+            self._eta_samples.clear()
+            return
+        key = (progress.stage, progress.strategy, detail.industry, detail.phase, detail.epoch)
+        if key != self._eta_key or self._eta_samples and detail.completed_batches < self._eta_samples[-1][1]:
+            self._eta_key = key
+            self._eta_samples.clear()
+        if not self._eta_samples or detail.completed_batches != self._eta_samples[-1][1]:
+            self._eta_samples.append((now, detail.completed_batches))
+        while len(self._eta_samples) > 2 and now - self._eta_samples[0][0] > 60:
+            self._eta_samples.popleft()
+
+    def _epoch_eta(self, now: float, progress: TomorrowTrainingProgress) -> str:
+        detail = progress.fit_detail
+        if detail is None or self._eta_key is None:
+            return ""
+        if len(self._eta_samples) < 2 or now - self._eta_samples[-1][0] > 10:
+            return "本轮估算中"
+        first_time, first_batch = self._eta_samples[0]
+        elapsed = now - first_time
+        advanced = detail.completed_batches - first_batch
+        if elapsed <= 0 or advanced <= 0:
+            return "本轮估算中"
+        return f"本轮余约 {ProgressDuration((detail.total_batches - detail.completed_batches) * elapsed / advanced)}"
 
     def _emit(self, progress: TomorrowTrainingProgress, now: float, *, waiting: bool = False) -> None:
-        percent = 100.0 if progress.total_units == 0 else progress.completed_units / progress.total_units * 100.0
-        key = (progress.stage, progress.strategy)
-        label = f"{progress.strategy.value}·{_STAGE_LABELS[progress.stage]}" if progress.strategy is not None else _STAGE_LABELS[progress.stage]
-        parts = [
-            *ProgressPrefix(now - self._started_at, f"{self._command_label}·{label}", now - self._display_started[key], "等待" if waiting else _STATE_LABELS[progress.state]),
-            f"{progress.completed_units}/{progress.total_units} ({percent:.2f}%)",
-        ]
-        if waiting:
-            parts.append(f"距上次进度更新 {ProgressDuration(now - self._advanced_at[key])}")
-        if progress.stage == "resource_preflight":
-            parts.extend(
-                (
-                    f"峰值 RSS 上限 {TOMORROW_TRAINING_PEAK_RSS_MIB} MiB",
-                )
-            )
+        label = self._stage_label(progress)
+        if progress.strategy is not None:
+            label = f"{_HEAD_LABELS[progress.strategy]}·{label}"
+        key = _display_key(progress)
+        prefix = ProgressPrefix(now - self._started_at, f"{self._command_label}·{label}",
+                                now - self._display_started[key], "等待" if waiting else _STATE_LABELS[progress.state],
+                                stage_width=36)
+        context, batch, details = "—", "—", "—"
+        if progress.stage == "history_conversion":
+            context = f"生成 {progress.produced_units}样本行"
+        if progress.validation is not None:
+            context = f"有效模型 {progress.produced_units}"
         elif progress.stage == "sample_cache" and progress.state == "completed":
-            parts.append("复用已校验完整样本" if progress.produced_units else "需要构建样本")
-        elif progress.stage in {"sample_cache_check", "sample_cache_seal"}:
-            parts[3] = (
-                f"{progress.completed_units / 1024**2:.1f}/{progress.total_units / 1024**2:.1f} MiB ({percent:.2f}%)"
-            )
-        elif progress.stage == "history_conversion":
-            parts.append(f"已生成样本 {progress.produced_units}")
-        elif progress.stage == "cross_section_conversion":
-            parts.append(f"有效样本 {progress.produced_units}")
-        elif progress.stage in {"model_fit", "final_model_refit"}:
-            parts.append(f"有效模型 {progress.produced_units}")
-        if progress.fit_detail is not None:
-            detail = progress.fit_detail
-            parts.extend(
-                (f"行业 {CleanProgressText(detail.industry)}", f"训练样本 {detail.training_rows}", _FIT_PHASE_LABELS[detail.phase])
-            )
-            if detail.epoch:
-                parts.append(f"轮次 {detail.epoch}/{detail.total_epochs}")
-            if detail.total_batches:
-                parts.append(f"已完成批次 {detail.completed_batches}/{detail.total_batches}")
-            if detail.failure_reason:
-                parts.append(f"原因 {CleanProgressText(detail.failure_reason)}")
-        if progress.sample_diagnostics is not None:
-            diagnostic = progress.sample_diagnostics
-            parts.append(
-                f"缺行业 {diagnostic.missing_industry} | 缺价格 {diagnostic.missing_prices} "
-                f"| 窗口不足 {diagnostic.short_window} "
-                f"| 特征无效 {diagnostic.invalid_features} | 标签不足 {diagnostic.missing_labels}"
-                f" | 停牌日 {diagnostic.suspended_sessions} | 缺行估算日 {diagnostic.estimated_sessions}"
-                f" | T+1标签缺失 {diagnostic.missing_t1} | D25标签缺失 {diagnostic.missing_d25}"
-            )
-        _write_line(" | ".join(parts))
-        self._emitted_at[key] = now
+            context = "复用完整样本" if progress.produced_units else "需要生成样本"
+        fit = progress.fit_detail
+        if fit is not None:
+            context = f"{ShortProgressText(fit.industry, 12)}·{_FIT_PHASE_LABELS[fit.phase]}"
+            details = f"样本 {fit.training_rows}行"
+            if fit.total_epochs or fit.total_batches:
+                batch = f"轮{fit.epoch:>2}/{fit.total_epochs:<2} 批{fit.completed_batches:>5}/{fit.total_batches:<5}"
+            eta = self._epoch_eta(now, progress)
+            if eta:
+                details = f"{details}；{eta}"
+        if waiting and now - self._advanced_at >= _HEARTBEAT_INTERVAL_SECONDS:
+            details = f"未推进 {ProgressDuration(now - self._advanced_at)}"
+        fields = (self._count(progress), context, batch, details)
+        _write_line(" | ".join((*prefix, *(PadProgressText(ShortProgressText(value, width), width) for value, width in zip(fields, (28, 24, 26, 34), strict=True)))))
+        self._emitted_at = now
 
 
 def _write_line(line: str) -> None:
     # Keep the newline in the same stream write across independent profile emitters.
     sys.stderr.write(line.rstrip(" ") + "\n")
     sys.stderr.flush()
+
+
+def _fit_position(detail: TrainingFitDetail | None) -> tuple[str, TrainingFitPhase, int, int] | None:
+    return None if detail is None else (detail.industry, detail.phase, detail.epoch, detail.completed_batches)
+
+
+def _display_key(progress: TomorrowTrainingProgress) -> tuple[str, Strategy | None]:
+    return (f"{progress.stage}:validation" if progress.validation is not None else progress.stage, progress.strategy)
+
+
+def _has_advanced(previous: TomorrowTrainingProgress | None, current: TomorrowTrainingProgress) -> bool:
+    if previous is None:
+        return True
+    return (
+        previous.stage != current.stage or previous.strategy is not current.strategy
+        or previous.completed_units != current.completed_units or previous.produced_units != current.produced_units
+        or (None if previous.validation is None else previous.validation.completed_rows)
+        != (None if current.validation is None else current.validation.completed_rows)
+        or _fit_position(previous.fit_detail) != _fit_position(current.fit_detail)
+        or current.state == "completed" and previous.state != "completed"
+    )
 
 
 __all__ = ["StderrTomorrowTrainingProgress"]

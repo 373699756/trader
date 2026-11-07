@@ -38,6 +38,11 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64, history_sessions=profile.history_sessions)
     usable_dates = tuple((*split.development_dates, *split.confirmation_dates, *split.daily_proxy_holdout_dates))
     settings = LoadProfileTrainingSettings(PROJECT_ROOT, profile.profile_id)
+    events = []
+
+    class Progress:
+        def publish(self, event):
+            events.append(event)
 
     feature_count = max(contract.feature_positions) + 1
     cache = TrainingSampleCache(tmp_path, contract.model_id, profile.heads[0].feature_manifest.names, split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
@@ -62,15 +67,28 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 
-        first, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads)
+        first, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads, progress=Progress())
+        fit_events = [event for event in events if event.stage == "model_fit"]
+        assert all(event.count_unit == "industries" for event in fit_events)
+        validation = [event for event in fit_events if event.validation is not None]
+        assert validation[0].validation.completed_rows == 0
+        assert validation[-1].state == "completed"
+        assert validation[-1].validation.completed_rows == validation[-1].validation.total_rows > 0
+        assert [event.validation.completed_rows for event in validation] == sorted(event.validation.completed_rows for event in validation)
         cache.seal(index)
 
     with cache.open() as index, ExitStack() as resources:
         assert cache.reused
         second, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads)
         if profile.algorithm == "ridge":
-            paired = FitIndustryModels(index, split, HEAD_CONTRACTS, settings.fitting, compute_threads=compute_threads)
+            events.clear()
+            paired = FitIndustryModels(index, split, HEAD_CONTRACTS, settings.fitting, compute_threads=compute_threads, progress=Progress())
             assert paired[HEAD_CONTRACTS.index(contract)] == first
+            for head in HEAD_CONTRACTS:
+                validation = [event for event in events if event.strategy is head.strategy and event.validation is not None]
+                assert validation[0].validation.completed_rows == 0
+                assert validation[-1].state == "completed"
+                assert validation[-1].validation.completed_rows == validation[-1].validation.total_rows > 0
 
     assert TOMORROW_TRAINING_COMPUTE_THREADS == 2
     assert first == second
@@ -146,9 +164,14 @@ def test_validation_keeps_sorted_industry_calls_batch_membership_and_metric_row_
 
     monkeypatch.setattr(model_fitting._ValidationPredictor, "predict", observed)
     heartbeats = []
-    actual = model_fitting._evaluate_validation(Samples(), HEAD_CONTRACTS[0], models, lambda: heartbeats.append(True), 2)
+    validated_rows = []
+    actual = model_fitting._evaluate_validation(
+        Samples(), HEAD_CONTRACTS[0], models, lambda: heartbeats.append(True), 2,
+        on_rows=lambda rows: validated_rows.append((rows, len(calls))),
+    )
 
     assert len(heartbeats) == 2
+    assert validated_rows == [(5, 2), (3, 4)]
     assert [intercept for intercept, _ in calls] == [1.0, 2.0, 1.0, 2.0]
     for (_, features), expected in zip(calls, ((10.0, 50.0), (20.0, 40.0), (70.0,), (60.0,)), strict=True):
         np.testing.assert_array_equal(features[:, 0], expected)

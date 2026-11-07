@@ -121,7 +121,8 @@ class _SampleBuildState:
         self.processed_rows = value
         _publish(
             self.progress,
-            TomorrowTrainingProgress("history_conversion", "running", value, self.total_rows, self.converted_samples),
+            TomorrowTrainingProgress("history_conversion", "running", value, self.total_rows, self.converted_samples,
+                                     total_is_exact=False),
         )
 
     def accept(self, row: HistoryTrainingRow) -> None:
@@ -225,6 +226,7 @@ class _SampleBuildState:
                     self.converted_samples,
                     self.total_rows,
                     self.converted_samples,
+                    total_is_exact=False,
                 ),
             )
 
@@ -236,8 +238,8 @@ def BuildTrainingSamples(
 
     state = _new_sample_state(request)
     total_rows = state.total_rows
-    _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, total_rows))
-    _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, total_rows))
+    _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, total_rows, total_is_exact=False))
+    _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, total_rows, total_is_exact=False))
 
     read_dates = AlignmentReadDates(request.history.snapshot.calendar.open_dates, request.window.readable_dates)
     rows = (
