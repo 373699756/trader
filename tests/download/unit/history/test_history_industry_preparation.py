@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -8,8 +9,8 @@ import pytest
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySyncProgress
-from trader.download.infra.cninfo_industry import CninfoIndustryClient, CninfoIndustryError
-from trader.download.infra.history_industry_preparation import InspectHistoricalIndustryQueries
+from trader.download.infra.cninfo_industry import CninfoIndustryClient
+from trader.download.infra.history_industry_preparation import PrepareHistoricalIndustries
 from trader.download.infra.industry_query_index import IndustrySourceDocument, SQLiteIndustryQueryIndex
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
@@ -45,16 +46,16 @@ def _document(code="600001", *, standard="中国上市公司协会上市公司�
 
 
 def _inspect(index, *, universe=_UNIVERSE, observed_at=_OBSERVED_AT, cancel_requested=lambda: False, progress=None):
-    return InspectHistoricalIndustryQueries(
-        index, universe, _FIRST_DATE, _LAST_DATE, observed_at, cancel_requested=cancel_requested, progress=progress
-    )
+    return PrepareHistoricalIndustries(
+        index, universe, (_FIRST_DATE, _LAST_DATE), observed_at, cancel_requested=cancel_requested, progress=progress
+    ).readiness
 
 
 def test_absent_source_database_is_not_created_and_history_remains_unqualified(tmp_path):
     index = _index(tmp_path / "missing")
     readiness = _inspect(index)
     assert (readiness.requested_codes, readiness.candidate_codes, readiness.point_in_time_codes) == (2, 0, 0)
-    assert readiness.source == "cninfo" and not readiness.ready
+    assert readiness.source == "capco" and not readiness.ready
     assert not index.path.parent.exists()
     assert _inspect(None) == readiness
 
@@ -74,10 +75,11 @@ def test_full_current_standard_candidate_coverage_never_becomes_point_in_time_in
     readiness = _inspect(index, progress=progress)
     assert (readiness.requested_codes, readiness.candidate_codes, readiness.point_in_time_codes) == (2, 2, 0)
     assert not readiness.ready
-    assert [item.current_item for item in progress.values] == [security.code for security in _UNIVERSE]
-    assert [item.completed_units for item in progress.values] == [1, 2]
-    assert [item.industry_missing_codes for item in progress.values] == [1, 2]
-    assert all(item.cache_hit for item in progress.values)
+    assert [item.current_item for item in progress.values[:-1]] == [security.code for security in _UNIVERSE]
+    assert [item.completed_units for item in progress.values[:-1]] == [1, 2]
+    assert all(item.industry_missing_codes is None for item in progress.values[:-1])
+    assert all(item.cache_hit for item in progress.values[:-1])
+    assert progress.values[-1].current_item == "capco" and progress.values[-1].industry_missing_codes == 2
     for original in originals:
         assert index.read_source_document(original.request_key, _OBSERVED_AT) == original
 
@@ -88,7 +90,8 @@ def test_partial_candidate_cache_preserves_missing_stock_as_missing(tmp_path):
     progress = _Progress()
     readiness = _inspect(index, progress=progress)
     assert (readiness.candidate_codes, readiness.point_in_time_codes) == (1, 0)
-    assert [item.cache_hit for item in progress.values] == [True, None]
+    assert [item.cache_hit for item in progress.values[:-1]] == [True, None]
+    assert progress.values[-1].current_item == "capco" and progress.values[-1].industry_missing_codes == 2
     assert not readiness.ready
 
 
@@ -128,12 +131,13 @@ def test_receipt_from_the_future_does_not_make_an_earlier_observation_ready(tmp_
     assert (readiness.candidate_codes, readiness.point_in_time_codes) == (0, 0)
 
 
-def test_persisted_response_is_reparsed_instead_of_trusting_a_matching_raw_digest(tmp_path):
+def test_persisted_response_is_reparsed_and_invalid_candidate_is_reported(tmp_path):
     index = _index(tmp_path)
     invalid = replace(_document(), content=b'{"resultcode":200,"count":1,"records":[]}')
     index.save_source_documents((invalid,))
-    with pytest.raises(CninfoIndustryError, match="records_incomplete"):
-        _inspect(index)
+    readiness = _inspect(index)
+    assert readiness.candidate_codes == readiness.point_in_time_codes == 0
+    assert readiness.failure_category == "cninfo_candidate_failures:1:600001:cninfo_industry_records_incomplete"
     assert index.read_source_document(invalid.request_key, _OBSERVED_AT) == invalid
 
 
@@ -143,8 +147,8 @@ def test_persisted_response_digest_conflict_is_not_silently_skipped_or_repaired(
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE industry_source_document SET payload=?", (b"altered",))
     before = index.path.read_bytes()
-    with pytest.raises(ValueError, match="hash_conflict"):
-        _inspect(index)
+    readiness = _inspect(index)
+    assert readiness.failure_category == "cninfo_candidate_failures:1:600001:industry_source_document_hash_conflict"
     assert index.path.read_bytes() == before
 
 
@@ -166,13 +170,15 @@ def test_cancellation_between_stocks_stops_without_touching_remaining_originals(
     for security in _UNIVERSE:
         index.save_source_documents((_document(security.code),))
     reads = []
-    read = SQLiteIndustryQueryIndex.read_source_document
+    read = SQLiteIndustryQueryIndex.iter_source_documents
 
-    def observed_read(self, request_key, as_of):
-        reads.append(request_key)
-        return read(self, request_key, as_of)
+    def observed_read(self, request_keys, as_of, *, cancel_requested):
+        with closing(read(self, request_keys, as_of, cancel_requested=cancel_requested)) as documents:
+            for result in documents:
+                reads.append(result.request_key)
+                yield result
 
-    monkeypatch.setattr(SQLiteIndustryQueryIndex, "read_source_document", observed_read)
+    monkeypatch.setattr(SQLiteIndustryQueryIndex, "iter_source_documents", observed_read)
     progress = _Progress()
     with pytest.raises(RuntimeError, match="supplier_cancelled"):
         _inspect(index, progress=progress, cancel_requested=lambda: bool(progress.values))
@@ -180,4 +186,4 @@ def test_cancellation_between_stocks_stops_without_touching_remaining_originals(
     assert len(progress.values) == 1
     for security in _UNIVERSE:
         original = _document(security.code)
-        assert read(index, original.request_key, _OBSERVED_AT) == original
+        assert index.read_source_document(original.request_key, _OBSERVED_AT) == original

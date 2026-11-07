@@ -230,7 +230,7 @@ def test_tencent_first_fetches_one_whole_window(count):
     assert tuple(cell.trade_date for cell in result.cells) == dates
     assert prices.calls == [dates]
     assert baseline.calls == []
-    assert context.source_versions.sdk_version.endswith("+cninfo-industry")
+    assert context.source_versions.sdk_version.endswith("+capco-industry")
 
 
 @pytest.mark.parametrize("incoming", ("missing", "raw"))
@@ -269,6 +269,7 @@ def test_existing_prices_survive_missing_or_conflicting_raw_input(tmp_path: Path
 
 def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypatch):
     from trader.bootstrap import ExecuteHistoryDownload
+    from trader.download.infra.history_industry_preparation import PrepareHistoricalIndustries
     from trader.download.infra.reference_index import SQLiteReferenceIndex
 
     dates = (date(2026, 9, 8), date(2026, 9, 9))
@@ -291,6 +292,17 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     monkeypatch.setattr("trader.bootstrap.BaoStockHistorySupplier", build_supplier)
     monkeypatch.setattr("trader.bootstrap.TencentQfqSupplier", lambda _dependencies, _options: Prices())
     monkeypatch.setattr("trader.bootstrap.HistoryStNameSource", lambda *_args, **_kwargs: StSource())
+
+    class HistoricalIndustries:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def prepare(self, universe, calendar, observed_at, *, progress=None):
+            return PrepareHistoricalIndustries(
+                None, universe, calendar, observed_at, cancel_requested=lambda: False, progress=progress,
+            )
+
+    monkeypatch.setattr("trader.bootstrap.OfficialIndustryHistory", HistoricalIndustries)
     monkeypatch.setattr(
         "trader.bootstrap.LoadCurrentAShareUniverse",
         lambda *_args: _current_universe("600001", "600002"),
@@ -535,21 +547,23 @@ def test_failed_tencent_download_reports_the_bounded_reason(capsys):
     )
 
     line = _compact_log(capsys.readouterr().err).strip()
-    assert "sync history 股票进度 | 1/2" in line
+    assert "history·Tencent下载 00:00:00 | 失败 | 已确认 1/2" in line
     assert "处理 Tencent下载 | 结果 失败" in line
     assert "原因 qfq_daily_query_failed" in line
 
 
 def test_history_st_reference_batches_report_distinct_counts(capsys):
-    progress = StderrHistorySyncProgress(monotonic=lambda: 0)
+    clock = [0.0]
+    progress = StderrHistorySyncProgress(monotonic=lambda: clock[0])
 
     progress.publish(HistorySyncProgress("history_st_reference", "completed", 8, 5224))
+    clock[0] = 1.0
     progress.publish(HistorySyncProgress("history_st_reference", "completed", 16, 5224))
 
     lines = _compact_log(capsys.readouterr().err).splitlines()
     assert lines == [
-        "00:00:00 | 历史ST名单 | 检查中 | 8/5224 (0.15%) | 阶段耗时 00:00:00",
-        "00:00:00 | 历史ST名单 | 检查中 | 16/5224 (0.31%) | 阶段耗时 00:00:00",
+        "00:00:00 | history·历史ST名单 00:00:00 | 处理中 | 8/5224 (0.15%)",
+        "00:00:01 | history·历史ST名单 00:00:01 | 处理中 | 16/5224 (0.31%)",
     ]
 
 
@@ -564,16 +578,18 @@ def test_gap_inventory_reports_missing_field_and_price_counts(capsys):
             gap_summary=HistoryGapSummary(1, 0),
         )
     )
-    assert "统计历史缺口 | 完成 | 价格对待补 1 股日 | 本轮Tencent失败 0 股" in _compact_log(capsys.readouterr().err)
+    assert "统计历史缺口 00:00:00 | 完成 | 价格对待补 1 股日 | 本轮Tencent失败 0 股" in _compact_log(capsys.readouterr().err)
 
 
 def test_current_gap_scan_prints_the_month_before_the_query_starts(capsys):
-    progress = StderrHistorySyncProgress(monotonic=lambda: 0)
+    clock = [0.0]
+    progress = StderrHistorySyncProgress(monotonic=lambda: clock[0])
 
     progress.publish(HistorySyncProgress("history_published_gaps", "started", 88, 100, "2025-11"))
+    clock[0] = 1.0
     progress.publish(HistorySyncProgress("history_published_gaps", "completed", 89, 100, "2025-11"))
 
     assert _compact_log(capsys.readouterr().err).splitlines() == [
-        "00:00:00 | 活动历史缺口 | 开始 | 88/100 (88.00%) | 月份 2025-11 | 本月耗时 00:00:00",
-        "00:00:00 | 活动历史缺口 | 完成 | 89/100 (89.00%) | 月份 2025-11 | 本月耗时 00:00:00",
+        "00:00:00 | history·活动历史缺口 00:00:00 | 开始 | 88/100 (88.00%) | 月份 2025-11",
+        "00:00:01 | history·活动历史缺口 00:00:01 | 处理中 | 89/100 (89.00%) | 月份 2025-11",
     ]

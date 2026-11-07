@@ -25,6 +25,7 @@ from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
+from trader.infra.http_contracts import HttpError
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
 
@@ -66,6 +67,9 @@ def st_sources(monkeypatch):
 
         def get(self, url, **kwargs):
             assert not self.closed
+            if url == "https://www.capco.org.cn/":
+                assert set(calls) == {"600004", "600005", "600006", "600007"}
+                raise HttpError("fixture_official_industry_unavailable")
             assert "vCI_CorpInfo/stockid/" in url
             assert kwargs["timeout"] == 15.0
             code = url.rsplit("/", 1)[1].split(".", 1)[0]

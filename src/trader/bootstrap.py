@@ -61,6 +61,7 @@ from trader.download.infra.download_settings import (
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
 from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
+from trader.download.infra.official_industry_history import OfficialIndustryHistory
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_control_index import HistoryControlIndex
@@ -191,21 +192,6 @@ def OpenExternalHttp(
     return RequestsHttpTransport(
         observe=observe, inspect_response=inspect_response, identity_content_encodings=identity_content_encodings,
         execute_request=execute_request,
-    )
-
-
-def BuildIndustrySource(
-    transport: HttpTransport,
-    path: Path,
-    *,
-    sqlite_policy: SqliteIoPolicy,
-    cancel_requested: Callable[[], bool],
-    clock: Callable[[], datetime],
-    report: Callable[[ProgressMessage], None] | None = None, disk_medium: DiskMedium | None = None,
-) -> CurrentIndustryPublication:
-    return CurrentIndustryPublication(
-        path, CninfoIndustryClient(transport, request_headers=lambda: CninfoIndustryHeaders(clock())),
-        sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=clock, report=report, source_batch_rows=64 if DiskProbe(disk_medium).inspect(path).kind == "hdd" else 1,
     )
 
 
@@ -466,10 +452,15 @@ def _prepare_reference(
         calendar = partial(
             FetchAkshareCalendar, 30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested)
         )
-        industry = BuildIndustrySource(
-            resources.enter_context(OpenExternalHttp(identity_content_encodings=("normal",))), reference_root / "industry.sqlite3",
-            sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=ShanghaiClock(_utc_now).now,
-            report=report, disk_medium=disk_medium,
+        industry_clock = ShanghaiClock(_utc_now).now
+        industry = CurrentIndustryPublication(
+            reference_root / "industry.sqlite3",
+            CninfoIndustryClient(
+                resources.enter_context(OpenExternalHttp(identity_content_encodings=("normal",))),
+                request_headers=lambda: CninfoIndustryHeaders(industry_clock()),
+            ),
+            sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=industry_clock, report=report,
+            source_batch_rows=64 if DiskProbe(disk_medium).inspect(reference_root).kind == "hdd" else 1,
         )
         dependencies = ReferencePreparationDependencies(
             source.fetch,
@@ -622,9 +613,15 @@ def ExecuteHistoryDownload(
                     baseline,
                     prices,
                     reference,
-                    industry_cache=SQLiteIndustryQueryIndex(
-                        configuration.reference_root / "industry.sqlite3", "cninfo_industry_queries", sqlite_policy=sqlite_policy,
-                    ),
+                    industry_preparation=partial(OfficialIndustryHistory(
+                        SQLiteIndustryQueryIndex(
+                            configuration.reference_root / "industry.sqlite3", "cninfo_industry_queries", sqlite_policy=sqlite_policy,
+                        ),
+                        http_resources.enter_context(OpenExternalHttp()),
+                        ShanghaiClock(clock or _utc_now).now,
+                        time.monotonic,
+                        cancel_requested=cancel_requested,
+                    ).prepare, progress=progress),
                     progress=progress,
                     cancel_requested=cancel_requested,
                 ),

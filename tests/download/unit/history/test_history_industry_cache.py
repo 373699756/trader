@@ -8,9 +8,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.domain.industry_evidence import IndustryCategoryMapping, OfficialIndustryEvidence
+from trader.download.domain.industry_evidence import OfficialIndustryEvidence
 from trader.download.infra.cninfo_industry import ParseCninfoIndustryChanges
-from trader.download.infra.industry_evidence_codec import IndustryEvidencePayload, LoadReviewedIndustryEvidence
+from trader.download.infra.industry_evidence_codec import IndustryEvidencePayload, ParseIndustryEvidence
 from trader.download.infra.industry_query_index import IndustrySourceDocument, SQLiteIndustryQueryIndex
 from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -38,15 +38,20 @@ def _document(code="001222", *, latest="1"):
 
 def _official_evidence():
     return OfficialIndustryEvidence(
-        "600003", "https://disc.static.szse.cn/fixture.pdf", "a" * 64,
-        datetime(2026, 11, 2, 12, tzinfo=_ZONE), date(2026, 11, 3), date(2026, 11, 6),
-        datetime(2026, 11, 2, 18, tzinfo=_ZONE), 1, "CAPCO2023 C29 Plastics",
-        IndustryCategoryMapping(
-            "CAPCO2023", "C29", "Plastics", "C29Plastics", "https://www.csrc.gov.cn/fixture.pdf",
-            "b" * 64, 1, "CSRC2012 C29Plastics", "Reviewed category scope in both standards.",
-        ),
+        "600003",
+        "https://sp.capco.org.cn:82/file/202609/fixture.pdf",
+        "a" * 64,
+        date(2026, 11, 2),
+        date(2026, 11, 3),
+        date(2026, 11, 6),
+        datetime(2026, 11, 2, 18, tzinfo=_ZONE),
+        1,
+        "600003 C29 塑料制品业",
+        "C29",
+        "塑料制品业",
+        "https://www.capco.org.cn/dataFile/zsxfb/hyfl/hyfljg/" + "b" * 32 + ".js",
+        "b" * 64,
     )
-
 
 def test_original_response_round_trip_retains_bytes_request_window_and_digest(tmp_path):
     index = _index(tmp_path)
@@ -318,77 +323,48 @@ def test_industry_evidence_conflicts_are_atomic_and_corruption_is_rejected(tmp_p
     index = _index(tmp_path)
     original = _official_evidence()
     index.import_evidence((original,))
-    conflict = replace(original, mapping=replace(original.mapping, target_industry="C29Other"))
+    conflict = replace(
+        original,
+        native_name="其他橡胶和塑料制品业",
+        document_sha256="c" * 64,
+        announcement_sha256="d" * 64,
+        announcement_url="https://www.capco.org.cn/dataFile/zsxfb/hyfl/hyfljg/" + "d" * 32 + ".js",
+    )
     with pytest.raises(ValueError, match="interval_conflict"):
         index.import_evidence((replace(original, code="600004"), conflict))
-    at = original.received_at + timedelta(days=2)
-    assert index.read_evidence(at) == (original,)
+    at = original.received_at + timedelta(days=4)
+    assert index.read_evidence_window(date(2026, 11, 3), date(2026, 11, 5), at) == (original,)
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE official_industry_evidence SET code='600005'")
     with pytest.raises(ValueError, match="hash_conflict"):
-        index.read_evidence(at)
+        index.read_evidence_window(date(2026, 11, 3), date(2026, 11, 5), at)
 
 
-@pytest.mark.parametrize("cancelled", (True, False))
-def test_reviewed_import_rejects_future_receipt_and_cancellation_before_database_write(tmp_path, monkeypatch, cancelled):
-    import trader.download.infra.industry_query_index as module
-
-    index = _index(tmp_path)
-    evidence = _official_evidence()
-    monkeypatch.setattr(module, "LoadReviewedIndustryEvidence", lambda _: (evidence,))
-    if cancelled:
-        assert not index.import_reviewed_file(tmp_path / "input.json", observed_at=evidence.disclosed_at, cancelled=lambda: True)
-    else:
-        with pytest.raises(ValueError, match="received_in_future"):
-            index.import_reviewed_file(tmp_path / "input.json", observed_at=evidence.disclosed_at, cancelled=lambda: False)
-    assert not index.path.exists()
+def test_current_official_codec_preserves_date_precision_and_native_identity():
+    original = _official_evidence()
+    payload = IndustryEvidencePayload(original)
+    assert payload["disclosed_on"] == "2026-11-02"
+    assert "disclosed_at" not in payload and "mapping" not in payload
+    assert ParseIndustryEvidence(payload) == original
+    assert original.industry == "capco:C29塑料制品业"
 
 
-@pytest.mark.parametrize("invalid", ("issuer", "excerpt", "mapping", "path", "url", "valid"))
-def test_reviewed_import_rejects_wrong_subject_or_missing_document_evidence(tmp_path, monkeypatch, invalid):
-    import trader.download.infra.industry_evidence_codec as codec
+@pytest.mark.parametrize("field", ("source_url", "announcement_url"))
+def test_current_official_codec_rejects_nonofficial_sources(field):
+    payload = IndustryEvidencePayload(_official_evidence())
+    payload[field] = "https://example.com/unofficial.pdf"
+    with pytest.raises(ValueError, match="official_industry_url_invalid"):
+        ParseIndustryEvidence(payload)
 
-    class _Page:
-        def __init__(self, text):
-            self.text = text
 
-        def extract_text(self):
-            return self.text
+def test_current_official_codec_rejects_retired_mapping_payload():
+    payload = IndustryEvidencePayload(_official_evidence())
+    payload["mapping"] = {"target_industry": "C29Plastics"}
+    with pytest.raises(ValueError, match="industry_evidence_fields_invalid"):
+        ParseIndustryEvidence(payload)
 
-    class _Pdf:
-        def __init__(self, text):
-            self.pages = (_Page(text),)
-            self.closed = False
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            self.closed = True
-
-    source = _Pdf("股票代码：600003 CAPCO2023 C29 Plastics")
-    mapping = _Pdf("CSRC2012 C29Plastics")
-    evidence = _official_evidence()
-    raw = IndustryEvidencePayload(evidence)
-    if invalid == "issuer":
-        source.pages[0].text = "股票代码：600009 CAPCO2023 C29 Plastics"
-    elif invalid == "excerpt":
-        source.pages[0].text = "股票代码：600003 missing"
-    elif invalid == "mapping":
-        mapping.pages[0].text = "C29Other"
-    elif invalid == "url":
-        raw["source_url"] = "https://example.com/unofficial.pdf"
-    monkeypatch.setattr(codec, "_pdf", lambda root, name, digest: source if name == "issuer.pdf" else mapping)
-    manifest = [{"evidence": raw, "document": "issuer.pdf", "mapping_document": "mapping.pdf"}]
-    path = tmp_path / "evidence.json"
-    if invalid == "path":
-        monkeypatch.undo()
-        manifest[0]["document"] = "../outside.pdf"
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-    if invalid == "valid":
-        assert LoadReviewedIndustryEvidence(path) == (evidence,)
-    else:
-        with pytest.raises(ValueError):
-            LoadReviewedIndustryEvidence(path)
-    if invalid not in {"path", "url"}:
-        assert source.closed and mapping.closed
+@pytest.mark.parametrize("start", (date(2026, 11, 1), date(2026, 11, 2)))
+def test_official_date_precision_never_backdates_public_availability(start):
+    with pytest.raises(ValueError, match="official_industry_evidence_invalid"):
+        replace(_official_evidence(), effective_from=start)

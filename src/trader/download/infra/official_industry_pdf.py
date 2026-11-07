@@ -32,11 +32,46 @@ class OfficialIndustryRow:
     subcategory_code: str = ""
     subcategory_name: str = ""
 
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.code, str) or re.fullmatch(r"[0-9]{6}", self.code) is None
+            or not isinstance(self.company_name, str) or not 1 <= len(self.company_name) <= 40
+            or self.company_name != self.company_name.strip()
+            or not isinstance(self.native_category, str) or re.fullmatch(r"[A-S][0-9]{2}", self.native_category) is None
+            or not isinstance(self.native_name, str) or not 1 <= len(self.native_name) <= 100
+            or self.native_name != self.native_name.strip()
+            or type(self.page) is not int or not 1 <= self.page <= _MAX_PAGES
+            or not isinstance(self.section_code, str) or not isinstance(self.section_name, str)
+            or not isinstance(self.subcategory_code, str) or not isinstance(self.subcategory_name, str)
+        ):
+            raise ValueError("official_industry_pdf_row_invalid")
+        if (
+            bool(self.section_code) != bool(self.section_name)
+            or self.section_code and self.section_code != self.native_category[0]
+            or len(self.section_name) > 100
+            or bool(self.subcategory_code) != bool(self.subcategory_name)
+            or self.subcategory_code and (
+                not self.section_code or re.fullmatch(self.section_code + r"[A-Z]", self.subcategory_code) is None
+            )
+            or len(self.subcategory_name) > 100
+        ):
+            raise ValueError("official_industry_pdf_row_invalid")
+
 
 @dataclass(frozen=True)
 class OfficialIndustrySnapshot:
     rows: tuple[OfficialIndustryRow, ...]
     page_count: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.rows) is not tuple or not 1 <= len(self.rows) <= _MAX_ROWS
+            or any(not isinstance(row, OfficialIndustryRow) for row in self.rows)
+            or type(self.page_count) is not int or not 1 <= self.page_count <= _MAX_PAGES
+            or any(row.page > self.page_count for row in self.rows)
+            or tuple(row.code for row in self.rows) != tuple(sorted({row.code for row in self.rows}))
+        ):
+            raise ValueError("official_industry_pdf_snapshot_invalid")
 
 
 @dataclass(frozen=True)

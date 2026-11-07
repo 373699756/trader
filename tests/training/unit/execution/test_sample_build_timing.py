@@ -111,6 +111,10 @@ def test_v1_builder_observation_survives_failure_without_entering_fitting(tmp_pa
 
 @pytest.mark.parametrize("profile", ("v1", "v3"))
 def test_selected_factory_injects_the_same_job_observer_into_both_builder_owners(tmp_path, monkeypatch, profile):
+    class IndustryHistory(_History):
+        def has_industry_window(self, _dates, _required_sessions):
+            return True
+
     wall = _Clock()
     observed = TrainingExecutionMeasurements((profile,), wall)
     runtime = Mock(spec=RuntimeSettings)
@@ -147,7 +151,7 @@ def test_selected_factory_injects_the_same_job_observer_into_both_builder_owners
     monkeypatch.setattr(selected_training, "FitSelectedProfile", run_standard)
     with ExitStack() as resources:
         factory = selected_training._TrainingTaskFactory(
-            selection, _History(), resources, observed, sqlite_policy=SqlitePolicyFixture()
+            selection, IndustryHistory(), resources, observed, sqlite_policy=SqlitePolicyFixture()
         )
         task = factory.prepare(profile, selection.progresses[0])
         assert task.execute(iter(())) is result

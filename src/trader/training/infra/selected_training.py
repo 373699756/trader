@@ -225,6 +225,8 @@ class _TrainingTaskFactory:
         dates = AlignmentReadDates(calendar, BuildLearnedRankReadDates(
             calendar, self.history.snapshot.source_cutoff, settings,
         ))
+        if not self.history.has_industry_window(dates, 1):
+            raise ValueError("history_industry_coverage_insufficient")
         execute = partial(
             RunV1Training,
             lambda: self.history,

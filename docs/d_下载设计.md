@@ -48,7 +48,7 @@ sync人工日志统一为`整体耗时 | 业务·具体阶段 阶段耗时 | 状
 | ST证据 | 当前参考准备中的新浪等既有来源 | st_status/checked_date/st_id | 所有下载业务和荐股其他处理前的第一道资格门 | 先完成核验；未知不派发其他业务 |
 | 其他证券资料 | 已通过ST者的正式证券参考 | board/listed_date/delisted_date | 第2/4层其他资格、训练总体和上市边界 | ST过滤后准备 |
 | 交易日历 | 当前腾讯指数日历合同 | trade_date/calendar_id | 历史完整性分母、标签成熟、上市交易日龄 | 目标日推进时准备 |
-| 行业 | 巨潮中上协分类目录／逐股变更；官方最新全表另作隔离核验 | 当前标准、大类身份、原生层级、最新标识、原件／回执摘要及真实收到时间 | 当前第5/6层及模型路由；历史需独立披露准入 | 七日复用原件，新增股补采；变更日不直接作为历史披露日 |
+| 行业 | 巨潮中上协分类目录／逐股变更；中上协已公开的历次半年度全表 | 当前标准、大类身份、原生层级、最新标识、公告披露日期、原件／回执摘要及真实收到时间 | 当前第5/6层及模型路由；历史按官方结果的公开可用区间接入 | 当前原件七日复用，新增股补采；变更日不直接作为历史披露日 |
 | 已完成raw/qfq日线 | history/market | OHLC、实际量额、复权身份、状态 | 第5层基础量和模型输入、训练标签 | 手动同步 |
 | 财报/质押/解禁/公告事实 | company | 见第5章 | 第4–11层 | 按来源披露和有效期更新 |
 
@@ -119,30 +119,17 @@ sync人工日志统一为`整体耗时 | 业务·具体阶段 阶段耗时 | 状
 
 `SQLiteIndustryQueryIndex`仍是唯一行业持久化owner。`industry_source_document`以`(request_key,received_at,content_hash)`保留各次原件，BLOB正文的SHA与绑定请求键／窗口／收到时间的receipt摘要分别验证，刷新不覆盖旧原件；`current_industry_query`保存当前完整切片及显式缺股，不再创建旧半年锚点`industry_query`。旧行业库结构明确拒绝，须按实际提示仅删除并重下`market/reference/industry.sqlite3`及配套文件；本批程序不迁移或清空，也不删除历史价格、模型、冻结记录或预算。
 
-巨潮变更日期及下载时间本身不能证明历史公开时点。历史路由只检查已缓存候选，不把它们转换为历史行业区间；价格仍可合法发布，终态另报`industry.complete=false`及`training_industry_ready=false`。训练原行业窗口门继续生效，不以价格完成或当前行业存在代签历史训练就绪。BaoStock只保留独立价格补缺职责，行业SDK方法、worker分支、18日期主派发及旧行业诊断默认路径已移除。
+巨潮变更日期及下载时间本身不能证明历史公开时点。正常`sync history`由组合根注入`OfficialIndustryHistory`，有界发现中上协官网当前半年度结果清单，复用已取得的公告及PDF，缺失时补取官方原件。只采用同一原生分类的八列全表；股票、大类代码和名称由完整PDF解析得到，不使用旧分类映射。`HistorySupplierRouter`将正式准备返回的区间与来源摘要传入新历史发布，训练按该发布绑定读取，不直接读取可变的当前行业表。
 
-既有人工审核材料继续保留原身份供离线审核，当前默认发布不再套用映射到旧模型分类的补缺；旧`sync --industry-evidence`入口已删除，不能导入后静默宣称已采用。材料JSON与PDF核验的独立codec仍按下表保留原件、披露、区间及人工映射证据，缺少当前标准映射不得升格为新归属。
+区间表达当时已经公开可见的最近一次官方分类结果：日期精度公告从披露次日起使用，遇下一次官方发布时结束；最新一段仅延续至本次观察次日。统计期末、附件迁站时间、巨潮`VARYDATE`均不作为更早可用日期。区间再按上市／退市边界裁剪；相邻同类可合并，矛盾归属不得静默覆盖。候选数量与真实覆盖分别报告，历史总窗口不足时价格仍可发布，`training_industry_ready`保持false；各档还须按自身信号日、分区及行数门核验，不能以最新全表或价格完成代签四档训练就绪。
 
-| evidence字段 | 含义和校验 |
-| --- | --- |
-| `code/source_url/document_sha256` | 六位主体代码、官方HTTPS来源及完整PDF摘要；封面股票/证券代码必须唯一对应主体 |
-| `disclosed_at/received_at` | 明确的上海时区时间；披露不晚于收到，导入时收到时间不能晚于观察时点；来源年龄不因导入或读取刷新 |
-| `effective_from/effective_to` | 必填日期区间，左闭右开且不早于披露日；上市前及区间外不补，不能省略终点变成永久回填 |
-| `page/excerpt` | 一起存物理页码和原文摘录；去空白及书名号后逐字核对，不做自由文本行业推断 |
-| `mapping` | 固定包含`native_classification/native_code/native_name/target_industry/reference_url/reference_sha256/reference_page/reference_excerpt/rationale`；保留原生标准及代码、目标模型行业、映射依据PDF/页/摘录和人工理由；缺一拒绝，不按代码相似自动推广其它类别 |
+唯一持久化owner仍是`SQLiteIndustryQueryIndex`，物理文件仍为`data/market/reference/industry.sqlite3`，不增加表或自定义格式编号。`industry_source_document`明确区分巨潮原件、官方目录／公告／PDF及由完整原件派生的解析缓存；原件保留原字节和各次回执，解析缓存须绑定原PDF与实际解析实现摘要，不能用部分已导入证券冒充整份全表处理完成。官方HTML／公告最多2MiB、主bundle8MiB、PDF及解析缓存32MiB；官方大件仅单件事务，不扩大巨潮2MiB合批预算。请求、完整准备及取消均有界。
 
-唯一持久化owner仍是`SQLiteIndustryQueryIndex`，物理文件仍为`data/market/reference/industry.sqlite3`。按完整当前表和索引校验，不使用user_version，也不为旧库补表或升级；新空库一次创建完整结构，不兼容的下载资料删除后重新下载。原行业证据的真实来源、时间及内容摘要校验保留。
+`official_industry_evidence`保存从完整官方原件派生的当前区间投影。新codec只接受`code/source_url/document_sha256/disclosed_on/effective_from/effective_to/received_at/page/excerpt/native_category/native_name/announcement_url/announcement_sha256`；原生大类形成`capco:`身份，旧人工映射材料不解释成新记录。物理`disclosed_at`列保留ISO披露日期精度，不伪造日内时刻；`received_at`仍为真实上海时区收到时间。相同官方原件／证券的观察边界调整在同一事务内替换派生行，不覆盖原件或旧历史参考；跨来源冲突拒绝整批。
 
-| 新表列/索引 | SQLite类型、用途与读写边界 |
-| --- | --- |
-| `evidence_id` | TEXT主键；完整不可变证据的内容摘要，同身份重试不重复写，读取重新计算校验 |
-| `code` | TEXT；主体代码，和payload逐项核对 |
-| `disclosed_at/received_at` | TEXT；带偏移的ISO时间，不以当前查询时间替代 |
-| `effective_from/effective_to` | TEXT；ISO日期，查本次有效区间及同股重叠；重叠区间映射到不同行业时拒绝整个事实批次 |
-| `payload` | TEXT；上述白名单字段的JSON codec，保留PDF/原生标准/映射证据；不是业务对象双表示 |
-| `official_industry_interval` | `(code,effective_from,effective_to)`索引；只读入相关重叠证据，单条最多1000项、有效读取最多20000项，超限明确拒绝而不截断 |
+历史读取采用与请求日期相交的全部正式区间，包括已经结束的旧区间，再排除观察时点之后的收到／披露事实。按4096行批读，最多256000条，超限明确失败而不截断；每行重新校验字段及摘要。所有实际采用证据摘要进入来源身份，新发布追加参考和快照，旧快照、模型及冻结不重写。空行业的V1在共享价格扫描前明确拒绝，已有完整模型复用仍保持零扫描。
 
-原已审核材料不会因当前行业改源而改写或被解释成新标准；已发布历史参考和冻结记录保持原身份。后续历史区间准入还须核披露时点、分类映射与全部封存消费者，不由当前查询缓存推导。
+原人工审核文件仍保留原身份供人工查阅；退役的映射类型和导入codec不再作为活动入口。当前数据库或载荷结构不兼容时明确拒绝，不补表、不升级、不静默清空；实际重下范围仅为提示的行业下载资料，不涉及价格、模型、冻结或预算。
 
 此前001381的[官方上市公告书](https://disc.static.szse.cn/disc/disk03/finalpage/2026-11-02/f85204b7-2475-41ad-b05e-f4bf35a0aac9.PDF)及其C29旧模型映射仅是当时的单案例证据，依据[旧指引代码目录](https://www.csisc.cn/zbscbzw/c100138/202206/f697c0f5befd4c4ba91d4171cd68d7ea/files/8500f38c4545b2c366b6abf5af22.pdf)，不是全面跨标准对照，也不由新当前链复用。
 
@@ -686,7 +673,7 @@ company优先测：无用途正文比例、重复解析/重试、OCR页成本、
 | 数据库 | 唯一写入 owner、主要读消费者与事务／发布边界 |
 | --- | --- |
 | `market/reference/company_st.sqlite3` | `SQLiteReferenceIndex` 写证券、ST、日历和参考发布；`PrepareReference`、`HistoryControlIndex`、`PublishedReferences` 读固定 publication。一次参考事务切 current，保留原供应商检查日；见第2.3节 |
-| `market/reference/industry.sqlite3` | `SQLiteIndustryQueryIndex` 写当前查询、官方证据和原件；`CurrentIndustryPublication`准备当前分类，`InspectHistoricalIndustryQueries`核查历史候选，参考发布／当前缓存读取。官方证据装载与历史行业绑定分别核验，缓存不自动变成训练就绪区间；见第2.5节 |
+| `market/reference/industry.sqlite3` | `SQLiteIndustryQueryIndex`写当前查询、官方证据和原件；`CurrentIndustryPublication`准备当前分类，`OfficialIndustryHistory`取得官方原件并生成区间，`PrepareHistoricalIndustries`核查历史候选和正式覆盖，参考发布／当前缓存读取。官方证据装载与历史行业绑定分别核验，缓存不自动变成训练就绪区间；见第2.5节 |
 | `market/history/catalog.sqlite3` | `HistoryControlIndex` 安装下载所需完整 schema，控制记录、下载任务、价格修复及推定停牌各 adapter 在调用方事务中写；`ReadPublishedHistoryUseCase`／快照 reader、训练和荐股预载读固定序号。下载断点与正式 published_snapshot 不是同一个完成标志 |
 | `market/history/prices_<year>.sqlite3` | `HistoryPricePartition`／`HistoryDirectPrices` 写价格修订和观察关系；同一历史端口供训练／荐股及显式审计读取。年库提交后才封存，catalog 固定可见序号；年／月逻辑分区不能当成多个物理库 |
 | `market/daily_window.sqlite3` | `SQLiteQfqWindowCache` 单 writer 写共享 raw/qfq 价格及两个档位视图，修复 adapter 复用其事务；训练／荐股历史端口的短窗实现及下载诊断读取。配对窗口、日历、成员和发布绑定同事务提交，再生成文件凭据 |

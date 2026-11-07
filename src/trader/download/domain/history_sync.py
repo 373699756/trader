@@ -130,14 +130,14 @@ class HistoryIndustryReadiness:
     requested_codes: int
     candidate_codes: int
     point_in_time_codes: int
-    source: str = "cninfo"
+    source: str = "capco"
     failure_category: str | None = None
 
     def __post_init__(self) -> None:
         if (
             any(type(value) is not int for value in (self.requested_codes, self.candidate_codes, self.point_in_time_codes))
             or not 0 <= self.point_in_time_codes <= self.candidate_codes <= self.requested_codes
-            or self.source != "cninfo"
+            or self.source != "capco"
         ):
             raise ValueError("history_industry_readiness_invalid")
 

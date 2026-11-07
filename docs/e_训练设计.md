@@ -53,6 +53,8 @@ CLI的`train`通过唯一组合根 `bootstrap.ExecuteSelectedTraining`独立启�
 
 源表全列的SQL类型、单位、来源和索引归d第8章；本表只解释训练消费。尤其量额必须沿真实解析链核对，不因qfq字段名猜测或改公式。
 
+历史行业由下载先形成官方公开可用区间，再绑定到新历史快照；训练不直接把`industry.sqlite3`里的当前分类或变更日期当作历史事实。V1在无法复用整组模型时，也会在共享价格扫描前拒绝完全没有行业区间的输入；该预检只是必要条件，不替代各分区有效日期和样本行数门。已有完整模型复用仍为零价格扫描、零拟合。所需行业日期是各档实际样本信号日，不把价格预热窗口误当成必须具备行业的日期；官方资料不足时保留具体档位未就绪，不减少日期或训练轮数。
+
 当前消费者追链与b第5.1节一致：年度库`history_prices._TRAINING_RANGE_SQL`的量额列只取`raw_volume`及`qfq_amount`，`_decode_training_row`构造`HistoryTrainingPoint`；`AlignTrainingRows`再按市场日历保留交易、确认停牌及估值状态。V1的`profile/v1/samples._complete_point`把金额交给完成日十因子；V2/V3/V5的`sample_builder._pending_sample`计算20日均额，V5的`_sequence_point`将原始量和qfq分支金额交给唯一序列公式，分别形成`log1p(volume)`和`log1p(amount)`。停牌估值的零量额由共享日历对齐规则产生，不改写年度原始事实；缺失、非有限或不满足各档准入的值不能通过换列或补0掩盖。
 
 这份追链确认当前代码读取的列及消费方式。腾讯解析的手→股、万元→元换算与raw/qfq分支写入由b第5.1节及d维护；未据此断言各供应商历史逐值一致、`raw_amount == qfq_amount`或已完成B的全历史审计。当前输入/工件的实际身份与覆盖另由本轮真实训练报告交接。
