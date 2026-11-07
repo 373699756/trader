@@ -81,6 +81,7 @@ from trader.download.infra.company_fact_inputs import (
     ReadCompanySnapshotShared,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_document_recovery import RestoreCompanyDocumentTasks
 from trader.download.infra.company_field_recovery import (
     CompleteCompanyFieldRepairs,
     CompanyFieldRepairReceipts,
@@ -142,6 +143,7 @@ class SQLiteCompanyEvidenceIndex:
         listings: tuple[CompanyListing, ...] = (), sqlite_policy: SqliteIoPolicy,
         raw_files: CompanyRawFiles | None = None,
         batch_publication_reads: bool = False,
+        skip_unchanged_document_recovery: bool = False,
     ) -> None:
         self._sqlite_policy = sqlite_policy
         self.path = path
@@ -151,6 +153,7 @@ class SQLiteCompanyEvidenceIndex:
         self._documents = documents
         self._raw_files = raw_files
         self._batch_publication_reads = batch_publication_reads
+        self._skip_unchanged_document_recovery = skip_unchanged_document_recovery
         self._facts = SQLiteCompanyFactsIndex(facts_path, event_policy=event_policy, cancel_requested=cancel_requested, sqlite_policy=self._sqlite_policy)
         self._cancel_requested = cancel_requested
         self._event_policy = event_policy
@@ -1177,21 +1180,10 @@ class SQLiteCompanyEvidenceIndex:
             for offset in range(0, len(codes), 128):
                 MarkCompanyDirty(connection, PendingCompanyContractLinkCodes(connection, codes[offset:offset + 128], self._facts.extraction_hash))
         if self._raw_files is not None:
-            with self._connect() as connection:
-                tasks = connection.run(
-                    "SELECT d.*,MIN(c.code) AS code FROM document_tasks t JOIN disclosures d "
-                    "ON d.source=t.source AND d.source_key=t.source_key AND d.record_hash=t.record_hash "
-                    "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE t.stage<>'cleaned' GROUP BY d.id"
-                ).fetchall()
-            for row in tasks:
-                item = DecodeCompanyDisclosure(row)
-                local = self._raw_files.local(item)
-                with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-                    connection.run(
-                        "UPDATE document_tasks SET stage=?,path=?,payload_hash=?,size=? WHERE source=? AND source_key=? AND record_hash=?",
-                        ("downloaded" if local else "pending", str(local.path.relative_to(self.path.parent)) if local else None,
-                         local.payload_hash if local else None, local.size if local else None, item.source, item.identity, item.digest),
-                    )
+            RestoreCompanyDocumentTasks(
+                self._connect, self._raw_files, self.path.parent,
+                skip_unchanged=self._skip_unchanged_document_recovery,
+            )
         # Formal receipts are authoritative across a crash between the commits.
         with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
