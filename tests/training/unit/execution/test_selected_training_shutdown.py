@@ -12,6 +12,7 @@ from tests.helpers.shared.configuration import RuntimeSettingsFixture, SqlitePol
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture, TrainingSampleSettingsFixture
 from trader.infra import signal_cancellation
 from trader.infra.shutdown import ShutdownDeadline
+from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.workers import BoundedExecutor
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingOutcome, SelectedTrainingRun, SelectedTrainingTask, TrainingLocations
@@ -147,3 +148,69 @@ def test_final_result_follows_shutdown_and_preserves_training_outcome(tmp_path, 
         for current in controllers:
             current.mark_completed()
         stop_workers(cancel_futures=True, deadline=ShutdownDeadline.start(2))
+
+
+@pytest.mark.parametrize(("progress_failure", "run_status"), (
+    ("io", "ready"), ("incomplete", "ready"), ("cancelled", "ready"),
+    ("io", "failed"), ("io", "cancelled"),
+))
+def test_returned_run_keeps_training_status_when_progress_cleanup_fails(tmp_path, monkeypatch, capsys, progress_failure, run_status):
+    runtime = RuntimeSettingsFixture()
+    resources = TrainingResourceSettingsFixture()
+    pool = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="selected-progress-shutdown-fixture")
+    previous_cancellation = signal_cancellation.ManualCancellation
+    stop_progress = ProgressHeartbeat.stop
+    scopes = []
+
+    @contextmanager
+    def cancellation(**options):
+        with previous_cancellation(**options, force_exit=lambda _code: None) as scope:
+            scopes.append(scope)
+            yield scope
+
+    def train(operations, _executor):
+        result = V1TrainingResult("engineering_ready" if run_status == "ready" else "failed", "retained-run", "a" * 64, 0)
+        outcome = SelectedTrainingOutcome("v1", None, "cancelled", True) if run_status == "cancelled" else SelectedTrainingOutcome("v1", result)
+        operations.request.on_outcome(outcome)
+        return SelectedTrainingRun((outcome,), 1, 123)
+
+    def stop(heartbeat, deadline):
+        report = stop_progress(heartbeat, deadline)
+        assert report.completed
+        if progress_failure == "io":
+            heartbeat._error = BrokenPipeError("private progress detail")
+            return report
+        if progress_failure == "cancelled":
+            signal.raise_signal(signal.SIGTERM)
+        # The real thread has closed; the fixture separately exercises an incomplete close report.
+        return replace(report, completed=False, timed_out=True, detail="fixture progress remains pending")
+
+    monkeypatch.setattr(selected_training, "ManualCancellation", cancellation)
+    monkeypatch.setattr(selected_training, "TrainSelectedProfiles", train)
+    monkeypatch.setattr(ProgressHeartbeat, "stop", stop)
+    try:
+        code = selected_training.RunSelectedTraining(
+            runtime, ("v1",), executor=pool, memory_admission=TrainingMemoryBudget(1024),
+            cpu_budget=TrainingCpuBudget(2, settings=resources.cpu), fanout_settings=resources.fanout,
+            sample_settings=TrainingSampleSettingsFixture(), paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
+            sqlite_policy=SqlitePolicyFixture(),
+            prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()),
+        )
+        reports = ReadJsonReports(capsys.readouterr().out)
+        summary = reports[-1]
+        assert summary["training_status"] == ("completed" if run_status == "ready" else run_status)
+        assert code == (130 if progress_failure == "cancelled" or run_status == "cancelled" else 1)
+        assert summary["status"] == ("cancelled" if code == 130 else "failed")
+        assert summary["failure"] == ("BrokenPipeError" if progress_failure == "io" else "TimeoutError")
+        assert summary["progress_shutdown"][0]["completed"] is (progress_failure == "io")
+        assert summary["progress_shutdown"][0]["timed_out"] is (progress_failure != "io")
+        assert summary["results"][0]["exit_code"] == (130 if run_status == "cancelled" else int(run_status != "ready"))
+        assert reports[0]["status"] == ("engineering_ready" if run_status == "ready" else run_status)
+        if run_status != "cancelled":
+            assert reports[0]["run_id"] == "retained-run"
+        assert summary["shutdown"]["completed"] and not pool.status().running
+        assert "private" not in str(reports)
+    finally:
+        for scope in scopes:
+            scope._controller.mark_completed()
+        pool.stop(cancel_futures=True, deadline=ShutdownDeadline.start(2))

@@ -20,8 +20,36 @@ from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.infra.settings import LoadRuntimeSettings
+from trader.infra.progress_format import DisplayWidth
 from trader.infra.settings.data_paths import DataPaths
 from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
+
+
+def test_shell_history_and_longest_training_stage_share_separator_positions(monkeypatch):
+    from trader.recommendation.domain.publication.models import Strategy
+    from trader.training.application.tomorrow_training import TomorrowTrainingProgress
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+
+    source = Path(__file__).resolve().parents[4] / "src/trader/infra/progress_format.py"
+    prepared = subprocess.run(
+        [sys.executable, str(source), "--pipe"], input="准备环境\n", text=True,
+        capture_output=True, timeout=10,
+        env={**os.environ, "TRADER_COMMAND_STARTED_MONOTONIC": str(time.monotonic())},
+    )
+    assert prepared.returncode == 0
+    stream = StringIO()
+    report = SyncProgress(TerminalDownloadProgress(stream), lambda: 0.0)
+    report(ProgressMessage((ProgressField("确认 9/4402"),), task=ProgressTask("history", "prices", "Tencent下载")))
+    monkeypatch.setattr(sys, "stderr", stream)
+    output = StderrTomorrowTrainingProgress(monotonic=lambda: 0.0, command_label="train·V5")
+    output.publish(TomorrowTrainingProgress("history_conversion", "started", 0, 1, strategy=Strategy.TOMORROW))
+    lines = [prepared.stderr.splitlines()[0], *stream.getvalue().splitlines()]
+    positions = [
+        tuple(DisplayWidth(" | ".join(line.split(" | ")[:index])) + 1 for index in (1, 2, 3))
+        for line in lines
+    ]
+    assert positions[0] == positions[1] == positions[2]
+    assert "train·V5·tomorrow·历史读取与训练样本生成" in lines[-1]
 from trader.download.domain.download_failure import DownloadFailureContext
 from trader.infra.http_contracts import HttpStatusError
 
@@ -108,11 +136,11 @@ def test_failure_console_keeps_operation_budget_and_http_code_without_payload():
 
 
 def test_shell_feedback_uses_shared_prefix_and_sanitizes_installer_lines():
-    source = Path(__file__).resolve().parents[4] / "src/trader/download/application/progress_message.py"
+    source = Path(__file__).resolve().parents[4] / "src/trader/infra/progress_format.py"
     result = subprocess.run(
         [sys.executable, str(source), "--pipe"], input="安装依赖\n\x1b[31m外部输出 | 子字段\n", text=True,
         capture_output=True, timeout=10,
-        env={**os.environ, "TRADER_SYNC_STARTED_MONOTONIC": str(time.monotonic() - 70)},
+        env={**os.environ, "TRADER_COMMAND_STARTED_MONOTONIC": str(time.monotonic() - 70)},
     )
     assert result.returncode == 0 and result.stdout == ""
     assert all("启动·运行环境检查 00:01:" in line for line in result.stderr.splitlines())

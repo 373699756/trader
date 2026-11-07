@@ -5,7 +5,6 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import json
-import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import CancelledError
@@ -56,6 +55,7 @@ def RunSelectedTraining(
     paths: TrainingLocations, sqlite_policy: SqliteIoPolicy,
     prepare_training: Callable[[SelectedTrainingRequest], SelectedTrainingPort[SelectedProfileResult]],
     memory_capacity_bytes: int | None = None,
+    started_at: float | None = None,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         return _run_selected_training(
@@ -71,6 +71,7 @@ def RunSelectedTraining(
             sqlite_policy=sqlite_policy,
             prepare_training=prepare_training,
             memory_capacity_bytes=memory_capacity_bytes,
+            started_at=started_at,
         )
 
 
@@ -84,31 +85,36 @@ def _run_selected_training(
     sample_settings: TrainingSampleSettings, sqlite_policy: SqliteIoPolicy,
     prepare_training: Callable[[SelectedTrainingRequest], SelectedTrainingPort[SelectedProfileResult]],
     memory_capacity_bytes: int | None = None,
+    started_at: float | None = None,
 ) -> int:
     started = time.monotonic()
     measurements: TrainingExecutionMeasurements | None = None
     summary: dict[str, object]
     run: SelectedTrainingRun[SelectedProfileResult] | None = None
+    returned_training_code: int | None = None
+    progress_closed = False
     observed_outcomes: list[SelectedTrainingOutcome[SelectedProfileResult]] = []
     outcome_lock = Lock()
     reported_profiles: set[ScoringProfileId] = set()
     complete_outcome_summary = False
     outputs: tuple[StderrTomorrowTrainingProgress, ...] = ()
     shutdown_failure: str | None = None
-    logging.getLogger(__name__).warning(
-        "训练CPU预算 | 可用CPU %s | 拟合总线程 %s | 原生库基线线程 %s | 档位 %s",
-        cpu_budget.available_cpus, cpu_budget.capacity, cpu_budget.native_threads, ",".join(profiles),
-    )
-    logging.getLogger(__name__).warning(
-        "训练资源配置 | 拟合内存 %s字节 | 扫描批次 %s行 | 每档队列 %s批",
-        memory_capacity_bytes, fanout_settings.batch_rows, fanout_settings.queue_batches,
-    )
+    command_output = StderrTomorrowTrainingProgress(command_label="train", started_at=started_at, start_heartbeat=False)
+    command_output.report_notice("资源预检", (
+        f"可用CPU {cpu_budget.available_cpus} | 拟合总线程预算 {cpu_budget.capacity} "
+        f"| 原生库基线线程 {cpu_budget.native_threads} | 档位 {','.join(profiles)} "
+        f"| 拟合内存预算 {memory_capacity_bytes if memory_capacity_bytes is not None else '未提供'}字节 "
+        f"| 扫描批次 {fanout_settings.batch_rows}行 | 每档队列 {fanout_settings.queue_batches}批"
+    ), state="完成")
     try:
         measurements = TrainingExecutionMeasurements(profiles, time.monotonic)
         executor.start()
         with ExitStack() as scope:
             outputs = tuple(
-                scope.enter_context(StderrTomorrowTrainingProgress(command_label=f"{profile.upper()}训练"))
+                scope.enter_context(StderrTomorrowTrainingProgress(
+                    command_label=f"train·{profile.upper()}", started_at=command_output.started_at,
+                    start_heartbeat=True, cancellation=cancelled,
+                ))
                 for profile in profiles
             )
             progresses = tuple(CancellableTrainingProgress(output, cancelled.is_set) for output in outputs)
@@ -150,6 +156,11 @@ def _run_selected_training(
             run = TrainSelectedProfiles(
                 prepare_training(selection), WorkerFutureExecutor(executor),
             )
+            returned_training_code = (
+                130 if cancelled.is_set() or any(outcome.cancelled for outcome in run.outcomes)
+                else int(any(outcome.result is None or outcome.result.status != "engineering_ready" for outcome in run.outcomes))
+            )
+        progress_closed = True
         codes: list[int] = []
         for outcome in run.outcomes:
             result = outcome.result
@@ -282,8 +293,9 @@ def _run_selected_training(
                 payload = _project_outcome(outcome)
                 payload["stage_seconds"] = dict(outputs[profiles.index(outcome.profile)].stage_durations)
                 print(json.dumps(payload, ensure_ascii=False, indent=2))
-    summary["training_status"] = "cancelled" if code == 130 else "failed" if code else "completed"
-    code = 130 if cancelled.is_set() or code == 130 else (code or int(not shutdown.completed or cancelled.watchdog_failure is not None))
+    training_code = returned_training_code if not progress_closed and returned_training_code is not None else code
+    summary["training_status"] = "cancelled" if training_code == 130 else "failed" if training_code else "completed"
+    code = 130 if cancelled.is_set() or code == 130 or training_code == 130 else (code or int(not cancelled.shutdown_completed or cancelled.watchdog_failure is not None))
     summary["status"] = "cancelled" if code == 130 else "failed" if code else "completed"
     summary["elapsed_seconds"] = round(time.monotonic() - started, 3)
     summary["shutdown"] = {
@@ -295,7 +307,13 @@ def _run_selected_training(
         "watchdog_started": cancelled.watchdog_started,
         "watchdog_failure": type(cancelled.watchdog_failure).__name__ if cancelled.watchdog_failure is not None else None,
     }
+    summary["progress_shutdown"] = [
+        {"profile": profiles[index], "name": step.name, "completed": step.completed,
+         "timed_out": step.timed_out, "cancelled_count": step.cancelled_count, "detail": step.detail}
+        for index, output in enumerate(outputs) if (step := output.shutdown_step) is not None
+    ]
     print(json.dumps(summary, indent=2, ensure_ascii=False))
+    command_output.report_notice("结果汇总", f"档位 {','.join(profiles)} | 退出码 {code}", state="取消" if code == 130 else "失败" if code else "完成")
     return code
 
 

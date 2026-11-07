@@ -8,6 +8,8 @@ from collections.abc import Callable
 from types import TracebackType
 from typing import Generic, TypeVar
 
+from trader.infra.shutdown import ObserveShutdownStep, ShutdownDeadline, ShutdownStep
+
 _Progress = TypeVar("_Progress")
 
 
@@ -63,6 +65,22 @@ class ProgressHeartbeat(Generic[_Progress]):
             self._thread.join()
         if exception_type is None and self._error is not None:
             raise self._error
+
+    @property
+    def failure(self) -> OSError | None:
+        return self._error
+
+    def stop(self, deadline: ShutdownDeadline) -> ShutdownStep:
+        """Stop within the caller's existing shutdown budget, retaining pending threads."""
+        self._stop.set()
+        with ObserveShutdownStep(deadline, "progress_heartbeat"):
+            if self._thread is not None:
+                self._thread.join(timeout=deadline.remaining_seconds())
+        completed = self._thread is None or not self._thread.is_alive()
+        return ShutdownStep(
+            "progress_heartbeat", completed, not completed and deadline.expired,
+            detail="" if completed else "progress callback remains blocked",
+        )
 
 
 __all__ = ["ProgressHeartbeat"]

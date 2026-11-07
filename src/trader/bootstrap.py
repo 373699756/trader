@@ -477,7 +477,7 @@ def ExecuteSelectedTraining(
     scoring_profiles: tuple[ScoringProfileId, ...],
     *,
     history_root: Path | None = None,
-    training_root: Path | None = None,
+    training_root: Path | None = None, started_at: float | None = None,
 ) -> int:
     """Compose offline training resources, also used by isolated diagnostics."""
     from trader.training.entrypoints.commands import ConfigureTrainingResources
@@ -510,7 +510,7 @@ def ExecuteSelectedTraining(
         sample_settings=resources.samples,
         paths=ResolveTrainingLocations(runtime.data_paths, history_root, training_root), sqlite_policy=sqlite_policy,
         prepare_training=partial(SelectedTrainingAdapter, sqlite_policy=sqlite_policy),
-        memory_capacity_bytes=memory_budget.capacity_bytes,
+        memory_capacity_bytes=memory_budget.capacity_bytes, started_at=started_at,
     )
 
 

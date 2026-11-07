@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from trader.infra.progress_format import CleanProgressText
+
 import os
 import sys
 from threading import Lock
 from typing import TextIO
 
-from trader.download.application.progress_message import CleanProgressText, ProgressLevel, ProgressMessage
+from trader.download.application.progress_message import ProgressLevel, ProgressMessage
 
 _COLORS = {ProgressLevel.SUCCESS: "32", ProgressLevel.WARNING: "33", ProgressLevel.ERROR: "31"}
 

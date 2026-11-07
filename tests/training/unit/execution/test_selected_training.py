@@ -327,13 +327,13 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
         )
         for outcome in outcomes:
             request.on_outcome(outcome)
-        immediate = capsys.readouterr().err
+        immediate = " ".join(capsys.readouterr().err.split())
         assert (
-            "V1训练 | 1/1 (100.00%) | 完成" in immediate
+            "train·V1·结果汇总" in immediate and "| 完成 | 状态 engineering_ready" in immediate
             if v1_status == "engineering_ready"
-            else "V1训练 | 0/1 (0.00%) | 失败 | 错误 publication_failed" in immediate
+            else "train·V1·结果汇总" in immediate and "| 失败 | 状态 failed | 错误 publication_failed" in immediate
         )
-        assert "V5训练 | 0/1 (0.00%) | 失败 | 错误 dependency_missing" in immediate
+        assert "train·V5·结果汇总" in immediate and "| 失败 | 状态 failed | 错误 dependency_missing" in immediate
         return SelectedTrainingRun(
             outcomes,
             1,

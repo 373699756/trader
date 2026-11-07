@@ -11,7 +11,8 @@ from datetime import date
 
 import pytest
 
-from trader.download.application.progress_message import DisplayWidth, ProgressField, ProgressLevel, ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
+from trader.infra.progress_format import DisplayWidth
 
 from trader.download.application.qfq_download_progress import QfqDownloadProgress
 

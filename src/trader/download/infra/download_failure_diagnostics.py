@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.progress_format import ProgressDuration
+
 import logging
 import re
 import sqlite3
@@ -13,7 +15,7 @@ from trader.download.domain.download_failure import DownloadFailureConfiguration
 from trader.download.infra.history_sync_failure import HistoryFailureCauses, HistoryFailureDetail, HistoryRemoteFailureError
 from trader.infra.http_contracts import HttpCancelled, HttpStatusError
 from trader.infra.sqlite_connection import SqliteConnection
-from trader.download.application.progress_message import ProgressDuration, ProgressField, ProgressLevel, ProgressMessage, ProgressTask
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressTask
 
 _LOGGER = logging.getLogger(__name__)
 _SAFE_CODE = re.compile(r"(?:tencent|qfq|supplier|history|http|company|disclosure|cninfo)_[a-z0-9_]{1,56}")

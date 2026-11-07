@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.progress_format import ProgressDuration
+
 import sys
 import time
 from collections.abc import Callable
@@ -9,7 +11,7 @@ from dataclasses import replace
 from math import ceil
 from typing import TextIO
 
-from trader.download.application.progress_message import ProgressDuration, ProgressField, ProgressLevel, ProgressMessage, ProgressTask
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressTask
 from trader.download.application.sync_progress import SyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.download.domain.company_evidence import CompanyStockProgress, DisclosurePartition, EvidenceSyncProgress

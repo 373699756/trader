@@ -375,7 +375,7 @@ def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
 def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, profile_args: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", f'exec "{sys.executable}" "$@"')
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
     _write_fake_entrypoint(venv_bin / "uname", "printf 'Darwin\\n'")
@@ -404,7 +404,8 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
 def test_train_reports_local_failure_without_exposing_details(tmp_path, monkeypatch, capsys, error):
     config = _runtime_config(tmp_path)
 
-    def train(_runtime, _profiles):
+    def train(_runtime, _profiles, *, started_at):
+        assert started_at >= 0
         raise error("private training details")
 
     monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", train)
@@ -421,7 +422,7 @@ def test_train_reports_local_failure_without_exposing_details(tmp_path, monkeypa
 def test_train_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", f'exec "{sys.executable}" "$@"')
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "exit 0")
     _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
@@ -452,7 +453,7 @@ def test_train_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
 def test_run_script_warns_when_training_scope_is_unavailable(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", f'exec "{sys.executable}" "$@"')
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
     _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")

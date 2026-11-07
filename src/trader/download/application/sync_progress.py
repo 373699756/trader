@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.progress_format import ProgressDuration
+
 import math
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -12,7 +14,7 @@ from typing import TypeVar
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 
 from trader.download.application.progress_message import (
-    ProgressDuration, ProgressField, ProgressMessage, ProgressTask, WithProgressTime,
+    ProgressField, ProgressMessage, ProgressTask, WithProgressTime,
 )
 
 _Result = TypeVar("_Result")

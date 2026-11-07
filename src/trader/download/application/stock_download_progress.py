@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from trader.infra.progress_format import CleanProgressText, DisplayWidth
+
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
 from trader.download.application.progress_message import (
-    CleanProgressText,
-    DisplayWidth,
     FormatProgressField,
     ProgressField,
     ProgressLevel,

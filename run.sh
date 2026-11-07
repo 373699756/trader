@@ -105,23 +105,23 @@ find_python() {
   return 1
 }
 
-if [[ "$MODE" == "sync" ]]; then
+if [[ "$MODE" == "sync" || "$MODE" == "train" ]]; then
   if [[ -x "$VENV_DIR/bin/python3" ]]; then
-    SYNC_PYTHON="$VENV_DIR/bin/python3"
+    COMMAND_PYTHON="$VENV_DIR/bin/python3"
   else
-    SYNC_PYTHON="$(find_python || true)"
+    COMMAND_PYTHON="$(find_python || true)"
   fi
-  if [[ -z "$SYNC_PYTHON" ]]; then
-    printf '需要 Python 3.10-3.14，sync 尚未启动。\n' >&2
+  if [[ -z "$COMMAND_PYTHON" ]]; then
+    printf '需要 Python 3.10-3.14，%s 尚未启动。\n' "$MODE" >&2
     exit 1
   fi
-  TRADER_SYNC_STARTED_MONOTONIC="$("$SYNC_PYTHON" -c 'import time; print(time.monotonic())')"
-  export TRADER_SYNC_STARTED_MONOTONIC
-  sync_log() {
-    "$SYNC_PYTHON" "$ROOT_DIR/src/trader/download/application/progress_message.py" "$@"
+  TRADER_COMMAND_STARTED_MONOTONIC="$("$COMMAND_PYTHON" -c 'import time; print(time.monotonic())')"
+  export TRADER_COMMAND_STARTED_MONOTONIC
+  command_log() {
+    "$COMMAND_PYTHON" "$ROOT_DIR/src/trader/infra/progress_format.py" "$@"
   }
-  sync_log 开始 检查运行环境
-  trap 'sync_log 失败 运行环境准备失败' ERR
+  command_log 开始 检查运行环境
+  trap 'command_log 失败 运行环境准备失败' ERR
 fi
 
 if [[ ! -x "$VENV_DIR/bin/python3" ]]; then
@@ -130,8 +130,8 @@ if [[ ! -x "$VENV_DIR/bin/python3" ]]; then
     printf '需要 Python 3.10-3.14。\n' >&2
     exit 1
   fi
-  if [[ "$MODE" == "sync" ]]; then
-    "$PYTHON_BIN" -m venv "$VENV_DIR" 2>&1 | sync_log --pipe
+  if [[ "$MODE" == "sync" || "$MODE" == "train" ]]; then
+    "$PYTHON_BIN" -m venv "$VENV_DIR" 2>&1 | command_log --pipe
   else
     "$PYTHON_BIN" -m venv "$VENV_DIR"
   fi
@@ -153,16 +153,16 @@ fi
 if ((NEEDS_INSTALL)); then
   # pip 25.1.1 can raise InvalidVersion: '' while resolving extras on Python 3.14.
   if "$VENV_DIR/bin/python3" -c 'import pip, sys; raise SystemExit(not (sys.version_info[:2] == (3, 14) and int(pip.__version__.split(".", 1)[0]) < 26))'; then
-    if [[ "$MODE" == "sync" ]]; then
-      "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check --upgrade 'pip>=26,<27' 2>&1 | sync_log --pipe
+    if [[ "$MODE" == "sync" || "$MODE" == "train" ]]; then
+      "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check --upgrade 'pip>=26,<27' 2>&1 | command_log --pipe
     else
       "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check --upgrade 'pip>=26,<27' >&2
     fi
   fi
   # Let pip provision the build requirements declared in pyproject.toml;
   # a fresh virtual environment may contain pip without setuptools.
-  if [[ "$MODE" == "sync" ]]; then
-    "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR" 2>&1 | sync_log --pipe
+  if [[ "$MODE" == "sync" || "$MODE" == "train" ]]; then
+    "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR" 2>&1 | command_log --pipe
   else
     "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR" >&2
   fi
@@ -174,9 +174,11 @@ export TRADER_PORT="${TRADER_PORT:-5000}"
 if [[ "$COMMAND_KIND" == "server" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${FORWARD_ARGS[@]}"
 fi
-if [[ "$MODE" == "sync" ]]; then
-  sync_log 完成 运行环境检查完成
+if [[ "$MODE" == "sync" || "$MODE" == "train" ]]; then
+  command_log 完成 运行环境检查完成
   trap - ERR
+fi
+if [[ "$MODE" == "sync" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" sync "${FORWARD_ARGS[@]}"
 fi
 if [[ "$MODE" == "train" ]]; then
@@ -194,7 +196,7 @@ if [[ "$MODE" == "train" ]]; then
         --property=IOWeight=20 \
         -- "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${FORWARD_ARGS[@]}"
     fi
-    printf '%s\n' '警告：当前用户 systemd scope 不可用；训练仍使用有界资源，但不能提供 cgroup 硬隔离。' >&2
+    command_log 处理中 '警告：当前用户 systemd scope 不可用；训练仍使用有界资源，但不能提供 cgroup 硬隔离。'
   fi
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${FORWARD_ARGS[@]}"
 fi

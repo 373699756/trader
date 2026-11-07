@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.progress_format import ProgressDuration
+
 import time
 from collections.abc import Callable
 from threading import Lock
@@ -11,7 +13,6 @@ from trader.download.application.progress_message import (
     ProgressLevel,
     ProgressMessage,
     ProgressNumber,
-    ProgressDuration,
     ProgressState,
     ProgressTask,
 )

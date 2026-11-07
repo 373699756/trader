@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.infra.progress_format import ProgressDuration
+
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -10,7 +12,6 @@ from typing import Literal
 
 from trader.download.application.progress_message import (
     FormatProgressField,
-    ProgressDuration,
     ProgressField,
     ProgressLevel,
     ProgressMessage,

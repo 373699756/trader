@@ -8,10 +8,9 @@ import argparse
 import json
 import os
 import sqlite3
-import sys
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from trader.download.application.sync_data import SyncResult
@@ -23,6 +22,9 @@ from trader.infra.signal_cancellation import ManualCancellation
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddResearchEvidenceParsers
+
+if TYPE_CHECKING:
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 
 
 class _FillFlag(argparse.Action):
@@ -102,7 +104,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             parser.error("sync does not accept --profile")
         from trader.bootstrap import CreateSyncProgress
 
-        inherited = os.environ.pop("TRADER_SYNC_STARTED_MONOTONIC", None)
+        inherited = os.environ.pop("TRADER_COMMAND_STARTED_MONOTONIC", None)
         progress = CreateSyncProgress(float(inherited) if inherited is not None else None)
         with progress.keep_alive():
             try:
@@ -111,6 +113,10 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
                 progress(ProgressMessage((ProgressField("已有断点保留"),),
                                          task=ProgressTask("sync", "result", "结果汇总"), state="取消", finished=True))
                 return 130
+    if args.command == "train":
+        if args.profile is not None:
+            parser.error("train does not accept --profile")
+        return _run_train(args)
     try:
         config_path = _absolute_config_path(args.config)
         runtime = LoadRuntimeSettings(config_path)
@@ -122,13 +128,6 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, indent=2, ensure_ascii=False))
         return 2
     profile_override = cast(ScoringProfileId | None, args.profile)
-    if args.command == "train":
-        if args.profile is not None:
-            parser.error("train does not accept --profile")
-        profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
-        print(f"train: 本次训练档位 {', '.join(profile.upper() for profile in profiles)}。", file=sys.stderr)
-        print("train: 仅使用本地已发布资料；缺资料请先手动执行 ./run.sh sync history，再重新训练。", file=sys.stderr)
-        return _run_selected_training(runtime, profiles)
     if args.command == "history-automation-status":
         from trader.bootstrap import ExecuteTrainingReminderStatus
         from trader.training.entrypoints.training_reminder_projection import ProjectTrainingReminderStatus
@@ -245,15 +244,48 @@ def _run_training_command(
     )
 
 
-def _run_selected_training(runtime: RuntimeSettings, profiles: tuple[ScoringProfileId, ...]) -> int:
+def _run_train(args: argparse.Namespace) -> int:
+    from trader.bootstrap import PrepareRuntimeDisk
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+
+    inherited = os.environ.pop("TRADER_COMMAND_STARTED_MONOTONIC", None)
+    output = StderrTomorrowTrainingProgress(command_label="train", started_at=float(inherited) if inherited is not None else None)
+    with output:
+        output.report_notice("配置检查", "正在读取运行配置及磁盘策略", state="开始")
+        try:
+            runtime = LoadRuntimeSettings(_absolute_config_path(args.config))
+            runtime = PrepareRuntimeDisk(runtime, choose=True, report_line=output.report_disk)
+        except (OSError, RuntimeError, ValueError) as exc:
+            output.report_notice("配置检查", f"原因 {type(exc).__name__}", state="失败")
+            print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, ensure_ascii=False))
+            return 2
+        except KeyboardInterrupt:
+            output.publish_cancelled()
+            return 130
+        output.report_notice("存储检测", "磁盘策略已确定", state="完成")
+        output.report_notice("配置检查", "配置准备完成", state="完成")
+        profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
+        output.report_notice("训练范围", f"档位 {', '.join(profile.upper() for profile in profiles)}；仅使用本地已发布资料；缺资料请先执行 ./run.sh sync history", state="完成")
+        return _run_selected_training(runtime, profiles, output=output)
+
+
+def _run_selected_training(
+    runtime: RuntimeSettings, profiles: tuple[ScoringProfileId, ...], *,
+    output: StderrTomorrowTrainingProgress,
+) -> int:
     from trader.bootstrap import ExecuteSelectedTraining
 
     try:
-        return ExecuteSelectedTraining(runtime, profiles)
+        output.report_notice("执行与收尾", "等待所选档位返回；含资源准备、训练、结果检查与关闭，具体进度见各档位阶段", state="开始")
+        code = ExecuteSelectedTraining(runtime, profiles, started_at=output.started_at)
+        output.report_notice("执行与收尾", f"退出码 {code}", state="取消" if code == 130 else "失败" if code else "完成")
+        return code
     except KeyboardInterrupt:
+        output.publish_cancelled()
         print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled"}, indent=2, ensure_ascii=False))
         return 130
     except (OSError, RuntimeError, ValueError) as exc:
+        output.publish_result("failed", type(exc).__name__)
         print(
             json.dumps(
                 {"schema_version": "selected_training_result", "status": "failed", "category": type(exc).__name__}, indent=2, ensure_ascii=False
