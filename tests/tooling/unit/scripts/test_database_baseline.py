@@ -11,8 +11,10 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -29,9 +31,11 @@ from scripts.core.contracts import CommandPreparation
 from scripts.core.paths import PROJECT_ROOT
 from scripts.core.contracts import DiagnosticCommand
 from trader.infra.settings import LoadRuntimeSettings
+from trader.infra import sqlite_connection
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSession, SqliteTransaction
 from trader.infra.disk_types import DiskProfile
 from scripts.infra.database import database_baseline
+from scripts.infra.database import database_measurement
 
 _CONFIG = PROJECT_ROOT / "config/runtime.json"
 
@@ -124,6 +128,91 @@ def test_measurement_counts_wrapper_operations_and_preserves_rollback(tmp_path: 
         raise ValueError("failure")
     assert failed.result["completed"] is False
     assert SqliteConnection.run is original
+
+
+@pytest.mark.parametrize("fails", (False, True))
+def test_running_database_snapshot_observes_a_blocked_call_without_sql_or_parameters(tmp_path, monkeypatch, fails):
+    entered, release = Event(), Event()
+    original = SqliteConnection.run
+
+    def blocked(connection, sql, parameters=()):
+        if sql == "SELECT ?":
+            entered.set()
+            assert release.wait(5)
+            if fails:
+                raise ValueError("private-database-payload")
+        return original(connection, sql, parameters)
+
+    monkeypatch.setattr(SqliteConnection, "run", blocked)
+    measured = DatabaseMeasurement(tmp_path, sample_wal=False)
+    assert measured.running_snapshot() == {}
+
+    def execute():
+        with SqliteSession(tmp_path / "probe.sqlite3") as connection:
+            return connection.run("SELECT ?", ("private-database-payload",)).require_one()[0]
+
+    with measured, ThreadPoolExecutor(max_workers=1) as worker:
+        future = worker.submit(execute)
+        try:
+            assert entered.wait(5)
+            monkeypatch.setattr(Path, "rglob", lambda *_: pytest.fail("running snapshot scanned files"))
+            snapshot = measured.running_snapshot()
+            pending = {row["operation"]: row for row in snapshot["pending_calls"]}
+            assert pending["execute"]["calls"] == 1 and pending["execute"]["oldest_seconds"] >= 0
+            assert not snapshot["completed"] and not snapshot["wal_sampling_enabled"]
+            assert snapshot["connections"] == 1 and snapshot["statements"] >= 1
+            assert "SELECT" not in json.dumps(snapshot) and "private" not in json.dumps(snapshot)
+        finally:
+            release.set()
+        if fails:
+            with pytest.raises(ValueError, match="private-database-payload"):
+                future.result(timeout=5)
+        else:
+            assert future.result(timeout=5) == "private-database-payload"
+        assert all(row["calls"] == 0 for row in measured.running_snapshot()["pending_calls"])
+    assert measured.running_snapshot() == {} and measured.result["completed"]
+    assert SqliteConnection.run is blocked
+
+
+def test_running_database_pending_calls_are_bounded_and_explicit_about_overflow(tmp_path, monkeypatch):
+    monkeypatch.setattr(database_measurement, "_MAX_PENDING_CALLS", 2)
+    with DatabaseMeasurement(tmp_path, sample_wal=False) as measured:
+        pending = [measured._begin_call("fetch") for _ in range(3)]
+        snapshot = measured.running_snapshot()
+        assert snapshot["pending_call_limit"] == 2 and snapshot["untracked_call_count"] == 1
+        assert sum(row["calls"] for row in snapshot["pending_calls"]) == 2
+        for token, started in pending:
+            measured._elapsed(token, started)
+        assert all(row["calls"] == 0 for row in measured.running_snapshot()["pending_calls"])
+
+
+@pytest.mark.parametrize("phase", ("connection_open", "connection_close"))
+def test_running_database_snapshot_includes_connection_setup_and_close(tmp_path, monkeypatch, phase):
+    entered, release = Event(), Event()
+    owner, method = (sqlite_connection, "OpenSqliteConnection") if phase == "connection_open" else (SqliteConnection, "close")
+    original = getattr(owner, method)
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, method, blocked)
+
+    def execute():
+        with SqliteSession(tmp_path / "probe.sqlite3") as connection:
+            connection.run("SELECT 1").require_one()
+
+    with DatabaseMeasurement(tmp_path, sample_wal=False) as measured, ThreadPoolExecutor(max_workers=1) as worker:
+        future = worker.submit(execute)
+        try:
+            assert entered.wait(5)
+            pending = {row["operation"]: row for row in measured.running_snapshot()["pending_calls"]}
+            assert pending[phase]["calls"] == 1 and pending[phase]["oldest_seconds"] >= 0
+        finally:
+            release.set()
+        future.result(timeout=5)
+    assert measured.result[f"{phase}_seconds"] > 0 and measured.result["completed"]
 
 
 @pytest.mark.parametrize(

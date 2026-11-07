@@ -38,3 +38,4 @@ class CompanyOptions:
     field_source_schema: bool = False
     field_source_identities: bool = False
     annual_income_period: date | None = None
+    financial_revision_period: date | None = None

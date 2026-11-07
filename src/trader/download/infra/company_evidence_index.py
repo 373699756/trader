@@ -958,6 +958,8 @@ class SQLiteCompanyEvidenceIndex:
         return row is None or row[0] is None or bool(row[1]) or datetime.fromisoformat(row[0]) <= observed_at - ttl
 
     def component_since(self, component: str, scope: str, observed_at: datetime) -> date:
+        if component == "financial":
+            return observed_at.date() - timedelta(days=365)
         with self._connect() as connection:
             row = connection.run(
                 "SELECT checked_at FROM component_checks WHERE component=? AND scope=?", (component, scope)

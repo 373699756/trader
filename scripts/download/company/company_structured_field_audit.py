@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
+from trader.download.domain.company_evidence import EvidenceMarket
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.domain.company_structured_fields import CompanyStructuredDataset, ResolveCompanyStructuredFields
 from trader.download.infra.company_structured_fields import DecodeCompanyStructuredFields
@@ -22,6 +23,258 @@ from trader.infra.http_contracts import HttpTransport
 _URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 _SAMPLE_ROWS = 5
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_FINANCIAL_URL = "https://datacenter.eastmoney.com/securities/api/data/get"
+_FINANCIAL_REPORT = "RPT_F10_FINANCE_MAINFINADATA"
+_FINANCIAL_FIELDS = (
+    ("eps", "EPSJB"),
+    ("bps", "BPS"),
+    ("revenue_growth_pct", "TOTALOPERATEREVETZ"),
+    ("profit_growth_pct", "PARENTNETPROFITTZ"),
+    ("core_profit_growth_pct", "KCFJCXSYJLRTZ"),
+    ("roe_pct", "ROEJQ"),
+    ("parent_profit", "PARENTNETPROFIT"),
+    ("core_profit", "KCFJCXSYJLR"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyFinancialRevisionRequest:
+    code: str
+    report_date: date
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.code, str) or re.fullmatch(r"[0-9]{6}", self.code) is None
+            or not self.code.startswith(("0", "3", "6", "4", "8", "92"))
+            or type(self.report_date) is not date
+            or (self.report_date.month, self.report_date.day) not in ((3, 31), (6, 30), (9, 30), (12, 31))
+        ):
+            raise ValueError("company_financial_revision_request_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class _FinancialRevisionRecord:
+    identity: str
+    report_date: date
+    notice_at: datetime
+    updated_at: datetime
+    values: tuple[tuple[str, float | None], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _FinancialRevisionProductionFields:
+    identity: str
+    report_date: date
+    notice_at: datetime
+    values: tuple[tuple[str, float | None], ...]
+
+
+class _FinancialRevisionProbeError(ValueError):
+    """Only this module's fixed protocol reasons may reach the public report."""
+
+
+def AuditCompanyFinancialRevision(
+    session: HttpTransport,
+    request: CompanyFinancialRevisionRequest,
+    *,
+    observed_at: datetime,
+    timeout_seconds: float,
+    deadline: float,
+    clock: Callable[[], datetime] = lambda: datetime.now(_SHANGHAI),
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict[str, object]:
+    """Compare one identity with positive and excluding UPDATE_DATE predicates."""
+    if (
+        observed_at.utcoffset() is None or request.report_date > observed_at.astimezone(_SHANGHAI).date()
+        or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30
+        or not math.isfinite(deadline)
+    ):
+        raise ValueError("company_financial_revision_options_invalid")
+    observed_at = observed_at.astimezone(_SHANGHAI)
+    started = monotonic()
+    identity = request.code + "." + {"sse": "SH", "szse": "SZ", "bse": "BJ"}[EvidenceMarket(request.code)]
+    columns = ("SECUCODE", "REPORT_DATE", "NOTICE_DATE", "UPDATE_DATE", *(field for _name, field in _FINANCIAL_FIELDS))
+    base_filter = f"(SECUCODE='{identity}')(REPORT_DATE='{request.report_date.isoformat()}')"
+    queries: list[dict[str, object]] = []
+    projection: dict[str, object] = {
+        "source": "eastmoney", "report": _FINANCIAL_REPORT, "code": request.code,
+        "report_date": request.report_date.isoformat(), "observed_at": observed_at.isoformat(),
+        "read_only": True, "production_adopted": False, "field_correctness_verified": False,
+        "full_window_coverage_verified": False, "update_filter_verified": False, "sort_verified": False,
+        "support_status": "unverified", "request_limit": 3, "max_response_bytes": 1024 * 1024,
+        "request_count": 0, "queries": queries,
+    }
+
+    def check() -> None:
+        if monotonic() >= deadline:
+            raise _FinancialRevisionProbeError("company_financial_revision_deadline_exhausted")
+
+    def fetch(
+        label: str, predicate: str = "", *, include_update: bool = True,
+    ) -> _FinancialRevisionRecord | _FinancialRevisionProductionFields | None:
+        check()
+        requested_columns = columns if include_update else tuple(field for field in columns if field != "UPDATE_DATE")
+        evidence: dict[str, object] = {"query": label, "status": "failed"}
+        queries.append(evidence)
+        projection["request_count"] = len(queries)
+        response = session.get(
+            _FINANCIAL_URL,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"},
+            params={
+                "type": _FINANCIAL_REPORT, "sty": ",".join(requested_columns), "quoteColumns": "",
+                "filter": base_filter + predicate, "p": "1", "ps": "1",
+                "sr": "-1,1,-1", "st": "NOTICE_DATE,SECUCODE,REPORT_DATE",
+                "source": "HSF10", "client": "PC",
+            },
+            timeout=min(timeout_seconds, max(0.001, deadline - monotonic())),
+            deadline=deadline,
+            max_response_bytes=1024 * 1024,
+            cancel_requested=lambda: monotonic() >= deadline,
+        )
+        received_at = clock()
+        if received_at.utcoffset() is None:
+            raise _FinancialRevisionProbeError("company_financial_revision_clock_invalid")
+        evidence.update({
+            "http_status": response.status_code, "received_at": received_at.astimezone(_SHANGHAI).isoformat(),
+            "response_sha256": hashlib.sha256(response.content).hexdigest(), "response_bytes": len(response.content),
+        })
+        check()
+        if not response.content or len(response.content) > 1024 * 1024:
+            raise _FinancialRevisionProbeError("company_financial_revision_response_size_invalid")
+        CheckCompanyResponse(response)
+        payload = response.json()
+        if isinstance(payload, Mapping):
+            evidence["provider_code"] = payload.get("code") if type(payload.get("code")) is int else None
+            evidence["provider_success"] = payload.get("success") if type(payload.get("success")) is bool else None
+        if (
+            not isinstance(payload, Mapping) or payload.get("success") is not True
+            or type(payload.get("code")) is not int or payload.get("code") != 0
+        ):
+            raise _FinancialRevisionProbeError("company_financial_revision_provider_rejected")
+        result = payload.get("result")
+        if not isinstance(result, Mapping):
+            raise _FinancialRevisionProbeError("company_financial_revision_result_invalid")
+        count, pages, rows = result.get("count"), result.get("pages"), result.get("data")
+        if count == 0 and rows is None:
+            rows = []
+        evidence.update({"reported_count": count if type(count) is int else None, "reported_pages": pages if type(pages) is int else None})
+        if (
+            type(count) is not int or count not in (0, 1) or type(pages) is not int
+            or pages not in (0, 1) or count == 1 and pages != 1
+            or not isinstance(rows, list) or len(rows) != count
+        ):
+            raise _FinancialRevisionProbeError("company_financial_revision_identity_count_invalid")
+        evidence["row_count"] = len(rows)
+        if not rows:
+            evidence["status"] = "empty"
+            return None
+        row = rows[0]
+        if not isinstance(row, Mapping):
+            raise _FinancialRevisionProbeError("company_financial_revision_row_invalid")
+        missing = tuple(field for field in requested_columns if field not in row)
+        if missing:
+            evidence["missing_fields"] = missing
+            raise _FinancialRevisionProbeError("company_financial_revision_required_fields_missing")
+        record = _financial_revision_record(row, request, identity, observed_at) if include_update else _financial_revision_production_fields(row, request, identity, observed_at)
+        evidence["status"] = "decoded"
+        check()
+        return record
+
+    status = "degraded"
+    try:
+        baseline = fetch("baseline")
+        if not isinstance(baseline, _FinancialRevisionRecord):
+            raise _FinancialRevisionProbeError("company_financial_revision_record_absent")
+        projection["record"] = {
+            "identity": baseline.identity, "report_date": baseline.report_date.isoformat(),
+            "notice_at": baseline.notice_at.isoformat(), "updated_at": baseline.updated_at.isoformat(),
+            "values": dict(baseline.values),
+            "missing_value_fields": tuple(name for name, value in baseline.values if value is None),
+        }
+        boundary = baseline.updated_at.date().isoformat()
+        included = fetch("include_update_boundary", f"(UPDATE_DATE>='{boundary}')")
+        if included != baseline:
+            raise _FinancialRevisionProbeError("company_financial_revision_inclusion_not_reproduced")
+        excluded = fetch("exclude_update_boundary", f"(UPDATE_DATE<'{boundary}')")
+        if excluded is not None:
+            raise _FinancialRevisionProbeError("company_financial_revision_filter_ignored")
+        check()
+        projection.update({"support_status": "sample_verified", "update_filter_verified": True})
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        status = "failed"
+        projection["failure"] = str(exc) if isinstance(exc, _FinancialRevisionProbeError) else type(exc).__name__
+        projection["support_status"] = "not_verified"
+        if isinstance(exc, _FinancialRevisionProbeError) and str(exc) == "company_financial_revision_provider_rejected" and len(queries) == 1:
+            control: dict[str, object] = {"status": "failed", "update_date_requested": False, "revision_verified": False}
+            projection["production_fields_control"] = control
+            try:
+                original = fetch("production_fields_control", include_update=False)
+                if isinstance(original, _FinancialRevisionProductionFields):
+                    control.update({
+                        "status": "decoded", "identity": original.identity, "report_date": original.report_date.isoformat(),
+                        "notice_at": original.notice_at.isoformat(), "values": dict(original.values),
+                        "missing_value_fields": tuple(name for name, value in original.values if value is None),
+                    })
+                elif original is None:
+                    control["status"] = "empty"
+                else:
+                    raise _FinancialRevisionProbeError("company_financial_revision_row_invalid")
+            except (OSError, RuntimeError, TypeError, ValueError) as control_exc:
+                control["failure"] = str(control_exc) if isinstance(control_exc, _FinancialRevisionProbeError) else type(control_exc).__name__
+    projection["elapsed_seconds"] = max(0.0, monotonic() - started)
+    return {"status": status, "financial_revision_probe": projection}
+
+
+def _financial_revision_record(
+    row: Mapping[str, object],
+    request: CompanyFinancialRevisionRequest,
+    identity: str,
+    observed_at: datetime,
+) -> _FinancialRevisionRecord:
+    original = _financial_revision_production_fields(row, request, identity, observed_at)
+    updated_at = _revision_time(row["UPDATE_DATE"])
+    if not original.notice_at <= updated_at <= observed_at:
+        raise _FinancialRevisionProbeError("company_financial_revision_time_invalid")
+    return _FinancialRevisionRecord(identity, request.report_date, original.notice_at, updated_at, original.values)
+
+
+def _financial_revision_production_fields(
+    row: Mapping[str, object],
+    request: CompanyFinancialRevisionRequest,
+    identity: str,
+    observed_at: datetime,
+) -> _FinancialRevisionProductionFields:
+    if row["SECUCODE"] != identity or _revision_time(row["REPORT_DATE"]).date() != request.report_date:
+        raise _FinancialRevisionProbeError("company_financial_revision_identity_mismatch")
+    notice_at = _revision_time(row["NOTICE_DATE"])
+    if not request.report_date <= notice_at.date() or notice_at > observed_at:
+        raise _FinancialRevisionProbeError("company_financial_revision_time_invalid")
+    values = []
+    for name, field in _FINANCIAL_FIELDS:
+        raw = row[field]
+        if raw is None or raw in ("", "-", "--"):
+            number = None
+        else:
+            if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+                raise _FinancialRevisionProbeError("company_financial_revision_number_invalid")
+            try:
+                number = float(raw)
+            except (OverflowError, ValueError) as exc:
+                raise _FinancialRevisionProbeError("company_financial_revision_number_invalid") from exc
+            if not math.isfinite(number):
+                raise _FinancialRevisionProbeError("company_financial_revision_number_invalid")
+        values.append((name, number))
+    return _FinancialRevisionProductionFields(identity, request.report_date, notice_at, tuple(values))
+
+
+def _revision_time(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise _FinancialRevisionProbeError("company_financial_revision_time_invalid")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise _FinancialRevisionProbeError("company_financial_revision_time_invalid") from exc
+    return parsed.replace(tzinfo=_SHANGHAI) if parsed.utcoffset() is None else parsed.astimezone(_SHANGHAI)
 
 
 @dataclass(frozen=True)
@@ -342,4 +595,4 @@ def _finite_number(value: object) -> bool:
         return False
 
 
-__all__ = ["AuditCompanyAnnualIncome", "AuditCompanyStructuredSources"]
+__all__ = ["AuditCompanyAnnualIncome", "AuditCompanyFinancialRevision", "AuditCompanyStructuredSources", "CompanyFinancialRevisionRequest"]

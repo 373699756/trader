@@ -26,7 +26,11 @@ def _measurement(code: int | None = 0, *, status: str = "passed", cancelled: boo
         "status_basis": "cli_exit_code_only",
         "private": "must-not-escape",
         "database": {"completed": True, "statements": 12, "private": "must-not-escape"},
-        "operations": [{"operation": "directory_fetch", "calls": 1, "private": "must-not-escape", "failures": []}],
+        "operations": [{
+            "operation": "directory_fetch", "calls": 1, "private": "must-not-escape", "failures": [],
+            "inflight_calls": 0, "oldest_inflight_seconds": 0.0, "inflight_duration_complete": True,
+            "untracked_inflight_calls": 0,
+        }],
     }
 
 
@@ -68,6 +72,8 @@ def test_success_uses_the_existing_measurement_and_redirects_product_stdout(tmp_
     assert outcome.exit_code == 0 and outcome.payload["status"] == "passed"
     assert outcome.payload["measurement_status"] == "passed"
     assert outcome.payload["field_correctness_verified"] is False
+    assert outcome.payload["operations"][0]["inflight_calls"] == 0
+    assert outcome.payload["operations"][0]["inflight_duration_complete"] is True
     assert calls == [(tmp_path / "runtime.json", output, True)]
     assert "must-not-escape" not in json.dumps(outcome.payload)
     captured = capsys.readouterr()

@@ -16,6 +16,42 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
     source = result.payload
     if source is None or result.error_code is not None:
         return result
+    if "financial_revision_probe" in source:
+        revision = source["financial_revision_probe"]
+        if not isinstance(revision, Mapping):
+            return replace(result, payload=dict(source, status="failed"))
+        queries = revision.get("queries")
+        count = revision.get("request_count")
+        valid = (
+            source.get("status") in ("passed", "degraded", "failed")
+            and revision.get("read_only") is True
+            and all(revision.get(name) is False for name in (
+                "production_adopted", "field_correctness_verified", "full_window_coverage_verified", "sort_verified",
+            ))
+            and type(count) is int and 0 <= count <= 3
+            and isinstance(queries, list) and len(queries) == count
+            and type(revision.get("request_limit")) is int and revision.get("request_limit") == 3
+            and type(revision.get("max_response_bytes")) is int and revision.get("max_response_bytes") == 1024 * 1024
+            and type(revision.get("update_filter_verified")) is bool
+            and revision.get("support_status") in ("sample_verified", "unverified", "not_verified")
+        )
+        if revision.get("update_filter_verified") is True:
+            valid = valid and revision.get("support_status") == "sample_verified" and count == 3
+            if isinstance(queries, list):
+                valid = valid and len(queries) == 3 and all(
+                    isinstance(query, Mapping) and query.get("query") == label
+                    and query.get("status") == status and type(query.get("row_count")) is int
+                    and query.get("row_count") == rows
+                    for query, label, status, rows in zip(queries, (
+                        "baseline", "include_update_boundary", "exclude_update_boundary",
+                    ), ("decoded", "decoded", "empty"), (1, 1, 0), strict=False)
+                )
+        elif revision.get("support_status") == "sample_verified":
+            valid = False
+        if "production_fields_control" in revision:
+            valid = valid and source.get("status") == "failed" and revision.get("update_filter_verified") is False
+        status = "degraded" if valid and source.get("status") != "failed" else "failed"
+        return replace(result, payload=dict(source, status=status))
     schema = source.get("schema_version")
     if schema == "company-field-replay":
         valid = (
@@ -336,6 +372,91 @@ def _research_source_compare_details(
     source: Mapping[str, object],
     payload: dict[str, object],
 ) -> None:
+    revision = source.get("financial_revision_probe")
+    if isinstance(revision, Mapping):
+        fields = (
+            "eps", "bps", "revenue_growth_pct", "profit_growth_pct", "core_profit_growth_pct",
+            "roe_pct", "parent_profit", "core_profit",
+        )
+        report_fields = (
+            "SECUCODE", "REPORT_DATE", "NOTICE_DATE", "UPDATE_DATE", "EPSJB", "BPS", "TOTALOPERATEREVETZ",
+            "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR",
+        )
+        record = revision.get("record")
+        record = record if isinstance(record, Mapping) else {}
+        values = record.get("values")
+        values = values if isinstance(values, Mapping) else {}
+        queries = revision.get("queries")
+        queries = queries if isinstance(queries, list) else []
+        projected_queries: list[dict[str, object]] = []
+        for query in queries[:3]:
+            if not isinstance(query, Mapping):
+                continue
+            digest = query.get("response_sha256")
+            projected_queries.append({
+                "query": query.get("query") if query.get("query") in (
+                    "baseline", "include_update_boundary", "exclude_update_boundary", "production_fields_control",
+                ) else None,
+                "status": query.get("status") if query.get("status") in ("decoded", "empty", "failed") else None,
+                "provider_code": query.get("provider_code") if type(query.get("provider_code")) is int else None,
+                "provider_success": query.get("provider_success") if type(query.get("provider_success")) is bool else None,
+                "received_at": _text(query.get("received_at"), 64),
+                "response_sha256": digest if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) else None,
+                **{name: SafeNonnegativeInt(query.get(name)) for name in (
+                    "http_status", "response_bytes", "reported_count", "reported_pages", "row_count",
+                )},
+                "missing_fields": [name for name in SafeStringList(query.get("missing_fields"), limit=12) if name in report_fields],
+            })
+        allowed_failures = (
+                "company_financial_revision_deadline_exhausted", "company_financial_revision_clock_invalid",
+                "company_financial_revision_response_size_invalid", "company_financial_revision_provider_rejected",
+                "company_financial_revision_result_invalid", "company_financial_revision_identity_count_invalid",
+                "company_financial_revision_row_invalid", "company_financial_revision_required_fields_missing",
+                "company_financial_revision_record_absent", "company_financial_revision_inclusion_not_reproduced",
+                "company_financial_revision_filter_ignored", "company_financial_revision_identity_mismatch",
+                "company_financial_revision_time_invalid", "company_financial_revision_number_invalid",
+                "OSError", "RuntimeError", "TypeError", "ValueError", "CompanySourceFailure", "HttpError",
+                "HttpTimeout", "HttpConnectionError", "HttpCancelled", "HttpResponseTooLarge", "JSONDecodeError",
+        )
+        failure = revision.get("failure")
+        failure = failure if isinstance(failure, str) and failure in allowed_failures else None
+        payload["summary"] = {"runtime_configuration_sha256": _configuration_hash(source)}
+        projected: dict[str, object] = {
+            **{name: _text(revision.get(name), 64) for name in (
+                "source", "report", "code", "report_date", "observed_at",
+            )},
+            "read_only": True, "production_adopted": False, "field_correctness_verified": False,
+            "full_window_coverage_verified": False, "sort_verified": False,
+            "update_filter_verified": revision.get("update_filter_verified") is True,
+            "support_status": revision.get("support_status") if revision.get("support_status") in (
+                "sample_verified", "unverified", "not_verified",
+            ) else None,
+            "request_limit": 3, "max_response_bytes": 1024 * 1024,
+            "request_count": SafeNonnegativeInt(revision.get("request_count")),
+            "elapsed_seconds": _number(revision.get("elapsed_seconds")), "failure": failure,
+            "queries": projected_queries,
+        }
+        payload["financial_revision_probe"] = projected
+        if isinstance(revision.get("record"), Mapping):
+            projected["record"] = {
+                **{name: _text(record.get(name), 64) for name in ("identity", "report_date", "notice_at", "updated_at")},
+                "values": {name: _number(values.get(name)) for name in fields},
+                "missing_value_fields": [name for name in SafeStringList(record.get("missing_value_fields"), limit=8) if name in fields],
+            }
+        control = revision.get("production_fields_control")
+        if isinstance(control, Mapping):
+            control_values = control.get("values")
+            control_values = control_values if isinstance(control_values, Mapping) else {}
+            control_failure = control.get("failure")
+            projected["production_fields_control"] = {
+                "status": control.get("status") if control.get("status") in ("decoded", "empty", "failed") else None,
+                "update_date_requested": False, "revision_verified": False,
+                "failure": control_failure if isinstance(control_failure, str) and control_failure in allowed_failures else None,
+                **{name: _text(control.get(name), 64) for name in ("identity", "report_date", "notice_at")},
+                "values": {name: _number(control_values.get(name)) for name in fields},
+                "missing_value_fields": [name for name in SafeStringList(control.get("missing_value_fields"), limit=8) if name in fields],
+            }
+        return
     payload["market_pagination"] = ProjectMapping(source.get("market_pagination"))
     payload["structured_samples"] = source.get("structured_samples", [])
     sources = source.get("sources")

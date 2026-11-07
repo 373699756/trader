@@ -19,7 +19,7 @@ from datetime import date, datetime
 from functools import partial
 from pathlib import Path
 from statistics import median
-from threading import Lock
+from threading import Event, Lock, Thread, current_thread
 from typing import ParamSpec, TypeVar
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -81,6 +81,7 @@ _DOCUMENT_FAILURES = frozenset(failure for failure, _route, _transient in Compan
 }
 _SOURCE_FAILURES = frozenset({"access_denied", "rate_limited", "http_error", "timeout", "schema_invalid"})
 _RUNNING_REPORT_INTERVAL_SECONDS = 30.0
+_MAX_PENDING_STARTS_PER_OPERATION = 256
 _OPERATIONS = (
     "directory_fetch", "directory_request", "structured_financial_fetch", "structured_pledge_fetch",
     "structured_unlock_fetch", "annual_income_fetch", "pledge_day", "news_fetch", "download_dispatch", "download_transfer",
@@ -88,6 +89,7 @@ _OPERATIONS = (
     "ocr_execute", "raw_usage", "raw_size_scan", "raw_digest", "pacer_wait", "collection_publish", "facts_publish",
     "collection_initialize", "publication_prepare", "facts_inputs", "facts_compile", "facts_seal", "material_cleanup",
     "raw_reservation_scan",
+    "text_read", "document_commit", "document_stage", "structured_commit", "publication_recovery",
 )
 
 
@@ -97,27 +99,61 @@ class _OperationCounts:
     wall_seconds: float = 0.0
     thread_cpu_seconds: float = 0.0
     failures: dict[str, int] = field(default_factory=dict)
+    pending_starts: list[float] = field(default_factory=list)
+    untracked_calls: int = 0
 
 
 class _CompanySyncMeasurement:
     """Keep fixed operation counters; never retain call arguments or exceptions."""
 
-    def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        snapshot_interval_seconds: float = _RUNNING_REPORT_INTERVAL_SECONDS,
+    ) -> None:
+        if not math.isfinite(snapshot_interval_seconds) or snapshot_interval_seconds <= 0:
+            raise ValueError("company_sync_measurement_snapshot_interval_invalid")
         self._lock = Lock()
         self._snapshot_io_lock = Lock()
         self._counts = {name: _OperationCounts() for name in _OPERATIONS}
         self._monotonic = monotonic
-        self._next_snapshot = monotonic() + _RUNNING_REPORT_INTERVAL_SECONDS
+        self._snapshot_interval_seconds = snapshot_interval_seconds
         self._snapshot_writer: Callable[[], None] | None = None
-        self._snapshot_in_progress = False
+        self._snapshot_stop = Event()
+        self._snapshot_thread: Thread | None = None
+        self._snapshot_configured = False
         self._snapshot_failed = False
         self._closed = False
 
     def set_snapshot_writer(self, writer: Callable[[], None]) -> None:
+        start_failed = False
         with self._lock:
             if self._closed:
                 raise RuntimeError("company_sync_measurement_closed")
+            if self._snapshot_configured:
+                raise RuntimeError("company_sync_measurement_writer_already_set")
+            self._snapshot_configured = True
             self._snapshot_writer = writer
+            worker = Thread(target=self._snapshot_loop, name="company-measurement-heartbeat", daemon=False)
+            self._snapshot_thread = worker
+            try:
+                worker.start()
+            except RuntimeError:
+                self._snapshot_writer = None
+                self._snapshot_failed = True
+                self._snapshot_stop.set()
+                start_failed = True
+            except (KeyboardInterrupt, SystemExit):
+                self._snapshot_writer = None
+                self._snapshot_stop.set()
+                raise
+        if start_failed:
+            self._snapshot_notice("running_report_thread_start_failed")
+
+    @property
+    def snapshot_interval_seconds(self) -> float:
+        return self._snapshot_interval_seconds
 
     @property
     def snapshot_failed(self) -> bool:
@@ -126,17 +162,43 @@ class _CompanySyncMeasurement:
 
     def close_snapshots(self) -> None:
         with self._lock:
+            worker = self._snapshot_thread
+            if worker is current_thread():
+                raise RuntimeError("company_sync_measurement_close_from_heartbeat")
             self._closed = True
             self._snapshot_writer = None
+        self._snapshot_stop.set()
+        # An interrupted start may leave a Thread object without a native thread.
+        # Its stop flag is already set, so a delayed bootstrap cannot publish.
+        if worker is not None and worker.ident is not None:
+            worker.join()
         # A claimed writer rechecks _closed after taking this lock. Waiting for
         # the current writer ensures the final report always follows running.
         with self._snapshot_io_lock:
             pass
 
+    def _snapshot_loop(self) -> None:
+        while not self._snapshot_stop.wait(self._snapshot_interval_seconds):
+            with self._lock:
+                if self._closed or self._snapshot_failed:
+                    return
+                writer = self._snapshot_writer
+            if writer is None:
+                return
+            self._publish_running(writer)
+
     @contextmanager
     def operation(self, name: str) -> Iterator[None]:
         if name not in self._counts:
             raise ValueError("company_sync_measurement_operation_invalid")
+        entered = self._monotonic()
+        with self._lock:
+            count = self._counts[name]
+            tracked = len(count.pending_starts) < _MAX_PENDING_STARTS_PER_OPERATION
+            if tracked:
+                count.pending_starts.append(entered)
+            else:
+                count.untracked_calls += 1
         started, cpu = time.perf_counter(), time.thread_time()
         failure: str | None = None
         try:
@@ -147,9 +209,12 @@ class _CompanySyncMeasurement:
             raise
         finally:
             wall, thread_cpu = time.perf_counter() - started, time.thread_time() - cpu
-            snapshot: Callable[[], None] | None = None
             with self._lock:
                 count = self._counts[name]
+                if tracked:
+                    count.pending_starts.remove(entered)
+                else:
+                    count.untracked_calls -= 1
                 count.calls += 1
                 count.wall_seconds += wall
                 count.thread_cpu_seconds += thread_cpu
@@ -157,35 +222,27 @@ class _CompanySyncMeasurement:
                     if failure not in count.failures and len(count.failures) >= 31:
                         failure = "other"
                     count.failures[failure] = count.failures.get(failure, 0) + 1
-                if (
-                    self._snapshot_writer is not None and not self._closed and not self._snapshot_failed
-                    and not self._snapshot_in_progress and self._monotonic() >= self._next_snapshot
-                ):
-                    snapshot = self._snapshot_writer
-                    self._snapshot_in_progress = True
-                    self._next_snapshot = self._monotonic() + _RUNNING_REPORT_INTERVAL_SECONDS
-            if snapshot is not None:
-                self._publish_running(snapshot)
 
     def _publish_running(self, writer: Callable[[], None]) -> None:
-        try:
-            with self._snapshot_io_lock:
-                with self._lock:
-                    if self._closed or self._snapshot_failed:
-                        return
-                try:
-                    writer()
-                except OSError:
-                    with self._lock:
-                        self._snapshot_failed = True
-                        self._snapshot_writer = None
-                    try:
-                        print("company live-sync: running_report_write_failed (io_error); 后续运行中快照已关闭。", file=sys.stderr)
-                    except OSError:
-                        pass  # Diagnostic output must not replace the business result.
-        finally:
+        with self._snapshot_io_lock:
             with self._lock:
-                self._snapshot_in_progress = False
+                if self._closed or self._snapshot_failed:
+                    return
+            try:
+                writer()
+            except (OSError, ValueError, TypeError, RuntimeError):
+                with self._lock:
+                    self._snapshot_failed = True
+                    self._snapshot_writer = None
+                self._snapshot_stop.set()
+                self._snapshot_notice("running_report_write_failed")
+
+    @staticmethod
+    def _snapshot_notice(reason: str) -> None:
+        try:
+            print(f"company live-sync: {reason}; 后续运行中快照已关闭。", file=sys.stderr)
+        except OSError:
+            pass  # Diagnostic output must not replace the business result.
 
     def wrap(self, name: str, operation: Callable[_Parameters, _Value]) -> Callable[_Parameters, _Value]:
         def measured(*args: _Parameters.args, **kwargs: _Parameters.kwargs) -> _Value:
@@ -195,6 +252,7 @@ class _CompanySyncMeasurement:
         return measured
 
     def report(self) -> list[dict[str, object]]:
+        now = self._monotonic()
         with self._lock:
             return [
                 {
@@ -202,6 +260,12 @@ class _CompanySyncMeasurement:
                     "calls": count.calls,
                     "wall_seconds": count.wall_seconds,
                     "thread_cpu_seconds": count.thread_cpu_seconds,
+                    "inflight_calls": len(count.pending_starts) + count.untracked_calls,
+                    "oldest_inflight_seconds": None if count.untracked_calls else max(
+                        (max(0.0, now - started) for started in count.pending_starts), default=0.0
+                    ),
+                    "inflight_duration_complete": count.untracked_calls == 0,
+                    "untracked_inflight_calls": count.untracked_calls,
                     "failures": [
                         {"category": category, "calls": calls} for category, calls in sorted(count.failures.items())
                     ],
@@ -223,7 +287,7 @@ def _failure_category(exc: BaseException) -> str:
         (HttpCancelled, "cancelled"), (HttpTimeout, "timeout"), (TimeoutError, "timeout"),
         (HttpConnectionError, "connection_error"),
         (HttpResponseTooLarge, "response_too_large"), (HttpStatusError, "http_status_error"),
-        (HttpError, "http_error"), (sqlite3.Error, "sqlite_error"), (OSError, "io_error"),
+        (HttpError, "http_error"), (sqlite3.Error, "sqlite_error"), (InterruptedError, "interrupted"), (OSError, "io_error"),
         (ValueError, "validation_error"), (RuntimeError, "runtime_error"),
     ):
         if isinstance(exc, kind):
@@ -270,6 +334,11 @@ def _observe_company_operations(stack: ExitStack, measurement: _CompanySyncMeasu
         (CompanyRawFiles, "_size", staticmethod(measurement.wrap("raw_size_scan", CompanyRawFiles._size))),
         (CompanyRawFiles, "digest", staticmethod(measurement.wrap("raw_digest", CompanyRawFiles.digest))),
         (CompanyRawFiles, "_reservation_usage", measurement.wrap("raw_reservation_scan", CompanyRawFiles._reservation_usage)),
+        (CompanyDocumentFiles, "read", measurement.wrap("text_read", CompanyDocumentFiles.read)),
+        (SQLiteCompanyEvidenceIndex, "commit_document", measurement.wrap("document_commit", SQLiteCompanyEvidenceIndex.commit_document)),
+        (SQLiteCompanyEvidenceIndex, "document_stage", measurement.wrap("document_stage", SQLiteCompanyEvidenceIndex.document_stage)),
+        (SQLiteCompanyEvidenceIndex, "commit_structured", measurement.wrap("structured_commit", SQLiteCompanyEvidenceIndex.commit_structured)),
+        (SQLiteCompanyEvidenceIndex, "_repair_pending_files", measurement.wrap("publication_recovery", SQLiteCompanyEvidenceIndex._repair_pending_files)),
         (CompanyRequestPacer, "wait", measurement.wrap("pacer_wait", CompanyRequestPacer.wait)),
         (SQLiteCompanyEvidenceIndex, "initialize", measurement.wrap("collection_initialize", SQLiteCompanyEvidenceIndex.initialize)),
         (SQLiteCompanyEvidenceIndex, "prepare_publication", measurement.wrap("publication_prepare", SQLiteCompanyEvidenceIndex.prepare_publication)),
@@ -325,7 +394,7 @@ def MeasureCompanySync(runtime_config: Path, report_path: Path, *, fill_missing:
             "wall_seconds": time.perf_counter() - started,
             "process_cpu_seconds": time.process_time() - cpu,
             "operation_timing": "inclusive; recursive, nested and concurrent operations overlap and must not be summed as total wall time",
-            "operation_counts": "method invocations; directory_request and download_transfer count physical attempts",
+            "operation_counts": "completed method invocations; inflight counts and durations are separate; directory_request and download_transfer count physical attempts",
             "operation_boundaries": {
                 "publication_prepare": "prepare_publication startup/resume work; may include publication",
                 "facts_inputs": "ReadCompanySnapshotRows batch SQL input read and decode",
@@ -336,20 +405,20 @@ def MeasureCompanySync(runtime_config: Path, report_path: Path, *, fill_missing:
             "route_classification": "dispatch route; OCR fallback is also measured by ocr_execute",
             "thread_cpu_includes_child_processes": False,
             "coverage": "company adapters and publication; CLI total also includes shared reference preparation",
-            "snapshot_interval_seconds": _RUNNING_REPORT_INTERVAL_SECONDS,
-            "snapshot_trigger": "operation_completion",
+            "snapshot_interval_seconds": measurements.snapshot_interval_seconds,
+            "snapshot_trigger": "periodic_timer",
             "snapshot_failed": measurements.snapshot_failed,
             "physical_io_includes_running_reports": True,
             "operations": measurements.report(),
-            "database": {} if running else database.result,
+            "database": database.running_snapshot() if running else database.result,
             "database_statistics_final": not running,
         }
 
     with destination.open("x", encoding="utf-8") as stream:
         json.dump(report_payload(running=True), stream, ensure_ascii=False, indent=2, allow_nan=False)
-    measurements.set_snapshot_writer(lambda: AtomicWriteJson(destination, report_payload(running=True), indent=2))
     print("company live-sync: 将通过现有 CLI 写入当前 company 数据；不使用隔离副本或采样预算。", file=sys.stderr)
     try:
+        measurements.set_snapshot_writer(lambda: AtomicWriteJson(destination, report_payload(running=True), indent=2))
         with ExitStack() as stack:
             _observe_company_operations(stack, measurements)
             stack.enter_context(database)
