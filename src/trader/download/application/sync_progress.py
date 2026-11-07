@@ -94,7 +94,7 @@ class SyncProgress:
             now = self._monotonic()
             for task, timing in self._tasks.items():
                 observed = (task.owner, None) in self._observers or (task.owner, task.key) in self._observers
-                if not observed and not timing.ended and now - timing.emitted >= 5.0:
+                if not observed and not timing.ended and timing.latest.heartbeat and now - timing.emitted >= 5.0:
                     message = replace(timing.latest, state="等待", fields=(
                         *timing.latest.fields,
                         ProgressField(f"距该阶段事实更新 {ProgressDuration(now - timing.updated)}"),

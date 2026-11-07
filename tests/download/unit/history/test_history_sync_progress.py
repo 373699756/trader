@@ -253,37 +253,110 @@ def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:
     assert "13/100" in lines[-1] and "处理中" in lines[-1]
 
 
-def test_partition_sealing_reports_file_start_heartbeat_and_completion(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 101.0, 106.0, 127.0))
-
+def test_partition_sealing_reports_start_and_completion_without_wait_heartbeats(capsys) -> None:
+    clock = [100.0]
+    progress = StderrHistorySyncProgress(monotonic=lambda: clock[0])
+    clock[0] = 101
     progress.publish(HistorySyncProgress("sealing_partitions", "started", 0, 1, "prices_2026.sqlite3"))
+    clock[0] = 106
     progress.publish(HistorySyncProgress("sealing_partitions", "waiting", 0, 1, "prices_2026.sqlite3"))
+    progress._output.heartbeat()
+    clock[0] = 127
     progress.publish(HistorySyncProgress("sealing_partitions", "completed", 1, 1, "prices_2026.sqlite3"))
 
     lines = _compact_log(capsys.readouterr().err).splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 2
     assert "数据库文件校验 00:00:00 | 开始" in lines[0]
-    assert "数据库文件校验 00:00:05 | 等待" in lines[1]
-    assert "数据库文件校验 00:00:26 | 完成" in lines[2]
+    assert "数据库文件校验 00:00:26 | 完成" in lines[1]
     assert all("prices_2026.sqlite3" in line for line in lines)
 
 
 def test_publication_checks_keep_stage_elapsed_across_months(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100, 101, 106, 107, 108, 113, 114))
-
+    clock = [100.0]
+    progress = StderrHistorySyncProgress(monotonic=lambda: clock[0])
+    clock[0] = 101
     progress.publish(HistorySyncProgress("checking_partitions", "started", 0, 2, "2026-01"))
+    clock[0] = 106
     progress.publish(HistorySyncProgress("checking_partitions", "waiting", 0, 2, "2026-01"))
+    progress._output.heartbeat()
+    clock[0] = 107
     progress.publish(HistorySyncProgress("checking_partitions", "completed", 1, 2, "2026-01"))
+    clock[0] = 108
     progress.publish(HistorySyncProgress("checking_partitions", "started", 1, 2, "2026-02"))
+    clock[0] = 113
     progress.publish(HistorySyncProgress("checking_partitions", "waiting", 1, 2, "2026-02"))
+    progress._output.heartbeat()
+    clock[0] = 114
     progress.publish(HistorySyncProgress("checking_partitions", "completed", 2, 2, "2026-02"))
 
     lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert len(lines) == 3
     assert "发布分区检查 00:00:00 | 开始 | 0/2" in lines[0]
     assert "月份 2026-01" in lines[0]
-    assert "发布分区检查 00:00:07 | 开始 | 1/2" in lines[3]
-    assert "月份 2026-02" in lines[3]
+    assert "发布分区检查 00:00:06 | 处理中 | 1/2" in lines[1]
+    assert "月份 2026-02" in lines[-1]
     assert "发布分区检查 00:00:13 | 完成 | 2/2" in lines[-1]
+
+
+@pytest.mark.parametrize("stage,items", [
+    ("checking_partitions", ("2026-01", "2026-02")),
+    ("sealing_partitions", ("prices_2025.sqlite3", "prices_2026.sqlite3")),
+])
+def test_verification_prints_every_changed_count_even_within_one_second(stage, items, capsys):
+    clock = [0.0]
+    report = StderrHistorySyncProgress(monotonic=lambda: clock[0])
+    report.publish(HistorySyncProgress(stage, "started", 0, 2, items[0]))
+    report.publish(HistorySyncProgress(stage, "started", 0, 2, items[0]))
+    clock[0] = 0.1
+    report.publish(HistorySyncProgress(stage, "completed", 1, 2, items[0]))
+    report.publish(HistorySyncProgress(stage, "completed", 1, 2, items[0]))
+    report.publish(HistorySyncProgress(stage, "started", 1, 2, items[1]))
+    clock[0] = 0.2
+    report.publish(HistorySyncProgress(stage, "completed", 2, 2, items[1]))
+    report.publish(HistorySyncProgress(stage, "completed", 2, 2, items[1]))
+    clock[0] = 10
+    report._output.heartbeat()
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert len(lines) == 3
+    assert [line.split(" | ")[3].split()[0] for line in lines] == ["0/2", "1/2", "2/2"]
+    assert sum("| 开始 |" in line for line in lines) == 1
+    assert "| 完成 |" in lines[-1]
+
+
+@pytest.mark.parametrize("stage", ("checking_partitions", "sealing_partitions"))
+def test_verification_waiting_with_a_new_count_is_reported_once(stage, capsys):
+    clock = [0.0]
+    report = StderrHistorySyncProgress(monotonic=lambda: clock[0])
+    report.publish(HistorySyncProgress(stage, "started", 0, 2))
+    clock[0] = 0.1
+    report.publish(HistorySyncProgress(stage, "waiting", 1, 2))
+    report.publish(HistorySyncProgress(stage, "waiting", 1, 2))
+    clock[0] = 10
+    report._output.heartbeat()
+    report.publish(HistorySyncProgress(stage, "completed", 2, 2))
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert len(lines) == 3 and "| 等待 | 1/2" in lines[1]
+
+
+@pytest.mark.parametrize("stage", ("checking_partitions", "sealing_partitions"))
+@pytest.mark.parametrize("state,label", (("failed", "失败"), ("retrying", "重试"), ("cancelled", "取消")))
+def test_verification_diagnostics_are_immediate_even_without_count_changes(stage, state, label, capsys):
+    report = StderrHistorySyncProgress(monotonic=lambda: 0.0)
+    report.publish(HistorySyncProgress(stage, "started", 0, 2))
+    report.publish(HistorySyncProgress(stage, state, 0, 2,
+                                       failure_reason="fixture_verification_error" if state == "failed" else None))
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert len(lines) == 2 and f"| {label} |" in lines[-1]
+    if state == "failed":
+        assert "错误 fixture_verification_error" in lines[-1]
+
+
+@pytest.mark.parametrize("stage", ("checking_partitions", "sealing_partitions"))
+def test_empty_verification_still_reports_its_real_completion(stage, capsys):
+    report = StderrHistorySyncProgress(monotonic=lambda: 0.0)
+    report.publish(HistorySyncProgress(stage, "started", 0, 0))
+    report.publish(HistorySyncProgress(stage, "completed", 0, 0))
+    assert "| 完成 |" in _compact_log(capsys.readouterr().err).splitlines()[-1]
 
 
 def test_publication_preparation_and_snapshot_start_are_not_silent(capsys) -> None:

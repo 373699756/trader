@@ -51,6 +51,7 @@ class ProgressMessage:
     immediate: bool = False
     compact: bool = False
     owner_finished: bool = False
+    heartbeat: bool = True
 
 
 def FormatProgressField(text: str, width: int = 0, *, level: ProgressLevel = ProgressLevel.NORMAL) -> ProgressField:

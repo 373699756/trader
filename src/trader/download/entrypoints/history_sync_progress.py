@@ -79,6 +79,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "history_gap_resume": "处理项",
     "baostock_repair": "股票",
 }
+_VERIFICATION_STAGES = frozenset({"checking_partitions", "sealing_partitions"})
 _RESULT_LABELS = {
     "completed": "同步完成",
     "already_current": "已是最新",
@@ -213,6 +214,7 @@ class StderrHistorySyncProgress:
         self._last_progress: tuple[HistorySyncProgressStage, str | None] | None = None
         self._specific_failure: tuple[HistorySyncProgressStage, str | None] | None = None
         self._route: HistorySyncProgress | None = None
+        self._verification_updates: dict[HistorySyncProgressStage, HistorySyncProgress] = {}
         self._download_display = HistoryDownloadDisplay(monotonic)
         self._download_failures: set[tuple[str | None, str | None]] = set()
         self._output.register_observer("history", self.heartbeat_message, task_key="prices")
@@ -257,6 +259,9 @@ class StderrHistorySyncProgress:
         self._last_progress = (progress.stage, progress.current_item)
         self._record_failure(progress)
         if self._should_suppress(progress):
+            return
+        verification_started_before = progress.stage in self._verification_updates
+        if self._suppress_unchanged_verification(progress):
             return
         if progress.stage == "tencent_history" and progress.state == "failed" and progress.current_item is None:
             self._download_display.finish()
@@ -308,13 +313,28 @@ class StderrHistorySyncProgress:
                 ),
                 task=ProgressTask("history", key, label),
                 state="处理中" if progress.state == "completed" and progress.stage in _COUNT_STAGES and progress.completed_units < progress.total_units
+                      or progress.stage in _VERIFICATION_STAGES and progress.state == "started" and verification_started_before
                       else _STATE_LABELS[progress.state],
-                immediate=progress.stage == "baostock_repair",
+                immediate=progress.stage == "baostock_repair" or progress.stage in _VERIFICATION_STAGES,
+                heartbeat=progress.stage not in _VERIFICATION_STAGES,
                 finished=progress.stage == "baostock_repair"
                          or progress.state == "completed" and (progress.stage not in _COUNT_STAGES or progress.completed_units == progress.total_units)
                          or progress.state == "cancelled",
             )
         )
+
+    def _suppress_unchanged_verification(self, progress: HistorySyncProgress) -> bool:
+        if progress.stage not in _VERIFICATION_STAGES:
+            return False
+        if progress.state in {"failed", "retrying", "cancelled"}:
+            return False
+        previous = self._verification_updates.get(progress.stage)
+        if previous is not None and (previous.completed_units, previous.total_units) == (progress.completed_units, progress.total_units):
+            terminal = progress.state == "completed" and progress.completed_units == progress.total_units
+            if not terminal or previous.state == "completed":
+                return True
+        self._verification_updates[progress.stage] = progress
+        return False
 
     def _stock_download_line(self, progress: HistorySyncProgress) -> ProgressMessage:
         code = progress.current_item
