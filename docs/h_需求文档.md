@@ -22,7 +22,7 @@ company最新补充：下载公告的成果必须是所需结构化字段及其�
 | `docs/d_下载设计.md`、`docs/e_训练设计.md` | 从 `docs/4_下载训练.md` 拆分，拆分及补充内容随23624ca0交付 |
 | `docs/f_人工审查.md` | `docs/5_人工审查.md` |
 | `docs/g_实施进度.md` | `docs/3_工程实施.md` |
-| `docs/company.md`、`docs/score.md` | 同名历史来源；company补充随23624ca0交付 |
+| `docs/company.md`、`docs/score.md` | 固定历史来源；分别用 `git show 23624ca0:docs/company.md`、`git show 23624ca0:docs/score.md` 回查 |
 
 查旧台账用`git log --follow -- docs/g_实施进度.md`，再按具体提交用`git show <提交>:docs/3_工程实施.md`读取改名前原文。`23624ca0`对该台账是100%重命名；它与原`3_工程实施.md`是同一条历史链。台账内容已更新到2026-11-02，晚于10月12日删除的changelog及其更早条目，应先核对该链及后续指令，再用更早记录补充。
 

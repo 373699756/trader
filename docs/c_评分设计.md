@@ -446,7 +446,7 @@ local_score = clamp(base_score - local_risk_penalty, 0, 100)
 
 ## 15. 荐股与收益研究
 
-以下完整承接原 `docs/score.md` 的六条研究主线。它们是研究计划，不直接改生产参数，不新增算法档位、不比较XGBoost，DeepSeek增量研究暂缓。进度只记 g，原文件保留供人工对照。
+以下完整承接原 `docs/score.md` 的六条研究主线。它们是研究计划，不直接改生产参数，不新增算法档位、不比较XGBoost，DeepSeek增量研究暂缓。进度只记 g，原稿用 `git show 23624ca0:docs/score.md` 回查。
 
 ### 15.1 建立八个模型头的收益基线
 

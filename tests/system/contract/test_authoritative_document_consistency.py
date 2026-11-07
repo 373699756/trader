@@ -132,10 +132,11 @@ def test_each_document_has_one_explicit_responsibility(name: str) -> None:
 
 
 def test_retired_blueprints_are_removed_without_forwarding_stubs() -> None:
-    for name in ("项目重构大纲.md", "项目重构详细.md", "04_策略回溯.md", "1.md", "2.md", "todo.md"):
+    for name in (
+        "项目重构大纲.md", "项目重构详细.md", "04_策略回溯.md", "1.md", "2.md", "todo.md",
+        "company.md", "score.md",
+    ):
         assert not (DOCS / name).exists()
-    # The current rewrite explicitly retains old documents for manual comparison.
-    assert (DOCS / "company.md").is_file()
 
 
 def test_current_document_links_resolve() -> None:
