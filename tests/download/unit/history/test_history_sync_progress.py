@@ -139,6 +139,92 @@ def test_industry_window_diagnostic_does_not_turn_published_prices_into_pending(
                if field.text.startswith(("历史行业整窗覆盖 ", "行业核验异常 ")))
 
 
+def test_context_and_industry_share_one_waiting_line_and_one_final_completion() -> None:
+    clock = [0.0]
+    messages: list[ProgressMessage] = []
+    output = SyncProgress(messages.append, lambda: clock[0])
+    reporter = StderrHistorySyncProgress(monotonic=lambda: clock[0], report=output)
+    reporter.publish(HistorySyncProgress("loading_context", "started", 0, 1))
+    reporter.publish(HistorySyncProgress("supplier_industry", "started", 0, 4402, "capco", data_source="中上协"))
+    for second in range(5, 76, 5):
+        clock[0] = float(second)
+        output.heartbeat()
+    waiting = [message for message in messages if message.state == "等待"]
+    assert len(waiting) == 2
+    assert all(message.task is not None and message.task.key == "supplier_industry" for message in waiting)
+    assert all("来源 中上协" in RenderProgress(message) for message in waiting)
+
+    clock[0] = 79.0
+    reporter.publish(HistorySyncProgress("supplier_industry", "completed", 1, 4402, "000001",
+                                         cache_hit=True, data_source="本地（巨潮原件）"))
+    clock[0] = 85.0
+    reporter.publish(HistorySyncProgress("supplier_industry", "completed", 4402, 4402, "689009",
+                                         cache_hit=True, data_source="本地（巨潮原件）"))
+    assert messages[-1].state == "处理中" and not messages[-1].finished
+    clock[0] = 86.0
+    reporter.publish(HistorySyncProgress("supplier_industry", "completed", 4402, 4402, "capco",
+                                         industry_missing_codes=4402, data_source="本地（中上协证据）"))
+    assert not any(message.state == "完成" for message in messages)
+    reporter.publish(HistorySyncProgress("loading_context", "completed", 1, 1))
+    completion = messages[-2]
+    assert completion.task is not None and completion.task.key == "supplier_industry"
+    assert completion.state == "完成" and completion.finished
+    assert "来源 本地（中上协证据）" in RenderProgress(completion)
+    assert messages[-1].task is not None and messages[-1].task.key == "loading_context"
+    assert messages[-1].state == "完成"
+    count = len(messages)
+    clock[0] = 120.0
+    output.heartbeat()
+    assert len(messages) == count
+
+
+@pytest.mark.parametrize("terminal", ("failed", "cancelled"))
+def test_context_failure_or_cancellation_discards_deferred_industry_completion(terminal) -> None:
+    clock = [0.0]
+    messages: list[ProgressMessage] = []
+    output = SyncProgress(messages.append, lambda: clock[0])
+    reporter = StderrHistorySyncProgress(monotonic=lambda: clock[0], report=output)
+    reporter.publish(HistorySyncProgress("loading_context", "started", 0, 1))
+    reporter.publish(HistorySyncProgress("supplier_industry", "started", 0, 1, "capco", data_source="中上协"))
+    reporter.publish(HistorySyncProgress("supplier_industry", "completed", 1, 1, "capco"))
+    reporter.publish(HistorySyncProgress("loading_context", terminal, 0, 1))
+    assert not any(message.state == "完成" for message in messages)
+    count = len(messages)
+    clock[0] = 60.0
+    output.heartbeat()
+    assert len(messages) == count
+
+
+@pytest.mark.parametrize("with_context", (False, True))
+def test_independent_industry_completion_does_not_require_a_capco_marker(with_context) -> None:
+    messages: list[ProgressMessage] = []
+    reporter = StderrHistorySyncProgress(monotonic=lambda: 0.0, report=SyncProgress(messages.append, lambda: 0.0))
+    if with_context:
+        reporter.publish(HistorySyncProgress("loading_context", "started", 0, 1))
+    reporter.publish(HistorySyncProgress("supplier_industry", "completed", 1, 1, "301548", data_source="独立来源"))
+    if with_context:
+        assert messages[-1].state == "处理中"
+        reporter.publish(HistorySyncProgress("loading_context", "completed", 1, 1))
+    completed = [message for message in messages if message.task is not None
+                 and message.task.key == "supplier_industry" and message.state == "完成"]
+    assert len(completed) == 1
+    assert "来源 独立来源" in RenderProgress(completed[0])
+
+
+def test_late_industry_failure_is_not_overwritten_by_a_deferred_success() -> None:
+    messages: list[ProgressMessage] = []
+    reporter = StderrHistorySyncProgress(monotonic=lambda: 0.0, report=SyncProgress(messages.append, lambda: 0.0))
+    reporter.publish(HistorySyncProgress("loading_context", "started", 0, 1))
+    reporter.publish(HistorySyncProgress("supplier_industry", "completed", 1, 1, "capco"))
+    reporter.publish(HistorySyncProgress("supplier_industry", "failed", 0, 1, "capco",
+                                         failure_detail="official_industry_budget_exhausted"))
+    assert messages[-1].state == "失败"
+    assert "official_industry_budget_exhausted" in RenderProgress(messages[-1])
+    reporter.publish(HistorySyncProgress("loading_context", "completed", 1, 1))
+    assert not any(message.task is not None and message.task.key == "supplier_industry"
+                   and message.state == "完成" for message in messages)
+
+
 def test_legacy_resume_progress_is_visible_with_counts_and_month(capsys):
     reporter = StderrHistorySyncProgress(monotonic=lambda: 0.0)
     reporter.publish(HistorySyncProgress("history_gap_resume", "waiting", 64, 65, current_item="2026-09"))

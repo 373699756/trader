@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Literal
@@ -63,6 +64,15 @@ class ProgressMessage:
     owner_finished: bool = False
     heartbeat: bool = True
     rows: tuple[ProgressRow, ...] = ()
+    heartbeat_interval_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.heartbeat_interval_seconds) not in (int, float)
+            or not math.isfinite(self.heartbeat_interval_seconds)
+            or self.heartbeat_interval_seconds <= 0
+        ):
+            raise ValueError("sync_progress_heartbeat_interval_invalid")
 
 
 def FormatProgressField(text: str, width: int = 0, *, level: ProgressLevel = ProgressLevel.NORMAL) -> ProgressField:

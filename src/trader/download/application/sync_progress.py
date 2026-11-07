@@ -72,7 +72,7 @@ class SyncProgress:
         if changed:
             timing.updated = now
         timing.ended = timing.ended or message.finished or message.owner_finished
-        interval = 5.0 if message.state == "等待" else 1.0
+        interval = message.heartbeat_interval_seconds if message.state == "等待" else 1.0
         if immediate or now - timing.emitted >= interval:
             self._emit(task, timing, message, now)
 
@@ -94,7 +94,10 @@ class SyncProgress:
             now = self._monotonic()
             for task, timing in self._tasks.items():
                 observed = (task.owner, None) in self._observers or (task.owner, task.key) in self._observers
-                if not observed and not timing.ended and timing.latest.heartbeat and now - timing.emitted >= 5.0:
+                if (
+                    not observed and not timing.ended and timing.latest.heartbeat
+                    and now - timing.emitted >= timing.latest.heartbeat_interval_seconds
+                ):
                     message = replace(timing.latest, state="等待", fields=(
                         *timing.latest.fields,
                         ProgressField(f"距该阶段事实更新 {ProgressDuration(now - timing.updated)}"),

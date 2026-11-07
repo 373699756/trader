@@ -215,6 +215,8 @@ class StderrHistorySyncProgress:
         self._specific_failure: tuple[HistorySyncProgressStage, str | None] | None = None
         self._route: HistorySyncProgress | None = None
         self._verification_updates: dict[HistorySyncProgressStage, HistorySyncProgress] = {}
+        self._loading_context = False
+        self._industry_completion: HistorySyncProgress | None = None
         self._download_display = HistoryDownloadDisplay(monotonic)
         self._download_failures: set[tuple[str | None, str | None]] = set()
         self._output.register_observer("history", self.heartbeat_message, task_key="prices")
@@ -236,6 +238,17 @@ class StderrHistorySyncProgress:
             self._output.finish_owner("history")
 
     def _publish(self, progress: HistorySyncProgress) -> None:
+        if progress.stage == "loading_context":
+            if progress.state == "started":
+                self._loading_context = True
+                self._industry_completion = None
+            elif progress.state in {"completed", "failed", "cancelled"}:
+                completion = self._industry_completion
+                self._loading_context = False
+                self._industry_completion = None
+                if progress.state == "completed" and completion is not None:
+                    self._publish(completion)
+                self._output.finish(ProgressTask("history", "supplier_industry", _STAGE_LABELS["supplier_industry"]))
         if progress.stage == "baostock_repair":
             self._repair_counts = (progress.completed_units, progress.total_units)
             if progress.current_item is not None or progress.state == "completed":
@@ -258,6 +271,15 @@ class StderrHistorySyncProgress:
             self._stock_counts = (progress.completed_units, progress.total_units)
         self._last_progress = (progress.stage, progress.current_item)
         self._record_failure(progress)
+        industry_completion_pending = False
+        if progress.stage == "supplier_industry" and self._loading_context:
+            if progress.state in {"failed", "retrying", "cancelled"} or progress.failure_reason is not None or progress.failure_detail is not None:
+                self._industry_completion = None
+            elif progress.state == "completed" and progress.completed_units == progress.total_units:
+                self._industry_completion = progress
+                if progress.current_item == "capco":
+                    return
+                industry_completion_pending = True
         if self._should_suppress(progress):
             return
         verification_started_before = progress.stage in self._verification_updates
@@ -312,14 +334,16 @@ class StderrHistorySyncProgress:
                     for index, part in enumerate(parts)
                 ),
                 task=ProgressTask("history", key, label),
-                state="处理中" if progress.state == "completed" and progress.stage in _COUNT_STAGES and progress.completed_units < progress.total_units
+                state="处理中" if industry_completion_pending
+                      or progress.state == "completed" and progress.stage in _COUNT_STAGES and progress.completed_units < progress.total_units
                       or progress.stage in _VERIFICATION_STAGES and progress.state == "started" and verification_started_before
                       else _STATE_LABELS[progress.state],
                 immediate=progress.stage == "baostock_repair" or progress.stage in _VERIFICATION_STAGES,
-                heartbeat=progress.stage not in _VERIFICATION_STAGES,
-                finished=progress.stage == "baostock_repair"
+                heartbeat=progress.stage not in _VERIFICATION_STAGES and progress.stage != "loading_context",
+                heartbeat_interval_seconds=30.0 if progress.stage == "supplier_industry" else 5.0,
+                finished=not industry_completion_pending and (progress.stage == "baostock_repair"
                          or progress.state == "completed" and (progress.stage not in _COUNT_STAGES or progress.completed_units == progress.total_units)
-                         or progress.state == "cancelled",
+                         or progress.state == "cancelled"),
             )
         )
 

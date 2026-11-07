@@ -106,6 +106,76 @@ def test_heartbeat_uses_latest_real_counts_and_never_reopens_finished_tasks():
     assert stream.getvalue() == before
 
 
+@pytest.mark.parametrize("interval", (None, 30.0))
+def test_task_heartbeat_uses_default_or_custom_interval_and_stops_after_completion(interval):
+    clock = [0.0]
+    messages = []
+    report = SyncProgress(messages.append, lambda: clock[0])
+    initial = ProgressMessage((ProgressField("已处理0"),), task=ProgressTask("history", "read", "读取任务"), state="开始")
+    if interval is not None:
+        initial = replace(initial, heartbeat_interval_seconds=interval)
+    seconds = 5.0 if interval is None else interval
+    assert initial.heartbeat_interval_seconds == seconds
+    report(initial)
+    clock[0] = 0.1
+    report(replace(initial, fields=(ProgressField("已处理1"),), state="处理中"))
+    clock[0] = seconds - 0.1
+    report.heartbeat()
+    assert len(messages) == 1
+    clock[0] = seconds
+    report.heartbeat()
+    assert len(messages) == 2 and messages[-1].state == "等待"
+    assert messages[-1].fields[-2].text == "已处理1"
+    clock[0] += 0.1
+    report(replace(initial, state="完成", finished=True))
+    assert len(messages) == 3 and messages[-1].state == "完成"
+    clock[0] += seconds * 2
+    report.heartbeat()
+    assert len(messages) == 3
+
+
+@pytest.mark.parametrize("interval", (5.0, 30.0))
+def test_explicit_wait_messages_follow_the_task_interval_but_facts_and_boundaries_keep_their_cadence(interval):
+    clock = [0.0]
+    messages = []
+    report = SyncProgress(messages.append, lambda: clock[0])
+    event = ProgressMessage((), task=ProgressTask("history", "read", "读取任务"), state="等待", heartbeat_interval_seconds=interval)
+    report(event)
+    clock[0] = interval - 0.1
+    report(event)
+    assert len(messages) == 1
+    clock[0] = interval
+    report(event)
+    assert len(messages) == 2
+    clock[0] += 0.9
+    report(replace(event, state="处理中"))
+    assert len(messages) == 2
+    clock[0] = interval + 1
+    report(replace(event, state="处理中"))
+    assert len(messages) == 3
+    for state in ("开始", "重试", "失败", "取消", "完成"):
+        report(replace(event, state=state, finished=state in {"失败", "取消", "完成"}))
+        assert messages[-1].state == state
+    assert len(messages) == 8
+
+
+def test_heartbeat_disabled_remains_disabled_with_custom_interval():
+    clock = [0.0]
+    messages = []
+    report = SyncProgress(messages.append, lambda: clock[0])
+    report(ProgressMessage((), task=ProgressTask("history", "parent", "父阶段"), state="开始",
+                           heartbeat=False, heartbeat_interval_seconds=30.0))
+    clock[0] = 120
+    report.heartbeat()
+    assert len(messages) == 1
+
+
+@pytest.mark.parametrize("interval", (0.0, -1.0, float("inf"), float("-inf"), float("nan"), True, "30", None))
+def test_progress_message_rejects_invalid_heartbeat_intervals(interval):
+    with pytest.raises(ValueError, match="sync_progress_heartbeat_interval_invalid"):
+        ProgressMessage((), heartbeat_interval_seconds=interval)
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_heartbeat_thread_is_reclaimed_after_success_and_exception(fail):
     report = SyncProgress(lambda message: None, time.monotonic)
