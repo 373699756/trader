@@ -353,3 +353,52 @@ Q24的价格差异检查只比较同源qfq OHLC，不因量额单独变化触发
 直接工具、离线回放和测试消费者同批显式传入配对基准；无默认比例1或从实时价猜造历史锚的生产回退。功能验证及交付摘要见g352。该修复防止后续混写/混算，没有运行活动历史同步、批量修复旧库或重训；重新训练前仍须核验历史输入是否已有污染，代码修复不能自动证明旧数据干净。
 
 隔离候选24个相关测试文件567项通过，推进已提交训练日历修复后完成相关复核；最终Review补齐离线回放不覆盖基准failure的边界及四档4例，120项最终复验通过。按用例身份以最新结果覆盖后571项唯一通过，不重复累加；最终35个改动Python文件Ruff及14源码模块mypy通过。原反例对应的错误输入已由新整窗/基准门处理，四档拒绝无证基准有定向回归；这些证据不升级为全市场真实除权、活动库修复或收益验收。
+
+## 6. 全工程、性能与模块边界Review（2026-11-07）
+
+### 6.1 源码身份、覆盖与结论边界
+
+本轮按用户要求复核整个工程，采用全目录静态扫描和关键调用链精读。扫描727个产品Python文件及20个配置文件，747个内容摘要首尾一致；Review期间共享HEAD由248d0dbf推进到fbc90b07，但没有改变该组已读取内容。当前无产品Python文件超过1500行；bootstrap为1497行，company_evidence_index为1500行。摘要清单保存在仓库外 /tmp/trader-engineering-review-20261107-source-manifest.json，不能把提交哈希单独当成这棵混合工作树的完整身份。
+
+已推送的对照基线为aa66aa91，继承353的9bb68f29关闭修复；共享356入口仍包含旧的忽略stop结果路径。356相对其本地HEAD只有日志/计时差集，没有主动删除修复；交付时须在已推送基线上重放窄差集，不能整文件覆盖而回退353。此项属于已交切片的整合/采用漂移，不新增一遍关闭修复任务。行业HDD正常入口采用64份已有fbc90b07中的用户新授权依据；采用与独占性能验收仍分开，不把旧“默认1”等过程文字恢复为当前结论。
+
+以下“确定”是源码与实际消费者确认的条件缺口，不表示本轮已复现生产故障或取得实测损失。没有运行pytest、Ruff、mypy、格式、供应商请求、同步、拟合、真实留出读取、活动库查询或性能作业；没有修改产品源码、配置、模型或资料。仅更新审查记录及g的原任务接续入口。
+
+### 6.2 确认的代码缺口与新增反例
+
+| 问题／优先级 | 当前回答与触发影响 | 证据及实际调用链 | 原任务接续与关闭所需核验 |
+| --- | --- | --- | --- |
+| 关闭异常跳过剩余owner／P1 | 任一资源或档位stop抛异常时，关闭循环立即退出，后续档位及第一档持有的共享资源可能未被尝试关闭；启动回滚也有同类短路 | [资源关闭](../src/trader/recommendation/application/runtime/resource_orchestration.py#L170)、[多档关闭](../src/trader/recommendation/infra/runtime/profiled_application.py#L55)；server→ProfiledApplicationSystem→ApplicationSystem→StopApplicationResources，外层整体失败报告不会补做跳过的清理 | 沿353第5项及281，在同一deadline下逐owner记录失败并继续关闭，保留最初异常与因果；反例需覆盖首个/中间stop异常、部分启动及共享资源最后回收 |
+| 进入有界关闭前仍无期限等待／P2 | history与market先等writer；训练源扫描失败则先wait全部任务。外层关闭scope/deadline尚未执行，直接取消回调/诊断调用者不具备同等期限保证；已缓存进入拟合的训练任务不观察fanout内部stopped | [history取消](../src/trader/download/infra/history_download_flow.py#L780)、[writer关闭](../src/trader/download/infra/history_download_flow.py#L789)、[market finally](../src/trader/download/application/update_qfq.py#L688)、[训练异常wait](../src/trader/training/application/selected_training.py#L291)。训练接收器观察内部Event，拟合消费者仍观察原cancelled；aa66也有该fanout路径 | 沿353生命周期、292下载及344/347训练核统一取消和剩余期限。正常CLI信号另有watchdog，不据此宣称其必然无限挂起。维护锁必须覆盖真实writer退出，不能简单给result加timeout就释放锁；普通源失败是否允许独立有效档位继续完成须先明确 |
+| market关闭失败只记日志／P2 | 这条下载链在aa66也未修，区别于6.1的训练入口采用漂移。业务结果成功、worker或完成回调未按期结束时，可同时出现“关闭失败”与任务completed/返回退出码0；不能据返回值证明真实进程已经退出 | [StopQfqWorkers](../src/trader/download/infra/qfq_update_runner.py#L54)未将ShutdownStep交回调用者；[组合根finally](../src/trader/bootstrap.py#L744)不改变原结果；[任务投影](../src/trader/download/application/sync_data.py#L103)只核needs_retry | 沿353/292，先尝试全部资源关闭，再把不完整/异常关闭纳入命令终态；保留实际已发布价格和凭据，不把清理失败改写成“未发布” |
+| 缓存再次关闭可能误报完成／P2 | wait=False或等候超期会清空inflight登记并释放等待者，但loader仍可执行；再次stop可能因映射为空返回completed=True，统计也提前归零。外层线程池仍可能报告未完成，不能据此认定整进程已假成功 | [cache.stop](../src/trader/infra/cache.py#L327)；实际coalesce由行情source_coordinator和特征构建使用 | 沿353第5项，分开表示等待者已释放和loader已退出，owner保留到finally完成；覆盖不等待关闭、超时、重复stop及loader随后成功/失败 |
+| 旧备份清理失败叠加下次硬退出／P1 | 正式目录存在时恢复入口忽略旧previous；清理失败保留它，下一次发布又创建一棵previous。若在移走正式目录后硬退出，恢复因两个previous拒绝，尽管完整旧双头仍在 | [恢复入口](../src/trader/training/infra/model_bundles/profile_publication.py#L65)、[目录切换](../src/trader/training/infra/model_bundles/profile_publication.py#L146)、[清理仅告警](../src/trader/training/infra/model_bundles/profile_publication.py#L160)；V1沿共用恢复owner有同类组合，aa66相同 | 沿334/353及C训练发布，在旧残留未裁决时阻止下一次破坏性切换，或以明确可验证的事务归属识别本次候选；保留歧义守卫和未知内容，不任意挑目录、不静默删除。补“清理失败→再发布→各切换点硬退出”的组合反例 |
+| 同摘要正文仍按新材料预约并重写／P2 | 有效相同正文净增长为零，现路径仍预约完整文本、压缩、按used+payload准入并覆盖/fsync；接近容量上限可能拒绝本可复用材料，充足时也重复工作 | [采集入库](../src/trader/download/infra/company_evidence_index.py#L833)→[文本write](../src/trader/download/infra/company_document_files.py#L48)，后者每次glob/stat并未先核同摘要有效文件 | 沿332，在完整验证现存摘要材料后复用，保留损坏材料处理和并发守卫；覆盖近上限重复、同正文不同公告、损坏同名文件。压缩/扫描/fsync收益须由4.5另测，不从静态次数推提速比例 |
+| 隔离IPC的完整收发未受截止监督／P2 | poll仅表示有字节可读，不保证完整帧；同步send/recv可能停在半帧、阻塞发送或反序列化阶段，不能继续检查原deadline/cancel | [HTTP send/recv](../src/trader/infra/isolated_http.py#L118)、[SDK recv](../src/trader/infra/isolated_call.py#L54)；HTTP经bootstrap._build_market_data→RequestsHttpTransport(execute_request=workers.http_executor.execute)→IsolatedHttpExecutor，SDK经RunIsolatedCall使用 | 沿353 I/O/关闭及281，完整收发、取消和worker回收须由同一剩余期限监督；补半帧后停滞、大发送、子进程中途退出。未测真实发生频率，不宣称已有网络性能故障 |
+| 材料读取未统一拒绝特殊文件／P2 | 正文压缩文件只核尺寸再gzip.open，原PDF摘要直接读至EOF；预期路径若意外成为FIFO等非普通文件，文件间取消检查无法中断该次读取。初始化还可能在写事务内逐份读材料 | [文本read](../src/trader/download/infra/company_document_files.py#L78)、[原件digest](../src/trader/download/infra/company_raw_files.py#L177)、[初始化](../src/trader/download/infra/company_evidence_index.py#L251)；[regular_file](../src/trader/infra/regular_file.py#L39)已有FD普通文件和读取上限primitive | 沿353边界/332材料恢复核唯一读取owner、FD后验类型和有界读取，保护原件；未构造特殊文件或测试，不把这一条件风险称为已发生的资料故障 |
+| 历史响应ETag不含收益汇总／P2 | 冻结与报价不变、收益结算汇总改变时，条件请求仍可能304而保留旧汇总；当前Web历史请求未发送条件头，影响限定为公开API合同 | [history追加汇总](../src/trader/recommendation/application/pipeline/freeze_publish/read_only_queries.py#L322)晚于_scored_view的etag生成；[HTTP 304](../src/trader/http_api/handlers/product_handler.py#L304)先于序列化 | 沿281的API/SSE/历史一致性，将该响应的汇总身份纳入validator或明确拆分缓存合同；用冻结不变、汇总变化的If-None-Match反例核验，不报页面已经出错 |
+
+### 6.3 模块与合同需要继续收口的地方
+
+| 问题 | 当前回答与证据 | 待确认及原归属 |
+| --- | --- | --- |
+| 顶层infra仍拥有荐股业务算术 | [公共history](../src/trader/infra/market_data/history/history.py#L135)维护均线、ATR、波动率、回撤和Amihud等FeatureBuilder算术，实际消费者包括recommendation的factor_history和SharedHistoryProjection。它们具有评分业务定义，不属于时钟/网络/事务等技术primitive | 沿353第4项裁决荐股domain算法、不可变类型和adapter各自owner，原子切换全部消费者并删除旧活动路径；保持数值和身份，不新增转发壳。该位置差距本身不证明性能损失 |
+| 终端状态标签的粒度与一致性未闭合 | [loader](../src/trader/training/infra/research/terminal_holdout_inputs.py#L107)接受每行三个非空状态；[评价](../src/trader/training/domain/evaluation/terminal_holdout.py#L437)在按代码排序后只取当天首行市场/波动/流动性标签，并用于40日覆盖。合法输入接口能接收同日混值，统计可随首个代码改变 | 沿213由原owner明确标签是全市场日状态、板级还是个股状态，再补一致性拒绝或合法聚合。正文不足以直接判定真实全市场40日门被补签；本轮未读取真实留出 |
+
+三业务及application/domain方向继续保留。本轮未发现CreateApp启动线程、联网、建库或写文件，HTTP路由也未发现直接触发下载、训练或评分。training外层发布adapter实现荐股拥有的port，不能仅凭双向包名判为循环依赖。近1500行的组合根与公司index，以及298行的BuildScoredLocal，可在下一次确有职责变化时先登记owner/消费者再拆；不因文件长而新增服务、第二组合根或空转发模块。
+
+### 6.4 只能先测、不能直接启用的性能候选
+
+| 候选及证据 | 实测前必须保留的正确性 | 唯一执行位置 |
+| --- | --- | --- |
+| 单V5冷样本的源扫描范围优化：[AlignmentReadDates](../src/trader/training/infra/history/aligned_training_rows.py#L19)只用请求最大日期，源扩为日历末最多2000日；[共享扫描](../src/trader/training/infra/selected_training.py#L166)读取后，builder再丢弃窗口外行 | 研究“必要窗口＋每股窗口前因果种子”，先核长期停牌、缺行、上市边界和所有四档数值。不得直接截短为61日、降低样本/日期/行业门；同输入报告实际扫描行、I/O及总作业墙钟 | C沿344/347、P50/P58及g4.5；原2000日语义保留到合法候选达门 |
+| 终端研究的资源预检和有界处理：[开启记录](../src/trader/training/infra/research/terminal_holdout_inputs.py#L48)先消耗一次资格；两策略均就绪时，随后同时返回两个完整Python对象分区，每分区允许最多200万行/4GiB，评价再排序/分日，没有训练内存准入 | 开启前只能按允许的文件元数据/预登记规模做不接触收益内容的资源预检；研究流式/分区处理须保持精确身份、统计、bootstrap及一次开启语义，不重置失败后的开启记录。未证明本机一定OOM | 213设计由A/C协同；性能只由C在获授权的隔离非真实留出输入上验证，不为测量打开真实留出 |
+| 模型缓存命中前的重复身份构造：[prepare_rows](../src/trader/recommendation/application/pipeline/local_score/model_scoring.py#L178)在查缓存前排序/逐股造key，[成本参考](../src/trader/recommendation/application/pipeline/local_score/model_scoring.py#L638)及后续全总体准备可能再做一遍；正文每次glob/stat/压缩/fsync同样有可分段成本 | 先量身份构造、命中收益、锁等待、逻辑/实际驻留和完整120秒轮次，区分模型算术与key成本。候选可在已有不可变整轮身份上复用，不得缩短key、丢总体/时点/成本合同或另建无上限缓存；正文复用先正确再测吞吐 | 281/332各原owner供等价实现及合法输入，C只在g4.5按同输入五对、CPU/RSS/I/O及全生命周期门验证 |
+
+所有候选收益均未测。本机仅HDD，SSD旧失败与待验保持；V5继续当前10轮。行业64份合批采用已有单独授权，原共享争用诊断不升级成独占性能通过。
+
+### 6.5 既有事项与建议接续次序
+
+旧工件多格式reader、下载未消费配置/分散附属结构、换手允许增加0.05、选择实验仅V2/V3、C27质量失败、真实行业/字段/八头/五轮/30秒及性能欠项仍沿g原记录，不重复新增阶段或P编号。
+
+建议原owner先完成“已交修复与窄日志差集整合→353本批清理/截止/终态反例→334发布组合恢复及332材料幂等→281 API validator和353算法owner→213状态粒度裁决”，再接依赖合法输入的功能验收及C唯一性能队列。其它已授权就绪任务仍可沿原记录并行，不能为本次Review停掉开发或用户进程。审查记录不是新的实现、业务作业、删除、重建、留出读取或发布授权，也不改变既有明确授权。
