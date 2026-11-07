@@ -44,7 +44,9 @@ def test_shared_clock_survives_interleaved_stocks_months_and_task_restarts():
     lines = stream.getvalue().splitlines()
     assert "00:01:50 | history·Tencent下载 00:00:10" in lines[2]
     assert "00:01:50 | history·价格写入 00:00:05" in lines[3]
-    assert "00:02:00 | history·Tencent下载 00:00:00 | 开始" in lines[-1]
+    assert [part.strip() for part in lines[-1].split(" | ")] == [
+        "00:02:00", "history·Tencent下载 00:00:00", "开始",
+    ]
 
 
 def test_heartbeat_uses_latest_real_counts_and_never_reopens_finished_tasks():
@@ -57,7 +59,9 @@ def test_heartbeat_uses_latest_real_counts_and_never_reopens_finished_tasks():
     report(ProgressMessage((ProgressField("股票 512/4402"),), task=task))
     clock[0] = 5
     report.heartbeat()
-    assert "等待 | 股票 512/4402" in stream.getvalue().splitlines()[-1]
+    assert [part.strip() for part in stream.getvalue().splitlines()[-1].split(" | ")][2:4] == [
+        "等待", "股票 512/4402",
+    ]
     report(ProgressMessage((), task=task, state="完成", finished=True))
     report(ProgressMessage((ProgressField("迟到事件"),), task=task))
     before = stream.getvalue()

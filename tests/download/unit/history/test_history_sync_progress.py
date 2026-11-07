@@ -315,12 +315,22 @@ def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) ->
     assert "月份 2026-09" in lines[-1]
 
 
-def test_partition_persistence_waiting_is_visible(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(0.0, 21.0))
+def test_generic_sqlite_waiting_does_not_register_a_duplicate_heartbeat(capsys) -> None:
+    clock = [0.0]
+    progress = StderrHistorySyncProgress(monotonic=lambda: clock[0])
 
     progress.publish(HistorySyncProgress("persisting_partitions", "waiting", 0, 1))
+    clock[0] = 30.0
+    progress._output.heartbeat()
 
-    assert "正式月库提交 00:00:00 | 等待" in _compact_log(capsys.readouterr().err)
+    assert capsys.readouterr().err == ""
+    progress.publish(HistorySyncProgress("persisting_partitions", "waiting", 0, 1, "2026-07"))
+    progress.publish(HistorySyncProgress(
+        "persisting_partitions", "failed", 0, 1, failure_reason="disk_full", failure_detail="sqlite_full",
+    ))
+    output = _compact_log(capsys.readouterr().err)
+    assert "月份 2026-07" in output
+    assert "失败" in output and "disk_full" in output and "sqlite_full" in output
 
 
 def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
@@ -354,8 +364,9 @@ def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
     assert "Tencent下载" in lines[-1] and "其它失败 5 股" in lines[-1]
 
 
-def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 100.0, 1486.0))
+def test_tencent_diagnostics_keep_coverage_and_defer_durations_to_summary(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 100.0, 1486.0, 1487.0))
+    pipeline = HistoryPipelineProgress(404, 16, 843.67, 2300.15, 2258.73)
     progress.publish(HistorySyncProgress("tencent_history", "started", 0, 4400))
     progress.publish(
         HistorySyncProgress(
@@ -367,7 +378,7 @@ def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(cap
             supplier_source="tencent",
             requested_sessions=2000,
             price_coverage=HistoryPriceCoverage(2000, 1980, 1980, 1980),
-            pipeline=HistoryPipelineProgress(404, 16, 843.67, 2300.15, 2258.73),
+            pipeline=pipeline,
         )
     )
 
@@ -375,12 +386,19 @@ def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(cap
     assert "Tencent下载 00:00:00 | 开始" in lines[0]
     assert "00:23:06 | history·Tencent下载 00:23:06" in lines[-1]
     assert "结果 部分" in lines[-1] and "raw 1980/2000" in lines[-1] and "缺日 20" in lines[-1]
-    assert "任务已处理 404/4400" in lines[-1] and "已确认 388/4400" in lines[-1]
-    assert "网络累计 00:14:03" in lines[-1] and "落库累计 00:38:20" in lines[-1]
-    assert "恢复读库累计" in lines[-1] and "回压 00:37:38" in lines[-1]
+    assert "已确认 388/4400" in lines[-1]
+    assert "累计" not in lines[-1] and "回压" not in lines[-1]
+    progress.publish(HistorySyncProgress(
+        "tencent_history", "completed", 4400, 4400,
+        tencent_summary=HistoryTencentSummary(4400, 4371, 29, 24), pipeline=pipeline,
+    ))
+    summary = _compact_log(capsys.readouterr().err)
+    assert "完整 4371 股" in summary and "其它失败 5 股" in summary
+    assert "网络累计 00:14:03" in summary and "落库累计 00:38:20" in summary
+    assert "恢复读库累计" in summary and "回压 00:37:38" in summary
 
 
-def test_tencent_waiting_state_does_not_reserve_a_wide_column(capsys) -> None:
+def test_tencent_waiting_only_prints_compact_pipeline_counts(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=lambda: 0.0)
     progress.publish(
         HistorySyncProgress(
@@ -406,14 +424,29 @@ def test_tencent_waiting_state_does_not_reserve_a_wide_column(capsys) -> None:
 
     output = capsys.readouterr().err
     assert "Tencent下载" in output
-    assert "| 等待 |" in output
-    assert "网络" in output and "落库" in output and "回压" in output
-    assert "在途 8" in _compact_log(output)
-    assert "待派发 4201" in _compact_log(output)
-    assert "最久在途 无 00:00:50" in output
-    assert "恢复读库累计 00:00:12" in output
-    assert "校验累计 00:00:03" in output
-    assert "本批待确认 00:00:08" in output
+    compact = _compact_log(output)
+    assert "| 等待 |" in compact
+    assert "176/4401 | 任务已处理 192/4401" in compact
+    assert "本轮网络返回 0股 | 本轮本地复用 0股 | 已确认 176/4401 | 待写 16 | 写入中 0股" in compact
+    assert all(text not in output for text in ("累计", "回压", "在途", "待派发", "本批待确认"))
+
+
+def test_pipeline_separators_align_across_digit_counts_states_and_stock_names(capsys) -> None:
+    clock = [0.0]
+    progress = StderrHistorySyncProgress(monotonic=lambda: clock[0])
+    for count, name, state in ((9, "宝兰德", "waiting"), (100, "云涌科技", "completed"), (9999, "AB测试", "waiting")):
+        progress.publish(HistorySyncProgress(
+            "tencent_history", state, count, 12000, "688058",
+            current_name=name, supplier_source="tencent", requested_sessions=2000,
+            pipeline=HistoryPipelineProgress(count + 1, 16, 1.0, 2.0, 3.0, writing_codes=8,
+                                             network_completed_codes=count),
+        ))
+        clock[0] += 5.0
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 3
+    positions = [tuple(DisplayWidth(line[:match.start()]) for match in re.finditer(r"\|", line)) for line in lines]
+    assert positions[0] == positions[1] == positions[2]
+    assert all(len(line.split(" | ")) == 10 for line in lines)
 
 
 def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) -> None:

@@ -88,8 +88,8 @@ def WithProgressTime(message: ProgressMessage, total_seconds: float, stage_secon
         raise ValueError("sync_progress_task_missing")
     return replace(message, fields=(
         ProgressField(ProgressDuration(total_seconds)),
-        ProgressField(f"{message.task.owner}·{message.task.label} {ProgressDuration(stage_seconds)}"),
-        ProgressField(message.state),
+        FormatProgressField(f"{message.task.owner}·{message.task.label} {ProgressDuration(stage_seconds)}", 36),
+        FormatProgressField(message.state, 6),
         *message.fields,
     ))
 

@@ -354,6 +354,11 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
     assert count_at_write[0] < 64
     assert all(task.tencent_done for task in HistoryDownloadIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks())
     assert any(item.pipeline and item.pipeline.write_seconds > 0 for item in progress.values)
+    summary = next(item for item in progress.values if item.tencent_summary is not None)
+    assert summary.pipeline is not None
+    assert summary.pipeline.network_completed_codes == 80
+    assert summary.pipeline.write_seconds > 0
+    assert summary.pipeline.queued_codes == summary.pipeline.writing_codes == summary.pipeline.inflight_codes == 0
     monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", original)
     serial = tmp_path / "serial"
     assert RunHistoryFixture(_configuration(serial), ManySecurities(DAYS), clock=lambda: NOW).state == "completed"

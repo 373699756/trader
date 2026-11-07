@@ -271,8 +271,8 @@ class HistoryDownloadFlow:
         self._reused_codes.update(task.code for task in tasks if task.tencent_done and task.code not in gap_codes)
         self._emit(HistorySyncProgress("initializing", "completed", 1, 1, "reading_gaps"))
         self._emit(HistorySyncProgress("tencent_history", "started", completed, len(tasks)))
-        _TencentPipeline(self, jobs, completed, len(tasks)).run()
-        self._report_tencent_summary(len(tasks))
+        pipeline = _TencentPipeline(self, jobs, completed, len(tasks)).run()
+        self._report_tencent_summary(len(tasks), pipeline)
 
     def prepare_inferred_reviews(
         self,
@@ -377,7 +377,7 @@ class HistoryDownloadFlow:
             budget.check_deadline()
             review.checked(result.task.code, result.cells, sequence, resources.context.calendar.open_dates[-1], budget)
 
-    def _report_tencent_summary(self, total: int) -> None:
+    def _report_tencent_summary(self, total: int, pipeline: HistoryPipelineProgress) -> None:
         resources = self._resources
         finished = resources.index.tasks(codes=frozenset(item.code for item in resources.context.universe))
         gap_codes = resources.index.gap_codes()
@@ -404,6 +404,7 @@ class HistoryDownloadFlow:
                     pending,
                     reused,
                 ),
+                pipeline=pipeline,
             )
         )
 
@@ -621,7 +622,7 @@ class _TencentPipeline:
         self._last_commit = self._last_report = time.monotonic()
         self._last_confirmed = self._last_report
 
-    def run(self) -> None:
+    def run(self) -> HistoryPipelineProgress:
         try:
             while not self._exhausted or self._futures or self._buffered or self._writing is not None:
                 self._flow._check()
@@ -642,6 +643,7 @@ class _TencentPipeline:
                 if original_failure is None:
                     raise
                 _LOGGER.error("history_writer_cleanup_failed diagnostic=%s", HistoryFailureDetail(exc))
+        return self._pipeline_progress()
 
     def _acknowledge(self) -> None:
         if self._writing is None or not self._writing.done():

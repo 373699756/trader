@@ -123,27 +123,27 @@ def _reuse_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
 
 
 def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+    if progress.tencent_summary is not None:
+        parts = _download_summary_parts(progress)
+        if progress.pipeline is not None:
+            pipeline = progress.pipeline
+            parts += (
+                f"网络累计 {ProgressDuration(pipeline.download_seconds)}",
+                f"恢复读库累计 {ProgressDuration(pipeline.read_seconds)}",
+                f"校验累计 {ProgressDuration(pipeline.validation_seconds)}",
+                f"落库累计 {ProgressDuration(pipeline.write_seconds)}",
+                f"回压 {ProgressDuration(pipeline.backpressure_seconds)}",
+            )
+        return parts
     if progress.pipeline is not None:
         pipeline = progress.pipeline
         return (
             f"任务已处理 {ProgressNumber(pipeline.downloaded_codes)}/{ProgressNumber(progress.total_units)}",
-            f"本轮网络返回 {pipeline.network_completed_codes}股",
-            f"本轮本地复用 {pipeline.reused_codes}股",
+            f"本轮网络返回 {ProgressNumber(pipeline.network_completed_codes)}股",
+            f"本轮本地复用 {ProgressNumber(pipeline.reused_codes)}股",
             f"已确认 {ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}",
             f"待写 {ProgressNumber(pipeline.queued_codes - pipeline.writing_codes)}",
-            f"写入中 {pipeline.writing_codes}股",
-            f"读库/请求在途 {ProgressNumber(pipeline.inflight_codes)}",
-            f"待派发 {ProgressNumber(pipeline.pending_codes)}",
-            f"最久在途 {pipeline.oldest_inflight_code or '无'} {ProgressDuration(pipeline.oldest_inflight_seconds)}",
-            f"当前写入操作 {pipeline.write_operation}",
-            f"距上次持久化推进 {ProgressDuration(pipeline.seconds_since_commit)}",
-            f"网络累计 {ProgressDuration(pipeline.download_seconds)}",
-            f"恢复读库累计 {ProgressDuration(pipeline.read_seconds)}",
-            f"校验累计 {ProgressDuration(pipeline.validation_seconds)}",
-            f"落库累计 {ProgressDuration(pipeline.write_seconds)}",
-            f"本批待确认 {ProgressDuration(pipeline.unconfirmed_write_seconds)}",
-            f"回压 {ProgressDuration(pipeline.backpressure_seconds)}",
-            *_reuse_summary_parts(progress),
+            f"写入中 {ProgressNumber(pipeline.writing_codes)}股",
         )
     return _download_summary_parts(progress)
 
@@ -219,6 +219,12 @@ class StderrHistorySyncProgress:
             self._output.finish_owner("history")
 
     def _publish(self, progress: HistorySyncProgress) -> None:
+        if (
+            progress.stage == "persisting_partitions" and progress.state == "waiting"
+            and progress.current_item is None and progress.completed_units == 0 and progress.total_units == 1
+            and progress.failure_reason is None and progress.failure_detail is None
+        ):
+            return
         if progress.stage == "supplier_routing":
             self._route = progress
         if progress.stage in {"downloading_codes", "tencent_history"}:
@@ -230,6 +236,11 @@ class StderrHistorySyncProgress:
         if (
             progress.stage == "tencent_history"
             and progress.current_item is not None
+            and (
+                progress.pipeline is None or progress.failure_reason is not None
+                or progress.failure_detail is not None
+                or progress.price_coverage is not None and progress.price_coverage.missing
+            )
         ):
             message = self._stock_download_line(progress)
             self._output(message)
@@ -284,13 +295,7 @@ class StderrHistorySyncProgress:
         extra = (
             f"本次请求 {progress.requested_sessions or 0}日",
             *((f"请求窗口 {progress.requested_from}～{progress.requested_to}",) if progress.requested_from else ()),
-            *((f"本股网络 {ProgressDuration(progress.stock_download_seconds)}",)
-              if progress.stock_download_seconds is not None else ()),
-            *((f"本股读库 {ProgressDuration(progress.stock_read_seconds)}",)
-              if progress.stock_read_seconds is not None else ()),
-            *((f"本股校验 {ProgressDuration(progress.stock_validation_seconds)}",)
-              if progress.stock_validation_seconds is not None else ()),
-            *_summary_parts(progress),
+            *_reuse_summary_parts(progress),
             *((f"诊断 {progress.failure_detail}",) if progress.failure_detail else ()),
             *(("后续 保留缺口，继续后续股票；补缺依现有策略",) if progress.failure_reason else ()),
         )
@@ -349,12 +354,14 @@ class StderrHistorySyncProgress:
             )
         if progress.stage == "initializing" and progress.total_units > 1:
             parts.append(f"股票 {_format_count(progress.completed_units, progress.total_units)}")
-        if progress.current_item is not None and not (
+        compact_pipeline = progress.stage == "tencent_history" and progress.pipeline is not None
+        if progress.current_item is not None and not compact_pipeline and not (
             progress.stage == "initializing" and progress.current_item in _LOCAL_PREPARATION_LABELS
         ):
             item_label = _ITEM_LABELS.get(progress.stage, "当前")
             parts.append(f"{item_label} {progress.current_item}")
-        parts.extend(_price_coverage_parts(progress))
+        if not compact_pipeline:
+            parts.extend(_price_coverage_parts(progress))
         parts.extend(_summary_parts(progress))
         if (
             progress.stage in {"downloading_codes", "tencent_history"}
