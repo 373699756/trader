@@ -9,7 +9,7 @@ import pytest
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
-from trader.download.domain.company_events import CompanySubject
+from trader.download.domain.company_events import CompanyPositiveStatus, CompanySubject
 from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition
 from trader.download.infra import company_facts_index, company_field_publication
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -28,8 +28,8 @@ _TEXT = (
 )
 
 
-def _put(index, text=_TEXT, *, identity="field-delivery", digest="field-record"):
-    item = fixtures._disclosure(identity, "关于首次回购公司股份的公告", digest=digest)
+def _put(index, text=_TEXT, *, identity="field-delivery", digest="field-record", title="关于首次回购公司股份的公告"):
+    item = fixtures._disclosure(identity, title, digest=digest)
     partition = DisclosurePartition("sse", item.published_at.date(), item.published_at.date())
     index.commit_page(partition, DisclosurePage((item,), 1, False), _AT)
     extraction = fixtures._extraction(text)
@@ -139,6 +139,46 @@ def test_source_fields_publish_with_exact_text_subject_and_the_ordinary_fact_ide
         assert evidence.quote in _TEXT
     assert (actual.evidence[0].start_line, actual.evidence[0].end_line) == (3, 3)
     assert (purpose.evidence[0].start_line, purpose.evidence[0].end_line) == (4, 4)
+
+
+@pytest.mark.parametrize(("title", "statement", "implemented"), (
+    ("关于首次回购公司股份的公告", "本公司首次回购股份100万股，拟回购股份占公司总股本的比例为0.3%。", True),
+    ("控股股东增持股份公告", "本公司控股股东已增持股份100万股，实际比例详见附表。", True),
+    ("关于首次回购公司股份的公告", "本公司拟首次回购股份，占公司总股本的比例为0.3%。", False),
+    ("关于首次回购公司股份的公告", "本公司尚未实际首次回购股份，占公司总股本的比例为0.3%。", False),
+    pytest.param(
+        "关于首次回购公司股份的公告",
+        "本公司首次通过股份回购专用证券账户以集中竞价方式回购公司股份100万股，实际比例详见附表。",
+        True,
+        id="account_repurchase_missing_ratio",
+    ),
+    pytest.param(
+        "控股股东增持股份公告",
+        "本公司收到公司控股股东甲方控股有限公司（以下简称“甲方控股”）声明，"
+        "甲方控股通过交易系统，以集中竞价方式累计增持本公司股份100万股，实际比例详见附表。",
+        True,
+        id="holder_alias_missing_ratio",
+    ),
+))
+def test_actual_action_without_a_ratio_publishes_an_applicable_gap_only_when_implemented(
+    tmp_path, title, statement, implemented,
+):
+    index = fixtures._index(tmp_path)
+    document = _put(index, statement + _DETAIL * 2, title=title)
+    index.publish(document.disclosure.codes, _AT)
+    reader = _reader(index)
+    before = reader.read(document.disclosure.codes)
+    event, = before[0].positive_events
+    actual, = (item for item in reader.read_fields(document.disclosure.codes).results if item.field == "actual_pct")
+
+    assert event.status is (CompanyPositiveStatus.IMPLEMENTING if implemented else CompanyPositiveStatus.PLANNED)
+    assert event.measurements.actual_ratio_pct is None
+    assert event.positive_level == 0 and event.level_milestones == ()
+    assert actual.value is None and actual.evidence == ()
+    assert actual.applicable is implemented
+    assert actual.state == ("verification_required" if implemented else "not_applicable")
+    assert actual.reason == ("measurement_missing" if implemented else "action_not_implemented")
+    assert reader.read(document.disclosure.codes) == before
 
 
 def test_same_numeric_value_under_a_changed_subject_cannot_reuse_the_old_proof(tmp_path):

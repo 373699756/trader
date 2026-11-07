@@ -964,6 +964,12 @@ def _positive_event(
     )
     reason = None if eligible else "implementation_or_measurement_unverified"
     level = sum(ratio >= threshold for threshold in thresholds) if eligible and ratio is not None else 0
+    status = (
+        CompanyPositiveStatus.COMPLETED if implemented and "完成" in title
+        else CompanyPositiveStatus.IMPLEMENTING if implemented else CompanyPositiveStatus.PLANNED
+    )
+    if not implemented and not isinstance(measurements, ContractMeasurements):
+        status = _share_action_status(verified, kind) or CompanyPositiveStatus.PLANNED
     milestones = list(previous.level_milestones if previous else ())
     if ratio is not None and level:
         for threshold_level in range(1, level + 1):
@@ -973,11 +979,7 @@ def _positive_event(
         previous.event_id if previous else f"{item.identity}:{kind.value}",
         kind,
         verified.subject,
-        CompanyPositiveStatus.COMPLETED
-        if implemented and "完成" in title
-        else CompanyPositiveStatus.IMPLEMENTING
-        if implemented
-        else CompanyPositiveStatus.PLANNED,
+        status,
         previous.first_disclosed_at if previous else item.published_at,
         max(item.published_at, previous.last_disclosed_at) if previous else item.published_at,
         None,
@@ -989,6 +991,121 @@ def _positive_event(
         reason,
     )
     return event, reason
+
+
+def _share_action_status(
+    verified: _VerifiedDocument, kind: CompanyPositiveType,
+) -> CompanyPositiveStatus | None:
+    """Recognize an execution fact without treating an unknown ratio as a plan."""
+    verb = "回购" if kind is CompanyPositiveType.SHARE_REPURCHASE else "增持"
+    if kind is CompanyPositiveType.SHAREHOLDER_INCREASE and verified.subject is CompanySubject.ISSUER:
+        return None
+    if "注销" in verified.title and not any(marker in verified.title for marker in ("首次回购", "回购进展", "增持")):
+        return None
+    aliases = _share_action_aliases(verified)
+    action = re.compile(
+        rf"(?:(?P<stage>累计(?:已)?|已(?:经)?|首次)(?:实际)?"
+        rf"(?:(?:通过|以)[^。；;，,]{{0,40}}?)?(?:首次)?)?{verb}(?!专用|专户|账户|证券账户)"
+        r"(?:了)?(?:本公司|公司)?(?:[AH]股)?(?:股份|股票)?"
+    )
+    completion = re.compile(
+        rf"本(?:次|轮){verb}(?:股份)?(?:计划|方案)?已(?:经)?实施(?:完成|完毕|结束)"
+        rf"|已(?:经)?完成(?:本次)?(?:股份)?{verb}(?:股份)?"
+        + (r"|本计划已(?:经)?实施(?:完成|完毕|结束)" if f"{verb}计划" in verified.title else "")
+    )
+    implemented = False
+    body = "".join(
+        "".join(line.split()) for line in verified.document.text.splitlines()
+        if re.fullmatch(r"[—－-]\s*[0-9]{1,4}\s*[—－-]", line.strip()) is None
+    )
+    for sentence in re.split(r"[。；;！？!?\n]", body):
+        if any(marker in sentence for marker in (
+            "上一期", "上一轮", "上一次", "前次", "前一轮", "去年", "上一年度", "上年度", "往年",
+            "历史回购", "历史增持", "子公司", "参股公司",
+        )) or re.search(r"(?:尚未|并未|未曾|没有|未)(?:实际)?(?:开展|实施|进行)(?!完毕|完成|结束)", sentence):
+            continue
+        action_end: int | None = None
+        for match in action.finditer(sentence):
+            prefix = sentence[:match.start()]
+            if _share_action_unconfirmed(prefix) or not _share_action_actor(prefix, verified.subject, aliases):
+                continue
+            if any(marker in match[0] for marker in ("拟", "计划", "预计", "将", "尚未", "未实施", "审议", "议案", "决议", "批准")):
+                continue
+            tail = re.split(r"[，,]", sentence[match.end():], maxsplit=1)[0]
+            if re.match(r"(?:的)?(?:计划|方案|安排|事项|议案|决策)", tail):
+                continue
+            quantity = re.match(r"(?:合计|共计|数量为|数量|共)?[：:]?([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?|零|〇)(?:万|亿)?股", sentence[match.end():])
+            if quantity is not None and (quantity[1] in {"零", "〇"} or float(quantity[1].replace(",", "").replace("，", "")) == 0):
+                continue
+            if match["stage"] is None and (
+                not aliases or quantity is None or re.search(r"通过[^。；;，,]{1,40}$", prefix) is None
+            ):
+                continue
+            if match["stage"] in {"首次", "累计"} and quantity is None and not any(
+                ratio.start() == match.start() and 0 < float(ratio[1]) <= 100
+                for ratio in _actual_ratio_matches(sentence, verb)
+            ):
+                continue
+            implemented = True
+            action_end = match.end()
+        for match in completion.finditer(sentence):
+            prefix, suffix = sentence[:match.start()], sentence[match.end():]
+            tail = re.sub(r"(?:本公司|公司)(?:目前|当前|现有)?总股本", "总股本", prefix[action_end:]) if action_end is not None else ""
+            tail = re.sub(r"(?:合计|累计)?(?:增持|回购)(金额|数量)", r"\1", tail)
+            continuation = action_end is not None and action_end <= match.start() and prefix.endswith(("，", ",")) and not re.search(
+                r"公司|股东|控制人|控股|先生|女士|回购|增持|计划|称|表示|宣布|披露|报告|通知", tail,
+            )
+            actor_confirmed = _share_action_actor(prefix, verified.subject, aliases) or continuation
+            if (not _share_action_unconfirmed(prefix) and actor_confirmed
+                and not re.match(r"(?:的)?(?:后|时|前|之前|条件|情况|方案|预案|计划|审议|审批|审核|备案|披露|准备|申报|申请|安排)", suffix)):
+                return CompanyPositiveStatus.COMPLETED
+    return CompanyPositiveStatus.IMPLEMENTING if implemented else None
+
+
+def _share_action_unconfirmed(prefix: str) -> bool:
+    return re.search(r"假如|假设|假定|如果|倘若|若|一旦|只要|仅当|是否|能否", prefix) is not None or re.search(
+        r"(?:尚未|尚待|未曾|没有|不会|未|不|拟|计划|预计|将|假如|假设|假定|如果|若|一旦|如|只要|仅当|是否|能否)"
+        r"[^。；;，,]{0,40}$", prefix,
+    ) is not None
+
+
+def _share_action_aliases(verified: _VerifiedDocument) -> tuple[str, ...]:
+    """Bind only a single explicitly declared owner in this exact document."""
+    own = r"(?:^|[。；;，,：:]|(?<=日))(?:本公司|上市公司|公司)(?:的|收到公司)?"
+    if verified.subject is CompanySubject.CONTROLLING_SHAREHOLDER:
+        header: list[str] = []
+        for line in verified.document.text.splitlines():
+            if line.strip():
+                header.append("".join(line.split()))
+            if len(header) == 24:
+                break
+        issuers = {line for line in header if re.fullmatch(r"[\u4e00-\u9fffA-Za-z]{2,40}股份有限公司", line)}
+        if len(issuers) == 1 and ExtractCompanyAnnouncementNumbers("\n".join(header)).issuer_codes == verified.document.disclosure.codes:
+            own = (
+                rf"(?:{own}|{re.escape(next(iter(issuers)))}（以下简称[“\"]公司[”\"]）"
+                r"于[0-9]{4}年[0-9]{1,2}月[0-9]{1,2}日收到公司)"
+            )
+        pattern = own + r"控股股东([\u4e00-\u9fffA-Za-z]{2,40})（以下简称[“\"]([\u4e00-\u9fffA-Za-z]{2,30})[”\"]）"
+        bindings = {match.groups() for match in re.finditer(pattern, verified.body)}
+    elif verified.subject is CompanySubject.ACTUAL_CONTROLLER:
+        pattern = own + r"实际控制人(?:、董事长兼总经理)?([\u4e00-\u9fffA-Za-z]{2,16}?(?:女士|先生))(?=计划|拟|通过|已|出具)"
+        bindings = {(match[1], match[1]) for match in re.finditer(pattern, verified.body)}
+    else:
+        return ()
+    return tuple(sorted(set(next(iter(bindings))))) if len(bindings) == 1 else ()
+
+
+def _share_action_actor(prefix: str, subject: CompanySubject, aliases: tuple[str, ...] = ()) -> bool:
+    markers = tuple(marker for marker, owner in _SUBJECT_MARKERS if owner is subject) + aliases
+    if subject is not CompanySubject.ISSUER and not markers:
+        return False
+    actor = (
+        r"(?:本公司|上市公司|公司)" if subject is CompanySubject.ISSUER else
+        r"(?:本公司|上市公司|公司)?(?:" + "|".join(re.escape(marker) for marker in markers) + ")"
+    )
+    return re.search(
+        r"(?:^|[，,：:]|(?<=日))" + actor + r"(?:(?:于|在|通过|以)[^，,]{0,80}(?:[，,]以[^，,]{0,40})?)?$", prefix,
+    ) is not None
 
 
 def _positive_measurements(

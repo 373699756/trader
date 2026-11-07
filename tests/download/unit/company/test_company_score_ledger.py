@@ -9,7 +9,7 @@ import pytest
 
 from trader.download.domain.company_descriptions import CompanyPositiveDescription, CompanyRiskDescription
 
-from trader.download.domain.company_event_extraction import ExtractCompanyEvents
+from trader.download.domain.company_event_extraction import ExtractCompanyEvents, ExtractCompanyLinkCandidate
 
 from trader.download.domain.company_events import CompanyDataState, CompanyPositiveStatus, CompanyPositiveType, CompanySubject, RepurchasePurpose
 
@@ -710,22 +710,118 @@ def test_issuer_repurchase_plan_can_include_holder_trading_disclosures(decision)
     assert event.measurements.actual_ratio_pct is None
 
 
-@pytest.mark.parametrize(("statement", "ratio"), (
-    ("本公司首次回购股份987791股，占公司总股本的比例约为0.10%。", 0.1),
-    ("本公司以集中竞价方式首次回购股份100万股，占公司总股本的0.062%。", 0.062),
+@pytest.mark.parametrize(("statement", "ratio", "implemented"), (
+    ("本公司首次回购股份987791股，占公司总股本的比例约为0.10%。", 0.1, True),
+    ("本公司以集中竞价方式首次回购股份100万股，占公司总股本的0.062%。", 0.062, True),
     ("本公司根据相关规定，现将公司首次回购股份情况公告如下：2026年11月5日，公司通过交易系统"
-     "首次回购公司股份987,791股，占公司总股本的比例约为0.10%。", 0.1),
-    ("本公司拟首次回购股份，占公司总股本的比例为0.3%。", None),
-    ("本公司计划于明日首次回购股份，占公司总股本的比例为0.3%。", None),
-    ("本公司未首次回购股份，占公司总股本的比例为0.3%。", None),
-    ("本公司尚未实际首次回购股份，占公司总股本的比例为0.3%。", None),
-    ("本公司首次回购股份100万股，拟回购股份占公司总股本的比例为0.3%。", None),
-    ("本公司首次回购股份占公司总股本比例为0.1%；首次回购股份占公司总股本比例为0.2%。", None),
+     "首次回购公司股份987,791股，占公司总股本的比例约为0.10%。", 0.1, True),
+    ("本公司拟首次回购股份，占公司总股本的比例为0.3%。", None, False),
+    ("本公司计划于明日首次回购股份，占公司总股本的比例为0.3%。", None, False),
+    ("本公司未首次回购股份，占公司总股本的比例为0.3%。", None, False),
+    ("本公司尚未实际首次回购股份，占公司总股本的比例为0.3%。", None, False),
+    ("本公司首次回购股份100万股，拟回购股份占公司总股本的比例为0.3%。", None, True),
+    ("本公司首次回购股份占公司总股本比例为0.1%；首次回购股份占公司总股本比例为0.2%。", None, True),
+    ("本公司首次回购股份占公司总股本比例为150%。", None, False),
+    ("本公司首次通过股份回购专用证券账户以集中竞价方式回购公司股份2,580,000股，占总股本0.66%。", None, True),
+    ("本公司首次通过股票回购专用证券账户以集中竞价方式回购股份1,295,000股，占总股本0.13%。", None, True),
+    ("本公司首次通过股份回购专用证券账户拟回购公司股份100万股。", None, False),
+    ("本公司首次通过股份回购专用证券账户完成开户，拟于次日实施。", None, False),
+    ("本公司首次—1—回购股份100万股。", None, False),
 ))
-def test_first_repurchase_ratio_is_an_actual_measurement_with_plan_guards(statement, ratio):
+def test_first_repurchase_ratio_is_an_actual_measurement_with_plan_guards(statement, ratio, implemented):
     document = _document("first", "关于首次回购公司股份的公告", statement + "回购股份用于员工持股计划。")
     event, = ExtractCompanyEvents((document,), AT, CompanyEventPolicy()).positives
     assert event.measurements.actual_ratio_pct == ratio
     assert event.measurements.purpose is RepurchasePurpose.EMPLOYEE_PLAN
     assert event.positive_level == 0
-    assert event.status is (CompanyPositiveStatus.IMPLEMENTING if ratio is not None else CompanyPositiveStatus.PLANNED)
+    assert event.status is (CompanyPositiveStatus.IMPLEMENTING if implemented else CompanyPositiveStatus.PLANNED)
+
+
+@pytest.mark.parametrize(("statement", "status"), (
+    ("本公司已通过集中竞价方式回购股份，实际比例尚待核实。", CompanyPositiveStatus.IMPLEMENTING),
+    ("本公司本次回购计划已实施完成，实际比例尚待核实。", CompanyPositiveStatus.COMPLETED),
+    ("本公司已完成股份回购，实际比例尚待核实。", CompanyPositiveStatus.COMPLETED),
+    ("本公司累计已回购股份100万股，本次回购计划尚未实施完毕。", CompanyPositiveStatus.IMPLEMENTING),
+    ("本公司尚未通过集中竞价方式回购股份。", CompanyPositiveStatus.PLANNED),
+    ("本公司拟回购股份。本次回购计划实施完成后，将披露结果。", CompanyPositiveStatus.PLANNED),
+    ("本公司本次回购计划已实施完成后，将披露结果。", CompanyPositiveStatus.PLANNED),
+    ("本公司已完成回购方案审议，拟于明日首次回购股份。", CompanyPositiveStatus.PLANNED),
+    ("本公司上一期回购计划已实施完成，本次拟回购股份。", CompanyPositiveStatus.PLANNED),
+    ("若本公司已回购股份100万股，则需披露结果。", CompanyPositiveStatus.PLANNED),
+    ("本公司累计已回购股份数量为：0股，尚未开展本次回购。", CompanyPositiveStatus.PLANNED),
+    ("本公司累计已回购股份数量为零股。", CompanyPositiveStatus.PLANNED),
+    ("本公司累计已回购股份，实际尚未实施。", CompanyPositiveStatus.PLANNED),
+    ("本公司拟回购股份。累计回购股份数量（股）：暂缺。", CompanyPositiveStatus.PLANNED),
+    ("本公司拟回购股份。同行公司已回购股份100万股。", CompanyPositiveStatus.PLANNED),
+    ("本公司拟回购股份。子公司已回购股份100万股。", CompanyPositiveStatus.PLANNED),
+    ("本公司拟回购股份。若满足全部实施条件，本公司已回购股份的数量将另行公告。", CompanyPositiveStatus.PLANNED),
+    ("本公司已完成本次股份回购的审批。拟下月实施。", CompanyPositiveStatus.PLANNED),
+    ("本公司拟开展本轮回购。去年，本公司已回购股份100万股。", CompanyPositiveStatus.PLANNED),
+    ("本公司已回购股份100万股，其他公司本次回购计划已实施完成。", CompanyPositiveStatus.IMPLEMENTING),
+    ("本公司已回购股份100万股，其他公司宣布，本次回购计划已实施完成。", CompanyPositiveStatus.IMPLEMENTING),
+    ("其他公司宣布，本次回购计划已实施完成，本公司已回购股份100万股。", CompanyPositiveStatus.IMPLEMENTING),
+))
+def test_share_action_status_requires_own_execution_evidence_without_inventing_a_ratio(statement, status):
+    document = _document("missing-ratio", "关于回购股份的公告", statement + "回购股份用于注销。")
+    result = ExtractCompanyEvents((document,), AT, CompanyEventPolicy())
+    event, = result.positives
+    assert event.status is status
+    assert event.measurements.actual_ratio_pct is None
+    assert event.positive_level == 0 and event.level_milestones == ()
+    assert event.not_eligible_reason is not None
+    assert result.reviews
+    for strategy in ("tomorrow", "d25"):
+        adjustments = _assess(_facts((document,)), strategy)
+        positive = tuple(item for item in adjustments.bonuses if item.kind == "positive_bonus")
+        assert positive and all(item.rule_points == 0 and item.reason != "eligible" for item in positive)
+
+
+@pytest.mark.parametrize(("title", "declaration", "action", "status"), (
+    ("控股股东增持股份公告", "本公司收到公司控股股东甲方控股有限公司（以下简称“甲方控股”）的增持意向函。",
+     "甲方控股通过交易系统，以集中竞价方式累计增持本公司股份255.67万股，占总股本0.26%。本次增持计划尚未实施完毕。",
+     CompanyPositiveStatus.IMPLEMENTING),
+    ("控股股东增持股份公告", "证券代码：600001\n发行人股份有限公司\n一、实施进展发行人股份有限公司（以下简称“公司”）于2026年9月29日收到公司控股股东甲方控股有限公司（以下简称“甲方控股”）的增持意向函。",
+     "甲方控股通过交易系统，以集中竞价方式累计\n—1—\n增持本公司股份255.67万股，占总股本0.26%。",
+     CompanyPositiveStatus.IMPLEMENTING),
+    ("控股股东增持股份公告", "本公司控股股东拟增持。其他公司控股股东甲方控股有限公司（以下简称“甲方控股”）公告。",
+     "甲方控股通过交易系统，以集中竞价方式累计增持公司股份100万股。", CompanyPositiveStatus.PLANNED),
+    ("控股股东增持股份公告", "本公司控股股东甲方控股有限公司（以下简称“甲方控股”）公告。本公司控股股东乙方控股有限公司（以下简称“乙方控股”）公告。",
+     "甲方控股通过交易系统，以集中竞价方式累计增持公司股份100万股。", CompanyPositiveStatus.PLANNED),
+    ("控股股东增持股份公告", "本公司控股股东甲方控股有限公司（以下简称“甲方控股”）公告。",
+     "甲方控股拟通过交易系统，以集中竞价方式累计增持公司股份100万股。", CompanyPositiveStatus.PLANNED),
+    ("控股股东增持股份公告", "证券代码：600001\n发行人股份有限公司\n本公司控股股东拟增持。其他股份有限公司（以下简称“公司”）于2026年9月29日收到公司控股股东甲方控股有限公司（以下简称“甲方控股”）的函。",
+     "甲方控股通过交易系统，以集中竞价方式累计增持本公司股份100万股。", CompanyPositiveStatus.PLANNED),
+    ("实际控制人增持计划实施完成公告", "公司实际控制人、董事长兼总经理甲乙丙女士计划增持公司H股股份。",
+     "甲乙丙女士通过集中竞价方式增持公司H股股份36,000,360股，占公司目前总股本0.44%，合计增持金额约人民币100万元，本次增持计划已实施完毕。",
+     CompanyPositiveStatus.COMPLETED),
+    ("实际控制人增持计划实施完成公告", "公司实际控制人、董事长兼总经理甲乙丙女士计划增持公司H股股份。",
+     "其他姓名女士通过集中竞价方式增持公司H股股份100万股，本次增持计划已实施完毕。", CompanyPositiveStatus.PLANNED),
+    ("实际控制人增持计划实施完成公告", "公司实际控制人、董事长兼总经理甲乙丙女士计划增持公司H股股份。",
+     "甲乙丙女士拟通过集中竞价方式增持公司H股股份100万股，本次增持计划实施完毕后将公告。", CompanyPositiveStatus.PLANNED),
+    ("实际控制人增持计划实施完成公告", "公司实际控制人、董事长兼总经理甲乙丙女士计划增持公司H股股份。",
+     "甲乙丙女士通过集中竞价方式增持公司H股股份100万股。其他公司宣布新的增持计划。本次增持计划已实施完毕。", CompanyPositiveStatus.IMPLEMENTING),
+))
+def test_only_explicit_unique_subject_bindings_support_alias_execution_status(title, declaration, action, status):
+    document = _document("alias-action", title, declaration + action)
+    candidate = ExtractCompanyLinkCandidate(document, AT, CompanyEventPolicy())
+    assert candidate is not None and candidate.positive is not None
+    event = candidate.positive
+    assert event.status is status
+    assert event.measurements.actual_ratio_pct is None
+    assert event.positive_level == 0 and event.level_milestones == () and event.not_eligible_reason is not None
+
+
+def test_current_unknown_ratio_cannot_score_historical_milestones():
+    first = _document("base-action", "关于回购股份的公告", "本公司已实际回购股份，占公司总股本比例为0.3%，用于注销。")
+    old = ExtractCompanyEvents((first,), AT, CompanyEventPolicy())
+    at = AT + timedelta(days=1)
+    event = replace(
+        old.positives[0], status=CompanyPositiveStatus.IMPLEMENTING, positive_level=0,
+        measurements=replace(old.positives[0].measurements, actual_ratio_pct=None),
+        not_eligible_reason="revision_pending",
+    )
+    assert event.level_milestones == old.positives[0].level_milestones
+    facts = replace(_facts(at=at), positive_events=(event,))
+    for strategy in ("tomorrow", "d25"):
+        positive = tuple(item for item in _assess(facts, strategy, at=at).bonuses if item.kind == "positive_bonus")
+        assert positive and all(item.rule_points == 0 and item.reason != "eligible" for item in positive)

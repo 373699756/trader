@@ -744,7 +744,7 @@ def _refresh_repurchase_link_candidates(
         ).fetchall()
         for row in rows:
             old = DecodeCompanyLink(row[8])
-            if old.positive is None or not isinstance(old.positive.measurements, RepurchaseMeasurements):
+            if old.positive is None or not isinstance(old.positive.measurements, (RepurchaseMeasurements, IncreaseMeasurements)):
                 continue
             body_hash = row[4]
             published = datetime.fromisoformat(row[6])
@@ -762,9 +762,42 @@ def _refresh_repurchase_link_candidates(
                 Disclosure(row[0], row[1], (row[2],), row[5], published, row[7], row[3]), text, True,
             ), observed_at, event_policy)
             if (current is None or current.positive is None or current.subject is not old.subject
-                or not isinstance(current.positive.measurements, RepurchaseMeasurements)
+                or type(current.positive.measurements) is not type(old.positive.measurements)
                 or current.references != old.references or current.cancellation != old.cancellation):
                 continue
+            status_recheck = (
+                current.positive.status in {CompanyPositiveStatus.IMPLEMENTING, CompanyPositiveStatus.COMPLETED}
+                and old.positive.status in {CompanyPositiveStatus.PLANNED, current.positive.status}
+                and old.positive.measurements.actual_ratio_pct is None
+                and isinstance(current.positive.measurements, (RepurchaseMeasurements, IncreaseMeasurements))
+                and current.positive.measurements.actual_ratio_pct is None
+            )
+            if isinstance(old.positive.measurements, IncreaseMeasurements) and not status_recheck:
+                continue
+            replay_status = False
+            if status_recheck:
+                matches = tuple(event for fact in ReadCompanyFactRows(formal, (row[2],)) for event in fact.positive_events
+                                if row[1] in event.evidence_ids)
+                if matches:
+                    if len(matches) != 1:
+                        continue
+                    event = matches[0]
+                    if (event.event_type is not current.positive.event_type or event.subject_type is not current.subject
+                        or event.status not in {CompanyPositiveStatus.PLANNED, current.positive.status}
+                        or event.evidence_ids[-1] != row[1]
+                        or event.last_disclosed_at != published
+                        or not isinstance(event.measurements, (RepurchaseMeasurements, IncreaseMeasurements))
+                        or event.measurements.actual_ratio_pct is not None):
+                        continue
+                    if event.status is CompanyPositiveStatus.PLANNED:
+                        # A prior interruption may have updated the cache before the formal fact.
+                        # Replay collection confirmation; the exact formal valid receipt stays immutable.
+                        collected.run(
+                            "DELETE FROM document_publications WHERE code=? AND disclosure_id IN "
+                            "(SELECT id FROM disclosures WHERE source=? AND source_key=? AND record_hash=?)",
+                            (row[2], row[0], row[1], row[3]),
+                        )
+                        replay_status = True
             payload = EncodeCompanyLink(current)
             if payload != row[8]:
                 collected.run(
@@ -772,6 +805,7 @@ def _refresh_repurchase_link_candidates(
                     "AND record_hash=? AND extraction_hash=? AND payload=?",
                     (payload, row[0], row[1], row[3], extraction_hash, row[8]),
                 )
+            if payload != row[8] or replay_status:
                 collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (row[2],))
 
 
