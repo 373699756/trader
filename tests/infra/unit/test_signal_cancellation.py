@@ -1,11 +1,46 @@
 import signal
 import threading
+import os
+import subprocess
+import sys
+import textwrap
 from threading import Event
 
 import pytest
 
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.infra.shutdown import ShutdownSignalController, ShutdownStep, ShutdownWatchdogStartError
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires a POSIX pipe")
+@pytest.mark.parametrize("signalled", (False, True))
+def test_hard_exit_does_not_wait_for_a_full_stderr_pipe(signalled):
+    source = textwrap.dedent(f"""
+        import os
+        import signal
+        import time
+        from trader.infra.signal_cancellation import ManualCancellation
+
+        read_fd, write_fd = os.pipe()
+        os.dup2(write_fd, 2)
+        os.close(write_fd)
+        os.set_blocking(2, False)
+        try:
+            while True:
+                os.write(2, b'x' * 4096)
+        except BlockingIOError:
+            pass
+        os.set_blocking(2, True)
+        with ManualCancellation(timeout_seconds=0.05) as cancelled:
+            if {signalled!r}:
+                signal.raise_signal(signal.SIGTERM)
+            else:
+                cancelled.shutdown_deadline()
+                cancelled._controller._lock.acquire()
+            time.sleep(5)
+    """)
+    result = subprocess.run([sys.executable, "-c", source], capture_output=True, timeout=2)
+    assert result.returncode == (130 if signalled else 2)
 
 
 @pytest.mark.parametrize("signum", (signal.SIGINT, signal.SIGTERM))

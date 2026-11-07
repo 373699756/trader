@@ -53,18 +53,10 @@ def ManualCancellation(
         cancelled.set()
         _notice(f"正在取消，停止新任务并清理资源（最多{deadline.timeout_seconds:g}秒）；再次按 Ctrl+C 强制退出。\n")
 
-    def stop(code: int) -> None:
+    def stop(_code: int) -> None:
         was_cancelled = bool(controller.exit_code or cancelled.is_set())
-        if not controller.watchdog_started:
-            _notice("资源关闭未完成且没有超时保护，正在强制退出。\n")
-            force_exit(130 if was_cancelled else 2)
-            return
-        if not was_cancelled:
-            _notice("资源关闭超时，正在强制退出。\n")
-            force_exit(2)
-            return
-        _notice("取消清理超时，正在强制退出。\n" if code == 2 else "再次收到停止信号，正在强制退出。\n")
-        force_exit(130)
+        # stderr may be the resource that is blocked. Hard exit must perform no I/O.
+        force_exit(130 if was_cancelled else 2)
 
     controller = ShutdownSignalController(
         timeout_seconds=timeout_seconds, on_first_signal=request_cancel, force_exit=stop

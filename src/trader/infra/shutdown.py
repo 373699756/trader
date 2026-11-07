@@ -206,8 +206,10 @@ class ShutdownSignalController:
 
     @property
     def exit_code(self) -> int:
-        with self._lock:
-            return SignalExitCode(self._first_signal) if self._first_signal is not None else 0
+        # Publish the first signal before starting a signal-triggered watchdog.
+        # Hard exit reads this once-assigned snapshot without a cleanup lock.
+        first_signal = self._first_signal
+        return SignalExitCode(first_signal) if first_signal is not None else 0
 
     @property
     def watchdog_started(self) -> bool:
