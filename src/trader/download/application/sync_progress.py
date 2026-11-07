@@ -46,29 +46,33 @@ class SyncProgress:
         self._monotonic = monotonic
         self._report = report
         self._tasks: dict[ProgressTask, _TaskTiming] = {}
+        self._observers: dict[tuple[str, str | None], Callable[[], ProgressMessage | None]] = {}
         self._lock = Lock()
 
     def __call__(self, message: ProgressMessage) -> None:
+        with self._lock:
+            self._accept(message)
+
+    def _accept(self, message: ProgressMessage) -> None:
         task = message.task
         if task is None:
             raise ValueError("sync_progress_task_missing")
-        with self._lock:
-            now = self._monotonic()
-            timing = self._tasks.get(task)
-            if timing is None:
-                timing = _TaskTiming(now, now, float("-inf"), message)
-                self._tasks[task] = timing
-            elif message.state == "开始":
-                timing.ended = False
-            immediate = message.state in {"开始", "完成", "失败", "重试", "取消"} or message.finished or message.stock_failure_code is not None
-            changed = message.fields != timing.latest.fields
-            timing.latest = message
-            if changed:
-                timing.updated = now
-            timing.ended = timing.ended or message.finished
-            interval = 5.0 if message.state == "等待" else 1.0
-            if immediate or now - timing.emitted >= interval:
-                self._emit(task, timing, message, now)
+        now = self._monotonic()
+        timing = self._tasks.get(task)
+        if timing is None:
+            timing = _TaskTiming(now, now, float("-inf"), message)
+            self._tasks[task] = timing
+        elif message.state == "开始":
+            timing.ended = False
+        immediate = message.immediate or message.state in {"开始", "完成", "失败", "重试", "取消"} or message.finished or message.stock_failure_code is not None
+        changed = message.fields != timing.latest.fields
+        timing.latest = message
+        if changed:
+            timing.updated = now
+        timing.ended = timing.ended or message.finished
+        interval = 5.0 if message.state == "等待" else 1.0
+        if immediate or now - timing.emitted >= interval:
+            self._emit(task, timing, message, now)
 
     def _emit(self, task: ProgressTask, timing: _TaskTiming, message: ProgressMessage, now: float) -> None:
         self._report(WithProgressTime(message, now - self._started, now - timing.started))
@@ -77,14 +81,30 @@ class SyncProgress:
     def heartbeat(self) -> None:
         """Expose each unfinished phase independently, even when other phases print."""
         with self._lock:
+            observers = tuple(self._observers.items())
+        for identity, observer in observers:
+            message = observer()
+            if message is not None:
+                with self._lock:
+                    if self._observers.get(identity) is observer:
+                        self._accept(message)
+        with self._lock:
             now = self._monotonic()
             for task, timing in self._tasks.items():
-                if not timing.ended and now - timing.emitted >= 5.0:
+                observed = (task.owner, None) in self._observers or (task.owner, task.key) in self._observers
+                if not observed and not timing.ended and now - timing.emitted >= 5.0:
                     message = replace(timing.latest, state="等待", fields=(
                         *timing.latest.fields,
                         ProgressField(f"距该阶段事实更新 {ProgressDuration(now - timing.updated)}"),
                     ))
                     self._emit(task, timing, message, now)
+
+    def register_observer(
+        self, owner: str, callback: Callable[[], ProgressMessage | None], *, task_key: str | None = None,
+    ) -> None:
+        """Reuse the command heartbeat for an owner's current in-memory snapshot."""
+        with self._lock:
+            self._observers[owner, task_key] = callback
 
     def finish(self, task: ProgressTask) -> None:
         """Close an explicitly scoped operation without inventing a success event."""
@@ -95,6 +115,9 @@ class SyncProgress:
 
     def finish_owner(self, owner: str) -> None:
         with self._lock:
+            for identity in tuple(self._observers):
+                if identity[0] == owner:
+                    del self._observers[identity]
             for task, timing in self._tasks.items():
                 if task.owner == owner:
                     timing.ended = True
@@ -125,6 +148,7 @@ class SyncProgress:
             finally:
                 with self._lock:
                     self._tasks.clear()
+                    self._observers.clear()
 
 
 __all__ = ["SyncProgress"]

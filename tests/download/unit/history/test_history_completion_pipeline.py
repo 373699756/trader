@@ -339,6 +339,12 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
             started.set()
             assert reached_capacity.wait(5), "network must continue while writer is blocked"
             assert network_count == 64, "completed plus in-flight payloads must stay bounded"
+            assert any(value.request is not None and value.request.state == "started" for value in progress.values)
+            assert not any(
+                value.stage == "tencent_history" and value.request is None and value.current_item is not None
+                and value.pipeline is not None and value.state in {"completed", "failed"}
+                for value in progress.values
+            ), "a real request must not become a durable acknowledgement while the writer is blocked"
             tasks = HistoryDownloadIndex(tmp_path / "parallel/catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks()
             assert not any(task.tencent_done for task in tasks)
         return original(prices, results)
@@ -353,6 +359,24 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
     assert result.state == "completed", result.reason
     assert count_at_write[0] < 64
     assert all(task.tencent_done for task in HistoryDownloadIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks())
+    requests = [value.request for value in progress.values if value.request is not None]
+    confirmations = [
+        value for value in progress.values
+        if value.stage == "tencent_history" and value.request is None and value.current_item is not None
+        and value.pipeline is not None and value.state in {"completed", "failed"}
+    ]
+    expected = [f"{600000 + number}" for number in range(80)]
+    assert sorted(request.code for request in requests if request.state == "started") == expected
+    assert sorted(request.code for request in requests if request.state == "finished") == expected
+    assert sorted(value.current_item for value in confirmations) == expected
+    for code in expected:
+        events = [
+            "request_" + value.request.state if value.request is not None else "confirmed"
+            for value in progress.values
+            if value.request is not None and value.request.code == code
+            or value in confirmations and value.current_item == code
+        ]
+        assert events == ["request_started", "request_finished", "confirmed"]
     assert any(item.pipeline and item.pipeline.write_seconds > 0 for item in progress.values)
     summary = next(item for item in progress.values if item.tencent_summary is not None)
     assert summary.pipeline is not None
@@ -501,6 +525,7 @@ def test_permanent_worker_rejection_reports_capacity_failure_and_resumes(tmp_pat
 @pytest.mark.parametrize("failure", [OSError("disk_full"), KeyboardInterrupt()])
 def test_async_write_failure_never_acknowledges_or_enters_baostock(tmp_path, monkeypatch, failure):
     supplier = FakeSupplier(DAYS)
+    progress = ProgressRecorder()
     original = HistoryDirectPrices.commit_pipeline
 
     def fail(prices, results):
@@ -509,13 +534,53 @@ def test_async_write_failure_never_acknowledges_or_enters_baostock(tmp_path, mon
     monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", fail)
     with ThreadPoolExecutor(max_workers=2) as network, ThreadPoolExecutor(max_workers=1) as writer:
         result = RunHistoryFixture(
-            _configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=network, writer_pool=writer
+            _configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=network, writer_pool=writer,
+            progress=progress,
         )
     assert result.state == ("failed" if isinstance(failure, OSError) else "cancelled")
+    assert any(value.request is not None and value.request.state == "started" for value in progress.values)
+    assert not any(
+        value.stage == "tencent_history" and value.request is None and value.current_item is not None
+        and value.pipeline is not None and value.state in {"completed", "failed"}
+        for value in progress.values
+    )
     assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).tasks())
     assert "baostock_prices" not in supplier.events
     monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", original)
     assert RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
+
+
+def test_price_commit_before_checkpoint_failure_reuses_prices_without_a_fake_request(tmp_path, monkeypatch):
+    class OneSecurity(FakeSupplier):
+        def load_context(self, as_of, sessions):
+            security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "test")
+            return super().load_context(as_of, sessions, universe=(security,))
+
+    supplier = OneSecurity(DAYS)
+    finish = HistoryDownloadIndex.finish
+
+    def fail_checkpoint(_index, _completions):
+        raise OSError("checkpoint_failed")
+
+    monkeypatch.setattr(HistoryDownloadIndex, "finish", fail_checkpoint)
+    first = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    assert first.state == "failed" and len(supplier.calls) == 1
+    assert not any(task.tencent_done for task in HistoryDownloadIndex(
+        tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture(),
+    ).tasks())
+    monkeypatch.setattr(HistoryDownloadIndex, "finish", finish)
+    monkeypatch.setattr(supplier, "fetch_tencent_window", lambda *_args: pytest.fail("durable prices need no request"))
+    progress = ProgressRecorder()
+    resumed = RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW, progress=progress)
+    assert resumed.state == "completed" and len(supplier.calls) == 1
+    assert not any(value.request is not None for value in progress.values)
+    confirmations = [
+        value for value in progress.values
+        if value.stage == "tencent_history" and value.request is None and value.current_item is not None
+        and value.pipeline is not None and value.state == "completed"
+    ]
+    assert len(confirmations) == 1 and confirmations[0].current_item == "600001"
+    assert confirmations[0].supplier_source is None
 
 
 def test_async_cross_year_failure_reuses_durable_rows_on_restart(tmp_path, monkeypatch):

@@ -297,6 +297,19 @@ class HistoryPipelineProgress:
 
 
 @dataclass(frozen=True)
+class HistoryStockRequest:
+    code: str
+    name: str
+    start: date
+    end: date
+    state: Literal["started", "finished"]
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[0-9]{6}", self.code) or self.start > self.end or self.state not in {"started", "finished"}:
+            raise ValueError("history_stock_request_invalid")
+
+
+@dataclass(frozen=True)
 class HistorySyncProgress:
     stage: HistorySyncProgressStage
     state: HistorySyncProgressState
@@ -325,8 +338,11 @@ class HistorySyncProgress:
     stock_download_seconds: float | None = None
     stock_read_seconds: float | None = None
     stock_validation_seconds: float | None = None
+    request: HistoryStockRequest | None = None
 
     def __post_init__(self) -> None:
+        if self.request is not None and (self.stage != "tencent_history" or self.current_item != self.request.code):
+            raise ValueError("history_stock_request_identity_invalid")
         if any(value is not None and (not math.isfinite(value) or value < 0) for value in (
             self.stock_download_seconds, self.stock_read_seconds, self.stock_validation_seconds,
         )) or (self.requested_from is None) != (self.requested_to is None) or (
@@ -434,4 +450,5 @@ __all__ = [
     "HistoryTencentSummary",
     "HistoryTwoStageSupplier",
     "HistoryPipelineProgress",
+    "HistoryStockRequest",
 ]

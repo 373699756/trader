@@ -48,6 +48,8 @@ class ProgressMessage:
     task: ProgressTask | None = None
     state: ProgressState = "处理中"
     finished: bool = False
+    immediate: bool = False
+    compact: bool = False
 
 
 def FormatProgressField(text: str, width: int = 0, *, level: ProgressLevel = ProgressLevel.NORMAL) -> ProgressField:
@@ -62,10 +64,12 @@ def ProgressNumber(value: int | None, width: int = 6) -> str:
 def WithProgressTime(message: ProgressMessage, total_seconds: float, stage_seconds: float) -> ProgressMessage:
     if message.task is None:
         raise ValueError("sync_progress_task_missing")
-    return replace(message, fields=(
-        *(ProgressField(part) for part in progress_format.ProgressPrefix(
+    prefix = progress_format.ProgressPrefix(
             total_seconds, f"{message.task.owner}·{message.task.label}", stage_seconds, message.state,
-        )),
+            stage_width=(30 if message.task.owner == "history" else 25) if message.compact else 52,
+        )
+    return replace(message, fields=(
+        *(ProgressField(part) for part in (prefix[:2] if message.compact else prefix)),
         *message.fields,
     ))
 

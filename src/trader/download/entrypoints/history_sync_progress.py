@@ -6,6 +6,7 @@ from trader.infra.progress_format import ProgressDuration
 
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from threading import Lock
 
 from trader.download.application.progress_message import (
@@ -24,6 +25,7 @@ from trader.download.application.stock_download_progress import (
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_supplier_failure import HISTORY_SUPPLIER_PENDING_REASONS
 from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressStage, HistorySyncProgressState
+from trader.download.entrypoints.history_download_display import HistoryDownloadDisplay
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 
 _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
@@ -206,6 +208,13 @@ class StderrHistorySyncProgress:
         self._last_progress: tuple[HistorySyncProgressStage, str | None] | None = None
         self._specific_failure: tuple[HistorySyncProgressStage, str | None] | None = None
         self._route: HistorySyncProgress | None = None
+        self._download_display = HistoryDownloadDisplay(monotonic)
+        self._download_failures: set[tuple[str | None, str | None]] = set()
+        self._output.register_observer("history", self.heartbeat_message, task_key="prices")
+
+    def heartbeat_message(self) -> ProgressMessage | None:
+        with self._lock:
+            return self._download_display.heartbeat_message()
 
     def publish(self, progress: HistorySyncProgress) -> None:
         with self._lock:
@@ -234,6 +243,23 @@ class StderrHistorySyncProgress:
         self._record_failure(progress)
         if self._should_suppress(progress):
             return
+        if progress.stage == "tencent_history" and progress.state == "failed" and progress.current_item is None:
+            self._download_display.finish()
+        if progress.stage == "tencent_history" and (
+            progress.pipeline is not None or progress.request is not None or progress.state in {"started", "cancelled"}
+        ):
+            message = self._download_display.update(progress)
+            if message is None and progress.state == "waiting" and progress.request is None:
+                message = self._download_display.heartbeat_message()
+            if message is not None:
+                self._output(message)
+            if progress.tencent_summary is None:
+                diagnostic = progress.failure_reason is not None or progress.price_coverage is not None and progress.price_coverage.missing
+                identity = progress.current_item, progress.failure_reason
+                if diagnostic and progress.current_item is not None and identity not in self._download_failures:
+                    self._download_failures.add(identity)
+                    self._output(self._stock_download_line(progress))
+                return
         if (
             progress.stage == "tencent_history"
             and progress.current_item is not None
@@ -300,7 +326,7 @@ class StderrHistorySyncProgress:
             *((f"诊断 {progress.failure_detail}",) if progress.failure_detail else ()),
             *(("后续 保留缺口，继续后续股票；补缺依现有策略",) if progress.failure_reason else ()),
         )
-        return FormatStockDownloadProgress(
+        message = FormatStockDownloadProgress(
             StockDownloadProgress(
                 command="sync history",
                 completed=progress.completed_units,
@@ -319,6 +345,9 @@ class StderrHistorySyncProgress:
                 extra=extra,
             ),
         )
+        if progress.pipeline is not None or progress.request is not None:
+            return replace(message, immediate=True)
+        return message
 
     def _record_failure(self, progress: HistorySyncProgress) -> None:
         if progress.state == "completed" and (
@@ -420,6 +449,9 @@ class StderrHistorySyncProgress:
         return parts
 
     def publish_result(self, status: HistoryMaintenanceStatus) -> None:
+        with self._lock:
+            self._download_display.finish()
+            self._output.finish_owner("history")
         parts = self._result_parts(status)
         # Final persisted gap state supersedes recoverable per-attempt failures.
         level = _maintenance_result_level(status)

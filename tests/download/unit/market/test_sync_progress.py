@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import time
-from threading import enumerate as enumerate_threads
+from threading import Event, Thread, enumerate as enumerate_threads
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -15,12 +15,14 @@ from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.application.sync_progress import SyncProgress
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
+from trader.download.domain.download_failure import DownloadFailureContext
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.progress_format import DisplayWidth
+from trader.infra.http_contracts import HttpStatusError
 from trader.infra.settings.data_paths import DataPaths
 from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
 
@@ -50,8 +52,6 @@ def test_shell_history_and_longest_training_stage_share_separator_positions(monk
     ]
     assert positions[0] == positions[1] == positions[2]
     assert "train·V5·tomorrow·历史读取与训练样本生成" in lines[-1]
-from trader.download.domain.download_failure import DownloadFailureContext
-from trader.infra.http_contracts import HttpStatusError
 
 
 def test_shared_clock_survives_interleaved_stocks_months_and_task_restarts():
@@ -109,6 +109,39 @@ def test_heartbeat_thread_is_reclaimed_after_success_and_exception(fail):
     except RuntimeError:
         assert fail
     assert not any(thread.name == "download-progress" for thread in enumerate_threads())
+
+
+def test_owner_finish_discards_an_observer_snapshot_already_being_built():
+    entered, release = Event(), Event()
+    messages = []
+    report = SyncProgress(messages.append, lambda: 5.0)
+
+    def observe():
+        entered.set()
+        assert release.wait(5)
+        return ProgressMessage((ProgressField("迟到快照"),), task=ProgressTask("company", "current", "正文"), immediate=True)
+
+    report.register_observer("company", observe)
+    heartbeat = Thread(target=report.heartbeat)
+    heartbeat.start()
+    try:
+        assert entered.wait(5)
+        report.finish_owner("company")
+    finally:
+        release.set()
+        heartbeat.join(5)
+    assert not heartbeat.is_alive()
+    assert messages == []
+
+
+def test_display_padding_and_shortening_use_chinese_cells_and_strip_terminal_controls():
+    from trader.infra.progress_format import PadProgressText, ShortProgressText
+
+    value = ShortProgressText("\x1b[31m很长股票名称|说明", 9)
+    assert DisplayWidth(value) == 9 and value.endswith("…")
+    assert "\x1b" not in value and "|" not in value
+    assert PadProgressText("股", 4) == "股  "
+    assert PadProgressText("12", 4, right=True) == "  12"
 
 
 def test_unknown_task_and_invalid_start_are_explicit_errors():

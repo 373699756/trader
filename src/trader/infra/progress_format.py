@@ -24,9 +24,36 @@ def DisplayWidth(text: str) -> int:
     )
 
 
-def ProgressPrefix(total_seconds: float, task: str, stage_seconds: float, state: str) -> tuple[str, str, str]:
+def PadProgressText(text: str, width: int, *, right: bool = False) -> str:
+    value = CleanProgressText(text)
+    padding = " " * max(0, width - DisplayWidth(value))
+    return padding + value if right else value + padding
+
+
+def ShortProgressText(text: str, width: int) -> str:
+    value = CleanProgressText(text)
+    if DisplayWidth(value) <= width:
+        return value
+    if width < 1:
+        return ""
+    result = ""
+    for char in value:
+        if DisplayWidth(result + char) > width - 1:
+            break
+        result += char
+    return result + "…"
+
+
+def ProgressPrefix(
+    total_seconds: float,
+    task: str,
+    stage_seconds: float,
+    state: str,
+    *,
+    stage_width: int = 52,
+) -> tuple[str, str, str]:
     fields = (ProgressDuration(total_seconds), f"{CleanProgressText(task)} {ProgressDuration(stage_seconds)}", CleanProgressText(state))
-    padded = tuple(value + " " * max(0, width - DisplayWidth(value)) for value, width in zip(fields, (8, 52, 6), strict=True))
+    padded = tuple(PadProgressText(value, width) for value, width in zip(fields, (8, stage_width, 6), strict=True))
     return padded[0], padded[1], padded[2]
 
 
@@ -66,7 +93,7 @@ def _startup_progress() -> None:
         thread.join()
 
 
-__all__ = ["ProgressDuration", "ProgressPrefix", "CleanProgressText", "DisplayWidth"]
+__all__ = ["ProgressDuration", "ProgressPrefix", "CleanProgressText", "DisplayWidth", "PadProgressText", "ShortProgressText"]
 
 
 if __name__ == "__main__":

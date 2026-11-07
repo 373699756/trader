@@ -25,6 +25,7 @@ from trader.download.domain.history_supplier_failure import (
 )
 from trader.download.domain.history_sync import (
     HistoryPipelineProgress,
+    HistoryStockRequest,
     HistorySupplierContext,
     HistorySyncConfiguration,
     HistorySyncProgress,
@@ -117,6 +118,8 @@ class HistoryDownloadFlow:
         self._stopped = Event()
         self._write_lock = Lock()
         self._write_operation = "空闲"
+        self._progress_lock = Lock()
+        self._download_progress: HistorySyncProgress | None = None
         self._emit(HistorySyncProgress("initializing", "started", 0, 1, "repair_index"))
         self._baostock_codes = HistoryPriceRepair(
             resources.configuration.history_root, sqlite_policy=self._sqlite_policy,
@@ -129,11 +132,43 @@ class HistoryDownloadFlow:
             raise KeyboardInterrupt
 
     def _emit(self, value: HistorySyncProgress) -> None:
+        if value.stage == "tencent_history" and value.request is None:
+            with self._progress_lock:
+                self._download_progress = value
         if self._resources.progress is not None:
             try:
                 self._resources.progress.publish(value)
             except OSError:
                 pass
+
+    def _request_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+        def report(state: str, failure: BaseException | None = None) -> None:
+            with self._progress_lock:
+                previous = self._download_progress
+            if previous is None:
+                return
+            request = HistoryStockRequest(security.code, security.name, dates[0], dates[-1], "started" if state == "started" else "finished")
+            self._emit(HistorySyncProgress(
+                "tencent_history", "failed" if failure is not None else "waiting",
+                previous.completed_units, previous.total_units, security.code,
+                current_name=security.name, pipeline=previous.pipeline, request=request,
+                supplier_source="tencent", requested_sessions=min(2000, len(dates)),
+                requested_from=dates[0], requested_to=dates[-1],
+                failure_reason=DownloadFailure(failure) if failure is not None else None,
+                failure_detail=HistoryFailureDetail(failure)[:512] if failure is not None else None,
+            ))
+
+        report("started")
+        try:
+            result = self._resources.supplier.fetch_tencent_window(security, dates)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            report("finished", exc)
+            raise
+        except BaseException:
+            report("finished")
+            raise
+        report("finished")
+        return result
 
     def _security(self, code: str) -> BaoStockSecurity:
         return next(item for item in self._resources.context.universe if item.code == code)
@@ -489,7 +524,7 @@ class HistoryDownloadFlow:
         diagnostic: str | None = None
         unusable_qfq_dates: tuple[date, ...] = ()
         try:
-            window = self._resources.supplier.fetch_tencent_window(self._security(task.code), dates)
+            window = self._request_window(self._security(task.code), dates)
         except HistorySupplierPendingError as exc:
             window, failure = exc.window, exc.reason
             diagnostic = HistoryFailureDetail(exc)
@@ -537,7 +572,7 @@ class HistoryDownloadFlow:
         try:
             fetch_started = time.monotonic()
             try:
-                window = self._resources.supplier.fetch_tencent_window(security, dates)
+                window = self._request_window(security, dates)
             finally:
                 download_seconds += time.monotonic() - fetch_started
             self._check()
