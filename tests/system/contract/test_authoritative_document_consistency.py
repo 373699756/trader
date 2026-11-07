@@ -139,11 +139,17 @@ def test_retired_blueprints_are_removed_without_forwarding_stubs() -> None:
 
 
 def test_current_document_links_resolve() -> None:
+    current_documents = tuple(DOCS / name for name in (
+        "a_总体目标.md", "b_系统设计.md", "c_评分设计.md", "d_下载设计.md",
+        "e_训练设计.md", "f_人工审核.md", "g_施工进度.md", "h_需求文档.md",
+    ))
+    assert all(path.is_file() for path in current_documents)
     paths = [
+        ROOT / "AGENTS.md",
         ROOT / "README.md",
         ROOT / "scripts/README.md",
         DOCS / "README.md",
-        *sorted((DOCS / "new").glob("*.md")),
+        *current_documents,
         *(ROOT / ".agents/skills/python-engineering-guide").rglob("*.md"),
     ]
     failures = []

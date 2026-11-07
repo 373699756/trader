@@ -13,7 +13,7 @@ def _read(relative: str) -> str:
 def test_candidate_planning_contract_is_synchronized_across_authoritative_documents() -> None:
     strategy = _read("docs/c_评分设计.md")
     design = _read("docs/b_系统设计.md")
-    work = _read("docs/new/g_施工进度.md")
+    work = _read("docs/g_施工进度.md")
 
     compact_strategy = "".join(strategy.split())
     assert "每轮每股只请求一次" in compact_strategy

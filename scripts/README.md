@@ -296,7 +296,7 @@ assets/consistency只读核对，assets/generate显式重建打包JS资源；公
 
 | `download/company/output_paths.py` | Reject company replay outputs that overlap protected runtime locations. | 路径隔离预检；不创建或清理目录 | `download/company/company_resume.py`、`download/company/commands.py`、`download/unit/scripts/test_company_output_isolation.py` |
 
-代码之外，Makefile的lint、long-watchlist-check、test-release、performance-check、browser-performance-check及diagnose-list/local均调用唯一入口；根README、两平台启动帮助、启用Python skill和测试同步使用新命令。产品CLI仍拥有产品配置、状态和性能用例，工具复用它们，不从产品包反向导入scripts。pytest只切换消费者与相应命名清单，不添加全局路径注入或新的收集钩子。进度与实际验证只记docs/new/g_施工进度.md原阶段338。
+代码之外，Makefile的lint、long-watchlist-check、test-release、performance-check、browser-performance-check及diagnose-list/local均调用唯一入口；根README、两平台启动帮助、启用Python skill和测试同步使用新命令。产品CLI仍拥有产品配置、状态和性能用例，工具复用它们，不从产品包反向导入scripts。pytest只切换消费者与相应命名清单，不添加全局路径注入或新的收集钩子。进度与实际验证只记docs/g_施工进度.md原阶段338。
 
 ## 荐股准备、预载与V5行业的离线候选
 

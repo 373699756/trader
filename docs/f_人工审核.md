@@ -304,9 +304,9 @@
 
 `QualifyPriceOverlap((new_anchor, new_day), (old_anchor,), full_window=False)`实际返回两个`complete`，qfq为`[100, 50]`；再经`BuildAlignedHistoryBars`得到−50%日收益。一致的新基准`[50, 50]`应为0%。这只是合成反例，没有用它认定真实证券发生了50%下跌。
 
-**证据和传播链：** `history_download_flow.py::_fetch_task`请求缺日及锚点；`history_direct_prices.py:245`调用[history_price_qualification.py:64–75](../../src/trader/download/domain/history_price_qualification.py#L64)，只验证raw并替回旧价格对。普通Tencent分支没有基准变更后的整窗重取，现有replacement分支处理的是BaoStock来源切换；`history_sync_runner.py:643`随后发布新快照。[既有qfq_basis回归](../../tests/download/unit/history/test_history_supplier_router.py#L192)明确允许旧锚保留、新基准尾日追加，未覆盖同一新快照基准一致性。
+**证据和传播链：** `history_download_flow.py::_fetch_task`请求缺日及锚点；`history_direct_prices.py:245`调用[history_price_qualification.py:64–75](../src/trader/download/domain/history_price_qualification.py#L64)，只验证raw并替回旧价格对。普通Tencent分支没有基准变更后的整窗重取，现有replacement分支处理的是BaoStock来源切换；`history_sync_runner.py:643`随后发布新快照。[既有qfq_basis回归](../tests/download/unit/history/test_history_supplier_router.py#L192)明确允许旧锚保留、新基准尾日追加，未覆盖同一新快照基准一致性。
 
-错误不仅影响该证券的历史动量、均线和波动率。训练[sample_builder.py:193–201](../../src/trader/training/infra/sample_builder.py#L193)直接计算未来收盘／信号收盘，再在第428–444行减去当日有效证券的等权收益基准。两股真实收益均为0、一股被读成−50%的合成场景，`ObservedTrainingBenchmark((-0.5, 0.0))`实际为−0.25，两股超额标签分别变成−0.25及+0.25；正常股票也被污染。V1的`samples.py:207–214、448–456`有同一传播方式，不另计独立问题。
+错误不仅影响该证券的历史动量、均线和波动率。训练[sample_builder.py:193–201](../src/trader/training/infra/sample_builder.py#L193)直接计算未来收盘／信号收盘，再在第428–444行减去当日有效证券的等权收益基准。两股真实收益均为0、一股被读成−50%的合成场景，`ObservedTrainingBenchmark((-0.5, 0.0))`实际为−0.25，两股超额标签分别变成−0.25及+0.25；正常股票也被污染。V1的`samples.py:207–214、448–456`有同一传播方式，不另计独立问题。
 
 **待处理及待确认：** download在qfq重叠基准改变时，应验证并为新发布序号形成完整一致的复权窗口；不能只保持raw一致继续拼接。旧快照不可变不妨碍新序号修正，`history_prices.py:986–1017`已有追加revision能力。需先隔离审计实际受影响证券、日期和下游样本/模型，再决定恢复范围；本轮未改活动历史、重建库、重训或追溯改写旧推荐。training负责核对受影响输入身份及标签，本项不等于已经证明活动模型全部受污染。
 
@@ -314,7 +314,7 @@
 
 **审查时回答（14632194，修复接续见5.5）：已从独立的纯特征构建反例确认。** 此项不依赖5.1的下载错误：D−1历史可以完全合法且基准一致，只有D日新除权使实时raw报价基准改变。61条常价qfq历史均为10，D日`price=previous_close=5`、报价涨跌为0；当时`FeatureBuilder.build`实际输出`qfq_return_1d=-0.5`、`return_3d=-50.0`、`ma20=10.0`，同时展示价为5。
 
-**证据和传播链：** [merge_quote.py:147](../../src/trader/recommendation/infra/normalization/merge_quote.py#L147)保留供应商raw报价；[candidate_quote_cache.py:186](../../src/trader/recommendation/infra/market_data/candidate_quote_cache.py#L186)把报价与冻结历史交给特征构建；[features.py:599–613](../../src/trader/recommendation/infra/normalization/features.py#L599)以`quote.price`直接除qfq锚点，第624行及之后的本地收益、均线和突破比较也直接使用该价格。中间没有利用`previous_close`、raw/qfq锚点或明确复权身份完成同基准转换；`published_history_cache.py:453–476`主要检查日期与窗口，不拒绝这种基准错配。
+**证据和传播链：** [merge_quote.py:147](../src/trader/recommendation/infra/normalization/merge_quote.py#L147)保留供应商raw报价；[candidate_quote_cache.py:186](../src/trader/recommendation/infra/market_data/candidate_quote_cache.py#L186)把报价与冻结历史交给特征构建；[features.py:599–613](../src/trader/recommendation/infra/normalization/features.py#L599)以`quote.price`直接除qfq锚点，第624行及之后的本地收益、均线和突破比较也直接使用该价格。中间没有利用`previous_close`、raw/qfq锚点或明确复权身份完成同基准转换；`published_history_cache.py:453–476`主要检查日期与窗口，不拒绝这种基准错配。
 
 这会污染使用当日收益的模型输入及本地趋势、破位等判断。5.1是新快照内部历史基准混用，本项是合法冻结历史与当日raw报价的基准混用，发生时间、owner和修复边界不同。
 
@@ -324,7 +324,7 @@
 
 **当前回答：原问题不能仅凭新训练代码存在就关闭。** 新训练路径已要求近期诊断、按各头最新成熟标签最终拟合，并在复用时拒绝不具备相应证据的旧工件；线上reader仍允许旧schema，之后按既有人工授权构造生产authority。保留旧工件用于历史解释或已有显式授权是有效边界；代码升级不会自动更新这些工件，enabled/authority也不是近期重拟合或收益通过声明，不能据此认定已有模型完成了新流程。
 
-**证据：** `bootstrap.py:875`调用`LoadScoringProfile`；[profile_factory.py:118](../../src/trader/recommendation/infra/scoring/profile_factory.py#L118)经[profile_publication.py:179–184](../../src/trader/training/infra/model_bundles/profile_publication.py#L179)解码及验证双头互同身份，但不调用第227行的近期诊断检查；该检查只在新writer路径执行。[profile.py:69–76](../../src/trader/training/infra/model_bundles/profile.py#L69)直接设置`production_authority=True`。V1的[models.py:362–364](../../src/trader/training/infra/profile/v1/models.py#L362)同样接受新旧schema，并在第471–481行授予原人工授权。最终选席投影只读取该authority，没有新的最终拟合证据门。
+**证据：** `bootstrap.py:875`调用`LoadScoringProfile`；[profile_factory.py:118](../src/trader/recommendation/infra/scoring/profile_factory.py#L118)经[profile_publication.py:179–184](../src/trader/training/infra/model_bundles/profile_publication.py#L179)解码及验证双头互同身份，但不调用第227行的近期诊断检查；该检查只在新writer路径执行。[profile.py:69–76](../src/trader/training/infra/model_bundles/profile.py#L69)直接设置`production_authority=True`。V1的[models.py:362–364](../src/trader/training/infra/profile/v1/models.py#L362)同样接受新旧schema，并在第471–481行授予原人工授权。最终选席投影只读取该authority，没有新的最终拟合证据门。
 
 本机默认工件目录八头只读核对仍为旧schema、无`final_fit`。V1的`training_input.split.fitting`实际末日也明显早于`source_cutoff`及验证末日，不能用资料截止或`label_cutoff`冒充实际拟合截止。对本机V3两头执行`DecodeHeadBundle → BuildTrainedScoringProfile → BuildProfileScoring.status`，实际输出为：
 
