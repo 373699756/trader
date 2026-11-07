@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
 from scripts.core.paths import PROJECT_ROOT, ExternalPath
@@ -61,6 +63,12 @@ def BuildParser(
         history_flush_cells=None,
         official_announcements=(),
         industry_work_root=None,
+        cninfo_query_codes=(),
+        cninfo_query_from=None,
+        cninfo_query_to=None,
+        cninfo_cache_evidence=None,
+        cninfo_cache_codes=(),
+        cninfo_cache_candidate="baseline",
     )
     if action_identity in ("history","baostock-concurrency","tencent-download","tencent-history-window","history-source-compare",):
         parser.add_argument('--codes', nargs='+', default=('600519', '300750', '688981'), help='one to 50 A-share codes, or up to 100 for baostock-concurrency')
@@ -76,7 +84,7 @@ def BuildParser(
         parser.add_argument('--tencent-history-host', choices=('proxy', 'direct'), default='proxy', help='Tencent K-line host for bounded history probes')
     if action_identity in ("history","baostock-concurrency","tencent-download","tencent-history-window","history-source-compare","history-industry",):
         parser.add_argument('--source-timeout-seconds', type=float, default=4.5, help='vendor HTTP timeout; SDK socket timeout for BaoStock experiments')
-    if action_identity in ("history-daily-capability","baostock-qfq-shadow","tencent-download","tencent-history-window","history-sqlite","history-publication","history-source-compare","price-repair-audit","history-write","download-performance","history-space","qfq-sqlite","download-failures",):
+    if action_identity in ("history-daily-capability","baostock-qfq-shadow","tencent-download","tencent-history-window","history-sqlite","history-publication","history-source-compare","price-repair-audit","history-write","download-performance","history-space","history-industry","qfq-sqlite","download-failures",):
         parser.add_argument('--runtime-config', default=str(PROJECT_ROOT / 'config/runtime.json'), help='runtime JSON configuration')
     if action_identity in ("baostock-concurrency",):
         rate_mode = parser.add_mutually_exclusive_group()
@@ -128,7 +136,14 @@ def BuildParser(
         parser.add_argument('--flush-codes', dest='history_flush_codes', type=int)
         parser.add_argument('--flush-cells', dest='history_flush_cells', type=int)
     if action_identity == "history-industry":
-        parser.add_argument('--official-announcements', nargs='+', help='CAPCO structured release URLs for isolated candidates')
+        source = parser.add_mutually_exclusive_group()
+        source.add_argument('--official-announcements', nargs='+', help='CAPCO structured release URLs for isolated candidates')
+        source.add_argument('--cninfo-query-codes', nargs='+', help='2..50 unique sorted codes for an isolated batch protocol probe')
+        source.add_argument('--cninfo-cache-evidence', type=Path, help='existing external CNINFO probe originals; offline five-round cache measurement')
+        parser.add_argument('--cninfo-cache-codes', nargs='+', help='2..5 unique sorted codes with single-stock receipts in the evidence directory')
+        parser.add_argument('--cninfo-cache-candidate', choices=("baseline", "batched", "compare"), default="baseline")
+        parser.add_argument('--cninfo-query-from', type=date.fromisoformat)
+        parser.add_argument('--cninfo-query-to', type=date.fromisoformat)
         parser.add_argument('--industry-work-root', type=Path, help='external directory for original files and candidates')
     return parser
 
@@ -174,13 +189,43 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         history_flush_cells=args.history_flush_cells,
         official_announcements=tuple(args.official_announcements or ()),
         industry_work_root=ExternalPath(args.industry_work_root, "--industry-work-root"),
+        cninfo_query_codes=tuple(args.cninfo_query_codes or ()),
+        cninfo_query_from=args.cninfo_query_from,
+        cninfo_query_to=args.cninfo_query_to,
+        cninfo_cache_evidence=ExternalPath(args.cninfo_cache_evidence, "--cninfo-cache-evidence"),
+        cninfo_cache_codes=tuple(args.cninfo_cache_codes or ()),
+        cninfo_cache_candidate=args.cninfo_cache_candidate,
     )
     if not math.isfinite(options.command_timeout_seconds) or not 0 < options.command_timeout_seconds <= 7200:
         raise ValueError("command timeout must be positive and must not exceed 7200 seconds")
-    if bool(options.official_announcements) != (options.industry_work_root is not None):
-        raise ValueError("--official-announcements and --industry-work-root must be set together")
-    if options.action_identity == "history-industry" and not options.official_announcements:
-        raise ValueError("industry diagnostic requires --official-announcements and --industry-work-root")
+    selected_source = bool(options.official_announcements or options.cninfo_query_codes or options.cninfo_cache_evidence)
+    if selected_source != (options.industry_work_root is not None):
+        raise ValueError("industry source selection and --industry-work-root must be set together")
+    if options.action_identity == "history-industry" and not selected_source:
+        raise ValueError("industry diagnostic requires an explicit source and --industry-work-root")
+    if options.cninfo_query_codes:
+        if (
+            not 2 <= len(options.cninfo_query_codes) <= 50
+            or options.cninfo_query_codes != tuple(sorted(set(options.cninfo_query_codes)))
+            or any(re.fullmatch(r"[0-9]{6}", code) is None for code in options.cninfo_query_codes)
+            or options.cninfo_query_from is None or options.cninfo_query_to is None
+            or options.cninfo_query_from > options.cninfo_query_to
+            or not 1 <= options.source_timeout_seconds <= 45
+        ):
+            raise ValueError("CNINFO probe requires 2..50 unique sorted codes, an ordered date window and timeout within 1..45")
+    elif options.cninfo_query_from is not None or options.cninfo_query_to is not None:
+        raise ValueError("CNINFO date window requires --cninfo-query-codes")
+    if options.cninfo_cache_evidence is not None:
+        if (
+            not 2 <= len(options.cninfo_cache_codes) <= 5
+            or options.cninfo_cache_codes != tuple(sorted(set(options.cninfo_cache_codes)))
+            or any(re.fullmatch(r"[0-9]{6}", code) is None for code in options.cninfo_cache_codes)
+        ):
+            raise ValueError("CNINFO cache measurement requires 2..5 unique sorted --cninfo-cache-codes")
+    elif options.cninfo_cache_codes:
+        raise ValueError("--cninfo-cache-codes requires --cninfo-cache-evidence")
+    if options.cninfo_cache_candidate != "baseline" and options.cninfo_cache_evidence is None:
+        raise ValueError("--cninfo-cache-candidate requires --cninfo-cache-evidence")
     if options.official_announcements:
         from trader.download.infra.official_industry_release import ValidateOfficialIndustryUrl
 

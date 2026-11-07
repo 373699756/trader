@@ -12,6 +12,14 @@
 .venv/bin/python3 scripts/tools.py --business recommendation --module assets --action consistency
 ```
 
+当前行业的批量协议核验沿同一`download/history/industry`动作，显式指定2–50个有序、不重复的六位代码、共同日期窗及全新仓库外目录。例如：
+
+```bash
+.venv/bin/python3 scripts/tools.py --business download --module history --action industry --cninfo-query-codes 002831 002832 --cninfo-query-from 2018-01-01 --cninfo-query-to 2026-11-07 --industry-work-root /tmp/industry-query-probe --source-timeout-seconds 15 --command-timeout-seconds 180 --report /tmp/industry-query-probe-report.json
+```
+
+该模式与`--official-announcements`互斥，比较GET查询参数、POST查询参数和POST表单，最多5股时再逐股取得同窗基线；超过5股明确报告未比较。原件、请求回执、收到时间和摘要保存在外部目录，完整记录多重集相等才报告与基线一致；失败的数据空值报告未知，接口200或空返回不代表覆盖完整。所有输出保持来源候选，不写活动行业库或历史，也不将单次耗时当作全市场性能。
+
 根`--help`展示中立公共参数，选中动作的`--help`只加载所属业务解析器，并展示其参数和副作用。业务检查沿用原有具名参数和上限；不会因选择某项动作而运行其它业务。训练、真实网络、浏览器、性能探针、隔离样本构建及维护都需要明确选中并满足原授权和隔离要求。`recommendation/pipeline/snapshot`明确选择配置、维护状态、研究就绪和离线性能四项；配置失败后其它三项报告skipped。
 
 荐股公共原始因子复用候选只在显式连续回放中选择，默认`baseline`，不修改生产服务。D在冻结版本上使用相同配置、模型、股票数和tick数分别运行基线及下列候选；删去`--performance-factor-candidate raw_factor_reuse`即为基线。它使用现有共享`quote_factor_inputs`容量和`feature_batches`字节预算，合并完全相同的报价、日线、历史摘要、horizons和基础配置；命中后返回独立可变副本，风险/证据/分钟及模型组装仍走原流程。非有限输入不写此候选缓存，交原计算处理，原异常也继续传播。`raw_factor_computations`仅统计可规范序列化输入的候选原计算完成次数（包括缓存拒写），基线为null；不把缓存命中计数当作省下的函数调用。`feature_group_max_bytes`包含基础、候选和横截面的整个特征组，仍需另看实际RSS。
@@ -143,10 +151,12 @@ assets/consistency只读核对，assets/generate显式重建打包JS资源；公
 | `download/history/baostock_qfq_shadow.py` | Read-only BaoStock qfq reuse shadow report for the active history snapshot. | 显式受限来源/只读发布或外部fixture | `download/history/commands.py`、`core/catalog.py`、`download/unit/scripts/test_baostock_qfq_shadow.py` |
 | `download/history/cli.py` | Parse only the selected download/history action and validate its inputs. | 业务参数/类型/命令；所选动作持有副作用 | `tooling/unit/scripts/test_tools_control_options.py`、`core/cli.py按catalog动态选择` |
 | `download/history/commands.py` | Build only the selected download/history invocation. | 业务参数/类型/命令；所选动作持有副作用 | `tooling/unit/scripts/test_tools_control_options.py`、`core/cli.py及tests/helpers/shared/tool_cli.py按catalog动态选择` |
+| `download/history/cninfo_industry_probe.py` | 比较巨潮多代码请求的三种编码与逐股完整记录 | 仅显式网络／外部原件，不发布行业；空返回与失败分别报告 | `download/history/history_industry_preparation.py`、`download/unit/scripts/test_cninfo_industry_probe.py` |
 | `download/history/download_performance.py` | Offline download persistence measurements on disposable, synthetic databases. | 显式受限来源/只读发布或外部fixture | `download/history/commands.py`、`core/catalog.py` |
 | `download/history/history_daily_capability.py` | Audit the configured daily-history sources without writing an archive. | 显式受限来源/只读发布或外部fixture | `download/history/commands.py`、`core/catalog.py`、`download/unit/scripts/test_history_daily_capability.py` |
 | `download/history/history_fallback.py` | Remote daily-history fallback for the standalone source diagnostic. | 显式受限来源/只读发布或外部fixture | `download/history/history_sources.py`、`helpers/recommendation/market_data.py` |
-| `download/history/history_industry_preparation.py` | 行业来源诊断；仅显式中上协当前公告／全表隔离核验，旧BaoStock两日诊断已删除 | 候选只写显式仓库外原件和解析投影，不发布行业／历史 | `download/history/commands.py`、`core/catalog.py` |
+| `download/history/history_industry_preparation.py` | 行业来源／批量协议／缓存分段计量的显式分派 | 候选只写显式仓库外原件、投影或测量库，不发布行业／历史 | `download/history/commands.py`、`core/catalog.py` |
+| `download/history/industry_cache_measurement.py` | 在真实原件及全新HDD库上测量逐份与合批保存 | 零网络；固定五轮或五对，原件／源码守卫和精确读回；不签全市场性能 | `download/history/history_industry_preparation.py`、`download/unit/scripts/test_cninfo_industry_probe.py` |
 | `download/history/history_parquet.py` | Offline Parquet candidate, derived exclusively from a pinned SQLite publication. | 显式受限来源/只读发布或外部fixture | `training/samples/training_read_comparison.py`、`download/unit/scripts/test_training_samples.py` |
 | `download/history/history_publication_audit.py` | Read-only verification of published history and durable download receipts. | 显式受限来源/只读发布或外部fixture | `download/history/commands.py`、`core/catalog.py`、`download/unit/scripts/test_history_publication_audit.py` |
 | `download/history/history_publication_measurement.py` | Scoped publication profiling in an isolated diagnostic worker; never installed in the product. | 显式受限来源/只读发布或外部fixture | `download/history/history_write_benchmark.py`、`download/unit/scripts/test_history_publication_measurement.py` |

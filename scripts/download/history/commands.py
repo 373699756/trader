@@ -239,15 +239,32 @@ def BuildCommands(
             common_timeout,
         ),)
     elif options.action_identity == "history-industry":
-        if not options.official_announcements or options.industry_work_root is None:
-            raise ValueError("industry diagnostic requires explicit official announcements and external work root")
+        if not (options.official_announcements or options.cninfo_query_codes or options.cninfo_cache_evidence) or options.industry_work_root is None:
+            raise ValueError("industry diagnostic requires an explicit source and external work root")
+        if options.cninfo_cache_evidence is not None:
+            source_arguments = (
+                "--cninfo-cache-evidence", str(options.cninfo_cache_evidence),
+                "--cninfo-cache-codes", *options.cninfo_cache_codes,
+                "--cninfo-cache-candidate", options.cninfo_cache_candidate,
+                "--runtime-config", str(options.runtime_config),
+            )
+        elif options.cninfo_query_codes:
+            if options.cninfo_query_from is None or options.cninfo_query_to is None:
+                raise ValueError("CNINFO probe requires an explicit date window")
+            source_arguments = (
+                "--cninfo-query-codes", *options.cninfo_query_codes,
+                "--cninfo-query-from", options.cninfo_query_from.isoformat(),
+                "--cninfo-query-to", options.cninfo_query_to.isoformat(),
+            )
+        else:
+            source_arguments = ("--official-announcements", *options.official_announcements)
         commands = (DiagnosticCommand(
             "history_industry",
             (
                 python_executable,
                 "-m",
                 "scripts.download.history.history_industry_preparation",
-                "--official-announcements", *options.official_announcements,
+                *source_arguments,
                 "--industry-work-root", str(options.industry_work_root),
                 "--budget-seconds", str(common_timeout),
                 "--timeout-seconds",

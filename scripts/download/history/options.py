@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -51,3 +52,9 @@ class HistoryOptions:
     history_flush_cells: int | None = None
     official_announcements: tuple[str, ...] = ()
     industry_work_root: Path | None = None
+    cninfo_query_codes: tuple[str, ...] = ()
+    cninfo_query_from: date | None = None
+    cninfo_query_to: date | None = None
+    cninfo_cache_evidence: Path | None = None
+    cninfo_cache_codes: tuple[str, ...] = ()
+    cninfo_cache_candidate: Literal["baseline", "batched", "compare"] = "baseline"

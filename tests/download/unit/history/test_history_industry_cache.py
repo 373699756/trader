@@ -1,5 +1,6 @@
 import hashlib
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -50,7 +51,7 @@ def _official_evidence():
 def test_original_response_round_trip_retains_bytes_request_window_and_digest(tmp_path):
     index = _index(tmp_path)
     original = _document()
-    index.save_source_document(original)
+    index.save_source_documents((original,))
     reopened = _index(tmp_path)
     assert reopened.read_source_document(original.request_key, _OBSERVED_AT) == original
     assert original.content_hash == hashlib.sha256(original.content).hexdigest()
@@ -60,11 +61,94 @@ def test_original_response_round_trip_retains_bytes_request_window_and_digest(tm
     assert row[1] == hashlib.sha256(original.content).digest()
 
 
+def test_two_originals_commit_together_and_retain_exact_bytes_and_receipts(tmp_path, monkeypatch):
+    import trader.download.infra.industry_query_index as module
+
+    index = _index(tmp_path)
+    index.prepare()
+    original_session = module.SqliteSession
+    statements = []
+
+    @contextmanager
+    def traced_session(path, options, *, sqlite_policy):
+        with original_session(path, options, sqlite_policy=sqlite_policy) as connection:
+            connection.observe_statements(statements.append)
+            yield connection
+
+    monkeypatch.setattr(module, "SqliteSession", traced_session)
+    documents = (_document("001222"), _document("002594"))
+    index.save_source_documents(documents)
+    assert statements.count("BEGIN") == statements.count("COMMIT") == 1
+    monkeypatch.undo()
+    reopened = _index(tmp_path)
+    assert tuple(reopened.read_source_document(item.request_key, _OBSERVED_AT) for item in documents) == documents
+    with SqliteSession(index.path) as connection:
+        rows = connection.run(
+            "SELECT request_key,payload,content_hash,receipt_hash FROM industry_source_document ORDER BY request_key"
+        ).fetchall()
+    assert tuple(tuple(row) for row in rows) == tuple(
+        (item.request_key, item.content, bytes.fromhex(item.content_hash), bytes.fromhex(item.receipt_hash))
+        for item in documents
+    )
+
+
+def test_conflict_in_second_original_rolls_back_the_first_and_keeps_previous_receipt(tmp_path):
+    index = _index(tmp_path)
+    original = _document("002594")
+    index.save_source_documents((original,))
+    first = _document("001222")
+    conflict = replace(original, content=original.content + b"\n")
+    with pytest.raises(ValueError, match="time_conflict"):
+        index.save_source_documents((first, conflict))
+    reopened = _index(tmp_path)
+    assert reopened.read_source_document(first.request_key, _OBSERVED_AT) is None
+    assert reopened.read_source_document(original.request_key, _OBSERVED_AT) == original
+
+
+@pytest.mark.parametrize("invalid", ("empty", "list", "member", "duplicate", "rows", "bytes"))
+def test_invalid_source_batches_are_rejected_before_creating_a_database(tmp_path, invalid):
+    index = _index(tmp_path)
+    original = _document()
+    if invalid == "empty":
+        documents = ()
+    elif invalid == "list":
+        documents = [original]
+    elif invalid == "member":
+        documents = (None,)
+    elif invalid == "duplicate":
+        documents = (original, replace(original, received_at=_OBSERVED_AT + timedelta(seconds=1)))
+    elif invalid == "rows":
+        documents = tuple(_document(f"{600001 + number:06d}") for number in range(index.source_batch_rows + 1))
+    else:
+        documents = (replace(original, content=b"x" * index.source_batch_bytes), _document("002594"))
+    with pytest.raises(ValueError, match="industry_source_batch"):
+        index.save_source_documents(documents)
+    assert not index.path.exists()
+
+
+@pytest.mark.parametrize("configured_rows", (1, 2, 64, 128))
+def test_source_batch_uses_the_selected_policy_with_a_fixed_upper_bound(tmp_path, configured_rows):
+    index = replace(_index(tmp_path), sqlite_policy=replace(SqlitePolicyFixture(), transaction_batch_rows=configured_rows))
+    assert index.source_batch_rows == min(configured_rows, 64)
+    assert index.source_batch_bytes == 2 * 1024 * 1024
+    documents = tuple(_document(f"{600001 + number:06d}") for number in range(index.source_batch_rows))
+    index.save_source_documents(documents)
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM industry_source_document").require_one()[0] == len(documents)
+
+
+def test_one_original_at_the_exact_batch_byte_limit_remains_legal(tmp_path):
+    index = _index(tmp_path)
+    original = replace(_document(), content=b"x" * index.source_batch_bytes)
+    index.save_source_documents((original,))
+    assert _index(tmp_path).read_source_document(original.request_key, _OBSERVED_AT) == original
+
+
 @pytest.mark.parametrize("latest", (0, 1, "0", "1"))
 def test_original_latest_marker_survives_cache_without_sdk_field_projection(tmp_path, latest):
     index = _index(tmp_path)
     original = _document(latest=latest)
-    index.save_source_document(original)
+    index.save_source_documents((original,))
     document = index.read_source_document(original.request_key, _OBSERVED_AT)
     assert document is not None
     parsed = ParseCninfoIndustryChanges(document.content, "001222", document.requested_from, document.requested_to)
@@ -81,18 +165,18 @@ def test_original_latest_marker_survives_cache_without_sdk_field_projection(tmp_
 def test_new_candidate_cannot_shrink_coverage_or_replace_a_newer_receipt(tmp_path, fields):
     index = _index(tmp_path)
     original = _document()
-    index.save_source_document(original)
+    index.save_source_documents((original,))
     with pytest.raises(ValueError, match="would_shrink"):
-        index.save_source_document(replace(original, **fields))
+        index.save_source_documents((replace(original, **fields),))
     assert _index(tmp_path).read_source_document(original.request_key, _OBSERVED_AT) == original
 
 
 def test_complete_refresh_retains_previous_original_and_as_of_reads(tmp_path):
     index = _index(tmp_path)
     original = replace(_document(), requested_from=date(2024, 1, 1), requested_to=date(2026, 11, 5))
-    index.save_source_document(original)
+    index.save_source_documents((original,))
     extended = replace(_document(latest=1), received_at=_OBSERVED_AT + timedelta(minutes=1))
-    index.save_source_document(extended)
+    index.save_source_documents((extended,))
     assert index.read_source_document(extended.request_key, extended.received_at) == extended
     assert index.read_source_document(extended.request_key, original.received_at) == original
     with SqliteSession(index.path) as connection:
@@ -105,13 +189,13 @@ def test_complete_refresh_retains_previous_original_and_as_of_reads(tmp_path):
 def test_same_receipt_time_conflict_is_rejected_without_overwriting_either_original(tmp_path, field):
     index = _index(tmp_path)
     original = _document()
-    index.save_source_document(original)
+    index.save_source_documents((original,))
     conflict = (
         replace(original, content=original.content + b"\n")
         if field == "content" else replace(original, requested_from=_FIRST_DATE - timedelta(days=1))
     )
     with pytest.raises(ValueError, match="time_conflict"):
-        index.save_source_document(conflict)
+        index.save_source_documents((conflict,))
     assert index.read_source_document(original.request_key, _OBSERVED_AT) == original
     with SqliteSession(index.path) as connection:
         assert connection.run("SELECT COUNT(*) FROM industry_source_document").require_one()[0] == 1
@@ -120,14 +204,14 @@ def test_same_receipt_time_conflict_is_rejected_without_overwriting_either_origi
 def test_resume_retains_completed_raw_documents_and_only_adds_the_missing_key(tmp_path):
     first = _document()
     index = _index(tmp_path)
-    index.save_source_document(first)
+    index.save_source_documents((first,))
     with pytest.raises(ValueError, match="document_invalid"):
         replace(_document("002594"), content=b"")
     second = _document("002594")
     reopened = _index(tmp_path)
     assert reopened.read_source_document(first.request_key, _OBSERVED_AT) == first
     assert reopened.read_source_document(second.request_key, _OBSERVED_AT) is None
-    reopened.save_source_document(second)
+    reopened.save_source_documents((second,))
     assert reopened.read_source_document(first.request_key, _OBSERVED_AT) == first
     assert reopened.read_source_document(second.request_key, _OBSERVED_AT) == second
 
@@ -135,7 +219,7 @@ def test_resume_retains_completed_raw_documents_and_only_adds_the_missing_key(tm
 def test_future_receipt_is_unavailable_at_an_earlier_observation_without_rewriting(tmp_path):
     index = _index(tmp_path)
     original = _document()
-    index.save_source_document(original)
+    index.save_source_documents((original,))
     assert index.read_source_document(original.request_key, _OBSERVED_AT - timedelta(seconds=1)) is None
     assert index.read_source_document(original.request_key, _OBSERVED_AT) == original
 
@@ -149,7 +233,7 @@ def test_future_receipt_is_unavailable_at_an_earlier_observation_without_rewriti
 def test_invalid_future_or_unbound_source_documents_are_rejected_before_writing(tmp_path, fields):
     index = _index(tmp_path)
     with pytest.raises(ValueError, match="document_invalid"):
-        index.save_source_document(replace(_document(), **fields))
+        index.save_source_documents((replace(_document(), **fields),))
     assert not index.path.exists()
 
 
@@ -157,7 +241,7 @@ def test_invalid_future_or_unbound_source_documents_are_rejected_before_writing(
 def test_corrupt_original_is_rejected_without_requery_delete_or_digest_repair(tmp_path, damage):
     index = _index(tmp_path)
     original = _document()
-    index.save_source_document(original)
+    index.save_source_documents((original,))
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         if damage == "payload":
             connection.run("UPDATE industry_source_document SET payload=?", (b"altered",))
@@ -173,7 +257,7 @@ def test_corrupt_original_is_rejected_without_requery_delete_or_digest_repair(tm
 def test_source_receipt_metadata_cannot_change_without_invalidating_its_digest(tmp_path, field):
     index = _index(tmp_path)
     original = _document()
-    index.save_source_document(original)
+    index.save_source_documents((original,))
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         if field == "requested_start":
             connection.run(
@@ -206,7 +290,7 @@ def test_unreadable_cache_is_explicitly_rejected_and_kept_intact(tmp_path):
     with pytest.raises(RuntimeError, match="industry_query_cache_unavailable"):
         index.read_source_document(_document().request_key, _OBSERVED_AT)
     with pytest.raises(RuntimeError, match="industry_query_cache_unavailable"):
-        index.save_source_document(_document())
+        index.save_source_documents((_document(),))
     assert index.path.read_bytes() == b"not a database"
 
 
@@ -219,7 +303,7 @@ def test_existing_schema_without_source_documents_is_rejected_without_upgrade(tm
     before = index.path.read_bytes()
     for failure, reason, operation in (
         (RuntimeError, "industry_query_cache_unavailable", lambda: index.read_source_document(_document().request_key, _OBSERVED_AT)),
-        (IndustryDatabaseIncompatibleError, "industry_database_incompatible", lambda: index.save_source_document(_document())),
+        (IndustryDatabaseIncompatibleError, "industry_database_incompatible", lambda: index.save_source_documents((_document(),))),
         (IndustryDatabaseIncompatibleError, "industry_database_incompatible", index.prepare),
     ):
         with pytest.raises(failure, match=reason):

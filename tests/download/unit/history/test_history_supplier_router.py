@@ -141,7 +141,7 @@ def test_history_router_inspects_the_explicit_industry_query_index_without_promo
         }],
     }, ensure_ascii=False).encode()
     document = IndustrySourceDocument("cninfo:p_stock2110:600001", dates[0], dates[-1], _at(dates[-1]), payload)
-    cache.save_source_document(document)
+    cache.save_source_documents((document,))
     router = HistorySupplierRouter(baseline, Prices(), _prepared(universe, dates), cache)
     context = router.load_context(dates[-1], len(dates))
     assert context.industry_readiness is not None

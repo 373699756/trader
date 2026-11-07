@@ -147,35 +147,53 @@ class SQLiteIndustryQueryIndex:
             return None
         return document
 
-    def save_source_document(self, document: IndustrySourceDocument) -> None:
+    @property
+    def source_batch_rows(self) -> int:
+        return min(self.sqlite_policy.transaction_batch_rows, 64)
+
+    @property
+    def source_batch_bytes(self) -> int:
+        return 2 * 1024 * 1024
+
+    def save_source_documents(self, documents: tuple[IndustrySourceDocument, ...]) -> None:
+        """Commit one bounded set of original replies and receipts atomically."""
+        if (
+            not isinstance(documents, tuple) or not documents or len(documents) > self.source_batch_rows
+            or any(not isinstance(document, IndustrySourceDocument) for document in documents)
+            or len({document.request_key for document in documents}) != len(documents)
+        ):
+            raise ValueError("industry_source_batch_invalid")
+        if sum(len(document.content) for document in documents) > self.source_batch_bytes:
+            raise ValueError("industry_source_batch_size_limit")
         self.prepare()
         try:
             with (
                 SqliteSession(self.path, SqliteConnectionOptions(), sqlite_policy=self.sqlite_policy) as connection,
                 SqliteTransaction(connection),
             ):
-                previous = connection.run(
-                    "SELECT received_at,requested_start,requested_end,content_hash FROM industry_source_document WHERE request_key=? "
-                    "ORDER BY received_at DESC LIMIT 1",
-                    (document.request_key,),
-                ).fetchone()
-                if previous is not None and (
-                    datetime.fromisoformat(previous[0]) > document.received_at
-                    or date.fromisoformat(previous[1]) < document.requested_from
-                    or date.fromisoformat(previous[2]) > document.requested_to
-                ):
-                    raise ValueError("industry_source_document_would_shrink")
-                if previous is not None and datetime.fromisoformat(previous[0]) == document.received_at and (
-                    DecodeHash(previous[3]) != document.content_hash
-                    or date.fromisoformat(previous[1]) != document.requested_from
-                    or date.fromisoformat(previous[2]) != document.requested_to
-                ):
-                    raise ValueError("industry_source_document_time_conflict")
-                connection.run(
-                    "INSERT OR IGNORE INTO industry_source_document VALUES(?,?,?,?,?,?,?)",
-                    (document.request_key, document.requested_from.isoformat(), document.requested_to.isoformat(),
-                     document.received_at.isoformat(), document.content, EncodeHash(document.content_hash), EncodeHash(document.receipt_hash)),
-                )
+                for document in documents:
+                    previous = connection.run(
+                        "SELECT received_at,requested_start,requested_end,content_hash FROM industry_source_document WHERE request_key=? "
+                        "ORDER BY received_at DESC LIMIT 1",
+                        (document.request_key,),
+                    ).fetchone()
+                    if previous is not None and (
+                        datetime.fromisoformat(previous[0]) > document.received_at
+                        or date.fromisoformat(previous[1]) < document.requested_from
+                        or date.fromisoformat(previous[2]) > document.requested_to
+                    ):
+                        raise ValueError("industry_source_document_would_shrink")
+                    if previous is not None and datetime.fromisoformat(previous[0]) == document.received_at and (
+                        DecodeHash(previous[3]) != document.content_hash
+                        or date.fromisoformat(previous[1]) != document.requested_from
+                        or date.fromisoformat(previous[2]) != document.requested_to
+                    ):
+                        raise ValueError("industry_source_document_time_conflict")
+                    connection.run(
+                        "INSERT OR IGNORE INTO industry_source_document VALUES(?,?,?,?,?,?,?)",
+                        (document.request_key, document.requested_from.isoformat(), document.requested_to.isoformat(),
+                         document.received_at.isoformat(), document.content, EncodeHash(document.content_hash), EncodeHash(document.receipt_hash)),
+                    )
         except sqlite3.Error as exc:
             raise RuntimeError("industry_query_cache_unavailable") from exc
 

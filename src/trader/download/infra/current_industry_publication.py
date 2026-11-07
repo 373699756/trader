@@ -59,6 +59,11 @@ class CurrentIndustryPublication:
     cancel_requested: Callable[[], bool] = field(default=lambda: False, kw_only=True)
     clock: Callable[[], datetime] = field(default=_now, kw_only=True)
     report: Callable[[ProgressMessage], None] | None = field(default=None, kw_only=True)
+    source_batch_rows: int = field(default=1, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if type(self.source_batch_rows) is not int or not 1 <= self.source_batch_rows <= 64:
+            raise ValueError("current_industry_batch_rows_invalid")
 
     def _check(self) -> None:
         if self.cancel_requested():
@@ -112,41 +117,71 @@ class CurrentIndustryPublication:
             self._check()
             start = min(calendar[0], taxonomy_document.requested_from) if taxonomy_document is not None else calendar[0]
             taxonomy_document = IndustrySourceDocument(_TAXONOMY_KEY, start, day, _aware(self.clock()), taxonomy.response_content)
-            index.save_source_document(taxonomy_document)
+            index.save_source_documents((taxonomy_document,))
         else:
             taxonomy = ParseCninfoIndustryTaxonomy(taxonomy_document.content)
         rows: list[dict[str, object]] = []
         gaps: list[dict[str, str]] = []
         documents = [taxonomy_document]
-        for completed, code in enumerate(codes, 1):
-            self._check()
-            key = "cninfo:p_stock2110:" + code
-            cut = max(cut, _aware(self.clock()))
-            document = index.read_source_document(key, cut)
-            if document is not None and document.requested_to > day:
-                raise ValueError("current_industry_source_window_in_future")
-            cached = document is not None and document.requested_from <= calendar[0] and cut - document.received_at < _REFRESH_AGE
-            if document is None or not cached:
-                start = min(calendar[0], document.requested_from) if document is not None else calendar[0]
-                changes = self.client.fetch_changes(code, start, day, cancel_requested=self.cancel_requested)
+        pending: list[IndustrySourceDocument] = []
+        pending_progress: list[_PendingIndustryProgress] = []
+        pending_bytes = 0
+
+        def flush() -> None:
+            nonlocal pending_bytes
+            if not pending:
+                return
+            batch = tuple(pending)
+            committed = tuple(pending_progress)
+            pending.clear()
+            pending_progress.clear()
+            pending_bytes = 0
+            index.save_source_documents(batch)
+            for item in committed:
+                self._progress(item.code, item.completed, len(codes), cached=False, missing=item.missing)
+
+        try:
+            for completed, code in enumerate(codes, 1):
                 self._check()
-                document = IndustrySourceDocument(key, start, day, _aware(self.clock()), changes.response_content)
-                index.save_source_document(document)
-            else:
-                changes = ParseCninfoIndustryChanges(document.content, code, document.requested_from, document.requested_to)
-            documents.append(document)
-            supported = tuple(item for item in changes.rows if item.is_current_standard and item.is_latest and item.changed_on <= day)
-            if not supported:
-                reason = "current_latest_record_absent" if any(item.is_current_standard for item in changes.rows) else "current_standard_absent"
-                gaps.append({"code": code, "reason": reason if changes.rows else "industry_records_empty"})
-                self._progress(code, completed, len(codes), cached=cached, missing=True)
-                continue
-            change = max(supported, key=lambda item: item.changed_on)
-            category = ResolveCninfoIndustryCategory(taxonomy, change)
-            if category is None:
-                raise ValueError("current_industry_category_unavailable")
-            rows.append(_row_payload(change, category.code, category.name, document))
-            self._progress(code, completed, len(codes), cached=cached)
+                key = "cninfo:p_stock2110:" + code
+                cut = max(cut, _aware(self.clock()))
+                document = index.read_source_document(key, cut)
+                if document is not None and document.requested_to > day:
+                    raise ValueError("current_industry_source_window_in_future")
+                cached = document is not None and document.requested_from <= calendar[0] and cut - document.received_at < _REFRESH_AGE
+                if document is None or not cached:
+                    start = min(calendar[0], document.requested_from) if document is not None else calendar[0]
+                    changes = self.client.fetch_changes(code, start, day, cancel_requested=self.cancel_requested)
+                    self._check()
+                    document = IndustrySourceDocument(key, start, day, _aware(self.clock()), changes.response_content)
+                    if pending_bytes + len(document.content) > index.source_batch_bytes:
+                        flush()
+                    pending.append(document)
+                    pending_bytes += len(document.content)
+                else:
+                    changes = ParseCninfoIndustryChanges(document.content, code, document.requested_from, document.requested_to)
+                documents.append(document)
+                supported = tuple(item for item in changes.rows if item.is_current_standard and item.is_latest and item.changed_on <= day)
+                missing = not supported
+                if missing:
+                    reason = "current_latest_record_absent" if any(item.is_current_standard for item in changes.rows) else "current_standard_absent"
+                    gaps.append({"code": code, "reason": reason if changes.rows else "industry_records_empty"})
+                else:
+                    change = max(supported, key=lambda item: item.changed_on)
+                    category = ResolveCninfoIndustryCategory(taxonomy, change)
+                    if category is None:
+                        raise ValueError("current_industry_category_unavailable")
+                    rows.append(_row_payload(change, category.code, category.name, document))
+                if cached:
+                    flush()
+                    self._progress(code, completed, len(codes), cached=True, missing=missing)
+                else:
+                    pending_progress.append(_PendingIndustryProgress(code, completed, missing))
+                    if len(pending) >= min(self.source_batch_rows, index.source_batch_rows):
+                        flush()
+        finally:
+            # Retain fully received originals on source failure/cancellation; never publish a partial snapshot.
+            flush()
         self._check()
         if len(rows) < self.minimum_rows:
             raise ValueError("industry_reference_snapshot_incomplete")
@@ -167,6 +202,13 @@ class CurrentIndustryPublication:
         result = _query_observations(query, as_of=max(completed_at, _aware(self.clock())))
         index.save(_SOURCE, day, completed_at.date(), encoded)
         return result
+
+
+@dataclass(frozen=True)
+class _PendingIndustryProgress:
+    code: str
+    completed: int
+    missing: bool
 
 
 def _row_payload(change: CninfoIndustryChange, category_code: str, category_name: str, document: IndustrySourceDocument) -> dict[str, object]:

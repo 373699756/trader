@@ -63,7 +63,7 @@ def test_full_current_standard_candidate_coverage_never_becomes_point_in_time_in
     index = _index(tmp_path)
     originals = tuple(_document(security.code) for security in _UNIVERSE)
     for original in originals:
-        index.save_source_document(original)
+        index.save_source_documents((original,))
 
     def unexpected(*args, **kwargs):
         pytest.fail("history inspection must not fetch industry or taxonomy")
@@ -84,7 +84,7 @@ def test_full_current_standard_candidate_coverage_never_becomes_point_in_time_in
 
 def test_partial_candidate_cache_preserves_missing_stock_as_missing(tmp_path):
     index = _index(tmp_path)
-    index.save_source_document(_document())
+    index.save_source_documents((_document(),))
     progress = _Progress()
     readiness = _inspect(index, progress=progress)
     assert (readiness.candidate_codes, readiness.point_in_time_codes) == (1, 0)
@@ -98,7 +98,7 @@ def test_partial_candidate_cache_preserves_missing_stock_as_missing(tmp_path):
 ))
 def test_partial_date_window_is_not_full_historical_candidate_coverage(tmp_path, fields):
     index = _index(tmp_path)
-    index.save_source_document(replace(_document(), **fields))
+    index.save_source_documents((replace(_document(), **fields),))
     readiness = _inspect(index, universe=_UNIVERSE[:1])
     assert (readiness.candidate_codes, readiness.point_in_time_codes) == (0, 0)
 
@@ -106,7 +106,7 @@ def test_partial_date_window_is_not_full_historical_candidate_coverage(tmp_path,
 def test_candidate_window_starts_at_listing_without_requiring_pre_listing_dates(tmp_path):
     index = _index(tmp_path)
     security = replace(_UNIVERSE[0], listed_on=date(2024, 1, 1))
-    index.save_source_document(replace(_document(), requested_from=security.listed_on))
+    index.save_source_documents((replace(_document(), requested_from=security.listed_on),))
     readiness = _inspect(index, universe=(security,))
     assert (readiness.candidate_codes, readiness.point_in_time_codes) == (1, 0)
     assert not readiness.ready
@@ -115,7 +115,7 @@ def test_candidate_window_starts_at_listing_without_requiring_pre_listing_dates(
 def test_old_standard_originals_are_retained_without_counting_as_current_candidates(tmp_path):
     index = _index(tmp_path)
     old = _document(standard="证监会行业分类2012")
-    index.save_source_document(old)
+    index.save_source_documents((old,))
     readiness = _inspect(index, universe=_UNIVERSE[:1])
     assert (readiness.candidate_codes, readiness.point_in_time_codes) == (0, 0)
     assert index.read_source_document(old.request_key, _OBSERVED_AT) == old
@@ -123,7 +123,7 @@ def test_old_standard_originals_are_retained_without_counting_as_current_candida
 
 def test_receipt_from_the_future_does_not_make_an_earlier_observation_ready(tmp_path):
     index = _index(tmp_path)
-    index.save_source_document(_document())
+    index.save_source_documents((_document(),))
     readiness = _inspect(index, observed_at=_OBSERVED_AT - timedelta(seconds=1))
     assert (readiness.candidate_codes, readiness.point_in_time_codes) == (0, 0)
 
@@ -131,7 +131,7 @@ def test_receipt_from_the_future_does_not_make_an_earlier_observation_ready(tmp_
 def test_persisted_response_is_reparsed_instead_of_trusting_a_matching_raw_digest(tmp_path):
     index = _index(tmp_path)
     invalid = replace(_document(), content=b'{"resultcode":200,"count":1,"records":[]}')
-    index.save_source_document(invalid)
+    index.save_source_documents((invalid,))
     with pytest.raises(CninfoIndustryError, match="records_incomplete"):
         _inspect(index)
     assert index.read_source_document(invalid.request_key, _OBSERVED_AT) == invalid
@@ -139,7 +139,7 @@ def test_persisted_response_is_reparsed_instead_of_trusting_a_matching_raw_diges
 
 def test_persisted_response_digest_conflict_is_not_silently_skipped_or_repaired(tmp_path):
     index = _index(tmp_path)
-    index.save_source_document(_document())
+    index.save_source_documents((_document(),))
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("UPDATE industry_source_document SET payload=?", (b"altered",))
     before = index.path.read_bytes()
@@ -164,7 +164,7 @@ def test_cancellation_stops_before_the_first_cache_read_or_fetch(tmp_path, monke
 def test_cancellation_between_stocks_stops_without_touching_remaining_originals(tmp_path, monkeypatch):
     index = _index(tmp_path)
     for security in _UNIVERSE:
-        index.save_source_document(_document(security.code))
+        index.save_source_documents((_document(security.code),))
     reads = []
     read = SQLiteIndustryQueryIndex.read_source_document
 

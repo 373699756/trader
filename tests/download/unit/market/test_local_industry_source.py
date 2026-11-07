@@ -63,7 +63,8 @@ def fixture(tmp_path):
     with RequestsHttpTransport(execute_request=execute) as transport:
         client = CninfoIndustryClient(transport, request_headers=lambda: (("Accept-Enckey", "fixture"),))
         source = CurrentIndustryPublication(
-            tmp_path / "industry.sqlite3", client, sqlite_policy=SqlitePolicyFixture(), clock=lambda: now[0]
+            tmp_path / "industry.sqlite3", client, sqlite_policy=SqlitePolicyFixture(), clock=lambda: now[0],
+            source_batch_rows=64,
         )
         yield source, now, calls, outcomes
 
@@ -267,3 +268,98 @@ def test_old_model_industry_identity_is_not_accepted_as_current_capco():
         ModelIndustryReference("J66货币金融服务", _STANDARD, _AT.date(), "cninfo_industry", "fixture")
     with pytest.raises(ValueError, match="identity"):
         ModelIndustryReference("capco:J66货币金融服务", "证监会行业分类", _AT.date(), "cninfo_industry", "fixture")
+
+
+def test_original_batches_are_bounded_and_progress_requires_committed_bytes(fixture, monkeypatch):
+    from dataclasses import replace
+
+    source, _now, calls, _outcomes = fixture
+    source = replace(source, sqlite_policy=replace(source.sqlite_policy, transaction_batch_rows=2))
+    index = SQLiteIndustryQueryIndex(source.path, "cninfo_industry_queries", sqlite_policy=source.sqlite_policy)
+    save = SQLiteIndustryQueryIndex.save_source_documents
+    batches = []
+    completed = []
+
+    def observed_save(self, documents):
+        batches.append(tuple(document.request_key for document in documents))
+        save(self, documents)
+
+    def progress(message):
+        code = message.fields[2].text.removeprefix("代码 ")
+        assert index.read_source_document("cninfo:p_stock2110:" + code, _AT) is not None
+        completed.append(code)
+
+    monkeypatch.setattr(SQLiteIndustryQueryIndex, "save_source_documents", observed_save)
+    result = _fetch(replace(source, report=progress), codes=("600001", "600002", "600003"))
+    assert [len(batch) for batch in batches] == [1, 2, 1]
+    assert completed == ["600001", "600002", "600003"]
+    assert [code for endpoint, code, _query in calls if endpoint == "p_stock2110"] == completed
+    for row in result:
+        document = index.read_source_document("cninfo:p_stock2110:" + row.subject_key, _AT)
+        assert document is not None and document.content_hash == row.payload_hash
+        assert json.loads(document.content)["records"] == [_change(row.subject_key)]
+
+
+def test_cancellation_retains_completed_originals_without_publishing_or_requerying(fixture):
+    from dataclasses import replace
+
+    source, _now, calls, _outcomes = fixture
+    cancelled = replace(source, cancel_requested=lambda: len(calls) >= 3)
+    with pytest.raises(HttpCancelled):
+        _fetch(cancelled, codes=("600001", "600002"))
+    index = SQLiteIndustryQueryIndex(source.path, "cninfo_industry_queries", sqlite_policy=source.sqlite_policy)
+    assert index.read_source_document("cninfo:p_stock2110:600001", _AT) is not None
+    assert index.read_source_document("cninfo:p_stock2110:600002", _AT) is None
+    assert CurrentIndustryCache(source.path, sqlite_policy=source.sqlite_policy).load(_AT) == ()
+    calls.clear()
+    assert len(_fetch(source, codes=("600001", "600002"))) == 2
+    assert [(endpoint, code) for endpoint, code, _query in calls] == [("p_stock2110", "600002")]
+
+
+def test_failed_batch_is_not_retried_or_reported_complete_by_final_flush(fixture, monkeypatch):
+    from dataclasses import replace
+
+    source, _now, _calls, _outcomes = fixture
+    source = replace(source, sqlite_policy=replace(source.sqlite_policy, transaction_batch_rows=2))
+    save = SQLiteIndustryQueryIndex.save_source_documents
+    attempts = []
+    progress = []
+
+    def fail_stock_batch(self, documents):
+        if documents[0].request_key.startswith("cninfo:p_stock2110:"):
+            attempts.append(documents)
+            raise RuntimeError("fixture_commit_failed")
+        save(self, documents)
+
+    monkeypatch.setattr(SQLiteIndustryQueryIndex, "save_source_documents", fail_stock_batch)
+    with pytest.raises(RuntimeError, match="fixture_commit_failed"):
+        _fetch(replace(source, report=progress.append), codes=("600001", "600002", "600003"))
+    assert len(attempts) == 1 and len(attempts[0]) == 2
+    assert progress == []
+    index = SQLiteIndustryQueryIndex(source.path, "cninfo_industry_queries", sqlite_policy=source.sqlite_policy)
+    assert index.read_source_document("cninfo:p_stock2110:600001", _AT) is None
+    assert CurrentIndustryCache(source.path, sqlite_policy=source.sqlite_policy).load(_AT) == ()
+
+
+def test_default_publication_keeps_single_stock_commits_until_candidate_is_accepted(fixture, monkeypatch):
+    source, _now, _calls, _outcomes = fixture
+    source = CurrentIndustryPublication(source.path, source.client, sqlite_policy=source.sqlite_policy, clock=source.clock)
+    save = SQLiteIndustryQueryIndex.save_source_documents
+    batches = []
+
+    def observed_save(self, documents):
+        batches.append(len(documents))
+        save(self, documents)
+
+    monkeypatch.setattr(SQLiteIndustryQueryIndex, "save_source_documents", observed_save)
+    assert len(_fetch(source, codes=("600001", "600002"))) == 2
+    assert batches == [1, 1, 1]
+
+
+@pytest.mark.parametrize("rows", (0, 65, True))
+def test_invalid_batch_budget_is_rejected_at_construction(fixture, rows):
+    from dataclasses import replace
+
+    source, _now, _calls, _outcomes = fixture
+    with pytest.raises(ValueError, match="batch_rows_invalid"):
+        replace(source, source_batch_rows=rows)
