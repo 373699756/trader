@@ -186,4 +186,8 @@ def test_selected_population_loads_with_999_sqlite_variable_limit(tmp_path, monk
         return connection
 
     monkeypatch.setattr(sqlite3, "connect", bounded)
-    assert index.tasks(codes=frozenset(task.code for task in tasks)) == tasks
+    progress = []
+    assert index.tasks(
+        codes=frozenset(task.code for task in tasks), progress=lambda completed, total: progress.append((completed, total)),
+    ) == tasks
+    assert progress == [(512, 1200), (1024, 1200), (1200, 1200)]

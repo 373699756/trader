@@ -115,10 +115,12 @@ class HistoryDownloadFlow:
         self._reused_codes: set[str] = set()
         self._window_cells: dict[str, int] = {}
         self._stopped = Event()
+        self._emit(HistorySyncProgress("initializing", "started", 0, 1, "repair_index"))
         self._baostock_codes = HistoryPriceRepair(
             resources.configuration.history_root, sqlite_policy=self._sqlite_policy,
         ).baostock_codes() & frozenset(item.code for item in resources.context.universe)
         self._recheck_codes = HistoryPriceRepair(resources.configuration.history_root, sqlite_policy=self._sqlite_policy).recheck_due(self._baostock_codes, resources.context.calendar.open_dates)
+        self._emit(HistorySyncProgress("initializing", "completed", 1, 1, "repair_index"))
 
     def _check(self) -> None:
         if self._stopped.is_set() or self._resources.cancel():
@@ -233,7 +235,16 @@ class HistoryDownloadFlow:
 
     def tencent(self) -> None:
         resources = self._resources
-        tasks = resources.index.tasks(codes=frozenset(item.code for item in resources.context.universe))
+        total = len(resources.context.universe)
+        self._emit(HistorySyncProgress("initializing", "started", 0, total, "reading_tasks"))
+        tasks = resources.index.tasks(
+            codes=frozenset(item.code for item in resources.context.universe),
+            progress=lambda completed, count: self._emit(
+                HistorySyncProgress("initializing", "waiting", completed, count, "reading_tasks")
+            ),
+        )
+        self._emit(HistorySyncProgress("initializing", "completed", total, total, "reading_tasks"))
+        self._emit(HistorySyncProgress("initializing", "started", 0, 1, "reading_gaps"))
         gap_codes = resources.index.gap_codes()
         retryable_codes = frozenset(resources.index.gaps_by_code(resources.context.calendar.open_dates))
         # Resume only retryable gaps; confirmed nonpositive qfq dates retain
@@ -243,6 +254,7 @@ class HistoryDownloadFlow:
             raise ValueError("history_download_task_too_large")
         completed = sum(task.tencent_done and task.code not in retryable_codes for task in tasks)
         self._reused_codes.update(task.code for task in tasks if task.tencent_done and task.code not in gap_codes)
+        self._emit(HistorySyncProgress("initializing", "completed", 1, 1, "reading_gaps"))
         self._emit(HistorySyncProgress("tencent_history", "started", completed, len(tasks)))
         _TencentPipeline(self, jobs, completed, len(tasks)).run()
         self._report_tencent_summary(len(tasks))

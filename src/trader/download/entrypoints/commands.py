@@ -29,7 +29,10 @@ def RunDownload(
     configuration = LoadHistorySyncConfiguration(project_root, runtime.data_paths)
     qfq_configuration = LoadQfqWindowConfiguration(project_root)
     progress = StderrHistorySyncProgress()
-    with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
+    with (
+        ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled,
+        progress.keep_alive(),
+    ):
         try:
             status = ExecuteHistoryDownload(
                 configuration,

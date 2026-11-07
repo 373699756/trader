@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import time
-from collections.abc import Callable
-from threading import Lock
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import replace
+from threading import Event, Lock, Thread
 
 from trader.download.application.progress_message import (
     FormatProgressField,
@@ -95,11 +98,23 @@ _COUNT_STAGES = frozenset(
 )
 _DAILY_STAGES = frozenset({"supplier_daily_raw", "supplier_daily_qfq"})
 _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplier_industry"})
+_LOCAL_PREPARATION_LABELS = {
+    "catalog_schema": "初始化历史控制库",
+    "published_state": "读取历史发布与断点",
+    "planning_tasks": "规划历史下载任务",
+    "resuming_tasks": "恢复历史下载任务",
+    "saving_tasks": "保存历史下载任务",
+    "repair_index": "读取历史修复索引",
+    "replaying_repairs": "恢复历史价格修复",
+    "reading_tasks": "读取历史下载任务",
+    "reading_gaps": "读取历史价格缺口",
+}
 
 
 def _suppress_transient(progress: HistorySyncProgress) -> bool:
     return progress.state in {"started", "waiting"} and not (
         progress.stage in {
+            "initializing", "loading_context", "tencent_history",
             "history_published_gaps", "history_gap_resume", "baostock_repair", "sealing_partitions",
             "preparing_partitions", "preparing_publication", "checking_partitions", "publishing_snapshot",
         }
@@ -213,9 +228,43 @@ class StderrHistorySyncProgress:
         self._preparation_started: tuple[HistorySyncProgressStage, str | None, int] | None = None
         self._partition_reported_at: float | None = None
         self._phase_started: dict[tuple[HistorySyncProgressStage, str | None], float] = {}
+        self._waiting_preparation: HistorySyncProgress | None = None
+
+    @contextmanager
+    def keep_alive(self, *, interval_seconds: float = 5.0) -> Iterator[None]:
+        """Report slow local preparation without accessing its databases or changing counts."""
+        if not math.isfinite(interval_seconds) or interval_seconds <= 0.0:
+            raise ValueError("history progress interval must be positive")
+        stopped = Event()
+
+        def heartbeat() -> None:
+            while not stopped.wait(interval_seconds):
+                with self._lock:
+                    pending = self._waiting_preparation
+                    if pending is not None:
+                        try:
+                            self._publish(replace(pending, state="waiting"))
+                        except OSError:
+                            pass
+
+        thread = Thread(target=heartbeat, name="history-preparation-progress", daemon=False)
+        thread.start()
+        try:
+            yield
+        finally:
+            stopped.set()
+            thread.join()
+            with self._lock:
+                self._waiting_preparation = None
 
     def publish(self, progress: HistorySyncProgress) -> None:
         with self._lock:
+            self._waiting_preparation = (
+                progress
+                if progress.stage in {"initializing", "loading_context"}
+                and progress.state in {"started", "waiting"}
+                else None
+            )
             self._publish(progress)
 
     def _publish(self, progress: HistorySyncProgress) -> None:
@@ -223,8 +272,8 @@ class StderrHistorySyncProgress:
         monthly = progress.stage in {
             "persisting_partitions", "sealing_partitions", "history_published_gaps", "checking_partitions",
         }
-        phase_key = (progress.stage, progress.current_item if monthly else None)
-        if progress.stage in {"sealing_partitions", "checking_partitions"} and progress.state == "started":
+        phase_key = (progress.stage, progress.current_item if monthly or progress.stage == "initializing" else None)
+        if progress.stage in {"initializing", "sealing_partitions", "checking_partitions"} and progress.state == "started":
             self._phase_started[phase_key] = now
         else:
             self._phase_started.setdefault(phase_key, now)
@@ -356,7 +405,7 @@ class StderrHistorySyncProgress:
         return (
             _suppress_transient(progress)
             or progress.stage == "loading_context"
-            and (progress.state == "completed" or progress.state == "failed" and self._specific_failure is not None)
+            and progress.state == "failed" and self._specific_failure is not None
         )
 
     def _suppress_partition_progress(self, progress: HistorySyncProgress, now: float) -> bool:
@@ -379,7 +428,8 @@ class StderrHistorySyncProgress:
     def _progress_parts(self, progress: HistorySyncProgress, now: float) -> list[str]:
         parts = [
             _format_duration(max(0.0, now - self._started_at)),
-            _STAGE_LABELS[progress.stage],
+            _LOCAL_PREPARATION_LABELS.get(progress.current_item or "", _STAGE_LABELS[progress.stage])
+            if progress.stage == "initializing" else _STAGE_LABELS[progress.stage],
             _state_label(progress),
         ]
         if progress.stage in _COUNT_STAGES and progress.failure_detail is None:
@@ -388,7 +438,11 @@ class StderrHistorySyncProgress:
                 if progress.stage == "tencent_history"
                 else _format_count(progress.completed_units, progress.total_units)
             )
-        if progress.current_item is not None:
+        if progress.stage == "initializing" and progress.total_units > 1:
+            parts.append(f"股票 {_format_count(progress.completed_units, progress.total_units)}")
+        if progress.current_item is not None and not (
+            progress.stage == "initializing" and progress.current_item in _LOCAL_PREPARATION_LABELS
+        ):
             item_label = _ITEM_LABELS.get(progress.stage, "当前")
             parts.append(f"{item_label} {progress.current_item}")
         parts.extend(_price_coverage_parts(progress))

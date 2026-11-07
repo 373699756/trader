@@ -267,17 +267,18 @@ def ExecuteSync(
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
         if qfq_configuration is None:
             raise RuntimeError("qfq_configuration_unavailable")
-        return ExecuteHistoryDownload(
-            configuration,
-            qfq_configuration=qfq_configuration,
-            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-            reference=reference,
-            progress=history_progress,
-            cancel_requested=cancel_requested,
-            disk_medium=settings.disk_medium,
-            repair_only=fill_missing, sqlite_policy=sqlite_policy,
-            price_review_budget=price_review_budget,
-        )
+        with history_progress.keep_alive():
+            return ExecuteHistoryDownload(
+                configuration,
+                qfq_configuration=qfq_configuration,
+                shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
+                reference=reference,
+                progress=history_progress,
+                cancel_requested=cancel_requested,
+                disk_medium=settings.disk_medium,
+                repair_only=fill_missing, sqlite_policy=sqlite_policy,
+                price_review_budget=price_review_budget,
+            )
 
     return SyncData(
         failures=market_failures,

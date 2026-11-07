@@ -104,7 +104,9 @@ class HistorySyncIo:
                     and ((root / "partitions").exists() or any(root.glob("prices_*.sqlite3")))
                 ):
                     raise RuntimeError("history_format_requires_rebuild")
+                PublishHistoryProgress(self.progress, "initializing", "started", current_item="catalog_schema")
                 self.control.initialize()
+                PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "catalog_schema")
                 yield
         except HistoryMaintenanceAlreadyRunningError as exc:
             raise HistorySyncAlreadyRunningError("history_maintenance_running") from exc

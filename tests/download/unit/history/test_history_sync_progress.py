@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from threading import Event, enumerate as enumerate_threads
 
 from dataclasses import replace
 
@@ -40,6 +41,54 @@ from tests.helpers.download.history.history_sync_progress import (
     _failed_status,
     _stock_progress,
 )
+
+
+def test_local_history_preparation_reports_counts_and_elapsed_before_stocks(capsys) -> None:
+    reporter = StderrHistorySyncProgress(monotonic=_Clock(0, 50, 55, 60, 61))
+    reporter.publish(HistorySyncProgress("initializing", "started", 0, 4402, "reading_tasks"))
+    reporter.publish(HistorySyncProgress("initializing", "waiting", 512, 4402, "reading_tasks"))
+    reporter.publish(HistorySyncProgress("initializing", "completed", 4402, 4402, "reading_tasks"))
+    reporter.publish(HistorySyncProgress("tencent_history", "started", 0, 4402))
+
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert "读取历史下载任务 | 开始 | 股票 0/4402" in lines[0]
+    assert "读取历史下载任务 | 等待 | 股票 512/4402" in lines[1]
+    assert "阶段耗时 00:00:05" in lines[1]
+    assert "读取历史下载任务 | 完成 | 股票 4402/4402" in lines[2]
+    assert "Tencent下载 | 开始 | 0/4402" in lines[3]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_preparation_heartbeat_keeps_real_counts_and_stops_on_exit(capsys, monkeypatch, fail: bool) -> None:
+    reporter = StderrHistorySyncProgress()
+    waiting = Event()
+    output = reporter._output
+
+    def report(message: ProgressMessage) -> None:
+        output(message)
+        if "等待" in RenderProgress(message, color=False):
+            waiting.set()
+
+    monkeypatch.setattr(reporter, "_output", report)
+
+    def run() -> None:
+        with reporter.keep_alive(interval_seconds=0.01):
+            reporter.publish(HistorySyncProgress("initializing", "started", 512, 4402, "reading_tasks"))
+            assert waiting.wait(5), "slow preparation produced no heartbeat"
+            if fail:
+                raise RuntimeError("fixture_preparation_failed")
+            reporter.publish(HistorySyncProgress("initializing", "completed", 4402, 4402, "reading_tasks"))
+
+    if fail:
+        with pytest.raises(RuntimeError, match="fixture_preparation_failed"):
+            run()
+    else:
+        run()
+    assert not any(thread.name == "history-preparation-progress" for thread in enumerate_threads())
+    lines = _compact_log(capsys.readouterr().err).splitlines()
+    assert any("等待 | 股票 512/4402" in line for line in lines)
+    if not fail:
+        assert "完成 | 股票 4402/4402" in lines[-1]
 
 
 def test_industry_retry_and_incomplete_publication_are_explicit(capsys):
@@ -329,6 +378,7 @@ def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(cap
     )
 
     assert _compact_log(capsys.readouterr().err) == (
+        "00:00:00 | Tencent下载 | 开始 | 0/4400 | 总计 00:00:00\n"
         "00:23:06 | sync history 股票进度 | 388/4400（8.82%） | 股票 000952 — | 处理 Tencent下载 | 结果 部分 "
         "| raw 1980/2000 | qfq 1980/2000 | 完整配对 1980/2000 | 缺日 20 "
         "| 网络 404/4400 | 落库 388/4400 | 待写 16 | 下载 00:14:03 "

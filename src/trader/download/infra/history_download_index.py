@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
+from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date
@@ -113,13 +114,16 @@ class HistoryDownloadIndex:
                 ((task.code, EncodeDate(day)) for task in tasks for day in task.dates),
             )
 
-    def tasks(self, *, codes: frozenset[str] | None = None) -> tuple[HistoryDownloadTask, ...]:
+    def tasks(
+        self, *, codes: frozenset[str] | None = None, progress: Callable[[int, int], None] | None = None,
+    ) -> tuple[HistoryDownloadTask, ...]:
         if codes is not None and not codes:
             return ()
         selected = tuple(sorted(codes)) if codes is not None else ()
         # Stay below the 999-variable limit used by older supported SQLite builds.
         batches = tuple(selected[start:start + 512] for start in range(0, len(selected), 512)) if codes is not None else ((),)
         result: list[HistoryDownloadTask] = []
+        completed = 0
         with (
             SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection),
@@ -138,6 +142,9 @@ class HistoryDownloadIndex:
                     HistoryDownloadTask(code, tuple(dates.get(code, ())), bool(done), attempts, failure)
                     for code, done, attempts, failure in rows
                 )
+                completed += len(batch)
+                if progress is not None and codes is not None:
+                    progress(completed, len(selected))
         return tuple(result)
 
     def rebind_context(

@@ -68,12 +68,14 @@ class DownloadHistoryUseCase:
             return _status("failed", failure.reason, self.configuration, maintenance.safe_snapshot())
 
     def _synchronize(self) -> HistoryMaintenanceStatus:
+        PublishHistoryProgress(self.progress, "initializing", "started", current_item="published_state")
         state = self.dependencies.control.load_published_state()
         current_snapshot = state.snapshot if state is not None else None
         previous = frozenset(item.code for item in state.universe.securities) if state is not None else frozenset()
         if not self.dependencies.maintenance.has_space(self.configuration.minimum_free_bytes):
             return _status("blocked", "disk_space_insufficient", self.configuration, current_snapshot)
         pending = self.dependencies.tasks.pending(current_snapshot.sequence if current_snapshot else 0)
+        PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "published_state")
         target = CompletedDailyCutoff(self.observed_at)
         if self.repair_only:
             target = pending.cutoff if pending else current_snapshot.data_cutoff if current_snapshot else target
@@ -137,7 +139,12 @@ class DownloadHistoryUseCase:
         ):
             raise RuntimeError("supplier_universe_regressed")
         if pending is not None:
-            return self._resume(context, current_snapshot, pending, publication_id)
+            PublishHistoryProgress(self.progress, "initializing", "started", current_item="resuming_tasks")
+            result = self._resume(context, current_snapshot, pending, publication_id)
+            PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "resuming_tasks")
+            return result
+        total = len(context.universe)
+        PublishHistoryProgress(self.progress, "initializing", "started", (0, total), "planning_tasks")
         source, calendar, universe = BuildHistoryControlIdentities(context)
         reference = HistoryReferenceSnapshot(
             tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
@@ -150,6 +157,7 @@ class DownloadHistoryUseCase:
         if self.repair_only:
             gaps = self.dependencies.tasks.gaps_by_code(context.calendar.open_dates, retryable_only=False)
             tasks = tuple(HistoryDownloadTask(item.code, gaps.get(item.code, ()), tencent_done=True) for item in context.universe)
+        PublishHistoryProgress(self.progress, "initializing", "completed", (total, total), "planning_tasks")
         already_current = (
             current_snapshot
             and not any(task.dates for task in tasks)
@@ -168,8 +176,10 @@ class DownloadHistoryUseCase:
             if current_snapshot is not None and self._review_current(inputs, current_snapshot, tasks, publication_id):
                 return replace(inputs, reviewed=True)
             return _AlreadyCurrent(context.industry_readiness)
+        PublishHistoryProgress(self.progress, "initializing", "started", (0, total), "saving_tasks")
         self.dependencies.control.save_inputs((source, calendar, universe), reference, publication_id)
         self.dependencies.tasks.begin(batch, tasks)
+        PublishHistoryProgress(self.progress, "initializing", "completed", (total, total), "saving_tasks")
         return inputs
 
     def _review_summary(self) -> HistoryPriceReviewSummary | None:
@@ -356,7 +366,9 @@ class DownloadHistoryUseCase:
             inputs, current_snapshot,
         ) as prices:
             allowed_codes = frozenset(item.code for item in inputs.context.universe)
+            PublishHistoryProgress(self.progress, "initializing", "started", current_item="replaying_repairs")
             prices.replay_repairs(allowed_codes)
+            PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "replaying_repairs")
             if not self.repair_only:
                 prices.download_tencent()
             prices.prepare_retry_pass()
