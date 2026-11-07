@@ -316,6 +316,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
             reread_sessions=2,
             minimum_free_bytes=0,
             reference_root=(tmp_path).parent / "reference",
+            supplier_timeout_seconds=17.0,
         ),
         qfq_configuration=LoadQfqWindowConfiguration(Path(__file__).resolve().parents[4]),
         shutdown_timeout_seconds=2.0,
@@ -326,7 +327,8 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     assert result.industry_readiness is not None
     assert not result.industry_readiness.ready
     assert baseline.calls == []
-    assert supplier_settings["configuration"].supplier_timeout_seconds == 45.0
+    assert supplier_settings["configuration"].supplier_timeout_seconds == 17.0
+    assert supplier_settings["price_total_seconds"] == 17.0
     assert supplier_settings["configuration"].supplier_retries == 2
     assert supplier_settings["price_policy"].retries == 2
     assert supplier_settings["vendor_lock"] is not None

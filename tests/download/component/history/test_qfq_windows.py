@@ -1010,6 +1010,7 @@ def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, 
     )
     def baostock(configuration, **options):
         assert options["price_policy"].timeout_seconds == configuration.supplier_timeout_seconds == 12.5
+        assert options["price_total_seconds"] == configuration.supplier_timeout_seconds
         return Bao()
 
     monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", baostock)

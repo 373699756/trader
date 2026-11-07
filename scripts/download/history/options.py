@@ -27,6 +27,8 @@ class HistoryOptions:
     baostock_intervals: tuple[float, ...] = (2.0,)
     baostock_sizes: tuple[int, ...] = (10, 50, 100)
     baostock_rounds: int = 1
+    baostock_sessions: int = 0
+    baostock_production: bool = False
     history_root: Path | None = None
     download_sizes: tuple[int, ...] = (10, 50, 100)
     database_probe_directory: Path | None = None

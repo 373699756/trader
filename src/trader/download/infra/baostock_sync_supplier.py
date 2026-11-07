@@ -268,7 +268,8 @@ class BaoStockHistorySupplier:
             if process is not None and process.is_alive():
                 try:
                     connection.send(_Stop())
-                    process.join(timeout=self._cancellation_grace_seconds)
+                    remaining = max(0.0, self._request_deadline - self._monotonic())
+                    process.join(timeout=min(self._cancellation_grace_seconds, remaining))
                 except (BrokenPipeError, OSError):
                     pass
             connection.close()

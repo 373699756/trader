@@ -38,6 +38,8 @@ def BuildParser(
         baostock_intervals=(2.0,),
         baostock_sizes=(10, 50, 100),
         baostock_rounds=1,
+        baostock_sessions=0,
+        baostock_production=False,
         history_root=None,
         download_sizes=(10, 50, 100),
         database_probe_directory=None,
@@ -96,6 +98,8 @@ def BuildParser(
         parser.add_argument('--baostock-sizes', nargs='+', type=int, default=(10, 50, 100), help='sample sizes within 1..100')
     if action_identity in ("baostock-concurrency",):
         parser.add_argument('--baostock-rounds', type=int, default=1, help='serial experiment repetitions within 1..3')
+        parser.add_argument('--baostock-sessions', type=int, default=0, help='exact recent trading sessions within 1..2500; zero uses calendar days')
+        parser.add_argument('--baostock-production', action='store_true', help='production subprocess and validation using timeout, interval and retries from current config/download.json; requires serial-only and sessions')
     if action_identity in ("baostock-qfq-shadow","tencent-download","tencent-history-window","history-sqlite","history-publication","history-source-compare","price-repair-audit","history-write","history-space",):
         parser.add_argument('--history-root', type=Path, default=None, help='published history input or explicit isolated publication replay source')
     if action_identity in ("tencent-download","history-write",):
@@ -164,6 +168,8 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         baostock_intervals=tuple(args.baostock_intervals),
         baostock_sizes=tuple(args.baostock_sizes),
         baostock_rounds=args.baostock_rounds,
+        baostock_sessions=args.baostock_sessions,
+        baostock_production=args.baostock_production,
         history_root=args.history_root.expanduser().resolve() if args.history_root is not None else None,
         download_sizes=tuple(args.download_sizes),
         database_probe_directory=ExternalPath(args.database_probe_directory, "--database-probe-directory"),
@@ -264,6 +270,13 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         raise ValueError("BaoStock intervals must be unique and at most three sizes are allowed")
     if not options.baostock_serial_only and (options.baostock_intervals != (2.0,) or options.baostock_rounds != 1):
         raise ValueError("BaoStock interval/round comparisons require --baostock-serial-only")
+    if not 0 <= options.baostock_sessions <= 2500 or options.baostock_sessions and not options.baostock_serial_only:
+        raise ValueError("--baostock-sessions must be within 0..2500 and requires --baostock-serial-only")
+    if options.baostock_production and (
+        not options.baostock_serial_only or not 1 <= options.baostock_sessions <= 2000
+        or options.baostock_rounds != 1 or len(options.baostock_intervals) != 1 or len(options.baostock_sizes) != 1
+    ):
+        raise ValueError("--baostock-production requires serial-only, sessions within 1..2000, one size, round and interval")
     maximum_size = 5000 if options.action_identity == "history-write" and options.baseline_checkout is not None else 100
     if not options.download_sizes or len(options.download_sizes) > 3 or any(not 1 <= size <= maximum_size for size in options.download_sizes):
         raise ValueError(f"--download-sizes accepts up to three sizes within 1..{maximum_size}")

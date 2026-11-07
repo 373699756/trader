@@ -196,6 +196,8 @@ HTTP成功或来源返回名为day的数据，不足以证明是合格qfq。复�
 
 BaoStock会话串行，物理请求含重试、分页共用限速时间线；现行最小起点间隔1.5秒，history/market/行业准备共用进程锁。供应商不响应的原因尚未闭合，不能把“TCP能连上”等同服务可用。
 
+history和market补缺的每股完整候选共用`history.supplier_timeout_seconds`总请求预算（当前45秒），从该股请求开始覆盖登录、raw、qfq、翻页及配置内重试；阶段切换、翻页和重试不续期。单次物理请求期限仍不超过同一配置值，快速失败可在剩余预算内重试，耗尽后记为待补并继续后续股票，不覆盖原有效价格。取消／超时收尾的优雅等待不超过剩余总预算；耗尽即终止自有供应商子进程，进程回收仍有既有有界等待。因此该预算约束最坏等待，不承诺供应商传输变快；超过预算的合法慢窗口仍会保留为未修复。
+
 ### 3.2 下载与写入是否异步
 
 现有 `history_download_flow.py` 已有下载 worker、有界背压和唯一 writer。网络和写入可重叠，同一物理库的写入由一个所有者归组，不是每个网络线程各开连接写。
@@ -901,7 +903,7 @@ CHECK、codec验证、外键启用及发布凭据检查是不同层次；本章�
 | download_batch_size | 64 | int，1–256；尚无运行消费单位 | 当前只解析／领域校验，未找到下载执行路径读取，不能当作真实写入批次 |
 | history_workers | 8 | int，worker，1–12 | bootstrap历史线程池／HTTP会话数及HistoryDownloadFlow在途派发 |
 | minimum_free_bytes | 1073741824 | int，字节，≥0 | DownloadHistoryUseCase经HistorySyncIo.has_space做空间准入 |
-| supplier_timeout_seconds | 45.0 | number，秒，≥0.001，无配置上限 | BaoStockRequestPolicy及BaoStockHistorySupplier请求期限 |
+| supplier_timeout_seconds | 45.0 | number，秒，≥0.001，无配置上限 | BaoStock物理请求期限，且history/market补缺每股登录、raw/qfq、分页及重试共用同值总预算 |
 | supplier_retries | 2 | int，重试次数，0–2 | BaoStock请求策略，物理失败请求仍实际发生 |
 | query_interval_seconds | 1.5 | number，秒，≥1.5 | BaoStock worker的BaoStockQueryLimiter |
 | cancellation_grace_seconds | 10.0 | number，秒，0.001–10 | BaoStockHistorySupplier子进程取消等待 |

@@ -602,12 +602,12 @@ def test_serial_probe_reuses_start_spacing_and_stops_after_first_failed_experime
 
     monkeypatch.setattr(baostock_concurrency, "_open", _Sdk)
     monkeypatch.setattr(baostock_concurrency, "_close", lambda sdk: None)
-    monkeypatch.setattr(baostock_concurrency, "_rows", lambda result: [{"date": "2026-10-08"}])
+    monkeypatch.setattr(baostock_concurrency, "_rows", lambda result, **kwargs: [{"date": "2026-10-08"}])
     monkeypatch.setattr(
         baostock_concurrency,
         "RateLimitedBaoStockSdk",
-        lambda sdk, interval_seconds: RateLimitedBaoStockSdk(
-            sdk, interval_seconds=interval_seconds, monotonic=lambda: clock[0], sleep=sleep
+        lambda sdk, interval_seconds, activity: RateLimitedBaoStockSdk(
+            sdk, interval_seconds=interval_seconds, monotonic=lambda: clock[0], sleep=sleep, activity=activity
         ),
     )
     report = baostock_concurrency.run_serial_intervals(
@@ -671,7 +671,7 @@ def test_serial_failure_stops_stock_requests_and_counts_login_timeout_once(monke
     monkeypatch.setattr(baostock_concurrency, "_close", lambda sdk: None)
     monkeypatch.setattr(baostock_concurrency, "RateLimitedBaoStockSdk", lambda sdk, **kwargs: sdk)
 
-    def fail(sdk, code, *, days):
+    def fail(sdk, code, *, days, trace=None, window=None):
         calls.append(code)
         return baostock_concurrency.CodeResult(False, 0, 0, False, 1, 0, 0, "network_error", 1)
 
@@ -704,7 +704,7 @@ def test_missing_sample_results_cannot_pass_rate_experiment(monkeypatch: pytest.
 
 @pytest.mark.parametrize("invalid_date", ["", "2026-13-01", "2099-01-01"])
 def test_invalid_paired_dates_do_not_pass_rate_experiment(monkeypatch: pytest.MonkeyPatch, invalid_date: str) -> None:
-    monkeypatch.setattr(baostock_concurrency, "_query_one", lambda *args: [{"date": invalid_date}])
+    monkeypatch.setattr(baostock_concurrency, "_query_one", lambda *args, **kwargs: [{"date": invalid_date}])
     assert baostock_concurrency._one(object(), "600519", days=400).ok is False
 
 

@@ -55,6 +55,10 @@ def _baostock_concurrency_details(
     payload["production_eligible"] = False
     payload["parallel_sessions"] = source.get("parallel_sessions")
     payload["history_calendar_days"] = source.get("history_calendar_days")
+    payload["history_trading_sessions"] = source.get("history_trading_sessions")
+    payload["timing_semantics"] = source.get("timing_semantics")
+    payload["supplier_path"] = source.get("supplier_path")
+    payload["security_metadata"] = source.get("security_metadata")
     payload["rate_semantics"] = source.get("rate_semantics")
     payload["retry_policy"] = source.get("retry_policy")
     payload["error"] = SafeText(source.get("error"))
@@ -77,9 +81,22 @@ def _baostock_concurrency_details(
         "successful_codes_per_minute",
         "interval_seconds",
         "round",
+        "configured_request_timeout_seconds",
+        "configured_price_budget_seconds",
+        "configured_request_interval_seconds",
+        "configured_retries",
+        "requested_experiment_interval_seconds",
     )
+    timing_fields = ("code", "phase", "elapsed_ms", "rows", "outcome", "error", "network_ms", "vendor_code", "raw_rows", "qfq_rows")
     payload["experiments"] = [
-        {name: item.get(name) for name in fields}
+        {
+            **{name: item.get(name) for name in fields},
+            "request_timings": [
+                {name: timing.get(name) for name in timing_fields}
+                for timing in (item["request_timings"][:1000] if isinstance(item.get("request_timings"), list) else [])
+                if isinstance(timing, dict)
+            ],
+        }
         for item in (values[:27] if isinstance(values, list) else [])
         if isinstance(item, dict)
     ]

@@ -22,6 +22,8 @@
 
 根`--help`展示中立公共参数，选中动作的`--help`只加载所属业务解析器，并展示其参数和副作用。业务检查沿用原有具名参数和上限；不会因选择某项动作而运行其它业务。训练、真实网络、浏览器、性能探针、隔离样本构建及维护都需要明确选中并满足原授权和隔离要求。`recommendation/pipeline/snapshot`明确选择配置、维护状态、研究就绪和离线性能四项；配置失败后其它三项报告skipped。
 
+BaoStock慢补缺沿既有`download/history/concurrency`诊断，不另建临时下载器。显式选择`--baostock-serial-only --baostock-sizes 1 --codes 000708 --baostock-sessions 2000`，先取交易日历，再对精确2000交易日分别计首响应、读取、尾部空页和日期一致性校验；`network_ms`不含节流，读取总耗时包含翻页，不能再次相加。加`--baostock-production`则使用当前`config/download.json`和真实供应商子进程／Gateway，核对完整配对及每日事实，命令中的SDK超时／候选间隔不覆盖生产配置；该模式只准一个样本规模、一轮及一个间隔。两种模式均只输出白名单计时、行数及安全供应商错误编号，不保存价格载荷或打开活动历史库；生产模式的证券上市日期是假定在窗口前的显式诊断元数据，不能签真实资格或全市场性能。
+
 荐股公共原始因子复用候选只在显式连续回放中选择，默认`baseline`，不修改生产服务。D在冻结版本上使用相同配置、模型、股票数和tick数分别运行基线及下列候选；删去`--performance-factor-candidate raw_factor_reuse`即为基线。它使用现有共享`quote_factor_inputs`容量和`feature_batches`字节预算，合并完全相同的报价、日线、历史摘要、horizons和基础配置；命中后返回独立可变副本，风险/证据/分钟及模型组装仍走原流程。非有限输入不写此候选缓存，交原计算处理，原异常也继续传播。`raw_factor_computations`仅统计可规范序列化输入的候选原计算完成次数（包括缓存拒写），基线为null；不把缓存命中计数当作省下的函数调用。`feature_group_max_bytes`包含基础、候选和横截面的整个特征组，仍需另看实际RSS。
 
 ```bash

@@ -79,13 +79,13 @@ def test_price_total_deadline_survives_page_activity_and_bounds_retries(tmp_path
     supplier = BaoStockHistorySupplier(
         HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference"),
         monotonic=clock,
-        price_total_seconds=180.0,
+        price_total_seconds=45.0,
     )
     attempts = []
 
     def request(command, state, attempt, timeout):
         attempts.append(attempt.number)
-        clock.value += 100.0
+        clock.value += 25.0
         return supplier_module._AttemptResult(None, state, "supplier_daily_qfq_timeout")
 
     monkeypatch.setattr(supplier, "_request_once", request)
@@ -94,11 +94,11 @@ def test_price_total_deadline_survives_page_activity_and_bounds_retries(tmp_path
     with pytest.raises(RuntimeError, match="supplier_price_total_timeout"):
         supplier.fetch_code(security, (date(2026, 10, 9),))
     assert attempts == [1, 2]
-    clock.value = 179.0
+    clock.value = 44.0
     state = supplier._handle_activity(
         _Activity("supplier_daily_raw", "started"), _RequestState("supplier_daily_raw", None, 0), _Attempt(1, 3), 45
     )
-    clock.value = 180.0
+    clock.value = 45.0
     with pytest.raises(RuntimeError, match="supplier_price_total_timeout"):
         supplier._receive(None, state, _Attempt(1, 3))
 
@@ -132,7 +132,7 @@ class _SilentConnection:
 class _TimedConnection(_SilentConnection):
     def __init__(self, clock: _Clock) -> None:
         super().__init__(clock)
-        self._events = [
+        self._events: list[tuple[float, object]] = [
             (0.0, _Activity("supplier_calendar", "started")),
             (0.75, _Activity("supplier_calendar", "returned")),
         ]
@@ -161,6 +161,64 @@ class _LiveProcess:
 
     def terminate(self) -> None:
         self.alive = False
+
+
+def test_price_poll_deadline_stops_pages_and_allows_next_stock(tmp_path, monkeypatch) -> None:
+    from multiprocessing.connection import Connection
+    from multiprocessing.process import BaseProcess
+    from trader.download.infra import baostock_sync_supplier as supplier_module
+    from trader.infra.process_lock import ProcessLock
+    from tests.helpers.download.history.infra.history_sync import _download
+
+    clock = _Clock()
+    starts = []
+    processes = []
+    days = (date(2026, 10, 9),)
+    security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
+    next_security = BaoStockSecurity("600002", "fixture", "main", date(2000, 1, 1), None, "fixture")
+    vendor_lock = ProcessLock(tmp_path / "vendor.lock")
+    supplier = BaoStockHistorySupplier(
+        HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference"),
+        monotonic=clock,
+        price_total_seconds=45.0,
+        vendor_lock=vendor_lock,
+    )
+
+    def start(attempt):
+        starts.append(attempt.number)
+        vendor_lock.acquire()
+        connection = _TimedConnection(clock)
+        if len(starts) == 1:
+            connection._events = [
+                (0.0, _Activity("supplier_daily_raw", "started")),
+                (14.0, _Activity("supplier_daily_raw", "returned")),
+                (15.0, _Activity("supplier_daily_raw", "started")),
+                (29.0, _Activity("supplier_daily_raw", "returned")),
+                (30.0, _Activity("supplier_daily_qfq", "started")),
+                (44.0, _Activity("supplier_daily_qfq", "returned")),
+                (44.5, _Activity("supplier_daily_qfq", "started")),
+            ]
+        else:
+            connection._events = [
+                (46.0, supplier_module._Response(download=_download(next_security.code, days, 1))),
+            ]
+        process = _LiveProcess()
+        processes.append(process)
+        supplier._process = cast(BaseProcess, process)
+        supplier._connection = cast(Connection, connection)
+
+    monkeypatch.setattr(supplier, "_start", start)
+    with pytest.raises(RuntimeError, match="supplier_price_total_timeout"):
+        supplier.fetch_code(security, days)
+    assert clock.value == pytest.approx(45.0)
+    assert starts == [1]
+    assert not processes[0].alive
+    assert supplier.fetch_code(next_security, days).batch.cells
+    assert starts == [1, 1]
+    assert clock.value == pytest.approx(46.0)
+    supplier.close()
+    with ProcessLock(tmp_path / "vendor.lock"):
+        pass
 
 
 class _Sdk:
@@ -353,15 +411,17 @@ def test_price_timeout_restarts_session_with_bounded_retries(tmp_path, monkeypat
     from tests.helpers.download.history.infra.history_sync import _download
 
     failures = []
+    clock = _Clock()
     supplier = BaoStockHistorySupplier(HistorySyncConfiguration(
         history_root=tmp_path / "history", reference_root=tmp_path / "reference", supplier_retries=2
-    ), failures=lambda context, exc: failures.append((context, str(exc))))
+    ), failures=lambda context, exc: failures.append((context, str(exc))), monotonic=clock, price_total_seconds=45.0)
     attempts, closes = [], []
     security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
     days = (date(2026, 10, 9),)
 
     def request(command, state, attempt, timeout):
         attempts.append(attempt.number)
+        clock.value += 2.0
         if recovers and attempt.number == 2:
             return supplier_module._AttemptResult(
                 supplier_module._Response(download=_download(security.code, days, 1)), state, None
@@ -381,6 +441,39 @@ def test_price_timeout_restarts_session_with_bounded_retries(tmp_path, monkeypat
     assert failures[0][0].code == security.code and failures[0][0].supplier == "baostock"
     assert failures[0][0].maximum_attempts == 3 and failures[0][0].window_start == days[0]
     assert failures[0][1] == "supplier_daily_raw_timeout"
+
+
+@pytest.mark.parametrize(("deadline", "expected_wait"), ((float("inf"), 10.0), (45.0, 3.0), (40.0, 0.0)))
+def test_close_bounds_grace_by_remaining_price_deadline(tmp_path, deadline, expected_wait):
+    from multiprocessing.connection import Connection
+    from multiprocessing.process import BaseProcess
+    from trader.infra.process_lock import ProcessLock
+
+    clock = _Clock(42.0)
+    waits = []
+
+    class BlockedProcess(_LiveProcess):
+        def join(self, timeout=None):
+            waits.append(timeout)
+
+    process = BlockedProcess()
+    lock_path = tmp_path / "vendor.lock"
+    vendor_lock = ProcessLock(lock_path)
+    vendor_lock.acquire()
+    supplier = BaoStockHistorySupplier(
+        HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference"),
+        monotonic=clock,
+        vendor_lock=vendor_lock,
+    )
+    supplier._request_deadline = deadline
+    supplier._process = cast(BaseProcess, process)
+    supplier._connection = cast(Connection, _SilentConnection(clock))
+    supplier.close()
+    assert waits == [expected_wait, 1.0]
+    assert not process.alive
+    assert supplier._process is None and supplier._connection is None
+    with ProcessLock(lock_path):
+        pass
 
 
 def test_supplier_login_timeout_does_not_repeat_the_slow_start(tmp_path, monkeypatch) -> None:

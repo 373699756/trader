@@ -71,6 +71,9 @@ def BuildCommands(
                         "--serial-only",
                         "--rounds",
                         str(options.baostock_rounds),
+                        "--sessions",
+                        str(options.baostock_sessions),
+                        *(("--production",) if options.baostock_production else ()),
                         "--intervals",
                         *(str(value) for value in options.baostock_intervals),
                     )
