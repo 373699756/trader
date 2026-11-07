@@ -14,7 +14,7 @@ V2/V3/V5的近期生产诊断由`BuildProductionDiagnosticDatePlan`拥有：两�
 
 近期诊断保留自己的拟合、早停、校准和验证日期及实际模型。V1/V2最终重拟合以近期诊断选出的树轮数为固定上限，无法继续分裂时如实保存实际树数；V3按原Ridge设置重拟合；V5最终按当前配置10轮拟合，不再对最终训练行做早停或伪装成未见验证。最终模型重新估计训练变换及模型权重，冻结并转移近期诊断模型的收益校准系数，明确标为校准转移；诊断指标只属于受评价的诊断模型，不能证明最终模型的校准或收益已经通过独立验证。最终重拟合可能使用研究留出中的日期，不能继续把这些日期称为最终模型的未见留出；历史记录和独立研究日期类型保持原身份。新行业必须满足近期诊断与最终样本门，不能仅凭最终窗口有样本就声明全行业覆盖。
 
-独立训练入口为 `ExecuteSelectedTraining`。A的提交 `7a562886`已将CLI切换到该入口并删除 `ExecuteDownloadTrain`及旧下载异常分支；该提交的远端交付状态见g，不由C推断。下面原始字段字典以 `e69d3e02`核对，第9.2节保留该基线旧消费者作为交接证据；C的计量改动不新增下载或组合入口。
+CLI的`train`通过唯一组合根 `bootstrap.ExecuteSelectedTraining`独立启动，只使用本地已发布资料，不补下载。入口、训练诊断及历史消费者的核对见[第9.2节](#92-p61训练检测清单与a交接)；旧基线只作历史定位，交付状态统一见g。
 
 ## 2. 四档比较
 
@@ -29,7 +29,7 @@ V2/V3/V5的近期生产诊断由`BuildProductionDiagnosticDatePlan`拥有：两�
 | 样本组织 | 日期排序query＋独立收益门 | 行业、日期、头 | 行业、日期、头 | 行业、序列、头 |
 | 主要待测开销 | 矩阵读取、排序器与收益门 | 特征长窗、行业树拟合 | 矩阵转换、线性拟合/校准 | 序列、张量、逐行业迭代和线程 |
 
-表中数值是本次只读配置核对结果，不是优化后的推荐值。当前V5为行业5000行门、网络8通道、float32计算、最多10轮、早停耐心3、相对改善阈值0.005、请求1线程；网络隐藏通道与输入6通道不是一回事。
+当前V5为行业5000行门、网络8通道、float32计算、最多10轮、早停耐心3、相对改善阈值0.005、请求1线程；网络隐藏通道与输入6通道不是一回事。
 
 ## 3. 用什么数据库、字段做什么
 
@@ -239,7 +239,7 @@ flowchart TD
     F --> P[各档独立评价与双头发布]
 ```
 
-现有 `application/selected_training.py` 按256行不可变批次分发，每档队列容量2；`infra/selected_training.py` 固定SQLite快照并在扫描前判断复用。全部复用时零价格扫描；共享扫描与日历对齐已存在，四档样本/特征仍各自构建。
+现有 `application/selected_training.py` 按注入的`TrainingFanoutSettings`分发不可变批次；当前配置为每批256行、每档队列容量2，来源见[第6.2节](#62-作业资源配置与仍待核对的常量)。`infra/selected_training.py`固定SQLite快照并在扫描前判断复用。全部复用时零价格扫描；共享扫描与日历对齐已存在，四档样本/特征仍各自构建。
 
 慢消费者会背压公共扫描。先量出是哪档计算、写入、资源等待造成背压，再比较“先算公共基础量”“调整批次”“隔离慢消费者”等候选。不能为了取消背压引入无限队列或四份完整历史。
 
@@ -259,16 +259,16 @@ flowchart TD
 
 ## 6. 怎样让四档全部尽快结束
 
-当前CPU预算按实际亲和性和cgroup约束，拟合总预算约为 `max(1, 可用CPU-1)`，为扫描和协调保留资源，并限制BLAS/OpenMP线程。现有内存原子预约、批读和临时映射避免四档同时膨胀；这些机制先复用，不另建资源中心。
+当前CPU预算按实际亲和性和cgroup约束，拟合总预算为`max(1, 可用CPU-cpu.coordinator_cpus)`，再由非null的`cpu.maximum_threads`收紧；默认预留1个CPU。原生基线和各档请求线程也由配置注入，并限制BLAS/OpenMP线程。现有内存原子预约、批读和临时映射避免四档同时膨胀；这些机制先复用，不另建资源中心。
 
 “慢档多分资源”是待测策略。先测每档/算法随线程数变化的边际收益：I/O或Python单线程瓶颈加模型线程可能无用；小任务获得太多线程也会挤压长任务。比较现有固定申请、长任务优先、有空闲时借用等候选，以全部完成的时间裁决。
 
-下表是资源说明，不是数据库字段。训练线程、窗口和拟合参数来自 `config/training.json`；通用存储策略来自 `config/sqlite.json`，介质选择来自 `config/runtime.json`。CPU/cgroup、RSS和队列等待是运行时测量；尚未配置化的预算需沿实际实现清点，不能写成配置中已有字段。
+下表是资源说明，不是数据库字段。训练窗口和拟合参数来自`config/training.json.profiles`，CPU、内存、共享扫描、队列和样本I/O预算来自同文件的`resources`；通用SQLite策略来自`config/sqlite.json`，介质选择来自`config/runtime.json`。CPU/cgroup、RSS和队列等待是运行时测量，已接线的资源字段及保留常量分别列在[第6.2节](#62-作业资源配置与仍待核对的常量)。
 
 | 资源 | 要测什么 | 配置化核对 |
 | --- | --- | --- |
 | CPU | 模型原生线程、等待、超额竞争、实际利用 | 总预算、每算法上限、协调预留；不得每档各占全CPU |
-| 内存 | 只读共享、矩阵、张量、缓存、换页、预约等待 | 核对现有3GiB上限、1.5GiB预留等硬编码是否迁出 |
+| 内存 | 只读共享、矩阵、张量、缓存、换页、预约等待 | `resources.<介质>.memory`已提供3GiB上限、1.5GiB预留和256MiB宿主低水位；实际容量仍受宿主及cgroup收紧 |
 | 磁盘 | 公共顺序扫描、样本写入、映射随机I/O | HDD/SSD各自批次和并发，保持唯一策略来源 |
 | 队列 | 长度、阻塞、批次字节和取消清理 | 批次、容量、最大驻留 |
 
@@ -276,7 +276,7 @@ flowchart TD
 
 ### 6.1 training.json现有逐叶配置
 
-以下来自 `config/training.json`，`profiles[]`是按 `profile` 选择的对象数组。记 `V1=profiles[profile=v1]`、`V2=profiles[profile=v2]`，其它同理；这只是文档定位写法，不是新增JSON字段。当前文件只有这四个profile，不含CPU总预算、内存预算、扫描批次或队列配置。
+`config/training.json`根对象精确包含`profiles`和`resources`：前者是四档拟合设置，后者是HDD/SSD两份作业资源策略，字段见[第6.2节](#62-作业资源配置与仍待核对的常量)。本节先列`profiles[]`；它是按`profile`选择的对象数组。记`V1=profiles[profile=v1]`、`V2=profiles[profile=v2]`，其它同理；这只是文档定位写法，不是新增JSON字段。
 
 所有字段在训练作业准备时读取。V1经 `LoadV1TrainingSettings → ParseV1TrainingSettings → V1TrainingSettings` 进入独立构造/拟合；V2/V3/V5经 `LoadProfileTrainingSettings → ProfileTrainingSettings` 进入 `engine.py`，V5参数再经 `ParseTcnParameters → TcnFittingParameters` 校验。字段名必须精确匹配，整数不接受bool，数值必须有限；下表范围按实际解析和类型校验写，不虚构额外上限。
 
@@ -345,7 +345,7 @@ flowchart TD
 
 ### 6.2 作业资源配置与仍待核对的常量
 
-P54本批按用户授权由C接通公共解析及训练组合根。`config/training.json.resources`必含`hdd`及`ssd`两份独立机器策略，每份具有下表字段；默认保持原值，尚未以磁盘名称推定CPU/内存大小或启用性能候选。两台个人电脑分别依据自身实测调整对应策略，另一策略不随之变化。组合根按runtime的`disk_medium`或原磁盘探测结果选取，unknown明确沿用现行保守HDD策略；无静默补默认值，任一机器段缺字段、未知字段、bool冒充整数或非法范围均拒绝。
+`config/training.json.resources`必含`hdd`及`ssd`两份独立机器策略，每份具有下表字段；默认保持原值，不以磁盘名称推定CPU/内存大小或启用性能候选。两台个人电脑分别依据自身实测调整对应策略，另一策略不随之变化。组合根按runtime的`disk_medium`或原磁盘探测结果选取，unknown明确沿用现行保守HDD策略；无静默补默认值，任一机器段缺字段、未知字段、bool冒充整数或非法范围均拒绝。
 
 | 每机器策略字段 | 默认值、单位与范围 | 最终消费者 |
 | --- | --- | --- |
@@ -367,9 +367,9 @@ P54本批按用户授权由C接通公共解析及训练组合根。`config/train
 | `samples.v1_batch_rows` | 4096，整数≥1，行 | V1具名矩阵有序流每次取行；跨批排序、query和负零不变 |
 | `samples.tcn_batch_memory_bytes` | 268435456，整数≥0，字节 | 单头训练/早停TCN批次超过此值映射；0允许强制映射 |
 
-`infra/settings/training.py`是根schema和资源解析唯一owner；仅训练启动及明确训练诊断读取，不让推荐或只读Web因训练资源错误而失效。不可变资源对象由bootstrap显式传至准入、训练请求及fanout，无消费者自行重读资源JSON。配置改后下次训练作业生效，不热切换运行中的作业。V1/V2/V3的请求线程数由必填`cpu.profile_threads`提供，默认仍各2；请求数进入各档模型复用身份，改变请求后不得误用原线程合同的模型。V5仍使用原`tcn.compute_threads/batch_size`，其它纯资源值不加入模型/样本参数身份。本次源码变化仍会改变既有宽范围implementation identity，不自动重训、发布或改写旧工件。线程设置可能影响实际数值路径，候选调值须核对数值/质量与C后台实测，不承诺任意调值逐位相等。
+`training/infra/resource_settings.py`是根schema和资源解析唯一owner：`ReadTrainingConfiguration`核根键，`LoadTrainingResourceSettings`完整校验两份介质策略后选择一份。仅训练启动及明确训练诊断读取，不让推荐或只读Web因训练资源错误而失效。不可变资源对象由bootstrap显式传至准入、训练请求及fanout，无消费者自行重读资源JSON。配置改后下次训练作业生效，不热切换运行中的作业。V1/V2/V3的请求线程数由必填`cpu.profile_threads`提供，默认仍各2；请求数进入各档模型复用身份，改变请求后不得误用原线程合同的模型。V5仍使用原`tcn.compute_threads/batch_size`，其它纯资源值不加入模型/样本参数身份。训练源码变化仍会改变既有宽范围implementation identity，不自动重训、发布或改写旧工件。线程设置可能影响实际数值路径，候选调值须核对数值/质量与C后台实测，不承诺任意调值逐位相等。
 
-阶段345接续将八项样本I/O运行参数按原值迁入现有资源段，由唯一解析器生成不可变`TrainingSampleSettings`，训练组合根显式传到四档、缓存及所有读写者；普通生产构造不补默认值。完整`hdd/ssd`段都须符合schema，缺字段、未知字段、bool/小数冒充整数及非法字节单位明确拒绝；本批实际验收仅在当前HDD，不改变SSD那台PC的验收进度或冒称已测最优值。训练诊断从同一配置边界注入，历史对照worker只按明确选定的冻结checkout及其已声明配置schema使用对应API，不向产品安装兼容分支。
+八项样本I/O运行参数由同一解析器生成不可变`TrainingSampleSettings`，训练组合根显式传到四档、缓存及所有读写者；普通生产构造不补默认值。完整`hdd/ssd`段都须符合schema，缺字段、未知字段、bool/小数冒充整数及非法字节单位明确拒绝。阶段345的HDD验收与SSD那台PC的进度分别保留在g，不把配置接线解释为任一介质的最优值或性能验收。训练诊断从同一配置边界注入，历史对照worker只按明确选定的冻结checkout及其已声明配置schema使用对应API，不向产品安装兼容分支。
 
 纯I/O参数不加入拟合参数或样本语义身份；配置变值不会单独强制重训，训练源码变化仍沿既有implementation identity生效。删除训练合同hash中原固定的两项SQLite缓存常量，实际八项值在`selected_training_result.sample_resources`按白名单报告。任何改值仍需数值、质量与完整资源/性能对照；软件内存预算不是OS隔离，不保证任意增大缓存或批次均满足RSS门。
 
@@ -405,7 +405,7 @@ P54本批按用户授权由C接通公共解析及训练组合根。`config/train
 
 Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU和内存共用membership、mountinfo、挂载根及可见父级，支持v1/v2和挂载路径转义；不受无关bind mount影响，不越过可见挂载根猜测宿主限制。CPU无法核验仍按1核保守运行；内存约束无法映射、读取或解析时抛出`training_memory_limit_unavailable`并保留原因，不退回宿主3GiB预算。内存容量和预约都要求正整数，拒绝bool、小数及非有限值。
 
-内存v1读取`memory.limit_in_bytes`，v2读取`memory.max`及`memory.high`，沿可见父级按每个有限限制减去配置预留（默认仍1.5GiB），再收紧现有拟合预算；没有启用控制器或明确无限值不增加限制。`memory.high`用于保守预算，不是硬隔离，语义见[Linux cgroup v2文档](https://docs.kernel.org/admin-guide/cgroup-v2.html)；v1字段见[Linux内存控制器文档](https://docs.kernel.org/admin-guide/cgroup-v1/memory.html)。预约顺序、常量和调度策略未改变，线程/RSS峰值与性能仍由D实测。
+内存v1读取`memory.limit_in_bytes`，v2读取`memory.max`及`memory.high`，沿可见父级按每个有限限制减去配置预留（默认仍1.5GiB），再收紧现有拟合预算；没有启用控制器或明确无限值不增加限制。`memory.high`用于保守预算，不是硬隔离，语义见[Linux cgroup v2文档](https://docs.kernel.org/admin-guide/cgroup-v2.html)；v1字段见[Linux内存控制器文档](https://docs.kernel.org/admin-guide/cgroup-v1/memory.html)。预约顺序、安全常量和调度策略不因资源配置接线而改变；线程/RSS峰值及性能由C唯一后台按[g第4.5节](g_施工进度.md#45-codexc后台承接原d全部性能实测)实测。
 
 测量必须分别输出请求、授权和实际原生线程数，预约等待、持CPU等内存时长、实际并行区间、取消至归还时间和最终在途数。`model_fit` 心跳把多种等待放在同一阶段，不能据该阶段总时长反推CPU或内存等待各占多少；现有作业计量按第6.4节分开报告预约与队列区间。
 
@@ -450,19 +450,19 @@ Linux cgroup路径由training内部`ReadTrainingCgroupScopes`唯一解析，CPU�
 
 ### 6.5 调度策略的隔离对照
 
-P53候选仅由既有`training_alignment`worker的`--scheduling-candidate`显式选择，默认baseline；生产组合根及训练准入不导入该诊断模块。fixed使用每档份额上限，long_task_first在当前已就绪的等待者中按D提供的拟合耗时降序授权，borrowing允许就绪者一次借用当前空闲容量；都不抢占运行中的拟合，不把尚未就绪的长任务当作必须等待的任务。
+P53候选仅由既有`training_alignment`worker的`--scheduling-candidate`显式选择，默认baseline；生产组合根及训练准入不导入该诊断模块。fixed使用每档份额上限，long_task_first在当前已就绪的等待者中按C后台提供的拟合耗时降序授权，borrowing允许就绪者一次借用当前空闲容量；都不抢占运行中的拟合，不把尚未就绪的长任务当作必须等待的任务。
 
 份额为max(原生基线, 总CPU预算/本次档数的整数部分)，是每档上限而非各自独立的一份总预算。实际授权始终≤算法请求且≤原CPU容量，原生基线必需预约仍扣除；借用可以在只剩部分空闲容量时少于原请求，不能超请求加线程，模型拟合中不动态升降线程。原`TrainingCpuBudget`仍最终预约及管理原生限制，原CPU后内存顺序和内存预算不变。默认普通请求2/V5请求1及原生基线2可能让策略没有可用收益，不能因此删除约束或宣称已提速。
 
-三个非baseline候选都必须另给`--scheduling-evidence <对应PC证据.json>`。输入根字段严格为schema_version、source_hash、configuration_hash、implementation_hash、medium、available_cpus、cpu_capacity、native_threads及profiles；schema_version固定training-scheduling-evidence，三个摘要分别匹配本次快照、既有training/features组合摘要与训练实现身份。medium必须是本次已确认hdd/ssd，未知介质拒绝。profiles按本次请求顺序列出唯一profile及有限正数fit_seconds（拟合耗时秒），由D在该PC相同输入上实测提供，不用猜测排序或另一台机器的数据填充。CPU三项在实际端口创建时再次比较，不能跨机器预算或在同一计量对象中偷换预算。
+三个非baseline候选都必须另给`--scheduling-evidence <对应PC证据.json>`。输入根字段严格为schema_version、source_hash、configuration_hash、implementation_hash、medium、available_cpus、cpu_capacity、native_threads及profiles；schema_version固定training-scheduling-evidence，三个摘要分别匹配本次快照、既有training/features组合摘要与训练实现身份。medium必须是本次已确认hdd/ssd，未知介质拒绝。profiles按本次请求顺序列出唯一profile及有限正数fit_seconds（拟合耗时秒），由C后台在该PC相同输入上实测提供，不用猜测排序或另一台机器的数据填充。CPU三项在实际端口创建时再次比较，不能跨机器预算或在同一计量对象中偷换预算。
 
 候选输出原计量与请求/实际授权/原生扣额/超固定份额借用数，以及规范化证据摘要、候选源码摘要、排队/预约残留。全部复用仍零扫描/零拟合预约；结束时排队和预约不归零不计完整通过。finally恢复计量端口的原绑定；非法模式、错误证据、取消、拟合失败不得使候选留在后续正常作业中。baseline及历史版本比较不导入新候选模块，保留原比较能力。
 
-D可在原内部worker命令追加`--scheduling-candidate fixed|long_task_first|borrowing --scheduling-evidence <证据>`，其它历史、四档、样本复用与工件复用参数沿用e9.1。需要在HDD/SSD两台PC各自比较全作业关键路径、数值/质量、资源峰值与取消收尾，单个fixture或单档回归不签四档性能。当前只交付隔离候选与功能证据，production_enabled/performance_evidence保持false；D达标后再由C在原P53记录完成唯一生产owner及全部消费者的原子切换。
+C后台可在原内部worker命令追加`--scheduling-candidate fixed|long_task_first|borrowing --scheduling-evidence <证据>`，其它历史、四档、样本复用与工件复用参数沿用[第9.1节](#91-三种负载与可复用的测量入口)。HDD/SSD需各自比较全作业关键路径、数值/质量、资源峰值与取消收尾；实际执行哪台PC及暂停条件统一按g第4.5节，不因一台待验阻塞另一台。单个fixture或单档回归不签四档性能。当前只有隔离候选与功能证据，production_enabled/performance_evidence保持false；C后台达标后，C沿原P53记录完成唯一生产owner及全部消费者的原子切换。
 
 ## 7. 缓存、复用、检查与工件发布
 
-正常复用检查版本、字段、维度、封存元数据和身份，不重算下载全库内容或每次做整文件摘要。完整内容审计单独显式运行。训练、早停、校准、评价的隔离、标签成熟、特征顺序和目标对齐必须保留。
+正常复用检查当前结构、字段、维度、封存元数据和身份，不重算下载全库内容或每次做整文件摘要。完整内容审计单独显式运行。训练、早停、校准、评价的隔离、标签成熟、特征顺序和目标对齐必须保留。
 
 特征公式、历史端点、单位、列顺序和缺失掩码由同一合同维护，训练、在线和回放不能各写一份近似版本。到期判断看成熟标签和真实语义修订；文档提交、纯物理压实和无变化重跑不能伪装成新标签或已重新拟合。
 
@@ -470,9 +470,13 @@ D可在原内部worker命令追加`--scheduling-candidate fixed|long_task_first|
 
 每档先写候选双头和报告，再检查完整工件组、输入/配置/特征身份和工程资格，通过才切换。取消、单头失败、校准拒绝或落盘失败均保留上一有效模型；复用不刷新拟合日期，不把复用标成新训练。
 
-标准生产发布入口只接受含可重建近期诊断计划的双头工件，在目录写入前和复制后分别核验；旧研究/旧refit工件仍可读取及恢复原身份，但不能通过当前生产发布入口重新安装。该门只证明用途和工程一致性，不代表收益质量通过。
+标准生产发布入口只接受含可重建近期诊断计划的双头工件，在目录写入前和复制后分别核验；该门只证明用途和工程一致性，不代表收益质量通过。
 
-V2/V3/V5当前最终工件使用显式`*_head_recent_refit_metadata`版本，`final_fit`保存完整源日历及其绑定、最终实际拟合日期/行业行数、近期诊断模型完整载荷及摘要、近期计划完整分区/摘要、校准转移政策和`final_model_unseen_validation_passed=false`。`validation_report.model_hash`始终指向实际受评价的诊断模型，顶层`model_hash`指向最终模型；读取时同时校验两者，不能用最终模型摘要替代诊断摘要。近期诊断的holdout为0并明确不适用，不称研究封存。旧`*_head_refit_metadata`和更早版本只按原研究切分及评价合同读取，不能复用成近期生产工件。V1使用独立`learned_rank_final_head_model/metadata`版本并保存完整近期诊断头与最终计划。前台进度分别报告`model_fit`和`final_model_refit`；命令回执分别列源截止、标签成熟截止、最终拟合首尾/N、诊断拟合首尾、校准首尾和独立评价首尾。
+当前工件要求是只接受当前实际结构，不维护旧格式兼容、升级或迁移路径，也不增加自定义格式版本控制。当前结构在发布中断后恢复上一完整双头组，仍按[第7.3节](#73-双头模型目录发布的中断恢复)处理；目录发布恢复与旧格式兼容是两件事。历史研究及冻结记录保持原身份，不因本规则改写、升级或删除；下载库不兼容的人工删除重下规则也不扩大到模型和冻结记录。
+
+现有源码仍保留历史格式读取分支，尚未完成上述要求：`model_bundles/bundle_codec.py::DecodeHeadBundle`接受普通`*_head_metadata`、旧`*_head_refit_metadata`和当前`*_head_recent_refit_metadata`三类标识；V1的`models.py::_read_pair_directory`接受诊断`learned_rank_head_model/metadata`和最终`learned_rank_final_head_model/metadata`两组标识。`RecoverProfileBundles/RecoverLearnedRankPublication`恢复目录时仍调用这些decoder，服务加载也经`profile_factory.LoadScoringProfile`使用相同reader。这是历史实现残留，不是继续兼容的要求，不能据本文认定已删除。C须会同A核销decoder、目录恢复、`engine._reuse_profile`、V1训练复用、服务加载及`training_alignment/v5_training`诊断消费者；施工与验证状态只记g。
+
+当前写入的V2/V3/V5最终metadata标识为`*_head_recent_refit_metadata`，`final_fit`保存完整源日历及其绑定、最终实际拟合日期/行业行数、近期诊断模型完整载荷及摘要、近期计划完整分区/摘要、校准转移政策和`final_model_unseen_validation_passed=false`。`validation_report.model_hash`始终指向实际受评价的诊断模型，顶层`model_hash`指向最终模型；读取时同时校验两者，不能用最终模型摘要替代诊断摘要。近期诊断的holdout为0并明确不适用，不称研究封存。V1当前写入独立`learned_rank_final_head_model/metadata`并保存完整近期诊断头与最终计划；这些是现存边界字段值，不构成新增格式版本制度。前台进度分别报告`model_fit`和`final_model_refit`；命令回执分别列源截止、标签成熟截止、最终拟合首尾/N、诊断拟合首尾、校准首尾和独立评价首尾。
 
 训练工件字典至少说明：档位、策略头、算法、样本/特征/数据身份、日期范围、拟合/早停/校准区、行业覆盖、质量状态、模型文件及摘要、发布版本。定义和全部消费者由训练负责，不由Web推断。
 
@@ -510,7 +514,7 @@ V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要�
 | `validation_report` | object，工程评价报告 | 切分/目标/模型身份及实际覆盖、预测诊断；收益资格独立 |
 | `industry_sample_counts` | object，行业→计数 | 每行业 `training_rows/validation_rows`，与报告预测覆盖交叉核对 |
 | `model_hash` | string，SHA-256 | 与model文档content_hash一致 |
-| 最终版本 `final_fit` | object，最终成熟日拟合及诊断凭证 | recent/refit两种显式版本分别按近期或原研究合同校验；原版本禁止补签，见本节上文 |
+| 当前最终工件 `final_fit` | object，最终成熟日拟合及诊断凭证 | 当前写入保存近期诊断凭证；旧refit读取分支仍待清理，要求与实际差距见第7章 |
 | V5 `training_configuration` | object，fit_dates/parameters/content_hash | 完整TCN参数及架构摘要，非V5不能带此字段 |
 | `content_hash` | string，SHA-256 | metadata自身规范化内容摘要 |
 
@@ -566,7 +570,7 @@ V5大行业的 `tcn-batches-*`目录仅包含只读拟合缓存 `training/early_
 
 正式档位目录缺失时，只接受唯一的`.<profile>.previous.<32位小写十六进制标识>`。先核对受管路径、两头固定文件和实际模型内容及同组身份，再将旧目录整体移回；不把`.<profile>.publication.*`中的候选提升为正式模型。正常训练中的`.bundle-staging.<8位受管标识>`可以随旧目录保留，但只允许普通目录和固定模型文件；未知条目、符号链接、多份旧目录、半套旧头或模型损坏均保留现场并明确失败，不选择某个目录猜测恢复。
 
-首次安装若只留下空目录或合法暂存工作目录，恢复该工作目录后仍无可复用模型，训练按原规则重新构建。新目录已经完成移入时保留该新组及其身份，不回滚到旧组；本轮不自动清理硬退出留下的其它候选或旧目录。恢复旧组后，配置、源资料、训练实现和日期分区仍须通过原复用合同；不匹配时正常重新拟合，不改写旧模型身份或收益资格。进程硬退出回归与SSD/HDD性能实测分别记录在g，不能互相替代。
+首次安装若只留下空目录或合法暂存工作目录，恢复该工作目录后仍无可复用模型，训练按原规则重新构建。新目录已经完成移入时保留该新组及其身份，不回滚到旧组；恢复流程不自动清理硬退出留下的其它候选或旧目录。这里的“旧组”指一次目录切换前的上一完整组，不授予旧格式兼容资格；现有decoder的历史分支差距见[第7章](#7-缓存复用检查与工件发布)。恢复后，配置、源资料、训练实现和日期分区仍须通过原复用合同；身份不匹配时正常重新拟合，不改写旧模型身份或收益资格。进程硬退出回归与SSD/HDD性能实测分别记录在g，不能互相替代。
 
 ### 7.4 公共计算与校验的隔离候选
 
@@ -600,7 +604,7 @@ CPU候选为baseline、two_plus_one及three_single。后两者仅在诊断作用
 
 `--fanout-candidate`仅用于隔离诊断：baseline保持配置，batch_double只将当前batch_rows倍增，queue_double只将当前queue_batches倍增；实验上限分别2048和8，超限拒绝，不能同时倍增两个维度。只调整fanout时保持原CPU配置。先按本机完整baseline的分段及背压证据判断是否值得试验，慢消费者问题不能用扩大队列冒充解决；报告记录实际batch_rows/queue_batches和明确选择的执行子集。
 
-完整worker同时覆盖首次全训练、全工件复用与样本复用重拟合（V1样本复用不适用），每次报告所用选项及有效预算。公开`--business training --module resources --action performance`可给`--baseline-checkout <独立冻结基线>`、上述两项候选和`--training-benchmark-rounds 5`；每组顺序为baseline_before、candidate、baseline_after，候选参数只传candidate。基线必须支持同一必填配置schema；比较本批执行选项时，采用同一冻结源码的默认路径与显式候选，不能将新配置交给不识别它的旧版本。
+完整worker同时覆盖首次全训练、全工件复用与样本复用重拟合（V1样本复用不适用），每次报告所用选项及有效预算。公开`--business training --module resources --action performance`可给`--baseline-checkout <独立冻结基线>`、上述两项候选和`--training-benchmark-rounds 5`；每组顺序为baseline_before、candidate、baseline_after，候选参数只传candidate。基线必须支持同一必填配置schema；比较这些执行选项时，采用同一冻结源码的默认路径与显式候选，不能将新配置交给不识别它的旧版本。
 
 计算候选仍沿7.4的`--computation-candidate`，与执行combined分开记录。首个完整baseline完成后先核对热点；最终五组固定已测执行子集、CPU、计算和可选fanout组合，各角色的源码与有效配置跨组冻结，不默认把全部执行项合并。
 
@@ -621,6 +625,8 @@ V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON
 研究/回溯的字段和存储字典由其实际owner核对：训练拥有样本与工件，推荐拥有决策及结果评价，不为了文档分篇搬动业务owner。历史研究身份、参数和留出记录不能改写成新候选通过。
 
 ## 9. 先测再实施的执行顺序
+
+所有性能基线、候选对照和完整负载资源实测统一由C唯一后台按[g第4.5节](g_施工进度.md#45-codexc后台承接原d全部性能实测)顺序执行，不另设D或第三组执行者。原D历史报告保留原责任与输入身份，不改署名或补签；当前机器、可用输入、暂停条件和欠项只在g维护。
 
 1. 固定真实历史、八头参数、代码、硬件和介质，测首次全训练、样本缓存复用、工件全部复用三种负载。
 2. 拆出扫描、对齐、队列阻塞、每档特征、样本写入/封存、矩阵读取、CPU/内存预约等待、逐行业双头拟合、校准、评价、发布与收尾。
@@ -698,7 +704,7 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 
 ### 9.3 V1/V5专项数值与相对质量验收
 
-V1以具名列的float64位模式、负零、每头缺失标签、日期/代码/行业顺序及按日query分组为数值合同；同一次双头读取各有可写矩阵，改动一头不得影响另一头。跨4096行批次的取消或非法值失败由调用者ExitStack关闭全部映射，连接仍可用于下一次合法读取。V5宽列与重叠序列、共享行业读取及TCN批次缓存分别检查数值、顺序、独立双头和异常/取消关闭；这些功能证据不替代D的完整负载性能。
+V1以具名列的float64位模式、负零、每头缺失标签、日期/代码/行业顺序及按日query分组为数值合同；同一次双头读取各有可写矩阵，改动一头不得影响另一头。跨4096行批次的取消或非法值失败由调用者ExitStack关闭全部映射，连接仍可用于下一次合法读取。V5宽列与重叠序列、共享行业读取及TCN批次缓存分别检查数值、顺序、独立双头和异常/取消关闭；这些功能证据不替代C后台的完整负载性能实测。
 
 当前`scripts/training/models/v5_lite.py`注册worker支持`--quality-only`跳过内核性能探针，使用显式`--reference-config`及`--candidate-config`固定两组配置。两组拟合日和行业行数门相同，按双方合格行业的Tomorrow训练行数选择最小/中位/最大行业，对每个行业的两头各比较一次；六组全部通过才形成完整相对质量证据。原RMSE不超过参考1.05倍、日期平均RankIC下降不超过0.01的门和失败即停、三小时质量预算保持。数值、确认区、门槛不因结果而调整，不授予收益或生产资格；原确认区不用于反复搜索参数。
 
@@ -712,4 +718,4 @@ V1以具名列的float64位模式、负零、每头缺失标签、日期/代码/
 
 缺少封存输入时显式使用`--prepare-samples --sample-root <配置samples下的独立子目录>`；`--prepare-only`只准备输入，并明确`quality_evidence=false`。`v5_quality_samples.py`复用同一生产日历/对齐/特征/标签/切分owner，只读已发布历史，在历史及V5训练锁内构建独立诊断身份的封存缓存，保留`samples.sqlite3/complete.json/quality-input.json`供后续复核。正式窗口前的因果预热也报告物理行进度并检查预算，所有源迭代器由调用者关闭。已有目录身份或摘要不符时保留现场并拒绝；合法封存缓存可显式审计后零扫描复用。
 
-质量比较只在新外部工作目录创建两份快照，先检查空间、源文件/完成标记身份、修改时间与ctime，校验两份摘要后再按相同日期读取；源样本及活动模型保持只读。Torch设置在比较退出时恢复，快照仅按确切文件名清理，源缓存和报告保留。执行仍经过唯一`tools.py`入口的已注册内部worker；高层参数解析/统一投影由A拥有，本批不改公共路由。实际命令、冻结版本、输入及配置身份、功能和真实质量结果只记g阶段344。
+质量比较只在新外部工作目录创建两份快照，先检查空间、源文件/完成标记身份、修改时间与ctime，校验两份摘要后再按相同日期读取；源样本及活动模型保持只读。Torch设置在比较退出时恢复，快照仅按确切文件名清理，源缓存和报告保留。执行仍经过唯一`tools.py`入口的已注册内部worker，高层参数解析及统一投影由A拥有。实际命令、冻结版本、输入及配置身份、功能和真实质量结果只记g阶段344。

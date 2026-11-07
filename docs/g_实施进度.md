@@ -1,10 +1,12 @@
 # 工程实施进度
 
-本文件是唯一活动台账，只保存当前状态、开放事项、最近交付和证据入口。业务合同见[评分逻辑](1_评分逻辑.md)、[工程设计](2_工程设计.md)、[下载训练](4_下载训练.md)。
+> 历史只读快照：本文保留原阶段的要求、过程和验证证据；下文“本轮”“当前”“唯一活动台账”均指记录当时。现行入口为[g_施工进度.md](g_施工进度.md)，执行状态只查[g_施工进度.md](g_施工进度.md)。旧编号链接固定到改名前提交 `e69d3e02`，不重新解释为当前合同。
+
+本文件是唯一活动台账，只保存当前状态、开放事项、最近交付和证据入口。业务合同见[评分逻辑](https://github.com/373699756/trader/blob/e69d3e0299d8e7120dbf930e7ae341d02954e088/docs/1_评分逻辑.md)、[工程设计](https://github.com/373699756/trader/blob/e69d3e0299d8e7120dbf930e7ae341d02954e088/docs/2_工程设计.md)、[下载训练](https://github.com/373699756/trader/blob/e69d3e0299d8e7120dbf930e7ae341d02954e088/docs/4_下载训练.md)。
 completed仅表示该批范围完成，不等于真实全链、收益或发布验收通过。历史数值只描述对应基线，不能自动沿用为当前结论。
 接续实施必须沿total_plan的系统关键路径推进；阶段只是交付边界，不得因某个局部阶段completed而宣称整体问题已结束，也不得改选无关的最小任务回避主线闭环。
 
-本轮目标以[total_plan.md](total_plan.md)为准；用户后续要求Long保持现有独立频率，不参与四档双策略发布屏障。DeepSeek流程/缓存/请求合并/配置迁出及增量研究暂缓。本台账旧记录中的10秒短线刷新、分段deadline、旧兼容和历史测试仅说明当时行为，不作为新框架完成证据；本批文档整理按用户要求不提交、不推送。
+本轮目标以[total_plan.md](https://github.com/373699756/trader/blob/e69d3e0299d8e7120dbf930e7ae341d02954e088/docs/total_plan.md)为准；用户后续要求Long保持现有独立频率，不参与四档双策略发布屏障。DeepSeek流程/缓存/请求合并/配置迁出及增量研究暂缓。本台账旧记录中的10秒短线刷新、分段deadline、旧兼容和历史测试仅说明当时行为，不作为新框架完成证据；本批文档整理按用户要求不提交、不推送。
 
 ## 当前状态
 
@@ -507,14 +509,14 @@ total_plan步骤号不是工程阶段号，九项历史专项也不是九个新�
 - 原检查点：起始基线abc881db，2026-10-28续作基线73c1d962，Afuture；当时用户要求保存进度后停止，未标completed。以下旧证据保留原时点，当前数据状态以上方复核为准。
 - 范围：公司持久化/只读诊断、历史预加载及必要消费者与回归；公司事实仍归download，历史派生投影归recommendation，不改评分、冻结或发布权限。
 - 原检查点数据：2026-10-28公司目录约850 MiB，含退役evidence.sqlite3约219 MiB、旧混合company_facts.sqlite3约631 MiB及eligibility.sqlite3，当时尚未重建；本轮只读审计已确认新正式库4401股。历史仍为年度SQLite结构，本轮没有重下行情。
-- 实际改动：正式库改为12张关系表，主表24列，固定整数枚举、数值、整数日期/时刻和二进制摘要；新增company_facts_schema/protocol、company_fact_rows和company_facts_index，删除旧JSON发布codec。采集、正文要求、分页、重试和发布回执移至raw/company_collection.sqlite3；PDF有界驻留内存，压缩正文暂存raw/text。默认50篇一批，正文上限256 MiB、磁盘余量64 MiB，按容量缩批；正式提交与所有相关股票回执完成后删除正文，保留已确认事实、待核实项及证据定位，清理无关已完成目录项和分页成员。完整字段与枚举见[合并方案公司存储协议](4_下载训练.md#company-protocol)及[正式库字段](4_下载训练.md#company-schema)；工程设计已同步，当时《下载训练》按用户要求暂不修改；现行字典及协议已在后续批次归入该文档。
+- 实际改动：正式库改为12张关系表，主表24列，固定整数枚举、数值、整数日期/时刻和二进制摘要；新增company_facts_schema/protocol、company_fact_rows和company_facts_index，删除旧JSON发布codec。采集、正文要求、分页、重试和发布回执移至raw/company_collection.sqlite3；PDF有界驻留内存，压缩正文暂存raw/text。默认50篇一批，正文上限256 MiB、磁盘余量64 MiB，按容量缩批；正式提交与所有相关股票回执完成后删除正文，保留已确认事实、待核实项及证据定位，清理无关已完成目录项和分页成员。完整字段与枚举见[合并方案公司存储协议](https://github.com/373699756/trader/blob/e69d3e0299d8e7120dbf930e7ae341d02954e088/docs/4_下载训练.md#company-protocol)及[正式库字段](https://github.com/373699756/trader/blob/e69d3e0299d8e7120dbf930e7ae341d02954e088/docs/4_下载训练.md#company-schema)；工程设计已同步，当时《下载训练》按用户要求暂不修改；现行字典及协议已在后续批次归入该文档。
 - 所有权切换：download拥有raw采集、正式事实及非ST排除发布；删除独立eligibility活动读写owner与导入路径，ST继续使用既有market/reference，运行中新观测ST仅留内存，非ST排除进入company_exclusion。已改bootstrap、同步用例、研究/证据详情、静态资格、CLI、状态和诊断消费者；源码合同已切换，活动数据尚未切换，因此当前旧库不能直接用于新reader，实跑出现company_exclusions_unavailable属于已知未完成状态。
 - 历史改动：合并同一年度文件/发布序列的月份读取，保持逐月证明；优化逻辑证明查询，缓存带数据库/WAL文件身份的已固定catalog快照。未改评分或放宽300秒deadline。只读剖析在290秒停于1296股，热点包括PublishedCellFromRevisionColumns、PriceCellFromColumns/_side及历史补长读取；该剖析带性能采样开销，不能代替正常启动耗时。
 - 真实启动：2026-10-28约17:30在沙箱外直接执行./run.sh v1,v2,v3，新进程先完成Web监听；三个档位均在3914/4401股处以history_preload_deadline结束预加载，后续close_quotes同样失败，Tomorrow/D25未就绪。已停止本批启动的服务并确认退出130。新raw路径另报storage介质unknown，现有storage.overrides仍指向旧eligibility文件，尚未修改用户配置；机器同时有其它训练进程，未停止或接管。
 - 验证：本批21个受影响测试文件集中运行`.venv/bin/python3 -m pytest -o addopts='' --strict-markers -q <本批测试文件>`，310 passed（98.97秒），4条Python3.14 forkpty多线程弃用警告。覆盖分批删除、失败保留、共享公告、多次恢复、乱序结案关联、证据定位、枚举拒绝、历史版本隔离和取消退出；9个核心产品模块mypy通过，61个受影响Python文件严格Ruff/格式及git diff --check通过。统一download-performance的三轮4402股合成测量超过360秒，未得到正式库体积或预加载耗时结果，不能声称瘦身实测完成；未运行全仓或发布门禁。
 - 数据切换授权：用户明确要求旧company数据全部删除后重下；只在实现及仓库外隔离验证通过、停止相关句柄后清理明确管理的company文件。market/reference、行情、模型和旧冻结记录保留。
 - 原公司验收未完成项：各字段完整覆盖、真实提取准确性、raw全程峰值和全量重跑幂等仍未取得完整实测，不因正式库已4401股而视为通过；保留在281，不再重复执行旧库清空计划。当前其它终端正在同步公司资料，本轮不接管其运行或298的OCR任务。
-- 续作与证据入口：公司完整字段见[正式库](4_下载训练.md#company-schema)及[采集库](4_下载训练.md#company-raw)。统一只读入口仍为`--profile history-sqlite --history-preload-audit`与`--profile company-resume --company-storage-audit`；formal/retained_bodies白名单已补齐，不再待办。本轮仓库外证据为trader-startup-baseline.json、trader-startup-optimized-1.json、trader-startup-fast-{1,2,3,cpu}.json、trader-startup-company-audit.json及trader-startup-live-*.json，不提交数据；失效后按同一诊断入口重跑。剩余原公司验收见上，真实在线报价/刷新阻断另行定位，不重做已完成的启动修复。
+- 续作与证据入口：公司完整字段见[正式库](https://github.com/373699756/trader/blob/e69d3e0299d8e7120dbf930e7ae341d02954e088/docs/4_下载训练.md#company-schema)及[采集库](https://github.com/373699756/trader/blob/e69d3e0299d8e7120dbf930e7ae341d02954e088/docs/4_下载训练.md#company-raw)。统一只读入口仍为`--profile history-sqlite --history-preload-audit`与`--profile company-resume --company-storage-audit`；formal/retained_bodies白名单已补齐，不再待办。本轮仓库外证据为trader-startup-baseline.json、trader-startup-optimized-1.json、trader-startup-fast-{1,2,3,cpu}.json、trader-startup-company-audit.json及trader-startup-live-*.json，不提交数据；失效后按同一诊断入口重跑。剩余原公司验收见上，真实在线报价/刷新阻断另行定位，不重做已完成的启动修复。
 - 本次接续（基线31f580f8）：启动四档当前源码新进程，实际介质与应用策略均为HDD；历史预读4401股在300秒后只告警并继续，约333秒完成绑定。收盘后Tomorrow/D25均完成本地恢复并各选6股，没有paired_input_epoch_mismatch；该证据是after_close/close_fallback，不代替盘中候选报价链。进程RSS约2122400 KiB，比2 GiB门高约25 MiB；Ctrl+C在9.1秒内退出且进程消失，本次未复现旧30秒停止失败。不将本轮HDD启动时间与SSD比较，SSD仍未验证。
 - 本次内存修复：确认四档历史为最大窗口一次扫描，不是四次读库；业务窗口只保留251日（V1/V2）和61日（V3/V5）两档，V2/V3/V5以`features.json`为运行时唯一配置源，V1仍由自身learned-rank合同给出251日；性能入口、历史切片和V5序列均从已加载设置/合同传入，不再维护第二份档位映射。底层通用边界行不再写为V5的62日业务合同。V5训练内部明确使用61个历史点加信号行，保留60步序列与全部样本；当前V1/V2/V3/V5双头模型均实际加载成功，未改动模型工件。四档共享模型特征及成本参考从保留3代收敛为当前1代；DailyBar、MarketQuote、FeatureSnapshot、ModelInput/预测及评分内部行改为slots不可变对象，不改评分、排序、模型参数或股票数。
 - 本次内存证据：同一四档、4401股、当前模型的分阶段诊断中，四档fixture准备RSS由约586降至563 MiB，四档运行状态由约801降至748 MiB，各档完成一次双策略评分后由约1.47降至1.36 GiB，首轮常驻减少约102 MiB。同一100-tick命令作限时采样，候选在193秒RSS为2045960 KiB，低于2 GiB约50 MiB；修复前仅缓存收缩候选在200秒为2112600 KiB，已越门。该长命令按计划在对照时点主动停止，不记为100 tick完整通过；首次完整基线也因过长在已确认越门后停止，没有伪造报告。V5 61日、历史共享、评分压缩及性能入口定向201 passed；受影响范围的更广回归及静态检查见本批最终验证记录。

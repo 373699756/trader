@@ -4,7 +4,7 @@
 
 三个模块都先读取全部股票的代码、名称和ST状态，排除ST后，再为通过者安排日线、行业、财务、公告和文件提取等任务。首次、增量、续传、`--fill`和`all`都按这个顺序执行，不能先下载完其他资料再排除ST。
 
-本篇把现有机制、目标和待测方案分开。当前 history/market 功能先保留；company 重点按字段需求重算工作量，不先决定改库或缩短到某个天数。本批未访问活动数据库、下载供应商资料或重建数据。
+本篇把现有机制、目标和待测方案分开。history/market保留当前合同；company按字段需求核工作量，性能候选先测后采用。字段、配置和表结构按所属源码核对，文档核对不等于活动资料审计或真实字段验收；作业、授权和结果只在g记录。
 
 阶段336的window_population、退出资格保留资料及本地提取资格校验已完成隔离功能和类型验证，旧库声明恢复已在夹具验证；活动库未迁移。下文对应行为的验证范围和证据以g原336记录为准，隔离通过不表示真实全量或性能验收通过。
 
@@ -259,7 +259,7 @@ company先ST过滤，再查合格股票的财务、质押、解禁、公告目�
 
 先把“原文明确披露但未取得”“当前解析器不支持”“来源确未披露”“该事件不适用”分清。解析器未命中不能直接写成来源未披露；暂不支持的字段必须显示为实现缺口，并阻止以该字段为目的继续扩大自动下载，已有事实和其它独立任务继续保留。
 
-### 5.2 把 company.md 的核心归到这里
+### 5.2 公司字段交付原则
 
 保留以下核心：财务、质押、解禁、风险和利好分开建事实；公告主体和案件关联需证据；目录覆盖、正文完成、字段完整、正式发布分别统计；未知不能当无风险；持续风险不能随回看窗口滚动消失；失败原件和OCR成功页保留；`--fill`补失败或缺项，不能用处理完成时间覆盖更新事实。
 
@@ -294,7 +294,7 @@ company先ST过滤，再查合格股票的财务、质押、解禁、公告目�
 
 财务当前实现按15分钟TTL决定是否刷新；到期后分页核对本轮允许的365日`NOTICE_DATE`窗口，每页500条、最多256页。保留原披露日期，允许同报告期、同披露日期但八值发生变化的记录更新；不再只回看最近7日披露，以免漏掉较早披露的更正。中断游标起点比当前窗口窄时，从完整窗口第一页重新取得，已接收财务行保留；完整窗口的已接受分页及旧截止日续传沿原流程。来源失败或最新报告不完整时保留合法旧快照及明确状态，不跨报告期拼表。采集库没有逐行修订身份或接收时点，年窗刷新不证明所有修订单调，也不覆盖原披露早于一年者；实际新增请求、解析和发布成本另行计量，不能当作性能收益。
 
-### 5.4 company_facts 当前24列底稿
+### 5.4 company_facts 24列业务说明
 
 数据库：`data/company/company_facts.sqlite3`。表：`company_facts`。下表逐项解释该表的24个物理列；下载、正文和OCR的任务进度位于另一份采集库，不混在这24列里。采集参数来自 `config/download.json`，字段如何用于过滤、评分和风险由 `config/filter.json`、`config/scoring.json`、`config/risk.json` 的消费者决定。
 
@@ -325,7 +325,7 @@ company先ST过滤，再查合格股票的财务、质押、解禁、公告目�
 | `checked_at` | 资料实际检查时点 | 采集 | 来源年龄，不被重新读取刷新 |
 | `published_at` | 本地事实快照发布时间 | 正式发布 | 版本追踪，不替代原披露时间 |
 
-后续要补每列真实SQL类型、空值、原始接口字段、解析器、写入者、读取者和索引。金额单位必须沿adapter核实，不仅凭字段名推断；这项列为P36，不能把底稿当成完整schema验收。
+SQL类型、可空性、键／索引、codec、写入者和读取者统一见[第8.6节](#86-company正式事实字段结论与凭据)，本表只维护列的业务意义和使用规则。当前财务解析器为 `company_structured_source.py::_financial`：报告期／原披露分别取REPORT_DATE／NOTICE_DATE，八个值依次取EPSJB、BPS、TOTALOPERATEREVETZ、PARENTNETPROFITTZ、KCFJCXSYJLRTZ、ROEJQ、PARENTNETPROFIT、KCFJCXSYJLR；金额原值经有限数值校验直接进入采集对象，没有据字段名增加倍率换算。质押取TRADE_DATE／PLEDGE_RATIO，解禁取FREE_DATE／TOTAL_RATIO；正式写入与时间／状态转换由company_fact_rows完成。供应商原金额单位、修订和逐值正确性仍须真实证据核验，不能用字典补齐代替P36验收。
 
 下面的关联表也全部位于 `data/company/company_facts.sqlite3`，通过证券、事件和证据身份关联；不属于 `company_collection.sqlite3` 的下载任务表。
 
@@ -633,28 +633,324 @@ history已有介质批次：首建HDD为8股或16384日期单元、SSD为16股�
 
 company优先测：无用途正文比例、重复解析/重试、OCR页成本、发布频率、事实编译及文件指纹。阶段328已撤掉`_write_identity`的整库逐行摘要，不能再把旧实现当现状；完整任务收益仍须同输入实测，旧12篇子集提速不能外推全量。本批只验证用户确认的当前HDD PC，SSD原失败和待验封存，分别保留环境、命令、数据身份及结果；不跨介质外推，虚拟盘ROTA或切换配置不能替代另一台机器的实测。
 
-## 8. 数据库和字段字典如何补齐
+## 8. 当前数据库与字段字典
 
-按 b 第5章格式逐表逐列核对，下列是明确范围，不按年份抄重复字典。
+### 8.1 核对范围、编码与读写所有权
 
-数据库范围：history为 `data/market/history/catalog.sqlite3` 和 `prices_<year>.sqlite3`；market为 `data/market/daily_window.sqlite3`；reference为 `data/market/reference/company_st.sqlite3`、`industry.sqlite3`；company正式与采集分别为 `data/company/company_facts.sqlite3`、`data/company/raw/company_collection.sqlite3`。下表按这些文件分组，避免只写业务简称而找不到库。
+以下以提交 `2f0a8710` 的 DDL、codec 和读写调用为依据，静态核对当前定义；没有打开活动数据库，也不沿用旧稿的 schema 编号或表列总数。路径以 `data_dir=data` 为例，年度分区只列一套结构。训练在同一 catalog 中维护的到期／提醒关系由 [e 第3.7节](e_训练设计.md#37-训练到期和提醒表)定义，推荐冻结和研究关系由 c 第16.7节定义，本章不复制其它业务的表。
 
-| 范围 | 必须逐项覆盖 |
+表内按字段类型分组，组内每个名字都是实际列；没有省略为“其它字段”。`?` 表示可空，其余为显式 NOT NULL 或主键隐含非空；普通 rowid 表的 INTEGER PRIMARY KEY 是自动分配的 rowid，不能把 PRAGMA 的 notnull 显示值当成可持久化 NULL。`WR` 表示 WITHOUT ROWID，PK／UQ 分别为主键／唯一约束，均有 SQLite 的相应键索引；“无另建索引”不表示没有这些键索引。除明确列出的 DEFAULT 外没有列默认值。CHECK／FK 的完整表达式以所链接 DDL 为准，下表保留影响解释的范围、关系与编码。
+
+| 记号／列族 | 实际类型、单位与空值含义 |
 | --- | --- |
-| history catalog | 发布、总体、交易日历、断点、问题/尝试、来源及可重放候选 |
-| history年度价格 | raw/qfq价格、量额、状态、revision及发布序号可见性 |
-| market | 配对窗口、日历、价格、发布成员`window_population`、发布、问题、失败诊断和完成断点 |
-| reference | 证券、ST证据、行业及来源/生效/版本 |
-| company正式 | 24列company_facts及全部关联表 |
-| company采集 | 目录查询、分区、结构化进度、文件/页/分析、失败与发布凭证 |
+| D、T、H | 分别是 INTEGER 的 epoch 日、INTEGER 的 UTC 微秒、BLOB 的摘要字节；日期／时间由 `infra/sqlite_codec.py` 或 `company_facts_protocol.py` 编解码，时间对象恢复为 Asia/Shanghai。H 通常为32字节，DDL只在明确声明时检查长度，其余由 codec／领域边界核对，不补列或补默认值 |
+| TEXT 日期／时间 | reference 行业和 company 采集表使用 ISO 日期／带时区时间文本；它们不是正式事实库的 D／T 整数。`record_hash` 在采集／凭据键中为 TEXT，不能据名字改成 BLOB |
+| code、比例、金额 | code 是六位证券代码；除另注外比例为百分点，具有CNY合同的金额为元，eps／bps按元／股消费。财务利润原值的来源单位不因本章记法被重新核验，见5.4。缺值表示未知或尚未取得，不是0；状态列另说明完整性。价格量额和标志见8.4，供应商原字段与业务用途见第2–5章 |
+| TEXT payload／members_json／causes／diagnostic | 持久化或诊断边界的规范载荷；不是内部对象另建一套 JSON 状态。摘要、证券／日期／来源身份及解码失败按各 owner 的现行合同拒绝，不能因 SQL 有行就视为业务核验通过 |
 
-字段说明同时回答数据库原列、适配器字段、荐股层和训练用途。无消费者的列先查实际使用再列删除候选；不把旧字段别名保留成兼容层。未核对完的表不得标记“完整字典已交付”。
+| 数据库 | 唯一写入 owner、主要读消费者与事务／发布边界 |
+| --- | --- |
+| `market/reference/company_st.sqlite3` | `SQLiteReferenceIndex` 写证券、ST、日历和参考发布；`PrepareReference`、`HistoryControlIndex`、`PublishedReferences` 读固定 publication。一次参考事务切 current，保留原供应商检查日；见第2.3节 |
+| `market/reference/industry.sqlite3` | `SQLiteIndustryQueryIndex` 写当前查询、官方证据和原件；`CurrentIndustryPublication`准备当前分类，`InspectHistoricalIndustryQueries`核查历史候选，参考发布／当前缓存读取。官方证据装载与历史行业绑定分别核验，缓存不自动变成训练就绪区间；见第2.5节 |
+| `market/history/catalog.sqlite3` | `HistoryControlIndex` 安装下载所需完整 schema，控制记录、下载任务、价格修复及推定停牌各 adapter 在调用方事务中写；`ReadPublishedHistoryUseCase`／快照 reader、训练和荐股预载读固定序号。下载断点与正式 published_snapshot 不是同一个完成标志 |
+| `market/history/prices_<year>.sqlite3` | `HistoryPricePartition`／`HistoryDirectPrices` 写价格修订和观察关系；同一历史端口供训练／荐股及显式审计读取。年库提交后才封存，catalog 固定可见序号；年／月逻辑分区不能当成多个物理库 |
+| `market/daily_window.sqlite3` | `SQLiteQfqWindowCache` 单 writer 写共享 raw/qfq 价格及两个档位视图，修复 adapter 复用其事务；训练／荐股历史端口的短窗实现及下载诊断读取。配对窗口、日历、成员和发布绑定同事务提交，再生成文件凭据 |
+| `company/company_facts.sqlite3` | `SQLiteCompanyFactsIndex`／`WriteCompanyFactRows`／字段发布器写正式事实及输入凭据；`SQLiteCompanyEvidenceReader`、排除 reader、正式编译和荐股公司预载读取。事实、字段结论、证据及匹配回执同事务发布；文件封存与跨库恢复见第5.13–5.14、6.1节 |
+| `company/raw/company_collection.sqlite3` | `SQLiteCompanyEvidenceIndex` 及其注入连接上的目录、文件、字段恢复 adapter 写；company 调度、编译及有界诊断读。采集提交不等于正式事实发布，正式库先提交后采集确认的恢复只凭精确回执，不把两个数据库称为全局事务 |
 
-## 9. 下载配置字段说明计划
+### 8.2 证券／ST／日历和行业参考
 
-配置来源：`config/download.json`。每个叶子字段按 b 第7章格式逐个列出，至少包括：目标日期/窗口、来源与重试/限速、worker、队列、读写批次、目录分页、PDF总时限与I/O时限、文本/OCR页预算及进程限制、文件容量、冷却、失败保留/查询、检查和发布。公共介质选择来自 `config/runtime.json`，通用SQLite参数来自 `config/sqlite.json`，说明见b，不在本篇再定义默认值。
+证券参考定义见 [reference_schema.py](../src/trader/download/infra/reference_schema.py)，读写与 codec 见 [reference_index.py](../src/trader/download/infra/reference_index.py)。以下均无另建二级索引；UQ列出额外唯一键。
 
-参数调整必须有真实消费者和实测依据；凭据只写引用。字段覆盖清单及未使用/重复配置一并交付，不能只说明顶层模块名。
+| 表 | 全部列及类型 | 主键／关系、用途与读写 |
+| --- | --- | --- |
+| schema_contract（WR） | schema_id TEXT | PK(schema_id)；参考库合同标识，由初始化写、每次打开验证 |
+| security（WR） | security_id H；code/name/board/source_version TEXT；listed_date D；delisted_date D?；content_hash H | PK(security_id)，UQ(content_hash)、UQ(code,security_id)；board=main/chinext/star，退市日为空或晚于上市日。证券版本供 reference_member、资格及历史总体消费 |
+| security_st_evidence（WR） | st_id/content_hash H；code/st_status TEXT；checked_date D | PK(st_id)，UQ(content_hash)、UQ(code,st_id)；st_status=ever_st/clear/unknown。保存原检查日，发布端口与当前ST读取共同使用 |
+| security_st_current（WR） | code TEXT；st_id H | PK(code)，(code,st_id) FK→security_st_evidence；当前原ST证据指针，不用新读取时间刷新证据 |
+| calendar_version（WR） | calendar_id/content_hash H；first_trade_date/last_trade_date D；session_count INTEGER | PK(calendar_id)，UQ(content_hash)；1–20000日且首日≤末日。参考发布和历史 calendar_binding 绑定 |
+| trading_calendar（WR） | calendar_id H；trade_date D | PK(calendar_id,trade_date)，FK→calendar_version；按版本读取完整市场日历 |
+| reference_publication（WR） | publication_id TEXT；content_hash/calendar_id H；checked_at T；industry_version TEXT?；security_count INTEGER | PK(publication_id)，UQ(content_hash)，calendar_id FK→calendar_version；证券数1–12000。行业不可用时版本为空，不伪造行业齐备 |
+| reference_member（WR） | publication_id/code TEXT；security_id/st_id H | PK(publication_id,code)；publication FK→reference_publication，(code,security_id)／(code,st_id)分别FK→security／security_st_evidence；保留发布成员的精确身份 |
+| reference_current | singleton INTEGER；publication_id TEXT | PK(singleton=1)，publication FK→reference_publication；一次事务更换当前发布 |
+
+行业定义见 [industry_query_index.py](../src/trader/download/infra/industry_query_index.py) 的 `_SCHEMA`，载荷由 [industry_evidence_codec.py](../src/trader/download/infra/industry_evidence_codec.py)解码；表均 WR。原件完整字节单份上限2 MiB，由原件对象核验，不表示每次连接都重新下载。
+
+| 表 | 全部列及类型 | 主键／索引与消费 |
+| --- | --- | --- |
+| current_industry_query | as_of_date/source/checked_date/members_json TEXT；content_hash H | PK(as_of_date)，无另建索引；ISO观察日、原核对日、规范成员和摘要，供当前行业发布／复用 |
+| official_industry_evidence | evidence_id/code/disclosed_at/effective_from/effective_to/received_at/payload TEXT | PK(evidence_id)；索引 official_industry_interval(code,effective_from,effective_to)。披露、有效区间和真实收到时间不可互换；公开证据装载／历史行业准备读取 |
+| industry_source_document | request_key/requested_start/requested_end/received_at TEXT；payload BLOB；content_hash/receipt_hash H | PK(request_key,received_at,content_hash)，无另建索引；完整供应商原件及请求／收到凭据，官方来源核验和历史准备读取；不能把缓存命中当历史时点已准入 |
+
+### 8.3 完整历史 catalog
+
+主定义及codec见 [history_control_rows.py](../src/trader/download/infra/history_control_rows.py)、[history_download_index.py](../src/trader/download/infra/history_download_index.py)、[history_inferred_review.py](../src/trader/download/infra/history_inferred_review.py)。表中未另注索引的只有主键／唯一键索引。正式源、日历、总体和快照身份不可通过下载任务的重试状态改写。
+
+| 表 | 全部列及类型 | 主键／关系与用途 |
+| --- | --- | --- |
+| schema_contract | singleton INTEGER；schema_id TEXT；reference_file TEXT? | PK(singleton=1)；当前结构标识和参考库相对位置，初始化／打开校验 |
+| reference_binding（WR） | reference_hash H；publication_id TEXT | PK(reference_hash)；`HistoryReferenceIndex`绑定外部参考发布，控制记录reader核对；不是另存参考全量JSON |
+| history_industry（WR） | reference_hash H；code/industry/classification TEXT；start_date D；end_date D? | PK(reference_hash,code,start_date)，reference FK→reference_binding；结束为空或大于开始，历史训练行／荐股历史投影按日期选行业 |
+| source_version（WR） | id H；source/dataset/supplier_contract TEXT；observed_at T | PK(id)；`WriteControlRecord`只追加一致来源，快照reader恢复源身份 |
+| calendar_binding（WR） | id/source_hash H；start_date/end_date D；session_count INTEGER；publication_id TEXT | PK(id)，source FK→source_version；session_count>0，按发布参考重建并核日历内容 |
+| universe_version（WR） | id/source_hash H；security_count INTEGER；publication_id TEXT | PK(id)，source FK→source_version；security_count>0，按发布成员核合格总体 |
+| sync_checkpoint（WR） | id/sync_id/state TEXT；content_hash H；ordinal/completed_units/total_units INTEGER；observed_at T；failure_code TEXT? | PK(id)，UQ(sync_id,ordinal)；ordinal>0，0≤completed≤total；state=pending/running/completed/failed/cancelled，记录同步控制状态 |
+| history_snapshot | id INTEGER；content_hash/calendar_hash/universe_hash/source_hash H；data_cutoff_date/label_cutoff_date D | PK(id>0)，UQ(content_hash)，三个hash分别FK→calendar_binding／universe_version／source_version；标签截止≤数据截止，固定正式历史身份 |
+| snapshot_partition（WR） | snapshot_id/calendar_year/calendar_month/row_count/sync_sequence INTEGER；relative_path TEXT；logical_hash H | PK(snapshot_id,calendar_year,calendar_month)，snapshot FK→history_snapshot；月1–12、行数≥0、序号>0。月逻辑摘要和年库相对路径供固定版本读取／审计 |
+| published_snapshot | singleton/sync_sequence INTEGER；snapshot_hash H | PK(singleton=1)，序号FK→history_snapshot(id)，hash FK→history_snapshot(content_hash)；正式当前指针 |
+| download_batch | singleton/sync_sequence INTEGER；source_hash/calendar_hash/universe_hash H；cutoff_date D | PK(singleton=1)；当前恢复批次，与正式发布序号分别核验 |
+| download_tasks（WR） | code TEXT；tencent_done INTEGER DEFAULT 0；attempts INTEGER DEFAULT 0；failure TEXT? | PK(code)；done∈{0,1}、attempts∈0–3；逐股任务与有界尝试，HistoryDownloadIndex调度／完成读取 |
+| download_task_dates（WR） | code TEXT；trade_date D | PK(code,trade_date)，code FK→download_tasks且级联删除；本批待下载日期 |
+| download_gaps（WR） | code TEXT；trade_date D | PK(code,trade_date)；缺口库存，恢复及缺口报告读取 |
+| download_qfq_unusable（WR） | code TEXT；trade_date/cutoff_date D | PK(code,trade_date)；qfq不可用及当时核对截止，避免每次重试全部同缺口 |
+| price_source（WR） | code/source TEXT；sync_sequence INTEGER | PK(code,sync_sequence)；按发布序号记录价格来源，历史补缺／审计读取 |
+| price_replacement（WR） | code/board/source/payload TEXT；trade_date D；sync_sequence INTEGER | PK(code,trade_date)；`HistoryPriceRepair`记录待回放规范价格单元，核证券／日期／序号后才重放 |
+| download_inferred_suspension（WR） | code TEXT；trade_date/checked_cutoff D；observation_sequence INTEGER | PK(code,trade_date)；索引 download_inferred_review_due_idx(checked_cutoff,code,trade_date)，有预算的推定停牌复查读取／回写 |
+| download_inferred_cursor | singleton INTEGER；after_code TEXT | PK(singleton=1)；有界复查发现游标，不替代逐日已确认状态 |
+
+catalog 还包含第8.5节共同定义的 price_tencent_check、price_repair_attempt；它们由本库writer的原事务持有，没有独立修复数据库。catalog中训练owner的表沿e第3.7节创建、读写，不纳入下载结构所有权。
+
+### 8.4 年度价格表及共享价格列
+
+定义见 [history_prices.py](../src/trader/download/infra/history_prices.py)、[price_columns.py](../src/trader/download/infra/price_columns.py)。同一套结构用于每个 `prices_<year>.sqlite3`，不按年份重复字段表。
+
+| 表 | 全部列及类型 | 主键／关系与消费 |
+| --- | --- | --- |
+| schema_contract | singleton/calendar_year INTEGER；schema_id TEXT | PK(singleton=1)；年库合同标识和实际日历年，年库打开时核对 |
+| daily_price_revision（WR） | trade_date D；code/revision_id/board TEXT；first_seen_sequence INTEGER；下表全部价格列；content_hash H | PK(trade_date,code,revision_id)，first_seen_sequence>0；下载写规范修订，history端口按固定发布读取raw/qfq，训练窄SQL读取raw_volume／qfq_amount，单位追链见第3章及e第3.1节 |
+| daily_price_observation（WR） | trade_date D；code/revision_id TEXT；sync_sequence INTEGER | PK(trade_date,code,sync_sequence)，序号>0；(trade_date,code,revision_id) FK→daily_price_revision；记录每次发布看到哪个修订，不把迟到修订回填到旧序号 |
+
+年库另建五个索引：history_price_code_date_idx(code,trade_date,first_seen_sequence DESC,revision_id)、history_price_date_board_code_idx(trade_date,board,code,first_seen_sequence DESC,revision_id)、history_price_observation_code_date_idx(code,trade_date,sync_sequence DESC,revision_id)、history_price_sequence_idx(sync_sequence)，以及仅覆盖 status 为 unknown_missing／qfq_missing／unadjusted_missing 的 history_price_price_gap_idx(code,trade_date,revision_id)。前四者供按证券／日期／发布序号扫描，部分索引供缺口检查；没有用年度重复建字典。
+
+下表逐项展开 PRICE_COLUMNS。raw与qfq是两个原始来源分支，不能用价格比替量额复权。年库的 REAL 列额外 CHECK(typeof为real或null)，market共享窗口沿同一列序但无该SQL typeof CHECK；写入／解码仍核规范单元和有限数值。SQL可空性不代表领域允许任意残缺组合。
+
+| 列 | SQL类型／单位与空值 | codec及消费者 |
+| --- | --- | --- |
+| status | TEXT?，单元状态 | PublishedHistoryCell／PriceCellFromColumns核实际状态；缺失、停牌与配对分别解释 |
+| raw_present、qfq_present | INTEGER?，0／1 | 对应分支不存在时为0，其余该分支十列为空；存在分支为1，由价格codec核对 |
+| raw_open、raw_high、raw_low、raw_close；qfq_open、qfq_high、qfq_low、qfq_close | REAL?，元／股 | OHLC；缺失不补0，特征、训练、标签和历史展示分别消费 |
+| raw_volume、qfq_volume | REAL?，股 | 来源分支成交量；训练只选raw_volume，不能用qfq_volume替代 |
+| raw_amount、qfq_amount | REAL?，元 | 来源分支成交额；训练选qfq_amount，不据列名假设两分支相等 |
+| raw_preclose、qfq_preclose | REAL?，元／股 | 来源前收；qfq来源未给时仍为空，不自行反推 |
+| raw_change_pct、qfq_change_pct；raw_turnover_pct、qfq_turnover_pct | REAL?，百分点 | 来源涨跌幅／换手率，未披露保持缺失 |
+| raw_trading_status、qfq_trading_status | TEXT? | trading／suspended；来源分支不存在时为空 |
+| number_flags | INTEGER，非空，0≤值<2^36 | PriceColumnValues／DecodePriceValues保留18个数值位置的原整数类型及负零，不是评分或schema版本；整数／负零标志互斥 |
+
+### 8.5 market窗口及共用修复／失败表
+
+定义见 [qfq_sqlite.py](../src/trader/download/infra/qfq_sqlite.py)，持久化价格列完全复用8.4；下列窗口表无额外二级索引。profile只指当前窗口档位v2／v3，不是格式版本。
+
+| 表 | 全部列及类型 | 主键／用途 |
+| --- | --- | --- |
+| daily_price（WR） | code TEXT；trade_date D；8.4全部价格列 | PK(code,trade_date)；同一物理价格行供两档窗口选择，不复制两个价格库 |
+| window_binding（WR） | profile/code/source TEXT；content_hash H；start_date/end_date D | PK(profile,code)；每档每股已提交窗口身份，原窗口摘要读取／复用 |
+| window_calendar（WR） | profile TEXT；trade_date D | PK(profile,trade_date)；档位目标交易日历，规划及manifest读取 |
+| window_completion（WR） | code/source TEXT；cutoff_date D | PK(code)；已经到达的来源／截止，不把请求结束当配对完整 |
+| window_publication（WR） | profile/publication_id TEXT | PK(profile)；档位正式发布指针 |
+| window_population（WR） | profile/code TEXT | PK(profile,code)；当前发布成员，库存仍包含退出成员的保留资料，见6.1 |
+| price_issue（WR） | code/reason TEXT；trade_date D | PK(code,trade_date)；待修原因，更新／检查及诊断读取 |
+| price_candidate（WR） | code/payload TEXT；trade_date D | PK(code,trade_date)；配对修复候选，规范载荷核验后由原writer采用 |
+| price_nontrading（WR） | code/kind TEXT；trade_date D；checked_on D?；source TEXT? | PK(code,trade_date)；ObservedNonTradingFacts／ReadNonTradingFacts区分停牌事实、证据来源和核对日期 |
+
+下列修复表在catalog和market各自创建，失败表在market及company采集库各自创建，语义只在这里定义一次。均复用所在库事务；没有另外的跨业务writer。SQL见 [price_repair_attempts.py](../src/trader/download/infra/price_repair_attempts.py)、[download_failure_diagnostics.py](../src/trader/download/infra/download_failure_diagnostics.py)。
+
+| 表 | 全部列及类型 | 主键／约束、读写及保留 |
+| --- | --- | --- |
+| price_tencent_check（WR） | code TEXT；trade_date D | PK(code)；最近腾讯来源核对日，TencentRecheckDue／RecordTencentCheck按市场日历处理20日复查，不刷新为任意读取日 |
+| price_repair_attempt（WR） | code/batch_id/state/reason TEXT；trade_date D；resolved_source TEXT? | PK(code,trade_date)；state=requested/failed/resolved，只有resolved须有tencent／baostock来源。PriceRepairAttempts在请求前预约，在正式采用事务中解决 |
+| download_failure | id/attempt/maximum_attempts INTEGER；run_id/occurred_at/stage/code/supplier/reason/causes/diagnostic/endpoint TEXT；elapsed_seconds/timeout_seconds REAL?；window_start/window_end TEXT? | PK(id)，无另建索引；时间为ISO、时长为秒。DownloadFailureDiagnostics安全分类、WriteDownloadFailure按retention_limit保留，ReadDownloadFailures按query_limit有界读取；取消不记为供应商失败，字段非成功进度 |
+
+### 8.6 company正式事实、字段结论与凭据
+
+全部表定义见 [company_facts_schema.py](../src/trader/download/infra/company_facts_schema.py)，列序及数值／日期／枚举codec见 [company_fact_rows.py](../src/trader/download/infra/company_fact_rows.py)、[company_facts_protocol.py](../src/trader/download/infra/company_facts_protocol.py)，字段结论见 [company_field_result_rows.py](../src/trader/download/infra/company_field_result_rows.py)。正式库只有一个独立命名的二级索引 company_review_identity；其它索引来自下表PK／UQ。所有表除rowid主键自动分配外没有列DEFAULT。
+
+`WriteCompanyFactRows`写公司事实、事件、证据、解禁和待核项，`WriteCompanyFieldResults`写字段结论及定位证据；`SQLiteCompanyFactsIndex`在同一正式事务中管理 publication 和 input_receipt。`ReadCompanyFactRows`、`ReadCompanyFieldResults`、正式凭据检查及 `SQLiteCompanyEvidenceReader`按固定发布读回，荐股消费的是这些类型结果，不是采集库。
+
+| 表 | 全部列及类型 | 主键／关系、约束及具体用途 |
+| --- | --- | --- |
+| company_facts（WR） | code TEXT；report_date D?；disclosed_at T?；finance_state INTEGER；eps/bps/revenue_growth_pct/profit_growth_pct/core_profit_growth_pct/roe_pct/parent_profit/core_profit REAL?；pledge_pct REAL?；pledge_date D?；pledge_state INTEGER；unlock_checked_at T?；unlock_end_date D?；unlock_state/pending_docs INTEGER；announcement_start_date/announcement_end_date D?；announcement_state INTEGER；checked_at/published_at T | PK(code)，六位数字；各state∈0/1/2，pending_docs≥0，pledge_pct∈0–100；report_date与disclosed_at同空，pledge_pct与pledge_date同空。24列快照的原来源／业务用途见5.4，时间不因读取刷新 |
+| company_input_receipt（WR） | source/source_key/code/record_hash/outcome/policy_id TEXT；extraction_hash H；body_hash H?；published_at T | PK(source,source_key,code,record_hash,extraction_hash)；每股精确输入处理凭据，编译与跨库恢复检查；valid／field_attempted的作用见5.13–5.14，不把凭据等同全字段有值 |
+| company_risk_event | id/risk_type/subject_type/level/status INTEGER；code/event_key TEXT；case_number TEXT?；first_disclosed_at/last_disclosed_at/effective_at T；resolved_at/expires_at T? | PK(id)，UQ(code,event_key)，code FK→company_facts且级联；risk_type1–10、subject1–4、level1–4、status1–3；后披露／生效不早于首次，已解除／取消须有resolved_at。风险事件身份及严重级别关系由DDL和领域共同核验 |
+| company_reduction_plan | risk_id INTEGER；start_date/end_date D?；planned_pct REAL?；completion_disclosed_at T? | PK／FK(risk_id)→company_risk_event且级联；计划比例0–100，已知起止日有序。减持计划不是另一个独立风险事件 |
+| company_positive_event | id/event_type/subject_type/status/level INTEGER；code/event_key TEXT；first_disclosed_at/last_disclosed_at T；cancelled_at T?；ineligible_reason INTEGER?；actual_pct REAL?；repurchase_purpose INTEGER?；contract_amount/annual_revenue REAL?；revenue_report_date D?；revenue_disclosed_at T?；contract_revenue_pct REAL?；binding_confirmed/amount_basis INTEGER? | PK(id)，UQ(code,event_key)，code FK→company_facts且级联；event_type1–3、subject1–4、status1–4、level0–3、reason1–25。比例0–100、金额及合同占比≥0；回购用途只属于回购，合同的分子／分母／约束／税口径只属于合同，非合同相关列须空；取消须有原时点 |
+| company_evidence_ref | id/source INTEGER；source_key TEXT | PK(id)，UQ(source,source_key)，source1–10；保存有界来源键，不把完整公告原文写入事件表 |
+| company_positive_milestone（WR） | positive_id/level/evidence_id INTEGER；qualified_at T；measured_pct REAL | PK(positive_id,level)，positive FK→company_positive_event且级联，evidence FK→company_evidence_ref；level1–3、测量≥0；保存首次达标的值／时点及依据，不从最新值重新编历史里程碑 |
+| company_unlock（WR） | code TEXT；unlock_date D；ratio_pct REAL | PK(code,unlock_date)，code FK→company_facts且级联；比例0–100。完整空快照与来源失败的保留规则见5.13 |
+| company_review | id/scope/reason INTEGER；code TEXT；evidence_id INTEGER?；detected_at T | PK(id)，code FK→company_facts且级联，evidence FK→company_evidence_ref；scope1–5、reason1–25；唯一表达式索引 company_review_identity(code,scope,reason,COALESCE(evidence_id,-1))，无依据与有依据待核项分别唯一 |
+| company_risk_evidence（WR） | risk_id/evidence_id/position INTEGER | PK(risk_id,evidence_id)，UQ(risk_id,position)；risk FK→company_risk_event且级联，evidence FK→company_evidence_ref，position≥0；保持风险证据顺序 |
+| company_positive_evidence（WR） | positive_id/evidence_id/position INTEGER | PK(positive_id,evidence_id)，UQ(positive_id,position)；positive FK→company_positive_event且级联，evidence FK→company_evidence_ref，position≥0；保持利好证据顺序 |
+| company_exclusion | id/reason/source INTEGER；code/source_key TEXT；effective_at T；evidence_hash H | PK(id)，UQ(code,reason,source,source_key)；code六位数字、reason1/2、source1–3、摘要须为32字节；公共资格准备与正式排除reader消费，不与ST参考另建重复状态源 |
+| company_publication | singleton INTEGER；extraction_hash/content_hash H；published_at T | PK(singleton=1)；两hash须为32字节；正式发布身份和当前提取规则摘要，父版本冲突／失败不推进 |
+| company_field_result（WR） | code/event_key/field/state/reason TEXT；applicable INTEGER | PK(code,event_key,field)，code FK→company_facts且级联；applicable为0/1，state=not_applicable等价于applicable=0；reason有界。12类字段及状态业务含义只在5.14定义，由字段发布器／正式reader共用 |
+| company_field_evidence（WR） | code/event_key/field/source/source_key/record_hash/rule_id/quote/unit TEXT；position/start_line/end_line/subject_type INTEGER；body_hash H；published_at T | PK(code,event_key,field,position)，前三列FK→company_field_result且级联；position≥0，行号≥1且有序，quote为1–1000字符，unit=percent/cny/date/time/text，subject1–4，body_hash32字节。绑定当前原文行段及规则；不是仅凭hash签字段正确 |
+
+company整数协议由 `company_facts_protocol.py`唯一维护，不是自定义schema版本：数据状态0/1/2=unavailable/partial/complete；subject1–4=发行人／控股股东／实控人／主要股东；风险状态1–3=ongoing/resolved/cancelled；利好类型1–3=回购／股东增持／经营合同，状态1–4=planned/implementing/completed/cancelled；回购用途0–4=unknown/cancellation/employee_plan/incentive/other。risk_type、source、review reason/scope的完整枚举分别是同文件的 RISK_TYPES、EVIDENCE_SOURCES、REVIEW_REASONS、REVIEW_SCOPES；无法解码的编号拒绝，不补成默认状态。严重级别、事件关联、适用分母及评分条件仍由第5章和c定义，字段存在不签收益或真实覆盖。
+
+### 8.7 company采集账本与工作关系
+
+核心定义是 [company_evidence_sql.py](../src/trader/download/infra/company_evidence_sql.py) 的 SCHEMA、DOCUMENT_RETRY_SCHEMA、DOCUMENT_EXTRACTION_SCHEMA、DISCLOSURE_QUERY_SCHEMA；安装调用在 `SQLiteCompanyEvidenceIndex.initialize`。下表的日期／时间都是ISO TEXT，NULL只按列的实际可空性表示。除另注和 INTEGER PRIMARY KEY 自动分配外无默认值；明确列出的DEFAULT为当前DDL值，不为旧库补列。
+
+| 表 | 全部列及类型 | 键／索引、实际写读与含义 |
+| --- | --- | --- |
+| contract | schema_id TEXT? | 普通rowid表的TEXT PK，DDL未显式NOT NULL；CHECK值为company_collection，adapter要求唯一精确合同值，不能将SQL允许NULL解释为合法合同 |
+| company_sync_job | singleton INTEGER；initialized_at/cutoff TEXT | PK(singleton=1)；首次作业与冻结截止，由采集初始化／恢复读取，不因新PID重置首次成本 |
+| company_expired_ranges（WR） | market/start_date/end_date TEXT；expired_at TEXT? | PK(market,start_date,end_date)，无另建索引；范围到期登记，不把过期范围当当前完整覆盖 |
+| disclosures | id INTEGER；source/source_key/kind/title/published_at/url/record_hash TEXT；body_hash H?；body_checked/body_retained INTEGER DEFAULT 0 | PK(id)，UQ(source,source_key)；索引 disclosures_date(kind,published_at)；kind=announcement/news，两个标志为0/1，body_hash为空或32字节。目录接收／正文恢复、编译和材料清理共用 |
+| disclosure_codes（WR） | code TEXT；disclosure_id INTEGER | PK(code,disclosure_id)，disclosure FK→disclosures且级联；索引 disclosure_links(disclosure_id,code)；同一公告多证券关联，按股读取材料 |
+| partitions（WR） | market/start_date/end_date TEXT；next_page INTEGER DEFAULT 1；expected_rows INTEGER?；received_rows INTEGER DEFAULT 0；is_complete INTEGER DEFAULT 0；checked_at TEXT?；failure TEXT DEFAULT '' | PK(market,start_date,end_date)；目录分区和下一页，目录采集／覆盖检查／恢复使用；unknown总量为空而非0 |
+| partition_rows（WR） | market/start_date/end_date/source_key/code TEXT | 五列联合PK；索引 partition_source_rows(source_key)；未完成分区的去重／页覆盖凭据，完成后的释放由原owner控制 |
+| coverage（WR） | market/start_date/end_date/checked_at TEXT | PK(market,start_date,end_date)；完整范围证明，ReadCompanySnapshotShared／CompanyCoverageComplete消费 |
+| financials（WR） | code/report_date/published_at TEXT；eps/bps/revenue_growth_pct/profit_growth_pct/core_profit_growth_pct/roe_pct/parent_profit/core_profit REAL? | PK(code,report_date)；结构化来源写，同披露更正及期次守卫后供 BuildCompanySnapshot 编译；采集值不直接进入荐股 |
+| ratios（WR） | component/code/as_of_date TEXT；ratio_pct REAL | PK(component,code,as_of_date)，component=pledge/unlock、比例0–100；结构化来源／正式快照选择读写 |
+| component_checks（WR） | component/scope TEXT；checked_at TEXT?；failure TEXT DEFAULT '' | PK(component,scope)；来源刷新成功／失败及TTL判断；本地读取不刷新核验时间 |
+| structured_progress（WR） | component/scope/start_date/end_date TEXT；next_page INTEGER；expected_rows INTEGER?；received_rows INTEGER DEFAULT 0 | PK(component,scope)；结构化分页恢复游标，不把页完成当字段正确 |
+| structured_members（WR） | component/code/as_of_date TEXT；ratio_pct REAL? | PK(component,code,as_of_date)；进行中结构化快照的成员，完成后由同一source流程选择正式输入 |
+| ratio_snapshots（WR） | component/start_date/end_date/checked_at TEXT | PK(component)；解禁／质押快照覆盖端点及核验时点，与明细共同选择 |
+| company_population（WR） | code TEXT | PK(code)；当前合格总体，PrepareCompanyPublication写，工作派发及编译读取；退出成员资料不等同本轮分母 |
+| document_supersessions（WR） | disclosure_id/replacement_id INTEGER；code/record_hash/replacement_hash/reason TEXT；extraction_hash H | PK(disclosure_id,code,record_hash)；同股材料替代及原规则身份，supersession owner和发布读取；没有SQL FK，不将ID对应关系误写为DDL约束 |
+| document_link_candidates（WR） | source/source_key/record_hash/payload TEXT；extraction_hash H | PK(source,source_key,record_hash,extraction_hash)；关联候选codec及正式编译读取；有候选不等于同案已核实 |
+| document_tasks（WR） | source/source_key/record_hash/stage TEXT；path TEXT?；payload_hash H?；size INTEGER? | PK(source,source_key,record_hash)；下载／分析阶段及已验证文件信息，准备发布、取消／重启和文件清理读取 |
+| document_publications（WR） | disclosure_id INTEGER；code/record_hash TEXT；extraction_hash H；published_at TEXT | PK(disclosure_id,code)，disclosure FK→disclosures且级联，提取hash32字节；采集侧正式采用投影，必须与正式输入凭据匹配 |
+| document_retries | disclosure_id INTEGER；record_hash/retry_policy_id/failure/attempted_at/retry_at TEXT；attempts INTEGER；payload_hash H?；ocr_diagnostic TEXT?；ocr_policy_id TEXT DEFAULT ''；ocr_timeout_attempts INTEGER DEFAULT 0 | PK(disclosure_id)，FK→disclosures且级联；payload_hash为空或32字节。冷却／OCR失败策略及重试派发消费，不无限重开确定性失败 |
+| document_extractions | disclosure_id INTEGER；record_hash/method/policy_id/extracted_at TEXT；payload_hash H；quality REAL? | PK(disclosure_id)，FK→disclosures且级联；method=text/ocr、hash32字节、quality为空或0–100；正文提取复用及依赖材料核验读取 |
+| disclosure_query_policy | singleton INTEGER；query_policy_id TEXT | PK(singleton=1)；目录查询选择身份，ActivateDisclosureQueryPolicy／恢复核对；不是数据库格式编号 |
+| disclosure_queries（WR） | market/start_date/end_date/scope/plate/securities TEXT；next_page INTEGER DEFAULT 1；expected_rows INTEGER?；received_rows/is_complete INTEGER DEFAULT 0；failure TEXT DEFAULT '' | PK(market,start_date,end_date,scope)；前三列FK→partitions且级联；复合目录查询的完整游标和证券／板块限定 |
+| disclosure_query_rows（WR） | market/start_date/end_date/scope/source_key/code/record_key TEXT | PK(market,start_date,end_date,scope,source_key,code)；前四列FK→disclosure_queries且级联；索引 disclosure_query_source_rows(source_key)，分页去重和恢复读取 |
+| partition_retries（WR） | market/start_date/end_date/scope/retry_at TEXT | PK(market,start_date,end_date,scope)；前三列FK→partitions且级联；目录冷却队列 |
+
+附属工作关系仍由上述采集库连接创建／写入，不能因分散在多个模块就称有第二采集owner。下表列出各实际DDL及最终读取用途；未列二级索引的只有键索引。连接级临时 retained_evidence 只为材料清理查询服务，不是新增持久业务表。
+
+| 表／DDL模块 | 全部列及类型、键和索引 | 写入与实际读取 |
+| --- | --- | --- |
+| company_dirty_codes（WR）；company_pipeline_queries.py | code TEXT，PK(code) | MarkCompanyDirty／PrepareCompanyPublication写；有界正式编译选择待处理证券 |
+| company_document_requirements；同上 | disclosure_id INTEGER PK／FK→disclosures且级联 | 当前正文适用性分类与IndexCompanyDocument写；正文派发和材料清理读 |
+| company_document_exclusions；同上 | disclosure_id INTEGER PK／FK→disclosures且级联；reason TEXT非空且固定subject_outside_scope | 同一主体分类写；正文排除、进度和保留逻辑读取，不作为正式字段有值证明 |
+| company_work_policy；同上 | singleton INTEGER PK且=1；work_policy_id TEXT非空 | 当前工作分类身份写，启动／分类重建读取；不是原公告版本 |
+| disclosure_query_contracts（WR）；同上 | market/start_date/end_date/scope/filter_identity TEXT；page_size INTEGER；PK(market,start_date,end_date,scope)；均非空 | CheckDisclosureQueryContract写／读；page_size固定30，filter_identity固定all_announcements，不能把过滤过的目录冒充完整范围 |
+| document_announcement_numbers（WR）；company_announcement_links.py | disclosure_id INTEGER；record_hash/number/rule_id TEXT；body_hash H；role INTEGER；PK(disclosure_id,role,number)；均非空，disclosure FK→disclosures且级联 | WriteCompanyAnnouncementNumbers写，LinkCompanyAnnouncementNumbers按来源／证券／时间读取；role0为自有编号、1为引用，body_hash32字节 |
+| company_field_repairs（WR）；company_field_recovery.py | disclosure_id INTEGER；code/record_hash/event_id/field/rule_id/state TEXT；前六列联合PK；均非空，disclosure FK→disclosures且级联 | QueueCompanyFieldRepairs／RegisterCompanyFieldAttempts写，CompleteCompanyFieldRepairs／RestoreCompanyFieldRepairs及材料恢复消费；state=pending/attempted/complete，只表达字段恢复任务，不替代正式字段值 |
+| company_material_dependencies（WR）；同上 | disclosure_id INTEGER；code/record_hash/scope/reason_code TEXT；body_hash/extraction_hash H；七列联合PK；均非空，两hash32字节，disclosure FK→disclosures且级联；索引 company_material_dependency_codes(code,disclosure_id) | RegisterCompanyMaterialDependencies写；字段review及材料清理按精确原有效回执读取；无原文只报告缺口，不自动重下 |
+| document_contract_link_rules（WR）；company_contract_link_rules.py | source/source_key/code/record_hash/rule_id TEXT；body_hash/extraction_hash/payload_hash H；PK(source,source_key,code,record_hash,extraction_hash)；均非空，body/payload hash32字节 | WriteCompanyContractLinkRules写，ReadCompanyContractLinkRules／ReadCompanyPublicationLinks核当前候选及局部主体规则；不能绕过同案／主体守卫 |
+| annual_income（WR）；company_annual_income_index.py | code/report_date/disclosed_at/updated_at/observed_at/currency/record_hash TEXT；operating_revenue REAL?；PK(code,report_date,disclosed_at,updated_at,record_hash) | WriteCompanyAnnualIncome写，PlanCompanyAnnualIncomeRequests／ReadCompanyAnnualIncome和合同编译消费；原披露／修订／收到时间分开，经营收入元，缺值不以营业总收入替代 |
+
+采集库还安装8.5的 download_failure。材料原件、压缩文字及OCR页是 `CompanyRawFiles`／`CompanyDocumentFiles` 管理的文件，不是遗漏在本表的SQLite列；容量、引用保护及清理前提见5.11–5.14。
+
+### 8.8 当前结构核对与后续差集边界
+
+本章替代旧稿DB编号及历史字段改名对照作为当前查询入口；不把旧schema2／3计数或字段别名带入新合同。下载数据库不兼容时仅按第6章明确的下载资料范围拒绝并提示人工删除后重下，本次字典整理没有初始化、补表、补列、迁移或删除任何资料，不涉及模型、冻结记录和预算。
+
+需要保留的源码边界：reference、catalog和market在原owner的完整schema中核对；company正式表由 COMPANY_FACTS_SCHEMA 核对，采集核心表由 SCHEMA 核对。采集附属工作表仍分散在 initialize 调用的 EnsureCompany*、DOCUMENT_* 和 DISCLOSURE_QUERY_SCHEMA 中，部分只读派生查询会在表不存在时返回“没有当前证明”。这是当前静态代码的安装／读取方式，不能由字典反推其已通过全部缺表反例，也不将它写成允许旧库兼容的产品要求；统一结构收口或删除这些分支如需实施，仍沿原业务owner和台账另行核对。
+
+CHECK、codec验证、外键启用及发布凭据检查是不同层次；本章列的是该已提交基线的物理定义及消费者，不证明活动库实际具有这些表、来源逐值正确、公司全字段覆盖、历史公开时点齐备或性能达标。现场行业／历史行业端口、公司运行监控和日志的未提交差集不纳入本字典，由原owner独立核对交付。后续变更只核对受影响DDL／codec／消费者差集，不重复复制年度表、另建一份字典或第二进度记录。
+
+## 9. download.json 配置字典
+
+### 9.1 来源、解析和生效边界
+
+唯一来源为 [config/download.json](../config/download.json)，解析owner为 [download_settings.py](../src/trader/download/infra/download_settings.py)。以下静态核对该提交中的全部64个标量叶子，数组用显式判别模式展开；当前值不是新的推荐值，也不表示已测得最优。
+
+顶层必须且只能包含 failure_diagnostics、price_review、history、company、online_qfq，各配置对象同样拒绝缺字段和未知字段，不补默认值。整数拒绝bool，数值拒绝bool和非有限值，字符串去除首尾空白后必须非空。`LoadHistorySyncConfiguration`、`LoadQfqWindowConfiguration`、`LoadCompanySyncConfiguration`、`LoadDownloadFailureConfiguration`构造不可变领域配置后继续核对字段间约束。配置在相应手工作业准备时生效，不热切换已运行作业。
+
+路径／介质、通用SQLite策略分别由runtime.json／sqlite.json拥有，字典见b第7章；OCR的实际可用能力由运行环境核对，配置声明不等于工具已安装。单纯修改等待和重试布局不自动使原成功正文失效；内容相关参数、实际解析／OCR能力如何进入规则身份，由 `BuildCompanyDocumentPolicies`／`CompanyDocumentOutputIdentity` 负责，不能笼统写成所有配置都影响或都不影响复用身份。
+
+### 9.2 失败诊断与额外价格复查
+
+| JSON路径 | 当前值 | 类型、单位与范围 | 实际消费者 |
+| --- | --- | --- | --- |
+| failure_diagnostics.retention_limit | 20000 | int，条，1–9223372036854775807 | WriteDownloadFailure按id保留最近失败记录 |
+| failure_diagnostics.query_limit | 50 | int，条，1–retention_limit | ReadDownloadFailures限制明细及分组输出 |
+| price_review.interval_sessions | 5 | int，市场交易日，≥1 | HistoryInferredReviewIndex及UpdateQfqWindows判断推定停牌复查到期 |
+| price_review.maximum_codes | 8 | int，股，1–8 | TencentRequestBudget.reserve_code，仅约束额外价格复查 |
+| price_review.maximum_requests | 16 | int，物理请求，1–16 | TencentRequestBudget.reserve_request；重试及备用host尝试同样消耗 |
+| price_review.maximum_seconds | 15.0 | number，秒，0.001–15 | TencentRequestBudget维护额外复查剩余预算，不是整次同步期限 |
+
+### 9.3 完整历史
+
+以下字段均以 history. 开头，另列两种介质的实际写批次，不能把配置名称当作已测性能结论。
+
+| 字段 | 当前值 | 类型、单位与范围 | 实际消费者 |
+| --- | --- | --- | --- |
+| requested_sessions | 2000 | int，市场交易日，1–2000 | DownloadHistoryUseCase取得并核对目标日历 |
+| reread_sessions | 5 | int，市场交易日，1–requested_sessions | PlanHistoryDownloadTasks及恢复规划选择重读尾窗 |
+| download_batch_size | 64 | int，1–256；尚无运行消费单位 | 当前只解析／领域校验，未找到下载执行路径读取，不能当作真实写入批次 |
+| history_workers | 8 | int，worker，1–12 | bootstrap历史线程池／HTTP会话数及HistoryDownloadFlow在途派发 |
+| minimum_free_bytes | 1073741824 | int，字节，≥0 | DownloadHistoryUseCase经HistorySyncIo.has_space做空间准入 |
+| supplier_timeout_seconds | 45.0 | number，秒，≥0.001，无配置上限 | BaoStockRequestPolicy及BaoStockHistorySupplier请求期限 |
+| supplier_retries | 2 | int，重试次数，0–2 | BaoStock请求策略，物理失败请求仍实际发生 |
+| query_interval_seconds | 1.5 | number，秒，≥1.5 | BaoStock worker的BaoStockQueryLimiter |
+| cancellation_grace_seconds | 10.0 | number，秒，0.001–10 | BaoStockHistorySupplier子进程取消等待 |
+| progress_heartbeat_seconds | 5.0 | number，秒，0.001–supplier_timeout_seconds | BaoStock供应商等待心跳，且不得超过实际价格请求策略timeout |
+| write_batches.maximum_codes | 64 | int，股，1–64 | HistoryWriteTuning.max_codes，所有介质写入批次的全局上限 |
+| write_batches.maximum_cells | 32768 | int，日期单元，1–32768 | HistoryWriteTuning.max_cells，全局上限 |
+| write_batches.hdd.fresh_codes | 8 | int，股，1–maximum_codes | HDD首建flush_codes |
+| write_batches.hdd.fresh_cells | 16384 | int，日期单元，1–maximum_cells | HDD首建flush_cells |
+| write_batches.hdd.incremental_codes | 16 | int，股，1–maximum_codes | HDD增量flush_codes |
+| write_batches.hdd.incremental_cells | 8192 | int，日期单元，1–maximum_cells | HDD增量flush_cells |
+| write_batches.ssd.fresh_codes | 16 | int，股，1–maximum_codes | SSD首建flush_codes |
+| write_batches.ssd.fresh_cells | 8192 | int，日期单元，1–maximum_cells | SSD首建flush_cells |
+| write_batches.ssd.incremental_codes | 16 | int，股，1–maximum_codes | SSD增量flush_codes |
+| write_batches.ssd.incremental_cells | 8192 | int，日期单元，1–maximum_cells | SSD增量flush_cells |
+
+`ChooseHistoryWriteTuning`按介质选择，unknown沿现行保守HDD策略；HistorySyncIo将实际批次交下载流。`download_batch_size`不能与这些已消费字段混同。完整历史中的腾讯价格分支仍消费 online_qfq.source_timeout_seconds／source_retries，并非所有供应商都使用 history.supplier_*。
+
+### 9.4 公司目录、正文、文本与OCR
+
+以下省略共同前缀 company.。范围同时受表后跨字段关系约束，不能只逐项通过后就声明整个配置可用。
+
+| 字段 | 当前值 | 类型、单位与标量范围 | 实际消费者 |
+| --- | --- | --- | --- |
+| source_timeout_seconds | 8.0 | number，秒，0.1–8 | CninfoMarketDisclosureSource目录及EastmoneyCompanySource结构化请求 |
+| document_download_timeout_seconds | 120.0 | number，秒，0.1–120，且≥source_timeout_seconds | 巨潮正文下载总期限 |
+| document_parse_timeout_seconds | 10.0 | number，秒，0.1–30 | 标准／扩限解析及BuildCompanyDocumentPolicies |
+| request_interval_seconds | 1.0 | number，秒，≥1 | CompanyRequestPacer；目录与文件host分别限速，同host共用时间线 |
+| directory_batch_pages | 20 | int，页，1–100 | SyncCompanyEvidence的目录批次 |
+| document_batch_size | 50 | int，篇，1–128，且≤document_queue_limit | pending_documents(limit=...)本批任务数 |
+| document_workers | 2 | int，worker，1–8 | bootstrap创建文档来源／会话和文档executor，流水线核对数量 |
+| text_workers | 2 | int，worker，1–8 | 文本executor及在途派发 |
+| ocr_workers | 1 | int，worker，1–4 | OCR executor及在途派发 |
+| document_queue_limit | 128 | int，篇，1–128 | 当前只约束document／publication批次合法性，未找到运行队列独立读取此值 |
+| publication_batch_size | 50 | int，篇，1–128，且≤document_queue_limit | 已完成待发布量达到阈值时触发正式发布 |
+| publication_interval_seconds | 5.0 | number，秒，0.1–60 | 正式发布等待阈值，与批次阈值共同判断 |
+| text_task_reserve_bytes | 16777216 | int，字节，≥1，另受并行约束 | CompanyRawFiles分析预约及正文来源文本任务 |
+| ocr_task_reserve_bytes | 314572800 | int，字节，≥300MiB，另受并行约束 | OCR任务分析预约 |
+| document_failure_retry_seconds | 86400.0 | number，秒，≥1 | 一般失败的冷却／下次尝试 |
+| document_transient_retry_seconds | 900.0 | number，秒，≥1 | 瞬时失败的冷却／下次尝试 |
+| document_ocr_timeout_seconds | 600.0 | number，秒，1–600 | CompanyOcrEngine整次OCR期限及策略身份 |
+| document_ocr_page_timeout_seconds | 120.0 | number，秒，1–600，且≤整次OCR期限 | OCR单页期限及策略身份 |
+| document_ocr_max_pages | 50 | int，页，1–200 | OCR页数上限及策略身份 |
+| document_ocr_dpi | 150 | int，dpi，72–300 | OCR渲染及策略身份 |
+| document_ocr_languages | chi_sim+eng | 非空string，以+分隔，每段仅字母／数字／下划线 | DetectCompanyOcr能力核对及OCR策略身份 |
+| raw_capacity_bytes | 2147483648 | int，字节，≥1，另受容量约束 | CompanyRawFiles.capacity，受管原件容量 |
+| raw_analysis_reserve_bytes | 536870912 | int，字节，≥320MiB，另受容量／并行约束 | CompanyRawFiles.analysis_reserve |
+| temporary_text_capacity_bytes | 268435456 | int，字节，≥1，另受容量约束 | CompanyDocumentFiles.max_bytes，临时文本容量 |
+| temporary_disk_reserve_bytes | 536870912 | int，字节，≥1 | 原件及临时文本写入的磁盘空余保留 |
+| document_limits.max_bytes | 16777216 | int，字节，1–67108864 | 标准正文大小、解析边界及标准策略身份 |
+| document_limits.max_pages | 200 | int，页，1–1000 | 标准解析页上限及策略身份 |
+| document_limits.max_text_characters | 1000000 | int，字符，80–2000000 | 标准正文文本上限及策略身份 |
+| extended_document_limits.max_bytes | 67108864 | int，字节，1–67108864，且≥标准值 | 扩限正文、下载响应及原件预约上限 |
+| extended_document_limits.max_pages | 1000 | int，页，1–1000，且≥标准值 | 扩限解析上限及策略身份 |
+| extended_document_limits.max_text_characters | 2000000 | int，字符，80–2000000，且≥标准值 | 扩限解析、CompanyDocumentFiles文本上限及策略身份 |
+
+必须同时满足：document_batch_size和publication_batch_size均≤document_queue_limit；text_task_reserve_bytes≥扩限字符数×8；text_workers×text_task_reserve_bytes＋ocr_workers×ocr_task_reserve_bytes≤raw_analysis_reserve_bytes；temporary_text_capacity_bytes≥扩限字符数×4，且temporary_text_capacity_bytes≤raw_analysis_reserve_bytes<raw_capacity_bytes。扩限字节／页／字符上限不小于标准上限，OCR单页期限不大于整次期限。这是预约与容量关系，不是操作系统RSS硬隔离或实测收益证明。
+
+### 9.5 独立在线短窗
+
+| JSON路径 | 当前值 | 类型、单位与范围 | 实际消费者 |
+| --- | --- | --- | --- |
+| online_qfq.workers | 8 | int，worker，1–12 | bootstrap短窗线程池／HTTP会话及UpdateQfqWindows并发 |
+| online_qfq.source_timeout_seconds | 15.0 | number，秒，0.1–120 | TencentQfqOptions，独立短窗及完整历史的腾讯价格分支 |
+| online_qfq.source_retries | 2 | int，重试次数，0–2 | 腾讯raw／qfq窗口请求策略 |
+| online_qfq.profiles[].profile | v2、v3各一个 | string判别字段；数组恰好2项、身份唯一且正好v2／v3 | ProfileMapping选择窗口配置，不是模型启用开关 |
+| online_qfq.profiles[profile=v2].sessions | 251 | int，市场交易日，v3.sessions≤本值≤2000 | QfqWindowConfiguration.maximum_sessions／sessions_for及窗口规划 |
+| online_qfq.profiles[profile=v3].sessions | 61 | int，市场交易日，1–v2.sessions | V3独立窗口覆盖、成员及发布规划 |
+
+profiles每项只允许profile和sessions，当前没有V1／V5的独立在线短窗配置；窗口档位与荐股档位不能按同名互相替代。
+
+### 9.6 配置差集与核对限制
+
+history.download_batch_size仅发现解析／校验，company.document_queue_limit仅发现批次合法性约束；后续如需接线或删除，先由原业务owner核所有消费者，不能让字典替实现生效。巨潮目录单页条数、结构化财务分页、刷新TTL等行为并非以上64个配置叶，不为凑齐字典写成已有配置项。
+
+本次没有新增默认值、格式编号、兼容、补列或迁移，也没有发供应商请求、同步、活动库查询、调参或性能测量。DDL及codec的当前事实与最新严格结构要求分别见8.8；真实资料、逐字段正确性、完整恢复和性能仍沿唯一施工台账取证。
 
 ## 10. 交付与验收入口
 
