@@ -63,6 +63,70 @@ def test_history_waits_for_tencent_and_replaces_entire_basis(tmp_path):
     assert HistoryPriceRepair(config.history_root, sqlite_policy=SqlitePolicyFixture()).source("600001", snapshot.sequence) == "baostock"
 
 
+@pytest.mark.parametrize("write_fails", (False, True))
+def test_history_reports_obtained_before_replacement_and_counts_only_persisted_repairs(tmp_path, monkeypatch, write_fails):
+    from tests.helpers.download.history.infra.history_sync import ProgressRecorder
+
+    days = (date(2026, 1, 2), date(2026, 1, 5))
+    supplier = RepairHistory(days)
+    config = _config(tmp_path, days)
+    progress = ProgressRecorder()
+    original = HistoryPriceRepair.replace
+    entered = []
+
+    def replace_prices(self, security, dates, incoming, prices, sequence, **options):
+        reports = [item for item in progress.values if item.stage == "baostock_repair" and item.current_item == security.code]
+        assert len(reports) == 1
+        assert reports[0].state == "obtained"
+        assert reports[0].repair_summary is None
+        assert reports[0].completed_units == reports[0].total_units == 1
+        assert tuple(cell.trade_date for cell in incoming.cells) == dates
+        entered.append(security.code)
+        if write_fails:
+            raise RuntimeError("fixture_write_failed")
+        return original(self, security, dates, incoming, prices, sequence, **options)
+
+    monkeypatch.setattr(HistoryPriceRepair, "replace", replace_prices)
+    result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]), progress=progress)
+    assert result.state == "completed"
+    assert result.unresolved_price_cells == int(write_fails)
+    assert entered == ["600001"]
+    reports = [item for item in progress.values if item.stage == "baostock_repair"]
+    stock_reports = [item for item in reports if item.current_item == "600001"]
+    assert [item.state for item in stock_reports] == (["obtained", "failed"] if write_fails else ["obtained"])
+    if write_fails:
+        assert stock_reports[-1].failure_reason == "fixture_write_failed"
+    summary = reports[-1].repair_summary
+    assert reports[-1].state == "completed" and summary is not None
+    assert (summary.attempted, summary.repaired, summary.skipped) == (1, int(not write_fails), 0)
+
+
+def test_history_does_not_report_obtained_for_incomplete_supplier_candidate(tmp_path, monkeypatch):
+    from tests.helpers.download.history.infra.history_sync import ProgressRecorder
+
+    class IncompleteRepair(RepairHistory):
+        def fetch_baostock_window(self, security, dates):
+            window = super().fetch_baostock_window(security, dates)
+            return PublishedHistoryWindow(security.code, (
+                replace(window.cells[0], status="qfq_missing", qfq=None), *window.cells[1:],
+            ))
+
+    def replace_prices(*args, **kwargs):
+        raise AssertionError("incomplete_candidate_must_not_enter_replacement")
+
+    days = (date(2026, 1, 2), date(2026, 1, 5))
+    config = _config(tmp_path, days)
+    progress = ProgressRecorder()
+    monkeypatch.setattr(HistoryPriceRepair, "replace", replace_prices)
+    result = RunHistoryFixture(config, IncompleteRepair(days), clock=lambda: _now(days[-1]), progress=progress)
+    assert result.state == "completed" and result.unresolved_price_cells == 1
+    reports = [item for item in progress.values if item.stage == "baostock_repair"]
+    stock_reports = [item for item in reports if item.current_item == "600001"]
+    assert [item.state for item in stock_reports] == ["failed"]
+    assert stock_reports[0].failure_reason == "price_replacement_window_incomplete"
+    assert reports[-1].repair_summary is not None and reports[-1].repair_summary.repaired == 0
+
+
 def test_explicit_repair_reuses_unchanged_month_proofs(tmp_path):
     from tests.helpers.download.history.infra.history_sync import ProgressRecorder
 

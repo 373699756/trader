@@ -59,6 +59,7 @@ _STATE_LABELS: dict[HistorySyncProgressState, ProgressState] = {
     "started": "开始",
     "waiting": "等待",
     "retrying": "重试",
+    "obtained": "处理中",
     "completed": "完成",
     "failed": "失败",
     "cancelled": "取消",
@@ -152,6 +153,8 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
 
 
 def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+    if progress.state == "obtained":
+        return ("获取成功，待落库",)
     if progress.required_free_bytes is not None:
         return (f"保守可用空间需求 {progress.required_free_bytes / 1024**3:.2f} GiB",)
     if progress.cache_hit is not None:

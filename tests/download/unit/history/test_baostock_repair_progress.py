@@ -24,11 +24,12 @@ def test_repair_prints_one_result_per_stock_without_daily_call_heartbeats() -> N
     assert "000708" in fields and "25" in fields and "timeout" in fields
     assert "4402" not in fields
     messages.clear()
-    progress.publish(HistorySyncProgress("baostock_repair", "completed", 2, 25, "000709"))
-    progress.publish(HistorySyncProgress("baostock_repair", "completed", 3, 25, "000710"))
+    progress.publish(HistorySyncProgress("baostock_repair", "obtained", 2, 25, "000709"))
+    progress.publish(HistorySyncProgress("baostock_repair", "obtained", 3, 25, "000710"))
     assert len(messages) == 2
     assert "000709" in " ".join(field.text for field in messages[0].fields)
     assert "000710" in " ".join(field.text for field in messages[1].fields)
+    assert all("获取成功，待落库" in " ".join(field.text for field in message.fields) for message in messages)
     messages.clear()
     now[0] = 10.0
     output.heartbeat()

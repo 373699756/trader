@@ -20,7 +20,7 @@ from trader.download.domain.history_download import (
 from trader.download.domain.history_maintenance import (
     HistoryMaintenanceState, HistoryMaintenanceStatus, HistoryPriceGapSummary, HistoryPriceReviewSummary,
 )
-from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
+from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT, QualifyReplacementWindow
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_sync import (
     HistoryIndustryReadiness, HistorySupplierContext, HistoryRepairSummary, HistorySyncConfiguration,
@@ -400,6 +400,8 @@ class DownloadHistoryUseCase:
                             candidate = MergeDailyTail(previous, tail, dates)
                     if candidate is None:
                         candidate = self.supplier.fetch_baostock_window(security, dates)
+                    QualifyReplacementWindow(dates, PublishedHistoryWindow(security.code, ()), candidate)
+                    PublishHistoryProgress(self.progress, "baostock_repair", "obtained", (completed, len(selected)), security.code)
                     prices.replace_repair(security, dates, candidate, inputs.batch.sequence)
                 except (OSError, RuntimeError, ValueError) as exc:
                     reason = self.dependencies.maintenance.download_failure(exc)
@@ -411,7 +413,6 @@ class DownloadHistoryUseCase:
                         ))
                 else:
                     repaired += 1
-                    PublishHistoryProgress(self.progress, "baostock_repair", "completed", (completed, len(selected)), security.code)
             prices.replay_repairs(allowed_codes)
             if self.progress is not None:
                 self.progress.publish(HistorySyncProgress(

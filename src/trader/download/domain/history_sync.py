@@ -47,7 +47,7 @@ HistorySyncProgressStage = Literal[
     "confirming_download",
     "synchronization",
 ]
-HistorySyncProgressState = Literal["started", "waiting", "retrying", "completed", "failed", "cancelled"]
+HistorySyncProgressState = Literal["started", "waiting", "retrying", "obtained", "completed", "failed", "cancelled"]
 _PROGRESS_ITEM = re.compile(r"[0-9A-Za-z_.:-]{1,64}")
 _PROGRESS_STAGES = frozenset(get_args(HistorySyncProgressStage))
 _PROGRESS_STATES = frozenset(get_args(HistorySyncProgressState))
@@ -342,6 +342,8 @@ class HistorySyncProgress:
     data_source: str | None = None
 
     def __post_init__(self) -> None:
+        if self.state == "obtained" and (self.stage != "baostock_repair" or self.current_item is None):
+            raise ValueError("history_repair_obtained_identity_invalid")
         if self.request is not None and (self.stage != "tencent_history" or self.current_item != self.request.code):
             raise ValueError("history_stock_request_identity_invalid")
         if any(value is not None and (not math.isfinite(value) or value < 0) for value in (

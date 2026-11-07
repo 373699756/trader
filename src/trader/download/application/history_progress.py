@@ -1,14 +1,14 @@
 """Best-effort typed history progress at application and I/O boundaries."""
 
-from typing import Literal
-
-from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressPort, HistorySyncProgressStage
+from trader.download.domain.history_sync import (
+    HistorySyncProgress, HistorySyncProgressPort, HistorySyncProgressStage, HistorySyncProgressState,
+)
 
 
 def PublishHistoryProgress(  # noqa: PLR0913 - typed progress projection, optional preparation capacity
     progress: HistorySyncProgressPort | None,
     stage: HistorySyncProgressStage,
-    state: Literal["started", "waiting", "retrying", "completed", "failed", "cancelled"],
+    state: HistorySyncProgressState,
     counts: tuple[int, int] = (0, 1),
     current_item: str | None = None,
     *,
