@@ -1,4 +1,4 @@
-"""Durable download metadata in the control database; never contains price payloads."""
+"""Durable history download tasks and repair journal in the control database."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from trader.download.domain.history_download import HistoryDownloadTask, HistoryDownloadCompletion, HistoryDownloadBatch
 from trader.download.domain.history_maintenance import HistoryPriceGapReason, HistoryPriceGapSummary
-from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PriceRepairAttempts
+from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PRICE_SOURCE_CHECK_SQL, PriceRepairAttempts
 from trader.download.infra.history_inferred_review import HISTORY_INFERRED_REVIEW_SQL, RecordHistoryInferredSuspensions
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate, EncodeHash
@@ -28,6 +28,12 @@ _QFQ_UNUSABLE_RECHECK_SESSIONS = 20
 HISTORY_DOWNLOAD_SCHEMA = SqliteSchema(
     (
         PRICE_REPAIR_ATTEMPT_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1),
+        PRICE_SOURCE_CHECK_SQL,
+        "CREATE TABLE IF NOT EXISTS price_source(code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, source TEXT NOT NULL, "
+        "PRIMARY KEY(code,sync_sequence)) WITHOUT ROWID",
+        "CREATE TABLE IF NOT EXISTS price_replacement(code TEXT NOT NULL, trade_date INTEGER NOT NULL, "
+        "sync_sequence INTEGER NOT NULL, board TEXT NOT NULL, source TEXT NOT NULL, payload TEXT NOT NULL, "
+        "PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
         *HISTORY_INFERRED_REVIEW_SQL,
         """
         CREATE TABLE IF NOT EXISTS download_batch (

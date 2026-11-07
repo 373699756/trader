@@ -105,7 +105,6 @@ class HistorySyncIo:
                 ):
                     raise RuntimeError("history_format_requires_rebuild")
                 self.control.initialize()
-                HistoryPriceRepair(root, sqlite_policy=self.sqlite_policy).initialize()
                 yield
         except HistoryMaintenanceAlreadyRunningError as exc:
             raise HistorySyncAlreadyRunningError("history_maintenance_running") from exc

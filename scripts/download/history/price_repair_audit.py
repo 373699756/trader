@@ -16,7 +16,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.history_control_index import HistoryControlIndex
@@ -31,7 +32,7 @@ from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.process_lock import ProcessLock
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+from trader.infra.sqlite_connection import SqliteSession
 
 from scripts.core.reporting import emit_report
 
@@ -47,7 +48,13 @@ class _AuditSupplier:
     def load_context(self, _as_of: date, _sessions: int) -> HistorySupplierContext:
         return self.context
 
-    def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+    def fetch_tencent_window(
+        self,
+        security: BaoStockSecurity,
+        dates: tuple[date, ...],
+        *,
+        request_budget: PriceReviewRequestBudget | None = None,
+    ) -> PublishedHistoryWindow:
         if not self.seed:
             raise RuntimeError("audit_must_not_request_tencent")
         window = next(item for item in self.windows if item.code == security.code)
@@ -59,6 +66,22 @@ class _AuditSupplier:
         self.calls += 1
         result = self.baseline.fetch_code(security, dates)
         return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in result.batch.cells))
+
+
+def _require_isolated_work_paths(
+    configuration: HistorySyncConfiguration, source_history: Path, source_reference: Path,
+) -> None:
+    sources = (source_history.resolve(), source_reference.resolve())
+    for output in (configuration.history_root, configuration.reference_root):
+        resolved = output.resolve()
+        if any(resolved.is_relative_to(source) or source.is_relative_to(resolved) for source in sources):
+            raise ValueError("audit_work_root_overlaps_source")
+        if output.is_symlink():
+            raise ValueError("audit_work_root_contains_alias")
+        if output.exists():
+            for child in output.iterdir():
+                if child.is_symlink() or child.is_file() and child.stat().st_nlink > 1:
+                    raise ValueError("audit_work_root_contains_alias")
 
 
 def _audit(root: Path, work_root: Path | None = None, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
@@ -91,6 +114,7 @@ def _audit(root: Path, work_root: Path | None = None, *, sqlite_policy: SqliteIo
             minimum_free_bytes=0,
             supplier_retries=0,
         )
+        _require_isolated_work_paths(configuration, root, control.reference_path())
         SQLiteReferenceIndex(configuration.reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy).publish(subset, subset.st_evidence)
         with BaoStockHistorySupplier(configuration, price_policy=BaoStockRequestPolicy(45, 0), vendor_lock=ProcessLock(control.reference_path().parent / "baostock.lock", label="BaoStock")) as baseline:
             from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockSourceVersions
@@ -106,16 +130,19 @@ def _audit(root: Path, work_root: Path | None = None, *, sqlite_policy: SqliteIo
                 )
                 if exported.state != "completed":
                     raise RuntimeError(exported.reason or "audit_export_failed")
-            before = HistoryControlIndex(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_published_state()
-            assert before is not None
-            # Rehearse the additive legacy metadata migration on an isolated v2
-            # catalog containing the real gap/price observations.
-            with SqliteSession(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
-                if not resumed:
-                    for table in ("price_repair_attempt", "price_source", "price_replacement", "price_tencent_check"):
-                        connection.run(f"DROP TABLE {table}")
-                else:
-                    connection.run("UPDATE download_tasks SET tencent_done=1")
+            exported_state = HistoryControlIndex(
+                configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy,
+            ).load_state()
+            if exported_state.published_snapshot is None:
+                raise RuntimeError("audit_requires_exported_history")
+            before = min(exported_state.snapshots, key=lambda item: item.sequence)
+            parent = HistoryDirectPrices(configuration.history_root, before.sequence, before, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=sqlite_policy)
+            if any(
+                tuple(ProjectHistoryCell(cell) for cell in parent.read(
+                    window.code, tuple(cell.trade_date for cell in window.cells),
+                )) != window.cells for window in windows
+            ):
+                raise RuntimeError("audit_export_windows_mismatch")
             supplier.seed = False
             repaired = ExecuteHistorySync(
                 configuration,
@@ -124,7 +151,7 @@ def _audit(root: Path, work_root: Path | None = None, *, sqlite_policy: SqliteIo
                 sqlite_policy=sqlite_policy,
                 resources=HistorySyncResources(repair_only=True),
             )
-            old = HistoryDirectPrices(configuration.history_root, before.snapshot.sequence, before.snapshot, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=sqlite_policy)
+            old = HistoryDirectPrices(configuration.history_root, before.sequence, before, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=sqlite_policy)
             unchanged = all(tuple(ProjectHistoryCell(cell) for cell in old.read(window.code, tuple(cell.trade_date for cell in window.cells))) == window.cells for window in windows)
             remaining = HistoryDownloadIndex(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy).gaps_by_code()
             attempts = []
@@ -149,5 +176,9 @@ def Main() -> int:
         project = TOOL_ROOT
         if not args.work_root.is_absolute() or args.work_root.resolve().is_relative_to(project):
             parser.error("work root must be an absolute path outside the repository")
+        work = args.work_root.resolve()
+        source = args.history_root.resolve()
+        if work.is_relative_to(source) or source.is_relative_to(work):
+            parser.error("work root must not overlap source history")
     emit_report({"schema_version": "price-repair-audit", **_audit(args.history_root, args.work_root, sqlite_policy=sqlite_policy)})
     return 0

@@ -16,20 +16,10 @@ from trader.download.domain.published_history import ProjectHistoryCell, Publish
 if TYPE_CHECKING:
     from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_prices import HistoryPricePartition
-from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PRICE_SOURCE_CHECK_SQL, PriceRepairAttempts, RepairSource, TencentRecheckDue, RecordTencentCheck
+from trader.download.infra.price_repair_attempts import PriceRepairAttempts, RepairSource, TencentRecheckDue, RecordTencentCheck
 from trader.download.infra.published_history_codec import DecodePublishedHistoryCellPayload, EncodePublishedHistoryCell
 from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
-
-HISTORY_REPAIR_SQL = (
-    PRICE_SOURCE_CHECK_SQL,
-    PRICE_REPAIR_ATTEMPT_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1),
-    "CREATE TABLE IF NOT EXISTS price_source(code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, source TEXT NOT NULL, "
-    "PRIMARY KEY(code,sync_sequence)) WITHOUT ROWID",
-    "CREATE TABLE IF NOT EXISTS price_replacement(code TEXT NOT NULL, trade_date INTEGER NOT NULL, "
-    "sync_sequence INTEGER NOT NULL, board TEXT NOT NULL, source TEXT NOT NULL, payload TEXT NOT NULL, "
-    "PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
-)
 
 
 class HistoryPriceRepair:
@@ -37,11 +27,6 @@ class HistoryPriceRepair:
         self._sqlite_policy = sqlite_policy
         self._root = root
         self._path = root / "catalog.sqlite3"
-
-    def initialize(self) -> None:
-        with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
-            for statement in HISTORY_REPAIR_SQL:
-                connection.run(statement)
 
     def source(self, code: str, sequence: int) -> RepairSource:
         with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
