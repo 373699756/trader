@@ -190,11 +190,11 @@ def test_per_stock_progress_reports_request_cache_and_missing_classification(fix
     messages = []
     source = replace(source, report=messages.append)
     _fetch(source, codes=("600001", "600002"))
-    assert [message.fields[1].text for message in messages] == ["1/2股", "2/2股"]
-    assert messages[0].fields[2].text == "代码 600001"
-    assert messages[0].fields[3].text == "缓存复用"
-    assert messages[1].fields[3].text == "接口获取"
-    assert messages[1].fields[4].level is ProgressLevel.WARNING
+    assert [message.fields[0].text for message in messages] == ["1/2股", "2/2股"]
+    assert messages[0].fields[1].text == "代码 600001"
+    assert messages[0].fields[2].text == "缓存复用"
+    assert messages[1].fields[2].text == "接口获取"
+    assert messages[1].fields[3].level is ProgressLevel.WARNING
 
 
 def test_late_received_time_is_preserved_instead_of_replaced_by_query_start(fixture):
@@ -285,7 +285,7 @@ def test_original_batches_are_bounded_and_progress_requires_committed_bytes(fixt
         save(self, documents)
 
     def progress(message):
-        code = message.fields[2].text.removeprefix("代码 ")
+        code = message.fields[1].text.removeprefix("代码 ")
         assert index.read_source_document("cninfo:p_stock2110:" + code, _AT) is not None
         completed.append(code)
 

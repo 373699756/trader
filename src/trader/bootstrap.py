@@ -199,11 +199,11 @@ def BuildIndustrySource(
     sqlite_policy: SqliteIoPolicy,
     cancel_requested: Callable[[], bool],
     clock: Callable[[], datetime],
-    report: Callable[[ProgressMessage], None] | None = None,
+    report: Callable[[ProgressMessage], None] | None = None, disk_medium: DiskMedium | None = None,
 ) -> CurrentIndustryPublication:
-    client = CninfoIndustryClient(transport, request_headers=lambda: CninfoIndustryHeaders(clock()))
     return CurrentIndustryPublication(
-        path, client, sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=clock, report=report,
+        path, CninfoIndustryClient(transport, request_headers=lambda: CninfoIndustryHeaders(clock())),
+        sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=clock, report=report, source_batch_rows=64 if DiskProbe(disk_medium).inspect(path).kind == "hdd" else 1,
     )
 
 
@@ -283,7 +283,7 @@ def ExecuteSync(
             paths.reference, clock.now(), progress,
             report=progress.report_preparation,
             cancel_requested=cancel_requested,
-            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
+            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds, sqlite_policy=sqlite_policy, disk_medium=settings.disk_medium,
         )),
         history=sync_history,
         market=sync_market,
@@ -439,7 +439,7 @@ def _prepare_reference(
     *,
     report: Callable[[ProgressMessage], None] | None = None,
     cancel_requested: Callable[[], bool],
-    shutdown_timeout_seconds: float, sqlite_policy: SqliteIoPolicy,
+    shutdown_timeout_seconds: float, sqlite_policy: SqliteIoPolicy, disk_medium: DiskMedium | None = None,
 ) -> PreparedReference:
     if cancel_requested():
         raise RuntimeError("reference_preparation_cancelled")
@@ -463,7 +463,7 @@ def _prepare_reference(
         industry = BuildIndustrySource(
             resources.enter_context(OpenExternalHttp(identity_content_encodings=("normal",))), reference_root / "industry.sqlite3",
             sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=ShanghaiClock(_utc_now).now,
-            report=report,
+            report=report, disk_medium=disk_medium,
         )
         dependencies = ReferencePreparationDependencies(
             source.fetch,
@@ -590,7 +590,7 @@ def ExecuteHistoryDownload(
             ShanghaiClock(clock or _utc_now).now(),
             None,
             cancel_requested=cancel_requested,
-            shutdown_timeout_seconds=shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
+            shutdown_timeout_seconds=shutdown_timeout_seconds, sqlite_policy=sqlite_policy, disk_medium=disk_medium,
         )
     history_pool = BoundedExecutor(
         worker_count=configuration.history_workers, queue_capacity=0, thread_name_prefix="history-download"
