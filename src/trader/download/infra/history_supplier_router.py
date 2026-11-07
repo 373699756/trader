@@ -83,6 +83,7 @@ class HistorySupplierRouter:
             if self._progress is not None:
                 self._progress.publish(HistorySyncProgress(
                     "supplier_industry", "failed", 0, len(universe), "capco", failure_detail=type(exc).__name__,
+                    data_source="本地行业证据" if self._industry_preparation is None else None,
                 ))
         self._calendar = context.calendar.open_dates
         versions = context.source_versions

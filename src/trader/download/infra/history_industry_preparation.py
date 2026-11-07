@@ -57,6 +57,7 @@ def PrepareHistoricalIndustries(
         progress.publish(HistorySyncProgress(
             "supplier_industry", "completed", len(universe), len(universe), "capco",
             industry_missing_codes=len(universe) - prepared.readiness.point_in_time_codes,
+            data_source="本地（中上协证据）",
         ))
     return prepared
 
@@ -107,11 +108,13 @@ def _inspect_candidate_codes(
                     progress.publish(HistorySyncProgress(
                         "supplier_industry", "failed", position, len(universe), security.code,
                         failure_reason="cninfo_candidate_invalid", failure_detail=reason,
+                        data_source="本地（巨潮原件）",
                     ))
                 else:
                     progress.publish(HistorySyncProgress(
                         "supplier_industry", "completed", position, len(universe), security.code,
                         cache_hit=True if document is not None else None,
+                        data_source="本地（巨潮原件）",
                     ))
     return _CandidateInspection(frozenset(candidates), tuple(failures))
 

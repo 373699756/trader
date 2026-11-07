@@ -20,6 +20,8 @@
 
 本切片验证：共享施工树history／进度100项通过（`/tmp/trader-355-history-source-final.xml`），从仅含本批暂存内容的冻结候选独立复验101项全部通过（`/tmp/trader-355-history-frozen.xml`），隔离未提交train/company差集；持久化流水线4项通过（`/tmp/trader-history-request-flow-fixed.xml`），覆盖慢writer、OSError／取消及价格已提交但断点失败后恢复复用。7源码mypy、受影响11个Python文件Ruff E/F/B/UP及diff检查通过；实际运行只用fixture及自有线程，不签真实联网或性能。company及用户补充的其它下载数据源标识继续本记录，不重开阶段；训练沿356更新跨命令旧布局断言。本次尚未启动真实sync或train。
 
+其它下载来源切片（2026-11-07，completed）：用户随后明确所有下载打印都增加实际来源，market按真实动作及已核验缓存身份显示，参考来源显式注入；历史BaoStock供应商、中上协官方准备、巨潮原件缓存及本地官方证据分别标注，未知端口不猜来源。来源标签不参与阶段身份，切源不重置耗时或重复心跳；保留并行已推送63b74398的补缺逐股日志，不重复施工。12源码及8测试Ruff、12源码mypy通过；定向来源／时钟／新补缺24项、历史具体来源16项、市场集成与行业心跳4项通过，首轮76通过／1旧空格断言失败已修并包含在4项补验。仅本批暂存差集加63b基线的独立冻结候选145项全部通过（`/tmp/trader-355-sources-frozen.xml`，含正常组合根ST预检消费者），排除train/company施工差集；组合根及共享任务类型Ruff与暂存Review通过。其它报告为`/tmp/trader-download-source-progress.xml`、`/tmp/trader-history-data-sources.xml`、`/tmp/trader-source-label-final.xml`及`/tmp/trader-source-integration-progress.xml`。不改下载策略、并发、持久结构或SDK调用，不签联网／性能；company仍接续本阶段，356待独立交付。
+
 用户确认的“整体耗时 | 业务·具体阶段 阶段耗时 | 状态 | 诊断详情”已覆盖启动、参考、history、market、company及终态；股票／月份／分页不重置阶段计时，新的执行身份另计。SyncProgress拥有命令时钟及阶段心跳，复用公共ProgressHeartbeat；各业务继续拥有供应商、覆盖及持久化计数，未改下载／恢复策略或数据库结构。history新增实际请求窗口、本股耗时、网络返回／复用分列、待写／写入中、最久在途股票、写入操作及距持久化推进；失败保留安全异常链和HTTP／SQLite证据，未核验覆盖不补零。
 
 验证：核心135项通过（`/tmp/trader-sync-355-final.xml`），行情组件整文件102项通过（`/tmp/trader-sync-355-qfq-all.xml`），入口与流水线50项通过、1项既有行业接线夹具排除（`/tmp/trader-sync-355-entry-pipeline.xml`）。独立候选107项通过；参考夹具6项因HEAD已有的identity_content_encodings参数与旧Session替身签名不符而失败，未混入另一任务已有的夹具修正，不签该6项通过（`/tmp/trader-sync-355-isolated.xml`）。13源码mypy使用`--no-site-packages --follow-imports=silent`通过，另一次含第三方导入的5源码检查通过；受影响Ruff E9/F、shell语法及diff检查通过。完整历史流水线扩展22项通过、1项旧日志断言修正后定向通过；争用敏感9秒上限未执行，不代签全仓、真实性能或原四分钟各步骤耗时分布。

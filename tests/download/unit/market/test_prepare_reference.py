@@ -9,7 +9,7 @@ import pytest
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.shared.reference_fixtures import PreparedFixture
-from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError, PrepareReference, ReferencePreparationDependencies
+from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError, PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
 from trader.download.application.sync_data import SyncData
 from trader.download.application.progress_message import ProgressLevel
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
@@ -18,6 +18,7 @@ from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 
 _NOW = datetime(2026, 11, 4, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
+_SOURCES = ReferencePreparationSources("fixture-ST", "fixture-calendar", "fixture-industry")
 
 
 def test_incompatible_industry_reports_its_exact_download_scope_without_stopping_price_preparation():
@@ -30,6 +31,7 @@ def test_incompatible_industry_reports_its_exact_download_scope_without_stopping
     result = PrepareReference(previous.official_universe, _NOW, ReferencePreparationDependencies(
         lambda *_args: previous.st_evidence, lambda: previous.open_dates, incompatible,
         lambda reference, evidence: published.append(reference), lambda: False,
+        _SOURCES,
     ), report=reports.append)
     text = str(reports)
     assert "market/reference/industry.sqlite3" in text
@@ -73,6 +75,7 @@ def test_no_eligible_stock_stops_before_calendar_industry_publication_and_downlo
         forbidden,
         forbidden,
         lambda: False,
+        _SOURCES,
     )
     result = SyncData(
         lambda: PrepareReference(universe, _NOW, dependencies),
@@ -159,6 +162,7 @@ def test_mixed_population_uses_one_st_cut_and_keeps_original_supplier_check_date
         industry,
         publish,
         lambda: False,
+        _SOURCES,
     )
     result = SyncData(
         lambda: PrepareReference(tuple(reversed(universe)), _NOW, dependencies),
@@ -202,6 +206,7 @@ def test_incomplete_st_cut_stops_before_other_reference_io(invalid):
         forbidden,
         forbidden,
         lambda: False,
+        _SOURCES,
     )
     with pytest.raises(ValueError, match="prepared_reference_incomplete"):
         PrepareReference(reference.official_universe, _NOW, dependencies)
@@ -231,6 +236,7 @@ def test_cancellation_between_reference_steps_stops_further_io(stage):
         forbidden,
         forbidden,
         lambda: cancelled,
+        _SOURCES,
     )
     with pytest.raises(RuntimeError, match="reference_preparation_cancelled"):
         PrepareReference(reference.official_universe, _NOW, dependencies)
@@ -242,9 +248,9 @@ def test_industry_progress_explains_degradation_and_still_enters_market_update(i
     messages, published, downloaded = [], [], []
 
     def industry(_at, eligible, open_dates):
-        assert messages[-1].fields[0].text == "当前行业"
+        assert messages[-1].task.label == "当前行业"
         assert eligible == expected.eligible_universe and open_dates == expected.open_dates
-        assert "开始准备" in messages[-1].fields[1].text
+        assert "开始准备" in messages[-1].fields[0].text
         if industry_status == "failed":
             raise RuntimeError("private supplier payload must not appear in progress")
         return (_Industry(),) if industry_status == "available" else ()
@@ -255,6 +261,7 @@ def test_industry_progress_explains_degradation_and_still_enters_market_update(i
         industry,
         lambda reference, _evidence: published.append(reference),
         lambda: False,
+        _SOURCES,
     )
 
     def forbidden(_reference):
@@ -262,8 +269,8 @@ def test_industry_progress_explains_degradation_and_still_enters_market_update(i
 
     def market(reference):
         assert published == [reference]
-        assert messages[-1].fields[0].text == "参考发布"
-        assert messages[-1].fields[1].text == "完成"
+        assert messages[-1].task.label == "参考发布"
+        assert messages[-1].state == "完成"
         downloaded.append(reference)
         return QfqUpdateResult(_NOW.date(), 1)
 
@@ -276,7 +283,7 @@ def test_industry_progress_explains_degradation_and_still_enters_market_update(i
     ).execute("market")
 
     assert result.exit_code == 0 and len(downloaded) == 1
-    industry_message = messages[1].fields[1]
+    industry_message = next(message.fields[0] for message in messages if message.task.label == "当前行业" and message.state in {"完成", "失败"})
     assert industry_message.level == (
         ProgressLevel.SUCCESS if industry_status == "available" else ProgressLevel.WARNING
     )
@@ -295,6 +302,7 @@ def test_reference_completion_cut_preserves_the_actual_industry_received_time():
         lambda *_args: (_Industry(received_at=received),),
         lambda *_args: None,
         lambda: False,
+        _SOURCES,
     )
     result = PrepareReference(expected.official_universe, _NOW, dependencies)
     assert result.checked_at == received
@@ -311,7 +319,34 @@ def test_partial_industry_preparation_reports_coverage_and_missing_count():
         lambda *_args: (_Industry(),),
         lambda *_args: None,
         lambda: False,
+        _SOURCES,
     )
     PrepareReference(expected.official_universe, _NOW, dependencies, report=messages.append)
-    assert messages[1].fields[1].level is ProgressLevel.WARNING
-    assert "1/2 股，缺分类 1 股" in messages[1].fields[1].text
+    industry_message = next(message for message in messages if message.task.label == "当前行业" and message.state == "完成")
+    assert industry_message.fields[0].level is ProgressLevel.WARNING
+    assert "1/2 股，缺分类 1 股" in industry_message.fields[0].text
+
+
+def test_reference_logs_use_injected_sources_and_keep_publication_local():
+    expected = PreparedFixture(_NOW)
+    messages = []
+    dependencies = ReferencePreparationDependencies(
+        lambda *_args: expected.st_evidence,
+        lambda: expected.open_dates,
+        lambda *_args: (_Industry(),),
+        lambda *_args: None,
+        lambda: False,
+        _SOURCES,
+    )
+    PrepareReference(expected.official_universe, _NOW, dependencies, report=messages.append)
+
+    for message in messages:
+        expected_source = {"ST资格": _SOURCES.st, "交易日历": _SOURCES.calendar, "当前行业": _SOURCES.industry, "参考发布": "本地"}[message.task.label]
+        assert message.fields[-1].text == f"来源 {expected_source}"
+    assert "Tencent" not in str(messages) and "BaoStock" not in str(messages)
+
+
+@pytest.mark.parametrize("sources", (("", "calendar", "industry"), ("st", " ", "industry"), ("st", "calendar", "")))
+def test_reference_source_labels_cannot_be_missing(sources):
+    with pytest.raises(ValueError, match="reference_preparation_source_invalid"):
+        ReferencePreparationSources(*sources)

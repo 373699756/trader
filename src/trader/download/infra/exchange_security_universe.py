@@ -14,11 +14,13 @@ from trader.infra.market_data.observations import ListingFetcher
 
 def LoadCurrentAShareUniverse(
     sse_fetcher: ListingFetcher, szse_fetcher: ListingFetcher, timeout_seconds: float,
-    *, report: Callable[[ProgressMessage], None] | None = None,
+    *, source_label: str, report: Callable[[ProgressMessage], None] | None = None,
 ) -> tuple[BaoStockSecurity, ...]:
+    if not source_label.strip():
+        raise ValueError("security_universe_source_invalid")
     task = ProgressTask("参考", "universe", "股票总体")
     if report is not None:
-        report(ProgressMessage((), task=task, state="开始"))
+        report(ProgressMessage((ProgressField(f"来源 {source_label}"),), task=task, state="开始"))
     listings = tuple(sse_fetcher(timeout_seconds)) + tuple(szse_fetcher(timeout_seconds))
     if (
         len(listings) < 4000
@@ -28,7 +30,8 @@ def LoadCurrentAShareUniverse(
     ):
         raise ValueError("official A-share security universe is incomplete")
     if report is not None:
-        report(ProgressMessage((ProgressField(f"总体 {len(listings)} 股"),), task=task, state="完成", finished=True))
+        report(ProgressMessage((ProgressField(f"总体 {len(listings)} 股"), ProgressField(f"来源 {source_label}")),
+                              task=task, state="完成", finished=True))
     return tuple(
         BaoStockSecurity(
             item.code, item.name, cast(BaoStockBoard, item.board), item.listing_date, None, "exchange_security_master"

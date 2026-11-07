@@ -194,9 +194,11 @@ def test_per_stock_progress_reports_request_cache_and_missing_classification(fix
     assert [message.fields[0].text for message in messages] == ["1/2股", "2/2股"]
     assert messages[0].fields[1].text == "代码 600001"
     assert messages[0].fields[2].text == "缓存复用"
+    assert any(field.text == "本地复用（原来源 巨潮）" for field in messages[0].fields)
     assert messages[1].fields[2].text == "接口获取"
     assert messages[1].fields[3].level is ProgressLevel.WARNING
     assert messages[1].fields[4].text == "原件缓存未复用 无原件"
+    assert any(field.text == "来源 巨潮" for field in messages[1].fields)
 
 
 def test_late_received_time_is_preserved_instead_of_replaced_by_query_start(fixture):
@@ -385,6 +387,7 @@ def test_feedback_reports_effective_budget_real_batches_and_exclusive_operation_
     _fetch(source, codes=("600001", "600002"))
     first = " | ".join(field.text for field in messages[0].fields)
     assert "有效单批上限 64股" in first and "正文合计上限 2097152字节" in first
+    assert "来源 巨潮" in first
     final = " | ".join(field.text for field in messages[-1].fields)
     assert messages[-1].state == "完成"
     assert "接口获取（含解析）累计 3.000秒" in final
@@ -400,6 +403,7 @@ def test_feedback_reports_effective_budget_real_batches_and_exclusive_operation_
     assert calls == []
     reused = " | ".join(field.text for field in messages[-1].fields)
     assert "当前发布缓存复用 2 股" in reused and "接口调用 0次" in reused
+    assert "来源 巨潮" in reused
     assert "已保存个股原件 0份" in reused
     assert "发布缓存复用 2股" in reused and "原件缓存复用 0股" in reused
 
@@ -444,10 +448,11 @@ def test_waiting_feedback_names_current_stock_without_confirming_uncommitted_ori
     def waiting(client, code, start, end, *, cancel_requested):
         clock[0] += 6
         output.heartbeat()
-        line = stream.getvalue().splitlines()[-1]
+        line = " | ".join(part.strip() for part in stream.getvalue().splitlines()[-1].split(" | "))
         assert "等待 | 操作 获取个股行业 | 当前股票 600001" in line
         assert "已确认 0/1股" in line and "已保存个股原件 0份" in line
         assert "原件缓存未复用 无原件" in line
+        assert "来源 巨潮" in line
         return fetch(client, code, start, end, cancel_requested=cancel_requested)
 
     monkeypatch.setattr(CninfoIndustryClient, "fetch_changes", waiting)

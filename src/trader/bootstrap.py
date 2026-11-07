@@ -21,7 +21,7 @@ from trader.download.application.company_evidence import CompanyEvidenceDependen
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_ports import HistorySyncDependencies
-from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies
+from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.sync_progress import SyncProgress
 from trader.download.application.qfq_download_progress import QfqMessage
@@ -436,7 +436,7 @@ def _prepare_reference(
     if cancel_requested():
         raise RuntimeError("reference_preparation_cancelled")
     universe = LoadCurrentAShareUniverse(
-        partial(FetchSseListings, get=HttpRequestScope(OpenExternalHttp).get), partial(FetchSzseListings, get=HttpRequestScope(OpenExternalHttp).get), 15.0, report=report,
+        partial(FetchSseListings, get=HttpRequestScope(OpenExternalHttp).get), partial(FetchSzseListings, get=HttpRequestScope(OpenExternalHttp).get), 15.0, report=report, source_label="上交所/深交所",
     )
     workers = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="risk-st-check")
     with ExitStack() as resources, WorkerScope((workers,), timeout_seconds=shutdown_timeout_seconds):
@@ -468,6 +468,7 @@ def _prepare_reference(
             industry.fetch,
             publication.publish,
             cancel_requested,
+            sources=ReferencePreparationSources("新浪/交易所", "新浪/Akshare", "巨潮"),
         )
         return PrepareReference(universe, observed_at, dependencies, report=report)
 

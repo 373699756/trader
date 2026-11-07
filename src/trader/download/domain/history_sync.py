@@ -339,6 +339,7 @@ class HistorySyncProgress:
     stock_read_seconds: float | None = None
     stock_validation_seconds: float | None = None
     request: HistoryStockRequest | None = None
+    data_source: str | None = None
 
     def __post_init__(self) -> None:
         if self.request is not None and (self.stage != "tencent_history" or self.current_item != self.request.code):
@@ -376,6 +377,7 @@ class HistorySyncProgress:
                 and (self.state != "failed" or not re.fullmatch(r"[0-9A-Za-z_.:> -]{1,512}", self.failure_detail))
             )
             or self.supplier_source not in (None, "baostock", "tencent")
+            or self.data_source is not None and not self.data_source.strip()
             or (
                 self.required_free_bytes is not None
                 and (

@@ -428,6 +428,12 @@ class StderrHistorySyncProgress:
                 source = "Tencent" if progress.supplier_source == "tencent" else "BaoStock"
                 requested = progress.requested_sessions
             parts.extend((f"来源 {source}", f"请求 {requested} 日"))
+        if (
+            progress.data_source is not None
+            and progress.stage not in {"tencent_history", "baostock_repair"}
+            and not any(part.startswith("来源 ") for part in parts)
+        ):
+            parts.append(f"来源 {progress.data_source}")
         if progress.stage in _DAILY_STAGES and self._stock_counts is not None:
             parts.append(f"总进度 {_format_count(*self._stock_counts)}")
         if progress.max_attempts > 1:

@@ -285,6 +285,7 @@ def test_supplier_reports_waiting_heartbeats_and_the_timed_out_stage(tmp_path) -
     assert recorder.values[-1].state == "failed"
     assert recorder.values[-1].stage == "supplier_calendar"
     assert recorder.values[-1].failure_reason == "supplier_calendar_timeout"
+    assert all(item.data_source == "BaoStock" for item in recorder.values)
 
 
 def test_supplier_result_handle_does_not_restart_the_call_deadline(tmp_path) -> None:
@@ -309,6 +310,7 @@ def test_supplier_result_handle_does_not_restart_the_call_deadline(tmp_path) -> 
 
     assert recorder.values[-1].state == "failed"
     assert recorder.values[-1].call_elapsed_seconds == pytest.approx(1.0)
+    assert all(item.data_source == "BaoStock" for item in recorder.values)
 
 
 def test_supplier_keeps_context_and_price_request_policies_separate(tmp_path, monkeypatch) -> None:

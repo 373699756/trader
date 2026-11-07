@@ -32,7 +32,7 @@ from trader.download.domain.qfq_window import QfqPendingReason, QfqPriceReviewSu
 
 def QfqMessage(
     stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL,
-    state: ProgressState = "处理中", finished: bool = False,
+    state: ProgressState = "处理中", finished: bool = False, label: str | None = None,
 ) -> ProgressMessage:
     return ProgressMessage(
         (
@@ -41,7 +41,7 @@ def QfqMessage(
                 for part in details.split(" | ")
             ),
         ),
-        task=ProgressTask("market", stage, stage),
+        task=ProgressTask("market", stage, label or stage),
         state="失败" if level is ProgressLevel.ERROR else state,
         finished=finished or level is ProgressLevel.ERROR,
     )
@@ -84,6 +84,7 @@ class QfqStockFeedback:
     missing_dates: tuple[date, ...] = ()
     inferred_suspended: int = 0
     reason: ProgressField = ProgressField("无")
+    source: str | None = None
 
 
 @dataclass
@@ -111,11 +112,15 @@ class QfqDownloadProgress:
     def processed(self) -> int:
         return self.completed + self.pending + self.not_applicable + self.no_trade_data
 
+    @property
+    def source_label(self) -> str:
+        return _source_label(self.source)
+
     def publish(
         self, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL,
-        state: ProgressState = "处理中", finished: bool = False,
+        state: ProgressState = "处理中", finished: bool = False, label: str | None = None,
     ) -> None:
-        self.report(QfqMessage(stage, details, level=level, state=state, finished=finished))
+        self.report(QfqMessage(stage, details, level=level, state=state, finished=finished, label=label))
 
     def record_stock(self, security: BaoStockSecurity, feedback: QfqStockFeedback) -> None:
         self.report(
@@ -136,6 +141,7 @@ class QfqDownloadProgress:
                     missing_dates=feedback.missing_dates,
                     inferred_suspended=feedback.inferred_suspended,
                     reason=feedback.reason.text,
+                    extra=(f"原来源 {_source_label(feedback.source)}",) if feedback.source is not None else (),
                     failure_level=ProgressLevel.ERROR
                     if feedback.reason.level is ProgressLevel.ERROR
                     else ProgressLevel.WARNING,
@@ -287,3 +293,8 @@ class QfqDownloadProgress:
             )
         self.summary(stage, level=level)
         return result
+
+
+def _source_label(source: str) -> str:
+    provider = source.partition(":")[0]
+    return {"tencent-newfqkline": "Tencent", "baostock": "BaoStock"}.get(provider, provider)

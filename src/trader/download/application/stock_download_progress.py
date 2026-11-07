@@ -109,7 +109,7 @@ def FormatStockDownloadProgress(progress: StockDownloadProgress) -> ProgressMess
         tuple(parts), progress.reason if progress.result in {"失败", "待重试"} else None,
         task=ProgressTask("history" if progress.command == "sync history" else "market",
                           "prices" if progress.command == "sync history" else "价格更新",
-                          "Tencent下载" if progress.command == "sync history" else "价格更新"),
+                          "Tencent下载" if progress.command == "sync history" else progress.action),
         state="失败" if progress.result == "失败" else "重试" if progress.result == "待重试" else "处理中",
     )
 

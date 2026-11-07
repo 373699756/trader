@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.historical_industry import HistoricalIndustryPreparation
-from trader.download.domain.history_sync import HistoryIndustryReadiness, HistorySyncProgressPort
+from trader.download.domain.history_sync import HistoryIndustryReadiness, HistorySyncProgress, HistorySyncProgressPort
 from trader.download.domain.industry_evidence import OfficialIndustryEvidence
 from trader.download.infra.history_industry_preparation import PrepareHistoricalIndustries
 from trader.download.infra.industry_query_index import IndustrySourceDocument, SQLiteIndustryQueryIndex
@@ -173,6 +173,10 @@ class OfficialIndustryHistory:
         if not math.isfinite(started):
             raise ValueError("official_industry_monotonic_invalid")
         operation = _Preparation(self, universe, calendar_dates, observed_at, started + self.budget_seconds)
+        if progress is not None:
+            progress.publish(HistorySyncProgress(
+                "supplier_industry", "started", 0, len(universe), "capco", data_source="中上协",
+            ))
         failure: str | None = None
         try:
             operation.download()

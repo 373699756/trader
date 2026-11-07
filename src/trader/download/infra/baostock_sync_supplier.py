@@ -497,6 +497,7 @@ class BaoStockHistorySupplier:
                 attempt=attempt.number,
                 max_attempts=attempt.total,
                 call_elapsed_seconds=max(0.0, call_elapsed_seconds),
+                data_source="BaoStock",
             )
         )
 
@@ -519,6 +520,7 @@ class BaoStockHistorySupplier:
                 max_attempts=attempt.total,
                 call_elapsed_seconds=max(0.0, call_elapsed_seconds),
                 failure_reason=failure_reason,
+                data_source="BaoStock",
             )
         )
 

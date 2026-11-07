@@ -121,7 +121,15 @@ def _parsed_documents(history: OfficialIndustryHistory, observed_at: datetime = 
 def test_official_chain_projects_from_publication_day_and_reuses_all_originals(tmp_path, sources):
     _links, calls, transport = sources
     history = _history(tmp_path, transport)
-    cold = history.prepare(_UNIVERSE, _CALENDAR, _OBSERVED)
+    messages = []
+
+    class Progress:
+        def publish(self, progress):
+            messages.append(progress)
+
+    cold = history.prepare(_UNIVERSE, _CALENDAR, _OBSERVED, progress=Progress())
+    assert messages[0].state == "started" and messages[0].data_source == "中上协"
+    assert messages[-1].data_source == "本地（中上协证据）"
     assert cold.readiness.ready
     assert [(item.effective_from, item.effective_to, item.industry) for item in cold.intervals] == [
         (date(2026, 4, 1), date(2026, 10, 1), "capco:J66货币金融服务"),
@@ -136,8 +144,10 @@ def test_official_chain_projects_from_publication_day_and_reuses_all_originals(t
     assert all(request[1] <= 45 and request[2] == 280 for request in transport.requests)
     assert transport.requests[-1][3] == 32 * 1024**2
     transport.requests.clear()
-    warm = history.prepare(_UNIVERSE, _CALENDAR, _OBSERVED)
+    messages.clear()
+    warm = history.prepare(_UNIVERSE, _CALENDAR, _OBSERVED, progress=Progress())
     assert warm == cold and transport.requests == []
+    assert all("下载" not in (item.data_source or "") for item in messages)
     assert len(_evidence(history)) == 2
     assert calls == [date(2025, 12, 31), date(2026, 6, 30)]
 

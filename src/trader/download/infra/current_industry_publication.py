@@ -290,7 +290,7 @@ class _IndustryProgress:
         if self.report is not None:
             self.report(ProgressMessage((
                 ProgressField(f"操作 {operation}"), *((ProgressField(f"当前股票 {code}"),) if code else ()),
-                *(ProgressField(value) for value in details), *self._details(),
+                *(ProgressField(value) for value in details), ProgressField("来源 巨潮"), *self._details(),
             ), task=ProgressTask("参考", "当前行业", "当前行业"), state=state))
 
     def stock(self, code: str, completed: int, *, cached: bool, missing: bool, reason: str | None = None) -> None:
@@ -300,7 +300,8 @@ class _IndustryProgress:
                 ProgressField(f"{completed}/{self.total}股"), ProgressField(f"代码 {code}"),
                 ProgressField("缓存复用" if cached else "接口获取"),
                 ProgressField("分类缺失" if missing else "完成", ProgressLevel.WARNING if missing else ProgressLevel.SUCCESS),
-                *((ProgressField(f"原件缓存未复用 {reason}"),) if reason else ()), *self._details(),
+                *((ProgressField(f"原件缓存未复用 {reason}"),) if reason else ()),
+                ProgressField("本地复用（原来源 巨潮）" if cached else "来源 巨潮"), *self._details(),
             ), task=ProgressTask("参考", "当前行业", "当前行业")))
 
 

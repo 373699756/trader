@@ -276,7 +276,7 @@ class UpdateQfqWindows:
         self, observed_at: datetime
     ) -> tuple[QfqDownloadProgress, Literal["qfq_worker_unavailable"] | None]:
         started = self.monotonic()
-        self.report(QfqMessage("准备", "正在加载沪深股票名单和 Tencent 交易日历", state="开始"))
+        self.report(QfqMessage("准备", "正在加载股票总体与交易日历", state="开始"))
         try:
             cutoff = self.v2.repair_cutoff() if self.repair_only else None
             context = self.supplier.load_qfq_context(
@@ -581,6 +581,7 @@ class UpdateQfqWindows:
                     len(v2_state.dates),
                     len(v2_state.dates),
                     len(v2_state.dates),
+                    source=selected_source,
                 ),
             )
             if facts and facts[-1].trade_date == dates[-1]:
@@ -620,9 +621,10 @@ class UpdateQfqWindows:
         failure_reason: Literal["qfq_worker_unavailable"] | None = None
         last_feedback = last_flush = self.monotonic()
         finished_normally = False
-        progress.publish("价格更新", f"来源 Tencent | 股票 {progress.total} | 并发 {self.worker_count} "
+        download_stage = f"{progress.source_label}下载"
+        progress.publish("价格更新", f"来源 {progress.source_label} | 股票 {progress.total} | 并发 {self.worker_count} "
                          f"| 单次超时 {self.configuration.source_timeout_seconds}秒 | 重试上限 {self.configuration.source_retries}",
-                         state="开始")
+                         state="开始", label=download_stage)
         try:
             while not self.cancel_requested():
                 if writing is not None and writing.done():
@@ -668,6 +670,7 @@ class UpdateQfqWindows:
                         "价格更新",
                         f"网络在途 {len(futures)} | 待写 {len(downloaded)} | 写入 {len(write_batch)} | 已处理 {progress.processed}/{progress.total}",
                         state="等待",
+                        label=download_stage,
                     )
                     last_feedback = self.monotonic()
                 if futures or writing is not None:
@@ -688,7 +691,7 @@ class UpdateQfqWindows:
                 writing.result()
             progress.publish("价格更新", f"已处理 {progress.processed}/{progress.total} | 待重试 {progress.pending}",
                              state="取消" if self.cancel_requested() else "失败" if failure_reason or not finished_normally else "完成",
-                             finished=True)
+                             finished=True, label=download_stage)
         return failure_reason
 
     def _submit_write(

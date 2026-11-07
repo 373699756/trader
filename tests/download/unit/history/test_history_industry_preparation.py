@@ -79,7 +79,9 @@ def test_full_current_standard_candidate_coverage_never_becomes_point_in_time_in
     assert [item.completed_units for item in progress.values[:-1]] == [1, 2]
     assert all(item.industry_missing_codes is None for item in progress.values[:-1])
     assert all(item.cache_hit for item in progress.values[:-1])
+    assert all(item.data_source == "本地（巨潮原件）" for item in progress.values[:-1])
     assert progress.values[-1].current_item == "capco" and progress.values[-1].industry_missing_codes == 2
+    assert progress.values[-1].data_source == "本地（中上协证据）"
     for original in originals:
         assert index.read_source_document(original.request_key, _OBSERVED_AT) == original
 
@@ -135,9 +137,12 @@ def test_persisted_response_is_reparsed_and_invalid_candidate_is_reported(tmp_pa
     index = _index(tmp_path)
     invalid = replace(_document(), content=b'{"resultcode":200,"count":1,"records":[]}')
     index.save_source_documents((invalid,))
-    readiness = _inspect(index)
+    progress = _Progress()
+    readiness = _inspect(index, progress=progress)
     assert readiness.candidate_codes == readiness.point_in_time_codes == 0
     assert readiness.failure_category == "cninfo_candidate_failures:1:600001:cninfo_industry_records_incomplete"
+    failed = next(item for item in progress.values if item.state == "failed")
+    assert failed.data_source == "本地（巨潮原件）"
     assert index.read_source_document(invalid.request_key, _OBSERVED_AT) == invalid
 
 

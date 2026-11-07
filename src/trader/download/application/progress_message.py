@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Literal
 
@@ -15,7 +15,7 @@ ProgressState = Literal["开始", "处理中", "等待", "重试", "完成", "�
 class ProgressTask:
     owner: str
     key: str
-    label: str
+    label: str = field(compare=False)
     execution: int = 0
 
     def __post_init__(self) -> None:
