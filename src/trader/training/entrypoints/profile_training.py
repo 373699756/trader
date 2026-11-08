@@ -11,6 +11,8 @@ from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.training_diagnostics import TrainingOperationIssue
 from trader.training.domain.training_date_coverage import TrainingDateCoverage
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
+from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
 
 
 class CancellableTrainingProgress:
@@ -184,7 +186,23 @@ def TrainingDateCoverageSummary(coverage: tuple[TrainingDateCoverage, ...]) -> s
     return "；".join(details)
 
 
+def ProjectTrainingIndustryCoverage(snapshot: CurrentIndustrySnapshot) -> dict[str, object]:
+    return {
+        "policy": TRAINING_INDUSTRY_POLICY,
+        "classification": snapshot.classification,
+        "source": snapshot.source,
+        "industry_content_hash": snapshot.content_hash,
+        "publication_hash": snapshot.publication_hash,
+        "received_at": snapshot.observed_at.isoformat(),
+        "refresh_after": snapshot.refresh_after.isoformat(),
+        "classified_codes": len(snapshot.members),
+        "missing_codes": len(snapshot.gaps),
+        "gaps": [{"code": item.code, "reason": item.reason} for item in snapshot.gaps],
+    }
+
+
 __all__ = [
     "ProjectProfileTrainingResult", "ProjectLearnedRankTrainingResult", "ProjectTrainingOperationIssues",
     "CancellableTrainingProgress", "ProjectTrainingDateCoverage", "TrainingDateCoverageSummary",
+    "ProjectTrainingIndustryCoverage",
 ]

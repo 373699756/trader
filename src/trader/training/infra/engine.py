@@ -484,6 +484,7 @@ class _ProfileFittingAdapter:
             self.fitted = FitIndustryModels(
                 self.samples, self.plan.split, request.contracts, request.settings.fitting,
                 progress=request.progress, compute_threads=self.reservation.compute_threads,
+                industry_snapshot=self.owner.history.snapshot.industry_snapshot,
             )
 
     def prepare_head(self, head: PlannedTrainingHead) -> PreparedTrainingHead:
@@ -494,6 +495,7 @@ class _ProfileFittingAdapter:
             refitted = RefitIndustryModels(
                 self.samples, contract, head.final_fit, fitted, request.settings.fitting,
                 compute_threads=self.reservation.compute_threads, progress=request.progress,
+                industry_snapshot=snapshot.industry_snapshot,
             )
             result, staging = _fit_and_prepare_head(
                 _HeadFitRequest(

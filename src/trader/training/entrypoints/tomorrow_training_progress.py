@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import sys
 import math
+import os
 import threading
 import time
 from collections import Counter, deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Literal
 
-from trader.infra.progress_format import CleanProgressText, PadProgressText, ProgressDuration, ProgressPrefix, ShortProgressText
+from trader.infra.progress_format import CleanProgressText, DisplayWidth, ProgressDuration, ProgressPrefix, WrapProgressText
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.shutdown import ShutdownStep
 from trader.infra.signal_cancellation import ManualCancellationScope
@@ -58,6 +60,33 @@ _RESULT_LABELS: dict[TomorrowTrainingCommandStatus, str] = {
 }
 
 
+@dataclass(frozen=True)
+class TrainingProgressLayout:
+    columns: int = 180
+
+    def __post_init__(self) -> None:
+        if type(self.columns) is not int or self.columns < 1:
+            raise ValueError("training_progress_columns_invalid")
+
+    def render(self, prefix: tuple[str, str, str], details: tuple[str, ...]) -> str:
+        first = " | ".join(prefix)
+        text = "；".join(CleanProgressText(part).strip() for part in details if part.strip())
+        if not text:
+            return first.rstrip()
+        offset = DisplayWidth(first) + 3
+        wrapped = WrapProgressText(text, max(2, self.columns - offset))
+        return "\n".join((first + " | " + wrapped[0], *(" " * offset + line for line in wrapped[1:])))
+
+
+def ReadTrainingProgressLayout() -> TrainingProgressLayout:
+    """Detect the actual stderr terminal once at the command boundary."""
+    try:
+        columns = os.get_terminal_size(sys.stderr.fileno()).columns
+    except (AttributeError, OSError, ValueError):
+        columns = 180
+    return TrainingProgressLayout(columns if columns > 0 else 180)
+
+
 class StderrTomorrowTrainingProgress:
     def __init__(
         self,
@@ -67,6 +96,7 @@ class StderrTomorrowTrainingProgress:
         command_label: str = "Tomorrow训练",
         started_at: float | None = None,
         cancellation: ManualCancellationScope | None = None,
+        layout: TrainingProgressLayout | None = None,
     ) -> None:
         self._monotonic = monotonic
         now = monotonic()
@@ -79,6 +109,7 @@ class StderrTomorrowTrainingProgress:
         self._cancellation = cancellation
         self._shutdown_step: ShutdownStep | None = None
         self._command_label = command_label
+        self._layout = TrainingProgressLayout() if layout is None else layout
         self._latest: TomorrowTrainingProgress | None = None
         self._stage_started_at: dict[tuple[TomorrowTrainingStage, Strategy | None], float] = {}
         self._completed_stages: set[tuple[TomorrowTrainingStage, Strategy | None]] = set()
@@ -127,12 +158,16 @@ class StderrTomorrowTrainingProgress:
     def started_at(self) -> float:
         return self._started_at
 
+    @property
+    def layout(self) -> TrainingProgressLayout:
+        return self._layout
+
     def report_notice(self, stage: str, details: str, *, state: str = "处理中") -> None:
         now = self._monotonic()
         with self._lock:
             started = self._notice_started.setdefault(stage, now)
             prefix = ProgressPrefix(now - self._started_at, f"{self._command_label}·{stage}", now - started, state, stage_width=36)
-            _write_line(" | ".join((*prefix, CleanProgressText(details))))
+            _write_line(self._layout.render(prefix, (details,)))
             self._emitted_at = now
             self._current_notice = None if state in {"完成", "失败", "取消"} else (stage, details, now)
 
@@ -209,8 +244,8 @@ class StderrTomorrowTrainingProgress:
         diagnostic = self._sample_diagnostics
         if diagnostic is not None:
             details.append(
-                f"样本诊断 缺行业{diagnostic.missing_industry} 缺价格{diagnostic.missing_prices} "
-                f"窗口不足{diagnostic.short_window} 特征无效{diagnostic.invalid_features} 标签不足{diagnostic.missing_labels} "
+                f"候选样本诊断（股日） 缺行业{diagnostic.missing_industry} 缺价格{diagnostic.missing_prices} "
+                f"窗口不足（含预热）{diagnostic.short_window} 特征无效{diagnostic.invalid_features} 标签不足{diagnostic.missing_labels} "
                 f"停牌{diagnostic.suspended_sessions} 估算缺行{diagnostic.estimated_sessions} "
                 f"T+1缺失{diagnostic.missing_t1} D25缺失{diagnostic.missing_d25}"
             )
@@ -218,7 +253,7 @@ class StderrTomorrowTrainingProgress:
         self._current_notice = None
         self._eta_key = None
         self._eta_samples.clear()
-        _write_line(" | ".join((*prefix, *details)))
+        _write_line(self._layout.render(prefix, tuple(details)))
 
     def _emit_heartbeat(self, now: float) -> None:
         with self._lock:
@@ -229,8 +264,9 @@ class StderrTomorrowTrainingProgress:
                 stage, details, updated = notice
                 prefix = ProgressPrefix(now - self._started_at, f"{self._command_label}·{stage}",
                                         now - self._notice_started[stage], "等待", stage_width=36)
-                _write_line(" | ".join((*prefix, CleanProgressText(details),
-                                       f"距上次阶段更新 {ProgressDuration(now - updated)}")))
+                _write_line(self._layout.render(prefix, (
+                    details, f"距上次阶段更新 {ProgressDuration(now - updated)}",
+                )))
                 self._emitted_at = now
             elif self._latest is not None and self._latest.state != "completed":
                 self._emit(self._latest, now, waiting=True)
@@ -242,6 +278,12 @@ class StderrTomorrowTrainingProgress:
         validation = progress.validation
         if validation is not None:
             return f"验证 {validation.completed_rows:>7}/{validation.total_rows:>7}行"
+        counts = progress.fit_counts
+        if counts is not None:
+            label = "行业" if progress.count_unit == "industries" else "任务"
+            if not progress.total_is_exact or counts.total == 0:
+                return f"{label}已处理 {counts.processed}"
+            return f"{label} {counts.processed}/{counts.total} ({counts.processed / counts.total:.1%})"
         if progress.stage == "history_conversion":
             return f"扫描 {progress.completed_units:>9}行"
         if progress.stage == "cross_section_conversion":
@@ -275,7 +317,7 @@ class StderrTomorrowTrainingProgress:
 
     def _epoch_eta(self, now: float, progress: TomorrowTrainingProgress) -> str:
         detail = progress.fit_detail
-        if detail is None or self._eta_key is None:
+        if detail is None or self._eta_key is None or detail.completed_batches == detail.total_batches:
             return ""
         if len(self._eta_samples) < 2 or now - self._eta_samples[-1][0] > 10:
             return "本轮估算中"
@@ -284,7 +326,9 @@ class StderrTomorrowTrainingProgress:
         advanced = detail.completed_batches - first_batch
         if elapsed <= 0 or advanced <= 0:
             return "本轮估算中"
-        return f"本轮余约 {ProgressDuration((detail.total_batches - detail.completed_batches) * elapsed / advanced)}"
+        remaining = detail.total_batches - detail.completed_batches
+        seconds = remaining * elapsed / advanced
+        return "本轮余约 <1秒" if seconds < 1 else f"本轮余约 {ProgressDuration(seconds)}"
 
     def _emit(self, progress: TomorrowTrainingProgress, now: float, *, waiting: bool = False) -> None:
         label = self._stage_label(progress)
@@ -294,31 +338,36 @@ class StderrTomorrowTrainingProgress:
         prefix = ProgressPrefix(now - self._started_at, f"{self._command_label}·{label}",
                                 now - self._display_started[key], "等待" if waiting else _STATE_LABELS[progress.state],
                                 stage_width=36)
-        context, batch, details = "—", "—", "—"
+        details = [self._count(progress)]
         if progress.stage == "history_conversion":
-            context = f"生成 {progress.produced_units}样本行"
+            details.append(f"生成 {progress.produced_units}样本行")
         if progress.validation is not None:
-            context = f"有效模型 {progress.produced_units}"
+            details.append(f"有效模型 {progress.produced_units}")
         elif progress.stage == "sample_cache" and progress.state == "completed":
-            context = "复用完整样本" if progress.produced_units else "需要生成样本"
+            details.append("复用完整样本" if progress.produced_units else "需要生成样本")
+        counts = progress.fit_counts
+        if counts is not None:
+            details.append(f"成功 {counts.fitted} 跳过 {counts.skipped}")
         fit = progress.fit_detail
         if fit is not None:
-            context = f"{ShortProgressText(fit.industry, 12)}·{_FIT_PHASE_LABELS[fit.phase]}"
-            details = f"样本 {fit.training_rows}行"
-            if fit.total_epochs or fit.total_batches:
-                batch = f"轮{fit.epoch:>2}/{fit.total_epochs:<2} 批{fit.completed_batches:>5}/{fit.total_batches:<5}"
+            industry_name = fit.industry_name
+            details.append(f"{industry_name}·{_FIT_PHASE_LABELS[fit.phase]}" if industry_name else _FIT_PHASE_LABELS[fit.phase])
+            details.append(f"样本 {fit.training_rows}行")
+            if fit.total_epochs:
+                details.append(f"轮次 {fit.epoch}/{fit.total_epochs}")
+            if fit.total_batches:
+                details.append(f"本轮批次 {fit.completed_batches}/{fit.total_batches} ({fit.completed_batches / fit.total_batches:.1%})")
             eta = self._epoch_eta(now, progress)
             if eta:
-                details = f"{details}；{eta}"
+                details.append(eta)
         if waiting and now - self._advanced_at >= _HEARTBEAT_INTERVAL_SECONDS:
-            details = f"未推进 {ProgressDuration(now - self._advanced_at)}"
-        fields = (self._count(progress), context, batch, details)
-        _write_line(" | ".join((*prefix, *(PadProgressText(ShortProgressText(value, width), width) for value, width in zip(fields, (28, 24, 26, 34), strict=True)))))
+            details.append(f"未推进 {ProgressDuration(now - self._advanced_at)}")
+        _write_line(self._layout.render(prefix, tuple(details)))
         self._emitted_at = now
 
 
 def _write_line(line: str) -> None:
-    # Keep the newline in the same stream write across independent profile emitters.
+    # Keep a complete wrapped event in one stream write across independent profile emitters.
     sys.stderr.write(line.rstrip(" ") + "\n")
     sys.stderr.flush()
 
@@ -331,6 +380,11 @@ def _display_key(progress: TomorrowTrainingProgress) -> tuple[str, Strategy | No
     return (f"{progress.stage}:validation" if progress.validation is not None else progress.stage, progress.strategy)
 
 
+def _fit_counts_position(progress: TomorrowTrainingProgress) -> tuple[int, int, int] | None:
+    counts = progress.fit_counts
+    return None if counts is None else (counts.processed, counts.fitted, counts.skipped)
+
+
 def _has_advanced(previous: TomorrowTrainingProgress | None, current: TomorrowTrainingProgress) -> bool:
     if previous is None:
         return True
@@ -340,8 +394,13 @@ def _has_advanced(previous: TomorrowTrainingProgress | None, current: TomorrowTr
         or (None if previous.validation is None else previous.validation.completed_rows)
         != (None if current.validation is None else current.validation.completed_rows)
         or _fit_position(previous.fit_detail) != _fit_position(current.fit_detail)
+        or _fit_counts_position(previous) != _fit_counts_position(current)
         or current.state == "completed" and previous.state != "completed"
     )
 
 
-__all__ = ["StderrTomorrowTrainingProgress"]
+__all__ = [
+    "ReadTrainingProgressLayout",
+    "StderrTomorrowTrainingProgress",
+    "TrainingProgressLayout",
+]

@@ -59,6 +59,7 @@ class TrainingFitDetail:
     completed_batches: int = 0
     total_batches: int = 0
     failure_reason: str | None = None
+    industry_name: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if (
@@ -67,8 +68,29 @@ class TrainingFitDetail:
             or self.epoch > self.total_epochs
             or self.completed_batches > self.total_batches
             or (self.phase == "skipped") != bool(self.failure_reason)
+            or self.industry_name is not None and (
+                not isinstance(self.industry_name, str)
+                or not self.industry_name.strip() or self.industry_name != self.industry_name.strip()
+            )
         ):
             raise ValueError("training fit detail is invalid")
+
+
+@dataclass(frozen=True)
+class TrainingFitCounts:
+    processed: int
+    total: int
+    fitted: int
+    skipped: int
+
+    def __post_init__(self) -> None:
+        values = (self.processed, self.total, self.fitted, self.skipped)
+        if (
+            any(type(value) is not int or value < 0 for value in values)
+            or self.processed > self.total
+            or self.processed != self.fitted + self.skipped
+        ):
+            raise ValueError("training_fit_counts_invalid")
 
 
 @dataclass(frozen=True)
@@ -97,6 +119,7 @@ class TomorrowTrainingProgress:
     total_is_exact: bool = field(default=True, kw_only=True)
     count_unit: Literal["tasks", "industries"] = field(default="tasks", kw_only=True)
     validation: TrainingValidationProgress | None = field(default=None, kw_only=True)
+    fit_counts: TrainingFitCounts | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if (
@@ -106,6 +129,11 @@ class TomorrowTrainingProgress:
             or type(self.total_is_exact) is not bool
             or self.count_unit not in {"tasks", "industries"}
             or self.validation is not None and not isinstance(self.validation, TrainingValidationProgress)
+            or self.fit_counts is not None and (
+                not isinstance(self.fit_counts, TrainingFitCounts)
+                or (self.completed_units, self.total_units, self.produced_units)
+                != (self.fit_counts.processed, self.fit_counts.total, self.fit_counts.fitted)
+            )
         ):
             raise ValueError("Tomorrow V3 training progress counts are invalid")
 
@@ -195,6 +223,7 @@ __all__ = [
     "TomorrowTrainingWindow",
     "ProductionTrainingWindow",
     "TrainingFitDetail",
+    "TrainingFitCounts",
     "TrainingFitPhase",
     "TrainingValidationProgress",
 ]

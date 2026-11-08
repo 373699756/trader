@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
@@ -67,7 +68,8 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 
-        first, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads, progress=Progress())
+        first, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads, progress=Progress(),
+                                   industry_snapshot=CurrentIndustrySnapshotFixture(()))
         fit_events = [event for event in events if event.stage == "model_fit"]
         assert all(event.count_unit == "industries" for event in fit_events)
         validation = [event for event in fit_events if event.validation is not None]
@@ -79,10 +81,12 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 
     with cache.open() as index, ExitStack() as resources:
         assert cache.reused
-        second, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads)
+        second, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads,
+                                    industry_snapshot=CurrentIndustrySnapshotFixture(()))
         if profile.algorithm == "ridge":
             events.clear()
-            paired = FitIndustryModels(index, split, HEAD_CONTRACTS, settings.fitting, compute_threads=compute_threads, progress=Progress())
+            paired = FitIndustryModels(index, split, HEAD_CONTRACTS, settings.fitting, compute_threads=compute_threads, progress=Progress(),
+                                       industry_snapshot=CurrentIndustrySnapshotFixture(()))
             assert paired[HEAD_CONTRACTS.index(contract)] == first
             for head in HEAD_CONTRACTS:
                 validation = [event for event in events if event.strategy is head.strategy and event.validation is not None]

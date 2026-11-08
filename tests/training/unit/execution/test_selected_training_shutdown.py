@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import date, timedelta
 import signal
 import threading
 
@@ -16,14 +17,87 @@ from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.workers import BoundedExecutor
 from trader.training.application.learned_rank_training import V1TrainingResult
+from trader.training.application.profile_training import HeadTrainingResult, TrainingRunResult
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingOutcome, SelectedTrainingRun, SelectedTrainingTask, TrainingLocations
 from trader.training.entrypoints import selected_training
+from trader.training.entrypoints.tomorrow_training_progress import TrainingProgressLayout
+from trader.training.domain.training_date_coverage import TrainingDateCoverage
+from trader.recommendation.domain.publication.models import Strategy
+from trader.infra.progress_format import DisplayWidth
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.selected_training import SelectedTrainingAdapter
 
 
 _CURRENT_INDUSTRY = CurrentIndustrySnapshotFixture(("000001", *(f"60000{number}" for number in range(6))))
+
+
+@pytest.mark.parametrize("terminal_columns", (None, 92))
+def test_selected_profiles_share_one_layout_and_report_brief_date_gaps_with_complete_json(
+    tmp_path, monkeypatch, capsys, terminal_columns,
+):
+    resources = TrainingResourceSettingsFixture()
+    width_reads = []
+    layouts = []
+    reporter = selected_training.StderrTomorrowTrainingProgress
+
+    def layout():
+        width_reads.append(True)
+        return TrainingProgressLayout(96)
+
+    def output(**options):
+        layouts.append(options["layout"])
+        return reporter(**options)
+
+    required = tuple(date(2026, 10, 1) + timedelta(days=index) for index in range(10))
+    coverage = TrainingDateCoverage(
+        Strategy.TOMORROW, "final_fitting", "sample_index", date(2026, 11, 6), date(2026, 11, 5),
+        required, required[:1],
+    )
+    v1 = V1TrainingResult(
+        "blocked", "fixture", "a" * 64, 0, failure_reasons=("coverage_insufficient",), date_coverage=(coverage,),
+    )
+    head = HeadTrainingResult(
+        Strategy.TOMORROW, "blocked", "complete_manifest", "fixture", "a" * 64,
+        1, 1, "", "", 0, 0, 0, ("coverage_insufficient",), date_coverage=(coverage,),
+    )
+    standard = TrainingRunResult("fixture", "a" * 64, 0, (head,))
+
+    def train(operations, _executor):
+        outcomes = (SelectedTrainingOutcome("v1", v1), SelectedTrainingOutcome("v3", standard))
+        for outcome in outcomes:
+            operations.request.on_outcome(outcome)
+        return SelectedTrainingRun(outcomes, 0, 0)
+
+    monkeypatch.setattr(selected_training, "ReadTrainingProgressLayout", layout)
+    monkeypatch.setattr(selected_training, "StderrTomorrowTrainingProgress", output)
+    monkeypatch.setattr(selected_training, "TrainSelectedProfiles", train)
+    monkeypatch.setattr(selected_training, "EvaluateAllHistoryTrainingDue", lambda *_args, **_options: ())
+    pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="selected-layout-fixture")
+    try:
+        code = selected_training.RunSelectedTraining(
+            RuntimeSettingsFixture(), ("v1", "v3"), executor=pool,
+            memory_admission=TrainingMemoryBudget(1024), cpu_budget=TrainingCpuBudget(2, settings=resources.cpu),
+            fanout_settings=resources.fanout, sample_settings=TrainingSampleSettingsFixture(),
+            paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
+            sqlite_policy=SqlitePolicyFixture(), terminal_columns=terminal_columns,
+            prepare_training=lambda request: SelectedTrainingAdapter(
+                request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _at: _CURRENT_INDUSTRY,
+                clock=lambda: _CURRENT_INDUSTRY.observed_at,
+            ),
+        )
+        captured = capsys.readouterr()
+        assert code == 1 and len(width_reads) == int(terminal_columns is None)
+        assert len(layouts) == 3 and all(value is layouts[0] for value in layouts)
+        assert all(DisplayWidth(line) <= (terminal_columns or 96) for line in captured.err.splitlines())
+        text = "".join(line.strip() for line in captured.err.splitlines())
+        assert text.count("明日·最终拟合 有效1/10日") == 2
+        assert required[-1].isoformat() not in text
+        reports = ReadJsonReports(captured.out)
+        assert reports[0]["date_coverage"][0]["missing_dates"] == [day.isoformat() for day in required[1:]]
+        assert reports[1]["heads"][0]["date_coverage"] == reports[0]["date_coverage"]
+    finally:
+        pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(2))
 
 
 @pytest.mark.parametrize(("execution", "cleanup", "watchdog_fails"), (

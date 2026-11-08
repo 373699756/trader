@@ -248,10 +248,13 @@ def _run_training_command(
 
 def _run_train(args: argparse.Namespace) -> int:
     from trader.bootstrap import PrepareRuntimeDisk
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.tomorrow_training_progress import ReadTrainingProgressLayout, StderrTomorrowTrainingProgress
 
     inherited = os.environ.pop("TRADER_COMMAND_STARTED_MONOTONIC", None)
-    output = StderrTomorrowTrainingProgress(command_label="train", started_at=float(inherited) if inherited is not None else None)
+    output = StderrTomorrowTrainingProgress(
+        command_label="train", started_at=float(inherited) if inherited is not None else None,
+        layout=ReadTrainingProgressLayout(),
+    )
     with output:
         output.report_notice("配置检查", "正在读取运行配置及磁盘策略", state="开始")
         try:
@@ -279,7 +282,7 @@ def _run_selected_training(
 
     try:
         output.report_notice("执行与收尾", "等待所选档位返回；含资源准备、训练、结果检查与关闭，具体进度见各档位阶段", state="开始")
-        code = ExecuteSelectedTraining(runtime, profiles, started_at=output.started_at)
+        code = ExecuteSelectedTraining(runtime, profiles, started_at=output.started_at, terminal_columns=output.layout.columns)
         output.report_notice("执行与收尾", f"退出码 {code}", state="取消" if code == 130 else "失败" if code else "完成")
         return code
     except KeyboardInterrupt:

@@ -483,7 +483,7 @@ def ExecuteSelectedTraining(
     *,
     history_root: Path | None = None,
     training_root: Path | None = None, started_at: float | None = None,
-    industry_snapshot: CurrentIndustrySnapshot | None = None,
+    industry_snapshot: CurrentIndustrySnapshot | None = None, terminal_columns: int | None = None,
 ) -> int:
     """Compose offline training resources, also used by isolated diagnostics."""
     from trader.training.entrypoints.commands import ConfigureTrainingResources
@@ -521,7 +521,7 @@ def ExecuteSelectedTraining(
                                     if industry_snapshot is None else lambda _as_of: industry_snapshot),
             clock=ShanghaiClock(_utc_now).now,
         ),
-        memory_capacity_bytes=memory_budget.capacity_bytes, started_at=started_at,
+        memory_capacity_bytes=memory_budget.capacity_bytes, started_at=started_at, terminal_columns=terminal_columns,
     )
 
 

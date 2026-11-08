@@ -14,6 +14,7 @@ from threading import Event
 from typing import Generic, Protocol, TypeVar
 
 from trader.download.domain.history_revision import HistoryTrainingRow
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.profile_training import TrainingRunResult
@@ -54,6 +55,7 @@ class SelectedTrainingRun(Generic[ResultT]):
     history_scan_passes: int
     history_rows_read: int
     timing: TrainingExecutionTiming | None = field(default=None, kw_only=True)
+    industry_snapshot: CurrentIndustrySnapshot | None = field(default=None, kw_only=True)
 
 
 class SelectedTrainingPreparationError(RuntimeError):

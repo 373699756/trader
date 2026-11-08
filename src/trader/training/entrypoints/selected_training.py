@@ -26,8 +26,14 @@ from trader.training.entrypoints.profile_training import (
     ProjectLearnedRankTrainingResult,
     ProjectProfileTrainingResult,
     ProjectTrainingOperationIssues,
+    ProjectTrainingIndustryCoverage,
+    TrainingDateCoverageSummary,
 )
-from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+from trader.training.entrypoints.tomorrow_training_progress import (
+    ReadTrainingProgressLayout,
+    StderrTomorrowTrainingProgress,
+    TrainingProgressLayout,
+)
 from trader.training.entrypoints.training_timing_projection import ProjectTrainingExecutionTiming
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.training_diagnostics import BuildTrainingOperationIssue
@@ -56,6 +62,7 @@ def RunSelectedTraining(
     prepare_training: Callable[[SelectedTrainingRequest], SelectedTrainingPort[SelectedProfileResult]],
     memory_capacity_bytes: int | None = None,
     started_at: float | None = None,
+    terminal_columns: int | None = None,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         return _run_selected_training(
@@ -72,6 +79,7 @@ def RunSelectedTraining(
             prepare_training=prepare_training,
             memory_capacity_bytes=memory_capacity_bytes,
             started_at=started_at,
+            terminal_columns=terminal_columns,
         )
 
 
@@ -86,6 +94,7 @@ def _run_selected_training(
     prepare_training: Callable[[SelectedTrainingRequest], SelectedTrainingPort[SelectedProfileResult]],
     memory_capacity_bytes: int | None = None,
     started_at: float | None = None,
+    terminal_columns: int | None = None,
 ) -> int:
     started = time.monotonic()
     measurements: TrainingExecutionMeasurements | None = None
@@ -99,7 +108,10 @@ def _run_selected_training(
     complete_outcome_summary = False
     outputs: tuple[StderrTomorrowTrainingProgress, ...] = ()
     shutdown_failure: str | None = None
-    command_output = StderrTomorrowTrainingProgress(command_label="train", started_at=started_at, start_heartbeat=False)
+    layout = ReadTrainingProgressLayout() if terminal_columns is None else TrainingProgressLayout(terminal_columns)
+    command_output = StderrTomorrowTrainingProgress(
+        command_label="train", started_at=started_at, start_heartbeat=False, layout=layout,
+    )
     command_output.report_notice("资源预检", (
         f"可用CPU {cpu_budget.available_cpus} | 拟合总线程预算 {cpu_budget.capacity} "
         f"| 原生库基线线程 {cpu_budget.native_threads} | 档位 {','.join(profiles)} "
@@ -114,6 +126,7 @@ def _run_selected_training(
                 scope.enter_context(StderrTomorrowTrainingProgress(
                     command_label=f"train·{profile.upper()}", started_at=command_output.started_at,
                     start_heartbeat=True, cancellation=cancelled,
+                    layout=layout,
                 ))
                 for profile in profiles
             )
@@ -134,7 +147,12 @@ def _run_selected_training(
                             if isinstance(result, TrainingRunResult)
                             else result.failure_reasons
                         )
-                        output.publish_result(result.status, "; ".join(dict.fromkeys(reasons)) or None)
+                        coverage = tuple(
+                            item for head in result.heads for item in head.date_coverage
+                        ) if isinstance(result, TrainingRunResult) else result.date_coverage
+                        coverage_summary = TrainingDateCoverageSummary(coverage)
+                        details = (*dict.fromkeys(reasons), *((coverage_summary,) if coverage_summary else ()))
+                        output.publish_result(result.status, "; ".join(details) or None)
                 except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     observed = replace(
                         outcome,
@@ -193,6 +211,7 @@ def _run_selected_training(
         code = 130 if cancelled.is_set() or 130 in codes else int(any(codes))
         summary = {
             "schema_version": "selected_training_result",
+            "industry": ProjectTrainingIndustryCoverage(run.industry_snapshot) if run.industry_snapshot is not None else None,
             "profiles": profiles,
             "worker_capacity": len(profiles),
             "available_cpus": cpu_budget.available_cpus,

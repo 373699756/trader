@@ -25,7 +25,7 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.infra.settings import LoadRuntimeSettings
 from trader.training.application.learned_rank_training import V1TrainingResult
-from trader.training.application.selected_training import SelectedTrainingTask, TrainSelectedProfiles, TrainingLocations
+from trader.training.application.selected_training import SelectedTrainingRun, SelectedTrainingTask, TrainSelectedProfiles, TrainingLocations
 from trader.training.infra import selected_training
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
@@ -139,8 +139,10 @@ def test_selected_profiles_freeze_one_clock_and_current_industry_load_for_the_ru
     with adapter.open() as session:
         for profile, progress in zip(request.profiles, request.progresses, strict=True):
             assert session.prepare_task(profile, progress).profile == profile
+        reported = session.completed(SelectedTrainingRun((), 0, 0)).industry_snapshot
     assert observed == loaded == [_CURRENT_INDUSTRY.observed_at]
     assert len(adopted) == 4 and all(snapshot is adopted[0] for snapshot in adopted)
+    assert reported is adopted[0]
     assert tuple(member.code for member in adopted[0].members) == ("000001",)
 
 

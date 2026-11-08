@@ -44,6 +44,28 @@ def ShortProgressText(text: str, width: int) -> str:
     return result + "…"
 
 
+def WrapProgressText(text: str, width: int) -> tuple[str, ...]:
+    """Keep complete cleaned text while wrapping at terminal display-cell boundaries."""
+    if width < 1:
+        raise ValueError("progress_wrap_width_invalid")
+    lines: list[str] = []
+    current: list[str] = []
+    current_width = 0
+    for character in CleanProgressText(text):
+        character_width = DisplayWidth(character)
+        if current and current_width + character_width > width:
+            lines.append("".join(current).rstrip())
+            current = []
+            current_width = 0
+        if not current and character.isspace():
+            continue
+        current.append(character)
+        current_width += character_width
+    if current:
+        lines.append("".join(current).rstrip())
+    return tuple(lines)
+
+
 def ProgressPrefix(
     total_seconds: float,
     task: str,
@@ -95,7 +117,15 @@ def _startup_progress() -> None:
         thread.join()
 
 
-__all__ = ["ProgressDuration", "ProgressPrefix", "CleanProgressText", "DisplayWidth", "PadProgressText", "ShortProgressText"]
+__all__ = [
+    "ProgressDuration",
+    "ProgressPrefix",
+    "CleanProgressText",
+    "DisplayWidth",
+    "PadProgressText",
+    "ShortProgressText",
+    "WrapProgressText",
+]
 
 
 if __name__ == "__main__":

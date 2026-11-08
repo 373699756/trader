@@ -9,6 +9,7 @@ import pytest
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from trader.infra.sqlite_connection import SqliteResult
 from trader.training.domain.training_dates import BuildTrainingDateSplit, TrainingDateSplit
 from trader.training.infra import model_fitting
@@ -217,7 +218,8 @@ def test_shared_candidates_keep_complete_ridge_results_equal_to_the_baseline(
             samples.prepare_for_model_fitting(split)
             if enabled:
                 samples.configure_shared_matrix_budget(samples.shared_matrix_memory_bytes())
-            results.append(FitIndustryModels(samples, split, HEAD_CONTRACTS, parameters, compute_threads=1))
+            results.append(FitIndustryModels(samples, split, HEAD_CONTRACTS, parameters, compute_threads=1,
+                                             industry_snapshot=CurrentIndustrySnapshotFixture(())))
     assert all(head.models for head in results[0])
     assert results[1] == results[0]
 

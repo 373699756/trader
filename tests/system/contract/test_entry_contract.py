@@ -402,14 +402,23 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
 
 @pytest.mark.parametrize("error", (OSError, RuntimeError, ValueError))
 def test_train_reports_local_failure_without_exposing_details(tmp_path, monkeypatch, capsys, error):
-    config = _runtime_config(tmp_path)
+    from trader.training.entrypoints import tomorrow_training_progress
 
-    def train(_runtime, _profiles, *, started_at):
-        assert started_at >= 0
+    config = _runtime_config(tmp_path)
+    layout_reads = []
+
+    def read_layout():
+        layout_reads.append(True)
+        return tomorrow_training_progress.TrainingProgressLayout(96)
+
+    def train(_runtime, _profiles, *, started_at, terminal_columns):
+        assert started_at >= 0 and terminal_columns == 96
         raise error("private training details")
 
+    monkeypatch.setattr(tomorrow_training_progress, "ReadTrainingProgressLayout", read_layout)
     monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", train)
     assert Main(["--config", str(config), "train", "v2,v3"]) == 1
+    assert layout_reads == [True]
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {
         "schema_version": "selected_training_result",

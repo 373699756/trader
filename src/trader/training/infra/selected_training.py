@@ -194,7 +194,10 @@ class _SelectedTrainingSession:
     def completed(
         self, run: SelectedTrainingRun[SelectedProfileResult],
     ) -> SelectedTrainingRun[SelectedProfileResult]:
-        return replace(run, history_rows_read=self.physical_rows, timing=self.measurements.snapshot())
+        return replace(
+            run, history_rows_read=self.physical_rows, timing=self.measurements.snapshot(),
+            industry_snapshot=self.history.snapshot.industry_snapshot,
+        )
 
 
 @dataclass(frozen=True)

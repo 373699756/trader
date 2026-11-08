@@ -172,7 +172,7 @@ def _populate_samples(request: TrainingSampleBuildRequest) -> None:
     request.index.prepare_for_model_fitting(split)
 
 
-def _refitted_models(samples, contract, plan, diagnostic, *_args, **_kwargs):
+def _refitted_models(samples, contract, plan, diagnostic, *_args, industry_snapshot, **_kwargs):
     counts = {item.industry: item for item in samples.final_fit_counts(contract, plan)}
     return tuple(replace(model, training_rows=counts[model.industry].rows) for model in diagnostic.models)
 
@@ -423,8 +423,9 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     fitted: list[Strategy] = []
 
-    def fit(_samples, _split, contracts, algorithm, *_args, progress, compute_threads):
+    def fit(_samples, _split, contracts, algorithm, *_args, progress, compute_threads, industry_snapshot):
         del progress
+        assert industry_snapshot is history.snapshot.industry_snapshot
         fitted.extend(contract.strategy for contract in contracts)
         return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
 
@@ -501,8 +502,9 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     fitted: list[Strategy] = []
 
-    def fit(_samples, _split, contracts, algorithm, *_args, progress, compute_threads):
+    def fit(_samples, _split, contracts, algorithm, *_args, progress, compute_threads, industry_snapshot):
         del progress
+        assert industry_snapshot is history.snapshot.industry_snapshot
         fitted.extend(contract.strategy for contract in contracts)
         return tuple(_fitted_result(len(contract.feature_positions), algorithm) for contract in contracts)
 
@@ -799,6 +801,7 @@ def test_model_progress_keeps_real_industry_count_for_each_head(monkeypatch, cal
         RidgeFittingParameters(20_000, 1.0),
         compute_threads=2,
         progress=progress,  # type: ignore[arg-type]
+        industry_snapshot=CurrentIndustrySnapshotFixture(()),
     )
 
     assert result.models == ()

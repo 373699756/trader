@@ -7,6 +7,7 @@ from typing import Literal, Protocol
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress, TomorrowTrainingProgressPort, TomorrowTrainingProgressState, TomorrowTrainingStage,
+    TrainingFitCounts,
 )
 from trader.training.application.training_diagnostics import (
     BuildTrainingOperationIssue, NotifyTrainingCommit, TrainingIssueStage, TrainingOperationIssue,
@@ -236,6 +237,7 @@ def _progress(
         progress.publish(TomorrowTrainingProgress(
             stage, state, completed, 1, produced_units=completed if stage in {"model_fit", "final_model_refit"} else 0,
             strategy=strategy,
+            fit_counts=TrainingFitCounts(completed, 1, completed, 0) if stage in {"model_fit", "final_model_refit"} else None,
         ))
 
 

@@ -10,9 +10,11 @@ from typing import TYPE_CHECKING, Literal
 import lightgbm as lgb
 import numpy as np
 
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
+    TrainingFitCounts,
     TrainingFitDetail,
     TrainingValidationProgress,
 )
@@ -85,9 +87,7 @@ def FittingParameterDocument(parameters: ModelFittingParameters) -> dict[str, ob
 @dataclass(frozen=True)
 class _FitProgress:
     state: Literal["started", "running", "completed"]
-    completed_units: int
-    total_units: int
-    produced_units: int = 0
+    counts: TrainingFitCounts
     fit_detail: TrainingFitDetail | None = None
     validation: TrainingValidationProgress | None = None
 
@@ -102,6 +102,8 @@ class _IndustryProgress:
         _publish(self.port, self.contract, self.update)
 
     def publish(self, detail: TrainingFitDetail) -> None:
+        if self.update.fit_detail is not None:
+            detail = replace(detail, industry_name=self.update.fit_detail.industry_name)
         self.update = replace(self.update, fit_detail=detail)
         self.heartbeat()
 
@@ -120,6 +122,7 @@ def FitIndustryModels(
     contracts: tuple[TrainedHeadContract, ...],
     parameters: ModelFittingParameters,
     *,
+    industry_snapshot: CurrentIndustrySnapshot,
     compute_threads: int,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> tuple[IndustryFitResult, ...]:
@@ -137,7 +140,7 @@ def FitIndustryModels(
     for state in states:
         if progress is not None:
             progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=state.contract.strategy))
-        _publish(progress, state.contract, _FitProgress("started", 0, len(state.workloads)))
+        _publish(progress, state.contract, _FitProgress("started", state.progress_counts()))
     industries = tuple(dict.fromkeys(counts.industry for state in states for counts in state.workloads))
     for industry in industries:
         reader = next(((state, counts) for state in states for counts in state.workloads if counts.industry == industry and not IndustryCoverageFailure(counts, parameters)), None)
@@ -145,8 +148,8 @@ def FitIndustryModels(
         if reader is not None:
             state, counts = reader
             read_progress = _IndustryProgress(progress, state.contract, _FitProgress(
-                "running", state.workloads.index(counts), len(state.workloads), len(state.models),
-                TrainingFitDetail(industry, counts.training, "preparation"),
+                "running", state.progress_counts(),
+                TrainingFitDetail(industry, counts.training, "preparation", industry_name=_industry_name(industry_snapshot, industry)),
             ))
             shared_read = samples.share_industry(industry, checkpoint=read_progress.heartbeat)
         else:
@@ -156,7 +159,7 @@ def FitIndustryModels(
                 industry_counts = next((item for item in state.workloads if item.industry == industry), None)
                 if industry_counts is None:
                     continue
-                _fit_head_industry(samples, state, industry_counts, parameters, progress, compute_threads)
+                _fit_head_industry(samples, state, industry_counts, parameters, progress, compute_threads, industry_snapshot)
     evaluations = (
         _evaluate_validation_pairs(samples, states, progress, compute_threads)
         if samples.execution_options.shared_validation else (None,) * len(states)
@@ -174,6 +177,7 @@ def RefitIndustryModels(
     diagnostic: IndustryFitResult,
     parameters: ModelFittingParameters,
     *,
+    industry_snapshot: CurrentIndustrySnapshot,
     compute_threads: int,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> tuple[FittedIndustryModel, ...]:
@@ -183,15 +187,16 @@ def RefitIndustryModels(
     refit_progress = _FinalRefitProgress(progress) if progress is not None else None
     counts = {item.industry: item for item in samples.final_fit_counts(contract, plan)}
     fitted: list[FittedIndustryModel] = []
-    _publish(refit_progress, contract, _FitProgress("started", 0, len(diagnostic.models)))
-    for position, original in enumerate(diagnostic.models):
+    _publish(refit_progress, contract, _FitProgress("started", TrainingFitCounts(0, len(diagnostic.models), 0, 0)))
+    for original in diagnostic.models:
         selected = counts.get(original.industry)
         if selected is None or selected.rows < parameters.minimum_industry_training_rows:
             raise ValueError("final_fit_industry_training_rows_insufficient")
         observer = _IndustryProgress(
             refit_progress, contract,
-            _FitProgress("running", position, len(diagnostic.models), len(fitted),
-                         TrainingFitDetail(original.industry, selected.rows, "preparation")),
+            _FitProgress("running", TrainingFitCounts(len(fitted), len(diagnostic.models), len(fitted), 0),
+                         TrainingFitDetail(original.industry, selected.rows, "preparation",
+                                           industry_name=_industry_name(industry_snapshot, original.industry))),
         )
         observer.heartbeat()
         if isinstance(parameters, TcnFittingParameters):
@@ -203,10 +208,14 @@ def RefitIndustryModels(
             model = _refit_industry(samples, selected, contract, plan, parameters, original,
                                     observer.heartbeat, compute_threads)
         fitted.append(model)
-        observer.update = replace(observer.update, completed_units=position + 1, produced_units=len(fitted))
+        observer.update = replace(observer.update, counts=TrainingFitCounts(len(fitted), len(diagnostic.models), len(fitted), 0))
         observer.publish(TrainingFitDetail(original.industry, selected.rows, "completed"))
-    _publish(refit_progress, contract, _FitProgress("completed", len(diagnostic.models), len(diagnostic.models), len(fitted)))
+    _publish(refit_progress, contract, _FitProgress("completed", TrainingFitCounts(len(fitted), len(diagnostic.models), len(fitted), 0)))
     return tuple(fitted)
+
+
+def _industry_name(snapshot: CurrentIndustrySnapshot, industry: str) -> str | None:
+    return next((member.name for member in snapshot.members if member.reference.industry_id == industry), None)
 
 
 def _refit_industry(
@@ -252,6 +261,10 @@ class _HeadFitState:
     workloads: tuple[TrainingIndustryCounts, ...]
     models: list[FittedIndustryModel]
     failures: list[IndustryFitFailure]
+    processed: int = 0
+
+    def progress_counts(self) -> TrainingFitCounts:
+        return TrainingFitCounts(self.processed, len(self.workloads), len(self.models), len(self.failures))
 
 
 def _fit_head_industry(
@@ -261,18 +274,20 @@ def _fit_head_industry(
     parameters: ModelFittingParameters,
     progress: TomorrowTrainingProgressPort | None,
     compute_threads: int,
+    industry_snapshot: CurrentIndustrySnapshot,
 ) -> None:
     contract = state.contract
-    position = state.workloads.index(counts) + 1
-    detail = TrainingFitDetail(counts.industry, counts.training, "preparation")
-    observer = _IndustryProgress(progress, contract, _FitProgress("running", position - 1, len(state.workloads), len(state.models), detail))
+    detail = TrainingFitDetail(counts.industry, counts.training, "preparation",
+                               industry_name=_industry_name(industry_snapshot, counts.industry))
+    observer = _IndustryProgress(progress, contract, _FitProgress("running", state.progress_counts(), detail))
     observer.heartbeat()
     model, failure = _attempt_industry_fit(samples, counts, contract, parameters, observer.heartbeat, observer.publish, compute_threads)
     if model is not None:
         state.models.append(model)
     if failure:
         state.failures.append(IndustryFitFailure(counts.industry, failure, counts.training, counts.calibration, counts.calibration_dates, counts.validation))
-    observer.update = replace(observer.update, completed_units=position, produced_units=len(state.models))
+    state.processed += 1
+    observer.update = replace(observer.update, counts=state.progress_counts())
     observer.publish(replace(detail, phase="skipped" if failure else "completed", failure_reason=failure or None))
 
 
@@ -288,7 +303,7 @@ def _finish_head_fit(
         nonlocal observed_rows
         observed_rows += rows
         _publish(progress, contract, _FitProgress(
-            "running", len(workloads), len(workloads), len(models),
+            "running", state.progress_counts(),
             validation=TrainingValidationProgress(observed_rows, total_rows),
         ))
 
@@ -306,7 +321,7 @@ def _finish_head_fit(
         metrics = PredictionMetrics(sum(item.validation for item in workloads), 0, 0, 0, 0, None, None, None, 0)
         industry_metrics = ()
     _publish(progress, contract, _FitProgress(
-        "completed", len(workloads), len(workloads), len(models),
+        "completed", state.progress_counts(),
         validation=TrainingValidationProgress(metrics.input_rows, total_rows) if models else None,
     ))
     return IndustryFitResult(tuple(models), tuple(failures), metrics, industry_metrics, sum(item.training for item in workloads), sum(item.holdout for item in workloads))
@@ -359,13 +374,14 @@ def _publish(
             TomorrowTrainingProgress(
                 "model_fit",
                 update.state,
-                update.completed_units,
-                update.total_units,
-                update.produced_units,
+                update.counts.processed,
+                update.counts.total,
+                update.counts.fitted,
                 strategy=contract.strategy,
                 fit_detail=update.fit_detail,
                 count_unit="industries",
                 validation=update.validation,
+                fit_counts=update.counts,
             )
         )
 
@@ -520,7 +536,7 @@ def _evaluate_validation_pairs(
         state = selected[head][1]
         observed_rows[head] += rows
         _publish(progress, state.contract, _FitProgress(
-            "running", len(state.workloads), len(state.workloads), len(state.models),
+            "running", state.progress_counts(),
             validation=TrainingValidationProgress(observed_rows[head], sum(item.validation for item in state.workloads)),
         ))
 

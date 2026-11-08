@@ -23,7 +23,7 @@ from trader.training.domain.v1.learned_rank import (
 )
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.infra.profile.v1.samples import CheckV1Cancellation, LearnedRankMatrix
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort, TrainingValidationProgress
+from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort, TrainingFitCounts, TrainingValidationProgress
 
 _CHUNK_ROWS = 8192
 
@@ -90,6 +90,7 @@ def FitLearnedRankHead(
         progress.publish(TomorrowTrainingProgress(
             "model_fit", "running", 0, 1, strategy=strategy,
             validation=TrainingValidationProgress(0, len(validation.targets)),
+            fit_counts=TrainingFitCounts(0, 1, 0, 0),
         ))
     predicted = calibration_intercept + slope * (intercept + validation.features @ coefficients)
     rank_raw = np.asarray(booster.predict(validation.features, num_threads=compute_threads), dtype=np.float64)
@@ -98,6 +99,7 @@ def FitLearnedRankHead(
         progress.publish(TomorrowTrainingProgress(
             "model_fit", "running", 0, 1, strategy=strategy,
             validation=TrainingValidationProgress(len(validation.targets), len(validation.targets)),
+            fit_counts=TrainingFitCounts(0, 1, 0, 0),
         ))
     return LearnedRankHead(
         strategy,

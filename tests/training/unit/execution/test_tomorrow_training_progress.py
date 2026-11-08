@@ -4,12 +4,17 @@ from dataclasses import replace
 
 import pytest
 
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TrainingFitDetail, TrainingSampleDiagnostics, TrainingValidationProgress
-from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TrainingFitCounts, TrainingFitDetail, TrainingSampleDiagnostics, TrainingValidationProgress
+from trader.training.entrypoints.tomorrow_training_progress import (
+    ReadTrainingProgressLayout,
+    StderrTomorrowTrainingProgress,
+    TrainingProgressLayout,
+)
 from trader.infra.progress_format import DisplayWidth
 from trader.recommendation.domain.publication.models import Strategy
 
 import io
+import os
 import re
 import sys
 import threading
@@ -55,7 +60,7 @@ def test_scan_bounds_and_global_v1_fit_do_not_claim_industry_or_percentage(capsy
     output.publish(TomorrowTrainingProgress("cross_section_conversion", "running", 7, 10_000, 7, total_is_exact=False))
     output.publish(TomorrowTrainingProgress("model_fit", "started", 0, 1, strategy=Strategy.TOMORROW))
     text = _compact(capsys.readouterr().err)
-    assert "扫描 50行 | 生成 7样本行" in text
+    assert "扫描 50行；生成 7样本行" in text
     assert "生成 7样本行" in text and "任务 0/1" in text
     assert all(value not in text for value in ("10000", "%", "行业", "余约", "估算"))
 
@@ -69,7 +74,7 @@ def test_industry_count_uses_typed_unit_even_without_fit_detail(capsys) -> None:
 def test_observation_diagnostics_and_upper_bound_changes_do_not_reset_stalled_time(capsys) -> None:
     clock = _MutableClock()
     output = StderrTomorrowTrainingProgress(monotonic=clock, command_label="train·V5")
-    detail = TrainingFitDetail("银行", 20_000, "training", 1, 10, 1, 10)
+    detail = TrainingFitDetail("银行", 20_000, "training", 1, 10, 1, 10, industry_name="银行")
     event = TomorrowTrainingProgress("model_fit", "running", 2, 83, fit_detail=detail, count_unit="industries")
     output.publish(event)
     clock.now = 2
@@ -93,7 +98,7 @@ def test_validation_is_an_actual_running_phase_after_all_models_are_fitted(capsy
     clock.now = 5
     output.publish(TomorrowTrainingProgress(
         "model_fit", "running", 3, 3, 3, strategy=Strategy.TOMORROW,
-        fit_detail=TrainingFitDetail("银行", 20_000, "completed"),
+        fit_detail=TrainingFitDetail("银行", 20_000, "completed", industry_name="银行"),
     ))
     capsys.readouterr()
     clock.now = 6
@@ -137,7 +142,7 @@ def test_each_validation_head_and_original_stage_starts_its_own_clock_without_ba
 def test_v5_eta_uses_only_current_epoch_and_resets_on_context_change(capsys, reset) -> None:
     clock = _MutableClock()
     output = StderrTomorrowTrainingProgress(monotonic=clock, command_label="train·V5")
-    detail = TrainingFitDetail("银行", 20_000, "training", 1, 10, 0, 10)
+    detail = TrainingFitDetail("银行", 20_000, "training", 1, 10, 0, 10, industry_name="银行")
     update = TomorrowTrainingProgress("model_fit", "running", 2, 83, strategy=Strategy.TOMORROW, fit_detail=detail)
     output.publish(update)
     for now, batch in ((2, 2), (5, 4)):
@@ -147,7 +152,7 @@ def test_v5_eta_uses_only_current_epoch_and_resets_on_context_change(capsys, res
     clock.now = 10
     changed = {
         "epoch": replace(update, fit_detail=replace(detail, epoch=2)),
-        "industry": replace(update, fit_detail=replace(detail, industry="软件")),
+        "industry": replace(update, fit_detail=replace(detail, industry="软件", industry_name="软件")),
         "head": replace(update, strategy=Strategy.D25),
         "stage": replace(update, stage="final_model_refit"),
         "phase": replace(update, fit_detail=replace(detail, phase="calibration")),
@@ -163,14 +168,161 @@ def test_training_columns_keep_display_positions_for_large_counts_and_long_indus
     output.publish(TomorrowTrainingProgress("history_conversion", "started", 0, 1))
     output.publish(TomorrowTrainingProgress(
         "model_fit", "running", 30, 83, strategy=Strategy.TOMORROW,
-        fit_detail=TrainingFitDetail("计算机通信和其他电子设备制造业", 123_456_789, "training", 10, 10, 12345, 12345),
+        fit_detail=TrainingFitDetail(
+            "计算机通信和其他电子设备制造业", 123_456_789, "training", 10, 10, 12345, 12345,
+            industry_name="计算机通信和其他电子设备制造业",
+        ),
     ))
     output.publish(TomorrowTrainingProgress("cross_section_conversion", "completed", 123_456_789, 123_456_789, 123_456_789))
     lines = capsys.readouterr().err.splitlines()
-    separators = [[DisplayWidth(line[:match.start()]) for match in re.finditer(r"\|", line)] for line in lines]
-    assert len(separators) == 3 and all(len(positions) == 6 for positions in separators)
+    main_lines = [line for line in lines if " | " in line]
+    separators = [[DisplayWidth(line[:match.start()]) for match in re.finditer(r"\|", line)] for line in main_lines]
+    assert len(separators) == 3 and all(len(positions) == 3 for positions in separators)
     assert separators[0] == separators[1] == separators[2]
-    assert "…" in lines[1] and "123456789" in lines[1]
+    assert all(DisplayWidth(line) <= 180 for line in lines)
+    assert "计算机通信和其他电子设备制造业" in "".join(line.strip() for line in lines)
+    assert "…" not in "".join(lines) and "123456789" in "".join(lines)
+
+
+def test_head_and_batch_percentages_use_actual_counts_without_treating_epoch_as_overall(capsys):
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0), command_label="train·V5")
+    output.publish(TomorrowTrainingProgress(
+        "model_fit", "running", 2, 10, 1, strategy=Strategy.TOMORROW, count_unit="industries",
+        fit_counts=TrainingFitCounts(2, 10, 1, 1),
+        fit_detail=TrainingFitDetail(
+            "capco:C39计算机通信和其他电子设备制造业", 20000, "training", 6, 10, 8, 10,
+            industry_name="计算机通信和其他电子设备制造业",
+        ),
+    ))
+    text = "".join(line.strip() for line in capsys.readouterr().err.splitlines())
+    assert "行业 2/10 (20.0%)" in text and "成功 1 跳过 1" in text
+    assert "轮次 6/10" in text and "本轮批次 8/10 (80.0%)" in text
+    assert "60.0%" not in text and "capco:" not in text
+    assert "计算机通信和其他电子设备制造业" in text
+
+
+def test_fit_total_changes_alone_do_not_reset_stalled_time(capsys):
+    clock = _MutableClock()
+    output = StderrTomorrowTrainingProgress(monotonic=clock)
+    event = TomorrowTrainingProgress(
+        "model_fit", "running", 1, 4, 1, count_unit="industries", fit_counts=TrainingFitCounts(1, 4, 1, 0),
+    )
+    output.publish(event)
+    clock.now = 2
+    output.publish(replace(event, total_units=5, fit_counts=TrainingFitCounts(1, 5, 1, 0)))
+    capsys.readouterr()
+    output._emit_heartbeat(5)
+    assert "未推进 00:00:05" in _compact(capsys.readouterr().err)
+
+
+def test_fit_upper_bound_does_not_claim_an_exact_percentage(capsys):
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0))
+    output.publish(TomorrowTrainingProgress(
+        "model_fit", "running", 2, 100, 1, count_unit="industries", total_is_exact=False,
+        fit_counts=TrainingFitCounts(2, 100, 1, 1),
+    ))
+    text = capsys.readouterr().err
+    assert "行业已处理 2" in text and "成功 1 跳过 1" in text
+    assert "%" not in text and "100" not in text
+
+
+@pytest.mark.parametrize("identity", ("capco:J66货币金融服务", "internal_sector_identity"))
+def test_unknown_industry_name_never_falls_back_to_an_internal_identity(capsys, identity):
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0))
+    output.publish(TomorrowTrainingProgress(
+        "model_fit", "running", 1, 83, fit_detail=TrainingFitDetail(identity, 20000, "training"),
+    ))
+    text = capsys.readouterr().err
+    assert identity not in text and "货币金融服务" not in text
+    assert "样本 20000行" in text
+
+
+@pytest.mark.parametrize("width", (80, 120, 180))
+def test_wrapped_native_name_and_complete_error_use_one_atomic_write_and_no_empty_columns(monkeypatch, width):
+    class RecordingStream(io.StringIO):
+        writes = 0
+        flushes = 0
+
+        def write(self, text):
+            self.writes += 1
+            return super().write(text)
+
+        def flush(self):
+            self.flushes += 1
+
+    stream = RecordingStream()
+    monkeypatch.setattr(sys, "stderr", stream)
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0, 1), layout=TrainingProgressLayout(width))
+    name = "计算机通信和其他电子设备制造业"
+    output.publish(TomorrowTrainingProgress(
+        "model_fit", "running", 1, 83, fit_detail=TrainingFitDetail(
+            "capco:C39" + name, 123456789, "training", 6, 10, 9, 10, industry_name=name,
+        ),
+    ))
+    error = "calibration_prediction_variance_insufficient_" * 4
+    output.publish_result("failed", error)
+    lines = stream.getvalue().splitlines()
+    main = [line for line in lines if " | " in line]
+    assert len(main) == 2 and all(len(line.split(" | ")) == 4 for line in main)
+    assert all(DisplayWidth(line) <= width for line in lines)
+    offset = DisplayWidth(main[0].rsplit(" | ", 1)[0]) + 3
+    assert all(line.startswith(" " * offset) for line in lines if line not in main)
+    rendered = "".join(line.strip() for line in lines)
+    assert name in rendered and error in rendered
+    assert all(value not in rendered for value in ("capco:", "…", "—", " |  | "))
+    assert stream.writes == stream.flushes == 2
+
+
+def test_layout_detects_stderr_once_and_is_shared_explicitly_across_profiles(monkeypatch):
+    class TerminalStream(io.StringIO):
+        def fileno(self):
+            return 17
+
+    stream = TerminalStream()
+    monkeypatch.setattr(sys, "stderr", stream)
+    descriptors = []
+
+    def terminal_size(descriptor):
+        descriptors.append(descriptor)
+        return os.terminal_size((96, 24))
+
+    monkeypatch.setattr(os, "get_terminal_size", terminal_size)
+    layout = ReadTrainingProgressLayout()
+    outputs = tuple(StderrTomorrowTrainingProgress(monotonic=lambda: 0, layout=layout) for _ in range(4))
+    for output in outputs:
+        output.report_notice("资源预检", "本地配置检查", state="完成")
+    assert descriptors == [17]
+    assert all(output.layout is layout and output.layout.columns == 96 for output in outputs)
+
+
+def test_non_terminal_layout_falls_back_to_180_without_reading_stdout(monkeypatch):
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    monkeypatch.setattr(os, "get_terminal_size", lambda *_: pytest.fail("stderr has no terminal descriptor"))
+    assert ReadTrainingProgressLayout().columns == 180
+
+
+def test_subsecond_unfinished_epoch_eta_never_prints_zero_remaining(capsys):
+    clock = _MutableClock()
+    output = StderrTomorrowTrainingProgress(monotonic=clock)
+    detail = TrainingFitDetail("银行", 20000, "training", 6, 10, 0, 100, industry_name="银行")
+    update = TomorrowTrainingProgress("model_fit", "running", 1, 83, fit_detail=detail)
+    output.publish(update)
+    capsys.readouterr()
+    clock.now = 5
+    output.publish(replace(update, fit_detail=replace(detail, completed_batches=99)))
+    text = "".join(line.strip() for line in capsys.readouterr().err.splitlines())
+    assert "本轮余约 <1秒" in text and "本轮余约 00:00:00" not in text
+
+
+def test_first_observation_of_a_finished_batch_does_not_claim_eta_is_still_being_estimated(capsys):
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0))
+    output.publish(TomorrowTrainingProgress(
+        "model_fit", "running", 0, 83,
+        fit_detail=TrainingFitDetail("银行", 20000, "training", 6, 10, 100, 100, industry_name="银行"),
+    ))
+    text = capsys.readouterr().err
+    assert "本轮批次 100/100 (100.0%)" in text
+    assert "本轮估算中" not in text and "本轮余约" not in text
 
 
 @pytest.mark.parametrize("completed,total", ((-1, 2), (3, 2), (0, -1), (True, 1)))
@@ -198,8 +350,8 @@ def test_training_progress_separates_scanned_and_generated_rows_without_repeatin
 
     lines = _compact(capsys.readouterr().err).splitlines()
     assert lines == [
-        "00:00:00 | Tomorrow训练·资源预检 00:00:00 | 完成 | 任务 1/1 | — | — | —",
-        "00:12:34 | Tomorrow训练·样本构建 00:00:00 | 处理中 | 扫描 850行 | 生成 612样本行 | — | —",
+        "00:00:00 | Tomorrow训练·资源预检 00:00:00 | 完成 | 任务 1/1",
+        "00:12:34 | Tomorrow训练·样本构建 00:00:00 | 处理中 | 扫描 850行；生成 612样本行",
     ]
 
 
@@ -215,10 +367,10 @@ def test_training_progress_throttles_advances_but_emits_stage_boundaries(capsys)
     output.publish(TomorrowTrainingProgress("history_conversion", "completed", 100, 100))
 
     assert _compact(capsys.readouterr().err).splitlines() == [
-        "00:00:00 | Tomorrow训练·样本构建 00:00:00 | 开始 | 扫描 0行 | 生成 0样本行 | — | —",
-        "00:00:10 | Tomorrow训练·样本构建 00:00:10 | 处理中 | 扫描 1行 | 生成 0样本行 | — | —",
-        "00:00:31 | Tomorrow训练·样本构建 00:00:31 | 处理中 | 扫描 25行 | 生成 0样本行 | — | —",
-        "00:00:32 | Tomorrow训练·样本构建 00:00:32 | 完成 | 扫描 100行 | 生成 0样本行 | — | —",
+        "00:00:00 | Tomorrow训练·样本构建 00:00:00 | 开始 | 扫描 0行；生成 0样本行",
+        "00:00:10 | Tomorrow训练·样本构建 00:00:10 | 处理中 | 扫描 1行；生成 0样本行",
+        "00:00:31 | Tomorrow训练·样本构建 00:00:31 | 处理中 | 扫描 25行；生成 0样本行",
+        "00:00:32 | Tomorrow训练·样本构建 00:00:32 | 完成 | 扫描 100行；生成 0样本行",
     ]
     assert output.stage_durations == (("history_conversion", 32.0),)
 
@@ -233,7 +385,7 @@ def test_training_progress_prints_compact_blocked_and_cancelled_results(capsys) 
     output.publish_cancelled()
 
     assert _compact(capsys.readouterr().err).splitlines() == [
-        "00:01:01 | Tomorrow训练·结果汇总 00:00:00 | 阻塞 | 状态 blocked | 错误 history_maintenance_running",
+        "00:01:01 | Tomorrow训练·结果汇总 00:00:00 | 阻塞 | 状态 blocked；错误 history_maintenance_running",
         "00:01:02 | Tomorrow训练·结果汇总 00:00:01 | 取消",
     ]
 
@@ -247,8 +399,8 @@ def test_expensive_index_stage_emits_heartbeat_at_five_seconds(capsys) -> None:
     output._emit_heartbeat(5.0)
     output._emit_heartbeat(10.0)
     assert _compact(capsys.readouterr().err).splitlines() == [
-        "00:00:05 | Tomorrow训练·样本索引 00:00:05 | 等待 | 任务 0/1 | — | — | 未推进 00:00:05",
-        "00:00:10 | Tomorrow训练·样本索引 00:00:10 | 等待 | 任务 0/1 | — | — | 未推进 00:00:10",
+        "00:00:05 | Tomorrow训练·样本索引 00:00:05 | 等待 | 任务 0/1；未推进 00:00:05",
+        "00:00:10 | Tomorrow训练·样本索引 00:00:10 | 等待 | 任务 0/1；未推进 00:00:10",
     ]
     output.publish_result("engineering_ready", None)
     capsys.readouterr()
@@ -279,26 +431,31 @@ def test_duplicate_completion_does_not_double_count_stage_duration() -> None:
 def test_fit_detail_retains_latest_batch_and_defers_skips_to_terminal_summary(capsys) -> None:
     output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0, 5, 5.1, 5.2, 11, 12, 16), start_heartbeat=False)
     output.publish(TomorrowTrainingProgress("model_fit", "started", 0, 83))
-    detail = TrainingFitDetail("银行", 20000, "training", 2, 100, 0, 79)
+    detail = TrainingFitDetail("银行", 20000, "training", 2, 100, 0, 79, industry_name="银行")
     update = TomorrowTrainingProgress("model_fit", "running", 11, 83, fit_detail=detail)
     output.publish(update)
-    assert "银行·训练 | 轮 2/100 批 0/79" in _compact(capsys.readouterr().err)
+    initial = _compact(capsys.readouterr().err)
+    assert "银行·训练" in initial and "轮次 2/100" in initial and "本轮批次 0/79" in initial
     for batch in (1, 2):
         output.publish(replace(update, fit_detail=replace(detail, completed_batches=batch)))
     assert _compact(capsys.readouterr().err) == ""
     output._emit_heartbeat(10)
     heartbeat = _compact(capsys.readouterr().err)
-    assert "拟合 00:00:10 | 等待" in heartbeat and "批 2/79" in heartbeat
-    skipped = TrainingFitDetail("银行", 20000, "skipped", failure_reason="calibration_prediction_variance_insufficient")
+    assert "拟合 00:00:10 | 等待" in heartbeat and "本轮批次 2/79" in heartbeat
+    skipped = TrainingFitDetail(
+        "银行", 20000, "skipped", failure_reason="calibration_prediction_variance_insufficient", industry_name="银行",
+    )
     output.publish(replace(update, completed_units=12, fit_detail=skipped))
     assert capsys.readouterr().err == ""
-    output.publish(replace(update, completed_units=12, fit_detail=TrainingFitDetail("软件", 30000, "preparation")))
+    output.publish(replace(update, completed_units=12, fit_detail=TrainingFitDetail(
+        "软件", 30000, "preparation", industry_name="软件",
+    )))
     assert capsys.readouterr().err == ""
     output._emit_heartbeat(15)
     assert "软件·检查" in _compact(capsys.readouterr().err)
     output.publish_result("engineering_ready", None)
     summary = _compact(capsys.readouterr().err)
-    assert "跳过 1项" in summary and "calibration_prediction_variance_insufficient 1项" in summary
+    assert "跳过 1项" in summary and "calibration_prediction_variance_insufficient 1项" in "".join(line.strip() for line in summary.splitlines())
 
 
 @pytest.mark.parametrize(
@@ -338,7 +495,7 @@ def test_parallel_profiles_keep_complete_lines_when_the_stream_yields_between_wr
         list(executor.map(lambda output: output.publish(update), outputs))
     lines = [_compact(line) for line in stream.getvalue().splitlines()]
     assert len(lines) == 2
-    assert all(line.startswith("00:00:00 | ") and "生成 0样本行" in line and len(line.split(" | ")) == 7 for line in lines)
+    assert all(line.startswith("00:00:00 | ") and "生成 0样本行" in line and len(line.split(" | ")) == 4 for line in lines)
     assert sorted(line.split(" | ")[1] for line in lines) == [
         "V1训练·样本构建 00:00:00", "V2训练·样本构建 00:00:00",
     ]
