@@ -367,7 +367,7 @@ def test_cache_single_flight_coalesces_physical_load_and_cleans_index() -> None:
     assert cache.inflight_count == 0
 
 
-def test_cache_stop_clears_inflight_index_and_releases_waiters() -> None:
+def test_cache_stop_releases_waiters_but_keeps_loader_registered_until_exit() -> None:
     cache = BoundedLruCache(_policy())
     identity = _identity("600001")
     started = threading.Event()
@@ -390,13 +390,52 @@ def test_cache_stop_clears_inflight_index_and_releases_waiters() -> None:
     waiter.start()
     time.sleep(0.02)
 
-    cache.stop(wait=False)
-    assert cache.inflight_count == 0
+    assert not cache.stop(wait=False).completed
+    assert cache.inflight_count == 1
     release.set()
     owner.join(1.0)
     waiter.join(1.0)
 
     assert sorted(errors) == ["cache stopped during load", "cache stopped during load"]
+    assert cache.inflight_count == 0
+    assert cache.stop(wait=False).completed
+
+
+@pytest.mark.parametrize("loader_fails", (False, True))
+def test_repeated_and_expired_cache_stop_do_not_claim_running_loader_completed(loader_fails):
+    from trader.infra.shutdown import ShutdownDeadline
+
+    cache = BoundedLruCache(_policy())
+    started, release = threading.Event(), threading.Event()
+    errors: list[str] = []
+
+    def load():
+        started.set()
+        assert release.wait(3)
+        if loader_fails:
+            raise ValueError("controlled loader failure")
+        return "late"
+
+    owner = threading.Thread(target=lambda: _capture_runtime_error(
+        errors, lambda: cache.coalesce(_identity("600001"), load),
+    ))
+    owner.start()
+    try:
+        assert started.wait(3)
+        first = cache.stop(wait=False)
+        repeated = cache.stop(wait=False)
+        expired = cache.stop(deadline=ShutdownDeadline.start(0))
+        assert not first.completed and not repeated.completed and not expired.completed
+        assert first.cancelled_count == 1 and repeated.cancelled_count == expired.cancelled_count == 0
+        assert expired.timed_out
+        assert cache.inflight_count == 1
+    finally:
+        release.set()
+        owner.join(3)
+    assert not owner.is_alive()
+    assert errors == ["cache stopped during load"]
+    assert cache.inflight_count == 0
+    assert cache.stop(wait=False).completed
 
 
 pytestmark = [pytest.mark.slow_supplier]

@@ -160,6 +160,42 @@ class ShutdownReport:
         )
 
 
+class ShutdownIncompleteError(RuntimeError):
+    """Startup rollback attempted every owner but could not confirm full cleanup."""
+
+    def __init__(self, report: ShutdownReport, deadline: ShutdownDeadline) -> None:
+        super().__init__("startup_shutdown_incomplete")
+        self.report = report
+        self.deadline = deadline
+
+
+@contextmanager
+def CollectShutdownFailures(
+    deadline: ShutdownDeadline,
+    steps: list[ShutdownStep],
+    name: str,
+) -> Iterator[None]:
+    """Record an owner's ordinary failure and let the caller attempt remaining owners."""
+    try:
+        with ObserveShutdownStep(deadline, name):
+            yield
+    except Exception as exc:
+        # An injected owner can fail with any ordinary exception. Process-control
+        # exceptions still propagate; diagnostics include types, never payloads.
+        causes: list[str] = []
+        current: BaseException | None = exc
+        for _ in range(4):
+            if current is None:
+                break
+            causes.append(type(current).__name__[:80])
+            current = current.__cause__ if current.__cause__ is not None else (
+                None if current.__suppress_context__ else current.__context__
+            )
+        steps.append(ShutdownStep(
+            name, False, deadline.expired, detail="shutdown_failed:" + "<-".join(causes),
+        ))
+
+
 def SignalExitCode(signum: int) -> int:
     if signum == getattr(signal, "SIGTERM", 15):
         return 143
@@ -322,11 +358,13 @@ def _supported_shutdown_signals() -> tuple[int, ...]:
 
 
 __all__ = [
+    "CollectShutdownFailures",
     "ObserveShutdownStep",
     "PendingShutdownSteps",
     "ReadShutdownTimeline",
     "RecordShutdownEvent",
     "ShutdownDeadline",
+    "ShutdownIncompleteError",
     "ShutdownReport",
     "ShutdownSignalController",
     "ShutdownSpan",

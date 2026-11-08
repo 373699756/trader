@@ -13,6 +13,7 @@ import pytest
 from tests.helpers.recommendation.runtime.scheduler import _round_cleanup_runtime
 from trader.entrypoints import server as server_entrypoint
 from trader.infra.shutdown import (
+    CollectShutdownFailures,
     ObserveShutdownStep,
     PendingShutdownSteps,
     ReadShutdownTimeline,
@@ -37,6 +38,21 @@ class _UnusedResource:
 class _UnusedSources:
     def stop(self, *, wait=True, deadline=None):
         return ()
+
+
+class _UnusedBudget:
+    def close(self):
+        return None
+
+
+@pytest.mark.parametrize("interruption", (KeyboardInterrupt, SystemExit))
+def test_shutdown_failure_collection_preserves_process_control_exceptions(interruption):
+    deadline = ShutdownDeadline.start(1)
+    steps: list[ShutdownStep] = []
+    with pytest.raises(interruption), CollectShutdownFailures(deadline, steps, "controlled:stop"):
+        raise interruption()
+    assert steps == []
+    assert PendingShutdownSteps(deadline) == ()
 
 
 @pytest.mark.parametrize("blocked_owner", ("control", "score_wave"))
@@ -64,6 +80,7 @@ def test_outer_shutdown_timeout_reports_the_profile_and_blocked_runtime_owner(mo
         _UnusedResource(),
         (),
         _UnusedResource(),
+        _UnusedBudget(),
         False,
     )
 

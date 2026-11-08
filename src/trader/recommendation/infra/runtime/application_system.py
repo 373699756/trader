@@ -9,7 +9,7 @@ from trader.infra.cache import BoundedLruCache
 from trader.infra.isolated_http import IsolatedHttpExecutor
 from trader.recommendation.infra.settings.models import LongWatchlist, StrategySettings
 from trader.infra.settings import RuntimeSettings
-from trader.infra.shutdown import ObserveShutdownStep, ShutdownDeadline, ShutdownReport
+from trader.infra.shutdown import ShutdownDeadline, ShutdownReport
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
@@ -100,6 +100,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
             (*((self.workers.http_executor,) if self.owns_shared_resources else ()),
              self.long_runtime, *((self.eligibility, self.input_preloader) if self.owns_shared_resources else ())),
             self.market_cache,
+            self.budget,
             self.owns_shared_resources,
         )
 
@@ -107,23 +108,13 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
         self.supervisor.initialize()
 
     def start(self) -> bool:
-        try:
-            return StartApplicationResources(
-                self._application_resources(), timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds
-            )
-        except BaseException:
-            if self.owns_shared_resources:
-                self.budget.close()
-            raise
+        return StartApplicationResources(
+            self._application_resources(), timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds
+        )
 
     def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
         shared = deadline or ShutdownDeadline.start(self.settings.pipeline.shutdown_timeout_seconds)
-        try:
-            return StopApplicationResources(self._application_resources(), deadline=shared)
-        finally:
-            if self.owns_shared_resources:
-                with ObserveShutdownStep(shared, "resources:deepseek_budget"):
-                    self.budget.close()
+        return StopApplicationResources(self._application_resources(), deadline=shared)
 
 
 __all__ = ["ApplicationSystem", "RuntimeWorkerResources"]

@@ -226,14 +226,15 @@ class BoundedLruCache(Generic[_T]):
         except BaseException as exc:
             with self._lock:
                 self._stats_for(identity).load_error += 1
-            if future.done():
-                return future.result()
-            future.set_exception(exc)
+                if future.done():
+                    return future.result()
+                future.set_exception(exc)
             raise
         else:
-            if future.done():
-                return future.result()
-            future.set_result(result)
+            with self._lock:
+                if future.done():
+                    return future.result()
+                future.set_result(result)
             return result
         finally:
             with self._condition:
@@ -325,18 +326,18 @@ class BoundedLruCache(Generic[_T]):
                     break
                 self._condition.wait(remaining)
             remaining_futures = tuple(self._inflight.values())
-            self._inflight.clear()
-            self._inflight_scope_entries.clear()
+            cancelled_count = 0
             for future in remaining_futures:
                 if not future.done():
                     future.set_exception(RuntimeError("cache stopped during load"))
+                    cancelled_count += 1
             self._condition.notify_all()
             completed = not remaining_futures
         return ShutdownStep(
             name="market-cache",
             completed=completed,
             timed_out=not completed and deadline is not None and deadline.expired,
-            cancelled_count=len(remaining_futures),
+            cancelled_count=cancelled_count,
             detail="cache loads remained inflight" if not completed else "",
         )
 
