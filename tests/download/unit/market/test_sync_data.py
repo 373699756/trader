@@ -25,6 +25,27 @@ def _history(state="completed", unresolved_price_cells=0):
     )
 
 
+def test_history_supplement_pending_is_not_a_core_price_gap_or_completed_command():
+    pending = replace(_history(), unresolved_supplement_cells=2, reason="history_price_supplements_remaining")
+    reference = PreparedFixture(_NOW)
+    result = SyncData(
+        lambda: reference,
+        lambda value: pending,
+        lambda value: QfqUpdateResult(_NOW.date(), 1),
+        lambda value: CompanyEvidenceSyncResult(_NOW, 1, 1, 0, 0, 0, 0, (), 0),
+        lambda: False,
+    ).execute("history")
+
+    assert pending.published and pending.needs_retry
+    assert result.exit_code != 0 and result.tasks[0].status == "pending"
+    projected = ProjectSyncResult(result)
+    assert projected["status"] == "pending"
+    assert projected["tasks"][0]["history"]["unresolved_price_cells"] == 0
+    assert projected["tasks"][0]["history"]["unresolved_supplement_cells"] == 2
+    with pytest.raises(ValueError, match="must not be negative"):
+        replace(pending, unresolved_supplement_cells=-1)
+
+
 @pytest.mark.parametrize("target", ("all", "history", "market", "company"))
 def test_one_prepared_full_reference_is_shared_in_order(target):
     reference = PreparedFixture(_NOW)

@@ -16,6 +16,7 @@ from trader.download.domain.published_history import ProjectHistoryCell, Publish
 if TYPE_CHECKING:
     from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_prices import HistoryPricePartition
+from trader.download.infra.history_inferred_review import RecordHistoryInferredSuspensions
 from trader.download.infra.price_repair_attempts import PriceRepairAttempts, RepairSource, TencentRecheckDue, RecordTencentCheck
 from trader.download.infra.published_history_codec import DecodePublishedHistoryCellPayload, EncodePublishedHistoryCell
 from trader.infra.sqlite_codec import DecodeDate, EncodeDate
@@ -35,6 +36,10 @@ class HistoryPriceRepair:
                 (code, sequence),
             ).fetchone()
         return cast(RepairSource, row[0]) if row else "tencent"
+
+    def pending_codes(self) -> frozenset[str]:
+        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            return frozenset(row[0] for row in connection.run("SELECT DISTINCT code FROM price_replacement"))
 
     def baostock_codes(self) -> frozenset[str]:
         with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
@@ -112,6 +117,7 @@ class HistoryPriceRepair:
                 )
             with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
                 connection.run("INSERT OR REPLACE INTO price_source VALUES(?,?,?)", (code, sequence, source))
+                RecordHistoryInferredSuspensions(connection, code, dates, (), sequence, dates[-1])
                 RecordTencentCheck(connection, code, dates[-1], initial=source == "baostock")
                 for table in ("download_gaps", "download_qfq_unusable"):
                     connection.run_many(f"DELETE FROM {table} WHERE code=? AND trade_date=?", ((code, EncodeDate(day)) for day in dates))

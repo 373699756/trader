@@ -19,8 +19,9 @@ from typing import Literal, TypeAlias
 from uuid import uuid4
 
 from trader.download.application.update_qfq import QfqPairPublicationError, QfqWindowPort
-from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow, ValidatePublishedHistoryCodes
+from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryManifest, PublishedHistoryWindow, ValidatePublishedHistoryCodes
 from trader.download.domain.price_repair import PriceIssue
+from trader.download.domain.history_price_qualification import NeedsPriceSupplement
 from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL, PRICE_SOURCE_CHECK_SQL, PriceRepairAttempts, RecordTencentCheck
 from trader.download.infra.published_history_codec import EncodePublishedHistoryCell, DecodePublishedHistoryCellPayload
 from trader.download.domain.qfq_window import QfqWindowConfiguration, QfqWindowSnapshot, QfqWindowState
@@ -235,6 +236,52 @@ class SQLiteQfqWindowCache:
                 return None
             row = connection.run("SELECT MAX(trade_date) FROM window_calendar WHERE profile=?", (self.profile,)).require_one()
             return DecodeDate(row[0]) if row[0] is not None else None
+
+    def repair_supplements(self, codes: frozenset[str], dates: tuple[date, ...]) -> tuple[PriceIssue, ...]:
+        """Derive explicit repair needs without adding ordinary price-gap records."""
+        if not codes or not dates:
+            return ()
+        allowed = frozenset(dates)
+        grouped: dict[str, set[date]] = {}
+        ordered = tuple(sorted(codes))
+        with self._read_connection() as connection:
+            if connection is None:
+                return ()
+            with SqliteTransaction(connection):
+                for offset in range(0, len(ordered), 128):
+                    batch = ordered[offset:offset + 128]
+                    placeholders = ",".join("?" for _ in batch)
+                    membership = (
+                        " JOIN window_binding b ON b.code=d.code AND b.profile=? "
+                        "JOIN window_population p ON p.profile=b.profile AND p.code=b.code "
+                    )
+                    parameters = (self.profile, *batch, EncodeDate(dates[0]), EncodeDate(dates[-1]))
+                    values = ",".join(f"d.{name}" for name in PRICE_COLUMNS)
+                    queries = (
+                        "SELECT d.code,d.trade_date FROM price_nontrading d" + membership
+                        + f"WHERE d.code IN ({placeholders}) AND d.trade_date BETWEEN ? AND ? "
+                        "AND d.trade_date BETWEEN b.start_date AND b.end_date AND d.kind='inferred'",
+                        f"SELECT d.code,d.trade_date,{values} FROM daily_price d" + membership
+                        + f"WHERE d.code IN ({placeholders}) AND d.trade_date BETWEEN ? AND ? "
+                        "AND d.trade_date BETWEEN b.start_date AND b.end_date AND d.status='complete' "
+                        "AND d.raw_change_pct IS NULL AND d.raw_open=d.raw_high "
+                        "AND d.raw_open=d.raw_low AND d.raw_open=d.raw_close",
+                    )
+                    for position, query in enumerate(queries):
+                        for row in connection.run(query, parameters):
+                            code, encoded = row[:2]
+                            day = DecodeDate(encoded)
+                            cell = (
+                                PublishedHistoryCell(code, day, "tencent_inferred_suspended", None, None)
+                                if position == 0
+                                else PriceCellFromColumns(code, encoded, tuple(row[2:]))
+                            )
+                            if day in allowed and NeedsPriceSupplement(cell):
+                                grouped.setdefault(code, set()).add(day)
+        return tuple(
+            PriceIssue(code, tuple(sorted(days)), "qfq_supplement_required")
+            for code, days in sorted(grouped.items())
+        )
 
     def record_price_issue(self, issue: PriceIssue, observed: PublishedHistoryWindow | None = None) -> None:
         _validate_code(issue.code)

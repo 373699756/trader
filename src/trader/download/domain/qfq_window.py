@@ -133,6 +133,7 @@ class QfqUpdateResult:
     latest_inferred_suspended_codes: int = 0
     price_review: QfqPriceReviewSummary = field(default_factory=QfqPriceReviewSummary)
     shutdown_failure: str | None = None
+    unresolved_supplement_codes: int = 0
 
     @property
     def needs_retry(self) -> bool:
@@ -140,7 +141,7 @@ class QfqUpdateResult:
             20, (self.completed_codes + 99) // 100
         )
         return (
-            self.pending_codes > 0 or self.failure_reason is not None
+            self.pending_codes > 0 or self.unresolved_supplement_codes > 0 or self.failure_reason is not None
             or self.shutdown_failure is not None or widespread_missing
         )
 

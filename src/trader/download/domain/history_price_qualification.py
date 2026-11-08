@@ -18,6 +18,20 @@ class HistoryQfqBasisError(RuntimeError):
     """An incremental window cannot prove one observed qfq price basis."""
 
 
+def NeedsPriceSupplement(cell: PublishedHistoryCell) -> bool:
+    """Select unconfirmed sessions or missing raw change needed for one-price outcomes."""
+    if cell.status == "tencent_inferred_suspended":
+        return True
+    raw = cell.unadjusted
+    if (
+        cell.status != "complete" or raw is None or raw.pct_change is not None
+        or raw.volume is None or raw.volume <= 0.0
+    ):
+        return False
+    prices = raw.open_price, raw.high_price, raw.low_price, raw.close_price
+    return prices[0] is not None and prices[0] > 0.0 and all(value == prices[0] for value in prices)
+
+
 def QualifyReplacementWindow(
     expected: tuple[date, ...],
     previous: PublishedHistoryWindow,
@@ -48,6 +62,15 @@ def QualifyReplacementWindow(
             raise RuntimeError("price_replacement_trading_status_conflict")
         if raw.trading_status == "trading":
             _require_raw_prices(before.unadjusted, raw)
+            if any(
+                old is not None and new is None
+                for old, new in (
+                    (before.unadjusted.preclose, raw.preclose),
+                    (before.unadjusted.pct_change, raw.pct_change),
+                    (before.unadjusted.turnover, raw.turnover),
+                )
+            ):
+                raise RuntimeError("price_replacement_known_raw_field_missing")
     return incoming
 
 

@@ -496,7 +496,9 @@ class StderrHistorySyncProgress:
 
     def _result_parts(self, status: HistoryMaintenanceStatus) -> list[str]:
         parts = [_RESULT_LABELS[status.state]]
-        if status.state in {"completed", "already_current"} and status.unresolved_price_cells:
+        if status.state in {"completed", "already_current"} and (
+            status.unresolved_price_cells or status.unresolved_supplement_cells
+        ):
             parts[0] = "历史已发布" if status.published else "同步结束"
         if status.state == "failed":
             location = self._specific_failure
@@ -520,6 +522,8 @@ class StderrHistorySyncProgress:
                 summary = status.price_gap_summary
                 parts.append(f"涉及 {summary.stocks} 股 | 日期 {summary.first_date}～{summary.last_date}")
                 parts.extend(f"{item.reason} {item.cells} 股日" for item in summary.reasons)
+        if status.unresolved_supplement_cells:
+            parts.append(f"停牌及辅助字段待补 {status.unresolved_supplement_cells} 股日")
         if status.industry_readiness is not None and not status.industry_readiness.ready:
             readiness = status.industry_readiness
             parts.append(f"历史行业整窗覆盖 {readiness.point_in_time_codes}/{readiness.requested_codes} 股")
@@ -547,6 +551,7 @@ class StderrHistorySyncProgress:
                         or part == f"错误 {status.reason}"
                         or part == "价格缺口待补"
                         or part == f"未修复价格缺口 {status.unresolved_price_cells} 股日"
+                        or part == f"停牌及辅助字段待补 {status.unresolved_supplement_cells} 股日"
                         else ProgressLevel.NORMAL,
                     )
                     for index, part in enumerate(parts)
@@ -601,7 +606,7 @@ def _progress_level(progress: HistorySyncProgress) -> ProgressLevel:
 def _maintenance_result_level(status: HistoryMaintenanceStatus) -> ProgressLevel:
     if status.state in {"failed", "blocked"}:
         return ProgressLevel.ERROR
-    if status.state == "cancelled" or status.unresolved_price_cells:
+    if status.state == "cancelled" or status.unresolved_price_cells or status.unresolved_supplement_cells:
         return ProgressLevel.WARNING
     if status.state in {"completed", "already_current"}:
         return ProgressLevel.SUCCESS

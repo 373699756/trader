@@ -4,7 +4,9 @@ from datetime import date
 import pytest
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.download.domain.history_price_qualification import HistoryQfqBasisError, QualifyPriceOverlap, QualifyReplacementWindow
+from trader.download.domain.history_price_qualification import (
+    HistoryQfqBasisError, NeedsPriceSupplement, QualifyPriceOverlap, QualifyReplacementWindow,
+)
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 
 
@@ -18,6 +20,44 @@ def test_replacement_uses_whole_new_adjustment_basis():
     )
     incoming = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(complete),))
     assert QualifyReplacementWindow((partial.trade_date,), previous, incoming) is incoming
+
+
+@pytest.mark.parametrize("field,value", (("preclose", 11.0), ("pct_change", 1.8), ("turnover", 0.5)))
+def test_replacement_does_not_erase_known_raw_auxiliary_fields(field, value):
+    _, complete = _partial_and_complete(1628280000.0)
+    known = replace(complete, unadjusted=replace(complete.unadjusted, **{field: value}))
+    previous = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(known),))
+    incoming = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(complete),))
+
+    with pytest.raises(RuntimeError, match="price_replacement_known_raw_field_missing"):
+        QualifyReplacementWindow((complete.trade_date,), previous, incoming)
+
+
+def test_replacement_can_fill_auxiliary_fields_without_changing_parent_pair():
+    _, complete = _partial_and_complete(1628280000.0)
+    supplied = replace(complete, unadjusted=replace(complete.unadjusted, preclose=11.0, pct_change=1.8, turnover=0.5))
+    previous = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(complete),))
+    incoming = PublishedHistoryWindow(complete.code, (ProjectHistoryCell(supplied),))
+
+    assert QualifyReplacementWindow((complete.trade_date,), previous, incoming) is incoming
+    assert previous.cells[0].unadjusted.pct_change is None
+    assert previous.cells[0].qfq == incoming.cells[0].qfq
+
+
+def test_supplement_selection_is_for_unconfirmed_sessions_and_one_price_unknown_change():
+    _, complete = _partial_and_complete(1628280000.0)
+    ordinary = ProjectHistoryCell(complete)
+    one_price = replace(
+        ordinary,
+        unadjusted=replace(ordinary.unadjusted, open_price=11.2, high_price=11.2, low_price=11.2),
+    )
+    inferred = replace(ordinary, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+
+    assert not NeedsPriceSupplement(ordinary)
+    assert NeedsPriceSupplement(one_price)
+    assert NeedsPriceSupplement(inferred)
+    assert not NeedsPriceSupplement(replace(one_price, unadjusted=replace(one_price.unadjusted, pct_change=0.0)))
+    assert not NeedsPriceSupplement(replace(one_price, unadjusted=replace(one_price.unadjusted, volume=0.0)))
 
 
 @pytest.mark.parametrize("field", ("open_price", "high_price", "low_price", "close_price"))

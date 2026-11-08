@@ -78,6 +78,8 @@ class QfqWindowPort(Protocol):
 
     def price_issues(self, codes: frozenset[str] | None = None, dates: tuple[date, ...] | None = None) -> tuple[PriceIssue, ...]: ...
 
+    def repair_supplements(self, codes: frozenset[str], dates: tuple[date, ...]) -> tuple[PriceIssue, ...]: ...
+
     def record_price_issue(self, issue: PriceIssue, observed: PublishedHistoryWindow | None = None) -> None: ...
 
     def repair_reference(self, code: str) -> PublishedHistoryWindow: ...
@@ -172,6 +174,13 @@ class _DownloadedWindow:
         return self.window.cells
 
 
+@dataclass(frozen=True)
+class _RepairTarget:
+    issue: PriceIssue
+    core_issue: PriceIssue | None
+    supplementary: bool
+
+
 class _BaoStockCooldown(RuntimeError):
     def __init__(self) -> None:
         super().__init__("price_source_basis_conflict")
@@ -205,12 +214,24 @@ class UpdateQfqWindows:
     batch_planning_candidate: bool = False
     skip_cooling_tencent_probe: bool = False
     shutdown: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(30.0))
+    repair_codes: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         workers = self.configuration.workers if self.workers is None else self.workers
         if not 1 <= workers <= 12:
             raise ValueError("qfq workers must be within 1..12")
         object.__setattr__(self, "workers", workers)
+        if self.repair_codes is not None:
+            if not self.repair_only:
+                raise ValueError("qfq_repair_codes_require_fill")
+            if (
+                not isinstance(self.repair_codes, frozenset) or not 1 <= len(self.repair_codes) <= 5
+                or any(
+                    not isinstance(code, str) or len(code) != 6 or not code.isascii() or not code.isdigit()
+                    for code in self.repair_codes
+                )
+            ):
+                raise ValueError("qfq_repair_codes_invalid")
 
     @property
     def worker_count(self) -> int:
@@ -325,6 +346,8 @@ class UpdateQfqWindows:
             price_review=QfqPriceReviewSummary(discovery_completed=False),
         )
         allowed_codes = frozenset(security.code for security in context.universe)
+        if self.repair_codes is not None and not self.repair_codes.issubset(allowed_codes):
+            raise ValueError("qfq_repair_codes_not_eligible")
         files, changed_rows = self.v2.select_published_codes(self.v3, allowed_codes)
         progress.changed.update(files)
         progress.rows += changed_rows
@@ -465,20 +488,29 @@ class UpdateQfqWindows:
         assert self.repair_supplier is not None
         batch = uuid4().hex
         securities = {item.code: item for item in context.universe}
-        issues = self.v2.price_issues(frozenset(securities), context.calendar.open_dates)
-        repair_states = {state.code: state for state in self.v2.review_states(frozenset(issue.code for issue in issues))}
+        targets = self._repair_targets(context)
+        repair_states = {state.code: state for state in self.v2.review_states(frozenset(target.issue.code for target in targets))}
         if self.repair_only:
-            progress.total = len(issues)
-        progress.publish("BaoStock补缺", f"问题股票 {len(issues)} 只 | 串行请求 | 最小间隔 1.5 秒")
-        for issue in issues:
+            progress.total = len(targets)
+        progress.publish("BaoStock补缺", f"问题股票 {len(targets)} 只 | 串行请求 | 最小间隔 1.5 秒")
+        if self.repair_codes is not None:
+            progress.publish("BaoStock补缺", f"本轮限定 {','.join(sorted(self.repair_codes))} | 最终待处理统计保留范围外问题")
+        for target in targets:
             if self.cancel_requested():
                 break
+            issue = target.issue
             security = securities.get(issue.code)
             if security is None:
                 continue
             dates = context.calendar.expected_dates(security)[-self.configuration.maximum_sessions :]
             issue = PriceIssue(issue.code, tuple(day for day in issue.dates if day in dates), issue.reason)
-            if not issue.dates or not self.v2.reserve_repair(issue, batch, explicit=self.repair_only):
+            if not issue.dates:
+                continue
+            core_dates = tuple(day for day in target.core_issue.dates if day in dates) if target.core_issue else ()
+            reserved = bool(core_dates) and self.v2.reserve_repair(
+                PriceIssue(issue.code, core_dates, issue.reason), batch, explicit=self.repair_only,
+            )
+            if not (reserved or target.supplementary):
                 continue
             repair_started = self.monotonic()
             try:
@@ -492,7 +524,7 @@ class UpdateQfqWindows:
                     previous = PublishedHistoryWindow(issue.code, tuple(cells[day] for day in sorted(cells)))
                 candidate = None
                 observed_dates = dates
-                if state is not None and state.source == source and previous.cells:
+                if not target.supplementary and state is not None and state.source == source and previous.cells:
                     missing = tuple(day for day in dates if day not in {cell.trade_date for cell in previous.cells})
                     if len(missing) <= 5:
                         observed_dates = dates[-max(5, len(missing) + 3):]
@@ -503,7 +535,12 @@ class UpdateQfqWindows:
                 if candidate is None:
                     observed_dates = dates
                     candidate = self.repair_supplier.fetch_baostock_window(security, dates)
+                if self.cancel_requested():
+                    break
+                candidate = QualifyReplacementWindow(dates, previous, candidate)
                 candidate = QualifyReplacementWindow(dates, self.v2.repair_reference(issue.code), candidate)
+                if self.cancel_requested():
+                    break
                 files, rows = self.v2.replace_paired_windows(
                     self.v3,
                     (candidate,),
@@ -518,18 +555,52 @@ class UpdateQfqWindows:
                 progress.publish("BaoStock补缺", f"{issue.code} | 整窗发布成功 | {len(dates)} 股日")
             except (RuntimeError, OSError, ValueError) as exc:
                 self._record_failure("baostock_repair", exc, issue.code, self.monotonic() - repair_started)
-                self.v2.fail_repair(issue.code, batch, QfqFailureCode(exc))
+                if reserved:
+                    self.v2.fail_repair(issue.code, batch, QfqFailureCode(exc))
                 progress.publish("BaoStock补缺", f"{issue.code} | 未修复 | {QfqFailureCode(exc)}", level=ProgressLevel.WARNING)
-        remaining = self.v2.price_issues(frozenset(securities), context.calendar.open_dates)
+        remaining = self._repair_targets(context, include_unselected=True)
         # Durable state is authoritative after the second phase; Tencent pending
         # counters must not continue to report a stock that has been repaired.
-        resolved = len(issues) - len(remaining)
+        selected_remaining = sum(
+            self.repair_codes is None or target.issue.code in self.repair_codes for target in remaining
+        )
+        resolved = len(targets) - selected_remaining
         progress.completed += resolved
         progress.pending = len(remaining)
+        if self.repair_only and self.repair_codes is not None:
+            progress.total = progress.completed + progress.pending
+        progress.unresolved_supplement_codes = sum(target.supplementary for target in remaining)
         reasons: dict[str, int] = {}
-        for issue in remaining:
+        for target in remaining:
+            issue = target.issue
             reasons[issue.reason] = reasons.get(issue.reason, 0) + 1
         progress.pending_reasons = tuple(QfqPendingReason(reason, count) for reason, count in sorted(reasons.items()))
+
+    def _repair_targets(
+        self, context: HistorySupplierContext, *, include_unselected: bool = False,
+    ) -> tuple[_RepairTarget, ...]:
+        codes = frozenset(item.code for item in context.universe)
+        if self.repair_codes is not None and not include_unselected:
+            codes = self.repair_codes
+        core = {issue.code: issue for issue in self.v2.price_issues(codes, context.calendar.open_dates)}
+        supplements = {
+            issue.code: issue for issue in self.v2.repair_supplements(codes, context.calendar.open_dates)
+        } if self.repair_only else {}
+        result = []
+        # Core gaps retain priority; one complete supplier candidate can also
+        # settle the same stock's derived supplementary needs.
+        for code in (*sorted(core), *sorted(supplements.keys() - core.keys())):
+            primary = core.get(code)
+            supplementary = supplements.get(code)
+            days = tuple(sorted({
+                *(primary.dates if primary else ()),
+                *(supplementary.dates if supplementary else ()),
+            }))
+            reason = primary.reason if primary else "qfq_supplement_required"
+            result.append(_RepairTarget(
+                PriceIssue(code, days, reason), primary, supplementary is not None,
+            ))
+        return tuple(result)
 
     def _plans(
         self,

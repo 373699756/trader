@@ -139,6 +139,19 @@ def test_industry_window_diagnostic_does_not_turn_published_prices_into_pending(
                if field.text.startswith(("历史行业整窗覆盖 ", "行业核验异常 ")))
 
 
+def test_history_supplement_pending_is_visible_without_claiming_a_core_gap(capsys) -> None:
+    reporter = StderrHistorySyncProgress(monotonic=lambda: 0.0)
+    status = replace(
+        _failed_status("fixture"), state="completed", reason="history_price_supplements_remaining",
+        snapshot_hash="a" * 64, unresolved_supplement_cells=3,
+    )
+    reporter.publish_result(status)
+
+    output = _compact_log(capsys.readouterr().err)
+    assert "等待 | 历史已发布 | 停牌及辅助字段待补 3 股日" in output
+    assert "未修复价格缺口" not in output
+
+
 def test_context_and_industry_share_one_waiting_line_and_one_final_completion() -> None:
     clock = [0.0]
     messages: list[ProgressMessage] = []

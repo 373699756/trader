@@ -27,6 +27,7 @@ from trader.download.application.sync_progress import SyncProgress
 from trader.download.application.qfq_download_progress import QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
+from trader.download.domain.price_repair import ValidateRepairSelection
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain import company_evidence, company_events
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
@@ -225,10 +226,9 @@ def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
 
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
-    fill_missing: bool = False, report: SyncProgress | None = None,
+    fill_missing: bool = False, report: SyncProgress | None = None, repair_codes: frozenset[str] | None = None,
 ) -> SyncResult:
-    if fill_missing and target == "all":
-        raise ValueError("fill_requires_explicit_target")
+    ValidateRepairSelection(repair_codes, fill=fill_missing, target=target)
     settings = LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
@@ -258,7 +258,7 @@ def ExecuteSync(
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             reference=reference, cancel_requested=cancel_requested,
             repair_only=fill_missing, sqlite_policy=sqlite_policy, failures=market_failures,
-            price_review_budget=price_review_budget,
+            price_review_budget=price_review_budget, repair_codes=repair_codes,
         ))
 
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
@@ -269,7 +269,7 @@ def ExecuteSync(
                 shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
                 reference=reference, progress=history_progress,
                 cancel_requested=cancel_requested, disk_medium=settings.disk_medium,
-                repair_only=fill_missing, price_review_budget=price_review_budget, sqlite_policy=sqlite_policy,
+                repair_only=fill_missing, price_review_budget=price_review_budget, sqlite_policy=sqlite_policy, repair_codes=repair_codes,
         ))
 
     return report.command(lambda: SyncData(
@@ -569,7 +569,7 @@ def ExecuteHistorySync(
     )
     return DownloadHistoryUseCase(
         configuration, supplier, observed_at, cancel, progress,
-        HistorySyncDependencies(io, control, tasks, io), resources.repair_only, resources.price_review_budget,
+        HistorySyncDependencies(io, control, tasks, io), resources.repair_only, resources.price_review_budget, resources.repair_codes,
     ).execute()
 
 
@@ -584,8 +584,9 @@ def ExecuteHistoryDownload(
     cancel_requested: Callable[[], bool] = lambda: False,
     disk_medium: DiskMedium | None = None,
     repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
-    price_review_budget: PriceReviewBudget | None = None,
+    price_review_budget: PriceReviewBudget | None = None, repair_codes: frozenset[str] | None = None,
 ) -> HistoryMaintenanceStatus:
+    ValidateRepairSelection(repair_codes, fill=repair_only, target="history")
     disk_kind = DiskProbe(disk_medium).inspect(configuration.history_root).kind
     if reference is None:
         reference = _prepare_reference(
@@ -639,7 +640,7 @@ def ExecuteHistoryDownload(
                 resources=HistorySyncResources(
                     history_pool, history_writer, disk_kind=disk_kind, repair_only=repair_only,
                     price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(configuration.price_review),
-                    shutdown=shutdown_budget,
+                    shutdown=shutdown_budget, repair_codes=repair_codes,
                 ),
             )
 
@@ -657,9 +658,10 @@ def ExecuteQfqDownload(
     now: Callable[[], datetime] = _utc_now,
     repair_only: bool = False, sqlite_policy: SqliteIoPolicy,
     failures: DownloadFailurePort | None = None,
-    price_review_budget: PriceReviewBudget | None = None,
+    price_review_budget: PriceReviewBudget | None = None, repair_codes: frozenset[str] | None = None,
 ) -> QfqUpdateResult:
     """Compose explicit short-window maintenance without building the server."""
+    ValidateRepairSelection(repair_codes, fill=repair_only, target="market")
     if report is None:
         report = CreateSyncProgress()
     v2 = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy)
@@ -732,7 +734,7 @@ def ExecuteQfqDownload(
                 worker_pool=qfq_pool,
                 writer_pool=qfq_writer,
                 repair_supplier=repair_supplier,
-                repair_only=repair_only,
+                repair_only=repair_only, repair_codes=repair_codes,
                 failures=failures,
                 price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(qfq_configuration.price_review),
                 shutdown=shutdown_budget,

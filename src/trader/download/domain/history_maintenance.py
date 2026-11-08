@@ -58,9 +58,11 @@ class HistoryMaintenanceStatus:
     price_gap_summary: HistoryPriceGapSummary | None = None
     price_review: HistoryPriceReviewSummary | None = None
     industry_readiness: HistoryIndustryReadiness | None = None
+    unresolved_supplement_cells: int = 0
+    repair_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.unresolved_price_cells < 0:
+        if self.unresolved_price_cells < 0 or self.unresolved_supplement_cells < 0:
             raise ValueError("unresolved history price cells must not be negative")
 
     @property
@@ -69,7 +71,7 @@ class HistoryMaintenanceStatus:
 
     @property
     def needs_retry(self) -> bool:
-        return not self.published or self.unresolved_price_cells > 0
+        return not self.published or self.unresolved_price_cells > 0 or self.unresolved_supplement_cells > 0
 
 
 __all__ = [

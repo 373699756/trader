@@ -19,10 +19,10 @@ from trader.download.application.history_ports import (
 from trader.download.application.history_progress import PublishHistoryProgress
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_control import HistoryDiskRequirement, HistorySnapshot, HistorySnapshotPartition
-from trader.download.domain.history_download import HistoryBatchInput, HistoryPublication
+from trader.download.domain.history_download import HistoryBatchInput, HistoryDownloadTask, HistoryPublication
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
-from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress, HistorySyncProgressPort, HistoryTwoStageSupplier
+from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration, HistorySyncProgress, HistorySyncProgressPort, HistoryTwoStageSupplier
 from trader.download.domain.price_review import PriceReviewBudget, PriceReviewBudgetExhausted
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.history_control_index import (
@@ -67,6 +67,7 @@ class HistorySyncResources:
     fingerprint_before_statistics: bool = False
     reuse_catalog_fingerprint: bool = False
     shutdown: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(30.0))
+    repair_codes: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,24 @@ class HistorySyncIo:
         return HistoryInferredReviewIndex(
             self.configuration.history_root / "catalog.sqlite3", sqlite_policy=self.sqlite_policy,
         ).known_inferred_codes(budget)
+
+    def pending_repair_codes(self) -> frozenset[str]:
+        return HistoryPriceRepair(self.configuration.history_root, sqlite_policy=self.sqlite_policy).pending_codes()
+
+    def supplemental_tasks(
+        self, context: HistorySupplierContext, snapshot: HistorySnapshot,
+    ) -> tuple[HistoryDownloadTask, ...]:
+        prices = HistoryDirectPrices(
+            self.configuration.history_root,
+            snapshot.sequence,
+            snapshot,
+            HistorySqliteActivity(
+                lambda: PublishHistoryProgress(self.progress, "initializing", "waiting", current_item="price_supplements"),
+                self.cancel,
+            ),
+            sqlite_policy=self.sqlite_policy,
+        )
+        return prices.supplemental_tasks(context)
 
     @contextmanager
     def open_batch(
@@ -385,6 +404,10 @@ class _HistoryPriceBatch:
 
     def prepare_retry_pass(self) -> None:
         self.prices.prepare_retry_pass()
+
+    def supplemental_tasks(self) -> tuple[HistoryDownloadTask, ...]:
+        planned = self.owner.index.tasks(codes=frozenset(item.code for item in self.inputs.context.universe))
+        return self.prices.supplemental_tasks(self.inputs.context, planned)
 
     def reserve_repair(self, code: str, dates: tuple[date, ...], batch: str, *, explicit: bool) -> bool:
         return bool(self.repair.reserve(code, dates, batch, explicit=explicit))

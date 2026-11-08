@@ -73,6 +73,7 @@ def BuildParser() -> argparse.ArgumentParser:
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
     sync.add_argument("--fill", action=_FillFlag, nargs=0, default=False, help="补充所选资料的缺口：history/market 自动用 BaoStock；company 补历史及正文并自动 OCR/扩限。")
+    sync.add_argument("--repair-codes", nargs="+", help="仅history/market --fill：限定本次补采的1至5个六位股票代码，保留完整发布总体。")
     subparsers.add_parser(
         "history-automation-status",
         help="Read the persisted history due and reminder state without recalculation.",
@@ -103,6 +104,15 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command == "sync" and args.fill and args.target == "all":
         parser.error("--fill 须指定 history、market 或 company")
     if args.command == "sync":
+        if args.repair_codes is not None:
+            from trader.download.domain.price_repair import ValidateRepairSelection
+
+            try:
+                if len(set(args.repair_codes)) != len(args.repair_codes):
+                    raise ValueError("repair_codes_must_be_unique")
+                ValidateRepairSelection(frozenset(args.repair_codes), fill=args.fill, target=args.target)
+            except ValueError as exc:
+                parser.error(str(exc))
         if args.profile is not None:
             parser.error("sync does not accept --profile")
         from trader.bootstrap import CreateSyncProgress
@@ -187,7 +197,8 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         try:
             result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set,
-                                 fill_missing=args.fill, report=progress)
+                                 fill_missing=args.fill, report=progress,
+                                 repair_codes=frozenset(args.repair_codes) if args.repair_codes is not None else None)
         except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             progress(ProgressMessage((ProgressField(f"原因 {type(exc).__name__}"),),
                                      task=ProgressTask("sync", "result", "结果汇总"), state="失败", finished=True))

@@ -101,6 +101,7 @@ class QfqDownloadProgress:
     latest_missing: int = 0
     latest_suspended: int = 0
     latest_inferred_suspended: int = 0
+    unresolved_supplement_codes: int = 0
     price_review: QfqPriceReviewSummary = field(default_factory=QfqPriceReviewSummary)
     rows: int = 0
     errors: int = 0
@@ -238,6 +239,7 @@ class QfqDownloadProgress:
             f"| 最近日停牌 {ProgressNumber(self.latest_suspended)} "
             f"| 最近日推定停牌 {ProgressNumber(self.latest_inferred_suspended)} "
             f"| 最近日未解释缺价 {ProgressNumber(self.latest_missing)} "
+            f"| 补采待核 {ProgressNumber(self.unresolved_supplement_codes)} "
             f"| 未处理 {ProgressNumber(self.total - self.processed)} "
             f"| 变更文件 {ProgressNumber(len(self.changed))} | 变更行 {ProgressNumber(self.rows)} "
             f"| 落库耗时 {ProgressDuration(self.write_seconds)}",
@@ -299,6 +301,7 @@ class QfqDownloadProgress:
             self.latest_suspended,
             self.latest_inferred_suspended,
             price_review=self.price_review,
+            unresolved_supplement_codes=self.unresolved_supplement_codes,
         )
 
 

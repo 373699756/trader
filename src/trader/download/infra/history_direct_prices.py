@@ -17,15 +17,17 @@ from typing import Literal
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_control import HistorySnapshot, HistorySnapshotPartition
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
-from trader.download.domain.history_price_qualification import QualifyHistoryPairs, QualifyPriceOverlap
+from trader.download.domain.history_price_qualification import NeedsPriceSupplement, QualifyHistoryPairs, QualifyPriceOverlap
 from trader.download.domain.history_revision import HistoryRevision
-from trader.download.domain.published_history import PublishedHistoryWindow
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewRequestBudget
-from trader.download.domain.history_sync import HistorySyncProgressStage
+from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncProgressStage
 from trader.download.domain.history_download import HistoryDownloadTask
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPricePartitionError, HistoryPriceWriteSession
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.infra.sqlite_publication import PublishSqliteFile
+from trader.infra.sqlite_codec import DecodeDate, EncodeDate
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,81 @@ class HistoryDirectPrices:
                     for item in self._month(year, keys[0][1].month).read_price_keys(tuple(keys), self._sequence)
                 )
         return tuple(sorted(cells, key=lambda cell: cell.trade_date))
+
+    def supplemental_tasks(
+        self, context: HistorySupplierContext, planned: tuple[HistoryDownloadTask, ...] | None = None,
+    ) -> tuple[HistoryDownloadTask, ...]:
+        """Select explicit repairs from current facts, independently of old repair receipts."""
+        securities = {item.code: item for item in context.universe}
+        calendar = frozenset(context.calendar.open_dates)
+        if planned is None:
+            groups = self._supplemental_keys(context)
+        else:
+            groups = defaultdict(list)
+            for task in planned:
+                security = securities.get(task.code)
+                if security is None:
+                    continue
+                for day in task.dates:
+                    if day in calendar and day >= security.listed_on and (
+                        security.delisted_on is None or day < security.delisted_on
+                    ):
+                        groups[(day.year, self._sequence)].append((task.code, day))
+        selected: dict[str, set[date]] = defaultdict(set)
+        for (year, sequence), keys in sorted(groups.items()):
+            if not keys:
+                continue
+            self._activity.tick()
+            target = self._month(year, keys[0][1].month)
+            for revision in target.read_price_keys(tuple(keys), sequence):
+                security = securities.get(revision.code)
+                day = revision.trade_date
+                if security is None or day not in calendar or day < security.listed_on or (
+                    security.delisted_on is not None and day >= security.delisted_on
+                ):
+                    continue
+                if NeedsPriceSupplement(ProjectHistoryCell(revision.cell)):
+                    selected[revision.code].add(day)
+        return tuple(
+            HistoryDownloadTask(code, tuple(sorted(days)), tencent_done=True)
+            for code, days in sorted(selected.items())
+        )
+
+    def _supplemental_keys(
+        self, context: HistorySupplierContext,
+    ) -> dict[tuple[int, int], list[tuple[str, date]]]:
+        dates_by_sequence: dict[tuple[int, int], set[date]] = defaultdict(set)
+        for day in context.calendar.open_dates:
+            previous = self._previous.get((day.year, day.month))
+            if previous is not None:
+                dates_by_sequence[(day.year, previous.sequence)].add(day)
+        groups: dict[tuple[int, int], list[tuple[str, date]]] = defaultdict(list)
+        eligible = frozenset(item.code for item in context.universe)
+        for (year, sequence), dates in sorted(dates_by_sequence.items()):
+            self._activity.tick()
+            path = self._root / f"prices_{year:04d}.sqlite3"
+            with (
+                SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection,
+                self._activity.watch(connection),
+            ):
+                rows = connection.run(
+                    "SELECT r.code,r.trade_date FROM daily_price_revision r "
+                    "INDEXED BY sqlite_autoindex_daily_price_revision_1 "
+                    "WHERE r.trade_date>=? AND r.trade_date<=? AND r.first_seen_sequence<=? "
+                    "AND (r.status='tencent_inferred_suspended' OR (r.status='complete' "
+                    "AND r.raw_change_pct IS NULL AND r.raw_open=r.raw_high "
+                    "AND r.raw_high=r.raw_low AND r.raw_low=r.raw_close)) "
+                    "AND r.revision_id=(SELECT o.revision_id FROM daily_price_observation o "
+                    "INDEXED BY sqlite_autoindex_daily_price_observation_1 "
+                    "WHERE o.trade_date=r.trade_date AND o.code=r.code AND o.sync_sequence<=? "
+                    "ORDER BY o.sync_sequence DESC LIMIT 1) ORDER BY r.trade_date,r.code",
+                    (EncodeDate(min(dates)), EncodeDate(max(dates)), sequence, sequence),
+                )
+                for code, encoded in rows:
+                    day = DecodeDate(encoded)
+                    if code in eligible and day in dates:
+                        groups[(year, sequence)].append((code, day))
+        return groups
 
     def read_for_download(self, code: str, dates: tuple[date, ...]) -> tuple[BaoStockDailyCell, ...]:
         # A retry reads its first durable observation, including explicit missing cells.

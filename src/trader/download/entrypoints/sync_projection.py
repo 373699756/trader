@@ -31,6 +31,7 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
                 "target_date": market.target_date.isoformat() if market.target_date else None,
                 "completed_codes": market.completed_codes,
                 "pending_codes": market.pending_codes,
+                "unresolved_supplement_codes": market.unresolved_supplement_codes,
                 "no_trade_data_codes": market.no_trade_data_codes,
                 "latest_missing_codes": market.latest_missing_codes,
                 "latest_suspended_codes": market.latest_suspended_codes,
