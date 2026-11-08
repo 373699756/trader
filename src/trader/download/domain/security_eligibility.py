@@ -6,6 +6,13 @@ import re
 import unicodedata
 
 _ST_NAME = re.compile(r"(?:^|[^A-Za-z])(?:S\*?ST|\*?ST)", re.IGNORECASE)
+_MISSING_NAME_HISTORY = frozenset({"", "-", "--", "暂无", "暂无数据"})
+
+
+def IsMissingNameHistory(name_history: str) -> bool:
+    """Recognize unavailable parsed history; a current name cannot fill this gap."""
+
+    return unicodedata.normalize("NFKC", name_history).strip() in _MISSING_NAME_HISTORY
 
 
 def IsStSecurityName(name: str) -> bool:
@@ -15,4 +22,7 @@ def IsStSecurityName(name: str) -> bool:
     return bool(normalized and _ST_NAME.search(normalized))
 
 
-__all__ = ["IsStSecurityName"]
+__all__ = [
+    "IsMissingNameHistory",
+    "IsStSecurityName",
+]

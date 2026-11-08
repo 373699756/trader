@@ -50,18 +50,27 @@ def test_name_history_keeps_delisted_st_names(names, expected):
 
 @pytest.mark.parametrize(
     "text",
-    ("maintenance", "<td>证券简称更名历史：</td><td>--</td>", "<td>证券简称更名历史：</td><td>－－</td>"),
+    (
+        "maintenance",
+        "<td>证券简称更名历史：</td><td>--</td>",
+        "<td>证券简称更名历史：</td><td>－－</td>",
+        "<td>证券简称更名历史：</td><td> \t\n </td>",
+        "<td>证券简称更名历史：</td><td><br/><span></span></td>",
+        "<td>证券简称更名历史：</td><td>&nbsp;&#160;</td>",
+        "<td>证券简称更名历史：</td><td>\u3000\u00a0</td>",
+    ),
 )
 def test_missing_name_history_never_means_clear(text):
     with pytest.raises(ValueError):
         ParseNameHistorySt("600848", "上海临港", date(2026, 10, 9), text)
 
 
-@pytest.mark.parametrize((("current_name", "expected")), (("青岛特锐", "clear"), ("*ST测试", "ever_st")))
-def test_explicit_empty_name_history_uses_the_official_current_name(current_name, expected):
+@pytest.mark.parametrize("current_name", ("青岛特锐", "*ST测试"))
+def test_empty_name_history_never_infers_history_from_the_current_name(current_name):
     html = '<td>证券简称更名历史：</td><td colspan="3"></td>'
 
-    assert ParseNameHistorySt("300001", current_name, date(2026, 10, 10), html).status == expected
+    with pytest.raises(ValueError, match="history_st_name_history_empty"):
+        ParseNameHistorySt("300001", current_name, date(2026, 10, 10), html)
 
 
 @pytest.mark.parametrize(

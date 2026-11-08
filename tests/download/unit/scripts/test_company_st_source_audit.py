@@ -210,12 +210,12 @@ def test_history_digest_normalizes_full_width_and_whitespace_without_false_drift
     assert report["observation_drift_codes"] == []
 
 
-@pytest.mark.parametrize("former", ("", "--"))
-def test_empty_sina_history_is_unverified_and_preserves_original_parser_result(former):
+@pytest.mark.parametrize("former", ("", "--", " \t\r\n ", "<br/><span></span>", "&nbsp;&#160;", "\u3000\u00a0"))
+def test_empty_sina_history_is_unverified_and_cannot_record_a_clear_parser_result(former):
     report = _audit(_Transport(baseline=_sina_response(former)), rounds=1)
     sina = report["observations"][1]
     assert sina["status"] == "unknown_unverified" and sina["eligibility"] == "unknown"
-    assert sina["original_parser_status"] == ("clear" if former == "" else None)
+    assert sina["original_parser_status"] is None
     assert report["source_conflicts"] == 0
 
 

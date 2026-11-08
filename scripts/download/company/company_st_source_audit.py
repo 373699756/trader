@@ -17,7 +17,7 @@ from html.parser import HTMLParser
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.download.domain.security_eligibility import IsStSecurityName
+from trader.download.domain.security_eligibility import IsMissingNameHistory, IsStSecurityName
 from trader.download.infra.history_st_source import ParseNameHistorySt
 from trader.download.infra.history_sync_failure import HistoryFailureDetail
 from trader.infra.http_contracts import (
@@ -29,7 +29,6 @@ _Status = Literal["ever_st", "clear", "unknown"]
 _Source = Literal["eastmoney_f10", "sina_name_history"]
 _MAX_BYTES = 1024 * 1024
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_EMPTY = frozenset({"", "-", "--", "暂无", "暂无数据"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +276,7 @@ def _sina(request: CompanyStSourceRequest, text: str, checked_on: date) -> _Deco
     try:
         result = ParseNameHistorySt(request.code, request.current_name, checked_on, text)
     except ValueError:
-        if cell.names is not None and _name(cell.names) in _EMPTY:
+        if cell.names is not None and IsMissingNameHistory(cell.names):
             return _decoded(request.current_name, cell.names, _Structure("html_name_history", 1,
                 (("name_history", "str"),)))
         raise
@@ -292,7 +291,7 @@ def _decoded(
     original_status: _Status | None = None,
 ) -> _Decoded:
     former = " ".join(_name(former).split())
-    empty, history_st, current_st = former in _EMPTY, IsStSecurityName(former), IsStSecurityName(current)
+    empty, history_st, current_st = IsMissingNameHistory(former), IsStSecurityName(former), IsStSecurityName(current)
     eligibility: _Status = ("unknown" if empty else original_status if original_status is not None else
                             "ever_st" if history_st or current_st else "clear")
     return _Decoded("unknown_unverified" if empty else "decoded", eligibility, original_status, name_matches,

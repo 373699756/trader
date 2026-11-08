@@ -15,7 +15,7 @@ from datetime import date
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStCheckFailure, HistoryStCheckProgress, HistoryStEligibilitySummary
-from trader.download.domain.security_eligibility import IsStSecurityName
+from trader.download.domain.security_eligibility import IsMissingNameHistory, IsStSecurityName
 from trader.download.infra.history_sync_failure import HistoryFailureCode, HistoryFailureDetail
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpError, HttpStatusError, HttpTimeout, HttpTransport
@@ -41,7 +41,7 @@ def ParseNameHistorySt(code: str, current_name: str, checked_on: date, text: str
         raise ValueError("history_st_name_history_missing")
     names = unicodedata.normalize("NFKC", html.unescape(re.sub(r"<[^>]+>", " ", match[1]))).strip()
     current = unicodedata.normalize("NFKC", current_name).strip()
-    if names in {"--", "-", "暂无", "暂无数据"} or not current:
+    if IsMissingNameHistory(names) or not current:
         raise ValueError("history_st_name_history_empty")
     return HistoryStEvidence(
         code,

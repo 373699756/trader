@@ -2,6 +2,7 @@
 
 from concurrent.futures import Future
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import date, timedelta
 from threading import Event
 from typing import cast
@@ -117,6 +118,41 @@ def test_st_retries_exhaust_exact_attempt_count_without_leaking_error_payload():
     assert failure.reason == "history_st_connection_failed" and "HttpConnectionError" in failure.diagnostic
     assert "private payload" not in failure.diagnostic and failure.elapsed_seconds == pytest.approx(0.25)
     assert reports[-1].summary.unknown == 1
+
+
+@pytest.mark.parametrize("names", ("", " \t\r\n ", "<br/><span></span>", "&nbsp;&#160;", "\u3000\u00a0", "-", "--", "暂无", "暂无数据"))
+def test_missing_history_is_unknown_without_retry_and_can_be_checked_again(names):
+    empty_history = HttpResponse(200, f"<td>证券简称更名历史：</td><td>{names}</td>".encode("gb18030"))
+    index, clock, transport = _Index(), _Clock(), _Transport(empty_history, _CLEAR)
+    source, reports = _source(index, transport, clock=clock)
+    universe = _current_universe("600001")
+
+    result = source.fetch(universe, _DAY)
+
+    assert result == (HistoryStEvidence("600001", _DAY, "unknown"),)
+    assert index.evidence == result and len(transport.calls) == 1 and clock.waits == []
+    failure = next(failure for report in reports for failure in report.failures)
+    assert failure.reason == "history_st_name_history_empty" and failure.attempts == 1
+    assert reports[-1].summary.unknown == 1 and reports[-1].summary.clear == 0
+
+    next_day = _DAY + timedelta(days=1)
+    recovered = source.fetch(universe, next_day)
+
+    assert recovered == (HistoryStEvidence("600001", next_day, "clear"),)
+    assert index.evidence == recovered and len(transport.calls) == 2
+    assert reports[-1].summary.clear == 1 and reports[-1].summary.unknown == 0
+
+
+def test_current_st_name_remains_excluded_without_requesting_missing_history():
+    index, transport = _Index(), _Transport()
+    source, reports = _source(index, transport)
+    universe = (replace(_current_universe("600001")[0], name="*ST测试"),)
+
+    result = source.fetch(universe, _DAY)
+
+    assert result == (HistoryStEvidence("600001", _DAY, "ever_st"),)
+    assert index.evidence == result and transport.calls == []
+    assert reports[-1].summary.ever_st == 1
 
 
 def test_st_session_acquisition_failure_does_not_invent_http_attempts():
