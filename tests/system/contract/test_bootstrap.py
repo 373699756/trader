@@ -460,6 +460,34 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure(previe
     assert payload["market_data"]["market_feature_rows"] == 5567
     market_health.assert_called_once_with()
 
+    scheduler.status.return_value.observer = replace(scheduler.status.return_value.observer, last_error_code=None)
+    for market_payload, input_failures in (
+        ({"sources": {"company_evidence": {"last_error_code": "company_snapshot:sqlite_schema_unsupported"}}},
+         ["company_snapshot:sqlite_schema_unsupported"]),
+        ({"issuer_eligibility": {"integrity_ok": False}}, ["company_exclusions_unavailable"]),
+        ({"history_maintenance_state": "failed"}, ["history_inputs_unavailable"]),
+        ({"reference_publication": {"failure": "reference_unavailable"}}, ["reference_inputs_unavailable"]),
+        ({"published_history_observation_failure": "private-cause"}, ["history_publication_observation_failed"]),
+        ({"reference_publication": {"publication_observation_failure": "private-cause"}},
+         ["reference_publication_observation_failed"]),
+        ({"sources": {"company_evidence": {"publication_observation_failure": "private-cause"}}},
+         ["company_publication_observation_failed"]),
+        ({"status": "unavailable"}, ["market_health_unavailable"]),
+        ({"sources": {"company_evidence": {"last_error_code": None}},
+          "issuer_eligibility": {"integrity_ok": True}, "history_maintenance_state": "ready"}, []),
+    ):
+        market_health.return_value = market_payload
+        payload = RuntimeStatus(scheduler, reviewer, market_health)
+        assert payload["health"] == {
+            "level": "degraded" if input_failures or preview else "normal",
+            "issue_count": len(input_failures) + int(preview),
+        }
+        assert payload["degraded_reasons"] == [
+            *(["preview:production_model_contract_conflict"] if preview else []), *input_failures,
+        ]
+        assert payload["last_error"] == next(iter(input_failures), None)
+        assert "private-cause" not in str(payload["degraded_reasons"])
+
 
 def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
     source_time = datetime(2026, 8, 24, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))

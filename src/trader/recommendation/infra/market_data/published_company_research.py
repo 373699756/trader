@@ -58,16 +58,42 @@ def _observe_snapshot_read(
         raise
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         cause = exc.__cause__
-        _LOGGER.warning(
-            "company preload read failed stage=%s error_type=%s cause_type=%s",
-            stage,
-            type(exc).__name__,
-            type(cause).__name__ if cause is not None else "none",
-        )
+        schema_unsupported = _company_snapshot_failure(exc) == "company_snapshot:sqlite_schema_unsupported"
+        if schema_unsupported:
+            _LOGGER.warning(
+                "公司正式资料结构不兼容（sqlite_schema_unsupported），已停止加载；"
+                "请先备份公司资料，在独立目录重新下载验证，确认后替换 company_facts.sqlite3 并重启。stage=%s",
+                stage,
+            )
+        else:
+            _LOGGER.warning(
+                "company preload read failed stage=%s error_type=%s cause_type=%s",
+                stage,
+                type(exc).__name__,
+                type(cause).__name__ if cause is not None else "none",
+            )
         detail = _snapshot_sqlite_failure_detail(exc)
         if detail is not None:
-            _SQLITE_LOGGER.warning("company preload sqlite failure stage=%s detail=%s", stage, detail)
+            _SQLITE_LOGGER.log(
+                logging.DEBUG if schema_unsupported else logging.WARNING,
+                "company preload sqlite failure stage=%s detail=%s", stage, detail,
+            )
         raise
+
+
+def _company_snapshot_failure(exc: BaseException) -> str:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, sqlite3.Error) and len(current.args) == 1:
+            code = current.args[0]
+            if isinstance(code, str) and code in _SQLITE_INTERNAL_FAILURES:
+                return f"company_snapshot:{code}"
+        current = current.__cause__ if current.__cause__ is not None else (
+            current.__context__ if not current.__suppress_context__ else None
+        )
+    return f"company_snapshot:{type(exc).__name__}"
 
 
 def _snapshot_sqlite_failure_detail(exc: BaseException) -> str | None:
@@ -208,7 +234,7 @@ class PublishedCompanyResearch:
                 self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
                 return
             except (OSError, RuntimeError, ValueError, TypeError) as exc:
-                self._last_error = f"company_snapshot:{type(exc).__name__}"
+                self._last_error = _company_snapshot_failure(exc)
                 return
             if cancelled() or self._monotonic() >= deadline:
                 self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"

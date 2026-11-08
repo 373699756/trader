@@ -249,6 +249,7 @@ class _FixtureHistory:
             outcome_snapshot_hash=None,
             outcome_disk_snapshot_hash=None,
             restart_required=False,
+            publication_observation_failure=None,
             data_cutoff=None,
             entries=len(self._bars),
             raw_rows=sum(len(bars) for bars in self._bars.values()),

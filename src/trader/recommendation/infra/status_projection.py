@@ -65,7 +65,11 @@ def RuntimeStatus(
     degraded_reasons.extend(
         f"{item.target.strategy.value}:publication_io:{item.operation}:{item.reasons[0].code}" for item in io_failures
     )
-    issue_count = len(unresolved_issues) + int(bool(observer_error)) + len(io_failures) + int(preview_failed)
+    input_failures = _input_failure_reasons(market_data)
+    degraded_reasons.extend(input_failures)
+    issue_count = (
+        len(unresolved_issues) + int(bool(observer_error)) + len(io_failures) + int(preview_failed) + len(input_failures)
+    )
     health_level = (
         "error"
         if not status.running or any(issue.severity == "error" for issue in unresolved_issues)
@@ -87,7 +91,9 @@ def RuntimeStatus(
         "degraded_reasons": degraded_reasons,
         "health": {"level": health_level, "issue_count": issue_count},
         "recent_errors": recent_errors,
-        "last_error": status.last_error_code or (f"observer:{observer_error}" if observer_error else None),
+        "last_error": status.last_error_code or (
+            f"observer:{observer_error}" if observer_error else next(iter(input_failures), None)
+        ),
         "observer": observer,
         "scheduler": {
             "config_version": status.config_version,
@@ -131,6 +137,33 @@ def RuntimeStatus(
             "publication_io": [PublicationIoPayload(item) for item in status.publication_io],
         },
     }
+
+
+def _input_failure_reasons(market_data: Mapping[str, object]) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if market_data.get("status") == "unavailable":
+        reasons.append("market_health_unavailable")
+    if market_data.get("history_maintenance_state") in {"failed", "unavailable"}:
+        reasons.append("history_inputs_unavailable")
+    if market_data.get("published_history_observation_failure"):
+        reasons.append("history_publication_observation_failed")
+    reference = market_data.get("reference_publication")
+    if isinstance(reference, Mapping):
+        if reference.get("failure"):
+            reasons.append("reference_inputs_unavailable")
+        if reference.get("publication_observation_failure"):
+            reasons.append("reference_publication_observation_failed")
+    eligibility = market_data.get("issuer_eligibility")
+    if isinstance(eligibility, Mapping) and eligibility.get("integrity_ok") is False:
+        reasons.append("company_exclusions_unavailable")
+    sources = market_data.get("sources")
+    company = sources.get("company_evidence") if isinstance(sources, Mapping) else None
+    if isinstance(company, Mapping):
+        if error := company.get("last_error_code"):
+            reasons.append(str(error))
+        if company.get("publication_observation_failure"):
+            reasons.append("company_publication_observation_failed")
+    return tuple(reasons)
 
 
 def _round_payload(status: RecommendationRoundStatus | None) -> dict[str, object] | None:

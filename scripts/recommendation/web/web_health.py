@@ -147,6 +147,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
     if not status.runtime_started or status.runtime_status != "running":
         findings.append(_finding("error", "runtime_not_running", sample, None, "runtime is not reported as running"))
     findings.extend(_observer_findings(sample, status.degraded_reasons))
+    findings.extend(_input_findings(sample, status.degraded_reasons))
     if not status.release_freeze_schema:
         findings.append(
             _finding("error", "release_identity_missing", sample, None, "status release identity is incomplete")
@@ -252,6 +253,26 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
         elif freeze is not None and freeze.pipeline is not None:
             findings.extend(_pipeline_consistency_findings(sample, strategy, freeze.pipeline))
     return findings
+
+
+def _input_findings(sample: WebSample, degraded_reasons: tuple[str, ...]) -> list[Finding]:
+    codes = frozenset({
+        "market_health_unavailable", "history_inputs_unavailable", "reference_inputs_unavailable",
+        "company_exclusions_unavailable", "company_not_loaded", "company_population_unavailable",
+        "company_preload_cancelled", "company_preload_deadline", "company_preload_capacity",
+        "company_publication_changed", "company_snapshot_unavailable",
+        "history_publication_observation_failed", "reference_publication_observation_failed",
+        "company_publication_observation_failed",
+    })
+    return [
+        _finding(
+            "warning" if reason == "company_not_loaded" else "error",
+            f"local_inputs_unavailable:{reason}", sample, None,
+            "local recommendation inputs or their publication checks are unavailable", {"error_code": reason},
+        )
+        for reason in degraded_reasons
+        if reason in codes or reason.startswith("company_snapshot:")
+    ]
 
 
 def _observer_findings(sample: WebSample, degraded_reasons: tuple[str, ...]) -> list[Finding]:

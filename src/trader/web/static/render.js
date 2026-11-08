@@ -105,6 +105,17 @@
   };
 
   const DEGRADED_REASON_LABELS = {
+    "company_snapshot:sqlite_schema_unsupported": "公司资料结构不兼容，请先备份并在独立目录重下验证",
+    "company_snapshot:sqlite_required_row_missing": "公司资料缺少必要记录，请重新下载验证",
+    "company_snapshot:sqlite_integrity_failed": "公司资料完整性校验失败，请重新下载验证",
+    "company_snapshot:missing": "公司正式资料尚未发布",
+    company_exclusions_unavailable: "公司排除事实无法读取，资格核验已降级",
+    company_not_loaded: "公司资料尚未完成加载",
+    company_publication_observation_failed: "公司资料发布状态检查失败",
+    history_publication_observation_failed: "历史行情发布状态检查失败",
+    reference_publication_observation_failed: "证券参考发布状态检查失败",
+    reference_inputs_unavailable: "证券参考资料无法加载",
+    market_health_unavailable: "行情健康状态暂时无法读取",
     snapshot_not_ready: "荐股快照尚未就绪",
     board_data_reliability_below_threshold: "板块数据可靠度不足",
     board_population_insufficient: "板块有效样本不足",

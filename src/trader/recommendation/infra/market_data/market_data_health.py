@@ -36,6 +36,9 @@ _COMPANY_ERROR_CODES = frozenset({
     "company_snapshot:FileNotFoundError",
     "company_snapshot:PermissionError",
     "company_snapshot:TimeoutError",
+    "company_snapshot:sqlite_schema_unsupported",
+    "company_snapshot:sqlite_required_row_missing",
+    "company_snapshot:sqlite_integrity_failed",
 })
 
 

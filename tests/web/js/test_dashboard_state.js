@@ -1034,6 +1034,20 @@ assert.strictEqual(runtimeRows.includes("活动中"), true);
 const normalHealth = state.healthView({ health: { level: "normal", issue_count: 0 }, recent_errors: [] }, []);
 assert.strictEqual(normalHealth.badge, "正常 · 无最近错误");
 assert.strictEqual(normalHealth.primary, null);
+const companyFailure = state.healthView({
+  health: { level: "degraded", issue_count: 1 },
+  degraded_reasons: ["company_snapshot:sqlite_schema_unsupported"],
+}, []);
+assert.strictEqual(companyFailure.level, "degraded");
+assert.strictEqual(companyFailure.issues.length, 1);
+assert.strictEqual(companyFailure.primary.message, "公司资料结构不兼容，请先备份并在独立目录重下验证");
+assert(state.runtimeErrorRows(companyFailure.issues).includes("company_snapshot:sqlite_schema_unsupported"));
+const duplicateHealth = state.healthView({
+  recent_errors: [{ code: "refresh:source_unavailable", strategy: "tomorrow", severity: "error" }],
+  degraded_reasons: ["tomorrow:refresh:source_unavailable"],
+}, []);
+assert.strictEqual(duplicateHealth.issues.length, 1);
+assert.strictEqual(duplicateHealth.level, "error");
 for (const [stage, message, label] of [
   ["freeze", "策略结果暂时无法构建", "策略构建"],
   ["seal", "正式快照冻结失败", "快照冻结"],

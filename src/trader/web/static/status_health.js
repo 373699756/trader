@@ -34,7 +34,11 @@
     const snapshotIssues = Array.isArray(snapshotReasons)
       ? snapshotReasons.map((code) => normalizeSnapshotIssue(code, strategy)).filter(Boolean)
       : [];
-    const issues = deduplicateIssues([...runtimeIssues, ...snapshotIssues]).sort(compareIssues);
+    const degradedIssues = Array.isArray(payload.degraded_reasons)
+      ? payload.degraded_reasons.map((code) => normalizeRuntimeIssue(splitStrategyPrefix(cleanString(code), null)))
+        .filter(Boolean)
+      : [];
+    const issues = deduplicateIssues([...runtimeIssues, ...snapshotIssues, ...degradedIssues]).sort(compareIssues);
     const unresolvedIssues = issues.filter((issue) => issue.recoveryStatus === "active");
     const declaredCount = finiteNonNegativeInteger(payload.health && payload.health.issue_count);
     const issueCount = Math.max(unresolvedIssues.length, declaredCount == null ? 0 : declaredCount);

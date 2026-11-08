@@ -761,6 +761,33 @@ def test_research_observer_failure_is_reported_from_root_degradation() -> None:
     assert finding.evidence == {"error_code": "ResearchTraceCapacityError"}
 
 
+@pytest.mark.parametrize("reason", (
+    "company_snapshot:sqlite_schema_unsupported", "company_snapshot:RuntimeError",
+    "company_exclusions_unavailable", "history_inputs_unavailable", "company_publication_observation_failed",
+    "reference_inputs_unavailable", "reference_publication_observation_failed",
+    "history_publication_observation_failed", "market_health_unavailable", "company_not_loaded",
+))
+def test_local_input_failures_reach_monitor_and_disappear_after_recovery(reason):
+    samples = (_sample(1, root_degraded_reasons=(reason,)), _sample(2))
+    findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+    failures = [item for item in findings if item.code == f"local_inputs_unavailable:{reason}"]
+    assert len(failures) == 1
+    assert failures[0].severity == ("warning" if reason == "company_not_loaded" else "error")
+    assert failures[0].evidence == {"error_code": reason}
+    assert failures[0].occurrences == 1 and failures[0].last_sample == 1
+
+
+def test_monitor_keeps_simultaneous_input_causes_and_counts_each_sample_once():
+    reasons = ("company_snapshot:sqlite_schema_unsupported", "company_exclusions_unavailable")
+    findings = analyze_samples(
+        (_sample(1, root_degraded_reasons=reasons), _sample(2, root_degraded_reasons=reasons)),
+        strategies=(_STRATEGY,), consecutive_zero_threshold=1,
+    )
+    failures = [item for item in findings if item.code.startswith("local_inputs_unavailable:")]
+    assert {item.evidence["error_code"] for item in failures} == set(reasons)
+    assert len(failures) == 2 and all(item.occurrences == 2 for item in failures)
+
+
 def test_runtime_report_exposes_enabled_model_head_consumption() -> None:
     sample = _sample(3, predictor_batch_count=2, evaluated_count=65)
 

@@ -470,6 +470,9 @@ def test_company_preload_cancellation_is_not_logged_as_a_read_failure(caplog) ->
     ("company_preload_capacity", "company_preload_capacity"),
     ("company_publication_changed", "company_publication_changed"),
     ("company_snapshot:missing", "company_snapshot:missing"),
+    ("company_snapshot:sqlite_schema_unsupported", "company_snapshot:sqlite_schema_unsupported"),
+    ("company_snapshot:sqlite_required_row_missing", "company_snapshot:sqlite_required_row_missing"),
+    ("company_snapshot:sqlite_integrity_failed", "company_snapshot:sqlite_integrity_failed"),
     ("company_snapshot:private-company-payload", "company_snapshot_unavailable"),
     ("private-company-payload", "company_snapshot_unavailable"),
 ))

@@ -1,6 +1,7 @@
 """Company preload diagnostics preserve native codes without exposing query values."""
 
 import json
+import logging
 import sqlite3
 import sys
 
@@ -57,10 +58,13 @@ def _initialize(reader):
 @pytest.mark.parametrize("stage", ("before", "visit", "after"))
 @pytest.mark.parametrize("failure", ("native", "sqlite_schema_unsupported"))
 def test_preload_failure_records_actual_sqlite_code_or_explicit_absence_and_safe_full_frames(stage, failure, caplog):
+    caplog.set_level(logging.DEBUG, logger="trader.recommendation.infra.market_data.published_company_research.sqlite")
     reader = _FailedReader(stage, failure)
     research, codes = _initialize(reader)
 
-    assert research.status().last_error == "company_snapshot:RuntimeError"
+    assert research.status().last_error == (
+        "company_snapshot:RuntimeError" if failure == "native" else f"company_snapshot:{failure}"
+    )
     records = [record for record in caplog.records if record.name.endswith("published_company_research.sqlite")]
     assert len(records) == 1
     detail = json.loads(records[0].getMessage().partition(" detail=")[2])
@@ -86,15 +90,30 @@ def test_preload_failure_records_actual_sqlite_code_or_explicit_absence_and_safe
     assert (reader.versions, reader.visits) == calls
 
 
+def test_incompatible_schema_warns_once_with_recovery_scope_without_verbose_frames(caplog):
+    research, codes = _initialize(_FailedReader("before", "sqlite_schema_unsupported"))
+    research.initialize(codes, cancelled=lambda: False)
+    assert research.status().last_error == "company_snapshot:sqlite_schema_unsupported"
+    assert len(caplog.records) == 1
+    assert "公司正式资料结构不兼容" in caplog.text
+    assert "备份" in caplog.text and "独立目录" in caplog.text
+    assert "company_facts.sqlite3" in caplog.text
+    assert "frames" not in caplog.text and "/private/" not in caplog.text
+    assert research.cached(codes, include_structured=True) == {}
+
+
 @pytest.mark.parametrize("failure", (
     "sqlite_required_row_missing", "sqlite_integrity_failed", "private-company-payload /private/company.sqlite3",
 ))
 def test_handwritten_database_error_only_exposes_known_internal_identifiers(failure, caplog):
-    _initialize(_FailedReader("visit", failure))
+    research, _ = _initialize(_FailedReader("visit", failure))
     records = [record for record in caplog.records if record.name.endswith("published_company_research.sqlite")]
     assert len(records) == 1
     detail = json.loads(records[0].getMessage().partition(" detail=")[2])[-1]
     assert detail["sqlite_errorcode"] is None and detail["sqlite_errorname"] is None
     assert detail["internal_code"] == (failure if failure.startswith("sqlite_") else None)
+    assert research.status().last_error == (
+        f"company_snapshot:{failure}" if failure.startswith("sqlite_") else "company_snapshot:RuntimeError"
+    )
     assert "private-company-payload" not in caplog.text
     assert "/private/company.sqlite3" not in caplog.text
