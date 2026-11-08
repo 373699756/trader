@@ -13,7 +13,7 @@ import pytest
 
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult, CompanyOperationProgress, EvidenceSyncProgress
 from trader.download.domain.download_failure import DownloadFailureContext
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
@@ -23,6 +23,7 @@ from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.progress_format import DisplayWidth
 from trader.infra.http_contracts import HttpStatusError
+from trader.infra.signal_cancellation import ManualCancellation
 from trader.infra.settings.data_paths import DataPaths
 from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
 
@@ -180,13 +181,75 @@ def test_progress_message_rejects_invalid_heartbeat_intervals(interval):
 def test_heartbeat_thread_is_reclaimed_after_success_and_exception(fail):
     report = SyncProgress(lambda message: None, time.monotonic)
     try:
-        with report.keep_alive():
+        with ManualCancellation(timeout_seconds=2.0) as shutdown, report.keep_alive(shutdown=shutdown):
             assert any(thread.name == "download-progress" for thread in enumerate_threads())
             if fail:
                 raise RuntimeError("fixture")
     except RuntimeError:
         assert fail
     assert not any(thread.name == "download-progress" for thread in enumerate_threads())
+
+
+def test_blocked_heartbeat_retains_the_existing_command_deadline_and_reports_incomplete(monkeypatch):
+    from trader.infra.progress_heartbeat import ProgressHeartbeat
+
+    entered, release, forced = Event(), Event(), Event()
+    before = set(enumerate_threads())
+    seen = []
+    stop = ProgressHeartbeat.stop
+
+    def observe():
+        entered.set()
+        release.wait(3)
+        return None
+
+    def record_stop(timer, deadline):
+        seen.append(deadline)
+        return stop(timer, deadline)
+
+    monkeypatch.setattr(ProgressHeartbeat, "stop", record_stop)
+    report = SyncProgress(lambda message: None, time.monotonic)
+    try:
+        with ManualCancellation(timeout_seconds=0.03, force_exit=lambda code: forced.set()) as shutdown:
+            with pytest.raises(RuntimeError, match="sync_progress_shutdown_incomplete"):
+                with report.keep_alive(shutdown=shutdown):
+                    report.register_observer("fixture", observe)
+                    assert entered.wait(2)
+                    deadline = shutdown.shutdown_deadline()
+            assert seen == [deadline]
+            assert not shutdown.shutdown_completed
+            assert not release.is_set()
+            assert forced.wait(1)
+    finally:
+        release.set()
+        for thread in set(enumerate_threads()) - before:
+            if thread.name == "download-progress":
+                thread.join(3)
+                assert not thread.is_alive()
+
+
+def test_progress_state_cleanup_is_bounded_and_cannot_report_complete_while_its_lock_is_busy():
+    entered, release, forced = Event(), Event(), Event()
+    report = SyncProgress(lambda message: None, time.monotonic)
+
+    def hold_state():
+        with report._lock:
+            entered.set()
+            release.wait(3)
+
+    worker = Thread(target=hold_state)
+    try:
+        with ManualCancellation(timeout_seconds=0.03, force_exit=lambda code: forced.set()) as shutdown:
+            with pytest.raises(RuntimeError, match="sync_progress_shutdown_incomplete"):
+                with report.keep_alive(shutdown=shutdown):
+                    worker.start()
+                    assert entered.wait(1)
+            assert not shutdown.shutdown_completed
+            assert forced.wait(1)
+    finally:
+        release.set()
+        worker.join(3)
+        assert not worker.is_alive()
 
 
 def test_owner_finish_discards_an_observer_snapshot_already_being_built():

@@ -13,8 +13,15 @@ from math import ceil
 from threading import Lock
 from typing import Literal, TextIO
 
-from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressNumber, ProgressRow, ProgressTask
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.application.progress_message import (
+    ProgressField,
+    ProgressLevel,
+    ProgressMessage,
+    ProgressRow,
+    ProgressTask,
+)
+from trader.download.infra.progress_projection import ProgressNumber
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.download.domain.company_evidence import (
     CompanyOperationKind, CompanyOperationProgress, CompanyPublicationProgress, CompanyStockProgress,

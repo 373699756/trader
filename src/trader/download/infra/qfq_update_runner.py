@@ -12,7 +12,8 @@ from types import TracebackType
 from zoneinfo import ZoneInfo
 
 from trader.download.application.progress_message import ProgressLevel
-from trader.download.application.qfq_download_progress import QfqFailureCode, QfqMessage
+from trader.download.application.qfq_download_progress import QfqFailureCode
+from trader.download.infra.progress_projection import QfqMessage
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import QfqWriterDrainError, UpdateQfqWindows
@@ -64,7 +65,7 @@ def StopQfqWorkers(
             RuntimeError("qfq_shutdown_incomplete"),
         )
         resources.report(QfqMessage(
-            "关闭失败", "qfq_shutdown_incomplete", level=ProgressLevel.ERROR,
+            "关闭失败", ('qfq_shutdown_incomplete',), level=ProgressLevel.ERROR,
         ))
     return result
 
@@ -196,7 +197,7 @@ class QfqUpdateRunner:
                     self.updater.report(
                         QfqMessage(
                             "历史提取",
-                            f"待提取 {len(needed)} 只",
+                            (f'待提取 {len(needed)} 只',),
                         )
                     )
                     with QfqLocalProgress(self.updater.report):
@@ -222,7 +223,7 @@ class QfqUpdateRunner:
                 self.failures(DownloadFailureContext(stage, elapsed_seconds=self.updater.monotonic() - started), exc)
             reason = QfqFailureCode(exc)
             self.updater.report(
-                QfqMessage("更新失败", reason, level=ProgressLevel.ERROR)
+                QfqMessage("更新失败", (reason,), level=ProgressLevel.ERROR)
             )
             if result is not None:
                 return replace(

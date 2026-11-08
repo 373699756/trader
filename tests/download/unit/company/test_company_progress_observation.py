@@ -8,8 +8,8 @@ from threading import Event, Thread
 from zoneinfo import ZoneInfo
 
 from trader.download.application.company_operations import CompanyOperations
-from trader.download.application.sync_progress import SyncProgress
-from trader.download.application.progress_message import WithProgressTime
+from trader.download.entrypoints.sync_progress import SyncProgress
+from trader.download.infra.progress_projection import WithProgressTime
 from trader.download.domain.company_evidence import (
     CompanyOperationProgress,
     CompanyPublicationProgress,

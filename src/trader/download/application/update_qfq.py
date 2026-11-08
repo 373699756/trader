@@ -13,11 +13,13 @@ from typing import Literal, Protocol, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressLevel
+from trader.download.application.progress_events import (
+    DownloadProgressPort, ProgressCount, ProgressRatio, ProgressMeasure, ProgressDate, ProgressSource, QfqNotice,
+)
 from trader.download.application.qfq_download_progress import (
     QfqDownloadProgress,
     QfqFailureCode,
-    QfqMessage,
     QfqStockFeedback,
 )
 from trader.download.domain.baostock_daily import BaoStockSecurity
@@ -201,7 +203,7 @@ class UpdateQfqWindows:
     v3: QfqWindowPort
     supplier: QfqSupplierPort
     cancel_requested: Callable[[], bool]
-    report: Callable[[ProgressMessage], None]
+    report: DownloadProgressPort
     configuration: QfqWindowConfiguration
     workers: int | None = None
     worker_pool: WorkerExecutor | None = None
@@ -284,9 +286,12 @@ class UpdateQfqWindows:
             count += 1
             if count % 64 == 0:
                 self.report(
-                    QfqMessage(
+                    QfqNotice(
                         "历史提取",
-                        f"已处理 {count} 只 | 变更文件 {len(changed)}",
+                        (
+                            ProgressCount("已处理", count, "只"),
+                            ProgressCount("变更文件", len(changed)),
+                        ),
                     )
                 )
         return QfqUpdateResult(None, count, changed_files=tuple(sorted(changed)), changed_rows=rows, price_review=QfqPriceReviewSummary(discovery_completed=False))
@@ -302,22 +307,22 @@ class UpdateQfqWindows:
         scope.enter_context(self.v2.publication(self.v3))
         try:
             yield
-            self.report(QfqMessage("数据库文件校验", "主文件及WAL整体指纹", state="开始"))
+            self.report(QfqNotice("数据库文件校验", ('主文件及WAL整体指纹',), state="开始"))
         except QfqWriterDrainError as exc:
             exc.pending = CloseAfterFutures(scope.pop_all().close, (exc.pending,))
             raise
         finally:
             scope.close()
-        self.report(QfqMessage(
+        self.report(QfqNotice(
             "数据库文件校验",
-            "主文件及WAL整体指纹已完成", state="完成", finished=True,
+            ('主文件及WAL整体指纹已完成',), state="完成", finished=True,
         ))
 
     def _execute(
         self, observed_at: datetime
     ) -> tuple[QfqDownloadProgress, Literal["qfq_worker_unavailable"] | None]:
         started = self.monotonic()
-        self.report(QfqMessage("准备", "正在加载股票总体与交易日历", state="开始"))
+        self.report(QfqNotice("准备", ('正在加载股票总体与交易日历',), state="开始"))
         try:
             cutoff = self.v2.repair_cutoff() if self.repair_only else None
             context = self.supplier.load_qfq_context(
@@ -328,16 +333,18 @@ class UpdateQfqWindows:
             self._record_failure("loading_context", exc, elapsed=self.monotonic() - started)
             stage = "已取消" if cancelled else "准备失败"
             self.report(
-                QfqMessage(
+                QfqNotice(
                     stage,
-                    QfqFailureCode(exc),
+                    (QfqFailureCode(exc),),
                     level=ProgressLevel.WARNING if cancelled else ProgressLevel.ERROR,
                 )
             )
             raise
         source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
-        self.report(QfqMessage("准备", f"总体 {len(context.universe)} 股 | 交易日 {len(context.calendar.open_dates)}日",
-                               state="完成", finished=True))
+        self.report(QfqNotice(
+            "准备", (ProgressCount("总体", len(context.universe), "股"), ProgressCount("交易日", len(context.calendar.open_dates), "日")),
+            state="完成", finished=True,
+        ))
         progress = QfqDownloadProgress(
             context.calendar.open_dates[-1],
             source,
@@ -351,7 +358,7 @@ class UpdateQfqWindows:
         files, changed_rows = self.v2.select_published_codes(self.v3, allowed_codes)
         progress.changed.update(files)
         progress.rows += changed_rows
-        progress.publish("本地窗口检查", "核对两档窗口日期与来源", state="开始")
+        progress.publish("本地窗口检查", ('核对两档窗口日期与来源',), state="开始")
         planning = self.v2.planning_snapshot(allowed_codes, batched=self.batch_planning_candidate)
         v2_snapshot = planning.windows
         v3_snapshot = (
@@ -360,11 +367,16 @@ class UpdateQfqWindows:
         )
         progress.publish(
             "本地窗口检查",
-            f"V2 {len(v2_snapshot.states)} 只 | V3 {len(v3_snapshot.states)} 只",
+            (
+                ProgressCount("V2", len(v2_snapshot.states), "只"),
+                ProgressCount("V3", len(v3_snapshot.states), "只"),
+            ),
             state="完成", finished=True,
         )
-        progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.worker_count}",
-                         state="完成", finished=True)
+        progress.publish(
+            "就绪", (ProgressCount("股票", progress.total, "只"), ProgressDate("截止", progress.day), ProgressCount("并发", self.worker_count)),
+            state="完成", finished=True,
+        )
         if self.repair_only:
             # Older files had no durable issue inventory. Recover absent dates
             # only for locally published stocks; never schedule the whole universe.
@@ -382,13 +394,13 @@ class UpdateQfqWindows:
                 plans, progress, context.calendar.open_dates[-self.configuration.maximum_sessions :]
             )
         if self.repair_supplier is not None and failure_reason is None and not self.cancel_requested():
-            progress.publish("BaoStock补缺", "开始读取当前缺口", state="开始")
+            progress.publish("BaoStock补缺", ('开始读取当前缺口',), state="开始")
             self._repair(context, progress, observed_at.astimezone(ZoneInfo("Asia/Shanghai")).date())
-            progress.publish("BaoStock补缺", "本轮补缺阶段结束，最终覆盖见汇总", state="完成", finished=True)
+            progress.publish("BaoStock补缺", ('本轮补缺阶段结束，最终覆盖见汇总',), state="完成", finished=True)
         if not self.repair_only and failure_reason is None and not self.cancel_requested():
-            progress.publish("停牌复核", "沿用本次请求预算", state="开始")
+            progress.publish("停牌复核", ('沿用本次请求预算',), state="开始")
             progress.price_review = self._review_persisted(context, progress, observed_at.astimezone(ZoneInfo("Asia/Shanghai")).date())
-            progress.publish("停牌复核", "本轮复核结束，未确认事实保留", state="完成", finished=True)
+            progress.publish("停牌复核", ('本轮复核结束，未确认事实保留',), state="完成", finished=True)
         return progress, failure_reason
 
     def _review_persisted(self, context: HistorySupplierContext, progress: QfqDownloadProgress, observed_on: date) -> QfqPriceReviewSummary:
@@ -405,11 +417,17 @@ class UpdateQfqWindows:
             budget.check_deadline()
             plans, remaining_codes = self._review_candidates(context, progress, observed_on, budget)
         except PriceReviewBudgetExhausted as exc:
-            progress.publish("停牌复核", "发现阶段预算耗尽 | 原事实保留待复核", level=ProgressLevel.WARNING)
+            progress.publish("停牌复核", (
+                '发现阶段预算耗尽',
+                '原事实保留待复核',
+            ), level=ProgressLevel.WARNING)
             return QfqPriceReviewSummary(exhaustion_reason=exc.reason, discovery_completed=False)
         except (RuntimeError, OSError, ValueError) as exc:
             self._record_failure("local_review_inventory", exc)
-            progress.publish("停牌复核", f"发现未完成 | {QfqFailureCode(exc)}", level=ProgressLevel.WARNING)
+            progress.publish("停牌复核", (
+                '发现未完成',
+                f'{QfqFailureCode(exc)}',
+            ), level=ProgressLevel.WARNING)
             return QfqPriceReviewSummary(discovery_completed=False)
         finally:
             budget.pause()
@@ -420,7 +438,11 @@ class UpdateQfqWindows:
             try:
                 if not budget.reserve_code(plan.security.code):
                     exhaustion = budget.exhausted_reason
-                    progress.publish("停牌复核", f"预算已用尽 | 剩余事实保留待下次复核 | {budget.exhausted_reason}", level=ProgressLevel.WARNING)
+                    progress.publish("停牌复核", (
+                        '预算已用尽',
+                        '剩余事实保留待下次复核',
+                        f'{budget.exhausted_reason}',
+                    ), level=ProgressLevel.WARNING)
                     if exhaustion == "code_limit":
                         continue
                     break
@@ -431,7 +453,11 @@ class UpdateQfqWindows:
                 budget.check_deadline()
                 receipt = self._write_downloaded(((job, downloaded),), progress.source, context.calendar.open_dates[-self.configuration.maximum_sessions:], review_budget=budget)
                 if receipt.failure is not None:
-                    progress.publish("停牌复核", f"{plan.security.code} | 发布未完成 | 保留待复核", level=ProgressLevel.WARNING)
+                    progress.publish("停牌复核", (
+                        f'{plan.security.code}',
+                        '发布未完成',
+                        '保留待复核',
+                    ), level=ProgressLevel.WARNING)
                     continue
                 progress.changed.update(receipt.files)
                 progress.rows += receipt.rows
@@ -443,14 +469,26 @@ class UpdateQfqWindows:
                     elif job.previous.cells[-1].status == "supplier_marked_suspended":
                         progress.latest_suspended = max(0, progress.latest_suspended - 1)
                 progress.record_latest(downloaded.window)
-                progress.publish("停牌复核", f"{plan.security.code} | 来源已复核 | 请求 {budget.request_count}")
+                progress.publish("停牌复核", (
+                    f'{plan.security.code}',
+                    '来源已复核',
+                    ProgressCount('请求', budget.request_count, ''),
+                ))
             except PriceReviewBudgetExhausted as exc:
                 exhaustion = exc.reason
-                progress.publish("停牌复核", f"{plan.security.code} | 预算耗尽 | 保留原事实待复核", level=ProgressLevel.WARNING)
+                progress.publish("停牌复核", (
+                    f'{plan.security.code}',
+                    '预算耗尽',
+                    '保留原事实待复核',
+                ), level=ProgressLevel.WARNING)
                 break
             except (RuntimeError, OSError, ValueError) as exc:
                 self._record_failure("tencent_review", exc, plan.security.code)
-                progress.publish("停牌复核", f"{plan.security.code} | 未确认 | {QfqFailureCode(exc)}", level=ProgressLevel.WARNING)
+                progress.publish("停牌复核", (
+                    f'{plan.security.code}',
+                    '未确认',
+                    f'{QfqFailureCode(exc)}',
+                ), level=ProgressLevel.WARNING)
             finally:
                 budget.pause()
         return QfqPriceReviewSummary(
@@ -492,9 +530,16 @@ class UpdateQfqWindows:
         repair_states = {state.code: state for state in self.v2.review_states(frozenset(target.issue.code for target in targets))}
         if self.repair_only:
             progress.total = len(targets)
-        progress.publish("BaoStock补缺", f"问题股票 {len(targets)} 只 | 串行请求 | 最小间隔 1.5 秒")
+        progress.publish("BaoStock补缺", (
+            ProgressCount('问题股票', len(targets), '只'),
+            '串行请求',
+            '最小间隔 1.5 秒',
+        ))
         if self.repair_codes is not None:
-            progress.publish("BaoStock补缺", f"本轮限定 {','.join(sorted(self.repair_codes))} | 最终待处理统计保留范围外问题")
+            progress.publish("BaoStock补缺", (
+                f"本轮限定 {','.join(sorted(self.repair_codes))}",
+                '最终待处理统计保留范围外问题',
+            ))
         for target in targets:
             if self.cancel_requested():
                 break
@@ -552,12 +597,20 @@ class UpdateQfqWindows:
                 )
                 progress.changed.update(files)
                 progress.rows += rows
-                progress.publish("BaoStock补缺", f"{issue.code} | 整窗发布成功 | {len(dates)} 股日")
+                progress.publish("BaoStock补缺", (
+                    f'{issue.code}',
+                    '整窗发布成功',
+                    f'{len(dates)} 股日',
+                ))
             except (RuntimeError, OSError, ValueError) as exc:
                 self._record_failure("baostock_repair", exc, issue.code, self.monotonic() - repair_started)
                 if reserved:
                     self.v2.fail_repair(issue.code, batch, QfqFailureCode(exc))
-                progress.publish("BaoStock补缺", f"{issue.code} | 未修复 | {QfqFailureCode(exc)}", level=ProgressLevel.WARNING)
+                progress.publish("BaoStock补缺", (
+                    f'{issue.code}',
+                    '未修复',
+                    f'{QfqFailureCode(exc)}',
+                ), level=ProgressLevel.WARNING)
         remaining = self._repair_targets(context, include_unselected=True)
         # Durable state is authoritative after the second phase; Tencent pending
         # counters must not continue to report a stock that has been repaired.
@@ -712,10 +765,15 @@ class UpdateQfqWindows:
         failure_reason: Literal["qfq_worker_unavailable"] | None = None
         last_feedback = last_flush = self.monotonic()
         finished_normally = False
-        download_stage = f"{progress.source_label}下载"
-        progress.publish("价格更新", f"来源 {progress.source_label} | 股票 {progress.total} | 并发 {self.worker_count} "
-                         f"| 单次超时 {self.configuration.source_timeout_seconds}秒 | 重试上限 {self.configuration.source_retries}",
-                         state="开始", label=download_stage)
+        download_source = progress.source
+        progress.publish("价格更新", (
+            ProgressSource(progress.source),
+            ProgressCount('股票', progress.total, ''),
+            ProgressCount('并发', self.worker_count, ''),
+            ProgressMeasure('单次超时', self.configuration.source_timeout_seconds, '秒'),
+            ProgressCount('重试上限', self.configuration.source_retries, ''),
+        ),
+                         state="开始", source=download_source)
         try:
             while not self.cancel_requested():
                 if writing is not None and writing.done():
@@ -759,9 +817,14 @@ class UpdateQfqWindows:
                 if self.monotonic() - last_feedback >= 5:
                     progress.publish(
                         "价格更新",
-                        f"网络在途 {len(futures)} | 待写 {len(downloaded)} | 写入 {len(write_batch)} | 已处理 {progress.processed}/{progress.total}",
+                        (
+                            ProgressCount("网络在途", len(futures)),
+                            ProgressCount("待写", len(downloaded)),
+                            ProgressCount("写入", len(write_batch)),
+                            ProgressRatio("已处理", progress.processed, progress.total),
+                        ),
                         state="等待",
-                        label=download_stage,
+                        source=download_source,
                     )
                     last_feedback = self.monotonic()
                 if futures or writing is not None:
@@ -789,9 +852,12 @@ class UpdateQfqWindows:
                             deadline,
                         ) from exc
                     raise
-            progress.publish("价格更新", f"已处理 {progress.processed}/{progress.total} | 待重试 {progress.pending}",
+            progress.publish("价格更新", (
+                ProgressRatio('已处理', progress.processed, progress.total),
+                ProgressCount('待重试', progress.pending, ''),
+            ),
                              state="取消" if self.cancel_requested() else "失败" if failure_reason or not finished_normally else "完成",
-                             finished=True, label=download_stage)
+                             finished=True, source=download_source)
         return failure_reason
 
     def _submit_write(
@@ -884,7 +950,11 @@ class UpdateQfqWindows:
             except PriceReviewBudgetExhausted as exc:
                 # No supplier outcome was established. Preserve completion,
                 # price facts and the original review date for a later command.
-                progress.publish("停牌复核", f"{job.security.code} | 预算耗尽 | 保留原窗口待复核", level=ProgressLevel.WARNING)
+                progress.publish("停牌复核", (
+                    f'{job.security.code}',
+                    '预算耗尽',
+                    '保留原窗口待复核',
+                ), level=ProgressLevel.WARNING)
                 if job.review_only:
                     progress.completed += 1
                     progress.skipped += 1

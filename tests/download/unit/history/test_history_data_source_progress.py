@@ -4,7 +4,7 @@ from io import StringIO
 
 import pytest
 
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress

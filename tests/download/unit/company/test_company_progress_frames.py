@@ -10,14 +10,14 @@ import pytest
 
 from tests.helpers.download.company.company_evidence import _disclosure
 from trader.download.application.company_operations import CompanyOperations
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.application.progress_message import (
     ProgressField,
     ProgressMessage,
     ProgressRow,
     ProgressTask,
-    WithProgressTime,
 )
+from trader.download.infra.progress_projection import WithProgressTime
 from trader.download.domain.company_evidence import (
     CompanyOperationKind, CompanyOperationResult, CompanyStockProgress, EvidenceSyncProgress,
 )

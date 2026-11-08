@@ -1,65 +1,21 @@
-"""Chinese batch feedback for paired-window updates, using one accounting owner."""
+"""Paired-window accounting emits immutable facts through one progress port."""
 
 from __future__ import annotations
 
-from trader.infra.progress_format import ProgressDuration
-
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from trader.download.application.progress_message import (
-    FormatProgressField,
-    ProgressField,
-    ProgressLevel,
-    ProgressMessage,
-    ProgressTask,
-    ProgressState,
-    ProgressNumber,
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressState
+from trader.download.application.progress_events import (
+    DownloadProgressPort, ProgressDetail, QfqNotice, QfqPendingSummary, QfqSummary,
 )
-from trader.download.application.stock_download_progress import (
-    FormatStockDownloadProgress,
-    StockDownloadProgress,
-)
+from trader.download.application.stock_download_progress import StockDownloadProgress
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
-from trader.download.domain.history_sync import HistoryStEligibilitySummary
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QfqPendingReason, QfqPriceReviewSummary, QfqUpdateResult, QfqWindowIncompleteError
-
-
-def QfqMessage(
-    stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL,
-    state: ProgressState = "处理中", finished: bool = False, label: str | None = None,
-) -> ProgressMessage:
-    return ProgressMessage(
-        (
-            *(
-                FormatProgressField(part, level=level if level is ProgressLevel.ERROR else ProgressLevel.NORMAL)
-                for part in details.split(" | ")
-            ),
-        ),
-        task=ProgressTask("market", stage, label or stage),
-        state="失败" if level is ProgressLevel.ERROR else state,
-        finished=finished or level is ProgressLevel.ERROR,
-    )
-
-
-def ReportQfqStProgress(
-    report: Callable[[ProgressMessage], None],
-    completed: int,
-    total: int,
-    summary: HistoryStEligibilitySummary | None,
-) -> None:
-    if summary is None and completed % 256 != 0:
-        return
-    details = f"{ProgressNumber(completed)}/{ProgressNumber(total)}"
-    if summary is not None:
-        details += f" | 合格 {ProgressNumber(summary.clear)} | 曾ST排除 {ProgressNumber(summary.ever_st)} | 未知排除 {ProgressNumber(summary.unknown)}"
-    report(QfqMessage("ST资格", details))
-
 
 def QfqFailureCode(exc: Exception) -> str:
     message = str(exc)
@@ -92,7 +48,7 @@ class QfqDownloadProgress:
     day: date
     source: str
     total: int
-    report: Callable[[ProgressMessage], None]
+    report: DownloadProgressPort
     completed: int = 0
     pending: int = 0
     skipped: int = 0
@@ -113,40 +69,35 @@ class QfqDownloadProgress:
     def processed(self) -> int:
         return self.completed + self.pending + self.not_applicable + self.no_trade_data
 
-    @property
-    def source_label(self) -> str:
-        return _source_label(self.source)
-
     def publish(
-        self, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL,
+        self, stage: str, details: tuple[ProgressDetail, ...], *, level: ProgressLevel = ProgressLevel.NORMAL,
         state: ProgressState = "处理中", finished: bool = False, label: str | None = None,
+        source: str | None = None,
     ) -> None:
-        self.report(QfqMessage(stage, details, level=level, state=state, finished=finished, label=label))
+        self.report(QfqNotice(stage, details, level, state, finished, label, source))
 
     def record_stock(self, security: BaoStockSecurity, feedback: QfqStockFeedback) -> None:
         self.report(
-            FormatStockDownloadProgress(
-                StockDownloadProgress(
-                    command="sync market",
-                    completed=self.processed,
-                    total=self.total,
-                    code=security.code,
-                    name=security.name,
-                    action=feedback.action,
-                    result=feedback.result,
-                    target=feedback.target,
-                    raw=feedback.raw,
-                    qfq=feedback.qfq,
-                    paired=feedback.paired,
-                    missing=feedback.target - feedback.paired if feedback.paired is not None else None,
-                    missing_dates=feedback.missing_dates,
-                    inferred_suspended=feedback.inferred_suspended,
-                    reason=feedback.reason.text,
-                    extra=(f"原来源 {_source_label(feedback.source)}",) if feedback.source is not None else (),
-                    failure_level=ProgressLevel.ERROR
-                    if feedback.reason.level is ProgressLevel.ERROR
-                    else ProgressLevel.WARNING,
-                ),
+            StockDownloadProgress(
+                command="sync market",
+                completed=self.processed,
+                total=self.total,
+                code=security.code,
+                name=security.name,
+                action=feedback.action,
+                result=feedback.result,
+                target=feedback.target,
+                raw=feedback.raw,
+                qfq=feedback.qfq,
+                paired=feedback.paired,
+                missing=feedback.target - feedback.paired if feedback.paired is not None else None,
+                missing_dates=feedback.missing_dates,
+                inferred_suspended=feedback.inferred_suspended,
+                reason=feedback.reason.text,
+                source=feedback.source,
+                failure_level=ProgressLevel.ERROR
+                if feedback.reason.level is ProgressLevel.ERROR
+                else ProgressLevel.WARNING,
             )
         )
 
@@ -229,23 +180,24 @@ class QfqDownloadProgress:
         )
 
     def summary(self, stage: str, *, level: ProgressLevel = ProgressLevel.NORMAL) -> None:
-        percent = self.processed / self.total * 100 if self.total else 100.0
-        self.publish(
-            stage,
-            f"已处理 {ProgressNumber(self.processed)}/{ProgressNumber(self.total)}（{percent:6.2f}%） "
-            f"| 合格 {ProgressNumber(self.completed)} | 待重试 {ProgressNumber(self.pending)} "
-            f"| 其中复用 {ProgressNumber(self.skipped)} | 无需下载 {ProgressNumber(self.not_applicable)} "
-            f"| 无真实日线 {ProgressNumber(self.no_trade_data)} "
-            f"| 最近日停牌 {ProgressNumber(self.latest_suspended)} "
-            f"| 最近日推定停牌 {ProgressNumber(self.latest_inferred_suspended)} "
-            f"| 最近日未解释缺价 {ProgressNumber(self.latest_missing)} "
-            f"| 补采待核 {ProgressNumber(self.unresolved_supplement_codes)} "
-            f"| 未处理 {ProgressNumber(self.total - self.processed)} "
-            f"| 变更文件 {ProgressNumber(len(self.changed))} | 变更行 {ProgressNumber(self.rows)} "
-            f"| 落库耗时 {ProgressDuration(self.write_seconds)}",
+        self.report(QfqSummary(
+            stage=stage,
+            total=self.total,
+            processed=self.processed,
+            completed=self.completed,
+            pending=self.pending,
+            skipped=self.skipped,
+            not_applicable=self.not_applicable,
+            no_trade_data=self.no_trade_data,
+            latest_suspended=self.latest_suspended,
+            latest_inferred_suspended=self.latest_inferred_suspended,
+            latest_missing=self.latest_missing,
+            unresolved_supplement_codes=self.unresolved_supplement_codes,
+            changed_files=len(self.changed),
+            rows=self.rows,
+            write_seconds=self.write_seconds,
             level=level,
-            state="完成", finished=True,
-        )
+        ))
 
     def finish(
         self, cancelled: bool, *, failure_reason: Literal["qfq_worker_unavailable", "qfq_writer_shutdown_incomplete"] | None = None
@@ -274,11 +226,7 @@ class QfqDownloadProgress:
             else ProgressLevel.SUCCESS
         )
         if self.pending_reasons:
-            self.publish(
-                "待重试原因",
-                " | ".join(f"{item.reason} {ProgressNumber(item.count)} 股" for item in self.pending_reasons),
-                level=level,
-            )
+            self.report(QfqPendingSummary(self.pending_reasons, level))
         self.summary(stage, level=level)
         return result
 
@@ -305,6 +253,4 @@ class QfqDownloadProgress:
         )
 
 
-def _source_label(source: str) -> str:
-    provider = source.partition(":")[0]
-    return {"tencent-newfqkline": "Tencent", "baostock": "BaoStock"}.get(provider, provider)
+__all__ = ["QfqDownloadProgress", "QfqStockFeedback", "QfqFailureCode"]

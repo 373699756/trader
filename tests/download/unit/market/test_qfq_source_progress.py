@@ -6,17 +6,34 @@ import pytest
 
 from tests.helpers.download.history.qfq_windows import DAYS, Supplier, _updater
 from trader.download.application.qfq_download_progress import QfqDownloadProgress, QfqStockFeedback
-from trader.download.application.stock_download_progress import FormatStockDownloadProgress, StockDownloadProgress
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.application.progress_events import QfqNotice, QfqSummary
+from trader.download.application.stock_download_progress import StockDownloadProgress
+from trader.download.infra.progress_projection import FormatStockDownloadProgress, ProjectingDownloadProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.qfq_planning import QfqPlanningSnapshot, QfqPlanningState
 from trader.download.domain.qfq_window import QfqWindowSnapshot, QfqWindowState
 
 
+def test_qfq_application_emits_unformatted_facts_for_the_output_adapter():
+    events = []
+    progress = QfqDownloadProgress(date(2026, 11, 6), "tencent-newfqkline:digest", 1, events.append)
+    progress.publish("价格更新", ("包含 | 分隔符的单条事实",), source=progress.source)
+    progress.summary("汇总")
+
+    assert isinstance(events[0], QfqNotice)
+    assert events[0].details == ("包含 | 分隔符的单条事实",)
+    assert events[0].source == "tencent-newfqkline:digest"
+    assert isinstance(events[1], QfqSummary)
+    assert events[1].total == 1 and events[1].processed == 0
+    with pytest.raises(TypeError, match="download_progress_details_require_typed_tuple"):
+        QfqNotice("价格更新", "不再接受旧拼接字符串")
+
+
 @pytest.mark.parametrize("action", ("Tencent下载", "BaoStock补缺", "本地检查", "本地复用", "配对落库", "无需下载"))
 def test_market_stock_label_follows_the_actual_action_without_changing_task_key(action):
     messages = []
-    progress = QfqDownloadProgress(date(2026, 11, 6), "tencent-newfqkline:digest", 1, messages.append)
+    progress = QfqDownloadProgress(date(2026, 11, 6), "tencent-newfqkline:digest", 1, ProjectingDownloadProgress(messages.append))
     security = BaoStockSecurity("600001", "测试股份", "main", date(2000, 1, 1), None, "fixture")
 
     progress.record_stock(security, QfqStockFeedback(action, "合格", 1, 1, 1, 1))
@@ -36,7 +53,7 @@ def test_complete_local_plan_reports_verified_original_provider_without_requesti
     updater = _updater(tmp_path, supplier)
     messages = []
     current_source = source.removeprefix("baostock:")
-    progress = QfqDownloadProgress(DAYS[-1], current_source, 1, messages.append)
+    progress = QfqDownloadProgress(DAYS[-1], current_source, 1, ProjectingDownloadProgress(messages.append))
     security = BaoStockSecurity("600001", "测试股份", "main", DAYS[0], None, "fixture")
     dates = DAYS[-updater.configuration.maximum_sessions:]
     v2 = QfqWindowSnapshot((QfqWindowState(security.code, source, dates, True, dates[0], dates[-1]),))
@@ -55,9 +72,9 @@ def test_complete_local_plan_reports_verified_original_provider_without_requesti
 
 def test_market_supplier_stage_label_preserves_price_task_identity():
     messages = []
-    progress = QfqDownloadProgress(date(2026, 11, 6), "tencent-newfqkline:digest", 1, messages.append)
+    progress = QfqDownloadProgress(date(2026, 11, 6), "tencent-newfqkline:digest", 1, ProjectingDownloadProgress(messages.append))
 
-    progress.publish("价格更新", "请求进行中", label=f"{progress.source_label}下载")
+    progress.publish("价格更新", ('请求进行中',), source=progress.source)
 
     assert messages[0].task.key == "价格更新" and messages[0].task.label == "Tencent下载"
 
@@ -67,10 +84,10 @@ def test_supplier_label_switch_keeps_elapsed_time_and_one_latest_source_heartbea
     messages = []
     report = SyncProgress(messages.append, lambda: clock[0])
     progress = QfqDownloadProgress(date(2026, 11, 6), "tencent-newfqkline:digest", 1, report)
-    progress.publish("价格更新", "来源 Tencent", state="开始", label="Tencent下载")
+    progress.publish("价格更新", ('来源 Tencent',), state="开始", label="Tencent下载")
     first_task = messages[0].task
     clock[0] = 0.2
-    progress.publish("价格更新", "来源 BaoStock", label="BaoStock补缺")
+    progress.publish("价格更新", ('来源 BaoStock',), label="BaoStock补缺")
     assert len(messages) == 1
 
     clock[0] = 5.0

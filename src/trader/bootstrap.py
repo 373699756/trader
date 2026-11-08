@@ -23,8 +23,8 @@ from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_ports import HistorySyncDependencies
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
 from trader.download.application.progress_message import ProgressMessage
-from trader.download.application.sync_progress import SyncProgress
-from trader.download.application.qfq_download_progress import QfqMessage
+from trader.download.entrypoints.sync_progress import SyncProgress
+from trader.download.infra.progress_projection import ProjectingDownloadProgress, QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
 from trader.download.domain.price_repair import ValidateRepairSelection
@@ -233,7 +233,7 @@ def ExecuteSync(
     sqlite_policy = BuildSqlitePolicy(settings)
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
-    owns_report, report = report is None, report or CreateSyncProgress()
+    report = report or CreateSyncProgress()
     progress = company_evidence_progress.CompanyEvidenceProgress(report=report, observe=report.register_observer)
     history_progress = StderrHistorySyncProgress(report=report)
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
@@ -251,7 +251,7 @@ def ExecuteSync(
     def sync_market(reference: PreparedReference) -> QfqUpdateResult:
         if qfq_configuration is None:
             raise RuntimeError("qfq_configuration_unavailable")
-        report(QfqMessage("资料交接", "参考资料已准备，开始更新 raw/qfq 短窗口", state="完成", finished=True))
+        report(QfqMessage("资料交接", ('参考资料已准备，开始更新 raw/qfq 短窗口',), state="完成", finished=True))
         return report.run("market", partial(
             ExecuteQfqDownload, paths, configuration, qfq_configuration,
             failure_configuration=failure_configuration, report=report,
@@ -272,7 +272,7 @@ def ExecuteSync(
                 repair_only=fill_missing, price_review_budget=price_review_budget, sqlite_policy=sqlite_policy, repair_codes=repair_codes,
         ))
 
-    return report.command(lambda: SyncData(
+    return SyncData(
         failures=market_failures,
         prepare=lambda: report.run("参考", lambda: _prepare_reference(
             paths.reference, clock.now(), progress,
@@ -305,7 +305,7 @@ def ExecuteSync(
             report=report,
         )),
         cancelled=cancel_requested,
-    ).execute(target), monitor=owns_report)
+    ).execute(target)
 
 
 def CreateCompanyEligibilityReader(path: Path, event_policy: company_events.CompanyEventPolicy, *, sqlite_policy: SqliteIoPolicy) -> CompanyEligibility:
@@ -729,7 +729,7 @@ def ExecuteQfqDownload(
                 v3,
                 tencent,
                 cancel_requested,
-                report,
+                ProjectingDownloadProgress(report),
                 qfq_configuration,
                 worker_pool=qfq_pool,
                 writer_pool=qfq_writer,

@@ -31,6 +31,7 @@ from trader.download.domain.qfq_window import (
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError
 from trader.infra.shutdown import ShutdownBudget
+from trader.infra.signal_cancellation import ManualCancellation
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.domain.qfq_planning import QfqNonTradingFact
@@ -1556,7 +1557,7 @@ def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context
     assert "处理 无需下载 | 结果 无需下载 | raw 0/0 | qfq 0/0 | 完整配对 0/0" in stock_progress
     assert messages[-1].startswith("market·完成 | 完成 | 已处理 1/1（100.00%）")
     assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 无真实日线 0" in messages[-1]
-    assert "最近日停牌 0 | 最近日推定停牌 0 | 最近日未解释缺价 0 | 未处理 0" in messages[-1]
+    assert "最近日停牌 0 | 最近日推定停牌 0 | 最近日未解释缺价 0 | 补采待核 0 | 未处理 0" in messages[-1]
 
 
 def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_processed(tmp_path):
@@ -2107,12 +2108,12 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
 def test_local_extraction_heartbeat_is_visible_and_thread_stops():
     import threading
     from trader.download.infra.qfq_progress import QfqLocalProgress
-    from trader.download.application.sync_progress import SyncProgress
+    from trader.download.entrypoints.sync_progress import SyncProgress
 
     clock = [0.0]
     messages = []
-    report = SyncProgress(lambda message: messages.append(RenderProgress(message)), lambda: clock[0])
-    with report.keep_alive():
+    report = SyncProgress(lambda message: messages.append(" ".join(RenderProgress(message).split())), lambda: clock[0])
+    with ManualCancellation(timeout_seconds=2.0) as shutdown, report.keep_alive(shutdown=shutdown):
         with QfqLocalProgress(report):
             assert "market·历史提取 00:00:00 | 开始" in messages[0]
             clock[0] = 5

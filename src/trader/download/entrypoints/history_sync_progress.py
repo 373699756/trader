@@ -10,18 +10,18 @@ from dataclasses import replace
 from threading import Lock
 
 from trader.download.application.progress_message import (
-    FormatProgressField,
     ProgressLevel,
     ProgressMessage,
-    ProgressNumber,
     ProgressState,
     ProgressTask,
 )
-from trader.download.application.sync_progress import SyncProgress
-from trader.download.application.stock_download_progress import (
-    FormatStockDownloadProgress,
-    StockDownloadProgress,
+from trader.download.infra.progress_projection import (
+    FormatProgressField,
+    ProgressNumber,
 )
+from trader.download.entrypoints.sync_progress import SyncProgress
+from trader.download.application.stock_download_progress import StockDownloadProgress
+from trader.download.infra.progress_projection import FormatStockDownloadProgress
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_supplier_failure import HISTORY_SUPPLIER_PENDING_REASONS
 from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressStage, HistorySyncProgressState

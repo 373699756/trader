@@ -32,7 +32,7 @@ def RunDownload(
     progress = StderrHistorySyncProgress(report=report)
     with (
         ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled,
-        report.keep_alive(),
+        report.keep_alive(shutdown=cancelled),
     ):
         try:
             status = ExecuteHistoryDownload(

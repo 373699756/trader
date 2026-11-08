@@ -9,12 +9,15 @@ import sys
 from threading import Lock
 from typing import TextIO
 
-from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressLevel
+from trader.download.application.progress_events import DownloadProgressEvent
+from trader.download.infra.progress_projection import ProjectDownloadProgress
 
 _COLORS = {ProgressLevel.SUCCESS: "32", ProgressLevel.WARNING: "33", ProgressLevel.ERROR: "31"}
 
 
-def RenderProgress(message: ProgressMessage, *, color: bool = False) -> str:
+def RenderProgress(event: DownloadProgressEvent, *, color: bool = False) -> str:
+    message = ProjectDownloadProgress(event)
     return "\n".join(
         _render_fields(fields, color=color) for fields in (message.fields, *(row.fields for row in message.rows))
     )
@@ -37,8 +40,8 @@ class TerminalDownloadProgress:
         self._lock = Lock()
         self._color = self._stream.isatty() and os.environ.get("TERM") != "dumb" and not os.environ.get("NO_COLOR")
 
-    def __call__(self, message: ProgressMessage) -> None:
-        line = RenderProgress(message, color=self._color)
+    def __call__(self, event: DownloadProgressEvent) -> None:
+        line = RenderProgress(event, color=self._color)
         with self._lock:
             self._stream.write(line + "\n")
             self._stream.flush()

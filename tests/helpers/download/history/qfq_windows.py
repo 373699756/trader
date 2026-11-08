@@ -9,7 +9,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from tests.helpers.download.qfq import QFQ_CONFIGURATION
 from tests.helpers.shared.reference_fixtures import PreparedFixture
-from trader.download.application.progress_message import ProgressMessage
+from trader.download.application.progress_events import DownloadProgressEvent
+from trader.download.infra.progress_projection import ProjectDownloadProgress
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
@@ -19,6 +20,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import (
     ProjectHistoryCell,
     PublishedHistoryWindow,
@@ -30,8 +32,9 @@ from trader.download.infra.terminal_progress import RenderProgress
 from trader.infra.settings.data_paths import DataPaths
 
 
-def _plain_feedback(message: ProgressMessage) -> str:
+def _plain_feedback(event: DownloadProgressEvent) -> str:
     # Existing behavior assertions ignore padding; separate terminal tests check exact cell positions.
+    message = ProjectDownloadProgress(event)
     identity = "" if message.task is None else f"{message.task.owner}·{message.task.label} | {message.state} | "
     line = re.sub(r" +", " ", identity + RenderProgress(message))
     return re.sub(r" */ *", "/", re.sub(r"([（(]) +", r"\1", line))
@@ -111,7 +114,9 @@ class Supplier:
             BaoStockSourceVersions("fixture", "3.11", ()),
         )
 
-    def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+    def fetch_window(
+        self, security: BaoStockSecurity, dates: tuple[date, ...], *, request_budget: PriceReviewRequestBudget | None = None
+    ) -> PublishedHistoryWindow:
         self.calls.append((security.code, dates))
         if self.fail:
             raise QfqWindowIncompleteError(dates, dates)
@@ -131,8 +136,10 @@ def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
 
 
 class _IncompleteSupplier(Supplier):
-    def fetch_window(self, security, dates):
-        window = super().fetch_window(security, dates)
+    def fetch_window(
+        self, security: BaoStockSecurity, dates: tuple[date, ...], *, request_budget: PriceReviewRequestBudget | None = None
+    ) -> PublishedHistoryWindow:
+        window = super().fetch_window(security, dates, request_budget=request_budget)
         if security.code == "600001":
             raise QfqWindowIncompleteError(dates[:4], dates[:4])
         return window

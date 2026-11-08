@@ -1,23 +1,14 @@
-"""Shared human-readable projection for per-stock download outcomes."""
+"""Immutable per-stock download facts shared with output adapters."""
 
 from __future__ import annotations
-
-from trader.infra.progress_format import CleanProgressText, DisplayWidth
 
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.download.application.progress_message import (
-    FormatProgressField,
-    ProgressField,
-    ProgressLevel,
-    ProgressMessage,
-    ProgressTask,
-)
+from trader.download.application.progress_message import ProgressLevel
 
 _DownloadCommand = Literal["sync history", "sync market"]
-_STOCK_NAME_WIDTH = 8
 
 
 @dataclass(frozen=True)
@@ -39,6 +30,7 @@ class StockDownloadProgress:
     extra: tuple[str, ...] = ()
     failure_level: ProgressLevel = ProgressLevel.WARNING
     inferred_suspended: int = 0
+    source: str | None = None
 
     def __post_init__(self) -> None:
         counts = (self.raw, self.qfq, self.paired)
@@ -67,76 +59,4 @@ class StockDownloadProgress:
             raise ValueError("stock download progress is invalid")
 
 
-def FormatStockDownloadProgress(progress: StockDownloadProgress) -> ProgressMessage:
-    percent = progress.completed / progress.total * 100 if progress.total else 100.0
-    name = CleanProgressText(progress.name or "—").strip() or "—"
-    short_name = name
-    if DisplayWidth(name) > _STOCK_NAME_WIDTH:
-        short_name = ""
-        for char in name:
-            if DisplayWidth(short_name + char) > _STOCK_NAME_WIDTH - 1:
-                break
-            short_name += char
-        short_name += "…"
-    level = _result_level(progress)
-    missing = "未知" if progress.missing is None else str(progress.missing)
-    parts = [
-        ProgressField(f"{'已确认' if progress.command == 'sync history' else '已处理'} {progress.completed}/{progress.total}（{percent:.2f}%）"),
-        FormatProgressField(
-            f"股票 {progress.code} {short_name}", width=DisplayWidth(f"股票 {progress.code} ") + _STOCK_NAME_WIDTH
-        ),
-        FormatProgressField(f"处理 {progress.action}"),
-        FormatProgressField(f"结果 {progress.result}", level=level),
-        FormatProgressField(f"raw {_format_count(progress.raw, progress.target)}"),
-        FormatProgressField(f"qfq {_format_count(progress.qfq, progress.target)}"),
-        FormatProgressField(f"完整配对 {_format_count(progress.paired, progress.target)}"),
-        FormatProgressField(
-            f"缺日 {missing}", level=ProgressLevel.WARNING if progress.missing != 0 else ProgressLevel.NORMAL
-        ),
-        *((FormatProgressField(f"推定停牌 {progress.inferred_suspended}"),) if progress.inferred_suspended else ()),
-        *(FormatProgressField(item) for item in progress.extra),
-        FormatProgressField(
-            f"原因 {progress.reason}", level=level if progress.reason != "无" else ProgressLevel.NORMAL
-        ),
-    ]
-    if progress.missing_dates:
-        parts.append(FormatProgressField(f"缺失日期 {_format_missing_dates(progress.missing_dates)}"))
-    if short_name != name:
-        parts.append(FormatProgressField(f"完整名称 {name}"))
-    if progress.target is None:
-        parts.append(ProgressField("本次覆盖 未重新核验"))
-    return ProgressMessage(
-        tuple(parts), progress.reason if progress.result in {"失败", "待重试"} else None,
-        task=ProgressTask("history" if progress.command == "sync history" else "market",
-                          "prices" if progress.command == "sync history" else "价格更新",
-                          "Tencent下载" if progress.command == "sync history" else progress.action),
-        state="失败" if progress.result == "失败" else "重试" if progress.result == "待重试" else "处理中",
-    )
-
-
-def _result_level(progress: StockDownloadProgress) -> ProgressLevel:
-    if progress.result == "失败":
-        return ProgressLevel.ERROR
-    if progress.result == "待重试":
-        return progress.failure_level
-    if progress.result == "复用":
-        return ProgressLevel.NORMAL
-    if progress.result == "部分" or progress.missing != 0:
-        return ProgressLevel.WARNING
-    if progress.result == "合格":
-        return ProgressLevel.SUCCESS
-    return ProgressLevel.NORMAL
-
-
-def _format_count(value: int | None, target: int | None) -> str:
-    return f"{'-' if value is None else value}/{'-' if target is None else target}"
-
-
-def _format_missing_dates(days: tuple[date, ...]) -> str:
-    preview = ", ".join(day.isoformat() for day in days[:10])
-    if len(days) > 10:
-        preview += f"，另有 {len(days) - 10} 日（共 {len(days)} 日）"
-    return preview
-
-
-__all__ = ["StockDownloadProgress", "FormatStockDownloadProgress"]
+__all__ = ["StockDownloadProgress"]

@@ -10,7 +10,7 @@ import pytest
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.prepare_reference import ReferenceDatabaseIncompatibleError
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTaskResult
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.qfq_window import QfqUpdateResult

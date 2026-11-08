@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-from trader.infra.progress_format import ProgressDuration
-
 import math
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from threading import Lock
 from typing import TypeVar
 
+from trader.infra.progress_format import ProgressDuration
 from trader.infra.progress_heartbeat import ProgressHeartbeat
-
+from trader.infra.signal_cancellation import ManualCancellationScope
+from trader.infra.shutdown import ShutdownStep
+from trader.download.infra.progress_projection import ProjectDownloadProgress, WithProgressTime
+from trader.download.application.progress_events import DownloadProgressEvent
 from trader.download.application.progress_message import (
-    ProgressField, ProgressMessage, ProgressTask, WithProgressTime,
+    ProgressField, ProgressMessage, ProgressTask,
 )
 
 _Result = TypeVar("_Result")
@@ -49,7 +52,8 @@ class SyncProgress:
         self._observers: dict[tuple[str, str | None], Callable[[], ProgressMessage | None]] = {}
         self._lock = Lock()
 
-    def __call__(self, message: ProgressMessage) -> None:
+    def __call__(self, event: DownloadProgressEvent) -> None:
+        message = ProjectDownloadProgress(event)
         with self._lock:
             self._accept(message)
 
@@ -139,24 +143,32 @@ class SyncProgress:
         finally:
             self.finish_owner(owner)
 
-    def command(self, operation: Callable[[], _Result], *, monitor: bool) -> _Result:
-        """Run the command under the explicitly owned observation scope."""
-        with self.keep_alive(enabled=monitor):
-            return operation()
-
     @contextmanager
-    def keep_alive(self, *, enabled: bool = True) -> Iterator[None]:
-        if not enabled:
-            yield
-            return
-        with ProgressHeartbeat[bool](lambda tick: self.heartbeat(), interval_seconds=1.0) as timer:
+    def keep_alive(self, *, shutdown: ManualCancellationScope) -> Iterator[None]:
+        """Own observation under the command's existing cancellation deadline."""
+        timer = ProgressHeartbeat[bool](lambda tick: self.heartbeat(), interval_seconds=1.0)
+        timer.__enter__()
+        try:
             timer(True)
-            try:
-                yield
-            finally:
-                with self._lock:
+            yield
+        finally:
+            deadline = shutdown.shutdown_deadline()
+            step = timer.stop(deadline)
+            shutdown.record_shutdown(step)
+            if step.completed:
+                acquired = self._lock.acquire(timeout=deadline.remaining_seconds())
+                shutdown.record_shutdown(ShutdownStep("sync_progress_state", acquired, not acquired and deadline.expired))
+                if not acquired:
+                    raise RuntimeError("sync_progress_shutdown_incomplete")
+                try:
                     self._tasks.clear()
                     self._observers.clear()
+                finally:
+                    self._lock.release()
+            else:
+                raise RuntimeError("sync_progress_shutdown_incomplete")
+            if timer.failure is not None and sys.exc_info()[0] is None:
+                raise timer.failure
 
 
 __all__ = ["SyncProgress"]

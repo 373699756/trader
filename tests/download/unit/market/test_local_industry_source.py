@@ -439,7 +439,7 @@ def test_waiting_feedback_names_current_stock_without_confirming_uncommitted_ori
     from dataclasses import replace
     from io import StringIO
 
-    from trader.download.application.sync_progress import SyncProgress
+    from trader.download.entrypoints.sync_progress import SyncProgress
     from trader.download.infra.terminal_progress import TerminalDownloadProgress
 
     source, _now, _calls, _outcomes = fixture

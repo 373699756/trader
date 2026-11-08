@@ -28,6 +28,7 @@ from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import CompletedDailyCutoff
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
@@ -45,6 +46,7 @@ from trader.download.infra.tencent_qfq_supplier import (
 from trader.infra.http_contracts import HttpError, HttpRequest, HttpResponse, HttpTransport
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
+from trader.download.infra.progress_projection import ProjectingDownloadProgress
 
 from scripts.core.paths import PROJECT_ROOT
 from scripts.core.reporting import emit_report
@@ -58,8 +60,10 @@ class _SampleSupplier:
     def load_qfq_context(self, _as_of: date, _sessions: int) -> HistorySupplierContext:
         return self.context
 
-    def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
-        return self.supplier.fetch_window(security, dates)
+    def fetch_window(
+        self, security: BaoStockSecurity, dates: tuple[date, ...], *, request_budget: PriceReviewRequestBudget | None = None
+    ) -> PublishedHistoryWindow:
+        return self.supplier.fetch_window(security, dates, request_budget=request_budget)
 
 
 def _benchmark(
@@ -94,7 +98,7 @@ def _benchmark(
                 SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v3", sqlite_policy=sqlite_policy),
                 sample_supplier,
                 lambda: False,
-                feedback,
+                ProjectingDownloadProgress(feedback),
                 replace(configuration, workers=workers),
                 worker_pool=pool,
                 writer_pool=writer,

@@ -3,7 +3,7 @@ from datetime import date
 from io import StringIO
 import re
 
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.domain.history_sync import HistoryPipelineProgress, HistoryStockRequest, HistorySyncProgress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress

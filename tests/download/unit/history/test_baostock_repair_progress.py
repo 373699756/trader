@@ -1,5 +1,5 @@
 from trader.download.application.progress_message import ProgressMessage
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 

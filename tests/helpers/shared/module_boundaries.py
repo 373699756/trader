@@ -29,7 +29,8 @@ _SHARED_APPLICATION_SYMBOLS = {
             "SubmitWithBackpressure",
         }
     ),
-    "trader.infra.shutdown": frozenset({"ShutdownDeadline", "ShutdownStep"}),
+    "trader.infra.shutdown": frozenset({"ShutdownDeadline", "ShutdownStep", "ShutdownBudget"}),
+    "trader.infra.future_cleanup": frozenset({"CloseAfterFutures"}),
     # Context-local counters and lifecycle accounting; no database access capability.
     "trader.infra.sqlite_observation": frozenset({"SqliteActivity", "SqliteObservation", "IndependentSqliteWork"}),
 }

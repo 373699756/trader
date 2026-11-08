@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.application.sync_data import SyncResult
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
@@ -119,13 +119,12 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
 
         inherited = os.environ.pop("TRADER_COMMAND_STARTED_MONOTONIC", None)
         progress = CreateSyncProgress(float(inherited) if inherited is not None else None)
-        with progress.keep_alive():
-            try:
-                return _run_sync(args, progress)
-            except KeyboardInterrupt:
-                progress(ProgressMessage((ProgressField("已有断点保留"),),
-                                         task=ProgressTask("sync", "result", "结果汇总"), state="取消", finished=True))
-                return 130
+        try:
+            return _run_sync(args, progress)
+        except KeyboardInterrupt:
+            progress(ProgressMessage((ProgressField("已有断点保留"),),
+                                     task=ProgressTask("sync", "result", "结果汇总"), state="取消", finished=True))
+            return 130
     if args.command == "train":
         if args.profile is not None:
             parser.error("train does not accept --profile")
@@ -194,7 +193,10 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
         return 2
     progress.finish_owner("启动")
     progress(ProgressMessage((ProgressField("配置与运行环境就绪"),), task=task, state="完成", finished=True))
-    with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
+    with (
+        ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled,
+        progress.keep_alive(shutdown=cancelled),
+    ):
         try:
             result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set,
                                  fill_missing=args.fill, report=progress,

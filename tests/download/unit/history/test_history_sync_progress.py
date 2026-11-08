@@ -12,12 +12,13 @@ from datetime import date
 import pytest
 
 from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage
-from trader.download.application.sync_progress import SyncProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.infra.progress_format import DisplayWidth
+from trader.infra.signal_cancellation import ManualCancellation
 
 from trader.download.application.qfq_download_progress import QfqDownloadProgress
 
-from trader.download.application.stock_download_progress import FormatStockDownloadProgress
+from trader.download.infra.progress_projection import FormatStockDownloadProgress
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
 
@@ -34,7 +35,7 @@ from trader.download.domain.history_sync import (
 )
 
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.application.progress_message import WithProgressTime
+from trader.download.infra.progress_projection import WithProgressTime
 
 from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 
@@ -76,7 +77,7 @@ def test_preparation_heartbeat_keeps_real_counts_and_stops_on_exit(capsys, monke
     monkeypatch.setattr(reporter, "_output", report)
 
     def run() -> None:
-        with output.keep_alive():
+        with ManualCancellation(timeout_seconds=2.0) as shutdown, output.keep_alive(shutdown=shutdown):
             reporter.publish(HistorySyncProgress("initializing", "started", 512, 4402, "reading_tasks"))
             clock[0] = 5
             output.heartbeat()
