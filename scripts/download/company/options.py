@@ -39,3 +39,6 @@ class CompanyOptions:
     field_source_identities: bool = False
     annual_income_period: date | None = None
     financial_revision_period: date | None = None
+    st_name_history: bool = False
+    st_rounds: int = 3
+    st_workers: int = 2

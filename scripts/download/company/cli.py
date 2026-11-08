@@ -52,6 +52,9 @@ def BuildParser(
         field_source_identities=False,
         annual_income_period=None,
         financial_revision_period=None,
+        st_name_history=False,
+        st_rounds=3,
+        st_workers=2,
     )
     parser.add_argument('--runtime-config', default=str(PROJECT_ROOT / 'config/runtime.json'), help='runtime JSON configuration')
     if action_identity in ("company-resume",):
@@ -75,7 +78,7 @@ def BuildParser(
         modes.add_argument('--company-directory-audit', action='store_true', help='repair failed directories only in an external backup')
         parser.add_argument('--company-audit-budget-seconds', type=float, help='actual worker budget within 30..10800 seconds; wall deadline must reserve another 30 seconds')
     if action_identity in ("research-source-compare",):
-        parser.add_argument('--codes', nargs='+', default=(), help='one security for an explicit annual-income or financial-revision period; rejected by market-wide modes')
+        parser.add_argument('--codes', nargs='+', default=(), help='one security for an explicit period, or one to 64 reference stocks with --st-name-history')
     if action_identity in ("research-source-compare",):
         parser.add_argument('--source-timeout-seconds', type=float, default=4.5, help='vendor HTTP timeout; SDK socket timeout for BaoStock experiments')
     if action_identity in ("research-source-compare",):
@@ -86,6 +89,9 @@ def BuildParser(
         modes.add_argument('--field-sources-only', action='store_true', help='bounded read-only samples of structured company field alternatives')
         modes.add_argument('--annual-income-period', type=date.fromisoformat, help='one December 31 period for exactly one A-share code')
         modes.add_argument('--financial-revision-period', type=date.fromisoformat, help='read-only eight-metric UPDATE_DATE filter diagnostic for one A-share code and one quarter-end period; at most three requests')
+        modes.add_argument('--st-name-history', action='store_true', help='read-only Eastmoney F10 name-history comparison against Sina for one to 64 explicit reference stocks')
+        parser.add_argument('--st-rounds', type=int, default=3, help='Eastmoney observation rounds (1..5); requires --st-name-history')
+        parser.add_argument('--st-workers', type=int, default=2, help='read-only source workers (1..4); requires --st-name-history')
         parser.add_argument('--field-source-rows', type=int, default=5, help='rows per structured source within 1..500; requires --field-sources-only')
         parser.add_argument('--field-source-schema', action='store_true', help='column discovery from one row; requires --field-sources-only and --field-source-rows 1')
         parser.add_argument('--field-source-identities', action='store_true', help='bounded source identities; requires --field-sources-only and at most five rows')
@@ -137,6 +143,9 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         field_source_identities=args.field_source_identities,
         annual_income_period=args.annual_income_period,
         financial_revision_period=args.financial_revision_period,
+        st_name_history=args.st_name_history,
+        st_rounds=args.st_rounds,
+        st_workers=args.st_workers,
     )
     if not math.isfinite(options.command_timeout_seconds) or not 0 < options.command_timeout_seconds <= 7200:
         raise ValueError("command timeout must be positive and must not exceed 7200 seconds")
@@ -182,6 +191,20 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         raise ValueError("--field-source-schema requires --field-sources-only and --field-source-rows 1")
     if options.field_source_identities and (not options.field_sources_only or options.field_source_rows > 5):
         raise ValueError("--field-source-identities requires --field-sources-only and at most five rows")
+    if options.st_name_history:
+        if (
+            options.action_identity != 'research-source-compare'
+            or options.field_sources_only or options.annual_income_period is not None
+            or options.financial_revision_period is not None
+            or not 1 <= len(options.codes) <= 64 or len(set(options.codes)) != len(options.codes)
+            or any(len(code) != 6 or not code.isascii() or not code.isdigit() or not code.startswith(('0', '3', '6'))
+                   for code in options.codes)
+            or not 1 <= options.st_rounds <= 5 or not 1 <= options.st_workers <= 4
+            or options.source_timeout_seconds > 15
+        ):
+            raise ValueError('--st-name-history requires 1..64 unique Shanghai/Shenzhen codes, rounds 1..5, workers 1..4 and timeout <=15 seconds')
+    elif options.st_rounds != 3 or options.st_workers != 2:
+        raise ValueError('--st-rounds and --st-workers require --st-name-history')
     if options.financial_revision_period is not None:
         if options.field_sources_only or options.annual_income_period is not None or len(options.codes) != 1:
             raise ValueError("--financial-revision-period requires one code and cannot be combined with other source modes")
@@ -193,6 +216,6 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
             CompanyAnnualIncomeRequest(options.codes[0], (options.annual_income_period,))
         except ValueError as exc:
             raise ValueError("annual income requires an A-share code and a December 31 period") from exc
-    elif options.action_identity == "research-source-compare" and options.codes:
+    elif options.action_identity == "research-source-compare" and options.codes and not options.st_name_history:
         raise ValueError("--codes selects securities only with --annual-income-period or --financial-revision-period; other modes audit market-wide sources")
     return options

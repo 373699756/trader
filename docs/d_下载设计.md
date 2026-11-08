@@ -101,6 +101,10 @@ company失败沿既有诊断owner生成完整证据块，统一终端呈现：�
 
 ST进度分别显示已核验和真正已保存的数量，64股检查点的持久策略保持；只有原保存调用确认后推进已保存数。结束表示总体处理完毕，另列核验通过、曾ST排除和待核排除，待核不等同已确认ST或核验通过。全缓存场景标本地缓存并保留新浪原来源，外部核验不误标来源本地；不在日志心跳中请求或读库。
 
+免费ST候选使用现有`download/company/sources --st-name-history`只读审计：显式选择1–64只当前参考成员，东财F10最多5轮、新浪原解析一次，最多4个worker，单次请求不超过15秒及1MiB，没有隐藏重试或生产写入。`--st-rounds`／`--st-workers`只适用于该模式；代码、当前名称和既有状态绑定同一已发布参考，既有状态只作回归对照，不当绝对真值。报告分别保留HTTP成功率、语义可判率、完整历史摘要的跨轮漂移、身份差异、当前名及曾用名中的ST证据；空值不在诊断中冒充已验证clear，原新浪解析对明确空单元格的结果另外原样记录。外层命令耗时包含启动／本地准备，审计`elapsed_seconds`仅计接口观察阶段；外层超时缺报告时不补猜已请求次数。该观察不授权切源，也不代表全市场或长期稳定性验收。
+
+示例：`.venv/bin/python3 scripts/tools.py --business download --module company --action sources --st-name-history --codes 300101 600848 --st-rounds 3 --st-workers 2 --source-timeout-seconds 8 --market-task-seconds 420 --command-timeout-seconds 450 --report /tmp/trader-st-name-history.json`。报告仅白名单投影证券身份、必要名称节选、安全原因及计量，不输出公司资料正文或联系人。
+
 当前资格传递按以下实际消费者核对，不增加另一套ST状态源：
 
 | 消费者 | 当前输入及派发约束 | 仍需区分的边界 |

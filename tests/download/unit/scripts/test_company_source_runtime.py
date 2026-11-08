@@ -5,11 +5,69 @@ import hashlib
 import json
 import shutil
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.core.paths import PROJECT_ROOT
 from scripts.download.company import research_source_compare as worker
+
+
+@pytest.mark.parametrize("arguments", (
+    ("--st-name-history",),
+    ("--st-name-history", "--codes", "300101", "300101"),
+    ("--st-name-history", "--codes", "920001"),
+    ("--st-name-history", "--codes", "300101", "--st-rounds", "6"),
+    ("--st-name-history", "--codes", "300101", "--timeout-seconds", "16"),
+    ("--st-workers", "3"),
+))
+def test_st_worker_rejects_invalid_selection_before_reading_configuration(monkeypatch, arguments):
+    monkeypatch.setattr(worker, "LoadRuntimeSettings", lambda *args: pytest.fail("configuration must remain unopened"))
+    monkeypatch.setattr(worker, "OpenExternalHttp", lambda: pytest.fail("HTTP must remain closed"))
+    monkeypatch.setattr("sys.argv", ["research-source-compare", "--config", "unused.json", *arguments])
+    with pytest.raises(SystemExit):
+        worker.Main()
+
+
+def test_st_worker_binds_one_readonly_reference_and_cannot_create_missing_codes(tmp_path, monkeypatch):
+    reference = SimpleNamespace(
+        official_universe=(SimpleNamespace(code="600848", name="上海临港"),),
+        st_evidence=(SimpleNamespace(code="600848", status="ever_st"),), identity="a" * 64,
+    )
+    reads = []
+    selected = SimpleNamespace(data_paths=SimpleNamespace(reference_database=tmp_path / "reference.sqlite3"))
+    policy = object()
+    monkeypatch.setattr(worker, "BuildSqlitePolicy", lambda runtime: policy if runtime is selected else pytest.fail("wrong runtime"))
+
+    class Index:
+        def __init__(self, path, *, sqlite_policy):
+            assert path == selected.data_paths.reference_database and sqlite_policy is policy
+
+        def read(self):
+            reads.append(True)
+            return reference
+
+    monkeypatch.setattr(worker, "SQLiteReferenceIndex", Index)
+    requests, identity = worker._st_requests(selected, ("600848",))
+    assert len(requests) == 1 and requests[0].expected_status == "ever_st" and identity == "a" * 64
+    with pytest.raises(ValueError, match="reference_code_missing"):
+        worker._st_requests(selected, ("300101",))
+    assert len(reads) == 2
+
+
+def test_st_worker_selects_only_readonly_audit_and_keeps_reference_identity(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(worker, "_st_requests", lambda *_args: (("typed_requests",), "a" * 64))
+    monkeypatch.setattr(worker, "AuditCompanyStSources", lambda requests, **kwargs: calls.append((requests, kwargs)) or {
+        "probe": "st_name_history", "status": "degraded", "read_only": True,
+    })
+    monkeypatch.setattr(worker, "Collect", lambda *_args, **_kwargs: pytest.fail("market-wide sources must remain closed"))
+    monkeypatch.setattr("sys.argv", ["research-source-compare", "--config", str(PROJECT_ROOT / "config/runtime.json"),
+                                     "--st-name-history", "--codes", "300101", "600848", "--st-rounds", "2", "--st-workers", "1"])
+    assert worker.Main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["reference_hash"] == "a" * 64 and len(calls) == 1
+    assert calls[0][1]["rounds"] == 2 and calls[0][1]["workers"] == 1
 
 
 @pytest.mark.parametrize("mode", ("market", "fields", "annual", "revision"))

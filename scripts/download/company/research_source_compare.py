@@ -12,18 +12,33 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from trader.bootstrap import OpenExternalHttp
+from trader.bootstrap import BuildSqlitePolicy, OpenExternalHttp
 from trader.download.domain.company_evidence import DisclosurePartition, StructuredCompanyQuery
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-from trader.infra.settings import LoadRuntimeSettings
+from trader.download.infra.reference_index import SQLiteReferenceIndex
+from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
+from scripts.download.company.company_st_source_audit import AuditCompanyStSources, CompanyStSourceRequest
 from scripts.download.company.company_structured_field_audit import AuditCompanyAnnualIncome
 from scripts.download.company.company_structured_field_audit import AuditCompanyStructuredSources
 from scripts.download.company.company_structured_field_audit import AuditCompanyFinancialRevision, CompanyFinancialRevisionRequest
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _st_requests(runtime: RuntimeSettings, codes: tuple[str, ...]) -> tuple[tuple[CompanyStSourceRequest, ...], str]:
+    reference = SQLiteReferenceIndex(
+        runtime.data_paths.reference_database, sqlite_policy=BuildSqlitePolicy(runtime),
+    ).read()
+    if reference is None:
+        raise ValueError("company_st_source_reference_missing")
+    securities = {security.code: security for security in reference.official_universe}
+    evidence = {item.code: item for item in reference.st_evidence}
+    if any(code not in securities or code not in evidence for code in codes):
+        raise ValueError("company_st_source_reference_code_missing")
+    return tuple(CompanyStSourceRequest(code, securities[code].name, evidence[code].status) for code in codes), reference.identity
 
 
 def Collect(args: argparse.Namespace, *, project_root: Path) -> dict[str, object]:
@@ -198,7 +213,7 @@ def Collect(args: argparse.Namespace, *, project_root: Path) -> dict[str, object
 def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--codes", nargs="+", default=(), help="one security for an explicit annual-income or financial-revision period; rejected by market-wide modes")
+    parser.add_argument("--codes", nargs="+", default=(), help="one security for an explicit period, or one to 64 reference stocks with --st-name-history")
     parser.add_argument("--timeout-seconds", type=float, default=8)
     parser.add_argument("--source-loop-seconds", type=float, default=120)
     parser.add_argument("--task-seconds", type=float, default=180)
@@ -209,6 +224,9 @@ def Main() -> int:
     parser.add_argument("--field-source-identities", action="store_true", help="Project at most five bounded source identities and measurements; requires --field-sources-only.")
     modes.add_argument("--annual-income-period", type=date.fromisoformat, help="Read one explicit annual period with the production F10 decoder; requires exactly one --codes value.")
     modes.add_argument("--financial-revision-period", type=date.fromisoformat, help="Read-only eight-metric UPDATE_DATE filter diagnostic for one code and one quarter end; at most three requests.")
+    modes.add_argument("--st-name-history", action="store_true", help="Read-only F10 and Sina name-history comparisons for one to 64 explicit reference stocks.")
+    parser.add_argument("--st-rounds", type=int, default=3)
+    parser.add_argument("--st-workers", type=int, default=2)
     args = parser.parse_args()
     if not (0 < args.timeout_seconds <= 30 and 0 < args.source_loop_seconds <= 120 and 0 < args.task_seconds <= 600):
         parser.error("diagnostic budgets exceed the bounded source/task limits")
@@ -222,17 +240,34 @@ def Main() -> int:
         parser.error("--annual-income-period requires one code and cannot be combined with --field-sources-only")
     if args.financial_revision_period is not None and len(args.codes) != 1:
         parser.error("--financial-revision-period requires one code")
+    if args.st_name_history:
+        if (
+            not 1 <= len(args.codes) <= 64 or len(set(args.codes)) != len(args.codes)
+            or any(len(code) != 6 or not code.isascii() or not code.isdigit() or not code.startswith(("0", "3", "6"))
+                   for code in args.codes)
+            or not 1 <= args.st_rounds <= 5 or not 1 <= args.st_workers <= 4 or args.timeout_seconds > 15
+        ):
+            parser.error("--st-name-history requires 1..64 unique Shanghai/Shenzhen codes, rounds 1..5, workers 1..4 and timeout <=15")
+    elif args.st_rounds != 3 or args.st_workers != 2:
+        parser.error("--st-rounds and --st-workers require --st-name-history")
     revision_request = None
     if args.financial_revision_period is not None:
         try:
             revision_request = CompanyFinancialRevisionRequest(args.codes[0], args.financial_revision_period)
         except ValueError:
             parser.error("financial revision requires an A-share code and a quarter-end period")
-    if args.annual_income_period is None and args.financial_revision_period is None and args.codes:
+    if args.annual_income_period is None and args.financial_revision_period is None and not args.st_name_history and args.codes:
         parser.error("--codes selects securities only with --annual-income-period or --financial-revision-period")
     runtime = LoadRuntimeSettings(args.config)
     runtime_hash = hashlib.sha256(Path(args.config).expanduser().resolve().read_bytes()).hexdigest()
-    if revision_request is not None:
+    if args.st_name_history:
+        requests, reference_hash = _st_requests(runtime, tuple(args.codes))
+        report = AuditCompanyStSources(
+            requests, session_factory=OpenExternalHttp, rounds=args.st_rounds, workers=args.st_workers,
+            timeout_seconds=args.timeout_seconds, deadline=time.monotonic() + args.task_seconds,
+        )
+        report["reference_hash"] = reference_hash
+    elif revision_request is not None:
         with OpenExternalHttp() as session:
             report = AuditCompanyFinancialRevision(
                 session, revision_request, observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
@@ -263,4 +298,4 @@ def Main() -> int:
         report = Collect(args, project_root=runtime.project_root)
     report["runtime_configuration_sha256"] = runtime_hash
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 1 if revision_request is not None and report.get("status") == "failed" else 0
+    return 1 if (revision_request is not None or args.st_name_history) and report.get("status") in {"failed", "cancelled", "timed_out"} else 0

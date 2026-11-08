@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 
@@ -16,6 +17,8 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
     source = result.payload
     if source is None or result.error_code is not None:
         return result
+    if source.get("probe") == "st_name_history":
+        return _normalize_st_source_probe(result, source)
     if "financial_revision_probe" in source:
         revision = source["financial_revision_probe"]
         if not isinstance(revision, Mapping):
@@ -50,8 +53,8 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
             valid = False
         if "production_fields_control" in revision:
             valid = valid and source.get("status") == "failed" and revision.get("update_filter_verified") is False
-        status = "degraded" if valid and source.get("status") != "failed" else "failed"
-        return replace(result, payload=dict(source, status=status))
+        revision_status = "degraded" if valid and source.get("status") != "failed" else "failed"
+        return replace(result, payload=dict(source, status=revision_status))
     schema = source.get("schema_version")
     if schema == "company-field-replay":
         valid = (
@@ -113,6 +116,220 @@ def _normalize_source_probe(result: DiagnosticResult, source: Mapping[str, objec
     else:
         valid = valid and source.get("production_adopted") is False and isinstance(source.get("sources"), list)
     return replace(result, payload=dict(source, status="degraded" if valid else "failed", observation_status=observation))
+
+
+_ST_SOURCES = ("eastmoney_f10", "sina_name_history")
+_ST_STATUSES = ("ever_st", "clear", "unknown")
+_ST_OBSERVATION_LIMIT = 64 * (5 + 1)
+_ST_STRUCTURE_FIELDS = frozenset({"jbzl", "SECURITY_CODE", "SECURITY_NAME_ABBR", "STR_NAMEA", "FORMERNAME", "name_history"})
+_ST_COUNTS = (
+    "planned_requests", "actual_requests", "http_successes", "usable_results", "unknown_results",
+    "failed_requests", "not_requested", "known_positive_misses", "known_positive_unknown",
+    "historical_positive_hits", "historical_positive_unverified", "local_clear_conflicts",
+)
+
+
+def _st_count(value: object, maximum: int = _ST_OBSERVATION_LIMIT) -> int | None:
+    return value if type(value) is int and 0 <= value <= maximum else None
+
+
+def _st_code(value: object) -> str | None:
+    return value if isinstance(value, str) and re.fullmatch(r"[036][0-9]{5}", value) else None
+
+
+def _normalize_st_source_probe(result: DiagnosticResult, source: Mapping[str, object]) -> DiagnosticResult:
+    status = source.get("status")
+    observation = source.get("observation_status", status)
+    rounds, workers = _st_count(source.get("rounds"), 5), _st_count(source.get("workers"), 4)
+    planned = _st_count(source.get("planned_requests"))
+    actual = _st_count(source.get("actual_requests"))
+    timeout = _st_number(source.get("timeout_seconds"))
+    sources, observations, comparisons = source.get("sources"), source.get("observations"), source.get("comparisons")
+    valid = (
+        observation in ("observed", "degraded", "cancelled", "timed_out", "failed")
+        and (status == observation or status == "degraded" and observation == "observed" or status == "failed")
+        and "schema_version" not in source and source.get("read_only") is True
+        and type(source.get("source_data_writes")) is int and source.get("source_data_writes") == 0
+        and all(source.get(name) is False for name in ("production_adopted", "field_correctness_verified", "full_market_verified"))
+        and source.get("expectation_role") == "local_reference_not_absolute_truth"
+        and source.get("session_policy") == "new_transport_per_request"
+        and rounds is not None and rounds >= 1 and workers is not None and workers >= 1
+        and timeout is not None and 0 < timeout <= 15
+        and type(source.get("max_response_bytes")) is int and source.get("max_response_bytes") == 1024 * 1024
+        and planned is not None and actual is not None and actual <= planned
+        and _st_count(source.get("request_limit")) == planned
+        and isinstance(sources, list) and len(sources) == 2
+        and isinstance(observations, list) and len(observations) == planned
+        and isinstance(comparisons, list) and 1 <= len(comparisons) <= 64
+        and ("reference_hash" not in source or _st_digest(source.get("reference_hash")) is not None)
+    )
+    if valid and isinstance(sources, list) and isinstance(observations, list) and isinstance(comparisons, list) and rounds is not None:
+        valid = planned == len(comparisons) * (rounds + 1)
+        source_names = [item.get("source") if isinstance(item, Mapping) and isinstance(item.get("source"), str) else None for item in sources]
+        valid = valid and set(source_names) == set(_ST_SOURCES)
+        codes = {_st_code(item.get("code")) if isinstance(item, Mapping) else None for item in comparisons}
+        valid = valid and None not in codes and len(codes) == len(comparisons)
+        observed_keys: set[tuple[str, str, int]] = set()
+        attempted = 0
+        for item in observations:
+            if not isinstance(item, Mapping):
+                valid = False
+                continue
+            provider, code, number = item.get("source"), _st_code(item.get("code")), _st_count(item.get("round"), rounds)
+            known = isinstance(provider, str) and provider in _ST_SOURCES and code in codes and number is not None and number >= 1
+            known = known and (provider != "sina_name_history" or number == 1)
+            if known and isinstance(provider, str) and code is not None and number is not None:
+                key = provider, code, number
+                valid = valid and key not in observed_keys
+                observed_keys.add(key)
+            else:
+                valid = False
+            valid = valid and type(item.get("attempted")) is bool and item.get("status") in (
+                "decoded", "unknown_unverified", "failed", "timed_out", "cancelled", "not_requested",
+            ) and item.get("eligibility") in _ST_STATUSES and item.get("expected_status") in _ST_STATUSES
+            attempted += item.get("attempted") is True
+        valid = valid and attempted == actual
+        for item in sources:
+            if not isinstance(item, Mapping):
+                valid = False
+                continue
+            entries = [value for value in observations if isinstance(value, Mapping) and value.get("source") == item.get("source")]
+            valid = valid and _st_count(item.get("planned_requests")) == len(entries)
+            valid = valid and _st_count(item.get("actual_requests")) == sum(value.get("attempted") is True for value in entries)
+            if observation == "observed":
+                valid = valid and all(item.get(name) == 0 for name in (
+                    "known_positive_misses", "known_positive_unknown", "historical_positive_unverified", "local_clear_conflicts",
+                ))
+        if observation == "observed":
+            valid = valid and source.get("source_conflicts") == 0
+            valid = valid and source.get("eligibility_drift_codes") == source.get("observation_drift_codes") == []
+            valid = valid and all(isinstance(item, Mapping) and item.get("status") == "decoded" for item in observations)
+    normalized = "failed" if status == "failed" else "degraded" if observation == "observed" else observation
+    return replace(result, payload=dict(source, status=normalized if valid else "failed", observation_status=observation))
+
+
+def _st_excerpt(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    clean = re.sub(r"(?:https?://|www\.)\S+|\S+@\S+|[0-9]{7,}", "[省略]", value)
+    return "".join(character for character in clean if character.isprintable())[:160]
+
+
+def _st_token(value: object) -> str | None:
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:+-]{1,100}", value) else None
+
+
+def _st_digest(value: object) -> str | None:
+    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+
+def _st_diagnostic(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    causes = value.split(" > ")
+    pattern = r"[A-Za-z_][A-Za-z0-9_]{0,63}(?::(?:errno_-?[0-9]{1,5}|HTTP_[0-9]{3}|SQLITE_[A-Z0-9_]{1,48}))*(?::[A-Za-z0-9_.-]{1,80}:[A-Za-z0-9_.-]{1,80}:[0-9]{1,8})?"
+    return value[:1000] if len(causes) <= 4 and all(re.fullmatch(pattern, cause) for cause in causes) else None
+
+
+def _st_number(value: object, *, rate: bool = False) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1_000_000_000:
+        return None
+    number = _number(value)
+    return number if number is not None and 0 <= number and (not rate or number <= 1) else None
+
+
+def _st_structure(value: object) -> dict[str, object]:
+    source = value if isinstance(value, Mapping) else {}
+    fields = source.get("fields")
+    projected = {name: kind for name, kind in fields.items()
+                 if name in _ST_STRUCTURE_FIELDS and kind in ("str", "int", "float", "bool", "list", "object", "null", "other")} if isinstance(fields, Mapping) else {}
+    return {
+        "format": source.get("format") if source.get("format") in ("json", "html_name_history", "not_decoded") else None,
+        "rows": _st_count(source.get("rows"), 1_000_000), "fields": projected,
+        "observed_code": (code if isinstance((code := source.get("observed_code")), str)
+                          and re.fullmatch(r"[0-9]{6}", code) else None),
+        **{name: _st_identity_name(source.get(name)) for name in ("observed_current_name", "observed_a_name")},
+    }
+
+
+def _st_identity_name(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    name = unicodedata.normalize("NFKC", value).strip()
+    excerpt = _st_excerpt(name) if 1 <= len(name) <= 40 else None
+    return excerpt[:40] if excerpt is not None else None
+
+
+def _st_source_details(source: Mapping[str, object], payload: dict[str, object]) -> None:
+    sources, observations, comparisons = source.get("sources"), source.get("observations"), source.get("comparisons")
+    projected_sources: list[dict[str, object]] = []
+    for item in sources[:2] if isinstance(sources, list) else []:
+        if not isinstance(item, Mapping) or item.get("source") not in _ST_SOURCES:
+            continue
+        confusion = item.get("confusion")
+        rows = confusion if isinstance(confusion, Mapping) else {}
+        projected_sources.append({
+            "source": item["source"], **{name: _st_count(item.get(name)) for name in _ST_COUNTS},
+            **{name: _st_number(item.get(name), rate=True) for name in ("success_rate", "http_success_rate")},
+            **{name: _st_number(item.get(name)) for name in ("p50_seconds", "p95_seconds", "max_seconds")},
+            "confusion": {expected: {actual: _st_count(row.get(actual)) for actual in sorted(_ST_STATUSES)}
+                          for expected in sorted(_ST_STATUSES) if isinstance((row := rows.get(expected)), Mapping)},
+        })
+    projected_observations: list[dict[str, object]] = []
+    for item in observations[:_ST_OBSERVATION_LIMIT] if isinstance(observations, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        projected_observations.append({
+            "source": item.get("source") if item.get("source") in _ST_SOURCES else None,
+            "code": _st_code(item.get("code")), "round": _st_count(item.get("round"), 5),
+            **{name: _st_excerpt(item.get(name)) for name in ("current_name", "former_names_excerpt")},
+            **{name: item.get(name) if item.get(name) in _ST_STATUSES else None
+               for name in ("expected_status", "eligibility", "original_parser_status")},
+            "status": item.get("status") if item.get("status") in (
+                "decoded", "unknown_unverified", "failed", "timed_out", "cancelled", "not_requested",
+            ) else None,
+            **{name: item.get(name) if type(item.get(name)) is bool else None for name in (
+                "attempted", "expected_match", "current_name_matches", "current_name_is_st", "history_is_st", "empty_history",
+            )},
+            "elapsed_seconds": _st_number(item.get("elapsed_seconds")),
+            "http_status": _st_count(item.get("http_status"), 599) if type(item.get("http_status")) is int and item["http_status"] >= 100 else None,
+            "response_bytes": _st_count(item.get("response_bytes"), 1024 * 1024 * 1024),
+            "reason": _st_token(item.get("reason")), "diagnostic": _st_diagnostic(item.get("diagnostic")),
+            "structure": _st_structure(item.get("structure")),
+            "former_names_sha256": _st_digest(item.get("former_names_sha256")),
+        })
+    projected_comparisons: list[dict[str, object]] = []
+    for item in comparisons[:64] if isinstance(comparisons, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        eligibility = item.get("eastmoney_eligibility")
+        projected_comparisons.append({
+            "code": _st_code(item.get("code")), "current_name": _st_excerpt(item.get("current_name")),
+            **{name: item.get(name) if item.get(name) in _ST_STATUSES else None for name in ("expected_status", "sina_eligibility")},
+            "eastmoney_eligibility": [value if value in _ST_STATUSES else None for value in eligibility[:5]] if isinstance(eligibility, list) else [],
+            "source_conflicts": _st_count(item.get("source_conflicts"), 5),
+            **{name: item.get(name) if type(item.get(name)) is bool else None for name in ("eligibility_drift", "observation_drift", "sina_expected_match")},
+            **{name: [value if type(value) is bool else None for value in values[:5]] if isinstance((values := item.get(name)), list) else []
+               for name in ("expected_matches", "historical_positive_found")},
+        })
+    payload["summary"] = {
+        "probe": "st_name_history", "observation_status": (observation if (observation := source.get("observation_status", source.get("status")))
+                                                            in ("observed", "degraded", "cancelled", "timed_out", "failed") else None),
+        "read_only": source.get("read_only") is True, "source_data_writes": _st_count(source.get("source_data_writes")),
+        **{name: source.get(name) if type(source.get(name)) is bool else None
+           for name in ("production_adopted", "field_correctness_verified", "full_market_verified")},
+        "observed_at": _st_token(source.get("observed_at")),
+        "reference_hash": _st_digest(source.get("reference_hash")),
+        "expectation_role": "local_reference_not_absolute_truth" if source.get("expectation_role") == "local_reference_not_absolute_truth" else None,
+        "session_policy": "new_transport_per_request" if source.get("session_policy") == "new_transport_per_request" else None,
+        **{name: _st_count(source.get(name)) for name in ("rounds", "workers", "planned_requests", "request_limit", "actual_requests", "source_conflicts")},
+        "max_response_bytes": _st_count(source.get("max_response_bytes"), 1024 * 1024),
+        "timeout_seconds": _st_number(source.get("timeout_seconds")), "elapsed_seconds": _st_number(source.get("elapsed_seconds")),
+        "sources": projected_sources, "observations": projected_observations, "comparisons": projected_comparisons,
+        **{name: [code for code in values[:64] if _st_code(code) is not None] if isinstance((values := source.get(name)), list) else []
+           for name in ("eligibility_drift_codes", "observation_drift_codes")},
+        "observations_truncated": isinstance(observations, list) and len(observations) > _ST_OBSERVATION_LIMIT,
+    }
 
 
 def CompleteReport(report: dict[str, object], results: Sequence[DiagnosticResult]) -> None:
@@ -508,6 +725,9 @@ _DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[st
 
 
 def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    if source.get("probe") == "st_name_history":
+        _st_source_details(source, payload)
+        return
     if source.get("schema_version") == "company-field-replay":
         codes = source.get("codes")
         keys = source.get("source_keys")

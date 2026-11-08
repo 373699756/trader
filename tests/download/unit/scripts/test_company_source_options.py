@@ -12,6 +12,33 @@ def _parse(arguments):
     return ParseOptions(BuildParser("research-source-compare").parse_args(arguments))
 
 
+def test_st_history_mode_keeps_explicit_stocks_and_request_bounds():
+    options = _parse([
+        "--st-name-history", "--codes", "300101", "600848", "--st-rounds", "3", "--st-workers", "2",
+        "--source-timeout-seconds", "8", "--market-task-seconds", "420", "--command-timeout-seconds", "450",
+    ])
+    command, = BuildCommands(options)
+    assert command.argv[command.argv.index("--codes") + 1:command.argv.index("--st-rounds")] == ("300101", "600848")
+    assert "--st-name-history" in command.argv and command.timeout_seconds == 420
+    assert command.argv[command.argv.index("--st-workers") + 1] == "2"
+    assert "--field-sources-only" not in command.argv
+
+
+@pytest.mark.parametrize("arguments", (
+    ("--st-name-history",),
+    ("--st-name-history", "--codes", "300101", "300101"),
+    ("--st-name-history", "--codes", "920001"),
+    ("--st-name-history", "--codes", "300101", "--st-rounds", "6"),
+    ("--st-name-history", "--codes", "300101", "--st-workers", "5"),
+    ("--st-name-history", "--codes", "300101", "--source-timeout-seconds", "16"),
+    ("--st-rounds", "2"),
+    ("--st-workers", "3"),
+))
+def test_st_history_mode_rejects_ambiguous_inputs_before_source_requests(arguments):
+    with pytest.raises(ValueError):
+        _parse(list(arguments))
+
+
 @pytest.mark.parametrize("rows", (1, 5, 500))
 def test_structured_field_mode_passes_rows_and_exact_source_budgets(rows):
     options = _parse([
