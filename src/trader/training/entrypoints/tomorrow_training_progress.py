@@ -24,6 +24,7 @@ from trader.training.application.tomorrow_training import (
     TrainingFitPhase,
     TrainingFitDetail,
     TrainingSampleDiagnostics,
+    TrainingSampleProgress,
 )
 
 _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
@@ -124,6 +125,7 @@ class StderrTomorrowTrainingProgress:
         self._skipped: set[tuple[TomorrowTrainingStage, Strategy | None, str]] = set()
         self._skip_reasons: Counter[str] = Counter()
         self._sample_diagnostics: TrainingSampleDiagnostics | None = None
+        self._input_progress: TrainingSampleProgress | None = None
         self._lock = threading.Lock()
         self._heartbeat = ProgressHeartbeat[bool](lambda _tick: self._emit_heartbeat(self._monotonic()), interval_seconds=1)
 
@@ -177,6 +179,16 @@ class StderrTomorrowTrainingProgress:
     def publish(self, progress: TomorrowTrainingProgress) -> None:
         now = self._monotonic()
         with self._lock:
+            if progress.input_progress is not None:
+                previous = self._input_progress
+                self._input_progress = progress.input_progress
+                latest = self._latest
+                if latest is not None and latest.sample_progress is not None and latest.state != "completed":
+                    if previous != progress.input_progress:
+                        self._advanced_at = now
+                    if now - self._emitted_at >= _PROGRESS_INTERVAL_SECONDS:
+                        self._emit(latest, now)
+                return
             key = (progress.stage, progress.strategy)
             if progress.state == "completed" and key in self._completed_stages:
                 return
@@ -283,6 +295,9 @@ class StderrTomorrowTrainingProgress:
         return "验证" if progress.validation is not None else _STAGE_LABELS[progress.stage]
 
     def _count(self, progress: TomorrowTrainingProgress) -> str:
+        if progress.sample_progress is not None:
+            value = progress.sample_progress
+            return "本档输入处理 " + _day_count(value)
         validation = progress.validation
         if validation is not None:
             return f"验证 {validation.completed_rows:>7}/{validation.total_rows:>7}行"
@@ -347,7 +362,30 @@ class StderrTomorrowTrainingProgress:
                                 now - self._display_started[key], "等待" if waiting else _STATE_LABELS[progress.state],
                                 stage_width=36)
         details = [self._count(progress)]
-        if progress.stage == "history_conversion":
+        sample = progress.sample_progress
+        if sample is not None:
+            if self._input_progress is not None:
+                details.append(f"共享扫描 {_day_count(self._input_progress)} {self._input_progress.processed_rows}行")
+            details.append("等待本档窗口" if sample.processed_rows == 0 else "预热" if sample.phase == "warmup" else "生成")
+            details.append(f"处理 {sample.processed_rows}行；生成 {progress.produced_units}样本行")
+            if sample.warmup_rows:
+                details.append(f"预热输入 {sample.warmup_rows}行")
+            if sample.pending_samples:
+                details.append(f"候选待标签 {sample.pending_samples}")
+            diagnostic = progress.sample_diagnostics
+            if diagnostic is not None and progress.produced_units == 0:
+                reasons = tuple(f"{label}{count}" for label, count in (
+                    ("缺价格", diagnostic.missing_prices), ("缺行业", diagnostic.missing_industry),
+                    ("窗口不足", diagnostic.short_window), ("特征无效", diagnostic.invalid_features),
+                    ("标签不足", diagnostic.missing_labels),
+                ) if count)
+                if reasons:
+                    details.append("当前累计 " + " ".join(reasons))
+                if diagnostic.missing_t1 or diagnostic.missing_d25:
+                    details.append(f"T+1标签缺失{diagnostic.missing_t1} D25标签缺失{diagnostic.missing_d25}")
+            if progress.state == "completed" and sample.completed_days < sample.total_days:
+                details.append(f"输入缺日 {sample.total_days - sample.completed_days}")
+        elif progress.stage == "history_conversion":
             details.append(f"生成 {progress.produced_units}样本行")
         if progress.validation is not None:
             details.append(f"有效模型 {progress.produced_units}")
@@ -382,6 +420,14 @@ def _write_line(line: str) -> None:
     sys.stderr.flush()
 
 
+def _day_count(value: TrainingSampleProgress) -> str:
+    if value.total_days == 0:
+        return "交易日总量未知"
+    # Avoid rounding an unfinished large window up to 100.0%.
+    percent = value.completed_days * 1000 // value.total_days / 10
+    return f"{value.completed_days}/{value.total_days}交易日 ({percent:.1f}%)"
+
+
 def _fit_position(detail: TrainingFitDetail | None) -> tuple[str, TrainingFitPhase, int, int] | None:
     return None if detail is None else (detail.industry, detail.phase, detail.epoch, detail.completed_batches)
 
@@ -405,6 +451,8 @@ def _has_advanced(previous: TomorrowTrainingProgress | None, current: TomorrowTr
         != (None if current.validation is None else current.validation.completed_rows)
         or _fit_position(previous.fit_detail) != _fit_position(current.fit_detail)
         or _fit_counts_position(previous) != _fit_counts_position(current)
+        or (None if previous.sample_progress is None else (previous.sample_progress.processed_rows, previous.sample_progress.completed_days))
+        != (None if current.sample_progress is None else (current.sample_progress.processed_rows, current.sample_progress.completed_days))
         or current.state == "completed" and previous.state != "completed"
     )
 

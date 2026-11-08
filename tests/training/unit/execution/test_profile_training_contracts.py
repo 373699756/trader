@@ -197,7 +197,8 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
     def build(profile, window, prefix, rows=None):
         with SQLiteTrainingSampleIndex(tmp_path / f"{prefix}-{profile.profile_id}.sqlite3", profile.heads[0].feature_manifest.names, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index:
             BuildTrainingSamples(
-                TrainingSampleBuildRequest(source, ("600000",), window, index, profile), aligned_rows=rows
+                TrainingSampleBuildRequest(source, ("600000",), window, index, profile), aligned_rows=rows,
+                aligned_dates=window.readable_dates if rows is not None else None,
             )
             return tuple(tuple(row) for row in index._connection.run("SELECT * FROM samples ORDER BY trade_date,code"))
 

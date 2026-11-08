@@ -34,7 +34,7 @@ from trader.recommendation.domain.market.v1.features import (
     LearnedRankDailyPoint,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
+from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort, TrainingSampleDiagnostics
 from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.v1.learned_rank import IsLearnedRankIndustryIdentity, LearnedRankDateSplit
@@ -42,6 +42,7 @@ from trader.training.domain.v1.training_plan import LearnedRankPartitionCoverage
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.sample_schema import SampleFeatureHash
+from trader.training.infra.sample_progress import TrainingSampleProgressTracker
 
 LEARNED_RANK_SAMPLE_COLUMNS = (
     "return_1d", "return_3d", "return_5d", "return_20d", "return_60d",
@@ -376,12 +377,23 @@ def BuildLearnedRankSamples(
     first_position = min(positions[day] for day in selected) - history_sessions
     readable = frozenset(day for day in calendar[first_position:] if day <= source.snapshot.source_cutoff)
     readable = AlignmentReadDates(calendar, readable)
-    total = source.training_row_upper_bound(readable)
+    tracker = TrainingSampleProgressTracker(readable, min(selected), progress, interval_rows=512)
     rolling: dict[str, _RollingCode] = {}
     pending: deque[LearnedRankPendingDay] = deque()
     current: date | None = None
     source_rows = converted = missing_prices = missing_industry = short_window = missing_t1 = missing_d25 = 0
     suspended_sessions = estimated_sessions = 0
+
+    def report(*, completed: bool = False, started: bool = False) -> None:
+        tracker.publish(
+            converted,
+            TrainingSampleDiagnostics(missing_industry, missing_prices, short_window, 0, 0,
+                                      suspended_sessions, estimated_sessions, missing_t1, missing_d25),
+            state="completed" if completed else "started" if started else "running",
+            pending_samples=sum(len(day.candidates) for day in pending),
+        )
+
+    report(started=True)
     last_key: tuple[date, str] | None = None
     rows = (
         aligned_rows
@@ -391,16 +403,10 @@ def BuildLearnedRankSamples(
         )
     )
     for row in rows:
+        emit = tracker.observe(row.trade_date)
         source_rows += 1
         if source_rows % 512 == 0:
             CheckV1Cancellation(cancel_requested)
-            if progress is not None:
-                progress.publish(
-                    TomorrowTrainingProgress(
-                        "history_conversion", "running", source_rows, max(source_rows, total), converted,
-                        total_is_exact=False,
-                    )
-                )
         key = (row.trade_date, row.code)
         if last_key is not None and key <= last_key:
             raise ValueError("learned-rank history must be unique and ordered by date/code")
@@ -426,6 +432,8 @@ def BuildLearnedRankSamples(
             missing_prices += 1
             state.points.clear()
             state.last_position = position
+            if emit:
+                report()
             continue
         for day in pending:
             candidate = day.candidates.get(row.code)
@@ -447,12 +455,15 @@ def BuildLearnedRankSamples(
                 pending[-1].candidates[row.code] = LearnedRankCandidate(row.code, row.industry, features, point.close_price)
         state.points.append(point)
         state.last_position = position
+        if emit:
+            report()
     while pending:
         added, absent_t1, absent_d25 = index.add_day(pending.popleft())
         converted += added
         missing_t1 += absent_t1
         missing_d25 += absent_d25
     CheckV1Cancellation(cancel_requested)
+    report(completed=True)
     return LearnedRankSampleCounts(
         source_rows,
         converted,

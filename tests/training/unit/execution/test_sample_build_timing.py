@@ -44,6 +44,8 @@ def test_standard_builder_observation_distinguishes_reuse_and_preserves_failures
     request.profile = profile
     request.progress = None
     request.index = Mock(spec=SQLiteTrainingSampleIndex)
+    request.window = Mock()
+    request.window.readable_dates = frozenset()
     request.index.count.return_value = 1
     request.index.validation_target_metrics.return_value = ()
     cache = Mock(spec=TrainingSampleCache)
@@ -51,8 +53,9 @@ def test_standard_builder_observation_distinguishes_reuse_and_preserves_failures
     rows = iter(())
     failure = InterruptedError("sample_cancelled") if state == "cancelled" else ValueError("sample_failed")
 
-    def build(actual, *, aligned_rows):
+    def build(actual, *, aligned_rows, aligned_dates):
         assert actual is request and aligned_rows is rows
+        assert aligned_dates == request.window.readable_dates
         assert observed.snapshot().profiles[0].sample_build.inflight_count == 1
         wall.value += 7
         cpu.value += 2

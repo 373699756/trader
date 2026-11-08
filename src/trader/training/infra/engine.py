@@ -577,7 +577,8 @@ def _prepare_samples(
 ) -> tuple[TargetMetric, ...]:
     if not cache.reused:
         with observer.sample_build(request.profile.profile_id) if observer is not None else nullcontext():
-            BuildTrainingSamples(request, aligned_rows=aligned_rows)
+            BuildTrainingSamples(request, aligned_rows=aligned_rows,
+                                 aligned_dates=request.window.readable_dates if aligned_rows is not None else None)
     if request.index.count() == 0:
         raise ValueError("profile_training_rows_empty")
     if not cache.reused:

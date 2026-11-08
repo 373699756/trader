@@ -159,6 +159,7 @@ def PrepareV5QualitySamples(
                             history, snapshot.training_codes, window, samples, V5_TRAINING_PROFILE, progress,
                         ),
                         aligned_rows=aligned,
+                        aligned_dates=dates,
                     )
                 if samples.count() == 0:
                     raise ValueError("v5_quality_samples_empty")

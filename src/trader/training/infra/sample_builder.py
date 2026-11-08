@@ -28,6 +28,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
     TrainingSampleDiagnostics,
+    TrainingSampleProgress,
 )
 from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
@@ -37,6 +38,7 @@ from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
     TrainingSample,
 )
+from trader.training.infra.sample_progress import TrainingSampleProgressTracker
 
 
 class TrainingHistorySource(Protocol):
@@ -97,12 +99,10 @@ class _SampleBuildState:
     index: SQLiteTrainingSampleIndex
     profile: TrainedProfileContract
     progress: TomorrowTrainingProgressPort | None
-    total_rows: int
     calendar_positions: dict[date, int]
     readable_dates: frozenset[date]
     allowed_codes: frozenset[str]
     converted_samples: int = 0
-    processed_rows: int = 0
     pending_days: list[_PendingDay] = field(default_factory=list)
     rolling_codes: dict[str, _RollingCodeState] = field(default_factory=dict)
     current_day: date | None = None
@@ -117,13 +117,18 @@ class _SampleBuildState:
     missing_t1: int = 0
     missing_d25: int = 0
 
-    def report_scanned(self, value: int) -> None:
-        self.processed_rows = value
-        _publish(
-            self.progress,
-            TomorrowTrainingProgress("history_conversion", "running", value, self.total_rows, self.converted_samples,
-                                     total_is_exact=False),
+    def diagnostics(self) -> TrainingSampleDiagnostics:
+        return TrainingSampleDiagnostics(
+            self.missing_industry, self.missing_prices, self.short_window, self.invalid_features,
+            self.missing_labels, self.suspended_sessions, self.estimated_sessions, self.missing_t1, self.missing_d25,
         )
+
+    def report_source_scanned(self, value: int) -> None:
+        # Keep the source callback's cancellation/deadline observation during alignment seeding.
+        _publish(self.progress, TomorrowTrainingProgress(
+            "input_read", "running", value, value, total_is_exact=False,
+            input_progress=TrainingSampleProgress(0, 0, value),
+        ))
 
     def accept(self, row: HistoryTrainingRow) -> None:
         code = row.code
@@ -218,48 +223,41 @@ class _SampleBuildState:
             self.missing_d25 += len(pending.samples) - sum(item.targets[-1] is not None for item in finalized)
             self.index.add_final(finalized)
             self.converted_samples += len(finalized)
-            _publish(
-                self.progress,
-                TomorrowTrainingProgress(
-                    "cross_section_conversion",
-                    "running",
-                    self.converted_samples,
-                    self.total_rows,
-                    self.converted_samples,
-                    total_is_exact=False,
-                ),
-            )
 
 
 def BuildTrainingSamples(
-    request: TrainingSampleBuildRequest, *, aligned_rows: Iterator[HistoryTrainingRow] | None = None
+    request: TrainingSampleBuildRequest, *, aligned_rows: Iterator[HistoryTrainingRow] | None = None,
+    aligned_dates: frozenset[date] | None = None,
 ) -> None:
     """Build T+1..T+5 targets with one scan and at most five pending sample days."""
 
     state = _new_sample_state(request)
-    total_rows = state.total_rows
-    _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, total_rows, total_is_exact=False))
-    _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, total_rows, total_is_exact=False))
-
+    if (aligned_rows is None) != (aligned_dates is None):
+        raise ValueError("training_sample_aligned_dates_required")
     read_dates = AlignmentReadDates(request.history.snapshot.calendar.open_dates, request.window.readable_dates)
+    tracker = TrainingSampleProgressTracker(
+        read_dates if aligned_dates is None else aligned_dates,
+        min(request.window.readable_dates.difference(request.window.split.warmup_dates)), request.progress,
+    )
+    tracker.publish(0, state.diagnostics(), state="started")
     rows = (
         aligned_rows
         if aligned_rows is not None
         else AlignTrainingRows(
-            request.history.iter_training_rows(read_dates, state.report_scanned),
+            request.history.iter_training_rows(read_dates, state.report_source_scanned),
             tuple(sorted(read_dates)),
             request.history.snapshot.listing_intervals,
         )
     )
     for row in rows:
+        report = tracker.observe(row.trade_date)
         if row.trade_date in request.window.readable_dates:
             state.accept(row)
-            if aligned_rows is not None:
-                state.processed_rows += 1
-                if state.processed_rows % 4096 == 0:
-                    state.report_scanned(state.processed_rows)
+        if report:
+            tracker.publish(state.converted_samples, state.diagnostics(),
+                            pending_samples=sum(len(day.samples) for day in state.pending_days))
 
-    _complete_sample_state(state, request)
+    _complete_sample_state(state, request, tracker)
 
 
 def _new_sample_state(request: TrainingSampleBuildRequest) -> _SampleBuildState:
@@ -268,46 +266,17 @@ def _new_sample_state(request: TrainingSampleBuildRequest) -> _SampleBuildState:
         request.index,
         request.profile,
         request.progress,
-        request.history.training_row_upper_bound(AlignmentReadDates(calendar, request.window.readable_dates)),
         {day: position for position, day in enumerate(calendar)},
         request.window.readable_dates,
         frozenset(request.codes),
     )
 
 
-def _complete_sample_state(state: _SampleBuildState, request: TrainingSampleBuildRequest) -> None:
+def _complete_sample_state(
+    state: _SampleBuildState, request: TrainingSampleBuildRequest, tracker: TrainingSampleProgressTracker,
+) -> None:
     state.flush_matured(state.current_position, all_days=True)
-    _publish(
-        request.progress,
-        TomorrowTrainingProgress(
-            "history_conversion",
-            "completed",
-            state.processed_rows,
-            state.processed_rows,
-            state.converted_samples,
-            sample_diagnostics=TrainingSampleDiagnostics(
-                state.missing_industry,
-                state.missing_prices,
-                state.short_window,
-                state.invalid_features,
-                state.missing_labels,
-                state.suspended_sessions,
-                state.estimated_sessions,
-                state.missing_t1,
-                state.missing_d25,
-            ),
-        ),
-    )
-    _publish(
-        request.progress,
-        TomorrowTrainingProgress(
-            "cross_section_conversion",
-            "completed",
-            state.converted_samples,
-            state.converted_samples,
-            state.converted_samples,
-        ),
-    )
+    tracker.publish(state.converted_samples, state.diagnostics(), state="completed")
     _publish(request.progress, TomorrowTrainingProgress("sample_index", "started", 0, 1))
     request.index.prepare_for_model_fitting(request.window.split)
     _publish(request.progress, TomorrowTrainingProgress("sample_index", "completed", 1, 1))

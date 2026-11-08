@@ -163,6 +163,7 @@ def test_cached_points_match_formula_and_are_validated_once_per_source_row(tmp_p
                 V5_TRAINING_PROFILE,
             ),
             aligned_rows=iter(rows),
+            aligned_dates=window.readable_dates,
         )
         for head in V5_TRAINING_PROFILE.heads:
             horizons = (1,) if head.strategy is Strategy.TOMORROW else (2, 3, 4, 5)

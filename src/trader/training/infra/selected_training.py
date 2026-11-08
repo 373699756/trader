@@ -33,7 +33,7 @@ from trader.training.application.selected_training import (
     SelectedTrainingTask,
     TrainingLocations,
 )
-from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
+from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
 from trader.training.domain.v1.training_plan import BuildLearnedRankReadDates
 from trader.training.infra.engine import FitSelectedProfile, InspectSelectedProfile, ProfileTrainingRequest
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
@@ -48,6 +48,7 @@ from trader.training.infra.profile.v5.settings import TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
+from trader.training.infra.sample_progress import TrainingSampleProgressTracker
 
 
 def ResolveTrainingLocations(
@@ -174,7 +175,28 @@ class _SelectedTrainingSession:
         with closing(self._source_rows(readable)) as source, closing(AlignTrainingRows(
             source, tuple(sorted(readable)), self.history.snapshot.listing_intervals,
         )) as rows:
-            yield rows
+            with closing(self._observe_input(rows, readable)) as observed:
+                yield observed
+
+    def _observe_input(
+        self, rows: Iterator[HistoryTrainingRow], dates: frozenset[date],
+    ) -> Generator[HistoryTrainingRow, None, None]:
+        tracker = TrainingSampleProgressTracker(dates, min(dates), None)
+
+        def report(*, finished: bool = False) -> None:
+            value = tracker.snapshot(finished=finished)
+            event = TomorrowTrainingProgress(
+                "input_read", "running", value.completed_days, value.total_days, input_progress=value,
+            )
+            for progress in self.request.progresses:
+                progress.publish(event)
+
+        report()
+        for row in rows:
+            if tracker.observe(row.trade_date):
+                report()
+            yield row
+        report(finished=True)
 
     def _source_rows(self, dates: frozenset[date]) -> Generator[HistoryTrainingRow, None, None]:
         with closing(self.history.iter_training_rows(dates)) as rows:

@@ -107,6 +107,26 @@ class TrainingValidationProgress:
 
 
 @dataclass(frozen=True)
+class TrainingSampleProgress:
+    completed_days: int
+    total_days: int
+    processed_rows: int
+    warmup_rows: int = 0
+    phase: Literal["warmup", "generation"] = "warmup"
+    pending_samples: int = 0
+
+    def __post_init__(self) -> None:
+        if (
+            any(type(value) is not int or value < 0 for value in (
+                self.completed_days, self.total_days, self.processed_rows, self.warmup_rows, self.pending_samples,
+            ))
+            or self.completed_days > self.total_days or self.warmup_rows > self.processed_rows
+            or self.phase not in {"warmup", "generation"}
+        ):
+            raise ValueError("training_sample_progress_invalid")
+
+
+@dataclass(frozen=True)
 class TomorrowTrainingProgress:
     stage: TomorrowTrainingStage
     state: TomorrowTrainingProgressState
@@ -120,6 +140,8 @@ class TomorrowTrainingProgress:
     count_unit: Literal["tasks", "industries"] = field(default="tasks", kw_only=True)
     validation: TrainingValidationProgress | None = field(default=None, kw_only=True)
     fit_counts: TrainingFitCounts | None = field(default=None, kw_only=True)
+    sample_progress: TrainingSampleProgress | None = field(default=None, kw_only=True)
+    input_progress: TrainingSampleProgress | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if (
@@ -129,6 +151,14 @@ class TomorrowTrainingProgress:
             or type(self.total_is_exact) is not bool
             or self.count_unit not in {"tasks", "industries"}
             or self.validation is not None and not isinstance(self.validation, TrainingValidationProgress)
+            or any(value is not None and not isinstance(value, TrainingSampleProgress)
+                   for value in (self.sample_progress, self.input_progress))
+            or self.sample_progress is not None and (
+                self.stage != "history_conversion" or self.input_progress is not None
+                or (self.completed_units, self.total_units)
+                != (self.sample_progress.completed_days, self.sample_progress.total_days)
+            )
+            or self.input_progress is not None and self.stage != "input_read"
             or self.fit_counts is not None and (
                 not isinstance(self.fit_counts, TrainingFitCounts)
                 or (self.completed_units, self.total_units, self.produced_units)
@@ -226,4 +256,5 @@ __all__ = [
     "TrainingFitCounts",
     "TrainingFitPhase",
     "TrainingValidationProgress",
+    "TrainingSampleProgress",
 ]
