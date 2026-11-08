@@ -25,6 +25,7 @@ from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddRe
 
 if TYPE_CHECKING:
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.report_output import TrainingReportOutput
 
 
 class _FillFlag(argparse.Action):
@@ -67,6 +68,8 @@ def BuildParser() -> argparse.ArgumentParser:
         default=SCORING_PROFILE_IDS,
         help="Comma-separated profiles; defaults to all profiles.",
     )
+    training.add_argument("--json", action="store_true", help="Print complete result JSON to stdout.")
+    training.add_argument("--diagnostics", type=Path, help="Write full diagnostics to a new file; never overwrite.")
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
     sync.add_argument("--fill", action=_FillFlag, nargs=0, default=False, help="补充所选资料的缺口：history/market 自动用 BaoStock；company 补历史及正文并自动 OCR/扩限。")
@@ -247,6 +250,26 @@ def _run_training_command(
 
 
 def _run_train(args: argparse.Namespace) -> int:
+    from trader.training.application.error_diagnostics import CaptureTrainingError
+    from trader.training.entrypoints.report_output import ProjectTrainingError, TrainingErrorSummary, TrainingReportOutput
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+
+    try:
+        with TrainingReportOutput(json_output=args.json, diagnostics=args.diagnostics) as reports:
+            return _execute_train(args, reports)
+    except (OSError, ValueError) as exc:
+        diagnostic = CaptureTrainingError(exc)
+        output = StderrTomorrowTrainingProgress(command_label="train")
+        output.report_notice("诊断输出", TrainingErrorSummary(diagnostic), state="失败")
+        if args.json:
+            print(json.dumps({"status": "failed", "failure": "training_report_output_failed",
+                              "diagnostic": ProjectTrainingError(diagnostic)}, ensure_ascii=False))
+        return 1
+
+
+def _execute_train(args: argparse.Namespace, reports: TrainingReportOutput) -> int:
+    from trader.training.application.error_diagnostics import CaptureTrainingError
+    from trader.training.entrypoints.report_output import ProjectTrainingError, TrainingErrorSummary
     from trader.bootstrap import PrepareRuntimeDisk
     from trader.training.entrypoints.tomorrow_training_progress import ReadTrainingProgressLayout, StderrTomorrowTrainingProgress
 
@@ -261,41 +284,46 @@ def _run_train(args: argparse.Namespace) -> int:
             runtime = LoadRuntimeSettings(_absolute_config_path(args.config))
             runtime = PrepareRuntimeDisk(runtime, choose=True, report_line=output.report_disk)
         except (OSError, RuntimeError, ValueError) as exc:
-            output.report_notice("配置检查", f"原因 {type(exc).__name__}", state="失败")
-            print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, ensure_ascii=False))
+            diagnostic = CaptureTrainingError(exc)
+            output.report_notice("配置检查", TrainingErrorSummary(diagnostic), state="失败")
+            reports.emit({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__,
+                          "diagnostic": ProjectTrainingError(diagnostic)})
             return 2
         except KeyboardInterrupt:
             output.publish_cancelled()
+            reports.emit({"schema_version": "selected_training_result", "status": "cancelled"})
             return 130
         output.report_notice("存储检测", "磁盘策略已确定", state="完成")
         output.report_notice("配置检查", "配置准备完成", state="完成")
         profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
         output.report_notice("训练范围", f"档位 {', '.join(profile.upper() for profile in profiles)}；仅使用本地已发布资料；缺资料请先执行 ./run.sh sync history", state="完成")
-        return _run_selected_training(runtime, profiles, output=output)
+        return _run_selected_training(runtime, profiles, output=output, reports=reports)
 
 
 def _run_selected_training(
     runtime: RuntimeSettings, profiles: tuple[ScoringProfileId, ...], *,
     output: StderrTomorrowTrainingProgress,
+    reports: TrainingReportOutput,
 ) -> int:
     from trader.bootstrap import ExecuteSelectedTraining
+    from trader.training.application.error_diagnostics import CaptureTrainingError
+    from trader.training.entrypoints.report_output import ProjectTrainingError, TrainingErrorSummary
 
     try:
         output.report_notice("执行与收尾", "等待所选档位返回；含资源准备、训练、结果检查与关闭，具体进度见各档位阶段", state="开始")
-        code = ExecuteSelectedTraining(runtime, profiles, started_at=output.started_at, terminal_columns=output.layout.columns)
+        code = ExecuteSelectedTraining(runtime, profiles, started_at=output.started_at,
+                                       terminal_columns=output.layout.columns, report_output=reports)
         output.report_notice("执行与收尾", f"退出码 {code}", state="取消" if code == 130 else "失败" if code else "完成")
         return code
     except KeyboardInterrupt:
         output.publish_cancelled()
-        print(json.dumps({"schema_version": "selected_training_result", "status": "cancelled"}, indent=2, ensure_ascii=False))
+        reports.emit({"schema_version": "selected_training_result", "status": "cancelled"})
         return 130
     except (OSError, RuntimeError, ValueError) as exc:
-        output.publish_result("failed", type(exc).__name__)
-        print(
-            json.dumps(
-                {"schema_version": "selected_training_result", "status": "failed", "category": type(exc).__name__}, indent=2, ensure_ascii=False
-            )
-        )
+        diagnostic = CaptureTrainingError(exc)
+        output.publish_result("failed", TrainingErrorSummary(diagnostic))
+        reports.emit({"schema_version": "selected_training_result", "status": "failed", "category": type(exc).__name__,
+                      "diagnostic": ProjectTrainingError(diagnostic)})
         return 1
 
 

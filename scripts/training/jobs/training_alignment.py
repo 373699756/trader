@@ -593,6 +593,7 @@ def _prepare_sample_reuse(
 ) -> dict[str, object]:
     """Exercise the normal failed-fit cache retention path in an isolated preparation run."""
     from trader.bootstrap import ExecuteSelectedTraining
+    from trader.training.entrypoints.report_output import TrainingReportOutput
     from trader.training.infra import engine
 
     if work.exists() or work.is_symlink():
@@ -621,6 +622,7 @@ def _prepare_sample_reuse(
         with TrainingProcessMeasurement(disk_root=work) as measurement, redirect_stdout(captured):
             code = ExecuteSelectedTraining(
                 runtime, profiles, history_root=history, training_root=work, industry_snapshot=industry_snapshot,
+                report_output=TrainingReportOutput(json_output=True),
             )
     finally:
         engine.FitIndustryModels = original_fit
@@ -670,6 +672,7 @@ def _train_once(
     *, industry_snapshot: CurrentIndustrySnapshot,
 ) -> dict[str, object]:
     from trader.bootstrap import ExecuteSelectedTraining
+    from trader.training.entrypoints.report_output import TrainingReportOutput
     from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 
     captured = io.StringIO()
@@ -677,6 +680,7 @@ def _train_once(
     with TrainingProcessMeasurement(disk_root=work) as measurement, redirect_stdout(captured):
         code = ExecuteSelectedTraining(
             runtime, profiles, history_root=history, training_root=work, industry_snapshot=industry_snapshot,
+            report_output=TrainingReportOutput(json_output=True),
         )
     seconds = time.monotonic() - started
     reports = ReadJsonReports(captured.getvalue())

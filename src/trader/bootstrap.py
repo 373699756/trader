@@ -180,6 +180,7 @@ from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 from trader.web import CreateApp
 
 if TYPE_CHECKING:
+    from trader.training.entrypoints.report_output import TrainingReportOutput
     from trader.training.application.research_commands import ResearchEvidenceCommand, ResearchEvidenceResult
 
 
@@ -483,17 +484,16 @@ def ExecuteSelectedTraining(
     runtime: RuntimeSettings,
     scoring_profiles: tuple[ScoringProfileId, ...],
     *,
-    history_root: Path | None = None,
-    training_root: Path | None = None, started_at: float | None = None,
+    history_root: Path | None = None, training_root: Path | None = None, started_at: float | None = None,
     industry_snapshot: CurrentIndustrySnapshot | None = None, terminal_columns: int | None = None,
+    report_output: TrainingReportOutput | None = None,
 ) -> int:
     """Compose offline training resources, also used by isolated diagnostics."""
     from trader.training.entrypoints.commands import ConfigureTrainingResources
     from trader.training.infra.cpu_admission import AvailableTrainingCpus, TrainingCpuBudget
 
     scoring_profiles = ParseProfileSelection(",".join(scoring_profiles))
-    medium = runtime.disk_medium or DiskProbe().inspect(runtime.data_paths.root).kind
-    resources = LoadTrainingResourceSettings(runtime.project_root, medium)
+    resources = LoadTrainingResourceSettings(runtime.project_root, runtime.disk_medium or DiskProbe().inspect(runtime.data_paths.root).kind)
     cpu_budget = TrainingCpuBudget(AvailableTrainingCpus(), resources.cpu)
     ConfigureTrainingResources(cpu_budget.native_threads)
 
@@ -520,7 +520,7 @@ def ExecuteSelectedTraining(
         load_expectation=HistoryTrainingExpectationReader(
             industry_reader, partial(LoadProfileTrainingSettings, runtime.project_root), lambda: cpu_budget.profile_threads,
         ).read,
-        memory_capacity_bytes=memory_budget.capacity_bytes, started_at=started_at, terminal_columns=terminal_columns,
+        memory_capacity_bytes=memory_budget.capacity_bytes, started_at=started_at, terminal_columns=terminal_columns, report_output=report_output,
     )
 
 

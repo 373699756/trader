@@ -50,7 +50,7 @@ _FIT_PHASE_LABELS: dict[TrainingFitPhase, str] = {
 }
 _HEAD_LABELS = {Strategy.TOMORROW: "明日", Strategy.D25: "D25"}
 _PROGRESS_INTERVAL_SECONDS = 5.0
-_HEARTBEAT_INTERVAL_SECONDS = 5.0
+_HEARTBEAT_INTERVAL_SECONDS = 30.0
 TomorrowTrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready", "failed"]
 _RESULT_LABELS: dict[TomorrowTrainingCommandStatus, str] = {
     "blocked": "阻塞",
@@ -197,15 +197,17 @@ class StderrTomorrowTrainingProgress:
             if progress.sample_diagnostics is not None:
                 self._sample_diagnostics = progress.sample_diagnostics
             detail = progress.fit_detail
+            first_skip = False
             if detail is not None and detail.phase == "skipped":
                 skipped = (progress.stage, progress.strategy, detail.industry)
                 if skipped not in self._skipped:
                     self._skipped.add(skipped)
                     self._skip_reasons[detail.failure_reason or "unknown"] += 1
+                    first_skip = True
             self._latest = progress
             self._current_notice = None
             self._observe_epoch(progress, now)
-            boundary = progress.state in {"started", "completed"} or validation_started
+            boundary = progress.state in {"started", "completed"} or validation_started or first_skip
             if boundary or now - self._emitted_at >= _PROGRESS_INTERVAL_SECONDS:
                 self._emit(progress, now)
 
@@ -229,6 +231,12 @@ class StderrTomorrowTrainingProgress:
             details = [f"状态 {status}"]
             if failure_reason is not None:
                 details.append(f"错误 {CleanProgressText(failure_reason)}")
+                if self._latest is not None:
+                    latest = self._latest
+                    head = _HEAD_LABELS[latest.strategy] if latest.strategy is not None else "共用"
+                    details.append(f"最后阶段 {head}·{self._stage_label(latest)}")
+                    if latest.fit_detail is not None and latest.fit_detail.industry_name:
+                        details.append(f"行业 {latest.fit_detail.industry_name}")
             self._finish(now, _RESULT_LABELS[status], details)
 
     def _finish(self, now: float, state: str, details: list[str]) -> None:
@@ -353,6 +361,8 @@ class StderrTomorrowTrainingProgress:
             industry_name = fit.industry_name
             details.append(f"{industry_name}·{_FIT_PHASE_LABELS[fit.phase]}" if industry_name else _FIT_PHASE_LABELS[fit.phase])
             details.append(f"样本 {fit.training_rows}行")
+            if fit.phase == "skipped":
+                details.append(f"原因 {fit.failure_reason}")
             if fit.total_epochs:
                 details.append(f"轮次 {fit.epoch}/{fit.total_epochs}")
             if fit.total_batches:

@@ -371,7 +371,11 @@ def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
     assert completed.stdout == f"server:--config {config} {profile}\n"
 
 
-@pytest.mark.parametrize("profile_args", ((), ("v1",), ("v1,v5",), ("v2",), ("v2,v3",)))
+@pytest.mark.parametrize("profile_args", (
+    (), ("v1",), ("v1,v5",), ("v2",), ("v2,v3",), ("--json",),
+    ("v1,v5", "--json", "--diagnostics", "/tmp/train-report.json"),
+    ("--diagnostics", "/tmp/train report.json", "v1"),
+))
 def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, profile_args: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -396,7 +400,7 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
     )
 
     assert completed.returncode == 0
-    suffix = f" {profile_args[0]}" if profile_args else ""
+    suffix = " " + " ".join(profile_args) if profile_args else ""
     assert completed.stdout == f"cli:--config {config} train{suffix}\n"
 
 
@@ -411,16 +415,18 @@ def test_train_reports_local_failure_without_exposing_details(tmp_path, monkeypa
         layout_reads.append(True)
         return tomorrow_training_progress.TrainingProgressLayout(96)
 
-    def train(_runtime, _profiles, *, started_at, terminal_columns):
+    def train(_runtime, _profiles, *, started_at, terminal_columns, report_output):
         assert started_at >= 0 and terminal_columns == 96
         raise error("private training details")
 
     monkeypatch.setattr(tomorrow_training_progress, "ReadTrainingProgressLayout", read_layout)
     monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", train)
-    assert Main(["--config", str(config), "train", "v2,v3"]) == 1
+    assert Main(["--config", str(config), "train", "v2,v3", "--json"]) == 1
     assert layout_reads == [True]
     captured = capsys.readouterr()
-    assert json.loads(captured.out) == {
+    payload = json.loads(captured.out)
+    assert payload.pop("diagnostic")["causes"][0]["error_type"] == error.__name__
+    assert payload == {
         "schema_version": "selected_training_result",
         "status": "failed",
         "category": error.__name__,

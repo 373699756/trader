@@ -5,6 +5,7 @@ import re
 from typing import Literal
 
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
+from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
 
 TrainingIssueStage = Literal[
     "completion_notification", "sample_cleanup", "scope_cleanup", "outcome_notification",
@@ -18,6 +19,7 @@ class TrainingOperationIssue:
     stage: TrainingIssueStage
     error_type: str
     cause_type: str | None = None
+    diagnostic: TrainingErrorDiagnostic | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -35,6 +37,7 @@ def BuildTrainingOperationIssue(stage: TrainingIssueStage, exc: BaseException) -
         stage,
         error_type if _ERROR_TYPE.fullmatch(error_type) is not None else "Error",
         cause_type if cause_type is None or _ERROR_TYPE.fullmatch(cause_type) is not None else "Error",
+        CaptureTrainingError(exc),
     )
 
 

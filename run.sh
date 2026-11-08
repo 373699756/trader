@@ -27,6 +27,8 @@ usage() {
     "  ./run.sh sync company --fill     补充历史缺口和待补正文，自动OCR/扩限，复用已完成资料" \
     "  ./run.sh train                   使用本地已发布历史训练全部档位 V1、V2、V3、V5" \
     "  ./run.sh train v1,v5             使用本地已发布历史，只训练所列档位" \
+    "  ./run.sh train --json            显式输出完整JSON结果" \
+    "  ./run.sh train --diagnostics /tmp/train-diagnostic.json  保存完整诊断（拒绝覆盖）" \
     "" \
     "档位以逗号分隔，可自由组合；省略时选择全部。V1已正式接入，V5保持工程Shadow并需可选CPU依赖。" \
     "本地检测使用 scripts/tools.py --business recommendation --module pipeline --action snapshot。" \
@@ -62,7 +64,36 @@ case "${1:-}" in
     ;;
 esac
 
-if [[ "$MODE" != "sync" ]] && (($# > 1)); then
+if [[ "$MODE" == "train" ]]; then
+  TRAIN_ARGS=("$@")
+  TRAIN_PROFILE_SEEN=0
+  for ((train_index=0; train_index<${#TRAIN_ARGS[@]}; train_index++)); do
+    case "${TRAIN_ARGS[train_index]}" in
+      --json) ;;
+      --diagnostics)
+        if ((train_index+1 >= ${#TRAIN_ARGS[@]})); then
+          printf '%s\n' '用法：./run.sh train [档位列表] [--json] [--diagnostics 新文件路径]' >&2
+          exit 2
+        fi
+        train_index=$((train_index+1))
+        ;;
+      v1|v2|v3|v5|v[1235],*)
+        if ((TRAIN_PROFILE_SEEN)); then
+          printf '%s\n' '用法：./run.sh train 仅接受一个逗号分隔的档位列表。' >&2
+          exit 2
+        fi
+        TRAIN_PROFILE_SEEN=1
+        TRAIN_PROFILE_LIST="${TRAIN_ARGS[train_index]}"
+        ;;
+      *)
+        printf '%s\n' '用法：./run.sh train [档位列表] [--json] [--diagnostics 新文件路径]' >&2
+        exit 2
+        ;;
+    esac
+  done
+fi
+
+if [[ "$COMMAND_KIND" == "server" ]] && (($# > 1)); then
   printf '%s\n' '用法：./run.sh [档位列表] 或 ./run.sh train [档位列表]；列表以逗号分隔。' >&2
   exit 2
 fi
@@ -76,12 +107,13 @@ if (($#)); then
       printf '%s\n' '用法：./run.sh sync [history|market|company]；指定分项后可加 --fill 补充下载。' >&2
       exit 2
     fi
-  else
-    if [[ ! "$1" =~ ^v(1|2|3|5)(,v(1|2|3|5))*$ ]]; then
+  elif [[ "$MODE" != "train" || "${TRAIN_PROFILE_SEEN:-0}" == 1 ]]; then
+    PROFILE_LIST="${TRAIN_PROFILE_LIST:-$1}"
+    if [[ ! "$PROFILE_LIST" =~ ^v(1|2|3|5)(,v(1|2|3|5))*$ ]]; then
       printf '%s\n' '档位列表只能包含 v1、v2、v3、v5，以逗号分隔且不得重复。' >&2
       exit 2
     fi
-    IFS=',' read -r -a SELECTED_PROFILES <<< "$1"
+    IFS=',' read -r -a SELECTED_PROFILES <<< "$PROFILE_LIST"
     SEEN_PROFILES=","
     for profile in "${SELECTED_PROFILES[@]}"; do
       if [[ "$SEEN_PROFILES" == *",$profile,"* ]]; then

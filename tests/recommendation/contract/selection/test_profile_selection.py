@@ -129,6 +129,7 @@ def test_training_selection_uses_local_history_and_runs_only_selected_profiles(
     def train(
         runtime, selected, *, executor, memory_admission, cpu_budget, fanout_settings,
         sample_settings, paths, sqlite_policy, prepare_training, memory_capacity_bytes,
+        load_expectation, started_at, terminal_columns, report_output,
     ):
         assert executor.status().workers == len(selected)
         assert sqlite_policy == bootstrap.BuildSqlitePolicy(runtime)

@@ -48,7 +48,7 @@ def test_heartbeat_only_observes_the_current_stage_for_each_profile(capsys) -> N
     clock.now = 1
     output.publish(TomorrowTrainingProgress("target_statistics", "started", 0, 1))
     capsys.readouterr()
-    output._emit_heartbeat(6)
+    output._emit_heartbeat(31)
     lines = _compact(capsys.readouterr().err).splitlines()
     assert len(lines) == 1 and "train·V5·标签统计" in lines[0]
     assert "样本索引" not in lines[0]
@@ -83,8 +83,8 @@ def test_observation_diagnostics_and_upper_bound_changes_do_not_reset_stalled_ti
         fit_detail=replace(detail, training_rows=21_000),
     ))
     capsys.readouterr()
-    output._emit_heartbeat(5)
-    assert "未推进 00:00:05" in _compact(capsys.readouterr().err)
+    output._emit_heartbeat(30)
+    assert "未推进 00:00:30" in _compact(capsys.readouterr().err)
     clock.now = 8
     output.publish(replace(event, fit_detail=replace(detail, completed_batches=2)))
     output._emit_heartbeat(10)
@@ -109,8 +109,8 @@ def test_validation_is_an_actual_running_phase_after_all_models_are_fitted(capsy
     output.publish(update)
     lines = _compact(capsys.readouterr().err).splitlines()
     assert len(lines) == 1 and "明日·验证 00:00:00 | 处理中 | 验证 0/ 100行" in lines[0]
-    output._emit_heartbeat(11)
-    assert "明日·验证 00:00:05 | 等待 | 验证 0/ 100行" in _compact(capsys.readouterr().err)
+    output._emit_heartbeat(36)
+    assert "明日·验证 00:00:30 | 等待 | 验证 0/ 100行" in _compact(capsys.readouterr().err)
     clock.now = 12
     output.publish(replace(update, state="completed", validation=TrainingValidationProgress(100, 100)))
     assert "明日·验证 00:00:06 | 完成 | 验证 100/ 100行" in _compact(capsys.readouterr().err)
@@ -211,8 +211,8 @@ def test_fit_total_changes_alone_do_not_reset_stalled_time(capsys):
     clock.now = 2
     output.publish(replace(event, total_units=5, fit_counts=TrainingFitCounts(1, 5, 1, 0)))
     capsys.readouterr()
-    output._emit_heartbeat(5)
-    assert "未推进 00:00:05" in _compact(capsys.readouterr().err)
+    output._emit_heartbeat(30)
+    assert "未推进 00:00:30" in _compact(capsys.readouterr().err)
 
 
 def test_fit_upper_bound_does_not_claim_an_exact_percentage(capsys):
@@ -390,17 +390,17 @@ def test_training_progress_prints_compact_blocked_and_cancelled_results(capsys) 
     ]
 
 
-def test_expensive_index_stage_emits_heartbeat_at_five_seconds(capsys) -> None:
+def test_expensive_index_stage_emits_heartbeat_at_thirty_seconds(capsys) -> None:
     output = StderrTomorrowTrainingProgress(monotonic=_Clock(0.0, 0.0, 61.0), start_heartbeat=False)
     output.publish(TomorrowTrainingProgress("sample_index", "started", 0, 1))
     capsys.readouterr()
-    output._emit_heartbeat(4.0)
+    output._emit_heartbeat(29.0)
     assert _compact(capsys.readouterr().err) == ""
-    output._emit_heartbeat(5.0)
-    output._emit_heartbeat(10.0)
+    output._emit_heartbeat(30.0)
+    output._emit_heartbeat(60.0)
     assert _compact(capsys.readouterr().err).splitlines() == [
-        "00:00:05 | Tomorrow训练·样本索引 00:00:05 | 等待 | 任务 0/1；未推进 00:00:05",
-        "00:00:10 | Tomorrow训练·样本索引 00:00:10 | 等待 | 任务 0/1；未推进 00:00:10",
+        "00:00:30 | Tomorrow训练·样本索引 00:00:30 | 等待 | 任务 0/1；未推进 00:00:30",
+        "00:01:00 | Tomorrow训练·样本索引 00:01:00 | 等待 | 任务 0/1；未推进 00:01:00",
     ]
     output.publish_result("engineering_ready", None)
     capsys.readouterr()
@@ -428,30 +428,37 @@ def test_duplicate_completion_does_not_double_count_stage_duration() -> None:
     assert output.stage_durations == (("sample_index", 10.0),)
 
 
-def test_fit_detail_retains_latest_batch_and_defers_skips_to_terminal_summary(capsys) -> None:
-    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0, 5, 5.1, 5.2, 11, 12, 16), start_heartbeat=False)
+def test_fit_detail_retains_latest_batch_and_reports_each_skip_immediately(capsys) -> None:
+    clock = _MutableClock()
+    output = StderrTomorrowTrainingProgress(monotonic=clock, start_heartbeat=False)
     output.publish(TomorrowTrainingProgress("model_fit", "started", 0, 83))
     detail = TrainingFitDetail("银行", 20000, "training", 2, 100, 0, 79, industry_name="银行")
     update = TomorrowTrainingProgress("model_fit", "running", 11, 83, fit_detail=detail)
+    clock.now = 5
     output.publish(update)
     initial = _compact(capsys.readouterr().err)
     assert "银行·训练" in initial and "轮次 2/100" in initial and "本轮批次 0/79" in initial
     for batch in (1, 2):
+        clock.now += 0.1
         output.publish(replace(update, fit_detail=replace(detail, completed_batches=batch)))
     assert _compact(capsys.readouterr().err) == ""
-    output._emit_heartbeat(10)
+    clock.now = 35
+    output._emit_heartbeat(clock.now)
     heartbeat = _compact(capsys.readouterr().err)
-    assert "拟合 00:00:10 | 等待" in heartbeat and "本轮批次 2/79" in heartbeat
+    assert "拟合 00:00:35 | 等待" in heartbeat and "本轮批次 2/79" in heartbeat
     skipped = TrainingFitDetail(
         "银行", 20000, "skipped", failure_reason="calibration_prediction_variance_insufficient", industry_name="银行",
     )
+    output.publish(replace(update, completed_units=12, fit_detail=skipped))
+    assert "calibration_prediction_variance_insufficient" in "".join(capsys.readouterr().err.split())
     output.publish(replace(update, completed_units=12, fit_detail=skipped))
     assert capsys.readouterr().err == ""
     output.publish(replace(update, completed_units=12, fit_detail=TrainingFitDetail(
         "软件", 30000, "preparation", industry_name="软件",
     )))
     assert capsys.readouterr().err == ""
-    output._emit_heartbeat(15)
+    clock.now = 65
+    output._emit_heartbeat(clock.now)
     assert "软件·检查" in _compact(capsys.readouterr().err)
     output.publish_result("engineering_ready", None)
     summary = _compact(capsys.readouterr().err)
@@ -513,10 +520,10 @@ def test_profiles_share_command_clock_and_cancel_retains_last_confirmed_progress
 
 
 def test_stage_notice_heartbeat_preserves_waiting_operation_and_stops_when_finished(capsys):
-    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 1, 8), start_heartbeat=False, command_label="train")
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 1, 32), start_heartbeat=False, command_label="train")
     output.report_notice("配置检查", "读取本地配置", state="开始")
-    output._emit_heartbeat(6)
-    assert "00:00:06 | train·配置检查 00:00:05 | 等待 | 读取本地配置" in _compact(capsys.readouterr().err)
+    output._emit_heartbeat(31)
+    assert "00:00:31 | train·配置检查 00:00:30 | 等待 | 读取本地配置" in _compact(capsys.readouterr().err)
     output.report_notice("配置检查", "已完成", state="完成")
     capsys.readouterr()
     output._emit_heartbeat(20)
@@ -554,7 +561,7 @@ def test_blocked_heartbeat_uses_the_training_scope_deadline_and_preserves_incomp
             with pytest.raises(TimeoutError, match="training_progress_shutdown_incomplete"):
                 with output:
                     output.publish(TomorrowTrainingProgress("sample_index", "started", 0, 1))
-                    clock[0] = 6.0
+                    clock[0] = 31.0
                     assert blocked.wait(2)
             assert output.shutdown_step is not None
             assert not output.shutdown_step.completed and output.shutdown_step.timed_out

@@ -340,6 +340,7 @@ def test_second_final_head_failure_releases_all_resources_without_publishing(err
         result = TrainLearnedRank(training)
         assert result.status == "failed" and result.heads == ()
         assert result.failure_reasons == ("controlled_refit_failure",)
+        assert result.diagnostic.causes[0].code == "controlled_refit_failure"
     assert training.events[-2:] == ["fitting_closed", "samples_closed"]
     assert training.scopes == [] and training.pair is None
 

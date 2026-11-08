@@ -6,6 +6,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
 from trader.training.application.resources import TrainingSampleSettings
+from trader.training.application.error_diagnostics import CaptureTrainingError
 from trader.training.application.profile_training import (
     HeadTrainingResult, InspectProfileDateAdmission, InspectProfileReuse, PreparedTrainingHead, PreparedTrainingSamples, ProfileFittingPort,
     ProfileTrainingOperationError, PublishedTrainingHead, TrainProfile, TrainingRunResult, TrainingStatus,
@@ -738,6 +739,7 @@ def _fit_and_prepare_head(
             ClearProfileStaging(request.train_root)
         return replace(
             _blocked_from_snapshot(contract, snapshot, _reason(exc)),
+            diagnostic=CaptureTrainingError(exc),
             run_id=request.run_id,
             label_cutoff=plan.label_cutoff,
             sample_database_peak_bytes=request.peak_bytes,

@@ -530,6 +530,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
     from trader.infra.workers import BoundedExecutor
     from trader.training.application.selected_training import SelectedTrainingOutcome, SelectedTrainingRun, TrainingLocations
     from trader.training.entrypoints.selected_training import RunSelectedTraining
+    from trader.training.entrypoints.report_output import TrainingReportOutput
     from trader.training.infra.selected_training import SelectedTrainingAdapter
     from trader.training.application.learned_rank_training import V1TrainingResult
 
@@ -555,6 +556,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
     assert RunSelectedTraining(
         runtime,
         ("v1",),
+        report_output=TrainingReportOutput(json_output=True),
         executor=workers,
         memory_admission=memory_budget,
         cpu_budget=cpu_budget,

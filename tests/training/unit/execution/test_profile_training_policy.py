@@ -239,6 +239,7 @@ def test_fitting_failure_closes_the_injected_scope_and_cancellation_still_propag
         result = TrainProfile(training)
         assert result.status == "blocked"
         assert all(head.model_hash == "" for head in result.heads)
+        assert all(head.diagnostic.causes[0].error_type == "ProfileTrainingOperationError" for head in result.heads)
     assert training.calls[-1] == "fitting_closed"
     assert "published" not in training.calls and "cleared" not in training.calls
 
@@ -275,7 +276,9 @@ def test_completed_progress_failure_retains_the_committed_pair_and_visible_diagn
         ("completion_notification", "sample_cleanup") if cleanup_error else ("completion_notification",)
     )
     payload = ProjectProfileTrainingResult("v3", result)
-    assert payload["post_commit_issues"][0] == {
+    issue = payload["post_commit_issues"][0]
+    assert issue.pop("diagnostic")["causes"][0]["error_type"] == "BrokenPipeError"
+    assert issue == {
         "stage": "completion_notification", "error_type": "BrokenPipeError", "cause_type": None,
     }
     assert "private" not in str(payload)

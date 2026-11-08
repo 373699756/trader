@@ -13,6 +13,7 @@ from trader.training.application.training_diagnostics import TrainingOperationIs
 from trader.training.domain.training_date_coverage import TrainingDateCoverage
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
+from trader.training.entrypoints.report_output import ProjectTrainingError
 
 
 class CancellableTrainingProgress:
@@ -39,6 +40,7 @@ def ProjectProfileTrainingResult(profile: ScoringProfileId, result: TrainingRunR
             {
                 "strategy": head.strategy.value,
                 "status": head.status,
+                "diagnostic": ProjectTrainingError(head.diagnostic) if head.diagnostic is not None else None,
                 "model_hash": head.model_hash,
                 "report_hash": head.report_hash,
                 "training_rows": head.training_rows,
@@ -98,6 +100,7 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
         "training_input_hash": result.training_input_hash,
         "sample_database_peak_bytes": result.sample_database_peak_bytes,
         "failure_reasons": list(result.failure_reasons),
+        "diagnostic": ProjectTrainingError(result.diagnostic) if result.diagnostic is not None else None,
         "date_coverage": [ProjectTrainingDateCoverage(item) for item in result.date_coverage],
         "post_commit_issues": ProjectTrainingOperationIssues(result.post_commit_issues),
         "sample_counts": CanonicalValue(result.sample_counts),
@@ -149,7 +152,8 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
 
 def ProjectTrainingOperationIssues(issues: tuple[TrainingOperationIssue, ...]) -> list[dict[str, object]]:
     return [
-        {"stage": issue.stage, "error_type": issue.error_type, "cause_type": issue.cause_type}
+        {"stage": issue.stage, "error_type": issue.error_type, "cause_type": issue.cause_type,
+         "diagnostic": ProjectTrainingError(issue.diagnostic) if issue.diagnostic is not None else None}
         for issue in issues
     ]
 
@@ -186,6 +190,21 @@ def TrainingDateCoverageSummary(coverage: tuple[TrainingDateCoverage, ...]) -> s
     return "；".join(details)
 
 
+def TrainingDateRangeSummary(coverage: tuple[TrainingDateCoverage, ...]) -> str:
+    details = []
+    for item in coverage:
+        if item.partition != "final_fitting" or not item.required_dates:
+            continue
+        head = "明日" if item.strategy.value == "tomorrow" else "D25"
+        available = "至多" if item.basis == "metadata_upper_bound" else "有效"
+        details.append(
+            f"{head} 资料截止{item.source_cutoff} 标签成熟截止{item.label_cutoff} "
+            f"拟合{item.required_dates[0]}至{item.required_dates[-1]} "
+            f"{available}{item.effective_dates}/{item.expected_dates}日"
+        )
+    return "；".join(details)
+
+
 def ProjectTrainingIndustryCoverage(snapshot: CurrentIndustrySnapshot) -> dict[str, object]:
     return {
         "policy": TRAINING_INDUSTRY_POLICY,
@@ -204,5 +223,5 @@ def ProjectTrainingIndustryCoverage(snapshot: CurrentIndustrySnapshot) -> dict[s
 __all__ = [
     "ProjectProfileTrainingResult", "ProjectLearnedRankTrainingResult", "ProjectTrainingOperationIssues",
     "CancellableTrainingProgress", "ProjectTrainingDateCoverage", "TrainingDateCoverageSummary",
-    "ProjectTrainingIndustryCoverage",
+    "ProjectTrainingIndustryCoverage", "TrainingDateRangeSummary",
 ]

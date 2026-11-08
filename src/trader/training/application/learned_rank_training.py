@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from trader.recommendation.domain.publication.models import Strategy
+from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
 from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress, TomorrowTrainingProgressPort, TomorrowTrainingProgressState, TomorrowTrainingStage,
     TrainingFitCounts,
@@ -38,6 +39,7 @@ class V1TrainingResult:
     reused: bool = False
     post_commit_issues: tuple[TrainingOperationIssue, ...] = ()
     date_coverage: tuple[TrainingDateCoverage, ...] = ()
+    diagnostic: TrainingErrorDiagnostic | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +201,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
             raise
         return V1TrainingResult(
             "failed", run_id, input_hash, peak_bytes, (), counts, (str(exc),), coverage, date_coverage=date_coverage,
+            diagnostic=CaptureTrainingError(exc),
         )
 
 

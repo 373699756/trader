@@ -14,6 +14,7 @@ from scripts.core.reporting import ReadJsonReports
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingTask
+from trader.training.entrypoints.report_output import TrainingReportOutput
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 
 SELECTIONS = tuple(group for count in range(1, 5) for group in combinations(SCORING_PROFILE_IDS, count))
@@ -93,7 +94,8 @@ def test_cache_hits_read_no_history_and_partial_failure_does_not_block_other_pro
             lambda: False,
             settings=TrainingResourceSettingsFixture().fanout,
         )
-    assert result.outcomes[0].failure == "fixture failure"
+    assert result.outcomes[0].failure == "ValueError"
+    assert result.outcomes[0].diagnostic.causes[0].error_type == "ValueError"
     assert result.outcomes[1].result == rows
 
 
@@ -331,9 +333,9 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
         assert (
             "train·V1·结果汇总" in immediate and "| 完成 | 状态 engineering_ready" in immediate
             if v1_status == "engineering_ready"
-            else "train·V1·结果汇总" in immediate and "| 失败 | 状态 failed | 错误 publication_failed" in immediate
+            else "train·V1·结果汇总" in immediate and "| 失败 | 状态 failed；错误 publication_failed" in immediate
         )
-        assert "train·V5·结果汇总" in immediate and "| 失败 | 状态 failed | 错误 dependency_missing" in immediate
+        assert "train·V5·结果汇总" in immediate and "| 失败 | 状态 failed；错误 dependency_missing" in immediate
         return SelectedTrainingRun(
             outcomes,
             1,
@@ -343,7 +345,7 @@ def test_composed_command_owns_worker_shutdown_and_reports_independent_failure(
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
     runtime = LoadRuntimeSettings(_empty_config(tmp_path))
-    assert ExecuteSelectedTraining(runtime, ("v1", "v5")) == 1
+    assert ExecuteSelectedTraining(runtime, ("v1", "v5"), report_output=TrainingReportOutput(json_output=True)) == 1
     assert not executors[0].status().running
     reports = ReadJsonReports(capsys.readouterr().out)
     assert [item["profile"] for item in reports[:2]] == ["v1", "v5"]
@@ -371,7 +373,7 @@ def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, cap
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
-    assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1",)) == 0
+    assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1",), report_output=TrainingReportOutput(json_output=True)) == 0
     output = capsys.readouterr().out
     assert '\n  "schema_version": ' in output
     reports = ReadJsonReports(output)
@@ -417,7 +419,7 @@ def test_composed_cancellation_restores_signal_handler_and_stops_executor(tmp_pa
 
     monkeypatch.setattr("trader.training.entrypoints.selected_training.TrainSelectedProfiles", train)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
-    assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1", "v5")) == 130
+    assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1", "v5"), report_output=TrainingReportOutput(json_output=True)) == 130
     assert signal.getsignal(signal.SIGTERM) == previous
     assert not workers[0].status().running
     assert '"status": "cancelled"' in capsys.readouterr().out

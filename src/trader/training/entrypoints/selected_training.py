@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
-import json
 import time
 from collections.abc import Callable
 from concurrent.futures import CancelledError
@@ -28,6 +27,7 @@ from trader.training.entrypoints.profile_training import (
     ProjectTrainingOperationIssues,
     ProjectTrainingIndustryCoverage,
     TrainingDateCoverageSummary,
+    TrainingDateRangeSummary,
 )
 from trader.training.entrypoints.tomorrow_training_progress import (
     ReadTrainingProgressLayout,
@@ -35,6 +35,8 @@ from trader.training.entrypoints.tomorrow_training_progress import (
     TrainingProgressLayout,
 )
 from trader.training.entrypoints.training_timing_projection import ProjectTrainingExecutionTiming
+from trader.training.entrypoints.report_output import ProjectTrainingError, TrainingErrorSummary, TrainingReportOutput
+from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.training_diagnostics import BuildTrainingOperationIssue
 from trader.training.infra.cpu_admission import TrainingCpuBudget
@@ -66,6 +68,7 @@ def RunSelectedTraining(
     memory_capacity_bytes: int | None = None,
     started_at: float | None = None,
     terminal_columns: int | None = None,
+    report_output: TrainingReportOutput | None = None,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         return _run_selected_training(
@@ -84,6 +87,7 @@ def RunSelectedTraining(
             memory_capacity_bytes=memory_capacity_bytes,
             started_at=started_at,
             terminal_columns=terminal_columns,
+            report_output=TrainingReportOutput() if report_output is None else report_output,
         )
 
 
@@ -100,6 +104,7 @@ def _run_selected_training(
     memory_capacity_bytes: int | None = None,
     started_at: float | None = None,
     terminal_columns: int | None = None,
+    report_output: TrainingReportOutput,
 ) -> int:
     started = time.monotonic()
     measurements: TrainingExecutionMeasurements | None = None
@@ -113,6 +118,7 @@ def _run_selected_training(
     complete_outcome_summary = False
     outputs: tuple[StderrTomorrowTrainingProgress, ...] = ()
     shutdown_failure: str | None = None
+    shutdown_diagnostic: TrainingErrorDiagnostic | None = None
     layout = ReadTrainingProgressLayout() if terminal_columns is None else TrainingProgressLayout(terminal_columns)
     command_output = StderrTomorrowTrainingProgress(
         command_label="train", started_at=started_at, start_heartbeat=False, layout=layout,
@@ -145,7 +151,8 @@ def _run_selected_training(
                     if outcome.cancelled:
                         output.publish_cancelled()
                     elif result is None:
-                        output.publish_result("failed", outcome.failure)
+                        output.publish_result("failed", TrainingErrorSummary(outcome.diagnostic)
+                                              if outcome.diagnostic is not None else outcome.failure)
                     else:
                         reasons = (
                             tuple(reason for head in result.heads for reason in head.failure_reasons)
@@ -156,8 +163,18 @@ def _run_selected_training(
                             item for head in result.heads for item in head.date_coverage
                         ) if isinstance(result, TrainingRunResult) else result.date_coverage
                         coverage_summary = TrainingDateCoverageSummary(coverage)
+                        range_summary = TrainingDateRangeSummary(coverage)
+                        if range_summary:
+                            output.report_notice("日期范围", range_summary, state="完成")
                         details = (*dict.fromkeys(reasons), *((coverage_summary,) if coverage_summary else ()))
                         output.publish_result(result.status, "; ".join(details) or None)
+                        diagnostics = (
+                            tuple((head.strategy.value, head.diagnostic) for head in result.heads)
+                            if isinstance(result, TrainingRunResult) else (("全局", result.diagnostic),)
+                        )
+                        for head_name, diagnostic in diagnostics:
+                            if diagnostic is not None:
+                                output.report_notice("错误定位", f"{head_name}；{TrainingErrorSummary(diagnostic)}", state="失败")
                 except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     observed = replace(
                         outcome,
@@ -206,8 +223,14 @@ def _run_selected_training(
                         payload["maintenance"] = [ProjectHeadTrainingStatus(head) for head in maintenance]
                     except (OSError, RuntimeError, ValueError) as exc:
                         payload["maintenance_failure"] = type(exc).__name__
+                        diagnostic = CaptureTrainingError(exc)
+                        payload["maintenance_diagnostic"] = ProjectTrainingError(diagnostic)
+                        outputs[profiles.index(outcome.profile)].report_notice(
+                            "训练维护", "模型结果已返回；维护失败 " + TrainingErrorSummary(diagnostic), state="失败",
+                        )
             payload["stage_seconds"] = dict(outputs[profiles.index(outcome.profile)].stage_durations)
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            _report_issues(outcome, outputs[profiles.index(outcome.profile)])
+            report_output.emit(payload)
             reported_profiles.add(outcome.profile)
             codes.append(
                 130
@@ -272,11 +295,14 @@ def _run_selected_training(
         }
     except (OSError, RuntimeError, ValueError) as exc:
         code = 130 if cancelled.is_set() else 1
-        reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+        diagnostic = CaptureTrainingError(exc)
+        reason = diagnostic.causes[0].code
+        command_output.report_notice("执行错误", TrainingErrorSummary(diagnostic), state="失败")
         summary = {
             "schema_version": "selected_training_result",
             "profiles": profiles,
-            "failure": reason,
+            "failure": type(exc).__name__ if reason == "training_operation_failed" else reason,
+            "diagnostic": ProjectTrainingError(diagnostic),
             "timing": ProjectTrainingExecutionTiming(measurements.snapshot()) if measurements is not None else None,
         }
     finally:
@@ -288,12 +314,14 @@ def _run_selected_training(
         except (KeyboardInterrupt, InterruptedError, CancelledError) as exc:
             cancelled.set()
             shutdown_failure = type(exc).__name__
+            shutdown_diagnostic = CaptureTrainingError(exc)
             shutdown = ShutdownStep(
                 "training_executor", False, deadline.expired,
                 detail=f"executor shutdown cancelled:{type(exc).__name__}",
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             shutdown_failure = type(exc).__name__
+            shutdown_diagnostic = CaptureTrainingError(exc)
             shutdown = ShutdownStep(
                 "training_executor", False, deadline.expired,
                 detail=f"executor shutdown failed:{type(exc).__name__}",
@@ -317,7 +345,8 @@ def _run_selected_training(
             if outcome.profile not in reported_profiles:
                 payload = _project_outcome(outcome)
                 payload["stage_seconds"] = dict(outputs[profiles.index(outcome.profile)].stage_durations)
-                print(json.dumps(payload, ensure_ascii=False, indent=2))
+                _report_issues(outcome, outputs[profiles.index(outcome.profile)])
+                report_output.emit(payload)
     training_code = returned_training_code if not progress_closed and returned_training_code is not None else code
     summary["training_status"] = "cancelled" if training_code == 130 else "failed" if training_code else "completed"
     code = 130 if cancelled.is_set() or code == 130 or training_code == 130 else (code or int(not cancelled.shutdown_completed or cancelled.watchdog_failure is not None))
@@ -337,7 +366,12 @@ def _run_selected_training(
          "timed_out": step.timed_out, "cancelled_count": step.cancelled_count, "detail": step.detail}
         for index, output in enumerate(outputs) if (step := output.shutdown_step) is not None
     ]
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    if not cancelled.shutdown_completed or shutdown_failure is not None:
+        details = TrainingErrorSummary(shutdown_diagnostic) if shutdown_diagnostic is not None else "shutdown_incomplete"
+        command_output.report_notice("资源关闭", f"关闭未完成或失败 {details}", state="失败")
+    if shutdown_diagnostic is not None:
+        summary["shutdown_diagnostic"] = ProjectTrainingError(shutdown_diagnostic)
+    report_output.emit(summary)
     command_output.report_notice("结果汇总", f"档位 {','.join(profiles)} | 退出码 {code}", state="取消" if code == 130 else "失败" if code else "完成")
     return code
 
@@ -356,4 +390,13 @@ def _project_outcome(outcome: SelectedTrainingOutcome[SelectedProfileResult]) ->
             "failure": outcome.failure,
         }
     payload["delivery_issues"] = ProjectTrainingOperationIssues(outcome.delivery_issues)
+    if outcome.diagnostic is not None:
+        payload["diagnostic"] = ProjectTrainingError(outcome.diagnostic)
     return payload
+
+
+def _report_issues(outcome: SelectedTrainingOutcome[SelectedProfileResult], output: StderrTomorrowTrainingProgress) -> None:
+    issues = (*outcome.delivery_issues, *(outcome.result.post_commit_issues if outcome.result is not None else ()))
+    for issue in issues:
+        details = TrainingErrorSummary(issue.diagnostic) if issue.diagnostic is not None else issue.error_type
+        output.report_notice("结果交付", f"{issue.stage}；训练结果单独保留；{details}", state="失败")

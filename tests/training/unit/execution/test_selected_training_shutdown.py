@@ -21,6 +21,7 @@ from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.profile_training import HeadTrainingResult, TrainingRunResult
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingOutcome, SelectedTrainingRun, SelectedTrainingTask, TrainingLocations
 from trader.training.entrypoints import selected_training
+from trader.training.entrypoints.report_output import TrainingReportOutput
 from trader.training.entrypoints.tomorrow_training_progress import TrainingProgressLayout
 from trader.training.domain.training_date_coverage import TrainingDateCoverage
 from trader.recommendation.domain.publication.models import Strategy
@@ -78,6 +79,7 @@ def test_selected_profiles_share_one_layout_and_report_brief_date_gaps_with_comp
     try:
         code = selected_training.RunSelectedTraining(
             RuntimeSettingsFixture(), ("v1", "v3"), executor=pool,
+            report_output=TrainingReportOutput(json_output=True),
             memory_admission=TrainingMemoryBudget(1024), cpu_budget=TrainingCpuBudget(2, settings=resources.cpu),
             fanout_settings=resources.fanout, sample_settings=TrainingSampleSettingsFixture(),
             paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
@@ -94,7 +96,8 @@ def test_selected_profiles_share_one_layout_and_report_brief_date_gaps_with_comp
         assert all(DisplayWidth(line) <= (terminal_columns or 96) for line in captured.err.splitlines())
         text = "".join(line.strip() for line in captured.err.splitlines())
         assert text.count("明日·最终拟合 有效1/10日") == 2
-        assert required[-1].isoformat() not in text
+        assert "拟合2026-10-01至2026-10-10" in text
+        assert "2026-10-08" not in text
         reports = ReadJsonReports(captured.out)
         assert reports[0]["date_coverage"][0]["missing_dates"] == [day.isoformat() for day in required[1:]]
         assert reports[1]["heads"][0]["date_coverage"] == reports[0]["date_coverage"]
@@ -192,6 +195,7 @@ def test_final_result_follows_shutdown_and_preserves_training_outcome(tmp_path, 
     try:
         code = selected_training.RunSelectedTraining(
             runtime, ("v1",), executor=pool, memory_admission=TrainingMemoryBudget(1024),
+            report_output=TrainingReportOutput(json_output=True),
             cpu_budget=TrainingCpuBudget(2, settings=resources.cpu), fanout_settings=resources.fanout,
             sample_settings=TrainingSampleSettingsFixture(), paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
             sqlite_policy=SqlitePolicyFixture(),
@@ -217,8 +221,9 @@ def test_final_result_follows_shutdown_and_preserves_training_outcome(tmp_path, 
         if execution == "notification_scope_failure":
             assert summary["failure"] == "OSError"
             expected_issue = {"stage": "outcome_notification", "error_type": "BrokenPipeError", "cause_type": None}
-            assert reports[0]["delivery_issues"] == [expected_issue]
-            assert summary["results"][0]["delivery_issues"] == [expected_issue]
+            for issue in (reports[0]["delivery_issues"][0], summary["results"][0]["delivery_issues"][0]):
+                assert issue.pop("diagnostic")["causes"][0]["error_type"] == "BrokenPipeError"
+                assert issue == expected_issue
         elif execution != "ready":
             assert summary["failure"] == ("RuntimeError" if execution == "cancelled" else "fixture_training_failed")
         assert published.read_bytes() == b"committed model fixture"
@@ -272,6 +277,7 @@ def test_returned_run_keeps_training_status_when_progress_cleanup_fails(tmp_path
     try:
         code = selected_training.RunSelectedTraining(
             runtime, ("v1",), executor=pool, memory_admission=TrainingMemoryBudget(1024),
+            report_output=TrainingReportOutput(json_output=True),
             cpu_budget=TrainingCpuBudget(2, settings=resources.cpu), fanout_settings=resources.fanout,
             sample_settings=TrainingSampleSettingsFixture(), paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
             sqlite_policy=SqlitePolicyFixture(),
@@ -283,7 +289,7 @@ def test_returned_run_keeps_training_status_when_progress_cleanup_fails(tmp_path
         assert summary["training_status"] == ("completed" if run_status == "ready" else run_status)
         assert code == (130 if progress_failure == "cancelled" or run_status == "cancelled" else 1)
         assert summary["status"] == ("cancelled" if code == 130 else "failed")
-        assert summary["failure"] == ("BrokenPipeError" if progress_failure == "io" else "TimeoutError")
+        assert summary["failure"] == ("BrokenPipeError" if progress_failure == "io" else "training_progress_shutdown_incomplete")
         assert summary["progress_shutdown"][0]["completed"] is (progress_failure == "io")
         assert summary["progress_shutdown"][0]["timed_out"] is (progress_failure != "io")
         assert summary["results"][0]["exit_code"] == (130 if run_status == "cancelled" else int(run_status != "ready"))

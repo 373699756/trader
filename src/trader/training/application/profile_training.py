@@ -23,6 +23,8 @@ from trader.training.domain.sample_coverage import SampleCoverage
 from trader.training.domain.tomorrow_training_input import EvaluateTomorrowTrainingInput
 from trader.training.domain.training_date_coverage import TrainingDateBasis, TrainingDateCoverage, TrainingDateCoverageMatches
 
+from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
+
 TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
 
 
@@ -47,6 +49,7 @@ class HeadTrainingResult:
     final_fit: FinalFitDatePlan | None = None
     diagnostic_plan: ProductionDiagnosticDatePlan | None = None
     date_coverage: tuple[TrainingDateCoverage, ...] = ()
+    diagnostic: TrainingErrorDiagnostic | None = None
 
 
 @dataclass(frozen=True)
@@ -213,7 +216,8 @@ def TrainProfile(
                     fitting.publish_pair()
                     published = True
                 except ProfileTrainingOperationError as exc:
-                    completed = [replace(item, status="blocked", model_hash="", failure_reasons=(str(exc),)) for item in completed]
+                    completed = [replace(item, status="blocked", model_hash="", failure_reasons=(str(exc),),
+                                         diagnostic=CaptureTrainingError(exc)) for item in completed]
                 if published:
                     issue = NotifyTrainingCommit(progress)
                     if issue is not None:
@@ -236,7 +240,7 @@ def TrainProfile(
             peak_bytes = max(peak_bytes, operations.sample_peak_bytes())
             reason = str(exc)
             completed = [
-                replace(item, status="blocked", model_hash="", failure_reasons=(reason,))
+                replace(item, status="blocked", model_hash="", failure_reasons=(reason,), diagnostic=CaptureTrainingError(exc))
                 if item.status == "engineering_ready" else item
                 for item in completed
             ]
@@ -245,6 +249,7 @@ def TrainProfile(
                     _blocked_head(source, head.strategy, reason),
                     run_id=plan.run_id,
                     label_cutoff=head.label_cutoff,
+                    diagnostic=CaptureTrainingError(exc),
                     coverage=tuple(item for item in coverage if item.target == (
                         "target_t1" if head.strategy is Strategy.TOMORROW else "target_d25_aggregate"
                     )),

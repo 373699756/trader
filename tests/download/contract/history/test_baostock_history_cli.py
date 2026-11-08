@@ -102,18 +102,16 @@ def test_train_missing_local_history_fails_without_download(tmp_path, monkeypatc
     monkeypatch.setattr("requests.Session.request", forbidden)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
 
-    assert Main(["--config", str(config), "train", "v2"]) == 1
+    assert Main(["--config", str(config), "train", "v2", "--json"]) == 1
     captured = capsys.readouterr()
     result = json.loads(captured.out)
     timing = result.pop("timing")
     assert timing["source_read_seconds"] == timing["peak_cpu_reservations"] == timing["peak_memory_reservations"] == 0
     assert timing["profiles"][0]["profile"] == "v2"
     assert timing["profiles"][0]["started_after_seconds"] is None
-    assert result == {
-        "schema_version": "selected_training_result",
-        "status": "failed",
-        "failure": "HistoryTrainingInputError",
-    }
+    assert result["schema_version"] == "selected_training_result"
+    assert result["status"] == "failed" and result["failure"] == "current_industry_not_published"
+    assert result["diagnostic"]["causes"][0]["error_type"] == "ValueError"
     assert "./run.sh sync history" in captured.err
     assert "正在准备官方总体" not in captured.err
     assert not tuple((tmp_path / "data").rglob("*.sqlite3"))
@@ -175,7 +173,7 @@ def test_train_preserves_selected_training_exit_code(
     config = _empty_config(tmp_path)
     monkeypatch.setattr(
         "trader.bootstrap.ExecuteSelectedTraining",
-        lambda _runtime, _profiles: exit_code,
+        lambda _runtime, _profiles, **_options: exit_code,
     )
     assert Main(["--config", str(config), "train"]) == exit_code
     assert capsys.readouterr().out == ""
@@ -280,7 +278,7 @@ def test_train_resource_setup_interrupt_returns_130(tmp_path, monkeypatch, capsy
         "trader.training.entrypoints.selected_training.RunSelectedTraining",
         lambda *args, **kwargs: pytest.fail("training ran after resource setup was interrupted"),
     )
-    assert Main(["--config", str(config), "train"]) == 130
+    assert Main(["--config", str(config), "train", "--json"]) == 130
     assert json.loads(capsys.readouterr().out) == {
         "schema_version": "selected_training_result",
         "status": "cancelled",
