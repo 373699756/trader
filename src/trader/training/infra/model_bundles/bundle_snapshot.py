@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -25,6 +25,7 @@ class PublishedHeadBundle:
     training_input_document_hash: str
     metadata_hash: str
     training_run_hash: str
+    price_snapshot_hash: str = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ def InspectPublishedHeadBundle(
         metadata,
         bundle.training_run_hash,
         bundle,
+        price_snapshot_hash=bundle.price_snapshot_hash,
     )
 
 

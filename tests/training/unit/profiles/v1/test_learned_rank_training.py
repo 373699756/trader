@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 import json
 
@@ -152,6 +153,7 @@ def test_matching_v1_pair_reuses_without_scanning_fitting_or_republishing(tmp_pa
     (
         "settings",
         "snapshot_hash",
+        "industry_snapshot",
         "source_identity_hash",
         "calendar_hash",
         "input_descriptor_hash",
@@ -176,7 +178,14 @@ def test_v1_reuse_rejects_any_changed_identity_or_invalid_head(tmp_path, monkeyp
     elif changed in {"snapshot_hash", "source_identity_hash", "calendar_hash", "input_descriptor_hash"}:
         history.snapshot = replace(history.snapshot, **{changed: "e" * 64})
     elif changed == "training_codes":
-        history.snapshot = replace(history.snapshot, training_codes=history.codes[:-1])
+        codes = history.codes[:-1]
+        history.snapshot = replace(
+            history.snapshot, training_codes=codes, industry_snapshot=history.snapshot.industry_snapshot.project(codes),
+        )
+    elif changed == "industry_snapshot":
+        history.snapshot = replace(
+            history.snapshot, industry_snapshot=CurrentIndustrySnapshotFixture(history.codes, sectors=(("C39", "计算机、通信和其他电子设备制造业"),)),
+        )
     elif changed == "label_cutoff":
         history.snapshot = replace(history.snapshot, label_cutoff=history.dates[-3])
     elif changed == "listing_intervals":
@@ -206,6 +215,22 @@ def test_v1_reuse_rejects_any_changed_identity_or_invalid_head(tmp_path, monkeyp
             document["content_hash"] = ContentHash(document)
             path.write_text(json.dumps(document), encoding="utf-8")
     assert InspectV1Training(history, model_root, settings) is None
+
+
+def test_v1_semantically_unchanged_industry_refresh_keeps_model_reusable(reusable_pair):
+    model_root, original = reusable_pair
+    history = _History()
+    before = history.snapshot
+    industry = before.industry_snapshot
+    refreshed = replace(
+        industry, observed_at=industry.observed_at + timedelta(days=1),
+        refresh_after=industry.refresh_after + timedelta(days=1), publication_hash="e" * 64,
+    )
+    history.snapshot = replace(before, industry_snapshot=refreshed)
+    assert history.snapshot.snapshot_hash == before.snapshot_hash
+    assert history.snapshot.training_input_hash == before.training_input_hash
+    reused = InspectV1Training(history, model_root, _settings())
+    assert reused is not None and reused.reused and reused.heads == original.heads
 
 
 def test_v1_cache_inspection_propagates_cancellation_and_publication_busy(tmp_path, reusable_pair):
@@ -372,6 +397,7 @@ def test_old_diagnostic_pair_keeps_original_schema_but_cannot_reuse_as_final(tmp
     old = LearnedRankPair(
         final.training_input_hash, final.source_identity_hash, final.calendar_hash, final.source_cutoff,
         final.settings, (final.heads[0].diagnostic, final.heads[1].diagnostic), final.training_identity_hash,
+        price_snapshot_hash=final.price_snapshot_hash, industry_snapshot=final.industry_snapshot,
     )
     model_root = tmp_path / "models"
     shutil.copytree(root, model_root)

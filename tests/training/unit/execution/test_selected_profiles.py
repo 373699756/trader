@@ -3,6 +3,7 @@ from tests.helpers.training.training_resources import TrainingSampleSettingsFixt
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +30,9 @@ from tests.helpers.training.execution.selected_profiles import (
     BuildFourProfileRequest,
     four_profile_seed as four_profile_seed,
 )
+
+
+_CURRENT_INDUSTRY = CurrentIndustrySnapshotFixture(("000001", *(f"60000{number}" for number in range(6))))
 
 
 @pytest.mark.parametrize("terminal", ("worker_failure", "source_failure", "cancelled", "success"))
@@ -88,9 +92,9 @@ def test_shared_reader_closes_nested_streams_even_when_callers_retain_them(tmp_p
     with ThreadPoolExecutor(max_workers=2) as executor:
         if terminal in ("source_failure", "cancelled"):
             with pytest.raises(OSError if terminal == "source_failure" else InterruptedError):
-                TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()), executor)
+                TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
         else:
-            result = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()), executor)
+            result = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
             assert all(item.failure == ("fixture_worker_failure" if terminal == "worker_failure" else None)
                        for item in result.outcomes)
     assert source_closed.is_set()
@@ -139,7 +143,7 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(
                 LoadScoringProfile(profile, training_root=request.paths.models)
             assert not root.exists()  # The serving reader never repairs a model directory.
     with ThreadPoolExecutor(max_workers=4) as executor:
-        reused = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()), executor)
+        reused = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
     assert not scans
     assert reused.history_scan_passes == reused.history_rows_read == 0
     assert all(item.result.reused for item in reused.outcomes)
@@ -159,7 +163,7 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(
 
     monkeypatch.setattr(network, "PreserveTcnRuntime", missing_dependency)
     with ThreadPoolExecutor(max_workers=4) as executor:
-        partial_failure = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()), executor)
+        partial_failure = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
     assert all(item.result.reused for item in partial_failure.outcomes[:3])
     assert partial_failure.outcomes[3].failure == "ImportError"
     assert partial_failure.history_scan_passes == 0

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
+
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
@@ -112,6 +114,7 @@ def test_profile_training_request_rejects_a_head_owned_by_another_profile(tmp_pa
             LoadProfileTrainingSettings(PROJECT_ROOT, "v2"),
             sample_root=(tmp_path / "train").parent / "samples",
             sample_settings=TrainingSampleSettingsFixture(),
+            industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
         )
 
 

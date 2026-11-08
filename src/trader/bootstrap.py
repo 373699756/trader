@@ -29,6 +29,7 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain import company_evidence, company_events
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort, HistoryTwoStageSupplier
 from trader.download.domain.prepared_reference import PreparedReference
@@ -60,8 +61,6 @@ from trader.download.infra.download_settings import (
 )
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
-from trader.download.infra.industry_query_index import SQLiteIndustryQueryIndex
-from trader.download.infra.official_industry_history import OfficialIndustryHistory
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_control_index import HistoryControlIndex
@@ -473,12 +472,18 @@ def _prepare_reference(
         return PrepareReference(universe, observed_at, dependencies, report=report)
 
 
+def ReadIndustrySnapshot(root: Path, observed_at: datetime, sqlite_policy: SqliteIoPolicy) -> CurrentIndustrySnapshot:
+    """Read one current industry publication for explicit offline consumers."""
+    return CurrentIndustryCache(root / "industry.sqlite3", sqlite_policy=sqlite_policy).snapshot(observed_at)
+
+
 def ExecuteSelectedTraining(
     runtime: RuntimeSettings,
     scoring_profiles: tuple[ScoringProfileId, ...],
     *,
     history_root: Path | None = None,
     training_root: Path | None = None, started_at: float | None = None,
+    industry_snapshot: CurrentIndustrySnapshot | None = None,
 ) -> int:
     """Compose offline training resources, also used by isolated diagnostics."""
     from trader.training.entrypoints.commands import ConfigureTrainingResources
@@ -510,7 +515,12 @@ def ExecuteSelectedTraining(
         fanout_settings=resources.fanout,
         sample_settings=resources.samples,
         paths=ResolveTrainingLocations(runtime.data_paths, history_root, training_root), sqlite_policy=sqlite_policy,
-        prepare_training=partial(SelectedTrainingAdapter, sqlite_policy=sqlite_policy),
+        prepare_training=partial(
+            SelectedTrainingAdapter, sqlite_policy=sqlite_policy,
+            load_industry_snapshot=(partial(ReadIndustrySnapshot, runtime.data_paths.reference, sqlite_policy=sqlite_policy)
+                                    if industry_snapshot is None else lambda _as_of: industry_snapshot),
+            clock=ShanghaiClock(_utc_now).now,
+        ),
         memory_capacity_bytes=memory_budget.capacity_bytes, started_at=started_at,
     )
 
@@ -615,16 +625,6 @@ def ExecuteHistoryDownload(
                     baseline,
                     prices,
                     reference,
-                    industry_preparation=partial(OfficialIndustryHistory(
-                        SQLiteIndustryQueryIndex(
-                            configuration.reference_root / "industry.sqlite3", "cninfo_industry_queries", sqlite_policy=sqlite_policy,
-                        ),
-                        http_resources.enter_context(OpenExternalHttp()),
-                        ShanghaiClock(clock or _utc_now).now,
-                        time.monotonic,
-                        cancel_requested=cancel_requested,
-                    ).prepare, progress=progress),
-                    progress=progress,
                     cancel_requested=cancel_requested,
                 ),
                 clock=clock,

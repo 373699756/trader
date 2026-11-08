@@ -5,6 +5,7 @@ from tests.helpers.shared.tool_cli import BuildToolCommands, ParseBusinessOption
 from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 import json
 import hashlib
@@ -347,12 +348,27 @@ def test_model_numeric_fingerprints_include_components_and_metrics_but_not_ident
 @pytest.mark.parametrize("initial_complete", (True, False))
 @pytest.mark.parametrize("reused,require_reuse", ((True, True), (False, True), (False, False)))
 def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, monkeypatch, initial_complete, reused, require_reuse):
+    from trader import bootstrap
     from trader.infra import settings
     from trader.training.entrypoints import commands
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
-    source = SimpleNamespace(snapshot=SimpleNamespace(snapshot_hash="a" * 64, training_codes=("600001",)))
-    monkeypatch.setattr(SQLiteHistoryTrainingInputSnapshot, "open", lambda _path, *, sqlite_policy: source)
+    industry = CurrentIndustrySnapshotFixture(("600001",))
+    source = SimpleNamespace(snapshot=SimpleNamespace(snapshot_hash="a" * 64, training_input_hash="b" * 64,
+                                                     industry_snapshot=industry, training_codes=("600001",)))
+    reads = []
+
+    def read_industry(path, observed_at, sqlite_policy):
+        assert path == tmp_path / "reference" and observed_at.utcoffset().total_seconds() == 8 * 60 * 60
+        reads.append(observed_at)
+        return industry
+
+    def opened(_path, *, industry_snapshot, sqlite_policy):
+        assert industry_snapshot is industry
+        return source
+
+    monkeypatch.setattr(bootstrap, "ReadIndustrySnapshot", read_industry)
+    monkeypatch.setattr(SQLiteHistoryTrainingInputSnapshot, "open", opened)
     monkeypatch.setattr(
         settings, "LoadRuntimeSettings", lambda _path: SimpleNamespace(
             project_root=Path(__file__).resolve().parents[4],
@@ -362,7 +378,8 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
     monkeypatch.setattr(commands, "ConfigureTrainingResources", lambda *_args: None)
     calls = []
 
-    def train_once(runtime, history, work, profiles):
+    def train_once(runtime, history, work, profiles, *, industry_snapshot):
+        assert industry_snapshot is industry
         calls.append((history, work, profiles))
         is_repeat = len(calls) == 2
         profile = deepcopy(_checkout_results()[1].payload["summary"]["initial"]["profiles"][0])
@@ -380,9 +397,14 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
     monkeypatch.setattr(training_alignment, "_train_once", train_once)
     report = training_alignment._probe(tmp_path / "history", tmp_path / "work", ("v1",), sqlite_policy=SqlitePolicyFixture(), require_reuse=require_reuse)
     assert len(calls) == (2 if initial_complete else 1)
+    assert len(reads) == 1
     assert all(call == (tmp_path / "history", tmp_path / "work", ("v1",)) for call in calls)
     assert report["status"] == ("passed" if initial_complete and (reused or not require_reuse) else "degraded")
     assert report["summary"]["repeat_reuse_verified"] is (initial_complete and reused)
+    assert report["summary"]["snapshot_hash"] == source.snapshot.snapshot_hash
+    assert report["summary"]["training_input_hash"] == source.snapshot.training_input_hash
+    assert report["summary"]["industry_snapshot_hash"] == industry.content_hash
+    assert report["summary"]["industry_publication_hash"] == industry.publication_hash
     if initial_complete:
         assert report["summary"]["repeat"]["profiles"][0]["reused"] is reused
         assert report["summary"]["repeat"]["execution"]["history_scan_passes"] == 0
@@ -537,8 +559,10 @@ def test_sample_refit_uses_verified_copy_without_deleting_or_copying_original_mo
     original = (model.read_bytes(), model.stat().st_mtime_ns)
     initial = deepcopy(_serial_results()[1].payload["summary"]["initial"])
     calls = []
+    industry = CurrentIndustrySnapshotFixture(("600001",))
 
-    def train(runtime, history, target, profiles):
+    def train(runtime, history, target, profiles, *, industry_snapshot):
+        assert industry_snapshot is industry
         calls.append(target)
         assert profiles == ("v5",)
         assert target == work / "sample-reuse"
@@ -547,10 +571,13 @@ def test_sample_refit_uses_verified_copy_without_deleting_or_copying_original_mo
         shutil.rmtree(target / "samples/v5")
         return _sample_scenario(initial["profiles"][0])["run"]
 
-    monkeypatch.setattr(training_alignment, "_prepare_sample_reuse", lambda *_args:
-                        _sample_scenario(initial["profiles"][0])["preparation"])
+    def prepare(*_args, industry_snapshot):
+        assert industry_snapshot is industry
+        return _sample_scenario(initial["profiles"][0])["preparation"]
+
+    monkeypatch.setattr(training_alignment, "_prepare_sample_reuse", prepare)
     monkeypatch.setattr(training_alignment, "_train_once", train)
-    result = training_alignment._sample_reuse(None, tmp_path / "history", work, ("v1", "v5"), initial)
+    result = training_alignment._sample_reuse(None, tmp_path / "history", work, ("v1", "v5"), initial, industry_snapshot=industry)
     assert (model.read_bytes(), model.stat().st_mtime_ns) == original
     assert result["not_applicable_profiles"] == ("v1",)
     if invalid is None:
@@ -569,7 +596,8 @@ def test_v1_sample_reuse_is_explicitly_not_applicable_and_never_runs_a_fake_cach
         pytest.fail("V1 has no sealed sample reuse workload")
 
     monkeypatch.setattr(training_alignment, "_train_once", forbidden)
-    result = training_alignment._sample_reuse(None, tmp_path / "history", tmp_path / "work", ("v1",), {})
+    result = training_alignment._sample_reuse(None, tmp_path / "history", tmp_path / "work", ("v1",), {},
+                                            industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)))
     assert result["profiles"] == () and result["not_applicable_profiles"] == ("v1",)
     assert TrainingSampleReuseFailures({}, result, ("v1",)) == ()
     assert not (tmp_path / "work").exists()
@@ -592,10 +620,12 @@ def test_sample_preparation_uses_real_engine_retention_then_normal_refit_clears_
     runtime = LoadRuntimeSettings(project / "config/runtime.json")
     work = tmp_path / "work"
     fitter = engine.FitIndustryModels
-    initial = training_alignment._train_once(runtime, history.history_root, work, ("v3",))
+    industry = history.snapshot.industry_snapshot
+    initial = training_alignment._train_once(runtime, history.history_root, work, ("v3",), industry_snapshot=industry)
     assert initial["complete"]
     assert not (work / "samples/v3").exists()
-    result = training_alignment._sample_reuse(runtime, history.history_root, work, ("v3",), initial, transfer=transfer)
+    result = training_alignment._sample_reuse(runtime, history.history_root, work, ("v3",), initial,
+                                            industry_snapshot=industry, transfer=transfer)
     assert result["failures"] == (), result
     assert result["preparation"]["exit_code"] == 1
     assert result["preparation"]["fit_entry_counts"] == {"v3": 1}
@@ -656,5 +686,6 @@ def test_sample_preparation_restores_fitter_when_execution_raises(tmp_path, monk
 
     monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", interrupt)
     with pytest.raises(InterruptedError, match="fixture"):
-        training_alignment._prepare_sample_reuse(None, tmp_path / "history", tmp_path / "prepare", ("v3",))
+        training_alignment._prepare_sample_reuse(None, tmp_path / "history", tmp_path / "prepare", ("v3",),
+                                                industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)))
     assert engine.FitIndustryModels is fitter

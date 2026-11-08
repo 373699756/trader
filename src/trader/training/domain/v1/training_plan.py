@@ -1,10 +1,12 @@
 """Pure learned-rank date plans, reuse qualification and sample admission."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
 from trader.recommendation.domain.publication.models import Strategy
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
+from trader.training.domain.training_input_identity import BuildTrainingInputHash
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FinalFitDatePlan
 from trader.training.domain.v1.learned_rank import (
     BuildLearnedRankDateSplit, LearnedRankDateSplit, LearnedRankFinalPair, V1TrainingSettings,
@@ -41,6 +43,11 @@ class LearnedRankTrainingSource:
     source_cutoff: date
     calendar: tuple[date, ...]
     identity_hash: str
+    industry_snapshot: CurrentIndustrySnapshot = field(kw_only=True)
+
+    @property
+    def training_input_hash(self) -> str:
+        return BuildTrainingInputHash(self.snapshot_hash, self.industry_snapshot.content_hash)
 
 
 @dataclass(frozen=True)
@@ -90,7 +97,7 @@ def CanReuseLearnedRankPair(pair: LearnedRankFinalPair, plan: LearnedRankTrainin
     source = plan.source
     return (
         pair.training_identity_hash == source.identity_hash
-        and pair.training_input_hash == source.snapshot_hash
+        and pair.training_input_hash == source.training_input_hash
         and pair.source_identity_hash == source.source_identity_hash
         and pair.calendar_hash == source.calendar_hash
         and pair.source_cutoff == source.source_cutoff

@@ -8,9 +8,12 @@ import sys
 import time
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from scripts.training.jobs.training_source_guard import ReadOnlyTrainingSource
+from trader.bootstrap import ReadIndustrySnapshot
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.infra.atomic_files.json import AtomicWriteJson
 from trader.infra.serialization.canonical_codec import CanonicalDigest
@@ -98,7 +101,10 @@ def PrepareV5QualitySamples(
         HistoryMaintenanceLock(runtime.data_paths.models / ".v5.training.lock"),
         ReadOnlyTrainingSource(history_root),
     ):
-        history = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=sqlite_policy)
+        industry = ReadIndustrySnapshot(runtime.data_paths.reference, datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy)
+        history = SQLiteHistoryTrainingInputSnapshot.open(
+            history_root, industry_snapshot=industry, sqlite_policy=sqlite_policy,
+        )
         snapshot = history.snapshot
         split = BuildTrainingDateSplit(
             snapshot.calendar.open_dates,
@@ -110,7 +116,7 @@ def PrepareV5QualitySamples(
             history_excludes_signal=True,
         )
         identity = CanonicalDigest((
-            "v5-quality-samples", TrainingImplementationIdentity(), snapshot.snapshot_hash,
+            "v5-quality-samples", TrainingImplementationIdentity(), snapshot.training_input_hash,
             snapshot.input_descriptor_hash, settings, V5_TRAINING_PROFILE,
         ))
         cache = TrainingSampleCache(
@@ -156,7 +162,9 @@ def PrepareV5QualitySamples(
                     )
                 if samples.count() == 0:
                     raise ValueError("v5_quality_samples_empty")
-                after = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=sqlite_policy).snapshot
+                after = SQLiteHistoryTrainingInputSnapshot.open(
+                    history_root, industry_snapshot=industry, sqlite_policy=sqlite_policy,
+                ).snapshot
                 if after != snapshot:
                     raise ValueError("v5_quality_history_changed")
                 cache.seal(samples)

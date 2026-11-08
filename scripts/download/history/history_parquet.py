@@ -20,6 +20,7 @@ from typing import cast
 import polars as pl
 
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockCellStatus
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.infra.history_snapshot_inspection import LoadPublishedHistorySnapshot, PublishedHistorySnapshot
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
@@ -48,6 +49,7 @@ class ParquetMonth:
 @dataclass(frozen=True)
 class ParquetPublication:
     snapshot_hash: str
+    industry_snapshot_hash: str
     months: tuple[ParquetMonth, ...]
 
 
@@ -77,17 +79,18 @@ def _record(row: HistoryTrainingRow) -> tuple[object, ...]:
 
 
 class ParquetHistoryProjection:
-    def __init__(self, root: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+    def __init__(self, root: Path, *, industry_snapshot: CurrentIndustrySnapshot, sqlite_policy: SqliteIoPolicy) -> None:
         self._sqlite_policy = sqlite_policy
+        self._industry_snapshot = industry_snapshot
         self.root = root
 
     def load(self) -> ParquetPublication:
         value = json.loads((self.root / "manifest.json").read_text())
-        if not isinstance(value, dict) or set(value) != {"snapshot_hash", "months"}:
+        if not isinstance(value, dict) or set(value) != {"snapshot_hash", "industry_snapshot_hash", "months"}:
             raise ValueError("parquet_manifest_format_invalid")
         months = tuple(ParquetMonth(**item) for item in value["months"])
         keys = tuple(item.month for item in months)
-        hashes = (value["snapshot_hash"], *(item.source_hash for item in months), *(item.file_hash for item in months))
+        hashes = (value["snapshot_hash"], value["industry_snapshot_hash"], *(item.source_hash for item in months), *(item.file_hash for item in months))
         if (
             keys != tuple(sorted(set(keys))) or not keys
             or any(len(key) != 7 or key[4] != "-" or not (key[:4] + key[5:]).isdigit()
@@ -97,7 +100,7 @@ class ParquetHistoryProjection:
             or any(type(item.row_count) is not int or item.row_count < 0 for item in months)
         ):
             raise ValueError("parquet_manifest_identity_invalid")
-        return ParquetPublication(value["snapshot_hash"], months)
+        return ParquetPublication(value["snapshot_hash"], value["industry_snapshot_hash"], months)
 
     def publish(self, history: PublishedHistorySnapshot) -> ParquetPublication:
         if LoadPublishedHistorySnapshot(history.root, sequence=history.snapshot.sequence, sqlite_policy=self._sqlite_policy) != history:
@@ -107,6 +110,7 @@ class ParquetHistoryProjection:
         old = {item.source_hash: item for item in previous.months} if previous else {}
         reader = HistorySnapshotReader(history.root, sqlite_policy=self._sqlite_policy)
         codes = tuple(item.code for item in history.universe.securities)
+        industry = self._industry_snapshot.project(codes)
         months = []
         for part in history.snapshot.partitions:
             month = f"{part.calendar_year:04d}-{part.calendar_month:02d}"
@@ -117,6 +121,7 @@ class ParquetHistoryProjection:
             source_hash = hashlib.sha256(json.dumps((
                 month, part.logical_hash, part.row_count,
                 history.snapshot.source_identity_hash, history.snapshot.universe_hash,
+                industry.content_hash,
                 tuple(EncodeDate(day) for day in dates),
             ), separators=(",", ":")).encode()).hexdigest()
             known = old.get(source_hash)
@@ -125,7 +130,7 @@ class ParquetHistoryProjection:
                 months.append(known)
                 continue
             records = []
-            for row in reader.iter_training_rows(history.snapshot, dates, codes):
+            for row in reader.iter_training_rows(history.snapshot, dates, codes, industry_snapshot=industry):
                 records.append(_record(row))
                 if len(records) > 310_000:
                     raise ValueError("parquet_probe_month_limit_exceeded")
@@ -148,13 +153,14 @@ class ParquetHistoryProjection:
                 months.append(item)
             finally:
                 temporary.unlink(missing_ok=True)
-        publication = ParquetPublication(history.snapshot.content_hash, tuple(months))
+        publication = ParquetPublication(history.snapshot.content_hash, industry.content_hash, tuple(months))
         self._publish_manifest(publication)
         return publication
 
     def _publish_manifest(self, publication: ParquetPublication) -> None:
         payload = {
             "snapshot_hash": publication.snapshot_hash,
+            "industry_snapshot_hash": publication.industry_snapshot_hash,
             "months": [
                 {"month": item.month, "source_hash": item.source_hash, "file_hash": item.file_hash,
                  "row_count": item.row_count} for item in publication.months
@@ -182,7 +188,9 @@ class ParquetHistoryProjection:
 
     def iter_rows(self, history: PublishedHistorySnapshot, dates: tuple[date, ...]) -> Iterator[HistoryTrainingRow]:
         publication = self.load()
-        if publication.snapshot_hash != history.snapshot.content_hash or not dates:
+        codes = tuple(item.code for item in history.universe.securities)
+        if (publication.snapshot_hash != history.snapshot.content_hash or not dates
+                or publication.industry_snapshot_hash != self._industry_snapshot.project(codes).content_hash):
             raise ValueError("parquet_snapshot_mismatch")
         selected = frozenset(dates)
         previous: tuple[date, str] | None = None

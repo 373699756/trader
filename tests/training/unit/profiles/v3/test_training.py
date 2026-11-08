@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
@@ -66,6 +67,7 @@ from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from tests.helpers.training.profiles.v5.v5_training import _history
 
 PROJECT_ROOT = Path(__file__).resolve().parents[5]
+_INPUT_INDUSTRY = CurrentIndustrySnapshotFixture(tuple(f"60000{number}" for number in range(6)))
 
 
 def run_v2_training(history_root: Path, train_root: Path, **kwargs):
@@ -75,6 +77,7 @@ def run_v2_training(history_root: Path, train_root: Path, **kwargs):
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v2"),
         sample_root=(train_root).parent / "samples",
         sample_settings=TrainingSampleSettingsFixture(),
+        industry_snapshot=_INPUT_INDUSTRY,
         **kwargs, sqlite_policy=SqlitePolicyFixture(),
     )
 
@@ -86,6 +89,7 @@ def run_v3_training(history_root: Path, train_root: Path, **kwargs):
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=(train_root).parent / "samples",
         sample_settings=TrainingSampleSettingsFixture(),
+        industry_snapshot=_INPUT_INDUSTRY,
         **kwargs, sqlite_policy=SqlitePolicyFixture(),
     )
 
@@ -97,6 +101,7 @@ def run_tomorrow_training(history_root: Path, train_root: Path, **kwargs):
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
         sample_root=(train_root).parent / "samples",
         sample_settings=TrainingSampleSettingsFixture(),
+        industry_snapshot=_INPUT_INDUSTRY,
         **kwargs, sqlite_policy=SqlitePolicyFixture(),
     )
 
@@ -113,6 +118,7 @@ def _cadence_history(history_root: Path) -> SimpleNamespace:
         BaoStockCalendar(dates),
         ("600000",),
         "4" * 64,
+        industry_snapshot=_INPUT_INDUSTRY.project(("600000",)),
     )
     descriptor = FrozenDailyInputDescriptor(
         manifest_hash=snapshot.snapshot_hash,
@@ -139,7 +145,7 @@ def _cadence_history(history_root: Path) -> SimpleNamespace:
 def _patch_history(monkeypatch: pytest.MonkeyPatch, history: SimpleNamespace) -> None:
     monkeypatch.setattr(
         "trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open",
-        lambda _path, *, sqlite_policy: history,
+        lambda _path, *, industry_snapshot, sqlite_policy: history,
     )
 
 
@@ -277,6 +283,7 @@ def test_first_production_fitting_date_requires_the_full_prior_warmup(tmp_path, 
     request = ProfileTrainingRequest(
         history.history_root, tmp_path / "models", profile, profile.heads, settings,
         sample_root=tmp_path / "samples", sample_settings=TrainingSampleSettingsFixture(),
+        industry_snapshot=history.snapshot.industry_snapshot,
     )
     result = RunProfileTraining(request, sqlite_policy=SqlitePolicyFixture())
     assert result.status == "blocked"
@@ -444,6 +451,7 @@ def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_pat
             head.strategy, head.maturity_sessions, _training_contract_hash(V3_TRAINING_PROFILE, head, settings),
         ) for head in HEAD_CONTRACTS),
         history.describe_frozen_daily_input(),
+        industry_content_hash=snapshot.industry_snapshot.content_hash,
     ))
     assert tuple(head.label_cutoff for head in plan.heads) == (
         snapshot.calendar.open_dates[-2], snapshot.calendar.open_dates[-6],
@@ -568,7 +576,7 @@ def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_r
     history = _cadence_history(tmp_path / "history")
     open_calls: list[Path] = []
 
-    def open_history(path: Path, *, sqlite_policy) -> SimpleNamespace:
+    def open_history(path: Path, *, industry_snapshot, sqlite_policy) -> SimpleNamespace:
         open_calls.append(path)
         return history
 

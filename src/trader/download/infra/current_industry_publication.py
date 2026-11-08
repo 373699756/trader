@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -16,7 +17,12 @@ from zoneinfo import ZoneInfo
 from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressState, ProgressTask
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError
-from trader.download.domain.current_industry import CurrentIndustryReference
+from trader.download.domain.current_industry import (
+    CurrentIndustryGap,
+    CurrentIndustryMember,
+    CurrentIndustryReference,
+    CurrentIndustrySnapshot,
+)
 from trader.download.infra.cninfo_industry import (
     CninfoIndustryChange,
     CninfoIndustryClient,
@@ -341,6 +347,22 @@ class CurrentIndustryCache:
         query = self.latest(observed_at)
         return _query_observations(query, as_of=observed_at) if query is not None else ()
 
+    def snapshot(self, observed_at: datetime) -> CurrentIndustrySnapshot:
+        """Read the latest complete publication, refusing stale or damaged evidence without refresh I/O."""
+        observed_at = _aware(observed_at)
+        index = SQLiteIndustryQueryIndex(self.path, _CONTRACT, "current_industry_query", sqlite_policy=self.sqlite_policy)
+        query = index.latest(observed_at.date(), strict=True)
+        if query is None:
+            raise ValueError("current_industry_not_published")
+        observations = _query_observations(query, as_of=observed_at)
+        if len(observations) < self.minimum_rows:
+            raise ValueError("industry_reference_snapshot_incomplete")
+        payload = _payload(query)
+        received_at, refresh_after = _timestamp(payload, "received_at"), _timestamp(payload, "refresh_after")
+        if observed_at >= refresh_after or observed_at - received_at >= _REFRESH_AGE:
+            raise ValueError("current_industry_publication_expired")
+        return _query_snapshot(query, payload, index, observed_at)
+
     def latest(self, observed_at: datetime) -> IndustryQuery | None:
         observed_at = _aware(observed_at)
         index = SQLiteIndustryQueryIndex(self.path, _CONTRACT, "current_industry_query", sqlite_policy=self.sqlite_policy)
@@ -368,6 +390,76 @@ def _text(payload: dict[str, object], name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("current_industry_payload_invalid")
     return value
+
+
+def _query_snapshot(
+    query: IndustryQuery,
+    payload: dict[str, object],
+    index: SQLiteIndustryQueryIndex,
+    observed_at: datetime,
+) -> CurrentIndustrySnapshot:
+    # Reuse the original-document decoder so both content and receipt hashes remain verified.
+    taxonomy = index.read_source_document(_TAXONOMY_KEY, _timestamp(payload, "taxonomy_received_at"))
+    if taxonomy is None or taxonomy.content_hash != _text(payload, "taxonomy_sha256"):
+        raise ValueError("current_industry_source_evidence_invalid")
+    if taxonomy.received_at != _timestamp(payload, "taxonomy_received_at"):
+        raise ValueError("current_industry_source_evidence_invalid")
+    rows, raw_gaps = payload["rows"], payload["gaps"]
+    if not isinstance(rows, list) or not isinstance(raw_gaps, list):
+        raise ValueError("current_industry_payload_invalid")
+    row_by_code: dict[str, dict[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("current_industry_row_invalid")
+        row_by_code[_text(row, "code")] = row
+    gap_by_code: dict[str, dict[str, object]] = {}
+    for gap in raw_gaps:
+        if not isinstance(gap, dict):
+            raise ValueError("current_industry_gap_invalid")
+        gap_by_code[_text(gap, "code")] = gap
+    codes = tuple(sorted((*row_by_code, *gap_by_code)))
+    members: list[CurrentIndustryMember] = []
+    gaps: list[CurrentIndustryGap] = []
+    received_times = [taxonomy.received_at]
+    reads = index.iter_source_documents(
+        tuple("cninfo:p_stock2110:" + code for code in codes),
+        _timestamp(payload, "received_at"),
+        cancel_requested=lambda: False,
+    )
+    with closing(reads):
+        for code, read in zip(codes, reads):
+            document = read.document
+            if document is None or read.failure_category is not None or document.requested_to > query.day:
+                raise ValueError("current_industry_source_evidence_invalid")
+            received_times.append(document.received_at)
+            row = row_by_code.get(code)
+            if row is None:
+                gaps.append(CurrentIndustryGap(code, _text(gap_by_code[code], "reason")))
+                continue
+            if (
+                document.content_hash != _text(row, "response_sha256")
+                or document.received_at != _timestamp(row, "received_at")
+                or document.requested_from.isoformat() != _text(row, "requested_from")
+                or document.requested_to.isoformat() != _text(row, "requested_to")
+            ):
+                raise ValueError("current_industry_source_evidence_invalid")
+            name = _text(row, "category_name")
+            members.append(CurrentIndustryMember(code, CurrentIndustryReference(
+                "capco:" + _text(row, "category_code") + name, _STANDARD,
+                date.fromisoformat(_text(row, "changed_on")), _SOURCE, "industry-query:" + query.digest,
+            ), name))
+    refresh_after = _timestamp(payload, "refresh_after")
+    if refresh_after != min(received_times) + _REFRESH_AGE or observed_at >= refresh_after:
+        raise ValueError("current_industry_source_evidence_invalid")
+    return CurrentIndustrySnapshot(
+        members=tuple(sorted(members, key=lambda member: member.code)),
+        gaps=tuple(sorted(gaps, key=lambda gap: gap.code)),
+        observed_at=_timestamp(payload, "received_at"),
+        refresh_after=refresh_after,
+        source=_SOURCE,
+        classification=_STANDARD,
+        publication_hash=query.digest,
+    )
 
 
 def _timestamp(payload: dict[str, object], name: str) -> datetime:

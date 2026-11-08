@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from trader.training.infra.training_industry_metadata import ParseTrainingIndustrySnapshot, ValidateTrainingInputIdentity
+
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Literal, cast
@@ -67,6 +69,9 @@ _METADATA_FIELDS = {
     "model_hash",
 }
 _REPORT_COMMON_FIELDS = {
+    "price_snapshot_hash",
+    "industry_policy",
+    "industry_content_hash",
     "schema_version",
     "profile_id",
     "model_id",
@@ -107,6 +112,10 @@ _REPORT_FIELDS = {
     "prediction_return_failure_reasons",
 }
 _INPUT_FIELDS = {
+    "price_snapshot_hash",
+    "industry_policy",
+    "industry_content_hash",
+    "industry_snapshot",
     "schema_version",
     "profile_id",
     "strategy_head",
@@ -202,6 +211,7 @@ class TrainedHeadModelBundle:
     content_hash: str
     final_fit: FinalFitDatePlan | None = None
     diagnostic_plan: ProductionDiagnosticDatePlan | None = None
+    price_snapshot_hash: str = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -223,6 +233,8 @@ class _GroupIdentity:
     industry_count: int | None
     training_rows: int | None
     validation_rows: int | None
+    price_snapshot_hash: str
+    industry_content_hash: str
 
 
 def LoadHeadBundle(
@@ -374,6 +386,7 @@ def DecodeHeadBundle(
         declared_hash,
         final_plan,
         diagnostic_plan,
+        price_snapshot_hash=report.price_snapshot_hash,
     )
 
 
@@ -459,7 +472,7 @@ def _decode_final_fit(
         diagnostic_plan = _recent_diagnostic_plan(value, calendar_dates, plan, profile)
         split_hash = diagnostic_plan.content_hash
     else:
-        split_hash = _research_diagnostic_split(value, calendar_dates, plan, profile, report.training_input_hash)
+        split_hash = _research_diagnostic_split(value, calendar_dates, plan, profile, report.price_snapshot_hash)
     if ContentHash({"calendar_split_hash": split_hash, "strategy_head": report.strategy.value,
                     "maturity_sessions": maturity_sessions,
                     "label_target": profile.head_for_strategy(report.strategy).label_target}) != report.split_hash:
@@ -561,6 +574,7 @@ def _decode_group_document(
 ) -> _GroupIdentity:
     fields = _REPORT_FIELDS if report else _INPUT_FIELDS
     payload, declared_hash = _hashed_object(document, fields, "report" if report else "training input")
+    ValidateTrainingInputIdentity(payload)
     contract = profile.head_for_strategy(strategy)
     expected_schema = (
         f"{profile.profile_id}_head_validation_report"
@@ -642,6 +656,8 @@ def _decode_group_document(
         _integer(payload, "industry_count") if report else None,
         _integer(payload, "training_rows") if report else None,
         _integer(payload, "validation_rows") if report else None,
+        _text(payload, "price_snapshot_hash"),
+        _text(payload, "industry_content_hash"),
     )
 
 
@@ -653,6 +669,12 @@ def _validate_training_input(payload: dict[str, object], input_codes: int) -> No
         raise ValueError("trained-head input label cutoff is invalid")
     requested_sessions = _integer(payload, "requested_sessions")
     codes = _string_list(payload, "codes")
+    industry = ParseTrainingIndustrySnapshot(payload["industry_snapshot"])
+    if (
+        industry.content_hash != payload["industry_content_hash"]
+        or sorted((*[member.code for member in industry.members], *[gap.code for gap in industry.gaps])) != codes
+    ):
+        raise ModelBundleContractError("trained-head current industry provenance conflicts with its input population")
     if (
         not 1_250 <= requested_sessions <= 2_000
         or codes != sorted(set(codes))
@@ -675,6 +697,8 @@ def _identity_tuple(value: _GroupIdentity) -> tuple[object, ...]:
         value.training_contract_hash,
         value.training_input_codes,
         value.training_universe_codes,
+        value.price_snapshot_hash,
+        value.industry_content_hash,
     )
 
 

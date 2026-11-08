@@ -120,7 +120,7 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery, *, sqlite_policy:
         return HistoryTrainingDueEvaluation(history_root, current_snapshot, due, None, (), ())
     baseline_cutoff = bundle.label_cutoff if bundle is not None else None
     baseline = (
-        next((item for item in state.snapshots if item.content_hash == bundle.training_input_hash), None)
+        next((item for item in state.snapshots if item.content_hash == bundle.price_snapshot_hash), None)
         if bundle is not None
         else None
     )

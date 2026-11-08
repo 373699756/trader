@@ -53,7 +53,9 @@ def _training_identity(
     compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
 ) -> str:
     return ContentHash((
-        snapshot,
+        snapshot.training_input_hash, snapshot.source_identity_hash, snapshot.calendar_hash,
+        snapshot.source_cutoff, snapshot.label_cutoff, snapshot.training_codes,
+        snapshot.input_scope, snapshot.input_descriptor_hash, snapshot.listing_intervals,
         settings,
         compute_threads,
         LEARNED_RANK_CONTRACT,
@@ -70,6 +72,7 @@ def _training_source(
     return LearnedRankTrainingSource(
         snapshot.snapshot_hash, snapshot.source_identity_hash, snapshot.calendar_hash, snapshot.source_cutoff,
         snapshot.calendar.open_dates, _training_identity(snapshot, settings, compute_threads),
+        industry_snapshot=snapshot.industry_snapshot,
     )
 
 

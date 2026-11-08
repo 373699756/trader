@@ -7,10 +7,12 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 import argparse
 import math
 from collections import Counter
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from trader.infra.settings import LoadRuntimeSettings
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession
 from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
@@ -78,8 +80,13 @@ def _audit_statistics(connection: SqliteConnection) -> dict[str, object]:
     }
 
 
-def _trace_labels(history: Path, path: Path, signal: date, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
-    source = SQLiteHistoryTrainingInputSnapshot.open(history, sqlite_policy=sqlite_policy)
+def _trace_labels(
+    history: Path, path: Path, signal: date, *,
+    industry_snapshot: CurrentIndustrySnapshot, sqlite_policy: SqliteIoPolicy,
+) -> dict[str, object]:
+    source = SQLiteHistoryTrainingInputSnapshot.open(
+        history, industry_snapshot=industry_snapshot, sqlite_policy=sqlite_policy,
+    )
     calendar = source.snapshot.calendar.open_dates
     position = calendar.index(signal)
     future = calendar[position + 1 : position + 6]
@@ -133,7 +140,7 @@ def Main() -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--signal-date", type=date.fromisoformat)
     args = parser.parse_args()
-    from trader.bootstrap import BuildSqlitePolicy
+    from trader.bootstrap import BuildSqlitePolicy, ReadIndustrySnapshot
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.config))
     paths = LoadRuntimeSettings(args.config).data_paths
     if args.signal_date is not None:
@@ -141,7 +148,11 @@ def Main() -> int:
             {
                 "schema_version": "training-coverage-diagnostic",
                 "status": "degraded",
-                "summary": _trace_labels(paths.history, paths.samples / "v5/samples.sqlite3", args.signal_date, sqlite_policy=sqlite_policy),
+                "summary": _trace_labels(
+                    paths.history, paths.samples / "v5/samples.sqlite3", args.signal_date,
+                    industry_snapshot=ReadIndustrySnapshot(paths.reference, datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy),
+                    sqlite_policy=sqlite_policy,
+                ),
             }
         )
         return 0

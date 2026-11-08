@@ -3,6 +3,7 @@
 from __future__ import annotations
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 import math
 from collections.abc import Iterator
 from datetime import date, timedelta
@@ -30,6 +31,7 @@ class _History:
             BaoStockCalendar(self.dates),
             self.codes,
             "d" * 64,
+            industry_snapshot=CurrentIndustrySnapshotFixture(self.codes, sectors=(("J66", "货币金融服务"), ("I65", "软件和信息技术服务业"))),
         )
 
     def training_row_upper_bound(self, allowed_dates: frozenset[date]) -> int:
@@ -45,7 +47,7 @@ class _History:
                     code,
                     day,
                     "main",
-                    f"capco:industry-{index % 2}",
+                    self.snapshot.industry_snapshot.members[index].reference.industry_id,
                     HistoryTrainingPoint(day, point.close_price, point.amount),
                     "complete",
                 )

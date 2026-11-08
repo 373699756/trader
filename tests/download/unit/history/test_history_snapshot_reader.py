@@ -14,6 +14,7 @@ import pytest
 
 import trader.download.infra.history_prices as partition_module
 from tests.helpers.shared.reference_fixtures import PublishHistoryReferenceFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide, BaoStockIndustryInterval
 from trader.download.domain.history_control import (
     HistorySnapshot,
@@ -97,7 +98,9 @@ def test_training_stream_releases_pages_after_each_annual_file(
 
     monkeypatch.setattr(HistoryPricePartition, "iter_training_rows", consuming)
     monkeypatch.setattr(HistoryPricePartition, "release_read_pages", releasing)
-    rows = tuple(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(snapshot, dates, ("600001",)))
+    rows = tuple(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(
+        snapshot, dates, ("600001",), industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
+    ))
     assert len(rows) == 2
     assert events == list(expected_events)
 
@@ -113,7 +116,9 @@ def test_training_stream_early_close_releases_open_annual_file(tmp_path: Path, m
         release(self)
 
     monkeypatch.setattr(HistoryPricePartition, "release_read_pages", releasing)
-    stream = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(snapshot, dates, ("600001",))
+    stream = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(
+        snapshot, dates, ("600001",), industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
+    )
     assert next(stream).trade_date == dates[0]
     stream.close()
     assert released == [8]
@@ -129,7 +134,9 @@ def test_training_stream_reports_invalid_projected_field_as_snapshot_error(tmp_p
     PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
 
     with pytest.raises(HistorySnapshotReadError, match="history training partition read failed"):
-        tuple(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(snapshot, (day,), ("600001",)))
+        tuple(HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(
+            snapshot, (day,), ("600001",), industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
+        ))
 
 
 def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistorySnapshot:
@@ -185,12 +192,19 @@ def test_history_reader_routes_single_day_code_window_and_cross_month_training_r
     assert tuple(row.trade_date for row in code_rows) == dates[-61:]
     assert tuple(history.iter_snapshot_revisions(snapshot)) == rows
 
-    training_rows = tuple(history.iter_training_rows(snapshot, dates, {"600001", "600002"}))
+    current_industry = CurrentIndustrySnapshotFixture(("600001", "600002"))
+    training_rows = tuple(history.iter_training_rows(
+        snapshot, dates, {"600001", "600002"}, industry_snapshot=current_industry,
+    ))
     assert len(training_rows) == 124
+    assert {row.industry for row in training_rows} == {"capco:J66货币金融服务"}
+    assert {row.industry for row in history.read_day(dates[31], snapshot)} == {"bank"}
     assert tuple((row.trade_date, row.code) for row in training_rows) == tuple(
         (day, code) for day in dates for code in ("600001", "600002")
     )
-    current_rows = tuple(history.iter_training_rows(snapshot, dates, {"600001"}))
+    current_rows = tuple(history.iter_training_rows(
+        snapshot, dates, {"600001"}, industry_snapshot=current_industry.project(("600001",)),
+    ))
     assert len(current_rows) == 62
     assert {row.code for row in current_rows} == {"600001"}
 
@@ -202,6 +216,7 @@ def test_history_reader_routes_single_day_code_window_and_cross_month_training_r
                 replace(snapshot, partitions=snapshot.partitions[:-1]),
                 dates,
                 {"600001", "600002"},
+                industry_snapshot=current_industry,
             )
         )
 
@@ -222,7 +237,9 @@ def test_history_reader_streams_2000_sessions_without_directory_scan_or_unbounde
         replayed_rows.append(row)
         if peak_descriptors is not None:
             peak_descriptors = max(peak_descriptors, len(tuple(descriptor_root.iterdir())))
-    training_rows = tuple(history.iter_training_rows(snapshot, dates, {"600001"}))
+    training_rows = tuple(history.iter_training_rows(
+        snapshot, dates, {"600001"}, industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
+    ))
 
     assert tuple(replayed_rows) == rows
     assert len(snapshot.partitions) == len(RouteHistoryMonths(dates[0], dates[-1]))

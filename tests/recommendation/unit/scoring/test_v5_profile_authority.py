@@ -61,6 +61,7 @@ def _bundle(profile: TrainedProfileContract, contract: TrainedHeadContract) -> T
         algorithm=profile.algorithm,
         training_input_scope="complete_manifest",
         training_input_hash="a" * 64,
+        price_snapshot_hash="4" * 64,
         training_run_hash="b" * 64,
         label_cutoff=date(2026, 9, 8),
         source_identity_hash="c" * 64,

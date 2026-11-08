@@ -3,6 +3,7 @@
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
@@ -20,6 +21,9 @@ from trader.training.entrypoints.training_timing_projection import ProjectTraini
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.memory_admission import TrainingMemoryBudget
+
+
+_CURRENT_INDUSTRY = CurrentIndustrySnapshotFixture(("000001", *(f"60000{number}" for number in range(6))))
 
 
 class _Clock:
@@ -555,7 +559,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
         cpu_budget=cpu_budget,
         paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
         sqlite_policy=SqlitePolicyFixture(),
-        prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()),
+        prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
         sample_settings=TrainingSampleSettingsFixture(),
     ) == expected_exit

@@ -3,6 +3,7 @@
 from tests.helpers.shared.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 from dataclasses import replace
 from pathlib import Path
@@ -26,14 +27,16 @@ def history_root(tmp_path_factory):
 
 def _sqlite_rows(history):
     return HistorySnapshotReader(history.root, sqlite_policy=SqlitePolicyFixture()).iter_training_rows(
-        history.snapshot, history.calendar.open_dates, tuple(item.code for item in history.universe.securities)
+        history.snapshot, history.calendar.open_dates, tuple(item.code for item in history.universe.securities),
+        industry_snapshot=CurrentIndustrySnapshotFixture(tuple(item.code for item in history.universe.securities)),
     )
 
 
 def test_month_reuse_atomic_failure_and_unpublished_revision_isolation(history_root, tmp_path, monkeypatch):
     first = LoadPublishedHistorySnapshot(history_root, sequence=1, sqlite_policy=SqlitePolicyFixture())
     second = LoadPublishedHistorySnapshot(history_root, sequence=2, sqlite_policy=SqlitePolicyFixture())
-    projection = ParquetHistoryProjection(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    industry = CurrentIndustrySnapshotFixture(tuple(item.code for item in first.universe.securities))
+    projection = ParquetHistoryProjection(tmp_path, industry_snapshot=industry, sqlite_policy=SqlitePolicyFixture())
     old = projection.publish(first)
     manifest = (tmp_path / "manifest.json").read_bytes()
     before = TrainingRowsHash(_sqlite_rows(first))
@@ -79,13 +82,29 @@ def test_missing_price_and_zero_amount_keep_nulls_and_exact_float_values(history
     snapshot = replace(history.snapshot, sequence=4, partitions=(*history.snapshot.partitions[:-1], partition.seal(4)))
     HistoryControlIndex(history.root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_snapshot(snapshot)
     updated = LoadPublishedHistorySnapshot(history.root, sequence=4, sqlite_policy=SqlitePolicyFixture())
-    projection = ParquetHistoryProjection(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    industry = CurrentIndustrySnapshotFixture(tuple(item.code for item in updated.universe.securities))
+    projection = ParquetHistoryProjection(tmp_path, industry_snapshot=industry, sqlite_policy=SqlitePolicyFixture())
     projection.publish(updated)
     rows = tuple(projection.iter_rows(updated, updated.calendar.open_dates))
     assert TrainingRowsHash(rows) == TrainingRowsHash(_sqlite_rows(updated))
     assert any(row.point is None and row.cell_status == "qfq_missing" for row in rows)
     assert any(row.point is not None and row.point.qfq_amount == 0.0
                and row.point.raw_volume == 0.0 for row in rows)
+
+
+def test_industry_change_rejects_old_projection_and_rebuilds_every_month(history_root, tmp_path):
+    history = LoadPublishedHistorySnapshot(history_root, sequence=2, sqlite_policy=SqlitePolicyFixture())
+    codes = tuple(item.code for item in history.universe.securities)
+    first = ParquetHistoryProjection(
+        tmp_path, industry_snapshot=CurrentIndustrySnapshotFixture(codes), sqlite_policy=SqlitePolicyFixture(),
+    ).publish(history)
+    current = CurrentIndustrySnapshotFixture(codes, sectors=(("C33", "金属制品业"),))
+    changed = ParquetHistoryProjection(tmp_path, industry_snapshot=current, sqlite_policy=SqlitePolicyFixture())
+    with pytest.raises(ValueError, match="snapshot_mismatch"):
+        tuple(changed.iter_rows(history, history.calendar.open_dates))
+    second = changed.publish(history)
+    assert not {month.source_hash for month in first.months} & {month.source_hash for month in second.months}
+    assert {row.industry for row in changed.iter_rows(history, history.calendar.open_dates)} == {"capco:C33金属制品业"}
 
 
 def test_public_training_sample_probe_is_explicit_and_runs_only_its_worker(tmp_path):

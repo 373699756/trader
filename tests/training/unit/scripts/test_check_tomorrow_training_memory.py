@@ -6,6 +6,7 @@ import pytest
 
 from scripts.training.resources import memory as check_tomorrow_training_memory
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 
 @pytest.mark.parametrize("repeat_matches", (True, False))
@@ -24,6 +25,7 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
         progress,
         expected_history_snapshot_hash: str,
         sqlite_policy,
+        industry_snapshot,
     ):
         del progress, settings
         assert sample_settings == TrainingSampleSettingsFixture()
@@ -47,6 +49,7 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
     monkeypatch.setattr("trader.training.infra.profile.v3.training.RunRepackV3Training", train)
     monkeypatch.setattr(check_tomorrow_training_memory, "_peak_rss_bytes", lambda: 100)
     monkeypatch.setattr(check_tomorrow_training_memory.os, "nice", lambda _increment: None)
+    monkeypatch.setattr("trader.bootstrap.ReadIndustrySnapshot", lambda *_args: CurrentIndustrySnapshotFixture(("600001",)))
     history = tmp_path / "history"
     output = tmp_path / "train"
     evidence = tmp_path / "historyless/training-memory-result.json"

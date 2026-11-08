@@ -1,4 +1,4 @@
-"""Historical training consumes disclosed intervals, independently of current query candidates."""
+"""Explicit historical-industry preparation remains separate from normal price downloads."""
 
 import hashlib
 import json
@@ -21,7 +21,6 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.industry_query_index import IndustrySourceDocument, SQLiteIndustryQueryIndex
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
-from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
 _OBSERVED = datetime(2026, 11, 6, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
 _DATES = (date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7))
@@ -205,41 +204,34 @@ def test_future_receipts_and_disjoint_intervals_do_not_supply_history(tmp_path):
     assert not _build((future,)).intervals
 
 
-def test_router_injects_prepared_intervals_and_industry_failure_preserves_price_context(tmp_path, monkeypatch):
+def test_explicit_industry_preparation_does_not_enter_normal_price_context(tmp_path, monkeypatch):
     index = _index(tmp_path)
     index.import_evidence((_evidence(),))
     reference = _prepared((_SECURITY,), _DATES, checked=_OBSERVED)
-    router = HistorySupplierRouter(Baseline(_DATES), Prices(), reference, index)
+    prepared = PrepareHistoricalIndustries(index, (_SECURITY,), _DATES, _OBSERVED, cancel_requested=lambda: False)
+    assert prepared.intervals and prepared.readiness.ready
+    router = HistorySupplierRouter(Baseline(_DATES), Prices(), reference)
     context = router.load_context(_DATES[-1], len(_DATES))
-    assert context.industry_intervals and context.industry_readiness.ready
+    assert not context.industry_intervals and context.industry_readiness is None
 
     def failed(*args, **kwargs):
         raise ValueError("industry_evidence_hash_conflict")
 
-    monkeypatch.setattr("trader.download.infra.history_supplier_router.PrepareHistoricalIndustries", failed)
-    rejected = router.load_context(_DATES[-1], len(_DATES))
-    assert rejected.calendar == context.calendar and rejected.universe == context.universe
-    assert not rejected.industry_intervals and not rejected.industry_readiness.ready
-    assert rejected.industry_readiness.failure_category == "ValueError"
+    monkeypatch.setattr(SQLiteIndustryQueryIndex, "read_evidence_window", failed)
+    unchanged = router.load_context(_DATES[-1], len(_DATES))
+    assert unchanged == context
+    with pytest.raises(ValueError, match="industry_evidence_hash_conflict"):
+        PrepareHistoricalIndustries(index, (_SECURITY,), _DATES, _OBSERVED, cancel_requested=lambda: False)
 
 
-def test_router_uses_injected_official_preparation_and_binds_its_identity(tmp_path):
-    index = _index(tmp_path)
-    prepared = _build((_evidence(),))
-    reference = _prepared((_SECURITY,), _DATES, checked=_OBSERVED)
-    calls = []
-
-    def prepare(universe, calendar, observed_at):
-        calls.append((universe, calendar, observed_at))
-        return prepared
-
-    context = HistorySupplierRouter(
-        Baseline(_DATES), Prices(), reference, index, industry_preparation=prepare,
-    ).load_context(_DATES[-1], len(_DATES))
-    assert calls == [((_SECURITY,), _DATES, reference.checked_at)]
-    assert context.industry_intervals == prepared.intervals
-    assert ("capco_industry", prepared.data_version) in context.source_versions.dependency_versions
-    assert not index.path.exists()
+def test_router_retains_the_real_prepared_reference_identity_without_official_history_dependencies():
+    reference = replace(_prepared((_SECURITY,), _DATES, checked=_OBSERVED), industry_version="current-industry")
+    context = HistorySupplierRouter(Baseline(_DATES), Prices(), reference).load_context(_DATES[-1], len(_DATES))
+    assert context.reference_id == reference.identity
+    assert context.st_evidence == reference.st_evidence
+    assert context.calendar.open_dates == _DATES and context.universe == (_SECURITY,)
+    assert context.industry_intervals == () and context.industry_readiness is None
+    assert all(name != "capco_industry" for name, _ in context.source_versions.dependency_versions)
 
 
 def test_missing_input_read_does_not_create_files_and_cancellation_propagates(tmp_path):
@@ -249,7 +241,7 @@ def test_missing_input_read_does_not_create_files_and_cancellation_propagates(tm
     with pytest.raises(RuntimeError, match="supplier_cancelled"):
         PrepareHistoricalIndustries(index, (_SECURITY,), _DATES, _OBSERVED, cancel_requested=lambda: True)
     router = HistorySupplierRouter(
-        Baseline(_DATES), Prices(), _prepared((_SECURITY,), _DATES, checked=_OBSERVED), index,
+        Baseline(_DATES), Prices(), _prepared((_SECURITY,), _DATES, checked=_OBSERVED),
         cancel_requested=lambda: True,
     )
     with pytest.raises(RuntimeError, match="supplier_cancelled"):
@@ -282,7 +274,7 @@ def test_large_official_original_is_a_single_transaction_without_expanding_cninf
     assert index.read_source_document(other.request_key, _OBSERVED) is None
 
 
-def test_new_industry_reference_reuses_prices_and_preserves_the_old_published_snapshot(tmp_path):
+def test_independent_industry_evidence_does_not_republish_price_history(tmp_path):
     observed = datetime(2026, 1, 7, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
     reference = _prepared((_SECURITY,), _DATES, checked=observed)
     root = tmp_path / "history"
@@ -316,16 +308,13 @@ def test_new_industry_reference_reuses_prices_and_preserves_the_old_published_sn
 
     second = RunHistoryFixture(
         configuration,
-        HistorySupplierRouter(Baseline(_DATES), NoPriceDownload(), reference, index),
+        HistorySupplierRouter(Baseline(_DATES), NoPriceDownload(), reference),
         clock=lambda: observed,
     )
-    assert second.published and second.industry_readiness.ready
+    assert second.state == "already_current" and second.industry_readiness is None
     after = control.load_published_state().snapshot
-    assert after.sequence > before.sequence
-    assert after.partitions == before.partitions
+    assert after == before
     assert reader.read_day(_DATES[-1], before) == old_rows
     assert reader.reference_index(before).reference.industry_intervals == ()
-    training = SQLiteHistoryTrainingInputSnapshot.open(root, sqlite_policy=SqlitePolicyFixture())
-    assert training.has_industry_window(frozenset(_DATES), 1)
-    rows = tuple(training.iter_training_rows(frozenset(_DATES)))
-    assert rows and all(row.industry == "capco:J66货币金融服务" for row in rows)
+    assert reader.reference_index(after).reference.industry_intervals == ()
+    assert PrepareHistoricalIndustries(index, (_SECURITY,), _DATES, observed, cancel_requested=lambda: False).readiness.ready

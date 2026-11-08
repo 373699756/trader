@@ -5,7 +5,7 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 from collections.abc import Callable, Generator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -20,6 +20,7 @@ from trader.download.domain.history_control import (
     HistorySnapshot,
 )
 from trader.download.domain.history_revision import HistoryTrainingRow
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
@@ -32,6 +33,7 @@ from trader.training.domain.tomorrow_training_input import (
     REQUIRED_DAILY_FIELDS,
     FrozenDailyInputDescriptor,
 )
+from trader.training.domain.training_input_identity import BuildTrainingInputHash
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,7 @@ class HistoryTrainingInputSnapshot:
     training_codes: tuple[str, ...]
     input_descriptor_hash: str
     listing_intervals: tuple[tuple[str, date, date | None], ...] = ()
+    industry_snapshot: CurrentIndustrySnapshot = field(kw_only=True)
 
     def __post_init__(self) -> None:
         hashes = (
@@ -71,6 +74,12 @@ class HistoryTrainingInputSnapshot:
             )
         ):
             raise ValueError("history training input snapshot is invalid")
+        if self.industry_snapshot.project(self.training_codes) != self.industry_snapshot:
+            raise ValueError("training_industry_population_mismatch")
+
+    @property
+    def training_input_hash(self) -> str:
+        return BuildTrainingInputHash(self.snapshot_hash, self.industry_snapshot.content_hash)
 
     @property
     def universe_count(self) -> int:
@@ -90,7 +99,7 @@ class SQLiteHistoryTrainingInputSnapshot:
         current_snapshot: HistorySnapshot,
         calendar: BaoStockCalendar,
         universe: tuple[BaoStockSecurity, ...],
-        descriptor: FrozenDailyInputDescriptor, *, sqlite_policy: SqliteIoPolicy,
+        descriptor: FrozenDailyInputDescriptor, *, industry_snapshot: CurrentIndustrySnapshot, sqlite_policy: SqliteIoPolicy,
     ) -> None:
         self._sqlite_policy = sqlite_policy
         self._root = root
@@ -101,12 +110,14 @@ class SQLiteHistoryTrainingInputSnapshot:
         self._codes = frozenset(item.code for item in universe)
         self._descriptor = descriptor
         self.snapshot = replace(
-            _snapshot_for_training(current_snapshot, calendar, self._codes, descriptor),
+            _snapshot_for_training(current_snapshot, calendar, self._codes, descriptor, industry_snapshot.project(tuple(sorted(self._codes)))),
             listing_intervals=tuple((item.code, item.listed_on, item.delisted_on) for item in universe),
         )
 
     @classmethod
-    def open(cls, root: Path, *, sqlite_policy: SqliteIoPolicy) -> SQLiteHistoryTrainingInputSnapshot:
+    def open(
+        cls, root: Path, *, industry_snapshot: CurrentIndustrySnapshot, sqlite_policy: SqliteIoPolicy,
+    ) -> SQLiteHistoryTrainingInputSnapshot:
         history_root = root
         control = HistoryControlIndex(history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
         try:
@@ -132,7 +143,8 @@ class SQLiteHistoryTrainingInputSnapshot:
             frozen=True,
             production_authority=False,
         )
-        return cls(history_root, current_snapshot, calendar, universe, descriptor, sqlite_policy=sqlite_policy)
+        return cls(history_root, current_snapshot, calendar, universe, descriptor,
+                   industry_snapshot=industry_snapshot, sqlite_policy=sqlite_policy)
 
     @property
     def published_snapshot(self) -> HistorySnapshot:
@@ -161,12 +173,19 @@ class SQLiteHistoryTrainingInputSnapshot:
         self, allowed_dates: frozenset[date], required_sessions: int, anchors: frozenset[date]
     ) -> tuple[tuple[str, int], ...]:
         dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
-        try:
-            return self._history.reference_index(self._published_snapshot).industry_sample_upper_bounds(
-                self._codes, dates, required_sessions, anchors
-            )
-        except (HistorySnapshotReadError, OSError, ValueError) as exc:
-            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
+        if frozenset(dates) != allowed_dates or required_sessions < 1:
+            raise HistoryTrainingInputError("history_training_dates_invalid")
+        counts: dict[str, int] = {}
+        for security in self._universe:
+            member = self.snapshot.industry_snapshot.member(security.code)
+            if member is None:
+                continue
+            possible = tuple(day for day in dates if day >= security.listed_on and (
+                security.delisted_on is None or day < security.delisted_on
+            ))
+            industry = member.reference.industry_id
+            counts[industry] = counts.get(industry, 0) + sum(day in anchors for day in possible[required_sessions - 1:])
+        return tuple(sorted(counts.items()))
 
     def has_industry_window(
         self, allowed_dates: frozenset[date], required_sessions: int, *, anchor_dates: frozenset[date] | None = None
@@ -174,15 +193,10 @@ class SQLiteHistoryTrainingInputSnapshot:
         dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
         if not dates or frozenset(dates) != allowed_dates:
             raise HistoryTrainingInputError("history_training_dates_invalid")
-        try:
-            return self._history.reference_index(self._published_snapshot).has_industry_window(
-                self._codes,
-                dates,
-                required_sessions,
-                anchor_dates=anchor_dates,
-            )
-        except (HistorySnapshotReadError, OSError, ValueError) as exc:
-            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
+        anchors = allowed_dates if anchor_dates is None else anchor_dates
+        return any(count > 0 for _industry, count in self.industry_sample_upper_bounds(
+            allowed_dates, required_sessions, anchors,
+        ))
 
     def iter_training_rows(
         self,
@@ -198,6 +212,7 @@ class SQLiteHistoryTrainingInputSnapshot:
                 dates,
                 self._codes,
                 progress,
+                industry_snapshot=self.snapshot.industry_snapshot,
             )
         except (HistorySnapshotReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
@@ -219,6 +234,7 @@ def _snapshot_for_training(
     calendar: BaoStockCalendar,
     codes: frozenset[str],
     descriptor: FrozenDailyInputDescriptor,
+    industry_snapshot: CurrentIndustrySnapshot,
 ) -> HistoryTrainingInputSnapshot:
     return HistoryTrainingInputSnapshot(
         "complete_manifest",
@@ -230,6 +246,7 @@ def _snapshot_for_training(
         calendar,
         tuple(sorted(codes)),
         descriptor.content_hash,
+        industry_snapshot=industry_snapshot,
     )
 
 

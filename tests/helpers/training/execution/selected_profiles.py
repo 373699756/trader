@@ -3,6 +3,7 @@
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -23,6 +24,9 @@ from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from tests.helpers.training.configuration import TcnFittingParametersFixture
 
 ROOT = Path(__file__).resolve().parents[4]
+
+
+_CURRENT_INDUSTRY = CurrentIndustrySnapshotFixture(("000001", *(f"60000{number}" for number in range(6))))
 
 
 class _Progress:
@@ -77,7 +81,7 @@ def BuildFourProfileRequest(
 
     history.iter_training_rows = rows
     monkeypatch.setattr(
-        "trader.training.infra.selected_training.SQLiteHistoryTrainingInputSnapshot.open", lambda _p, *, sqlite_policy: history
+        "trader.training.infra.selected_training.SQLiteHistoryTrainingInputSnapshot.open", lambda _p, *, industry_snapshot, sqlite_policy: history
     )
     monkeypatch.setattr("trader.training.infra.selected_training.LoadV1TrainingSettings", lambda _p: _settings())
 
@@ -135,7 +139,7 @@ def four_profile_seed(request: pytest.FixtureRequest, tmp_path_factory: pytest.T
     with pytest.MonkeyPatch.context() as patches:
         selection = BuildFourProfileRequest(directory, execution_case, patches, scans, tcn_threads)
         with ThreadPoolExecutor(max_workers=4) as executor:
-            result = TrainSelectedProfiles(SelectedTrainingAdapter(selection, sqlite_policy=SqlitePolicyFixture()), executor)
+            result = TrainSelectedProfiles(SelectedTrainingAdapter(selection, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
         assert len(scans) == result.history_scan_passes == 1
         assert tuple(item.profile for item in result.outcomes) == selection.profiles
         assert all(item.failure is None and item.result.status == "engineering_ready" for item in result.outcomes), result

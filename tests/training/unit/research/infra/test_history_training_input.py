@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 import hashlib
 import shutil
@@ -165,7 +166,7 @@ def test_monthly_training_input_binds_published_snapshot_and_counts_typed_rows(
         raise AssertionError("training input must not load historical checkpoints")
 
     monkeypatch.setattr(HistoryControlIndex, "load_state", fail_full_history_read)
-    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
+    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history", industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)), sqlite_policy=SqlitePolicyFixture())
     assert history.snapshot.snapshot_hash == expected_hash
     assert len(tuple(history.iter_training_rows(frozenset(dates)))) == len(dates)
     assert history.snapshot.label_cutoff == dates[-2]
@@ -175,9 +176,42 @@ def test_training_input_streams_rows_from_published_snapshot(tmp_path: Path, pre
     history_root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     prepared_history(history_root, dates)
-    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
+    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history", industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)), sqlite_policy=SqlitePolicyFixture())
     assert history.training_row_upper_bound(frozenset(dates)) >= 3
     assert len(tuple(history.iter_training_rows(frozenset(dates)))) == 3
+
+
+def test_training_uses_one_current_mapping_for_old_dates_without_dated_fallback(tmp_path, monkeypatch, prepared_history):
+    root = tmp_path / "history"
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    prepared_history(root, dates)
+    current = CurrentIndustrySnapshotFixture(("600001",))
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("current-group training must not read dated industry bindings")
+
+    monkeypatch.setattr("trader.download.infra.history_reference_index.HistoryReferenceIndex.industry_on", forbidden)
+    first = SQLiteHistoryTrainingInputSnapshot.open(root, industry_snapshot=current, sqlite_policy=SqlitePolicyFixture())
+    assert dates[-1] < current.members[0].reference.effective_date
+    assert {row.industry for row in first.iter_training_rows(frozenset(dates))} == {"capco:J66货币金融服务"}
+    refreshed = replace(
+        current, observed_at=current.observed_at + timedelta(days=1),
+        refresh_after=current.refresh_after + timedelta(days=1), publication_hash="e" * 64,
+    )
+    same = SQLiteHistoryTrainingInputSnapshot.open(root, industry_snapshot=refreshed, sqlite_policy=SqlitePolicyFixture())
+    changed = SQLiteHistoryTrainingInputSnapshot.open(
+        root, industry_snapshot=CurrentIndustrySnapshotFixture(("600001",), sectors=(("I65", "软件和信息技术服务业"),)),
+        sqlite_policy=SqlitePolicyFixture(),
+    )
+    assert first.snapshot.snapshot_hash == same.snapshot.snapshot_hash == changed.snapshot.snapshot_hash
+    assert first.snapshot.training_input_hash == same.snapshot.training_input_hash
+    assert first.snapshot.training_input_hash != changed.snapshot.training_input_hash
+    assert {row.industry for row in changed.iter_training_rows(frozenset(dates))} == {"capco:I65软件和信息技术服务业"}
+    missing = SQLiteHistoryTrainingInputSnapshot.open(
+        root, industry_snapshot=CurrentIndustrySnapshotFixture(()), sqlite_policy=SqlitePolicyFixture(),
+    )
+    assert not missing.has_industry_window(frozenset(dates), 1)
+    assert all(row.industry is None for row in missing.iter_training_rows(frozenset(dates)))
 
 
 def test_training_calendar_hash_is_reconstructible_without_changing_published_identity(
@@ -190,7 +224,7 @@ def test_training_calendar_hash_is_reconstructible_without_changing_published_id
     published = control.load_published_state()
     assert published is not None
 
-    history = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=SqlitePolicyFixture())
+    history = SQLiteHistoryTrainingInputSnapshot.open(history_root, industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)), sqlite_policy=SqlitePolicyFixture())
 
     assert history.snapshot.calendar_hash == BaoStockCalendar(dates).content_hash
     assert history.snapshot.calendar_hash != published.snapshot.calendar_hash
@@ -210,7 +244,7 @@ def test_training_reader_uses_narrow_projection_without_rechecking_published_pay
         "trader.download.infra.history_prices.RevisionFromColumns",
         lambda *_args, **_kwargs: pytest.fail("training must not run a separate row audit"),
     )
-    history = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=SqlitePolicyFixture())
+    history = SQLiteHistoryTrainingInputSnapshot.open(history_root, industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)), sqlite_policy=SqlitePolicyFixture())
     rows = tuple(history.iter_training_rows(frozenset(dates)))
     assert len(rows) == len(dates)
     assert all(row.point is not None for row in rows)
@@ -220,13 +254,13 @@ def test_training_input_streams_typed_rows_without_per_code_queries(tmp_path: Pa
     history_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(62))
     prepared_history(history_root, dates)
-    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history", sqlite_policy=SqlitePolicyFixture())
+    history = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history", industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)), sqlite_policy=SqlitePolicyFixture())
     progress: list[int] = []
 
     rows = tuple(history.iter_training_rows(frozenset(dates), progress.append))
 
     assert tuple(row.trade_date for row in rows) == dates
-    assert all(row.point is not None and row.industry == "银行" for row in rows)
+    assert all(row.point is not None and row.industry == "capco:J66货币金融服务" for row in rows)
     assert progress[-1] == len(dates)
     assert history.training_row_upper_bound(frozenset(dates)) >= progress[-1]
 
@@ -235,7 +269,7 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
     history_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(251))
     result = prepared_history(history_root, dates)
-    training = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=SqlitePolicyFixture())
+    training = SQLiteHistoryTrainingInputSnapshot.open(history_root, industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)), sqlite_policy=SqlitePolicyFixture())
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=SqlitePolicyFixture())),
         lookback_sessions=251,
@@ -653,7 +687,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     bundle = PublishedHeadBundle(
         tmp_path / "train/tomorrow-v3/model.json",
         Strategy.TOMORROW,
-        baseline.content_hash,
+        "f" * 64,
         baseline.source_identity_hash,
         baseline.label_cutoff,
         contract_hash,
@@ -662,6 +696,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
         "c" * 64,
         "d" * 64,
         "e" * 64,
+        price_snapshot_hash=baseline.content_hash,
     )
     later_dates = (*first_dates, date(2026, 9, 10))
     RunHistoryFixture(configuration, _Supplier(later_dates), clock=lambda: NOW)

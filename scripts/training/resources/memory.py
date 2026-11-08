@@ -72,8 +72,13 @@ def Main(argv: list[str] | None = None) -> int:
     from trader.training.infra.profile.v3.training import RunRepackV3Training
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
-    from trader.bootstrap import BuildSqlitePolicy
+    from trader.bootstrap import BuildSqlitePolicy, ReadIndustrySnapshot
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     sqlite_policy = BuildSqlitePolicy(runtime)
+    industry = ReadIndustrySnapshot(
+        args.history_root.resolve().parent / "reference", datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy,
+    )
     os.nice(10)
     before = _peak_rss_bytes()
     settings = LoadProfileTrainingSettings(TOOL_ROOT, "v3")
@@ -86,6 +91,7 @@ def Main(argv: list[str] | None = None) -> int:
             sample_settings=sample_settings,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash, sqlite_policy=sqlite_policy,
+            industry_snapshot=industry,
         )
         stage_durations = progress.stage_durations
         repeated = RunRepackV3Training(
@@ -96,6 +102,7 @@ def Main(argv: list[str] | None = None) -> int:
             sample_settings=sample_settings,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash, sqlite_policy=sqlite_policy,
+            industry_snapshot=industry,
         )
     peak = _peak_rss_bytes()
     budget = args.max_rss_mib * 1024 * 1024

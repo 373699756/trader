@@ -20,6 +20,7 @@ from trader.training.domain.profile_training import ProfileTrainingHead, Profile
 from trader.training.domain.sample_coverage import SampleCoverage
 from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescriptor, REQUIRED_DAILY_FIELDS
 from trader.training.entrypoints.profile_training import ProjectProfileTrainingResult
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 
 def _source():
@@ -32,6 +33,7 @@ def _source():
         "v3", "ridge", calendar, calendar[-1], "a" * 64, "complete_manifest", 2, 2, 61, 61, 10,
         (ProfileTrainingHead(Strategy.TOMORROW, 1, "b" * 64), ProfileTrainingHead(Strategy.D25, 5, "c" * 64)),
         descriptor,
+        industry_content_hash=CurrentIndustrySnapshotFixture(("600001", "600002")).content_hash,
     )
 
 
@@ -114,7 +116,7 @@ class _Training:
         rejected = self.rejected_head and head.strategy is Strategy.D25
         result = HeadTrainingResult(
             head.strategy, "rejected" if rejected else "engineering_ready", "complete_manifest",
-            self.plan.run_id, self.source.snapshot_hash, 2, 2, "d" * 64, "e" * 64, 1, 122, 40,
+            self.plan.run_id, self.source.training_input_hash, 2, 2, "d" * 64, "e" * 64, 1, 122, 40,
             ("structure_invalid",) if rejected else (), label_cutoff=head.label_cutoff, final_fit=head.final_fit,
         )
         return PreparedTrainingHead(result, not rejected)
@@ -258,7 +260,7 @@ def test_fitting_scope_exit_failure_after_commit_does_not_erase_the_published_he
     assert result.post_commit_issues[0].error_type == "OSError"
 
 
-@pytest.mark.parametrize("mismatch", (None, "source", "target", "label", "contract", "run", "final_fit", "diagnostic", "missing_head"))
+@pytest.mark.parametrize("mismatch", (None, "source", "industry", "target", "label", "contract", "run", "final_fit", "diagnostic", "missing_head"))
 def test_application_reuses_only_a_complete_pair_matching_the_current_training_plan(mismatch):
     training = _Training()
     result = TrainProfile(training)
@@ -268,6 +270,10 @@ def test_application_reuses_only_a_complete_pair_matching_the_current_training_p
     first = heads[0]
     if mismatch == "source":
         first = replace(first, result=replace(first.result, training_input_hash="f" * 64))
+    elif mismatch == "industry":
+        previous_price_hash = training.source.snapshot_hash
+        training.source = replace(training.source, industry_content_hash="f" * 64)
+        assert training.source.snapshot_hash == previous_price_hash
     elif mismatch == "target":
         training.source = replace(training.source, target_matches=False)
     elif mismatch == "label":

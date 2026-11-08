@@ -45,7 +45,7 @@ def trained(request, tmp_path: Path, monkeypatch):
     profile = request.param
     history = _history(tmp_path / "history")
     monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open",
-                        lambda _path, *, sqlite_policy: history)
+                        lambda _path, *, industry_snapshot, sqlite_policy: history)
     settings = LoadProfileTrainingSettings(ROOT, profile.profile_id)
     if profile.profile_id == "v2":
         settings = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=10,
@@ -60,6 +60,7 @@ def trained(request, tmp_path: Path, monkeypatch):
     training = ProfileTrainingRequest(
         history.history_root, tmp_path / "models", profile, profile.heads, settings,
         sample_root=tmp_path / "samples", sample_settings=TrainingSampleSettingsFixture(),
+        industry_snapshot=history.snapshot.industry_snapshot,
     )
     result = RunProfileTraining(training, sqlite_policy=SqlitePolicyFixture())
     assert result.status == "engineering_ready", result

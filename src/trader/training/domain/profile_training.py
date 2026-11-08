@@ -1,6 +1,6 @@
 """Pure production training plans, without model files or native fitting state."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
@@ -10,6 +10,7 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FinalFitDatePlan
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan, ProductionDiagnosticDatePlan
 from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescriptor
+from trader.training.domain.training_input_identity import BuildTrainingInputHash
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class ProfileTrainingSource:
     heads: tuple[ProfileTrainingHead, ...]
     descriptor: FrozenDailyInputDescriptor
     target_matches: bool = True
+    industry_content_hash: str = field(kw_only=True)
 
     def __post_init__(self) -> None:
         if (
@@ -44,6 +46,10 @@ class ProfileTrainingSource:
             or type(self.minimum_industry_training_rows) is not int or self.minimum_industry_training_rows < 1
         ):
             raise ValueError("profile_training_source_contract_invalid")
+
+    @property
+    def training_input_hash(self) -> str:
+        return BuildTrainingInputHash(self.snapshot_hash, self.industry_content_hash)
 
 
 @dataclass(frozen=True)
@@ -107,7 +113,7 @@ def BuildProfileTrainingPlan(source: ProfileTrainingSource) -> ProfileTrainingPl
     )
     run_id = CanonicalDigest((
         source.profile_id,
-        source.snapshot_hash,
+        source.training_input_hash,
         split.content_hash,
         tuple((head.strategy.value, head.training_contract_hash) for head in heads),
     ))

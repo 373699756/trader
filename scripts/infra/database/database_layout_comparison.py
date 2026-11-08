@@ -658,9 +658,16 @@ def _worker(checkout: Path, layout: str, size: int, *, sqlite_policy: SqliteIoPo
             measure("history_startup_load", load)
             measure("history_hot_read", load)
             reader = HistorySnapshotReader(history, **sqlite_arguments)
+            from scripts.download.history.history_write_benchmark import SyntheticIndustrySnapshot
+
+            industry = SyntheticIndustrySnapshot(
+                codes, datetime.combine(days[-1], datetime.min.time(), ZoneInfo("Asia/Shanghai")),
+            )
 
             def scan() -> None:
-                assert sum(1 for _ in reader.iter_training_rows(snapshot, days, codes)) == size * 2000
+                assert sum(1 for _ in reader.iter_training_rows(
+                    snapshot, days, codes, industry_snapshot=industry,
+                )) == size * 2000
 
             measure("training_narrow_scan", scan)
             supplier.days += (days[-1] + timedelta(days=1),)

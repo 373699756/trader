@@ -115,7 +115,7 @@ def ProbeTrainingSamples(work: Path, baseline: Path, config: Path, *, size: int,
         for mode in (("sqlite", "parquet") if number % 2 == 0 else ("parquet", "sqlite")):
             measured = _run((
                 sys.executable, str(TOOL_ROOT / "scripts/tools.py"), "--internal-worker", 'scripts.training.samples.training_read_comparison', "--", "--history", str(history),
-                "--output", str(work / f"parquet-{number}"), "--mode", mode,
+                "--output", str(work / f"parquet-{number}"), "--mode", mode, "--synthetic-industry",
                 "--runtime-config", str(config),
             ), project, work)
             if measured.get("runtime_config_hash") != runtime_hash or measured.get("performance_budget_hash") != performance_hash:

@@ -33,6 +33,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_reference import HistoryStEvidence
+from trader.download.domain.current_industry import CurrentIndustryMember, CurrentIndustryReference, CurrentIndustrySnapshot
 from trader.download.domain.history_sync import (
     HistoryPipelineProgress,
     HistorySupplierContext,
@@ -64,6 +65,19 @@ from scripts.infra.database.database_measurement import DatabaseMeasurement
 from scripts.download.history.history_publication_measurement import HistoryPublicationMeasurement
 from scripts.download.history.history_publication_measurement import ProfilePublishedHistory
 from scripts.core.reporting import emit_report
+
+
+def SyntheticIndustrySnapshot(codes: tuple[str, ...], observed_at: datetime) -> CurrentIndustrySnapshot:
+    """Assign the deterministic financial classification of synthetic price fixtures."""
+    classification = "中国上市公司协会上市公司行业分类标准"
+    return CurrentIndustrySnapshot(
+        tuple(CurrentIndustryMember(
+            code, CurrentIndustryReference(
+                "capco:J66货币金融服务", classification, observed_at.date(), "fixture", "fixture",
+            ), "货币金融服务",
+        ) for code in codes),
+        (), observed_at, observed_at + timedelta(days=7), "fixture", classification, "f" * 64,
+    )
 
 
 @dataclass

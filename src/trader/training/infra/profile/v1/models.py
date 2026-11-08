@@ -48,6 +48,10 @@ from trader.training.infra.model_bundles.bundle_codec import ModelBundleContract
 from trader.training.infra.model_bundles.profile_publication import InspectProfileWorkspace, ProfilePublicationLock, RecoverProfilePublication
 from trader.training.infra.profile.composition import SingleHeadCombiner
 from trader.training.infra.profile.v1.settings import ParseV1TrainingSettings
+from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
+from trader.training.infra.training_industry_metadata import (
+    ParseTrainingIndustrySnapshot, ProjectTrainingIndustrySnapshot, ValidateTrainingInputIdentity,
+)
 
 _MAXIMUM_MODEL_DOCUMENT_BYTES = 32 * 1024 * 1024
 _STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
@@ -81,6 +85,10 @@ _SHARED_INPUT_FIELDS = frozenset(
         "source_cutoff",
         "settings",
         "training_identity_hash",
+        "price_snapshot_hash",
+        "industry_policy",
+        "industry_content_hash",
+        "industry_snapshot",
     }
 )
 _MODEL_DOCUMENT_FIELDS = frozenset(
@@ -222,6 +230,10 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None
                 "algorithm": "lightgbm_lambdarank_ridge",
                 "training_input": {
                     "training_input_hash": pair.training_input_hash,
+                    "price_snapshot_hash": pair.price_snapshot_hash,
+                    "industry_policy": TRAINING_INDUSTRY_POLICY,
+                    "industry_content_hash": pair.industry_snapshot.content_hash,
+                    "industry_snapshot": ProjectTrainingIndustrySnapshot(pair.industry_snapshot),
                     "source_identity_hash": pair.source_identity_hash,
                     "calendar_hash": pair.calendar_hash,
                     "source_cutoff": pair.source_cutoff.isoformat(),
@@ -385,6 +397,7 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
         if final_fit:
             input_fields = input_fields | {"calendar_dates", "final_fit"}
         RequireExactKeys(training, set(input_fields), "learned_rank_training_input")
+        ValidateTrainingInputIdentity(training)
         RequireExactKeys(
             report,
             set(_FINAL_VALIDATION_REPORT_FIELDS if final_fit else _VALIDATION_REPORT_FIELDS),
@@ -407,6 +420,9 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
     if any(inputs[1][key] != inputs[0][key] for key in shared_input_fields):
         raise ModelBundleContractError("V1 pair training input differs")
     first_input = inputs[0]
+    industry = ParseTrainingIndustrySnapshot(first_input["industry_snapshot"])
+    if industry.content_hash != _text(first_input, "industry_content_hash"):
+        raise ModelBundleIntegrityError("V1 industry snapshot semantic identity differs")
     if final_fit:
         calendar_dates = _date_vector(first_input["calendar_dates"])
         if BaoStockCalendar(calendar_dates).content_hash != _text(first_input, "calendar_hash"):
@@ -420,6 +436,7 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
             (cast(LearnedRankFinalHead, heads[0]), cast(LearnedRankFinalHead, heads[1])),
             _text(first_input, "training_identity_hash"),
             calendar_dates,
+            price_snapshot_hash=_text(first_input, "price_snapshot_hash"), industry_snapshot=industry,
         )
     else:
         pair = LearnedRankPair(
@@ -430,6 +447,7 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
             ParseV1TrainingSettings(_object(first_input["settings"])),
             (heads[0], heads[1]),
             _text(first_input, "training_identity_hash"),
+            price_snapshot_hash=_text(first_input, "price_snapshot_hash"), industry_snapshot=industry,
         )
     if first["pair_content_hash"] != pair.content_hash:
         raise ModelBundleIntegrityError("V1 pair content hash differs")

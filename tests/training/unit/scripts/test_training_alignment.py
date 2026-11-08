@@ -5,6 +5,7 @@ from tests.helpers.shared.tool_cli import BuildToolCommands, ParseBusinessOption
 from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 from pathlib import Path
 from datetime import date, datetime, timezone
@@ -25,6 +26,44 @@ from scripts.training.jobs.training_alignment import _probe
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 
+def _publish_industry(history, sqlite_policy):
+    from urllib.parse import parse_qs, urlsplit
+    from zoneinfo import ZoneInfo
+    from trader.download.domain.baostock_daily import BaoStockSecurity
+    from trader.download.infra.cninfo_industry import CninfoIndustryClient
+    from trader.download.infra.current_industry_publication import CurrentIndustryPublication
+    from trader.download.infra.history_snapshot_inspection import LoadPublishedHistorySnapshot
+    from trader.infra.http_contracts import HttpResponse
+    from trader.infra.http_transport import RequestsHttpTransport
+
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    standard = "中国上市公司协会上市公司行业分类标准"
+    published = LoadPublishedHistorySnapshot(history, sqlite_policy=sqlite_policy)
+    universe = tuple(BaoStockSecurity(item.code, item.code, "main", date(2000, 1, 1), None, "fixture")
+                     for item in published.universe.securities)
+
+    def execute(request):
+        parsed = urlsplit(request.url)
+        if parsed.path.endswith("p_public0002"):
+            rows = [{"SORTCODE": code, "PARENTCODE": parent, "SORTNAME": name, "F001V": None, "F002D": None,
+                     "F003V": "008001", "F004V": standard}
+                    for code, parent, name in (("0", "008", "中上协行业分类"), ("J", "0", "金融业"),
+                                               ("J66", "J", "货币金融服务"), ("J661", "J66", "中央银行服务"))]
+        else:
+            code = parse_qs(parsed.query)["scode"][0]
+            rows = [{"SECCODE": code, "SECNAME": "测试股份", "ORGNAME": "测试股份有限公司", "VARYDATE": "2024-09-30",
+                     "F001V": "008001", "F002V": standard, "F003V": "J661", "F004V": "金融业", "F005V": None,
+                     "F006V": "货币金融服务", "F007V": "中央银行服务", "F008C": "1"}]
+        return HttpResponse(200, json.dumps({"resultcode": 200, "count": len(rows), "records": rows}, ensure_ascii=False).encode())
+
+    with RequestsHttpTransport(execute_request=execute) as transport:
+        CurrentIndustryPublication(
+            history.parent / "reference/industry.sqlite3", CninfoIndustryClient(
+                transport, request_headers=lambda: (("Accept-Enckey", "fixture"),),
+            ), sqlite_policy=sqlite_policy, clock=lambda: now,
+        ).fetch(now, universe, (date(2024, 1, 1), now.date()))
+
+
 @pytest.mark.parametrize("reported_profile", ("v1", "v2"))
 def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, monkeypatch, reported_profile):
     from scripts.training.jobs import training_alignment
@@ -38,8 +77,10 @@ def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, m
         "history_rows_read": 0,
         "timing": {"source_read_seconds": 0.0, "profiles": [{"profile": reported_profile, "queue_send_seconds": 1.25}]},
     }
+    industry = CurrentIndustrySnapshotFixture(("600001",))
 
     def train(*args, **kwargs):
+        assert kwargs["industry_snapshot"] is industry
         print(json.dumps(profile, ensure_ascii=False, indent=2))
         print(json.dumps(execution, ensure_ascii=False, indent=2))
         return 0
@@ -47,7 +88,7 @@ def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, m
     monkeypatch.setattr(bootstrap, "ExecuteSelectedTraining", train)
     monkeypatch.setattr(profile_factory, "LoadScoringProfile", lambda *args, **kwargs: SimpleNamespace(heads=(1, 2)))
     monkeypatch.setattr(training_alignment, "_numeric_fingerprints", lambda *args: ())
-    result = training_alignment._train_once(None, tmp_path / "history", tmp_path / "work", ("v1",))
+    result = training_alignment._train_once(None, tmp_path / "history", tmp_path / "work", ("v1",), industry_snapshot=industry)
     assert result["complete"] is (reported_profile == "v1")
     assert result["profiles"] == [profile]
     assert result["execution"] == execution
@@ -83,6 +124,25 @@ def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp
         _probe(Path(__file__).resolve().parents[4] / "data/market/history", tmp_path / "probe", sqlite_policy=SqlitePolicyFixture())
     with pytest.raises(ValueError, match="new_separate_output"):
         _probe(tmp_path / "history", tmp_path, sqlite_policy=SqlitePolicyFixture())
+
+
+@pytest.mark.parametrize("failure", ("current_industry_not_published", "current_industry_publication_expired"))
+def test_probe_rejects_unavailable_current_industry_before_creating_output(tmp_path, monkeypatch, failure):
+    from trader import bootstrap
+    from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+
+    def unavailable(*_args):
+        raise ValueError(failure)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("unavailable current industry must not open a training input")
+
+    monkeypatch.setattr(bootstrap, "ReadIndustrySnapshot", unavailable)
+    monkeypatch.setattr(SQLiteHistoryTrainingInputSnapshot, "open", forbidden)
+    work = tmp_path / "output"
+    with pytest.raises(ValueError, match=failure):
+        _probe(tmp_path / "history", work, ("v1",), sqlite_policy=SqlitePolicyFixture())
+    assert not work.exists()
 
 
 @pytest.mark.parametrize("inputs_only", (True, False))
@@ -221,6 +281,7 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
     from scripts.training.jobs.training_alignment import PrepareTrainingHistoryCopy
     from trader.infra.sqlite_publication import PublishSqliteFile
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+    from trader import bootstrap
 
     market = tmp_path / "source/market"
     history = market / "history"
@@ -243,18 +304,23 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
     for path in paths[:2]:
         PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
     before = tuple(path.read_bytes() for path in paths)
+    industry = CurrentIndustrySnapshotFixture(("600001",))
     snapshot = SimpleNamespace(
         snapshot_hash="a" * 64, source_identity_hash="b" * 64,
         source_cutoff=date(2026, 11, 4), training_codes=("600001",),
+        training_input_hash="c" * 64, industry_snapshot=industry,
     )
     calls = []
 
-    def opened(path, *, sqlite_policy):
+    def opened(path, *, industry_snapshot, sqlite_policy):
+        assert industry_snapshot is industry
         calls.append(path)
         value = SimpleNamespace(snapshot_hash="changed") if source_changed and len(calls) == 3 else snapshot
         return SimpleNamespace(snapshot=value)
 
     monkeypatch.setattr(SQLiteHistoryTrainingInputSnapshot, "open", opened)
+    monkeypatch.setattr(bootstrap, "ReadIndustrySnapshot", lambda *_args: industry)
+    monkeypatch.setattr("scripts.training.jobs.training_alignment.shutil.disk_usage", lambda _path: SimpleNamespace(free=2**40))
     target = tmp_path / "copy"
     try:
         if source_changed:
@@ -263,11 +329,12 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
             assert not (target / "copy-summary.json").exists()
         else:
             report = PrepareTrainingHistoryCopy(history, target, timeout_seconds=30, sqlite_policy=SqlitePolicyFixture())
-            assert report["files"] == 3 and report["source_data_writes"] == 0
+            assert report["files"] == 4 and report["source_data_writes"] == 0
             assert report["publication_receipts"] == 2
             assert report["source_identity_unchanged"] is True
-            assert not (target / "reference/industry.sqlite3").exists()
-            for path in paths[:3]:
+            assert report["training_input_hash"] == snapshot.training_input_hash
+            assert report["industry_snapshot_hash"] == industry.content_hash
+            for path in paths:
                 with SqliteSession(target / path.relative_to(market), SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture()) as copied:
                     assert tuple(copied.run("SELECT value FROM fixture").require_one()) == (17,)
         assert tuple(path.read_bytes() for path in paths) == before
@@ -283,6 +350,7 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
     from trader.infra.sqlite_connection import SqliteConnection
     from trader.infra.sqlite_publication import PublishSqliteFile
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+    from trader import bootstrap
 
     market = tmp_path / "source"
     history = market / "history"
@@ -315,12 +383,14 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
     monkeypatch.setattr(SqliteConnection, "backup_to", backup)
     opened = []
 
-    def snapshot(path, *, sqlite_policy):
+    def snapshot(path, *, industry_snapshot, sqlite_policy):
         opened.append(path)
         assert invalid == "copy_escape" and path == history and len(opened) == 1
         return SimpleNamespace(snapshot=object())
 
     monkeypatch.setattr(SQLiteHistoryTrainingInputSnapshot, "open", snapshot)
+    monkeypatch.setattr(bootstrap, "ReadIndustrySnapshot", lambda *_args: CurrentIndustrySnapshotFixture(("600001",)))
+    monkeypatch.setattr("scripts.training.jobs.training_alignment.shutil.disk_usage", lambda _path: SimpleNamespace(free=2**40))
     destination = tmp_path / "copy"
     before = paths[0].read_bytes()
     with pytest.raises(ValueError, match="training_history_copy_reference_invalid"):
@@ -332,16 +402,19 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
 
 
 @pytest.mark.parametrize("receipt_state", ("valid", "missing", "corrupt"))
-def test_real_history_copy_preserves_readable_publication_and_rejects_invalid_source_receipts(tmp_path, receipt_state):
+def test_real_history_copy_preserves_readable_publication_and_rejects_invalid_source_receipts(tmp_path, monkeypatch, receipt_state):
     from scripts.training.jobs.training_alignment import PrepareTrainingHistoryCopy
     from scripts.training.jobs.training_alignment import _published_input_signature
     from scripts.training.samples.training_read_comparison import PrepareTrainingHistory
     from scripts.training.samples.training_read_comparison import TrainingRowsHash
     from trader.infra.sqlite_publication import SqlitePublicationError
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+    from trader.bootstrap import ReadIndustrySnapshot
+    from zoneinfo import ZoneInfo
 
     policy = SqlitePolicyFixture()
-    history = PrepareTrainingHistory(tmp_path / "source", size=2, sessions=2000, sqlite_policy=policy)
+    history = PrepareTrainingHistory(tmp_path / "source", size=2, sessions=40, sqlite_policy=policy)
+    _publish_industry(history, policy)
     database = next(history.glob("prices_*.sqlite3"))
     receipt = database.with_name(database.name + ".sha256")
     if receipt_state == "missing":
@@ -350,14 +423,16 @@ def test_real_history_copy_preserves_readable_publication_and_rejects_invalid_so
         receipt.write_bytes(b"invalid")
     before = _published_input_signature(history)
     destination = tmp_path / "copy"
+    monkeypatch.setattr("scripts.training.jobs.training_alignment.shutil.disk_usage", lambda _path: SimpleNamespace(free=2**40))
     if receipt_state != "valid":
         with pytest.raises(SqlitePublicationError, match="sqlite_publication_"):
             PrepareTrainingHistoryCopy(history, destination, timeout_seconds=30, sqlite_policy=policy)
         assert not (destination / "copy-summary.json").exists()
     else:
         result = PrepareTrainingHistoryCopy(history, destination, timeout_seconds=30, sqlite_policy=policy)
-        original = SQLiteHistoryTrainingInputSnapshot.open(history, sqlite_policy=policy)
-        copied = SQLiteHistoryTrainingInputSnapshot.open(destination / "history", sqlite_policy=policy)
+        industry = ReadIndustrySnapshot(history.parent / "reference", datetime.now(ZoneInfo("Asia/Shanghai")), policy)
+        original = SQLiteHistoryTrainingInputSnapshot.open(history, industry_snapshot=industry, sqlite_policy=policy)
+        copied = SQLiteHistoryTrainingInputSnapshot.open(destination / "history", industry_snapshot=industry, sqlite_policy=policy)
         dates = frozenset(original.snapshot.calendar.open_dates)
         assert copied.snapshot == original.snapshot
         assert TrainingRowsHash(copied.iter_training_rows(dates)) == TrainingRowsHash(original.iter_training_rows(dates))
@@ -543,6 +618,7 @@ def test_real_published_history_training_never_persists_due_observations(tmp_pat
     project = Path(__file__).resolve().parents[4]
     runtime = replace(LoadRuntimeSettings(project / "config/runtime.json"), data_paths=DataPaths(tmp_path / "source"))
     history = PrepareTrainingHistory(tmp_path / "source", size=4, sessions=2000, sqlite_policy=SqlitePolicyFixture())
+    _publish_industry(history, SqlitePolicyFixture())
     settings = LoadProfileTrainingSettings(project, "v3")
     settings = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=10))
     monkeypatch.setattr(selected_training, "LoadProfileTrainingSettings", lambda *_args: settings)
@@ -589,10 +665,13 @@ def test_alignment_keeps_completed_workload_checkpoints_after_later_interruption
     from scripts.training.jobs import training_alignment
     from trader.infra import settings
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+    from trader import bootstrap
 
     project = Path(__file__).resolve().parents[4]
-    source = SimpleNamespace(snapshot=SimpleNamespace(snapshot_hash="a" * 64, training_codes=("600001",)))
+    source = SimpleNamespace(snapshot=SimpleNamespace(snapshot_hash="a" * 64, training_input_hash="b" * 64,
+                                                     training_codes=("600001",)))
     monkeypatch.setattr(SQLiteHistoryTrainingInputSnapshot, "open", lambda *_args, **_kwargs: source)
+    monkeypatch.setattr(bootstrap, "ReadIndustrySnapshot", lambda *_args: CurrentIndustrySnapshotFixture(("600001",)))
     monkeypatch.setattr(settings, "LoadRuntimeSettings", lambda _path: SimpleNamespace(
         project_root=project,
         data_paths=SimpleNamespace(root=tmp_path / "active", history=tmp_path / "active/history"),

@@ -6,9 +6,11 @@
 
 ## 1. 输入固定，双头独立
 
-每次作业固定一个已发布历史版本及配置、特征身份。四档各有 Tomorrow、D25，共八个模型头；每档双头合格才发布该档模型。某档失败不污染其它档位，不覆盖旧有效工件。
+每次作业固定一个已发布价格历史版本、一份最新有效当前行业映射及配置、特征身份。四档共用该行业映射处理全部历史日期，不按历史行业变更切换；各有 Tomorrow、D25，共八个模型头，每档双头合格才发布该档模型。某档失败不污染其它档位，不覆盖旧有效工件。
 
 正常训练先形成近期生产诊断模型，再将最终模型重新拟合到该头最新标签成熟日。`BuildFinalFitDatePlan`按冻结交易日历，从源截止日回退Tomorrow的1个交易日或D25的5个交易日，取配置的最近N个成熟信号日；V1/V2/V3/V5分别仍为750/1000/750/61日。读取源末日用于观测标签，不把源末日本身当成成熟信号日，也不把`label_cutoff`当作诊断模型的实际拟合终点。源版本没有最近资料时，训练不会自行下载或伪补，须先完成历史同步。
+
+例如价格源截止2026-11-06、相关日期按冻结市场日历正常交易时，Tomorrow最新成熟训练信号为11-05，D25为10-30；11-06价格仍可提供标签观测及最新已完成历史特征。预测按合法信号各自的特征锚点和实时锚点取数，未来目标价格无需先存在。以11-06信号为例，Tomorrow目标是11-09，D25对应第2–5个市场日11-10至11-13；11-09等后续信号须重新按实际市场日历定位，不能沿用该例目标日期。价格截止、成熟训练信号和预测输入分别核对，行业规则切换不改变这些日期或预测公式。
 
 V2/V3/V5的近期生产诊断由`BuildProductionDiagnosticDatePlan`拥有：两头共用D25的5交易日成熟末日，倒序分配20日验证、5日隔离、20日校准、需要时5日隔离及20日早停、5日隔离、配置N日拟合和原特征预热。共用分区只是诊断的保守日期选择，最终拟合仍分别到各头1/5交易日成熟末日。研究的`BuildTrainingDateSplit`保留原200日确认及留出合同，研究模型和旧记录只按各自身份解释；正常生产诊断不再使用这套长期留出决定轮次、行业资格或校准。
 
@@ -45,7 +47,7 @@ CLI的`train`通过唯一组合根 `bootstrap.ExecuteSelectedTraining`独立启�
 
 ### 3.1 原始历史与参考
 
-数据库：`data/market/history/catalog.sqlite3` 保存发布/日历/总体身份，年度 `data/market/history/prices_<year>.sqlite3` 的 `daily_price_revision`、`daily_price_observation` 提供对应版本价格；行业使用该历史发布绑定的参考。`HistoryTrainingRow`、`HistoryTrainingPoint` 是读取后形成的程序对象，不是数据库表名。路径以 `config/runtime.json` 的 `data_dir=data` 举例。
+数据库：`data/market/history/catalog.sqlite3` 保存发布/日历/总体身份，年度 `data/market/history/prices_<year>.sqlite3` 的 `daily_price_revision`、`daily_price_observation` 提供对应版本价格；行业从 `data/market/reference/industry.sqlite3` 的最新有效完整发布只读固定，不再使用历史发布绑定的行业区间。`HistoryTrainingRow`、`HistoryTrainingPoint` 是读取后形成的程序对象，不是数据库表名。路径以 `config/runtime.json` 的 `data_dir=data` 举例。
 
 | 数据库/对象 | 字段 | 中文意思及训练作用 |
 | --- | --- | --- |
@@ -59,11 +61,13 @@ CLI的`train`通过唯一组合根 `bootstrap.ExecuteSelectedTraining`独立启�
 | `HistoryTrainingPoint` | qfq_close_price、qfq_open、qfq_high、qfq_low | 收益、动量、波动及V5价格通道 |
 | 同对象 | raw_volume | 未复权分支的成交量，下载合同单位为股；进入V5量通道，不取qfq_volume |
 | 同对象 | qfq_amount | qfq分支随价格取得的成交额，下载合同单位为元；用于20日均额、V1金额因子和V5金额通道，未按价格复权比重新计算 |
-| 历史行业参考 | 行业ID、日期、生效与版本 | 当时行业、横截面、行业模型，不能用当前行业倒填 |
+| `CurrentIndustrySnapshot` | 选定证券的行业ID／中文名称、分类、缺口及发布凭据 | 本轮固定最新行业用于全历史分组；V1仅准入，V2/V3/V5用于残差暴露及行业模型 |
 
 源表全列的SQL类型、单位、来源和索引归d第8章；本表只解释训练消费。尤其量额必须沿真实解析链核对，不因qfq字段名猜测或改公式。
 
-历史行业由下载先形成官方公开可用区间，再绑定到新历史快照；训练不直接把`industry.sqlite3`里的当前分类或变更日期当作历史事实。V1在无法复用整组模型时，也会在共享价格扫描前拒绝完全没有行业区间的输入；该预检只是必要条件，不替代各分区有效日期和样本行数门。已有完整模型复用仍为零价格扫描、零拟合。所需行业日期是各档实际样本信号日，不把价格预热窗口误当成必须具备行业的日期；官方资料不足时保留具体档位未就绪，不减少日期或训练轮数。
+训练开始后由组合根注入的只读加载器取得一份最新有效`CurrentIndustrySnapshot`，再投影到同一价格发布的资格代码集合；四档、双头、近期诊断和最终拟合共享该不可变映射。`HistorySnapshotReader`只在程序对象上给历史价格行附加固定行业，不改写年度价格或旧历史参考。V1仍是全市场排序器与独立收益门，行业只用于原有准入及诊断；V2/V3/V5按这份映射构造残差暴露并分行业拟合。缺发布、过期或原件损坏明确拒绝，缺代码保留原因，不用“其他行业”凑行；各分区日期、样本行数和新股边界继续按原门槛核验，V1/V2/V3/V5仍为750/1000/750/61日，V5仍10轮。
+
+`BuildTrainingInputHash`以价格快照摘要、行业语义摘要和`latest_snapshot`策略共同生成训练输入身份。行业语义摘要只包含分类标准、所选代码到行业ID／中文名称的映射及缺口；发布时间、刷新期限、变更日期、回执和原查询摘要保留为独立凭据，不单独导致重训。同一价格和分组允许按原规则复用完整模型；映射、缺口、价格或其它语义合同变化则不得复用旧样本／模型。模型封存完整所选映射与来源凭据供重建和核查，旧工件不补字段、不重贴身份，也不删除或重建现有数据。此分组规则不证明历史当时行业归属或点时收益验证通过。
 
 当前消费者追链与b第5.1节一致：年度库`history_prices._TRAINING_RANGE_SQL`的量额列只取`raw_volume`及`qfq_amount`，`_decode_training_row`构造`HistoryTrainingPoint`；`AlignTrainingRows`再按市场日历保留交易、确认停牌及估值状态。V1的`profile/v1/samples._complete_point`把金额交给完成日十因子；V2/V3/V5的`sample_builder._pending_sample`计算20日均额，V5的`_sequence_point`将原始量和qfq分支金额交给唯一序列公式，分别形成`log1p(volume)`和`log1p(amount)`。停牌估值的零量额由共享日历对齐规则产生，不改写年度原始事实；缺失、非有限或不满足各档准入的值不能通过换列或补0掩盖。
 
@@ -120,7 +124,7 @@ V1十因子和V5的60×6通道在c第7章逐项解释；物理字段、列顺序
 | `samples.trade_date` | INTEGER非空，日 | 信号日；同日股票必须进入同一分区 |
 | `code` | TEXT非空 | 六位证券代码，与日期构成行身份 |
 | `board` | TEXT非空 | 板块暴露，来自历史窄投影 |
-| `industry` | TEXT非空 | 历史发布绑定的行业，供残差化及行业模型选择 |
+| `industry` | TEXT非空 | 本轮固定最新行业，供残差化及行业模型选择 |
 | `avg_amount_20d` | REAL非空，金额沿输入合同 | 20日均额，供对数流动性暴露；写入前检查有效性 |
 | 第3.5节具名特征列 | REAL非空、有限数 | 按有序manifest生成，不能用0填必需缺失 |
 | V5 `sequence_start` | INTEGER非空，≥0，时间步 | 当前证券的60步序列在重叠块流中的起点；不是BLOB字节偏移 |
@@ -191,7 +195,7 @@ V5在各头辅助列后接360个序列值；两个头完整输入维数分别366
 | --- | --- | --- |
 | `trade_date` | INTEGER，日 | 信号日期，四分区和query共同使用 |
 | `code` | TEXT | 六位代码，排序/追溯使用 |
-| `industry` | TEXT | 历史行业证据及诊断，不据此换成行业V2模型 |
+| `industry` | TEXT | 本轮固定最新行业的准入及诊断，不据此换成行业V2模型 |
 | `return_1d` | REAL，收益小数 | 前一完整日锚点的1日收益 |
 | `return_3d` | REAL，收益小数 | 同锚点3日收益 |
 | `return_5d` | REAL，收益小数 | 同锚点5日收益 |
@@ -537,7 +541,11 @@ V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要�
 | `schema_version` | 该档头训练输入格式 |
 | `profile_id`、`strategy_head` | 所属档位、策略头，各自独立校验 |
 | `training_input_scope` | 固定 `complete_manifest` |
-| `training_input_hash` | 完整训练输入身份 |
+| `training_input_hash` | 价格快照、所选行业语义摘要与`latest_snapshot`共同生成的训练输入身份 |
+| `price_snapshot_hash` | 原已发布价格快照摘要，独立保留，不改写价格manifest |
+| `industry_policy` | 固定`latest_snapshot`，本轮最新行业映射用于全部历史日期 |
+| `industry_content_hash` | 所选代码映射及缺口的语义摘要，不含刷新时间及原件回执 |
+| `industry_snapshot` | 完整所选members／gaps、原生中文名称、引用、真实发布时间、刷新期限、来源、分类及publication_hash／content_hash；由训练codec白名单封存与校验 |
 | `training_run_hash` | 同档本次作业身份，双头一致 |
 | `label_cutoff` | 标签截止，早于source_cutoff |
 | `source_identity_hash` | 已发布历史源身份 |
@@ -558,7 +566,7 @@ V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要�
 
 `model.json`由 `industries`及自身 `content_hash`组成。每行业必须有逐列 `transformer_means/transformer_scales`与 `calibration_intercept/calibration_slope`，标准差尺度>0、向量维数匹配；V2另有 `lightgbm_model/lightgbm_best_iteration`，V3另有 `ridge_intercept/ridge_coefficients`，V5另有 `tcn_network`。TCN网络记录contract、architecture、hidden_channels、compute_dtype、dropout及具名权重的shape/values；不能只取一个能加载的权重文件就当完整工件。
 
-V1的两个文件使用独立白名单：model包含 `schema_version/profile_id/strategy_head/pair_content_hash/head_content_hash/components/content_hash`；metadata除共同身份外还含 `model_id/score_scale/model_hash/contract_hash/feature_ids/algorithm/training_input/validation_report`。其中pair摘要保证双头同组、head摘要保证各头独立；components保存排序器、独立收益门、标准化和校准等具名分量。V1输入记录完整settings、训练/源/日历身份、资料截止、分区及头输入证据；报告明确 `feature_anchor=previous_completed_session` 与 `label_anchor=signal_close_proxy`。字段细节以 `profile/v1/models.py`与domain类型为准，不能用通用metadata解码器猜测。
+V1的两个文件使用独立白名单：model包含 `schema_version/profile_id/strategy_head/pair_content_hash/head_content_hash/components/content_hash`；metadata除共同身份外还含 `model_id/score_scale/model_hash/contract_hash/feature_ids/algorithm/training_input/validation_report`。其中pair摘要保证双头同组、head摘要保证各头独立；components保存排序器、独立收益门、标准化和校准等具名分量。V1输入记录完整settings、训练/价格源/日历身份、`latest_snapshot`策略、行业语义摘要、完整所选行业映射及发布凭据、资料截止、分区及头输入证据；报告明确 `feature_anchor=previous_completed_session` 与 `label_anchor=signal_close_proxy`。字段细节以 `profile/v1/models.py`与domain类型为准，不能用通用metadata解码器猜测。
 
 评价报告的逐项预测指标由 `model_bundles/evaluation_codec.py`维护，研究准入归c第15章；本节不复制第二份指标公式。报告必须保留工程结构、预测诊断和 `daily_close_proxy_not_point_in_time`的收益缺口；人工生产授权不改写这些证据。
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
+from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
 from trader.training.application.resources import TrainingSampleSettings
 from trader.training.application.profile_training import (
     HeadTrainingResult, InspectProfileReuse, PreparedTrainingHead, PreparedTrainingSamples, ProfileFittingPort,
@@ -99,6 +101,7 @@ from trader.training.infra.sample_index import (
 from trader.training.infra.sample_schema import TrainingFeatureNames
 from trader.training.infra.sample_sequences import SEQUENCE_FORMAT, SampleSequenceLayout
 from trader.training.infra.training_settings import ProfileTrainingSettings
+from trader.training.infra.training_industry_metadata import ProjectTrainingIndustrySnapshot
 
 class _TrainingInputSnapshot(TrainingHistorySource, Protocol):
     snapshot: HistoryTrainingInputSnapshot
@@ -147,6 +150,7 @@ class ProfileTrainingRequest:
     settings: ProfileTrainingSettings
     sample_root: Path = field(kw_only=True)
     sample_settings: TrainingSampleSettings = field(kw_only=True)
+    industry_snapshot: CurrentIndustrySnapshot = field(kw_only=True)
     progress: TomorrowTrainingProgressPort | None = None
     expected_history_snapshot_hash: str | None = None
     memory_admission: TrainingMemoryAdmission | None = None
@@ -221,7 +225,9 @@ def _run_training(request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPol
     _publish(request.progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
     _publish(request.progress, TomorrowTrainingProgress("input_read", "started", 0, 1))
     try:
-        history = SQLiteHistoryTrainingInputSnapshot.open(request.history_root, sqlite_policy=sqlite_policy)
+        history = SQLiteHistoryTrainingInputSnapshot.open(
+            request.history_root, industry_snapshot=request.industry_snapshot, sqlite_policy=sqlite_policy,
+        )
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
         heads = tuple(_unavailable_result(item, _reason(exc)) for item in request.contracts)
         return TrainingRunResult(None, "", 0, heads)
@@ -236,7 +242,9 @@ def _run_training(request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPol
             HistoryMaintenanceLock(history.history_root.with_name(".history.lock")),
             HistoryMaintenanceLock(training_lock),
         ):
-            history = SQLiteHistoryTrainingInputSnapshot.open(request.history_root, sqlite_policy=sqlite_policy)
+            history = SQLiteHistoryTrainingInputSnapshot.open(
+                request.history_root, industry_snapshot=request.industry_snapshot, sqlite_policy=sqlite_policy,
+            )
             try:
                 RequireHistoryRepackIdle(history.history_root)
             except HistoryPartitionRepackFenceError:
@@ -247,13 +255,13 @@ def _run_training(request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPol
         heads = tuple(
             _blocked_from_snapshot(item, history.snapshot, "history_maintenance_running") for item in request.contracts
         )
-        return TrainingRunResult(None, history.snapshot.snapshot_hash, 0, heads)
+        return TrainingRunResult(None, history.snapshot.training_input_hash, 0, heads)
     except HistoryPartitionRepackFenceError:
         heads = tuple(
             _blocked_from_snapshot(item, history.snapshot, "history_archive_repack_activation_pending")
             for item in request.contracts
         )
-        return TrainingRunResult(None, history.snapshot.snapshot_hash, 0, heads)
+        return TrainingRunResult(None, history.snapshot.training_input_hash, 0, heads)
 
 
 def FitSelectedProfile(
@@ -489,7 +497,7 @@ def _sample_cache_for(
     cache_identity = ContentHash(
         (
             TrainingImplementationIdentity(),
-            snapshot.snapshot_hash,
+            snapshot.training_input_hash,
             snapshot.input_descriptor_hash,
             request.profile.profile_id,
             split.content_hash,
@@ -568,7 +576,9 @@ def _reopen_expected_snapshot(
 ) -> tuple[_TrainingInputSnapshot, bool]:
     if expected_snapshot_hash is None:
         return history, True
-    reopened = SQLiteHistoryTrainingInputSnapshot.open(history.history_root, sqlite_policy=sqlite_policy)
+    reopened = SQLiteHistoryTrainingInputSnapshot.open(
+        history.history_root, industry_snapshot=history.snapshot.industry_snapshot, sqlite_policy=sqlite_policy,
+    )
     return reopened, reopened.snapshot.snapshot_hash == expected_snapshot_hash
 
 
@@ -640,7 +650,7 @@ def _fit_and_prepare_head(
                 "rejected",
                 snapshot.input_scope,
                 request.run_id,
-                snapshot.snapshot_hash,
+                snapshot.training_input_hash,
                 len(snapshot.training_codes),
                 snapshot.universe_count,
                 report_hash,
@@ -672,7 +682,7 @@ def _fit_and_prepare_head(
             "engineering_ready",
             snapshot.input_scope,
             request.run_id,
-            snapshot.snapshot_hash,
+            snapshot.training_input_hash,
             len(snapshot.training_codes),
             snapshot.universe_count,
             report_hash,
@@ -793,7 +803,11 @@ def _training_input_document(context: _TrainingInputDocumentContext) -> dict[str
         "profile_id": profile.profile_id,
         "strategy_head": contract.strategy.value,
         "training_input_scope": snapshot.input_scope,
-        "training_input_hash": snapshot.snapshot_hash,
+        "training_input_hash": snapshot.training_input_hash,
+        "price_snapshot_hash": snapshot.snapshot_hash,
+        "industry_policy": TRAINING_INDUSTRY_POLICY,
+        "industry_content_hash": snapshot.industry_snapshot.content_hash,
+        "industry_snapshot": ProjectTrainingIndustrySnapshot(snapshot.industry_snapshot),
         "training_run_hash": context.training_run_hash,
         "label_cutoff": context.label_cutoff.isoformat(),
         "source_identity_hash": snapshot.source_identity_hash,
@@ -820,7 +834,10 @@ def _common_document(context: _TrainingRunContext) -> dict[str, object]:
     snapshot = context.snapshot
     return {
         "training_input_scope": snapshot.input_scope,
-        "training_input_hash": snapshot.snapshot_hash,
+        "training_input_hash": snapshot.training_input_hash,
+        "price_snapshot_hash": snapshot.snapshot_hash,
+        "industry_policy": TRAINING_INDUSTRY_POLICY,
+        "industry_content_hash": snapshot.industry_snapshot.content_hash,
         "training_run_hash": context.training_run_hash,
         "label_cutoff": context.label_cutoff.isoformat(),
         "source_identity_hash": snapshot.source_identity_hash,
@@ -850,6 +867,7 @@ def _read_profile_source(
             _training_contract_hash(request.profile, contract, request.settings, compute_threads=request.compute_threads),
         ) for contract in request.contracts),
         history.describe_frozen_daily_input(), target_matches,
+        industry_content_hash=snapshot.industry_snapshot.content_hash,
     )
 
 
@@ -922,6 +940,7 @@ def _training_contract_hash(
             "prediction_evaluation_contract": RECENT_PREDICTION_EVALUATION_CONTRACT,
             "diagnostic_date_contract": PRODUCTION_DIAGNOSTIC_CONTRACT,
             "final_fit_contract": FINAL_FIT_CONTRACT,
+            "industry_policy": TRAINING_INDUSTRY_POLICY,
             "model_parameters": FittingParameterDocument(fitting)
             if isinstance(fitting, TcnFittingParameters)
             else {"ridge_penalty": fitting.penalty}
@@ -974,7 +993,7 @@ def _base_result(
         status,
         snapshot.input_scope,
         None,
-        snapshot.snapshot_hash,
+        snapshot.training_input_hash,
         len(snapshot.training_codes),
         snapshot.universe_count,
         "",

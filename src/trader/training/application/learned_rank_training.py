@@ -99,7 +99,7 @@ def InspectLearnedRankTraining(session: LearnedRankInspectionPort) -> V1Training
         return None
     session.check_cancelled()
     return V1TrainingResult(
-        "engineering_ready", session.source.identity_hash, session.source.snapshot_hash, 0, pair.heads, reused=True,
+        "engineering_ready", session.source.identity_hash, session.source.training_input_hash, 0, pair.heads, reused=True,
     )
 
 
@@ -114,7 +114,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
     try:
         with operations.open() as session:
             source = session.source
-            run_id, input_hash = source.identity_hash, source.snapshot_hash
+            run_id, input_hash = source.identity_hash, source.training_input_hash
             reused = InspectLearnedRankTraining(session)
             if reused is not None:
                 return reused
@@ -139,8 +139,9 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
                         _progress(session.progress, "final_model_refit", "completed", diagnostic.strategy)
                 _progress(session.progress, "artifact_publish", "started", None)
                 pair = LearnedRankFinalPair(
-                    source.snapshot_hash, source.source_identity_hash, source.calendar_hash, source.source_cutoff,
+                    source.training_input_hash, source.source_identity_hash, source.calendar_hash, source.source_cutoff,
                     plan.settings, (heads[0], heads[1]), run_id, source.calendar,
+                    price_snapshot_hash=source.snapshot_hash, industry_snapshot=source.industry_snapshot,
                 )
                 session.check_cancelled()
                 session.publish_pair(pair)

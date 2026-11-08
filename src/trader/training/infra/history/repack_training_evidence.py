@@ -25,8 +25,8 @@ def VerifyHistoryRepackTraining(
     bundle = InspectPublishedProfileBundles(training_root.resolve() / "v3", V3_TRAINING_PROFILE)[0]
     evidence = ReadTomorrowTrainingMemoryEvidence(memory_evidence_path.resolve())
     if (
-        bundle.training_input_hash != snapshot_hash
-        or evidence.training_input_hash != snapshot_hash
+        bundle.price_snapshot_hash != snapshot_hash
+        or evidence.training_input_hash != bundle.training_input_hash
         or evidence.model_hash != bundle.model_hash
         or evidence.report_hash != bundle.report_hash
     ):

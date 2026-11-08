@@ -112,10 +112,14 @@ def _probe(source: Path, work: Path, *, sample_settings: TrainingSampleSettings,
         raise ValueError("V5 probe requires a published history")
     published = HistoryControlIndex(source / "catalog.sqlite3", sqlite_policy=sqlite_policy).read_universe_reference(state.universe.content_hash)
     reference = ReadBoundHistoryReference(source, state.source.supplier_contract, sqlite_policy=sqlite_policy)
+    from trader.bootstrap import ReadIndustrySnapshot
+
+    industry_snapshot = ReadIndustrySnapshot(
+        source.parent / "reference", datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy,
+    ).project(tuple(sorted(item.code for item in state.universe.securities)))
     groups: dict[str, set[str]] = defaultdict(set)
-    for interval in reference.industry_intervals:
-        if interval.effective_to is None:
-            groups[interval.industry].add(interval.code)
+    for member in industry_snapshot.members:
+        groups[member.reference.industry_id].add(member.code)
     eligible = {item.code: item for item in state.universe.securities}
     industry, members = max(groups.items(), key=lambda pair: len(pair[1]))
     selected = sorted(
@@ -139,7 +143,7 @@ def _probe(source: Path, work: Path, *, sample_settings: TrainingSampleSettings,
         BaoStockCalendar(state.calendar.open_dates),
         universe,
         BaoStockSourceVersions("bounded_frozen_v5_export", platform.python_version(), ()),
-        tuple(item for item in reference.industry_intervals if item.code in codes),
+        (),
         tuple(item for item in reference.st_evidence if item.code in codes),
     )
     configuration = replace(
@@ -174,6 +178,7 @@ def _probe(source: Path, work: Path, *, sample_settings: TrainingSampleSettings,
             settings,
             sample_root=work / "samples",
             sample_settings=sample_settings,
+            industry_snapshot=industry_snapshot,
         ), sqlite_policy=sqlite_policy
     )
     if result.status == "engineering_ready":

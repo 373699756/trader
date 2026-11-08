@@ -11,6 +11,7 @@ import pytest
 
 from scripts.training.samples.training_read_comparison import PrepareTrainingHistory
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from tests.helpers.training.configuration import TcnFittingParametersFixture
 from tests.helpers.training.execution.selected_profiles import ROOT, _Progress
 from tests.helpers.training.profiles.v1.learned_rank_training import _settings
@@ -27,11 +28,14 @@ from trader.training.application.selected_training import TrainSelectedProfiles
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 
+_CURRENT_INDUSTRY = CurrentIndustrySnapshotFixture(("000001", *(f"60000{number}" for number in range(6))))
+
+
 @pytest.mark.slow_training
 def test_four_profiles_publish_and_reuse_the_real_history_calendar(tmp_path: Path, monkeypatch) -> None:
     policy = SqlitePolicyFixture()
     history_root = PrepareTrainingHistory(tmp_path / "source", size=6, sessions=2000, sqlite_policy=policy)
-    source = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=policy)
+    source = SQLiteHistoryTrainingInputSnapshot.open(history_root, industry_snapshot=_CURRENT_INDUSTRY, sqlite_policy=policy)
     published = source.published_snapshot
 
     def settings(project: Path, profile: str):
@@ -63,7 +67,7 @@ def test_four_profiles_publish_and_reuse_the_real_history_calendar(tmp_path: Pat
         memory_capacity_bytes=memory_capacity,
     )
     with ThreadPoolExecutor(max_workers=4) as executor:
-        initial = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy), executor)
+        initial = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy, load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
         assert initial.history_scan_passes == 1
         for outcome in initial.outcomes:
             assert outcome.failure is None, (outcome.profile, outcome.failure)
@@ -80,14 +84,15 @@ def test_four_profiles_publish_and_reuse_the_real_history_calendar(tmp_path: Pat
             if path.name == "metadata.json":
                 inputs = json.loads(content)["training_input"]
                 assert inputs["calendar_hash"] == source.snapshot.calendar.content_hash
-                assert inputs["training_input_hash"] == published.content_hash
+                assert inputs["price_snapshot_hash"] == published.content_hash
+                assert inputs["training_input_hash"] == source.snapshot.training_input_hash
                 assert inputs["source_identity_hash"] == published.source_identity_hash
-        repeated = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy), executor)
+        repeated = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy, load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
 
     assert repeated.history_scan_passes == repeated.history_rows_read == 0
     assert all(
         item.failure is None and item.result is not None and item.result.reused for item in repeated.outcomes
     )
     assert {path: path.read_bytes() for path in files} == files
-    current = SQLiteHistoryTrainingInputSnapshot.open(history_root, sqlite_policy=policy)
+    current = SQLiteHistoryTrainingInputSnapshot.open(history_root, industry_snapshot=_CURRENT_INDUSTRY, sqlite_policy=policy)
     assert current.published_snapshot == published

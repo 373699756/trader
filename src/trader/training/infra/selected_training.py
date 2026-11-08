@@ -10,12 +10,13 @@ import time
 from collections.abc import Callable, Generator, Iterator
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime
 from functools import partial
 from pathlib import Path
 from threadpoolctl import ThreadpoolController
 
 from trader.download.domain.history_revision import HistoryTrainingRow
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.settings import RuntimeSettings
@@ -101,6 +102,8 @@ class SelectedTrainingRequest:
 class SelectedTrainingAdapter:
     request: SelectedTrainingRequest
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
+    load_industry_snapshot: Callable[[datetime], CurrentIndustrySnapshot] = field(kw_only=True)
+    clock: Callable[[], datetime] = field(kw_only=True)
     _measurements: TrainingExecutionMeasurements = field(init=False)
 
     def __post_init__(self) -> None:
@@ -142,7 +145,10 @@ class SelectedTrainingAdapter:
             for profile in request.profiles:
                 scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
             RequireHistoryRepackIdle(paths.history)
-            history = SQLiteHistoryTrainingInputSnapshot.open(paths.history, sqlite_policy=self.sqlite_policy)
+            industry = self.load_industry_snapshot(self.clock())
+            history = SQLiteHistoryTrainingInputSnapshot.open(
+                paths.history, industry_snapshot=industry, sqlite_policy=self.sqlite_policy,
+            )
             factory = _TrainingTaskFactory(
                 request, history, scope, self._measurements, sqlite_policy=self.sqlite_policy,
             )
@@ -284,6 +290,7 @@ class _TrainingTaskFactory:
                 progress,
                 sample_root=paths.samples,
                 sample_settings=selection.sample_settings,
+                industry_snapshot=self.history.snapshot.industry_snapshot,
                 memory_admission=self.measurements.memory_admission(profile, selection.memory_admission),
                 cpu_admission=self.measurements.cpu_admission(profile, selection.cpu_budget),
                 compute_threads=settings.fitting.compute_threads if isinstance(settings.fitting, TcnFittingParameters)

@@ -14,6 +14,7 @@ import pytest
 from tests.helpers.download.history_fixtures import RunHistoryFixture
 from tests.helpers.download.history.history_sync_progress import _compact_log
 from tests.helpers.download.history.infra.history_sync import NOW, FakeSupplier, ProgressRecorder, _configuration, _download
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
@@ -167,15 +168,21 @@ def test_inferred_suspension_is_published_without_a_price_or_retry_gap(tmp_path,
     assert result.state == "completed" and result.unresolved_price_cells == 0
     current_snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
-    assert all(row.cell.status == "tencent_inferred_suspended" for row in reader.read_day(DAYS[1], current_snapshot))
-    training = tuple(reader.iter_training_rows(current_snapshot, DAYS, ("600001", "600002")))
+    suspended = reader.read_day(DAYS[1], current_snapshot)
+    assert tuple(row.code for row in suspended) == ("600001", "600002")
+    assert all(row.cell.status == "tencent_inferred_suspended" for row in suspended)
+    training = tuple(reader.iter_training_rows(
+        current_snapshot, DAYS, ("600001", "600002"),
+        industry_snapshot=CurrentIndustrySnapshotFixture(("600001", "600002")),
+    ))
     assert all(
         row.point is None and row.cell_status == "tencent_inferred_suspended"
         for row in training
         if row.trade_date == DAYS[1]
     )
     assert all(row.point is not None for row in training if row.trade_date != DAYS[1])
-    assert "推定停牌 1" in _compact_log(capsys.readouterr().err)
+    logs = _compact_log(capsys.readouterr().err)
+    assert "确认600001-600001" in logs and "确认600002-600002" in logs
     supplier.calls.clear()
     assert RunHistoryFixture(_configuration(tmp_path), supplier, clock=lambda: NOW).unresolved_price_cells == 0
     assert not supplier.calls
@@ -194,7 +201,10 @@ def test_explicit_unknown_tencent_cell_remains_retryable_without_baostock(tmp_pa
     cells = reader.read_day(DAYS[1], current_snapshot)
     assert all(row.cell.status == "unknown_missing" for row in cells)
     assert all(row.cell.qfq is None or row.cell.qfq.close_price is None for row in cells)
-    training = tuple(reader.iter_training_rows(current_snapshot, DAYS, ("600001", "600002")))
+    training = tuple(reader.iter_training_rows(
+        current_snapshot, DAYS, ("600001", "600002"),
+        industry_snapshot=CurrentIndustrySnapshotFixture(("600001", "600002")),
+    ))
     assert all(row.point is None for row in training if row.trade_date == DAYS[1])
     assert {row.trade_date for row in training} == set(DAYS)
     logs = _compact_log(capsys.readouterr().err)

@@ -208,6 +208,7 @@ def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_sa
             options,
             sample_root=tmp_path / "samples",
             sample_settings=sample_settings,
+            industry_snapshot=snapshot.industry_snapshot,
         )
         return (
             _sample_cache_for(snapshot, split, request, sqlite_policy=SqlitePolicyFixture()).identity,

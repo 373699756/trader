@@ -133,14 +133,14 @@ def InspectProfileReuse(
         result = current.result
         if (
             result.status != "engineering_ready"
-            or result.training_input_hash != source.snapshot_hash
+            or result.training_input_hash != source.training_input_hash
             or result.label_cutoff != head.label_cutoff
             or current.training_contract_hash != head.training_contract_hash
             or result.final_fit != head.final_fit
             or result.diagnostic_plan != plan.split
         ):
             return None
-    return TrainingRunResult(published[0].result.run_id, source.snapshot_hash, 0, tuple(
+    return TrainingRunResult(published[0].result.run_id, source.training_input_hash, 0, tuple(
         head.result for head in published
     ), reused=True)
 
@@ -237,7 +237,7 @@ def TrainProfile(
         for head in source.heads
     )
     return TrainingRunResult(
-        plan.run_id, source.snapshot_hash, peak_bytes, ordered, post_commit_issues=tuple(post_commit_issues),
+        plan.run_id, source.training_input_hash, peak_bytes, ordered, post_commit_issues=tuple(post_commit_issues),
     )
 
 
@@ -285,7 +285,7 @@ def _expected_coverage(
 
 def _blocked_head(source: ProfileTrainingSource, strategy: Strategy, reason: str) -> HeadTrainingResult:
     return HeadTrainingResult(
-        strategy, "blocked", source.input_scope, None, source.snapshot_hash, source.training_codes,
+        strategy, "blocked", source.input_scope, None, source.training_input_hash, source.training_codes,
         source.universe_codes, "", "", 0, 0, 0, (reason,),
     )
 
@@ -293,7 +293,7 @@ def _blocked_head(source: ProfileTrainingSource, strategy: Strategy, reason: str
 def _blocked_run(
     source: ProfileTrainingSource, reason: str, *, plan: ProfileTrainingPlan | None = None,
 ) -> TrainingRunResult:
-    return TrainingRunResult(None, source.snapshot_hash, 0, tuple(
+    return TrainingRunResult(None, source.training_input_hash, 0, tuple(
         replace(
             _blocked_head(source, head.strategy, reason),
             label_cutoff=None if plan is None else next(item.label_cutoff for item in plan.heads if item.strategy is head.strategy),

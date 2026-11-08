@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
@@ -301,6 +302,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         sample_root=tmp_path / "samples",
         expected_history_snapshot_hash=built.target_snapshot_hash, sqlite_policy=SqlitePolicyFixture(),
         sample_settings=TrainingSampleSettingsFixture(),
+        industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
     )
 
     assert result is expected
@@ -312,6 +314,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         sample_root=tmp_path / "samples",
         expected_history_snapshot_hash="f" * 64, sqlite_policy=SqlitePolicyFixture(),
         sample_settings=TrainingSampleSettingsFixture(),
+        industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
     )
     assert mismatch.status == "blocked"
     assert mismatch.failure_reasons == ("history_archive_repack_activation_pending",)
@@ -338,6 +341,7 @@ def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monke
         sample_root=tmp_path / "samples",
         expected_history_snapshot_hash=built.target_snapshot_hash, sqlite_policy=SqlitePolicyFixture(),
         sample_settings=TrainingSampleSettingsFixture(),
+        industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
     )
 
     assert result.heads == ()
@@ -355,7 +359,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
     bundle = PublishedHeadBundle(
         tmp_path / "data/training/models/tomorrow-v3/model.json",
         Strategy.TOMORROW,
-        original.content_hash,
+        "f" * 64,
         original.source_identity_hash,
         original.label_cutoff,
         contract_hash,
@@ -364,6 +368,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
         "c" * 64,
         "d" * 64,
         "e" * 64,
+        price_snapshot_hash=original.content_hash,
     )
     monkeypatch.setattr(due_module, "_current_bundle", lambda _root, _profile, _strategy: (bundle, False))
 
@@ -404,7 +409,8 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
                 "Bundle",
                 (),
                 {
-                    "training_input_hash": built.target_snapshot_hash,
+                    "price_snapshot_hash": built.target_snapshot_hash,
+                    "training_input_hash": "d" * 64,
                     "model_hash": "b" * 64,
                     "report_hash": "c" * 64,
                 },
@@ -412,7 +418,7 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
         ),
     )
     memory_evidence = tmp_path / "data/historyless/memory.json"
-    _write_training_memory_evidence(memory_evidence, built.target_snapshot_hash)
+    _write_training_memory_evidence(memory_evidence, "d" * 64)
     backup_partition = next((tmp_path / "data/history-before-repack").rglob("*.sqlite3"))
     Path(f"{backup_partition}-wal").touch()
     Path(f"{backup_partition}-shm").write_bytes(b"sqlite coordination state")
@@ -473,7 +479,8 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
                 "Bundle",
                 (),
                 {
-                    "training_input_hash": built.target_snapshot_hash,
+                    "price_snapshot_hash": built.target_snapshot_hash,
+                    "training_input_hash": "d" * 64,
                     "model_hash": "b" * 64,
                     "report_hash": "c" * 64,
                 },
@@ -486,7 +493,7 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
         lambda _path: TomorrowTrainingMemoryEvidence(
             "engineering_ready",
             "engineering_ready",
-            built.target_snapshot_hash,
+            "d" * 64,
             "b" * 64,
             "c" * 64,
             1024,
@@ -522,7 +529,8 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
                 "Bundle",
                 (),
                 {
-                    "training_input_hash": built.target_snapshot_hash,
+                    "price_snapshot_hash": built.target_snapshot_hash,
+                    "training_input_hash": "d" * 64,
                     "model_hash": "b" * 64,
                     "report_hash": "c" * 64,
                 },
@@ -535,7 +543,7 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
         lambda _path: TomorrowTrainingMemoryEvidence(
             "engineering_ready",
             "engineering_ready",
-            built.target_snapshot_hash,
+            "d" * 64,
             "b" * 64,
             "c" * 64,
             1024,

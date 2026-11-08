@@ -9,6 +9,7 @@ from trader.download.domain.baostock_daily import BAOSTOCK_RESEARCH_IDENTITY, Ba
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.training.domain.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 ROOT = Path(__file__).resolve().parents[5]
 
@@ -34,6 +35,7 @@ def _history(root: Path) -> SimpleNamespace:
         BaoStockCalendar(dates),
         codes,
         "d" * 64,
+        industry_snapshot=CurrentIndustrySnapshotFixture(codes),
     )
     descriptor = FrozenDailyInputDescriptor(
         manifest_hash=snapshot.snapshot_hash,

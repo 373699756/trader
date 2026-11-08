@@ -19,6 +19,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingRow
+from trader.download.domain.history_sync import HistorySyncConfiguration
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_prices import HistoryPricePartition
@@ -30,14 +32,14 @@ from trader.infra.sqlite_publication import PublishSqliteFile
 from trader.training.infra.history.aligned_training_rows import AlignTrainingRows
 
 from scripts.download.history.history_parquet import ParquetHistoryProjection
-from scripts.download.history.history_write_benchmark import HistoryFixtureSupplier
+from scripts.download.history.history_write_benchmark import HistoryFixtureSupplier, SyntheticIndustrySnapshot
 
 
 def PrepareTrainingHistory(root: Path, *, size: int, sessions: int, sqlite_policy: SqliteIoPolicy) -> Path:
     days = tuple(date(2024, 1, 1) + timedelta(days=i) for i in range(sessions))
     supplier = HistoryFixtureSupplier(days, size, varying_prices=True, sqlite_policy=sqlite_policy)
     project = TOOL_ROOT
-    config = replace(
+    config: HistorySyncConfiguration = replace(
         LoadHistorySyncConfiguration(project, DataPaths(root)), sessions=sessions,
         reread_sessions=min(5, sessions), minimum_free_bytes=0,
     )
@@ -66,7 +68,7 @@ def PrepareTrainingHistory(root: Path, *, size: int, sessions: int, sqlite_polic
     hidden = replace(source, qfq=replace(source.qfq, amount=source.qfq.amount + 9876))
     partition.save_revisions((HistoryRevision(3, "main", hidden, False, "fixture", "fixture"),))
     PublishSqliteFile(config.history_root / reference.relative_path, sqlite_policy=sqlite_policy)
-    return config.history_root
+    return Path(config.history_root)
 
 
 def TrainingRowsHash(rows: Iterable[HistoryTrainingRow]) -> tuple[str, int]:
@@ -84,10 +86,14 @@ def TrainingRowsHash(rows: Iterable[HistoryTrainingRow]) -> tuple[str, int]:
     return digest.hexdigest(), count
 
 
-def MeasurePreparation(history_root: Path, output: Path, mode: str, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+def MeasurePreparation(
+    history_root: Path, output: Path, mode: str, *,
+    industry_snapshot: CurrentIndustrySnapshot, sqlite_policy: SqliteIoPolicy,
+) -> dict[str, object]:
     initial = LoadPublishedHistorySnapshot(history_root, sequence=1, sqlite_policy=sqlite_policy)
     updated = LoadPublishedHistorySnapshot(history_root, sequence=2, sqlite_policy=sqlite_policy)
-    projection = ParquetHistoryProjection(output, sqlite_policy=sqlite_policy)
+    industry = industry_snapshot
+    projection = ParquetHistoryProjection(output, industry_snapshot=industry, sqlite_policy=sqlite_policy)
     cases = {}
     first_files: set[str] = set()
     reused = 0
@@ -108,7 +114,9 @@ def MeasurePreparation(history_root: Path, output: Path, mode: str, *, sqlite_po
         codes = tuple(item.code for item in history.universe.securities)
         rows = (
             projection.iter_rows(history, dates) if mode == "parquet"
-            else HistorySnapshotReader(history.root, sqlite_policy=sqlite_policy).iter_training_rows(history.snapshot, dates, codes)
+            else HistorySnapshotReader(history.root, sqlite_policy=sqlite_policy).iter_training_rows(
+                history.snapshot, dates, codes, industry_snapshot=industry,
+            )
         )
         fingerprint, count = TrainingRowsHash(AlignTrainingRows(rows, dates))
         cases[name] = {
@@ -126,9 +134,10 @@ def Main() -> int:
     parser.add_argument("--history", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("sqlite", "parquet"), required=True)
+    parser.add_argument("--synthetic-industry", action="store_true", help="仅为显式合成量价fixture采用固定金融行业")
     parser.add_argument("--runtime-config", type=Path, default=TOOL_ROOT / "config/runtime.json")
     args = parser.parse_args()
-    from trader.bootstrap import BuildSqlitePolicy
+    from trader.bootstrap import BuildSqlitePolicy, ReadIndustrySnapshot
     from trader.infra.settings import LoadRuntimeSettings
 
     runtime_config = args.runtime_config.expanduser().resolve()
@@ -136,7 +145,15 @@ def Main() -> int:
     runtime_hash = hashlib.sha256(runtime_config.read_bytes()).hexdigest()
     performance_hash = hashlib.sha256(performance_config.read_bytes()).hexdigest()
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(runtime_config))
-    report = MeasurePreparation(args.history, args.output, args.mode, sqlite_policy=sqlite_policy)
+    observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
+    if args.synthetic_industry:
+        fixture = LoadPublishedHistorySnapshot(args.history, sequence=1, sqlite_policy=sqlite_policy)
+        industry = SyntheticIndustrySnapshot(tuple(item.code for item in fixture.universe.securities), observed_at)
+    else:
+        industry = ReadIndustrySnapshot(args.history.resolve().parent / "reference", observed_at, sqlite_policy)
+    report = MeasurePreparation(
+        args.history, args.output, args.mode, industry_snapshot=industry, sqlite_policy=sqlite_policy,
+    )
     if runtime_hash != hashlib.sha256(runtime_config.read_bytes()).hexdigest() or performance_hash != hashlib.sha256(performance_config.read_bytes()).hexdigest():
         raise ValueError("training_read_configuration_changed")
     report["runtime_config_hash"] = runtime_hash

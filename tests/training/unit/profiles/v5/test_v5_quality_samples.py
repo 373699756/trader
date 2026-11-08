@@ -24,7 +24,10 @@ def _inputs(tmp_path, monkeypatch):
     history = _history(runtime.data_paths.history)
     monkeypatch.setattr(
         "scripts.training.samples.v5_quality_samples.SQLiteHistoryTrainingInputSnapshot.open",
-        lambda _root, *, sqlite_policy: history,
+        lambda _root, *, industry_snapshot, sqlite_policy: history,
+    )
+    monkeypatch.setattr(
+        "scripts.training.samples.v5_quality_samples.ReadIndustrySnapshot", lambda *_args: history.snapshot.industry_snapshot,
     )
     report = tmp_path / "reports"
     report.mkdir()

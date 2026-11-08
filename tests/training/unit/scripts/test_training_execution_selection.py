@@ -15,6 +15,7 @@ import pytest
 from scripts.training.resources import execution_candidates as candidates
 from scripts.training.resources import execution_selection as selection
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
 from trader.infra.settings import LoadRuntimeSettings
 from trader.training.application.resources import TrainingFanoutSettings, TrainingProfileThreads
@@ -26,6 +27,7 @@ from trader.training.infra.selected_training import SelectedTrainingRequest, Sel
 
 ROOT = Path(__file__).resolve().parents[4]
 _ENVIRONMENT = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+_INDUSTRY = CurrentIndustrySnapshotFixture(("600001",))
 
 
 def _request(tmp_path, resources):
@@ -113,7 +115,7 @@ def test_selected_enables_only_the_requested_winners(tmp_path, monkeypatch, comp
         "selected", "baseline", components=components,
     ) as experiment:
         assert candidates.training_configuration.LoadTrainingResourceSettings is loader
-        assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy), pool) is outcome
+        assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy, load_industry_snapshot=lambda _: _INDUSTRY, clock=lambda: _INDUSTRY.observed_at), pool) is outcome
         assert received[-1].execution_options == expected
         assert received[-1].fanout_settings == request.fanout_settings
         assert received[-1].cpu_budget is request.cpu_budget
@@ -189,7 +191,7 @@ def test_fanout_changes_one_configured_dimension_and_observes_actual_requests(
             )
         assert resources.memory == baseline.memory and resources.samples == baseline.samples
         request = _request(tmp_path, resources)
-        assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture()), pool) is outcome
+        assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _: _INDUSTRY, clock=lambda: _INDUSTRY.observed_at), pool) is outcome
         assert received[-1].execution_options == TrainingExecutionOptions()
         report = candidates.ProjectTrainingExecutionExperiment(experiment)
         assert report["execution"] == "baseline" and report["components"] == ()

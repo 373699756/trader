@@ -319,19 +319,27 @@ class SQLiteIndustryQueryIndex:
     def read(self, day: date, as_of: date, *, source: str | None = None) -> IndustryQuery | None:
         return self._query(f"{self._date_column}=?", (day.isoformat(),), as_of, source)
 
-    def latest(self, as_of: date) -> IndustryQuery | None:
+    def latest(self, as_of: date, *, strict: bool = False) -> IndustryQuery | None:
         if not self.path.is_file():
             return None
         try:
             with SqliteSession(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self.sqlite_policy) as connection:
                 EnsureSqliteSchema(connection, _SCHEMA)
+                checked = "" if strict else " AND checked_date<=?"
+                parameters = (as_of.isoformat(),) if strict else (as_of.isoformat(), as_of.isoformat())
+                limit = 1 if strict else 256
                 rows = connection.run(
                     f"SELECT {self._date_column},source,checked_date,members_json,content_hash FROM {self.table} "
-                    f"WHERE {self._date_column}<=? AND checked_date<=? ORDER BY {self._date_column} DESC LIMIT 256",
-                    (as_of.isoformat(), as_of.isoformat()),
+                    f"WHERE {self._date_column}<=?{checked} ORDER BY {self._date_column} DESC LIMIT {limit}",
+                    parameters,
                 ).fetchall()
         except sqlite3.Error as exc:
             raise RuntimeError("industry_query_cache_unavailable") from exc
+        if strict and rows:
+            query = self._verified(rows[0], as_of)
+            if query is None:
+                raise ValueError("industry_query_publication_invalid")
+            return query
         return next((query for row in rows if (query := self._verified(row, as_of)) is not None), None)
 
     def _query(

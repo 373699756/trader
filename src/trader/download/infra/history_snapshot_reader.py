@@ -18,6 +18,7 @@ from typing import cast
 
 from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
 from trader.download.domain.history_control import HistorySnapshot, HistorySnapshotPartition
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.download.domain.history_revision import (
     MAX_HISTORY_TRAINING_WINDOW_SESSIONS,
     HistoryRevision,
@@ -64,9 +65,9 @@ class HistoryPartitionRevisionComparison:
             raise ValueError("history partition revision comparison sequences are invalid")
 
 
-def _with_training_industry(row: HistoryTrainingRow, index: HistoryReferenceIndex) -> HistoryTrainingRow:
-    industry = index.industry_on(row.code, row.trade_date)
-    return replace(row, industry=industry.industry if index.eligible(row.code) and industry is not None else None)
+def _with_training_industry(row: HistoryTrainingRow, snapshot: CurrentIndustrySnapshot) -> HistoryTrainingRow:
+    member = snapshot.member(row.code)
+    return replace(row, industry=member.reference.industry_id if member is not None else None)
 
 
 def _training_months(snapshot: HistorySnapshot, dates: tuple[date, ...]) -> tuple[tuple[int, int], ...]:
@@ -483,6 +484,8 @@ class HistorySnapshotReader:
         calendar_dates: tuple[date, ...],
         codes: Collection[str],
         progress: Callable[[int], None] | None = None,
+        *,
+        industry_snapshot: CurrentIndustrySnapshot,
     ) -> Iterator[HistoryTrainingRow]:
         """Trust the published snapshot and stream its narrow training projection."""
 
@@ -490,8 +493,8 @@ class HistorySnapshotReader:
         allowed_codes = _training_codes(codes)
         expected_months = _training_months(snapshot, dates)
         allowed_dates = frozenset(dates)
-        processed_rows = 0
         reference_index = self.reference_index(snapshot)
+        processed_rows = 0
         selected = tuple(item for item in snapshot.partitions if _reference_month(item) in expected_months)
         for position, reference in enumerate(selected):
             partition = self._published_partition(reference)
@@ -504,12 +507,13 @@ class HistorySnapshotReader:
                     )
                 ) as rows:
                     for row in rows:
-                        if row.code not in allowed_codes or not dates[0] <= row.trade_date <= dates[-1]:
+                        if (row.code not in allowed_codes or not reference_index.eligible(row.code)
+                                or not dates[0] <= row.trade_date <= dates[-1]):
                             continue
                         processed_rows += 1
                         if row.trade_date not in allowed_dates:
                             raise HistorySnapshotReadError("history training row is outside the published calendar")
-                        yield _with_training_industry(row, reference_index)
+                        yield _with_training_industry(row, industry_snapshot)
                         if progress is not None and processed_rows % 512 == 0:
                             progress(processed_rows)
                 completed_month = True

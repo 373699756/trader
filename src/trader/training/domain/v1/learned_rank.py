@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
@@ -17,6 +17,8 @@ from trader.training.domain.evaluation.research_identity import CanonicalResearc
 from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT, FinalFitDatePlan
 from trader.training.domain.training_dates import MAX_TRAINING_SESSIONS
+from trader.download.domain.current_industry import CurrentIndustrySnapshot
+from trader.training.domain.training_input_identity import BuildTrainingInputHash, TRAINING_INDUSTRY_POLICY
 
 
 @dataclass(frozen=True)
@@ -226,6 +228,7 @@ LEARNED_RANK_CONTRACT = (
     "shared_numeric_features_no_categorical_exposure_unknown_industry_allowed_at_inference",
     ("industry_classification", LEARNED_RANK_INDUSTRY_CLASSIFICATION),
     ("industry_id_prefix", LEARNED_RANK_INDUSTRY_PREFIX),
+    ("industry_grouping_policy", TRAINING_INDUSTRY_POLICY),
     "engineering_shadow_no_return_validation_no_production_authority",
 )
 
@@ -335,6 +338,8 @@ class LearnedRankPair:
     settings: V1TrainingSettings
     heads: tuple[LearnedRankHead, LearnedRankHead]
     training_identity_hash: str
+    price_snapshot_hash: str = field(kw_only=True)
+    industry_snapshot: CurrentIndustrySnapshot = field(kw_only=True)
 
     def __post_init__(self) -> None:
         if (
@@ -347,6 +352,7 @@ class LearnedRankPair:
                     self.training_identity_hash,
                 )
             )
+            or self.training_input_hash != BuildTrainingInputHash(self.price_snapshot_hash, self.industry_snapshot.content_hash)
             or tuple(head.strategy for head in self.heads) != (Strategy.TOMORROW, Strategy.D25)
             or any(head.split.label_cutoff >= self.source_cutoff for head in self.heads)
             or any(head.training_contract_hash != self.contract_hash for head in self.heads)

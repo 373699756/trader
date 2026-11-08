@@ -208,6 +208,7 @@ def test_candidate_runs_real_isolated_fit_and_zero_scan_model_and_sample_reuse(t
     from scripts.training.jobs import training_alignment
     from scripts.training.samples.training_read_comparison import PrepareTrainingHistory
     from tests.helpers.shared.configuration import SqlitePolicyFixture
+    from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
     from trader.infra.settings import LoadRuntimeSettings
     from trader.infra.settings.data_paths import DataPaths
     from trader.training.infra import selected_training
@@ -223,7 +224,10 @@ def test_candidate_runs_real_isolated_fit_and_zero_scan_model_and_sample_reuse(t
     settings = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=10))
     monkeypatch.setattr(selected_training, "LoadProfileTrainingSettings", lambda *_args: settings)
     monkeypatch.setattr("trader.infra.settings.LoadRuntimeSettings", lambda _path: runtime)
-    source = SQLiteHistoryTrainingInputSnapshot.open(history, sqlite_policy=SqlitePolicyFixture())
+    source = SQLiteHistoryTrainingInputSnapshot.open(
+        history, industry_snapshot=CurrentIndustrySnapshotFixture(tuple(f"60000{number}" for number in range(4))),
+        sqlite_policy=SqlitePolicyFixture(),
+    )
     budget = _budget(native=2, available=AvailableTrainingCpus())
     raw = _document()
     raw.update(

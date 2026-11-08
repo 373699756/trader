@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.domain.market.v5.features import CalculatePriceVolumeSequence, PriceVolumePoint
@@ -106,6 +107,7 @@ def test_cached_points_match_formula_and_are_validated_once_per_source_row(tmp_p
         BaoStockCalendar(calendar),
         ("600001",),
         "d" * 64,
+        industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
     ))
     expected = {}
     row_by_day = {row.trade_date: row for row in rows}

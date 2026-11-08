@@ -10,6 +10,7 @@ import pytest
 
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.models import Strategy
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from trader.training.application.learned_rank_training import (
     LearnedRankFittingPort,
     LearnedRankSamplesPort,
@@ -68,7 +69,10 @@ class _Training:
         cleanup_error: type[Exception] | None = None, scope_error: type[Exception] | None = None,
     ) -> None:
         calendar = tuple(date(2024, 1, 1) + timedelta(days=index) for index in range(340))
-        self.source = LearnedRankTrainingSource("a" * 64, "b" * 64, "c" * 64, calendar[-3], calendar, "d" * 64)
+        self.source = LearnedRankTrainingSource(
+            "a" * 64, "b" * 64, "c" * 64, calendar[-3], calendar, "d" * 64,
+            industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
+        )
         self.settings = _settings()
         self.progress = None
         self.events: list[str] = []

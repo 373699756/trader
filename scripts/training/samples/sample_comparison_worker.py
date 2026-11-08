@@ -15,8 +15,9 @@ import sqlite3
 import sys
 import time
 from contextlib import ExitStack, closing, nullcontext
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
@@ -128,6 +129,7 @@ def _construct_samples(
     from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
     from trader.training.infra.sample_sequences import SampleSequenceLayout
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
+    from scripts.download.history.history_write_benchmark import SyntheticIndustrySnapshot
 
     sample_arguments = SampleArgumentsForCheckout(checkout, medium=medium)
 
@@ -175,6 +177,7 @@ def _construct_samples(
         BaoStockCalendar(dates),
         codes,
         "d" * 64,
+        industry_snapshot=SyntheticIndustrySnapshot(codes, datetime(2026, 11, 8, tzinfo=ZoneInfo("Asia/Shanghai"))),
     )
 
     @dataclass
