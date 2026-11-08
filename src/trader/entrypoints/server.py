@@ -25,6 +25,7 @@ from trader.infra.shutdown import (
     ReadShutdownTimeline,
     RecordShutdownEvent,
     ShutdownDeadline,
+    ShutdownIncompleteError,
     ShutdownReport,
     ShutdownSignalController,
     ShutdownStep,
@@ -108,7 +109,13 @@ def _run_system(
     delegated = False
     try:
         controller.install()
-        started = system.start()
+        try:
+            started = system.start()
+        except ShutdownIncompleteError:
+            # Startup owners have already attempted rollback under the original
+            # deadline. Incomplete cleanup must not enter Python's thread joins,
+            # repeat stop(), or wait for diagnostic I/O before failing the process.
+            os._exit(2)
         if shutdown_requested.is_set():
             deadline = controller.deadline or ShutdownDeadline.start(timeout_seconds)
             if started:

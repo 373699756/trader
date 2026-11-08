@@ -647,6 +647,12 @@ history发布专项继续沿本节原P09/P45/P65及327/349：先补本机可比�
 
 ### 4.8 工程审查全面修复（353）
 
+- **启动回滚异常退出保障接续（2026-11-08，completed，仅本批，沿第5项；353整阶段仍in_progress）**：用户继续最近两天Review修复，基线`11e001ff`。服务入口未消费`start()`抛出的`ShutdownIncompleteError`，可能跳过退出保护并等待遗留非daemon线程。本批只在start调用处处理已明确回滚不完整的类型：owner已尝试关闭后，不再重复stop或新建期限，按原不完整回收失败策略直接退出2；强退不等待日志、时间线投影或诊断线程。原报告／因果链保留在异常对象中，强退时不保证来得及输出；回滚完整后的普通／进程控制异常仍保持原传播。b第3章窄更新实际入口合同，f第10章保留问题及证据。
+
+  验证：修复前新增四项反例均失败（`/tmp/trader-353-server-startup-before-20261108.xml`），真实自有子进程被遗留非daemon线程及日志锁拖住，父进程3秒超时后已回收。修复后server入口、关闭诊断、信号取消、资源编排及多档启动五个定向文件70项全部通过（`/tmp/trader-353-server-startup-final-20261108.xml`），含新增7项：无／较早／较晚信号期限不重建预算，普通／KeyboardInterrupt／SystemExit异常原样传播，以及真实线程／日志阻塞时失败退出2。两Python文件Ruff E9/F/B/UP、server源码正常mypy、独立Review及完整diff／空白检查通过；未运行格式脚本。
+
+  未完成项：本批入口缺口无；353其它原工程欠项及真实服务30秒／平台验收仍按原记录，不因隔离测试关闭。不改controller、不接管company及其它owner，不启动真实服务、下载、训练或性能作业，不触碰活动资料。
+
 - **强退不等待终端／互斥锁（2026-11-07，本切片completed；353整阶段in_progress）**：356日志交付复审进一步复现stderr满管道时强退提示也会阻塞，关闭锁占用时读取controller退出码同样可能等待。沿原ManualCancellation／ShutdownSignalController删除强退路径终端I/O，首次信号只读快照查询不加锁；不新建关闭owner、重置期限或改变原取消130／正常失败2及通用controller退出规则。真实自有子进程填满stderr、持关闭锁或发送首次SIGTERM的两条路线均在原短期限退出；现有15项controller／server消费者通过，报告`/tmp/trader-356-shutdown-consumers.xml`及`/tmp/trader-356-delivery-scope-final2.xml`。本切片不补签真实服务30秒或全阶段关闭验收。
 
 - **全工程Review补充（2026-11-07，仅审查登记）**：完整问题、当前回答、证据及待确认项见[f第6章](f_人工审核.md#6-全工程性能与模块边界review2026-11-07)。关闭异常短路、期限启动前等待、market关闭终态、缓存loader身份、IPC完整收发及材料读取反例并入原第5项/相关I/O边界；公共history业务算术沿第4项。334发布组合恢复、332材料幂等、281 API validator和213状态粒度分别由原owner接续，不新增阶段/P号、不标记本10项完成。共享356须在已推送353基线上重放窄日志差集，已交修复不重复施工；本批不改运行源码或启动业务/性能作业。
