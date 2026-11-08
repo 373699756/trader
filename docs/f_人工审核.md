@@ -499,4 +499,4 @@ Q24的价格差异检查只比较同源qfq OHLC，不因量额单独变化触发
 
 **边界与待确认：** 原报告及因果仍在异常对象中，但强退可能来不及输出，不为日志可见性延后退出；本次没有修改通用controller或重新证明全部异常收尾路径。隔离测试不补签真实服务30秒退出、Windows实机或353整体工程验收；活动资料、运行服务及company并行任务保持原owner。
 
-**扩展观测待修，沿281接续：** 服务关闭的扩展验证确认，`scripts/recommendation/web/shutdown.py::_read_events`只在`signal_received.started_seconds == 0`时记录handler起点，正常非负事件偏移却可能为几十微秒，使完整资源报告及真实退出143仍被标为degraded。显式绑定各冻结树`PYTHONPATH`后，基线与候选的同一自有子进程节点均复现，日志偏移分别约67／25微秒，三个观测源码／测试文件逐项摘要相同；报告`/tmp/trader-353-shutdown-observation-{base,candidate}-frozen-20261108.xml`。这是已有观测解析缺口，不是本批退出逻辑回退或真实30秒门通过；281应按事件合同处理起点与非负偏移，保留进程身份、事件顺序及冲突检查，不以放宽时间门或改期望掩盖。本批353不修改该观察器，实施状态仍只记g。
+**扩展观测问题，沿281核销：** 服务关闭的扩展验证确认，原`scripts/recommendation/web/shutdown.py::_read_events`只在`signal_received.started_seconds == 0`时记录handler起点，正常非负事件偏移却可能为几十微秒，使完整资源报告及真实退出143仍被标为degraded。显式绑定各冻结树`PYTHONPATH`后，基线与候选的同一自有子进程节点均复现，日志偏移分别约67／25微秒，三个观测源码／测试文件逐项摘要相同；报告`/tmp/trader-353-shutdown-observation-{base,candidate}-frozen-20261108.xml`。当前解析合同取预算起点加合法非负事件偏移，保留有限数值、进程身份、事件顺序和冲突检查及原30秒门；实现与验证仅记[g阶段281](g_施工进度.md#42-任务a真实荐股采用与整链验收281)。353原交付证据保持，解析修复不能代签真实服务30秒验收。

@@ -401,8 +401,25 @@ def _reference_publication(raw: object) -> dict[str, object]:
             field: raw[field]
             for field in ("loaded_identity", "disk_identity", "restart_required", "failure")
             if field in raw and _json_scalar(raw[field])
-        }
+        } | _observation_failure(raw, "publication_observation_failure", "reference")
     }
+
+
+def _observation_failure(raw: Mapping[object, object], field: str, source: str) -> dict[str, object]:
+    if field not in raw:
+        return {}
+    value = raw[field]
+    if value is None:
+        return {field: None}
+    if not isinstance(value, str) or len(value) > 128:
+        return {}
+    if source != "model" and value == f"{source}_publication_unavailable":
+        return {field: value}
+    prefix = f"{source}_observation:"
+    name = value.removeprefix(prefix)
+    if value.startswith(prefix) and name.isascii() and name.isidentifier():
+        return {field: value}
+    return {}
 
 
 def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
@@ -437,6 +454,7 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         "measured_at",
     )
     result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}
+    result.update(_observation_failure(raw, "published_history_observation_failure", "history"))
     result.update(_issuer_eligibility(raw.get("issuer_eligibility")))
     result.update(_reference_publication(raw.get("reference_publication")))
     for field in ("market_quote_age", "candidate_quote_age"):
@@ -502,9 +520,12 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         for name, value in sorted(sources.items(), key=lambda item: str(item[0]))[:8]:
             if not isinstance(value, Mapping):
                 continue
-            safe_sources[str(name)[:32]] = {
+            projected_source = {
                 field: value[field] for field in source_fields if field in value and _json_scalar(value[field])
             }
+            if name == "company_evidence":
+                projected_source.update(_observation_failure(value, "publication_observation_failure", "company"))
+            safe_sources[str(name)[:32]] = projected_source
         result["sources"] = safe_sources
     if changes := _market_changes(raw.get("market_changes")):
         result["market_changes"] = changes
@@ -619,6 +640,7 @@ def _training_maintenance(raw: object) -> list[dict[str, object]]:
             )
             if key in row and _json_scalar(row[key])
         }
+        item.update(_observation_failure(row, "publication_observation_failure", "model"))
         for key in ("loaded", "disk"):
             identity = row.get(key)
             item[key] = (

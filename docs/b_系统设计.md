@@ -558,7 +558,9 @@ Long 实时报价按来源时间判断年龄，超过scheduler配置的上限时
 
 `/api/status`的`market_data.sources.company_evidence.last_error_code`只公开有限的预载状态和已知读取异常类别；未知原因归`company_snapshot_unavailable`，无错误为null，不公开原始错误文本。planned_count/error_count统计已采用资料，预载完全失败时也可能同时为0，须结合错误码、loaded_identity及覆盖判断，不能仅据0错误签加载成功。
 
-公司库读取失败时打印错误，服务和只读Web继续启动，相关资料资格按缺失处理。读取因果链中的已知SQLite结构、必需记录和完整性失败分别保留有限错误码；旧结构仍明确拒绝，普通日志给出公司资料备份及隔离重下的处理范围，结构不兼容的详细安全栈转入DEBUG。总健康同时反映公司预载、排除事实完整性、参考／历史加载及三类发布观察失败，页面异常详情和既有Web健康工具消费同一降级原因；恢复后移除当前输入异常，状态读取不执行I/O。公司资料真实恢复和活动库替换仍须按下载授权边界处理。
+公司库读取失败时打印错误，服务和只读Web继续启动，相关资料资格按缺失处理。读取因果链中的已知SQLite结构、必需记录和完整性失败分别保留有限错误码；旧结构仍明确拒绝，普通日志给出公司资料备份及隔离重下的处理范围，结构不兼容的详细安全栈转入DEBUG。总健康同时反映公司预载、排除事实完整性、参考／历史加载，以及历史／参考／公司／模型四类发布观察失败，页面异常详情和既有Web健康工具消费同一降级原因。模型只统计当前档位且owned的Tomorrow／D25，按档位和策略去重；其它档位失败仍逐行可见。恢复仅解除对应原因，其它异常保留，最近有效身份和快照不变，状态读取不执行I/O。公司资料真实恢复和活动库替换仍须按下载授权边界处理。
+
+`/api/status`按原层级公开`market_data.published_history_observation_failure`、`market_data.reference_publication.publication_observation_failure`、`market_data.sources.company_evidence.publication_observation_failure`和`scoring_profile.maintenance[].publication_observation_failure`。仅接受对应来源已定义的有界ASCII异常类别码或发布不可用码，成功为null；不公开原始异常文本、路径或对象。该投影不改变已加载资料／模型、restart_required及评分行为。
 
 模型计算继续由原计算锁串行保护；状态读取仅获取最近一次完整的不可变计算快照，不等待正在进行的预测。快照在计算完成或已处理的deadline终态一次性发布，未处理异常或取消保留上一份完整快照；状态接口不触发模型计算。
 

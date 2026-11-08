@@ -22,6 +22,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     RecommendationPipelineStatus,
     StageState,
 )
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 
@@ -65,7 +66,7 @@ def RuntimeStatus(
     degraded_reasons.extend(
         f"{item.target.strategy.value}:publication_io:{item.operation}:{item.reasons[0].code}" for item in io_failures
     )
-    input_failures = _input_failure_reasons(market_data)
+    input_failures = (*_input_failure_reasons(market_data), *_model_observation_failure_reasons(scoring_profile))
     degraded_reasons.extend(input_failures)
     issue_count = (
         len(unresolved_issues) + int(bool(observer_error)) + len(io_failures) + int(preview_failed) + len(input_failures)
@@ -164,6 +165,21 @@ def _input_failure_reasons(market_data: Mapping[str, object]) -> tuple[str, ...]
         if company.get("publication_observation_failure"):
             reasons.append("company_publication_observation_failed")
     return tuple(reasons)
+
+
+def _model_observation_failure_reasons(profile: ScoringProfileRuntimeStatus | None) -> tuple[str, ...]:
+    if profile is None:
+        return ()
+    failed = {
+        item.strategy
+        for item in profile.maintenance
+        if item.profile_id == profile.profile_id and item.owned and item.publication_observation_failure
+        and item.strategy in {Strategy.TOMORROW, Strategy.D25}
+    }
+    return tuple(
+        f"{strategy.value}:model_publication_observation_failed"
+        for strategy in (Strategy.TOMORROW, Strategy.D25) if strategy in failed
+    )
 
 
 def _round_payload(status: RecommendationRoundStatus | None) -> dict[str, object] | None:

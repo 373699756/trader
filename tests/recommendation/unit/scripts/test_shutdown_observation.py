@@ -251,6 +251,91 @@ def test_two_deadlines_for_one_identity_are_never_spliced_into_a_complete_axis(t
     assert observed.conflicting and observed.matched_records == 2
 
 
+def _read_timeline(tmp_path, spans):
+    from scripts.recommendation.web.shutdown import _read_events
+
+    identity = LinuxProcessIdentity(7412, 1234, "d50dbb32-ac67-4d74-99a9-7ad7db37c791")
+    record = {
+        "process_identity": {"pid": identity.pid, "birth_ticks": identity.birth_ticks, "boot_id": identity.boot_id},
+        "started_at_monotonic": 10,
+        "timeline": spans,
+        "report": {"completed": True, "forced": False},
+    }
+    log = tmp_path / "timeline.log"
+    log.write_text("shutdown completed: " + json.dumps(record))
+    with log.open("rb") as stream:
+        return identity, _read_events(stream, 0, identity, 9)
+
+
+@pytest.mark.parametrize("offset", (0, 0.000025, 0.000067, 0.125))
+def test_nonnegative_signal_event_offsets_use_the_same_timeline_origin(tmp_path, offset):
+    from scripts.recommendation.web.shutdown import _Times, _outcome
+
+    identity, observed = _read_timeline(tmp_path, [
+        {"name": "signal_received", "started_seconds": offset},
+        {"name": "return_ready", "started_seconds": 1},
+    ])
+    assert observed.handler_started == 10 + offset
+    assert observed.return_ready == 11 and not observed.conflicting
+    result = _outcome(
+        ShutdownObservationOptions(identity.pid, identity.birth_ticks, Path("unused"), 40, True), identity,
+        _Times(9, 9.5, 9.6, 9.7, 12, 12), observed, cancelled=False,
+    )
+    assert result.exit_code == 0 and result.payload["status"] == "passed"
+    assert result.payload["summary"]["timeline_complete"] is True
+    assert result.payload["summary"]["durations"]["signal_to_handler_seconds"] == pytest.approx(0.5 + offset, abs=1e-12)
+    assert result.payload["summary"]["shutdown_limit_seconds"] == 30
+
+
+@pytest.mark.parametrize("offset", (-0.000001, True, "0.000025", None, float("nan"), float("inf")))
+def test_invalid_signal_event_offsets_cannot_supply_a_handler_time(tmp_path, offset):
+    from scripts.recommendation.web.shutdown import _Times, _outcome
+
+    identity, observed = _read_timeline(tmp_path, [
+        {"name": "signal_received", "started_seconds": offset},
+        {"name": "return_ready", "started_seconds": 1},
+    ])
+    assert observed.handler_started is None
+    result = _outcome(
+        ShutdownObservationOptions(identity.pid, identity.birth_ticks, Path("unused"), 40, True), identity,
+        _Times(9, 9.5, 9.6, 9.7, 12, 12), observed, cancelled=False,
+    )
+    assert result.payload["status"] == "degraded"
+    assert result.payload["summary"]["timeline_complete"] is False
+
+
+def test_conflicting_signal_event_offsets_are_not_merged_into_one_handler(tmp_path):
+    from scripts.recommendation.web.shutdown import _Times, _outcome
+
+    identity, observed = _read_timeline(tmp_path, [
+        {"name": "signal_received", "started_seconds": 0.000025},
+        {"name": "signal_received", "started_seconds": 0.000067},
+        {"name": "return_ready", "started_seconds": 1},
+    ])
+    assert observed.conflicting and observed.handler_started is None
+    result = _outcome(
+        ShutdownObservationOptions(identity.pid, identity.birth_ticks, Path("unused"), 40, True), identity,
+        _Times(9, 9.5, 9.6, 9.7, 12, 12), observed, cancelled=False,
+    )
+    assert result.exit_code == 1 and result.payload["status"] == "failed"
+    assert result.payload["summary"]["timeline_complete"] is False
+
+
+def test_signal_event_after_return_is_a_conflict_even_with_one_origin(tmp_path):
+    from scripts.recommendation.web.shutdown import _Times, _outcome
+
+    identity, observed = _read_timeline(tmp_path, [
+        {"name": "signal_received", "started_seconds": 2},
+        {"name": "return_ready", "started_seconds": 1},
+    ])
+    result = _outcome(
+        ShutdownObservationOptions(identity.pid, identity.birth_ticks, Path("unused"), 40, True), identity,
+        _Times(9, 9.5, 9.6, 9.7, 13, 13), observed, cancelled=False,
+    )
+    assert result.exit_code == 1 and result.payload["status"] == "failed"
+    assert result.payload["summary"]["timeline_complete"] is False
+
+
 def test_observed_exit_over_the_unchanged_gate_never_passes():
     from scripts.recommendation.web.shutdown import _LogObservation, _Times, _outcome
     identity = LinuxProcessIdentity(7412, 1234, "d50dbb32-ac67-4d74-99a9-7ad7db37c791")

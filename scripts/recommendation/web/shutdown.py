@@ -215,10 +215,13 @@ def _read_events(log: BinaryIO, offset: int, identity: LinuxProcessIdentity, sta
             elapsed = _number(span.get("started_seconds"))
             if elapsed is None or elapsed < 0:
                 continue
-            if span.get("name") == "signal_received" and elapsed == 0:
-                handlers.add(origin)
+            event_started = origin + elapsed
+            if not math.isfinite(event_started):
+                continue
+            if span.get("name") == "signal_received":
+                handlers.add(event_started)
             elif span.get("name") == "return_ready":
-                returns.add(origin + elapsed)
+                returns.add(event_started)
         report = value.get("report")
         if isinstance(report, dict):
             if isinstance(report.get("completed"), bool):

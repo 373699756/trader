@@ -676,3 +676,102 @@ def test_maintenance_status_projects_six_heads_and_restart_identity_without_io(m
     assert all(head["loaded"]["publication_hash"] == "b" * 64 for head in projected)
     assert all(head["disk"]["publication_hash"] == "e" * 64 for head in projected)
     assert payload["market_data"]["reference_publication"]["restart_required"] is True
+
+
+@pytest.mark.parametrize("missing_publication", [False, True])
+def test_observation_failures_are_public_and_clear_on_recovery_without_io(monkeypatch, missing_publication):
+    _, queries, stream = _app()
+    failures = {
+        source: f"{source}_publication_unavailable" if missing_publication and source != "model"
+        else f"{source}_observation:OSError"
+        for source in ("history", "reference", "company", "model")
+    }
+    maintenance = {
+        "profile_id": "v3", "strategy": "tomorrow", "owned": True,
+        "publication_observation_failure": failures["model"], "private_path": "must-not-leak",
+    }
+    reference = {
+        "loaded_identity": "old-reference", "disk_identity": "same-reference", "restart_required": False,
+        "publication_observation_failure": failures["reference"], "private_path": "must-not-leak",
+    }
+    company = {
+        "loaded_identity": "old-company", "disk_identity": "same-company", "restart_required": False,
+        "publication_observation_failure": failures["company"], "private_path": "must-not-leak",
+    }
+    market = {
+        "published_history_snapshot_hash": "a" * 64,
+        "published_history_observation_failure": failures["history"],
+        "reference_publication": reference, "sources": {"company_evidence": company},
+    }
+    runtime = {
+        "market_data": market,
+        "scoring_profile": {"profile_id": "v3", "heads": {}, "maintenance": [maintenance]},
+    }
+    app = CreateApp(services=UnifiedWebServices(queries, stream, lambda: runtime))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("HTTP observation projection must not perform external I/O")
+
+    monkeypatch.setattr("trader.training.infra.history.history_training_due.EvaluateAllHistoryTrainingDue", forbidden)
+    monkeypatch.setattr("sqlite3.connect", forbidden)
+    monkeypatch.setattr("requests.sessions.Session.request", forbidden)
+    monkeypatch.setattr("builtins.open", forbidden)
+    client = app.test_client()
+    for recovered in (False, True):
+        response = client.get("/api/status")
+        assert response.status_code == 200
+        assert "must-not-leak" not in response.get_data(as_text=True)
+        payload = response.get_json()
+        observed = payload["market_data"]
+        assert observed["published_history_observation_failure"] == (None if recovered else failures["history"])
+        assert observed["reference_publication"]["publication_observation_failure"] == (
+            None if recovered else failures["reference"]
+        )
+        assert observed["sources"]["company_evidence"]["publication_observation_failure"] == (
+            None if recovered else failures["company"]
+        )
+        assert payload["scoring_profile"]["maintenance"][0]["publication_observation_failure"] == (
+            None if recovered else failures["model"]
+        )
+        assert observed["published_history_snapshot_hash"] == "a" * 64
+        assert observed["reference_publication"]["loaded_identity"] == "old-reference"
+        assert observed["sources"]["company_evidence"]["loaded_identity"] == "old-company"
+        market["published_history_observation_failure"] = None
+        for item in (maintenance, reference, company):
+            item["publication_observation_failure"] = None
+
+
+class _PrivateFailure:
+    def __str__(self):
+        raise AssertionError("A private failure object must never be converted to text")
+
+
+@pytest.mark.parametrize("failure", [
+    "/private/must-not-leak: token=secret",
+    "history_observation:OSError /private/must-not-leak",
+    "history_observation:" + "x" * 128,
+    {"message": "must-not-leak"},
+    _PrivateFailure(),
+    True,
+])
+def test_observation_projection_rejects_private_and_invalid_failure_values(failure):
+    _, queries, stream = _app()
+    runtime = {
+        "market_data": {
+            "published_history_observation_failure": failure,
+            "reference_publication": {"publication_observation_failure": failure},
+            "sources": {"company_evidence": {"publication_observation_failure": failure}},
+        },
+        "scoring_profile": {"profile_id": "v3", "heads": {}, "maintenance": [
+            {"profile_id": "v3", "strategy": "tomorrow", "publication_observation_failure": failure},
+        ]},
+    }
+    app = CreateApp(services=UnifiedWebServices(queries, stream, lambda: runtime))
+    response = app.test_client().get("/api/status")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert "must-not-leak" not in response.get_data(as_text=True)
+    assert "published_history_observation_failure" not in payload["market_data"]
+    assert "publication_observation_failure" not in payload["market_data"]["reference_publication"]
+    assert "publication_observation_failure" not in payload["market_data"]["sources"]["company_evidence"]
+    assert "publication_observation_failure" not in payload["scoring_profile"]["maintenance"][0]

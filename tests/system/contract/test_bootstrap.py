@@ -16,6 +16,7 @@ from trader.infra.initialization import InitializeIfAvailable
 from trader.recommendation.application.pipeline.data_source.source_router import MarketInputCoordinator
 from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import FreezeObserverStatus
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
+from trader.recommendation.application.ports.loaded_profile import ScoringHeadRuntimeStatus, ScoringProfileRuntimeStatus
 from trader.recommendation.application.ports.read_only_queries import (
     InputQualityStatus,
     SupplySummary,
@@ -28,7 +29,9 @@ from trader.recommendation.application.runtime.cadence import (
     SchedulePointStatus,
 )
 from trader.recommendation.application.runtime.schedule import SchedulePoint
+from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.application.runtime.scheduler_runtime import TradingCalendarRuntimeStatus
+from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineStage,
     PipelineStageSnapshot,
@@ -41,9 +44,11 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.infra.market_data.reference_initialization import InitializeMarketReferences
 from trader.recommendation.infra.status_projection import InputQualityPayload, RuntimeStatus
 from trader.training.application.research_runtime import ResearchRuntime
+from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
 from tests.helpers.shared.bootstrap import (
     PROJECT_ROOT,
     _config,
@@ -487,6 +492,95 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure(previe
         ]
         assert payload["last_error"] == next(iter(input_failures), None)
         assert "private-cause" not in str(payload["degraded_reasons"])
+
+
+@pytest.mark.parametrize("profile_id", ("v1", "v2", "v3", "v5"))
+@pytest.mark.parametrize("other_failure", (False, True))
+def test_model_observation_health_is_owned_deduplicated_and_recovers_without_io(
+    monkeypatch, profile_id: ScoringProfileId, other_failure: bool,
+) -> None:
+    from unittest.mock import Mock
+
+    scheduler = Mock()
+    scheduler.status.return_value = SchedulerRuntimeStatus(
+        running=True, phase=MarketPhase.BEFORE_CLOSE, config_version="runtime:test",
+        lanes=(), hybrid_lanes=(), task_lanes=(), cadence=CadencePlannerStatus(None, {}, {}, {}, ()),
+        observer=FreezeObserverStatus(8, True, False, False, 0, 0, 0, 0, 0, ""),
+        deepseek=Mock(), company_research=ResearchRuntimeStatus(state="idle"),
+        control_running=True, control_inflight=0, control_rejected_count=0,
+        refresh_failure_count=0, freeze_failure_count=0, review_failure_count=0,
+        overlay_publish_count=0, overlay_failure_count=0, local_publish_count=0, hybrid_publish_count=0,
+        publish_rejection_count=0, observer_rejection_count=0, freeze_completed_count=0, seal_failure_count=0,
+        settlement_completed_count=0, settlement_failure_count=0, last_error_code="", strategy_error_codes=(),
+        recent_errors=(), input_quality=(),
+    )
+    reviewer = Mock()
+    reviewer.status.return_value = {"budget": {"available": True}}
+    market = {"issuer_eligibility": {"integrity_ok": not other_failure}}
+    head = ScoringHeadRuntimeStatus(
+        is_enabled=True, profile_id=profile_id, model_id="test", model_hash="model-test", scoring_version="test",
+        activation_basis="trained_artifact", historical_status="historical_unavailable", historical_failure_reasons=(),
+        monitoring_mode="automatic_t1_outcome_settlement", automatic_model_update=False,
+        loss_probability_status="not_modeled",
+    )
+    loaded = ModelPublicationIdentity(
+        profile_id, Strategy.TOMORROW, "a" * 64, "b" * 64, date(2026, 11, 6), "c" * 64, "d" * 64,
+    )
+    failed = HeadTrainingStatus(
+        profile_id, Strategy.TOMORROW, loaded, None, loaded=loaded, owned=True,
+        publication_observation_failure="model_observation:RuntimeError private-payload",
+    )
+    d25_failed = replace(failed, strategy=Strategy.D25)
+    foreign: ScoringProfileId = "v2" if profile_id != "v2" else "v3"
+    ignored = (
+        replace(failed, profile_id=foreign), replace(failed, owned=False),
+        replace(failed, strategy=Strategy.LONG),
+    )
+    profile = ScoringProfileRuntimeStatus(
+        profile_id, {Strategy.TOMORROW: head, Strategy.D25: head},
+        (failed, *ignored, d25_failed, failed, replace(failed, publication_observation_failure=None)),
+    )
+
+    def forbidden_io(*_args, **_kwargs):
+        pytest.fail("status must consume the in-memory observation only")
+
+    monkeypatch.setattr("builtins.open", forbidden_io)
+    monkeypatch.setattr(Path, "open", forbidden_io)
+    monkeypatch.setattr(sqlite3, "connect", forbidden_io)
+    other_reasons = ["company_exclusions_unavailable"] if other_failure else []
+    payload = RuntimeStatus(scheduler, reviewer, lambda: market, profile)
+    assert payload["health"] == {"level": "degraded", "issue_count": 2 + int(other_failure)}
+    assert payload["degraded_reasons"] == [
+        *other_reasons, "tomorrow:model_publication_observation_failed", "d25:model_publication_observation_failed",
+    ]
+    assert payload["last_error"] == next(iter(other_reasons), "tomorrow:model_publication_observation_failed")
+    assert "private-payload" not in str(payload["degraded_reasons"])
+    assert all(not item.restart_required for item in profile.maintenance if item.owned and item.profile_id == profile_id)
+
+    partial = replace(profile, maintenance=(
+        replace(failed, publication_observation_failure=None), *ignored, d25_failed,
+    ))
+    payload = RuntimeStatus(scheduler, reviewer, lambda: market, partial)
+    assert payload["health"] == {"level": "degraded", "issue_count": 1 + int(other_failure)}
+    assert payload["degraded_reasons"] == [*other_reasons, "d25:model_publication_observation_failed"]
+    recovered = replace(partial, maintenance=tuple(
+        replace(item, publication_observation_failure=None)
+        if item.owned and item.profile_id == profile_id else item for item in partial.maintenance
+    ))
+    payload = RuntimeStatus(scheduler, reviewer, lambda: market, recovered)
+    assert payload["health"] == {
+        "level": "degraded" if other_failure else "normal", "issue_count": int(other_failure),
+    }
+    assert payload["degraded_reasons"] == other_reasons
+    assert payload["last_error"] == next(iter(other_reasons), None)
+    assert all(
+        item.loaded == item.disk == loaded
+        for item in recovered.maintenance if item.owned and item.profile_id == profile_id
+    )
+    assert (
+        payload["scoring_profile"]["maintenance"][1]["publication_observation_failure"]
+        == failed.publication_observation_failure
+    )
 
 
 def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
