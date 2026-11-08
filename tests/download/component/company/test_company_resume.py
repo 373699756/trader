@@ -25,7 +25,8 @@ NOW = fixtures.NOW
 
 
 def _local_backlog(tmp_path, count):
-    raw = CompanyRawFiles(tmp_path, capacity=10000000, analysis_reserve=1000000, free_reserve=1)
+    raw = CompanyRawFiles(tmp_path, capacity=10000000, analysis_reserve=1000000, free_reserve=1,
+                          maximum_document_bytes=64 * 1024**2)
     index = SQLiteCompanyEvidenceIndex(
         tmp_path / "company_evidence.sqlite3",
         facts_path=tmp_path / "company_facts.sqlite3",

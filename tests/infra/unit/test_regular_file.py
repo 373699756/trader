@@ -80,11 +80,82 @@ def test_file_replaced_by_fifo_does_not_block_and_its_descriptor_is_closed(tmp_p
 def test_file_growth_cannot_evade_the_stream_size_bound(tmp_path):
     path = tmp_path / "input"
     path.write_bytes(b"a\n")
-    with regular_file.OpenRegularFileLines(
-        path, maximum_bytes=3, maximum_line_bytes=2, maximum_lines=2,
-    ) as lines:
-        assert next(lines) == b"a\n"
-        with path.open("ab") as writer:
-            writer.write(b"b\n")
-        with pytest.raises(ValueError, match="read_limit"):
+    with pytest.raises(ValueError, match="read_limit"):
+        with regular_file.OpenRegularFileLines(
+            path, maximum_bytes=3, maximum_line_bytes=2, maximum_lines=2,
+        ) as lines:
+            assert next(lines) == b"a\n"
+            with path.open("ab") as writer:
+                writer.write(b"b\n")
             next(lines)
+
+
+@pytest.mark.parametrize("change", ["replace", "rewrite", "grow"])
+def test_stream_rejects_identity_or_content_changes_after_open(tmp_path, change):
+    path = tmp_path / "input"
+    path.write_bytes(b"initial")
+    with pytest.raises(ValueError, match="regular_file_identity_changed"):
+        with regular_file.OpenRegularFile(path, maximum_bytes=32) as stream:
+            assert stream.read(1) == b"i"
+            if change == "replace":
+                replacement = tmp_path / "replacement"
+                replacement.write_bytes(b"changed")
+                os.replace(replacement, path)
+            elif change == "rewrite":
+                metadata = path.stat()
+                path.write_bytes(b"changed")
+                os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1000000000))
+            else:
+                with path.open("ab") as writer:
+                    writer.write(b"new")
+            stream.read(1)
+
+
+def test_stream_checks_cancellation_between_chunks_and_closes_descriptor(tmp_path):
+    path = tmp_path / "input"
+    path.write_bytes(b"a" * 200000)
+    calls = 0
+
+    def check():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise InterruptedError("fixture_cancelled")
+
+    with pytest.raises(InterruptedError, match="fixture_cancelled"):
+        with regular_file.OpenRegularFile(path, maximum_bytes=200000, check=check) as stream:
+            descriptor = stream.fileno()
+            stream.read()
+    assert calls == 3
+    with pytest.raises(OSError) as failure:
+        os.fstat(descriptor)
+    assert failure.value.errno == errno.EBADF
+
+
+def test_stream_keeps_a_total_read_budget_across_seeks(tmp_path):
+    path = tmp_path / "input"
+    path.write_bytes(b"1234")
+    with pytest.raises(ValueError, match="read_limit"):
+        with regular_file.OpenRegularFile(path, maximum_bytes=4) as stream:
+            assert stream.read() == b"1234"
+            stream.seek(0)
+            stream.read(1)
+
+
+def test_stream_creation_failure_closes_the_owned_descriptor(tmp_path, monkeypatch):
+    path = tmp_path / "input"
+    path.write_bytes(b"preserved")
+    descriptors = []
+
+    def failed_open(descriptor, _mode):
+        descriptors.append(descriptor)
+        raise RuntimeError("fixture_fdopen_failed")
+
+    monkeypatch.setattr(regular_file.os, "fdopen", failed_open)
+    with pytest.raises(RuntimeError, match="fixture_fdopen_failed"):
+        with regular_file.OpenRegularFile(path, maximum_bytes=1024):
+            pytest.fail("failed stream must not be yielded")
+    assert len(descriptors) == 1
+    with pytest.raises(OSError) as failure:
+        os.fstat(descriptors[0])
+    assert failure.value.errno == errno.EBADF

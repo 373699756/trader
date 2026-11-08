@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture
-from tests.helpers.download.configuration import CompanyEventPolicyFixture
+from tests.helpers.download.configuration import CompanyEventPolicyFixture, CompanySyncConfigurationFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.company_evidence import CompanyDocumentExtraction, Disclosure, DisclosurePage, DisclosurePartition
 from trader.download.infra import company_document_recovery
@@ -24,7 +24,8 @@ _NOW = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def _index(root: Path, *, candidate: bool = False, cancelled=None) -> SQLiteCompanyEvidenceIndex:
-    raw = CompanyRawFiles(root / "raw", capacity=1024**3, analysis_reserve=1024**2, free_reserve=1)
+    raw = CompanyRawFiles(root / "raw", capacity=1024**3, analysis_reserve=1024**2, free_reserve=1,
+                          maximum_document_bytes=CompanySyncConfigurationFixture().extended_document_limits.max_bytes)
     build = partial(SQLiteCompanyEvidenceIndex, skip_unchanged_document_recovery=True) if candidate else SQLiteCompanyEvidenceIndex
     index = build(
         root / "company_evidence.sqlite3",
@@ -57,7 +58,8 @@ def _seed(index: SQLiteCompanyEvidenceIndex, count: int):
             DisclosurePage(batch, count, offset + len(batch) < count),
             _NOW,
         )
-    raw = CompanyRawFiles(index.path.parent / "raw", capacity=1024**3, analysis_reserve=1024**2, free_reserve=1)
+    raw = CompanyRawFiles(index.path.parent / "raw", capacity=1024**3, analysis_reserve=1024**2, free_reserve=1,
+                          maximum_document_bytes=CompanySyncConfigurationFixture().extended_document_limits.max_bytes)
     files = []
     rows = []
     for item in items:
@@ -110,11 +112,11 @@ def test_identical_tasks_keep_default_writes_and_candidate_checks_every_original
     original_digest = CompanyRawFiles.digest
     checked = []
 
-    def digest(path):
+    def digest(owner, path, *, check=None):
         checked.append(path)
-        return original_digest(path)
+        return original_digest(owner, path, check=check)
 
-    monkeypatch.setattr(CompanyRawFiles, "digest", staticmethod(digest))
+    monkeypatch.setattr(CompanyRawFiles, "digest", digest)
     transactions = _record_recovery_transactions(monkeypatch)
     index.prepare_publication(("600001",), _NOW)
     assert set(checked) == set(files) and len(checked) == count
@@ -167,8 +169,8 @@ def test_candidate_compares_current_task_after_hashing_instead_of_an_old_snapsho
     expected = _tasks(index)
     original_local = CompanyRawFiles.local
 
-    def changed(raw, item):
-        local = original_local(raw, item)
+    def changed(raw, item, *, check=None):
+        local = original_local(raw, item, check=check)
         with SqliteSession(index.path) as connection, SqliteTransaction(connection):
             connection.run("UPDATE document_tasks SET stage='pending' WHERE source_key=?", (item.identity,))
         return local
@@ -190,9 +192,9 @@ def test_cancelled_recovery_keeps_prior_commit_and_restart_finishes_remaining_ta
     original_local = CompanyRawFiles.local
     calls = 0
 
-    def interrupt(raw, item):
+    def interrupt(raw, item, *, check=None):
         nonlocal calls
-        local = original_local(raw, item)
+        local = original_local(raw, item, check=check)
         calls += 1
         if calls == 2:
             cancelled.set()

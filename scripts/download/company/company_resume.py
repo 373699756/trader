@@ -431,7 +431,8 @@ def Main() -> int:
     configuration = replace(LoadCompanySyncConfiguration(_ROOT), document_workers=1)
     raw_files = CompanyRawFiles(directory, capacity=configuration.raw_capacity_bytes,
                                analysis_reserve=configuration.raw_analysis_reserve_bytes,
-                               free_reserve=configuration.temporary_disk_reserve_bytes)
+                               free_reserve=configuration.temporary_disk_reserve_bytes,
+                               maximum_document_bytes=configuration.extended_document_limits.max_bytes)
     ocr_capability = DetectCompanyOcr(configuration.document_ocr_languages)
     text_capability = DetectCompanyText()
     policies = BuildCompanyDocumentPolicies(configuration, ocr_capability.identity, text_identity=text_capability.identity)

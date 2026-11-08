@@ -166,6 +166,7 @@ class CninfoMarketDisclosureSourceFixture(CninfoMarketDisclosureSource):
             raw_files = CompanyRawFiles(
                 Path(self._temporary_raw.name), capacity=settings.raw_capacity_bytes,
                 analysis_reserve=settings.raw_analysis_reserve_bytes, free_reserve=settings.temporary_disk_reserve_bytes,
+                maximum_document_bytes=(extended_document_limits or settings.extended_document_limits).max_bytes,
             )
         if settings is not None:
             timeout_seconds = settings.source_timeout_seconds if timeout_seconds is None else timeout_seconds

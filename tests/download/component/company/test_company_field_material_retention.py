@@ -29,7 +29,8 @@ _BODY = (
 
 
 def _index(root):
-    raw = CompanyRawFiles(root, capacity=10_000_000, analysis_reserve=1_000_000, free_reserve=1000)
+    raw = CompanyRawFiles(root, capacity=10_000_000, analysis_reserve=1_000_000, free_reserve=1000,
+                          maximum_document_bytes=64 * 1024**2)
     index = SQLiteCompanyEvidenceIndexFixture(
         root / "company_evidence.sqlite3", facts_path=root / "company_facts.sqlite3",
         documents=CompanyDocumentFilesFixture(root / "text"), raw_files=raw,

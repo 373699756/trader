@@ -7,9 +7,10 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 import sqlite3
 import json
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -85,7 +86,7 @@ from trader.download.infra.company_fact_inputs import (
     ReadCompanySnapshotShared,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
-from trader.download.infra.company_document_recovery import RestoreCompanyDocumentTasks
+from trader.download.infra.company_document_recovery import RepairCompanyDocumentFiles, RestoreCompanyDocumentTasks
 from trader.download.infra.company_field_recovery import (
     CompleteCompanyFieldRepairs,
     CompanyFieldRepairReceipts,
@@ -255,27 +256,7 @@ class SQLiteCompanyEvidenceIndex:
             raise ValueError("company_evidence_database_contract_mismatch")
 
     def _repair_pending_files(self) -> None:
-        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-            for row in connection.run("SELECT id,body_hash,record_hash FROM disclosures WHERE body_retained=1").fetchall():
-                self._check_cancelled()
-                try:
-                    text = self._documents.read(row[1])
-                except (OSError, ValueError, EOFError):
-                    connection.run(
-                        "UPDATE disclosures SET body_checked=0,body_retained=0,body_hash=NULL WHERE id=?", (row[0],)
-                    )
-                    connection.run("DELETE FROM document_extractions WHERE disclosure_id=?", (row[0],))
-                    MarkCompanyDirty(
-                        connection,
-                        tuple(
-                            item[0]
-                            for item in connection.run(
-                                "SELECT code FROM disclosure_codes WHERE disclosure_id=?", (row[0],)
-                            )
-                        ),
-                    )
-                else:
-                    WriteCompanyAnnouncementNumbers(connection, row[0], row[2], row[1], ExtractCompanyAnnouncementNumbers(text))
+        RepairCompanyDocumentFiles(self._connect, self._documents, self._check_cancelled)
         with (
             SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal,
             self._connect() as connection,
@@ -749,7 +730,7 @@ class SQLiteCompanyEvidenceIndex:
                 else CompanyDocumentTask(replace(previous.disclosure, codes=(*previous.disclosure.codes, *item.codes)), previous.route)
             )
         pending = tuple(items.values())
-        return pending[: self._documents.batch_limit(limit)] if pending and limit is not None else pending
+        return pending
 
     def document_workload(
         self,
@@ -829,19 +810,30 @@ class SQLiteCompanyEvidenceIndex:
 
     def commit_document(self, item: Disclosure, extraction: CompanyDocumentExtraction, extracted_at: datetime) -> bool:
         # A result already accepted by the main thread is drained on cancellation.
-        with self._connect(accepted_document=True) as connection, SqliteTransaction(connection, immediate=True):
-            # Reject late or duplicate results before writing text or link candidates.
+        with self._connect(accepted_document=True) as connection:
+            existing = connection.run(
+                "SELECT id FROM disclosures WHERE source=? AND source_key=? AND record_hash=? AND body_checked=0",
+                (item.source, item.identity, item.digest),
+            ).fetchone()
+        if existing is None:
+            return False
+        numbers = ExtractCompanyAnnouncementNumbers(extraction.text)
+        candidate = ExtractCompanyLinkCandidate(CompanyDocument(item, extraction.text, True), extracted_at, self._event_policy)
+        reserve = partial(self._raw_files.reserve, self._documents.root, analysis=True) if self._raw_files is not None else None
+        # Pin the prepared file, without holding its lock across a SQLite wait.
+        with (
+            self._documents.prepare(extraction.text, reserve=reserve) as digest,
+            self._connect(accepted_document=True) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
+            # A concurrent version/result change cannot acquire a reference or receipt.
             existing = connection.run(
                 "SELECT id FROM disclosures WHERE source=? AND source_key=? AND record_hash=? AND body_checked=0",
                 (item.source, item.identity, item.digest),
             ).fetchone()
             if existing is None:
                 return False
-            reservation = self._raw_files.reserve(self._documents.root, len(extraction.text.encode("utf-8")) + 4096, analysis=True) if self._raw_files is not None else nullcontext()
-            with reservation:
-                digest = self._documents.write(extraction.text)
-            WriteCompanyAnnouncementNumbers(connection, existing[0], item.digest, digest, ExtractCompanyAnnouncementNumbers(extraction.text))
-            candidate = ExtractCompanyLinkCandidate(CompanyDocument(item, extraction.text, True), extracted_at, self._event_policy)
+            WriteCompanyAnnouncementNumbers(connection, existing[0], item.digest, digest, numbers)
             connection.run(
                 "DELETE FROM document_link_candidates WHERE source=? AND source_key=? AND record_hash=? AND extraction_hash=?",
                 (item.source, item.identity, item.digest, self._facts.extraction_hash),
@@ -1198,6 +1190,7 @@ class SQLiteCompanyEvidenceIndex:
             RestoreCompanyDocumentTasks(
                 self._connect, self._raw_files, self.path.parent,
                 skip_unchanged=self._skip_unchanged_document_recovery,
+                check=self._check_cancelled,
             )
         # Formal receipts are authoritative across a crash between the commits.
         with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
@@ -1240,11 +1233,11 @@ class SQLiteCompanyEvidenceIndex:
                     QueueCompanyFieldRepairs(connection, formal, codes, observed_at, self.path.parent)
                     QueueCompanyRepurchaseRechecks(
                         connection, formal, codes, observed_at, self._facts.extraction_hash,
-                        self._event_policy, self._documents.read,
+                        self._event_policy, partial(self._documents.read, check=self._check_cancelled),
                     )
                     QueueCompanyReductionRechecks(
                         connection, formal, codes, observed_at, self._facts.extraction_hash,
-                        self._event_policy, self._documents.read,
+                        self._event_policy, partial(self._documents.read, check=self._check_cancelled),
                     )
         if parent is not None and parent.extraction_hash != self._facts.extraction_hash:
             with self._connect() as connection, SqliteTransaction(connection, immediate=True):
@@ -1325,7 +1318,7 @@ class SQLiteCompanyEvidenceIndex:
                     previous_facts.update(previous)
                     link_rows = ReadCompanyPublicationLinks(
                         source, batch, self._facts.extraction_hash, observed_at=observed_at,
-                        event_policy=self._event_policy, read_document=self._documents.read,
+                        event_policy=self._event_policy, read_document=partial(self._documents.read, check=self._check_cancelled),
                     ) if self._batch_publication_reads else ()
                     for code in batch:
                         self._check_cancelled()
@@ -1339,7 +1332,7 @@ class SQLiteCompanyEvidenceIndex:
                             inputs[code],
                             shared,
                             listed_on=listing_dates.get(code),
-                            read_document=self._documents.read,
+                            read_document=partial(self._documents.read, check=self._check_cancelled),
                         )
                         facts = CompileCompanyFacts(
                             snapshot, self._event_policy, previous=None if rebuild else previous.get(code)
@@ -1349,7 +1342,7 @@ class SQLiteCompanyEvidenceIndex:
                             if self._batch_publication_reads
                             else ReadCompanyPublicationLinks(
                                 source, (code,), self._facts.extraction_hash, observed_at=observed_at,
-                                event_policy=self._event_policy, read_document=self._documents.read,
+                                event_policy=self._event_policy, read_document=partial(self._documents.read, check=self._check_cancelled),
                             )[0]
                         )
                         contract_refreshes.extend(link_input.refreshes)
@@ -1381,7 +1374,7 @@ class SQLiteCompanyEvidenceIndex:
                         prepared.append(facts)
                         fields = PrepareCompanyFieldResults(
                             source, formal, facts, snapshot.announcements, observed_at=observed_at,
-                            extraction_hash=self._facts.extraction_hash, event_policy=self._event_policy, read_document=self._documents.read,
+                            extraction_hash=self._facts.extraction_hash, event_policy=self._event_policy, read_document=partial(self._documents.read, check=self._check_cancelled),
                         )
                         field_results.extend(fields.results)
                         formal_receipts.extend(fields.receipts)

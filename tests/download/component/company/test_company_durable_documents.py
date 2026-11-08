@@ -1,10 +1,12 @@
 """Crash boundaries and physical requests, independent of terminal counters."""
 
 import hashlib
+import multiprocessing
 import os
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -13,18 +15,129 @@ from tests.helpers.download.company_resources import CninfoMarketDisclosureSourc
 from tests.helpers.download.company.company_document_parser import _pdf
 from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentFailure, DisclosurePage
 from trader.download.infra.company_raw_files import CompanyRawFiles
-from trader.infra.http_contracts import HttpResponse, HttpTimeout
+from trader.infra.http_contracts import HttpCancelled, HttpResponse, HttpTimeout
 from trader.infra.http_transport import RequestsHttpTransport
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
 def _raw(root):
-    return CompanyRawFiles(root, capacity=2 * 1024**3, analysis_reserve=512 * 1024**2, free_reserve=1)
+    return CompanyRawFiles(root, capacity=2 * 1024**3, analysis_reserve=512 * 1024**2, free_reserve=1,
+                           maximum_document_bytes=64 * 1024**2)
 
 
 def _item():
     return replace(fixtures._disclosure("1000000001", "关于收到立案告知书的公告"),
                    url="https://static.cninfo.com.cn/finalpage/fixture.pdf")
+
+
+def _read_fifo(path, result):
+    try:
+        _raw(path.parent).digest(path)
+    except ValueError as exc:
+        result.send(str(exc))
+    finally:
+        result.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX named pipe boundary")
+def test_raw_named_pipe_fails_in_a_bounded_child_and_is_preserved(tmp_path):
+    path = tmp_path / "input.pdf"
+    os.mkfifo(path)
+    context = multiprocessing.get_context("spawn")
+    receive, send = context.Pipe(duplex=False)
+    process = context.Process(target=_read_fifo, args=(path, send))
+    process.start()
+    send.close()
+    try:
+        assert receive.poll(5), "regular input validation blocked on a named pipe"
+        assert receive.recv() == "regular_file_required"
+        process.join(5)
+        assert process.exitcode == 0
+        assert path.lstat().st_size == 0
+    finally:
+        receive.close()
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+
+
+def test_raw_document_reads_enforce_single_document_limit_without_modifying_file(tmp_path):
+    path = tmp_path / "input.pdf"
+    payload = b"%PDF-" + b"x" * 30
+    path.write_bytes(payload)
+    raw = CompanyRawFiles(tmp_path, capacity=1000, analysis_reserve=100, free_reserve=1, maximum_document_bytes=32)
+    with pytest.raises(ValueError, match="regular_file_size_limit"):
+        raw.digest(path)
+    with pytest.raises(ValueError, match="regular_file_size_limit"):
+        raw.complete(_item(), path)
+    assert path.read_bytes() == payload
+
+
+def test_raw_document_hash_honors_cancellation_between_chunks(tmp_path):
+    path = tmp_path / "input.pdf"
+    payload = b"%PDF-" + b"x" * 200000
+    path.write_bytes(payload)
+    calls = 0
+
+    def check():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise InterruptedError("fixture_cancelled")
+
+    with pytest.raises(InterruptedError, match="fixture_cancelled"):
+        _raw(tmp_path).digest(path, check=check)
+    assert calls == 3 and path.read_bytes() == payload
+
+
+def test_complete_accepts_exact_document_limit_without_hashing_the_header_twice(tmp_path):
+    path = tmp_path / "download.part"
+    payload = b"%PDF-" + b"x" * 27
+    path.write_bytes(payload)
+    raw = CompanyRawFiles(tmp_path, capacity=1000, analysis_reserve=100, free_reserve=1, maximum_document_bytes=32)
+    local = raw.complete(_item(), path)
+    assert local.payload_hash == hashlib.sha256(payload).digest()
+    assert local.size == len(payload) == 32 and local.path.read_bytes() == payload
+
+
+def test_complete_checks_the_verified_input_again_before_publishing(tmp_path, monkeypatch):
+    from trader.download.infra import company_raw_files
+
+    path = tmp_path / "download.part"
+    original, changed = b"%PDF-original", b"%PDF-changed"
+    path.write_bytes(original)
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(changed)
+    fsync = os.fsync
+
+    def replace_after_sync(descriptor):
+        fsync(descriptor)
+        os.replace(replacement, path)
+
+    monkeypatch.setattr(company_raw_files.os, "fsync", replace_after_sync)
+    with pytest.raises(ValueError, match="regular_file_identity_changed"):
+        _raw(tmp_path).complete(_item(), path)
+    assert path.read_bytes() == changed
+    assert not (tmp_path / (hashlib.sha256(original).hexdigest() + ".pdf")).exists()
+
+
+def test_cached_raw_input_does_not_bypass_source_cancellation(tmp_path):
+    raw = _raw(tmp_path)
+    item = _item()
+    directory = raw.directory(item)
+    directory.mkdir(parents=True)
+    payload = _pdf()
+    path = directory / (hashlib.sha256(payload).hexdigest() + ".pdf")
+    path.write_bytes(payload)
+    cancelled = Event()
+    cancelled.set()
+    with RequestsHttpTransport(execute_request=lambda _: pytest.fail("cached input needs no HTTP")) as transport:
+        source = CninfoMarketDisclosureSourceFixture(
+            transport, raw_files=raw, monotonic=lambda: 0, sleeper=lambda _: None, cancel_requested=cancelled.is_set,
+        )
+        with pytest.raises(HttpCancelled):
+            source.download_document(item)
+    assert path.read_bytes() == payload
 
 
 def test_usage_tolerates_scratch_directory_removed_during_scan(tmp_path, monkeypatch):
@@ -124,7 +237,8 @@ def test_failed_input_survives_restart_success_cleanup_and_obsolete_revision(tmp
     restarted.directory(new).mkdir(parents=True)
     assert restarted.release(new)
     assert retained.exists()
-    constrained = CompanyRawFiles(tmp_path, capacity=100, analysis_reserve=10, free_reserve=1)
+    constrained = CompanyRawFiles(tmp_path, capacity=100, analysis_reserve=10, free_reserve=1,
+                                  maximum_document_bytes=64 * 1024**2)
     with pytest.raises(RuntimeError, match="company_raw_capacity_exhausted"):
         with constrained.reserve(retained, 1):
             pass

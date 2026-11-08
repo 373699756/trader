@@ -99,7 +99,7 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     monkeypatch.setattr(CninfoMarketDisclosureSource, "_ocr", lambda *args: extraction)
     monkeypatch.setattr(CompanyRawFiles, "usage", usage)
     monkeypatch.setattr(CompanyRawFiles, "_size", staticmethod(lambda directory: 3))
-    monkeypatch.setattr(CompanyRawFiles, "digest", staticmethod(lambda path: b"d" * 32))
+    monkeypatch.setattr(CompanyRawFiles, "digest", lambda instance, path, **kwargs: b"d" * 32)
     monkeypatch.setattr(CompanyRequestPacer, "wait", lambda *args: None)
     monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "publish", lambda *args, **kwargs: 1)
     monkeypatch.setattr(SQLiteCompanyFactsIndex, "publish", lambda *args, **kwargs: None)
@@ -217,6 +217,7 @@ def test_candidate_reservation_scan_is_observed_without_counting_it_as_legacy_us
         capacity=10_000,
         analysis_reserve=1000,
         free_reserve=1,
+        maximum_document_bytes=64 * 1024**2,
         scan_reservations_once=True,
     )
     measurement = company_pipeline_audit._CompanySyncMeasurement()

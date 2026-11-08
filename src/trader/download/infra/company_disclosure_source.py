@@ -263,6 +263,16 @@ class CninfoMarketDisclosureSource:
         if self._cancel_requested is not None and self._cancel_requested():
             raise HttpCancelled("http_cancelled")
 
+    def _document_read_check(self) -> Callable[[], None]:
+        deadline = self._monotonic() + self._document_parse_timeout
+
+        def check() -> None:
+            self._check_cancelled()
+            if self._monotonic() >= deadline:
+                raise CompanyDocumentFailure("disclosure_document_parse_timeout")
+
+        return check
+
     def _pace(self) -> None:
         self._check_cancelled()
         delay = max(0.0, self._next_request - self._monotonic())
@@ -278,14 +288,14 @@ class CninfoMarketDisclosureSource:
     def document_ready(self, item: Disclosure) -> bool:
         if self._raw_files is None:
             raise RuntimeError("company_raw_files_required")
-        return self._raw_files.result(item, (self._document_policies.standard, self._document_policies.ocr, self._document_policies.limits)) is not None or self._raw_files.local(item) is not None
+        return self._raw_files.result(item, (self._document_policies.standard, self._document_policies.ocr, self._document_policies.limits)) is not None or self._raw_files.local(item, check=self._document_read_check()) is not None
 
     def download_document(self, item: Disclosure) -> None:
         if self._raw_files is None:
             raise RuntimeError("company_raw_files_required")
         if not item.url.startswith("https://static.cninfo.com.cn/finalpage/"):
             raise CompanyDocumentFailure("disclosure_document_unavailable")
-        local = self._raw_files.local(item)
+        local = self._raw_files.local(item, check=self._document_read_check())
         if local is not None:
             return
         directory = self._raw_files.directory(item)
@@ -294,7 +304,7 @@ class CninfoMarketDisclosureSource:
                 self._request(partial(self._transfer_document, item, directory))
             except HttpResponseTooLarge as exc:
                 raise CompanyDocumentFailure("disclosure_document_oversized") from exc
-            self._raw_files.complete(item, directory / "download.part")
+            self._raw_files.complete(item, directory / "download.part", check=self._document_read_check())
 
     def _transfer_document(self, item: Disclosure, directory: Path) -> HttpResponse:
         partial_path, metadata_path = directory / "download.part", directory / "download.json"
@@ -380,7 +390,7 @@ class CninfoMarketDisclosureSource:
         cached = self._raw_files.result(item, policies)
         if cached is not None:
             return cached
-        local = self._raw_files.local(item)
+        local = self._raw_files.local(item, check=self._document_read_check())
         if local is None:
             raise RuntimeError("company_local_document_missing")
         # Scratch, page checkpoints and result are covered by this reservation.

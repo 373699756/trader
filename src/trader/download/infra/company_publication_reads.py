@@ -186,6 +186,8 @@ def _recheck_contract(
         return _ContractRecheck(None, "旧合同关联候选缺少可核验的完整本地正文", False)
     try:
         text = read_document(row.body_hash)
+    except InterruptedError:
+        raise
     except (OSError, ValueError, EOFError):
         return _ContractRecheck(None, "旧合同关联候选缺少可核验的完整本地正文", False)
     if hashlib.sha256(text.encode("utf-8")).digest() != row.body_hash:

@@ -41,7 +41,8 @@ def AuditCompanyOcr(
     deadline = started + budget_seconds
     raw = CompanyRawFiles(directory / "inputs", capacity=configuration.raw_capacity_bytes,
                           analysis_reserve=configuration.raw_analysis_reserve_bytes,
-                          free_reserve=configuration.temporary_disk_reserve_bytes)
+                          free_reserve=configuration.temporary_disk_reserve_bytes,
+                          maximum_document_bytes=configuration.extended_document_limits.max_bytes)
 
     def cancelled() -> bool:
         return time.monotonic() >= deadline

@@ -529,6 +529,8 @@ def QueueCompanyRepurchaseRechecks(
                     continue
                 try:
                     text = read_document(body_hash)
+                except InterruptedError:
+                    raise
                 except (OSError, ValueError, EOFError):
                     continue
                 if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
@@ -616,6 +618,8 @@ def QueueCompanyReductionRechecks(
                     continue
                 try:
                     text = read_document(body_hash)
+                except InterruptedError:
+                    raise
                 except (OSError, ValueError, EOFError):
                     continue
                 if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
@@ -690,6 +694,8 @@ def _queue_unverified_repurchase_inputs(
                 continue
             try:
                 text = read_document(body_hash)
+            except InterruptedError:
+                raise
             except (OSError, ValueError, EOFError):
                 continue
             if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
@@ -754,6 +760,8 @@ def _refresh_repurchase_link_candidates(
                 continue
             try:
                 text = read_document(body_hash)
+            except InterruptedError:
+                raise
             except (OSError, ValueError, EOFError):
                 continue
             if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:

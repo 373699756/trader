@@ -1,7 +1,9 @@
 """Unresolved review inputs have versioned dependencies, never fake field completion."""
 
+import zlib
 from dataclasses import replace
 from datetime import timedelta
+from contextlib import contextmanager
 
 import pytest
 
@@ -12,20 +14,22 @@ from tests.helpers.download.company_resources import CompanyDocumentFilesFixture
 from trader.download.domain.company_events import CompanyReviewReason
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.infra.company_document_recovery import RepairCompanyDocumentFiles
 from trader.download.infra.company_field_recovery import (
     ReadCompanyFieldRecovery,
     ReadRequiredCompanyMaterialDependencies,
     RegisterCompanyMaterialDependencies,
 )
 from trader.download.infra.company_raw_files import CompanyRawFiles
-from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 NOW = fixtures.NOW
 _DETAIL = "相关事项仍在核实，具体签署主体及后续安排请以正式文件为准，相关资料并未作出进一步说明。"
 
 
 def _index(root, *, batch=False, event_policy=None):
-    raw = CompanyRawFiles(root, capacity=10_000_000, analysis_reserve=1_000_000, free_reserve=1000)
+    raw = CompanyRawFiles(root, capacity=10_000_000, analysis_reserve=1_000_000, free_reserve=1000,
+                          maximum_document_bytes=64 * 1024**2)
     index = SQLiteCompanyEvidenceIndexFixture(
         root / "company_evidence.sqlite3",
         facts_path=root / "company_facts.sqlite3",
@@ -351,3 +355,161 @@ def test_amount_rule_upgrade_reuses_retained_text_once_without_upgrading_documen
             "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted' "
             "AND policy_id LIKE '%:contract_amount:explicit_cny_contract_amount:3'"
         ).require_one()[0] == 1
+
+
+@pytest.mark.parametrize("damage", ("gzip", "deflate", "symlink"))
+def test_unsafe_retained_material_stops_recovery_without_deleting_evidence(tmp_path, monkeypatch, damage):
+    index, raw = _index(tmp_path)
+    item = fixtures._disclosure("reviewed", "关于签订重大合同的公告")
+    original = _stage(index, raw, item, _DETAIL)
+    index.publish(item.codes, NOW)
+    with SqliteSession(index.path) as collected:
+        before = tuple(collected.run("SELECT body_checked,body_retained,body_hash FROM disclosures").require_one())
+        extraction = tuple(collected.run("SELECT * FROM document_extractions").require_one())
+    material = index._documents._path(before[2])
+    damaged = b"invalid compressed material preserved for recovery"
+    if damage == "deflate":
+        damaged = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03\x07" + b"\x00" * 8
+    material.unlink()
+    if damage == "symlink":
+        target = tmp_path / "preserved-target"
+        target.write_bytes(damaged)
+        try:
+            material.symlink_to(target)
+        except OSError:
+            pytest.skip("this platform cannot create a test symlink")
+    else:
+        material.write_bytes(damaged)
+    monkeypatch.setattr(index, "_release_files", lambda: pytest.fail("unsafe recovery must not enter cleanup"))
+    with pytest.raises(RuntimeError, match="company_document_material_recovery_required") as failure:
+        index.initialize()
+    assert isinstance(failure.value.__cause__, (OSError, ValueError, EOFError, zlib.error))
+    assert material.read_bytes() == damaged and original.path.is_file()
+    if damage == "symlink":
+        assert material.is_symlink()
+    with SqliteSession(index.path) as collected:
+        assert tuple(collected.run("SELECT body_checked,body_retained,body_hash FROM disclosures").require_one()) == before
+        assert tuple(collected.run("SELECT * FROM document_extractions").require_one()) == extraction
+
+
+def test_material_read_and_number_extraction_happen_after_read_connection_closes(tmp_path, monkeypatch):
+    from trader.download.infra import company_document_recovery as recovery
+
+    index, raw = _index(tmp_path)
+    item = fixtures._disclosure("reviewed", "关于签订重大合同的公告")
+    _stage(index, raw, item, "证券代码：600001\n公告编号：2026-19\n" + _DETAIL)
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("DELETE FROM document_announcement_numbers")
+    active = 0
+
+    @contextmanager
+    def connect():
+        nonlocal active
+        with index._connect() as connection:
+            active += 1
+            try:
+                yield connection
+            finally:
+                active -= 1
+
+    original_read = index._documents.read
+    original_extract = recovery.ExtractCompanyAnnouncementNumbers
+    observed = []
+
+    def read(digest, *, check=None):
+        assert active == 0
+        with SqliteSession(index.path, SqliteConnectionOptions(timeout_seconds=0)) as writer:
+            with SqliteTransaction(writer, immediate=True):
+                writer.run("SELECT 1")
+        observed.append("read")
+        return original_read(digest, check=check)
+
+    def extract(text):
+        assert active == 0
+        observed.append("extract")
+        return original_extract(text)
+
+    monkeypatch.setattr(index._documents, "read", read)
+    monkeypatch.setattr(recovery, "ExtractCompanyAnnouncementNumbers", extract)
+    RepairCompanyDocumentFiles(connect, index._documents, index._check_cancelled)
+    assert observed == ["read", "extract"]
+    with SqliteSession(index.path) as collected:
+        assert tuple(collected.run("SELECT number FROM document_announcement_numbers").require_one()) == ("2026-19",)
+
+
+@pytest.mark.parametrize("column,value", (
+    ("record_hash", "new-record"), ("body_hash", b"x" * 32), ("body_retained", 0),
+))
+def test_material_recovery_rechecks_reference_after_reading(tmp_path, monkeypatch, column, value):
+    index, raw = _index(tmp_path)
+    item = fixtures._disclosure("reviewed", "关于签订重大合同的公告")
+    _stage(index, raw, item, "证券代码：600001\n公告编号：2026-19\n" + _DETAIL)
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("DELETE FROM document_announcement_numbers")
+    original_read = index._documents.read
+
+    def read(digest, *, check=None):
+        text = original_read(digest, check=check)
+        with SqliteSession(index.path) as writer, SqliteTransaction(writer, immediate=True):
+            writer.run(f"UPDATE disclosures SET {column}=?", (value,))
+        return text
+
+    monkeypatch.setattr(index._documents, "read", read)
+    RepairCompanyDocumentFiles(index._connect, index._documents, index._check_cancelled)
+    with SqliteSession(index.path) as collected:
+        assert collected.run(f"SELECT {column} FROM disclosures").require_one()[0] == value
+        assert collected.run("SELECT COUNT(*) FROM document_announcement_numbers").require_one()[0] == 0
+        assert collected.run("SELECT COUNT(*) FROM document_extractions").require_one()[0] == 1
+
+
+def test_missing_material_cannot_clear_a_new_reference(tmp_path, monkeypatch):
+    index, raw = _index(tmp_path)
+    item = fixtures._disclosure("reviewed", "关于签订重大合同的公告")
+    _stage(index, raw, item, _DETAIL)
+    new_hash = b"x" * 32
+
+    def missing(_digest, *, check=None):
+        with SqliteSession(index.path) as writer, SqliteTransaction(writer, immediate=True):
+            writer.run("UPDATE disclosures SET body_hash=?", (new_hash,))
+        raise FileNotFoundError("fixture material disappeared")
+
+    monkeypatch.setattr(index._documents, "read", missing)
+    RepairCompanyDocumentFiles(index._connect, index._documents, index._check_cancelled)
+    with SqliteSession(index.path) as collected:
+        assert tuple(collected.run("SELECT body_checked,body_retained,body_hash FROM disclosures").require_one()) == (1, 1, new_hash)
+        assert collected.run("SELECT COUNT(*) FROM document_extractions").require_one()[0] == 1
+
+
+def test_cancelled_material_recovery_preserves_completed_batches_and_resumes(tmp_path, monkeypatch):
+    index, raw = _index(tmp_path)
+    item = fixtures._disclosure("reviewed", "关于签订重大合同的公告")
+    _stage(index, raw, item, "证券代码：600001\n公告编号：2026-19\n" + _DETAIL)
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        for number in range(64):
+            collected.run(
+                "INSERT INTO disclosures(source,source_key,kind,title,published_at,url,record_hash,body_hash,body_checked,body_retained) "
+                "SELECT source,?,kind,title,published_at,url,record_hash,body_hash,body_checked,body_retained "
+                "FROM disclosures WHERE source_key=?", (f"copy-{number}", item.identity),
+            )
+        collected.run("INSERT OR IGNORE INTO disclosure_codes SELECT '600001',id FROM disclosures")
+        collected.run("DELETE FROM document_announcement_numbers")
+    original_read = index._documents.read
+    reads = 0
+
+    def read(digest, *, check=None):
+        nonlocal reads
+        reads += 1
+        if reads == 65:
+            raise InterruptedError("fixture cancellation")
+        return original_read(digest, check=check)
+
+    monkeypatch.setattr(index._documents, "read", read)
+    with pytest.raises(InterruptedError, match="fixture cancellation"):
+        RepairCompanyDocumentFiles(index._connect, index._documents, index._check_cancelled)
+    with SqliteSession(index.path) as collected:
+        assert collected.run("SELECT COUNT(*) FROM document_announcement_numbers").require_one()[0] == 64
+        assert collected.run("SELECT COUNT(*) FROM disclosures WHERE body_checked=1 AND body_retained=1").require_one()[0] == 65
+    monkeypatch.setattr(index._documents, "read", original_read)
+    RepairCompanyDocumentFiles(index._connect, index._documents, index._check_cancelled)
+    with SqliteSession(index.path) as collected:
+        assert collected.run("SELECT COUNT(*) FROM document_announcement_numbers").require_one()[0] == 65

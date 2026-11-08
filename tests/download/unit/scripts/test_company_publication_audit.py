@@ -155,7 +155,8 @@ def test_disk_inventory_includes_history_beyond_summary_limit_without_touching_i
     index = _published(tmp_path)
     item = fixtures._disclosure(title="关于收到立案告知书的公告")
     index.document_failure(item, "old-policy", "FileNotFoundError", fixtures.NOW, fixtures.NOW)
-    raw = CompanyRawFiles(tmp_path, capacity=1000000, analysis_reserve=100000, free_reserve=1000)
+    raw = CompanyRawFiles(tmp_path, capacity=1000000, analysis_reserve=100000, free_reserve=1000,
+                          maximum_document_bytes=64 * 1024**2)
     directory = raw.directory(item)
     directory.mkdir(parents=True)
     invalid = directory / "invalid.pdf"

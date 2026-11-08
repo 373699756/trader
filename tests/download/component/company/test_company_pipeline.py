@@ -35,7 +35,8 @@ def test_retry_pdf_survives_old_failure_receipt_cleanup(tmp_path, stage):
     item = _seed(index, 1)[0]
     index.document_failure(item, "old-ocr-policy", "disclosure_document_ocr_low_quality", NOW, NOW)
     index.publish(item.codes, NOW)
-    raw = CompanyRawFiles(tmp_path, capacity=10000000, analysis_reserve=1000000, free_reserve=1000)
+    raw = CompanyRawFiles(tmp_path, capacity=10000000, analysis_reserve=1000000, free_reserve=1000,
+                          maximum_document_bytes=64 * 1024**2)
     index._raw_files = raw
     directory = raw.directory(item)
     directory.mkdir(parents=True)

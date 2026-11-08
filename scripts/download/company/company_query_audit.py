@@ -271,6 +271,7 @@ def _audit_company_database(
         capacity=configuration.raw_capacity_bytes,
         analysis_reserve=configuration.raw_analysis_reserve_bytes,
         free_reserve=configuration.temporary_disk_reserve_bytes,
+        maximum_document_bytes=configuration.extended_document_limits.max_bytes,
     )
     with (
         SqliteSession(

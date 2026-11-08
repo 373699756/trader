@@ -257,3 +257,65 @@ def test_cancelled_component_does_not_persist_source_failure(tmp_path, monkeypat
         news_codes=("600001",),
     )
     assert result.failures == ("task:cancelled",) and not failures
+
+
+@pytest.mark.parametrize("phase", ("prepare", "publish_fields", "publish_contract"))
+def test_material_read_cancellation_is_propagated_before_missing_evidence_recovery(tmp_path, monkeypatch, phase):
+    from tests.helpers.download.company import company_field_recovery as field_fixtures
+    from trader.infra import regular_file
+
+    if phase == "publish_contract":
+        index = fixtures._index(tmp_path)
+        item = fixtures._disclosure("retained-contract", "关于签订重大合同的公告")
+        body = "本公司已签订正式合同，合同已生效。合同金额人民币2亿元（不含税）。" + field_fixtures._DETAIL
+        field_fixtures._put(index, item, body)
+        index.publish(item.codes, fixtures.NOW)
+        digest = index._documents.write(body)
+        with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+            collected.run("UPDATE disclosures SET body_retained=1,body_hash=?", (digest,))
+            collected.run("DELETE FROM document_contract_link_rules")
+    else:
+        index, item = field_fixtures._legacy_repurchase_template(tmp_path)
+    cancelled = Event()
+    index = SQLiteCompanyEvidenceIndex(
+        index.path, facts_path=index.facts_path, documents=index._documents,
+        cancel_requested=cancelled.is_set,
+    )
+    before = index.facts_path.read_bytes()
+    original_document_read = index._documents.read
+    original_stream_read = regular_file._RegularFileReader.read
+    original_check = index._check_cancelled
+    reading = False
+    interruptions = []
+
+    def document_read(digest, *, check=None):
+        nonlocal reading
+        reading = True
+        try:
+            return original_document_read(digest, check=check)
+        finally:
+            reading = False
+
+    def stream_read(stream, size=-1):
+        content = original_stream_read(stream, size)
+        if reading and content:
+            cancelled.set()
+        return content
+
+    def check_cancelled():
+        try:
+            original_check()
+        except InterruptedError as exc:
+            if reading:
+                interruptions.append(exc)
+            raise
+
+    monkeypatch.setattr(index._documents, "read", document_read)
+    monkeypatch.setattr(regular_file._RegularFileReader, "read", stream_read)
+    monkeypatch.setattr(index, "_check_cancelled", check_cancelled)
+    operation = index.prepare_publication if phase == "prepare" else index.publish
+    with pytest.raises(InterruptedError, match="company_sync_cancelled") as failure:
+        operation(item.codes, fixtures.NOW)
+    assert cancelled.is_set() and len(interruptions) == 1
+    assert failure.value is interruptions[0], "The material cancellation must escape its consumer unchanged"
+    assert index.facts_path.read_bytes() == before

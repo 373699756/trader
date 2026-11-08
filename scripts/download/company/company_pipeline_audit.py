@@ -332,7 +332,7 @@ def _observe_company_operations(stack: ExitStack, measurement: _CompanySyncMeasu
         (CninfoMarketDisclosureSource, "_ocr", measurement.wrap("ocr_execute", CninfoMarketDisclosureSource._ocr)),
         (CompanyRawFiles, "usage", measurement.wrap("raw_usage", CompanyRawFiles.usage)),
         (CompanyRawFiles, "_size", staticmethod(measurement.wrap("raw_size_scan", CompanyRawFiles._size))),
-        (CompanyRawFiles, "digest", staticmethod(measurement.wrap("raw_digest", CompanyRawFiles.digest))),
+        (CompanyRawFiles, "digest", measurement.wrap("raw_digest", CompanyRawFiles.digest)),
         (CompanyRawFiles, "_reservation_usage", measurement.wrap("raw_reservation_scan", CompanyRawFiles._reservation_usage)),
         (CompanyDocumentFiles, "read", measurement.wrap("text_read", CompanyDocumentFiles.read)),
         (SQLiteCompanyEvidenceIndex, "commit_document", measurement.wrap("document_commit", SQLiteCompanyEvidenceIndex.commit_document)),
@@ -561,6 +561,7 @@ def AuditCompanyPipeline(
         raw_files = CompanyRawFiles(run_directory, capacity=configuration.raw_capacity_bytes,
                                    analysis_reserve=configuration.raw_analysis_reserve_bytes,
                                    free_reserve=configuration.temporary_disk_reserve_bytes,
+                                   maximum_document_bytes=configuration.extended_document_limits.max_bytes,
                                    scan_reservations_once=candidate)
         index = _SampleIndex(
             database,

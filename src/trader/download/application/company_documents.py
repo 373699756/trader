@@ -136,8 +136,12 @@ class CompanyDocumentRun:
         self.report(workload, completed_before)
         last_publish = dependencies.monotonic()
         unpublished = 0
-        capacity_blocked = False
+        capacity_failure: str | None = None
         while queue or text_queue or ocr_queue or pending_documents:
+            if capacity_failure is not None:
+                queue.clear()
+                text_queue.clear()
+                ocr_queue.clear()
             urgent_publish = False
             stages: tuple[tuple[Literal["text", "ocr"], deque[CompanyDocumentTask], WorkerExecutor | None, int], ...] = (
                 ("ocr", ocr_queue, dependencies.ocr_executor, self.configuration.ocr_workers),
@@ -153,7 +157,7 @@ class CompanyDocumentRun:
                     pending_documents[self._submit(self.sources[0], task, stage, executor)] = (-1, stage, task)
                     inflight += 1
                     self._attempt(task.disclosure)
-            while queue and available and not self.stopped and not capacity_blocked and not CompanyCancelled(dependencies):
+            while queue and available and not self.stopped and capacity_failure is None and not CompanyCancelled(dependencies):
                 slot = available.popleft()
                 task = queue.popleft()
                 item = task.disclosure
@@ -199,7 +203,7 @@ class CompanyDocumentRun:
                         self.state.operations.recover(exc, "ocr_queued", exc.reason, record=False)
                     elif str(exc) == "company_raw_capacity_exhausted":
                         self.state.operations.record_failure(exc)
-                        capacity_blocked = True
+                        capacity_failure = "company_raw_capacity_exhausted"
                         queue.clear()
                         self.report(workload, completed_before, discovering=discovering,
                                     failure_document=task.disclosure, failure_stage=completed_stage,
@@ -216,11 +220,22 @@ class CompanyDocumentRun:
                         self._stage(task.disclosure, "downloaded", raw_saved=True)
                         (ocr_queue if task.route == "ocr" else text_queue).append(task)
                     elif extraction is not None:
-                        accepted, committed = self.state.operations.call_observed(
-                            "document_commit", partial(index.commit_document, task.disclosure, extraction, self.now()),
-                            document=task.disclosure, raw_saved=True, text_extracted=True,
-                            endpoint="sqlite:company_collection",
-                        )
+                        try:
+                            accepted, committed = self.state.operations.call_observed(
+                                "document_commit", partial(index.commit_document, task.disclosure, extraction, self.now()),
+                                document=task.disclosure, raw_saved=True, text_extracted=True,
+                                endpoint="sqlite:company_collection",
+                            )
+                        except RuntimeError as exc:
+                            if str(exc) not in {"company_raw_capacity_exhausted", "company_temporary_space_exhausted"}:
+                                raise
+                            capacity_failure = str(exc)
+                            self.state.operations.result(timing, "rejected", extraction=extraction)
+                            self.state.operations.recover(exc, "source_deferred", capacity_failure)
+                            self.report(workload, completed_before, discovering=discovering,
+                                        failure_document=task.disclosure, failure_stage="document_commit",
+                                        failure_reason=capacity_failure)
+                            continue
                         self.state.operations.result(timing, "accepted" if accepted else "rejected",
                                                      commit=committed, extraction=extraction)
                         if accepted:
@@ -243,9 +258,9 @@ class CompanyDocumentRun:
                 self._publish()
                 unpublished = 0
                 last_publish = dependencies.monotonic()
-        if capacity_blocked and self.completed == completed_before:
+        if capacity_failure is not None:
             self.capacity_blocked = True
-            self.state.failures += ("risk_documents:company_raw_capacity_exhausted",)
+            self.state.failures += (f"risk_documents:{capacity_failure}",)
         self.elapsed += max(0.0, dependencies.monotonic() - self.batch_started)
         self.batch_started = None
         if CompanyCancelled(dependencies):
@@ -259,7 +274,7 @@ class CompanyDocumentRun:
         self.report(
             final_workload,
             self.completed,
-            status="deferred" if self.stopped else "complete",
+            status="deferred" if self.stopped or self.capacity_blocked else "complete",
             discovering=discovering,
         )
 

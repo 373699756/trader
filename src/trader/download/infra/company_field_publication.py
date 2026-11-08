@@ -120,6 +120,8 @@ def PrepareCompanyFieldResults(
                     continue
                 try:
                     text = read_document(body_hash)
+                except InterruptedError:
+                    raise
                 except (OSError, ValueError, EOFError):
                     continue
                 if hashlib.sha256(text.encode()).digest() != body_hash:

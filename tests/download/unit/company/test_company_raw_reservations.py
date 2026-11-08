@@ -12,6 +12,7 @@ def test_reservation_growth_counts_owned_files_and_unused_reservations_once(tmp_
         capacity=1000,
         analysis_reserve=100,
         free_reserve=1,
+        maximum_document_bytes=64 * 1024**2,
         scan_reservations_once=candidate,
     )
     first = tmp_path / "documents" / "first"
@@ -37,6 +38,7 @@ def test_analysis_reserve_remains_available_without_releasing_existing_inputs(tm
         capacity=1000,
         analysis_reserve=300,
         free_reserve=1,
+        maximum_document_bytes=64 * 1024**2,
         scan_reservations_once=candidate,
     )
     directory = tmp_path / "documents" / "retained"
