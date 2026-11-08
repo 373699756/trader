@@ -18,6 +18,7 @@ from typing import Literal, cast
 from urllib.parse import parse_qs
 
 from scripts.download.company.company_publication_audit import AuditCompanyPublication
+from scripts.download.company.company_risk_comparison import CompareCompanyRisks, ProjectCompanyRiskComparison
 from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_evidence import (
@@ -208,7 +209,8 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float, sqlite_policy: Sql
 
 
 def AuditCompanyDatabase(
-    path: Path, *, now: datetime, budget_seconds: float, facts_path: Path | None = None, sqlite_policy: SqliteIoPolicy
+    path: Path, *, now: datetime, budget_seconds: float, facts_path: Path | None = None, sqlite_policy: SqliteIoPolicy,
+    risk_baseline: Path | None = None,
 ) -> dict[str, object]:
     """Count local records and persisted retry reasons without reading bodies into the report."""
     deadline = time.monotonic() + budget_seconds
@@ -224,6 +226,7 @@ def AuditCompanyDatabase(
         return _audit_company_database(
             path, now=now, deadline=deadline, cancel_requested=cancel_requested,
             facts_path=facts_path, sqlite_policy=sqlite_policy,
+            risk_baseline=risk_baseline,
         )
     except (sqlite3.OperationalError, _CompanyDatabaseAuditBudgetExceeded) as exc:
         # Python 3.10 has no sqlite_errorcode. The exact SQLite interruption
@@ -254,6 +257,7 @@ def _audit_company_database(
     cancel_requested: Callable[[], bool],
     facts_path: Path | None,
     sqlite_policy: SqliteIoPolicy,
+    risk_baseline: Path | None,
 ) -> dict[str, object]:
     cutoff = (now.date() - timedelta(days=365)).isoformat()
     pending = cooling = ready = deterministic = 0
@@ -438,9 +442,23 @@ def _audit_company_database(
     publication_findings = publication["findings"]
     if not isinstance(publication_findings, list):
         raise ValueError("company_publication_findings_invalid")
+    risk_comparison: dict[str, object] | None = None
+    risk_findings: list[str] = []
+    if risk_baseline is not None:
+        if facts_path is None:
+            raise ValueError("company_risk_comparison_requires_formal_database")
+        comparison = CompareCompanyRisks(
+            facts_path, risk_baseline, deadline=deadline, sqlite_policy=sqlite_policy,
+            cancel_requested=cancel_requested,
+        )
+        risk_comparison = ProjectCompanyRiskComparison(comparison)
+        if not comparison.all_old_risks_and_evidence_preserved:
+            risk_findings.append("company_old_risks_require_review")
+        if not comparison.stable_read or comparison.publication_hash != publication.get("publication_hash"):
+            risk_findings.append("company_audit_concurrent_change")
     return {
         "schema_version": "company-resume",
-        "status": "degraded" if partitions or pending or publication_findings else "passed",
+        "status": "degraded" if partitions or pending or publication_findings or risk_findings else "passed",
         "summary": {
             "database": {
                 "read_only": True,
@@ -454,6 +472,7 @@ def _audit_company_database(
                 "retained_bodies": totals[2],
                 "formal": formal,
                 "publication": publication,
+                **({"risk_comparison": risk_comparison} if risk_comparison is not None else {}),
                 "pending_ranges": partitions,
                 "pending_documents": pending,
                 "recorded_retry_cooling": cooling,
@@ -480,6 +499,7 @@ def _audit_company_database(
             (["company_download_pending"] if partitions or ready or cooling else [])
             + (["company_documents_deterministic_failure"] if deterministic else [])
             + publication_findings
+            + risk_findings
         ),
     }
 

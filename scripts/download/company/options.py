@@ -19,6 +19,7 @@ class CompanyOptions:
     company_replay_directory: Path | None = None
     company_query_audit: bool = False
     company_database_audit: bool = False
+    company_risk_baseline: Path | None = None
     company_pagination_audit: bool = False
     company_pipeline_audit: bool = False
     company_pacing_audit: bool = False

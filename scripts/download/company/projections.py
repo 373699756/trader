@@ -217,6 +217,23 @@ def ProjectCompanyResume(
         if field_audit:
             projected_publication["field_audit"] = ProjectCompanyFieldAudit(field_audit)
         projected_database["publication"] = projected_publication
+        risk_comparison = ProjectMapping(database.get("risk_comparison"))
+        if risk_comparison:
+            projected_risks = {key: risk_comparison.get(key) for key in (
+                "read_only", "complete", "stable_read", "baseline_sha256", "baseline_risks", "new_risks",
+                "exactly_preserved", "publication_hash", "all_old_risks_and_evidence_preserved",
+                "missing_means_resolved", "field_correctness_verified",
+            )}
+            for name, risk_keys in (
+                ("missing", ("code", "event_key")),
+                ("changed_requires_review", ("code", "event_key", "changed_fields", "original_evidence_retained")),
+            ):
+                rows = risk_comparison.get(name)
+                projected_risks[name] = [
+                    {key: row.get(key) for key in risk_keys}
+                    for row in (rows[:10_000] if isinstance(rows, list) else []) if isinstance(row, dict)
+                ]
+            projected_database["risk_comparison"] = projected_risks
         for name, count_key in (("partition_failures", "ranges"), ("document_failures", "documents")):
             rows = database.get(name)
             projected_database[name] = [

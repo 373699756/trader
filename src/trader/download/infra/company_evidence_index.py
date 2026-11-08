@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
@@ -958,10 +959,21 @@ class SQLiteCompanyEvidenceIndex:
     def component_due(self, component: str, scope: str, observed_at: datetime) -> bool:
         with self._connect() as connection:
             row = connection.run(
-                "SELECT checked_at,failure FROM component_checks WHERE component=? AND scope=?", (component, scope)
+                "SELECT checked_at,failure,EXISTS(SELECT 1 FROM structured_progress p "
+                "WHERE p.component=component_checks.component AND p.scope=component_checks.scope) "
+                "FROM component_checks WHERE component=? AND scope=?", (component, scope)
             ).fetchone()
-        ttl = timedelta(minutes=15) if component in {"financial", "news"} else timedelta(hours=4)
-        return row is None or row[0] is None or bool(row[1]) or datetime.fromisoformat(row[0]) <= observed_at - ttl
+        if row is None or row[0] is None or bool(row[1]):
+            return True
+        checked_at = datetime.fromisoformat(row[0])
+        if component == "financial":
+            shanghai = ZoneInfo("Asia/Shanghai")
+            return (
+                bool(row[2]) or checked_at > observed_at
+                or checked_at.astimezone(shanghai).date() != observed_at.astimezone(shanghai).date()
+            )
+        ttl = timedelta(minutes=15) if component == "news" else timedelta(hours=4)
+        return checked_at <= observed_at - ttl
 
     def component_since(self, component: str, scope: str, observed_at: datetime) -> date:
         if component == "financial":

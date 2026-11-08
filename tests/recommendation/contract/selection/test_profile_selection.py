@@ -1,7 +1,8 @@
 """Profile combinations share resources and keep training independent of downloads."""
 
 import threading
-from datetime import datetime
+from dataclasses import replace
+from datetime import date, datetime, timedelta
 from itertools import combinations
 from zoneinfo import ZoneInfo
 
@@ -9,11 +10,15 @@ import pytest
 
 from tests.helpers.shared.cold_start import _empty_config
 from trader import bootstrap
+from trader.download.domain.company_evidence import CompanyEvidenceInput, CompanyFinancial
+from trader.download.domain.company_facts import CompileCompanyFacts
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.entrypoints.cli import BuildParser as CliParser
 from trader.entrypoints.cli import Main as CliMain
 from trader.entrypoints.server import BuildParser as ServerParser
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
+from trader.recommendation.domain.publication.models import ScoredDisposition, Strategy
 from trader.training.entrypoints import commands, selected_training
 
 _SELECTIONS = tuple(group for size in range(1, 5) for group in combinations(SCORING_PROFILE_IDS, size))
@@ -79,6 +84,92 @@ def test_selected_profiles_share_resources_and_web_shows_only_selected_buttons(t
             assert status.status_code == 400
     assert f'name="trader-long-scoring-profile" content="{default}"' in html
     assert not (tmp_path / "data").exists()
+
+
+def test_all_profiles_filter_the_shared_published_latest_report_without_using_old_profit(
+    tmp_path, monkeypatch, application_feature_factory,
+):
+    observed_at = datetime(2026, 11, 8, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("company filter fixture must not start threads, request suppliers or train")
+
+    monkeypatch.setattr(threading.Thread, "start", forbidden)
+    monkeypatch.setattr(bootstrap.RequestsHttpTransport, "execute", forbidden)
+    monkeypatch.setattr(bootstrap, "ExecuteSelectedTraining", forbidden)
+    monkeypatch.setattr(bootstrap, "_utc_now", lambda: observed_at)
+    monkeypatch.setattr(
+        bootstrap.ChinaTradingCalendar, "open_dates",
+        lambda self: (date(2026, 11, 6), date(2026, 11, 9)),
+    )
+    group = bootstrap.BuildProfiledSystem(_empty_config(tmp_path), profiles=SCORING_PROFILE_IDS)
+    primary = group.systems[0]
+    writer = SQLiteCompanyFactsIndex(
+        primary.settings.data_paths.company,
+        event_policy=primary.strategy.company_scoring.events,
+        sqlite_policy=bootstrap.BuildSqlitePolicy(primary.settings),
+    )
+    writer.initialize()
+    facts = []
+    for code, old_parent, old_core, parent, core in (
+        ("600001", 10, 8, -3, 2),
+        ("600002", -10, -8, 3, 2),
+        ("600003", -10, -8, 3, None),
+    ):
+        old = CompanyFinancial(
+            code, date(2026, 3, 31), observed_at - timedelta(days=190),
+            1, 5, 10, 10, 10, 10, old_parent, old_core,
+        )
+        latest = replace(
+            old, report_date=date(2026, 6, 30), published_at=observed_at - timedelta(days=70),
+            basic_eps=None, parent_net_profit=parent, core_net_profit=core,
+        )
+        source = CompanyEvidenceInput(
+            code, observed_at, observed_at.date() - timedelta(days=365), observed_at.date(),
+            "fixture", (), True, (old, latest), None, (), False, (), False, (),
+        )
+        facts.append(CompileCompanyFacts(source, primary.strategy.company_scoring.events))
+    writer.publish(tuple(facts), {}, None, observed_at)
+    codes = tuple(item.code for item in facts)
+    research = primary.market_data.research
+    research.initialize(codes, cancelled=lambda: False)
+    assert research.status().entries == 3 and not research.status().last_error
+    quotes = tuple(application_feature_factory(code, observed_at).quote for code in codes)
+
+    assert {system.profile_id for system in group.systems} == set(SCORING_PROFILE_IDS)
+    for system in group.systems:
+        coordinator = system.scheduler._dependencies.data
+        assert coordinator._market is system.market_data
+        assert system.market_data.research is research
+        assert coordinator._candidate_filtering.policy.hard_filter.structured_risk_thresholds[
+            "latest_disclosed_report_loss"
+        ] == 0
+        observations = system.market_data.research.cached(codes, include_structured=True, as_of=observed_at)
+        features = system.market_data.quotes._feature_builder.build(
+            quotes, {}, observed_at, research_observations=observations,
+        )
+        assert {item.quote.code: item.values["latest_disclosed_report_loss"] for item in features} == {
+            "600001": 1.0, "600002": 0.0, "600003": None,
+        }
+        plans = coordinator._candidate_filtering.plan(
+            features, None, evaluated_at=observed_at, data_version="published-company-fixture",
+            apply_model_eligibility=False,
+        )
+        assert set(plans.plans) == {Strategy.TOMORROW, Strategy.D25}
+        for plan in plans.plans.values():
+            evaluations = {item.code: item for item in plan.evaluations}
+            assert evaluations["600001"].disposition is ScoredDisposition.REJECT
+            assert "latest_disclosed_report_loss" in {
+                item.code for item in evaluations["600001"].filter_reasons
+            }
+            assert "latest_disclosed_report_loss" not in {
+                item.code for item in evaluations["600002"].filter_reasons
+            }
+            assert evaluations["600003"].disposition is ScoredDisposition.OBSERVE_ONLY
+            missing = next(
+                item for item in evaluations["600003"].optional_flags if item.code == "structured_risk_unavailable"
+            )
+            assert "latest_disclosed_report_loss" in missing.actual
 
 
 @pytest.mark.parametrize("profiles", _SELECTIONS)

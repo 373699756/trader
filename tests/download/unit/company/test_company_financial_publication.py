@@ -46,9 +46,17 @@ def _source(financials, *, failures=()):
     )
 
 
-@pytest.mark.parametrize(("parent", "core", "expected"), ((3, 2, 0.0), (-3, 2, 1.0), (3, None, None)))
-def test_latest_partial_report_survives_formal_roundtrip_and_owns_loss_without_cross_period_values(tmp_path, parent, core, expected):
+@pytest.mark.parametrize(("old_parent", "old_core", "parent", "core", "expected"), (
+    (10, 8, -3, 2, 1.0),
+    (-10, -8, 3, 2, 0.0),
+    (-10, -8, 3, None, None),
+    (10, 8, -3, None, 1.0),
+))
+def test_latest_partial_report_survives_formal_roundtrip_and_owns_loss_without_cross_period_values(
+    tmp_path, old_parent, old_core, parent, core, expected,
+):
     old, latest = _reports()
+    old = replace(old, parent_net_profit=old_parent, core_net_profit=old_core)
     latest = replace(latest, parent_net_profit=parent, core_net_profit=core)
     facts = CompileCompanyFacts(_source((old, latest)), CompanyEventPolicyFixture())
     assert facts.financial == old and facts.latest_financial == latest

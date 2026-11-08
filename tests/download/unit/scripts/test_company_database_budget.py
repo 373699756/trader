@@ -32,7 +32,7 @@ def _budget_failure(monkeypatch, *, inventory=False):
     clock = _Clock()
     monkeypatch.setattr(company_query_audit.time, "monotonic", clock)
 
-    def interrupted(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy):
+    def interrupted(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy, risk_baseline):
         clock.now = deadline
         assert cancel_requested()
         if inventory:
@@ -134,7 +134,7 @@ def test_unproven_interrupt_and_other_sqlite_errors_keep_their_original_cause(
     cause = ValueError("private cause remains on the exception")
     monkeypatch.setattr(company_query_audit.time, "monotonic", clock)
 
-    def failed(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy):
+    def failed(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy, risk_baseline):
         clock.now = deadline if expired else deadline - 1
         if callback:
             assert cancel_requested() is expired
@@ -155,7 +155,7 @@ def test_unrelated_timeout_keeps_its_identity_and_cause_even_after_deadline_canc
     cause = OSError(f"private {origin} timeout cause")
     monkeypatch.setattr(company_query_audit.time, "monotonic", clock)
 
-    def failed(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy):
+    def failed(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy, risk_baseline):
         clock.now = deadline
         assert cancel_requested()
         raise error from cause

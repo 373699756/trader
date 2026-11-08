@@ -51,6 +51,7 @@ def BuildCommands(
                 str(options.company_audit_budget_seconds),
                 *(("--audit-only",) if options.company_query_audit else ()),
                 *(("--database-only",) if options.company_database_audit else ()),
+                *(("--risk-baseline", str(options.company_risk_baseline)) if options.company_risk_baseline else ()),
                 *(("--pagination-only",) if options.company_pagination_audit else ()),
                 *(("--pipeline-only",) if options.company_pipeline_audit else ()),
                 *(("--pacing-only",) if options.company_pacing_audit else ()),

@@ -275,6 +275,7 @@ def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--database", type=Path)
     parser.add_argument("--facts-database", type=Path)
+    parser.add_argument("--risk-baseline", type=Path)
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--budget-seconds", type=float)
     parser.add_argument("--config", type=Path, help="Runtime policy for isolated audit modes.")
@@ -291,6 +292,10 @@ def Main() -> int:
     audit.add_argument("--document-only", action="store_true")
     audit.add_argument("--directory-only", action="store_true")
     args = parser.parse_args()
+    if args.risk_baseline is not None and (
+        not args.database_only or args.directory is not None or args.facts_database is None
+    ):
+        parser.error("--risk-baseline requires read-only --database-only with --facts-database and without --directory")
     if args.budget_seconds is None:
         parser.error("--budget-seconds is required")
     if args.database is None:
@@ -348,6 +353,7 @@ def Main() -> int:
             now=datetime.now(ZoneInfo("Asia/Shanghai")),
             budget_seconds=min(180.0, args.budget_seconds),
             facts_path=args.facts_database, sqlite_policy=sqlite_policy,
+            risk_baseline=args.risk_baseline,
         )
         if args.directory is not None and report["status"] != "failed":
             summary = report["summary"]

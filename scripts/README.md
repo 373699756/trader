@@ -12,6 +12,8 @@
 .venv/bin/python3 scripts/tools.py --business recommendation --module assets --action consistency
 ```
 
+公司资料重下后的旧风险对照沿同一`download/company/coverage`动作，显式组合`--company-database-audit --company-risk-baseline /external/baseline-risks.json`，并用`--company-collection-database`、`--company-evidence-database`选定采集库和正式库。基线只读，上限4MiB、10000条风险及50000条证据；比较原风险业务字段和来源证据集合，忽略自增ID，分别报告精确保留、缺失及变化待审。比较与原数据库审计共用总期限，公开报告只含身份、变更字段名和证据保全状态，不含案件正文或原字段值。缺失不等于解除，快照变化或无正式发布不能签稳定完成；该对照不证明供应商原值、其它附表或全市场资料正确。此参数不能与隔离回放目录组合，也不会启动同步或初始化数据库。
+
 当前行业的批量协议核验沿同一`download/history/industry`动作，显式指定2–50个有序、不重复的六位代码、共同日期窗及全新仓库外目录。例如：
 
 ```bash
