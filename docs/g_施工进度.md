@@ -256,25 +256,67 @@ company接线及验证：组合根显式注入observe注册回调；采用并行
 
 281校验的5模块为`src/trader/infra/linux_process.py`、`src/trader/entrypoints/server.py`、`scripts/core/catalog.py`、`scripts/training/resources/training_process_measurement.py`、`scripts/recommendation/web/shutdown.py`；Ruff另加两个新测试。最终69项pytest文件为`tests/system/unit/test_shutdown_diagnostics.py`、`tests/system/unit/test_shutdown_observation.py`、`tests/recommendation/unit/scripts/test_shutdown_observation.py`、`tests/training/unit/scripts/test_training_process_measurement.py`，使用`.venv/bin/python3 -m pytest -o addopts='' --strict-markers -q`显式选择这4文件，不跑格式或无关脚本。
 
-### 合并后的修复顺序与关闭条件（2026-11-07）
+### 合并后的修复顺序与关闭条件（2026-11-08接续）
 
 下表替换此前的接续顺序，不新增阶段或P编号。代码缺口、目标差距和证据欠项分别关闭；已交切片保留原证据，不重新施工。先闭合353当前批次，再进行依赖其结果的联合采用与验收；B/C已有独立授权作业仍由原owner持有，不新增执行者或接管共享差集。
 
 | 顺序／原阶段与负责人 | 合并范围与问题性质 | 实施及关闭条件 |
 | --- | --- | --- |
-| 1．353／A：工程正确性 | 原10项继续in_progress；新增训练关闭结果遗漏、补缺IPC证据遗漏两项代码缺口 | 训练最终作业状态须在既有关闭结果已知后形成，关闭不完整／异常须明确诊断及非成功终态，同时保留已提交双头、原始失败／取消和逐档结果；沿现有ShutdownStep及共享deadline处理，不新增报告协议。补缺模块先查真实入口与owner：确认闲置则删除路径及消费者，确认保留则统一接现有安全失败证据并切全部消费者。未知文件、已发布模型、冻结及预算保护不变，具体见4.8 |
+| 1．353／A：工程正确性 | 原10项继续in_progress；已交训练关闭、IPC及启动typed回滚分支不重复施工，剩余退出路径、材料I/O和算法owner按本节细化接续 | 核无信号的绑定／输出／Web异常、关闭及诊断再次异常，全部经过原controller的同一期限保护且owner不重复stop；材料两项只由4.8已持有任务的负责人实施。业务算法切换新owner、全部消费者并删除旧路径。未知文件、已发布模型、冻结及预算保护不变；保留原10项的其它关闭条件，具体见4.8 |
 | 2．353／A：功能验收 | 当前回归未闭环，属于验证欠项；新发现修复前的运行不能签修复后通过 | 完成实现后冻结候选，按infra、download、training、recommendation、HTTP/Web、tooling分别留完整报告；先定位失败节点，再区分产品、旧消费者及环境限制。补训练关闭未完成／异常叠加原始失败和取消的最小回归；保留四档selected合成八头拟合／恢复／复用工程证据。受影响Ruff、必要mypy、完整diff及消费者复核通过后，才关闭原10项；排除performance及未授权format_tools，中断日志／旧缓存不计通过 |
 | 3．292／B供源、C接训练消费：当前行业快照（P34/P49，358替代原训练前置） | 358三批代码已交；2026-11-08用户确认history、market、train正常运行，正常入口运行项completed；覆盖／凭据与逐头交接专项保留 | B交最新有效当前行业发布及完整映射／缺口／原件凭据，C按358固定一份映射分组全部历史，核四档逐头成熟信号、诊断及最终拟合日期。正常history不再准备历史行业，官方历史区间覆盖不再阻塞正常训练；旧点时行业缺口仅作为独立历史研究限制保留，不能把最新分组实验补签成点时收益通过。旧发布不改写、门槛不降低 |
 | 4．292／B：历史价格验收（P34/P41/P44） | 354代码已交并采用；真实全历史审计仍待验 | 在固定合法发布身份上核全历史内容、raw/qfq配对、复权影响范围及恢复采用，拒绝发布漂移并保留明确失败类别。354严格结构代码不重复施工；旧快照不改写，不自动补表、迁移或重建活动库 |
 | 5．332／B：逐字段交付（P35–P43） | 任务完成判据不等于全部适用字段正确；既有字段结果类型的完整交付与真实核验仍待补齐 | 沿现有CompanyFieldResult／CompanyFieldConclusion／CompanyFieldSnapshot及codec补齐尚缺字段、适用性、结果状态、未知原因与分母，不另建结果owner。完成免费来源正式链，核主体／同案、计划／实际、单位／币种、年度、修订时点及未来180日解禁；逐项原文→规范值→正式reader→精确receipt，以独立留出报告正确／漏提／误提／未知。needs_retry=false、valid、NULL率、SQL有行及下载量不代签 |
 | 6．332／B：完整作业与恢复（P33/P38/P41/P42/P46–P48） | 全链运行、首次8小时与收尾证据尚未闭环 | 先核唯一writer及boot／birth，再取得目录、下载、解析、OCR、发布与收尾的真实分段和终态；验普通／fill旧值、续传、双库凭证和材料保护。最终报告、字段状态及退出码一致，锁／线程／子进程释放；首次8小时计入准备、失败与重启。监控与候选按4.3，性能只交4.5 |
-| 7．344／C：正常训练与交接（P49–P60） | train正常运行项completed（2026-11-08用户现场确认）；逐头身份交接、尚缺整作业恢复及质量待验；C27失败保留 | 沿已正常运行的当前训练结果交接源／配置／特征／样本／日期／覆盖及质量限制，核八头精确重载；V5统一10轮，不为关闭正常运行项重复启动训练。只补尚未覆盖的取消／重启阶段，C39等已交切片不重跑；另制合法独立质量取证方案，不在原确认区反复调参或补签旧失败 |
-| 8．281／A：真实荐股采用（P14–P30/P60） | 荐股正常运行项completed（2026-11-08用户现场确认）；冻结、恢复等专项仍按各自证据验收 | 核八组合资格／排名／六席／动作及API、SSE、页面一致；至少5个不同且连续的新鲜完整轮、正常轮零连接／SQL。补Long独立、正常15:00 scheduled冻结、迟到、部分提交、重启、结算及繁忙真实退出≤30秒；fallback、mock与局部fixture各保留自身身份，不代签现场 |
+| 7．344／C：正常训练与交接（P49–P60） | train正常运行项completed（2026-11-08用户现场确认）；旧顶层工件reader收口、逐头身份交接、尚缺整作业恢复及质量待验；C27失败保留 | C会同A原子切换完整loader、metadata身份观察、恢复、复用、到期和诊断消费者，仅接受当前writer实际结构；保留当前final内部的合法近期诊断证据，不迁移或删除模型。沿已正常运行的当前训练结果核八头精确重载；V5统一10轮，不为关闭正常运行项重复拟合。只补尚未覆盖的取消／重启阶段，C39等已交切片不重跑；独立质量取证不在原确认区反复调参或补签旧失败 |
+| 8．281／A：真实荐股采用（P14–P30/P60） | 荐股正常运行项completed（2026-11-08用户现场确认）；发布观察失败的HTTP／健康投影待补，冻结、恢复等专项仍按各自证据验收 | 先补四类观察失败的公开白名单和当前档位模型健康降级／恢复，保持只读及最近有效身份／快照。真实采用仍须核八组合资格／排名／六席／动作及API、SSE、页面一致，至少5个不同且连续的新鲜完整轮、正常轮零连接／SQL；补Long独立、正常15:00 scheduled冻结、迟到、部分提交、重启、结算及繁忙真实退出≤30秒。fallback、mock与局部fixture不代签现场 |
 | 9．4.5唯一队列／C：全部HDD性能 | 347/289/297/325/330、327/283/349及332/292/281/338的完整性能欠项 | 先完整基线，再按热点单变量试验；覆盖四档三负载及串并行、资料预读／存储生命周期、正确字段吞吐／发布、荐股全链／100 tick和工具成本。沿4.5同输入五对及各原门核CPU/RSS/I/O、空间、数值／质量／恢复；争用轮只作诊断或作废自身轮次，达门由原owner采用并复验。仅本机HDD，SSD状态原样保留 |
-| 10．213／A协调B/C：收益验收（P31/P71） | 已确认实现与新目标差距：换手仍允许增加0.05，完整总体选择仅接受V2/V3 | 先将换手目标与四档八头研究消费者原子切换，补不读取真实收益的合同回归；再依合法点时资格、统一成本、偏差检查、预登记候选、独立确认、一次终端留出及前瞻顺序取证。20/50bp收益与风险门分别验，100bp压力单列；至少200个未见交易日只开启一次。当前计划不授权读取真实留出，不以工程、模型加载、性能或人工启用补签收益 |
+| 10．213／A协调B/C：收益验收（P31/P71） | 状态标签粒度待裁决；换手仍允许增加0.05、完整总体选择仅接受V2/V3、一次开启前资源准入未接齐 | 先固定状态语义／候选及四档研究身份，再将统计、换手门、资源准入和全部研究消费者接通，补零真实收益读取的合同回归。随后依合法点时资格、统一成本、偏差检查、独立确认、一次终端留出及前瞻顺序取证；20/50bp收益与风险门分别验，100bp压力单列，至少200个未见交易日只开启一次。当前计划不授权读取真实留出，不以工程、模型加载、性能或人工启用补签收益 |
 | 11．321/341、338及平台债务／原owner（P04–P07/P61–P70） | 文档状态冲突、后续字典及类型／回归／平台证据差集 | 354只保留一条活动记录，区分源码采用与活动资料审计；本次只合并计划与校正状态。后续按实际行为补DDL、配置、字段及消费者，不重做工具入口或已交字典；Python3.10–3.14、Windows／Job、真实Chrome／信号／断电等缺条件逐项保留，当前Linux HDD正确性交付不因异平台缺证停工 |
 
 依赖关系：353代码修复→353冻结功能验收；292当前行业与价格、332字段与终态分别交合法输入，344按358当前合同交八头，281再验实际采用。C可顺序测已具备条件的冻结负载，缺一类不阻塞其它就绪项；213在合同目标、点时资格及独立确认均满足后才能进入一次留出。每个独立批次沿原记录提交、立即推送并核上游，不混入其他owner差集；数据删除、数据库重建、真实资料切换和发布仍须具体授权。
+
+#### 本次九项问题的Codex执行细化（2026-11-08，仅规划）
+
+本次以`6bd18bc3`及当前源码核对结果形成实施指令；本轮只改本台账，不执行代码改造或业务作业。以下序号仅对应用户询问的九项问题，不是新阶段、P号或第二份进度；施工及证据继续更新353、281、344、213各原记录。开工先读取最新HEAD、原记录及实际消费者，已有负责人实施的条目只接其交付，不启动第二执行者。公司材料两项已由原会话获授权实施，其4.8原段为唯一状态来源，本节不重置其进度。
+
+1．**其它异常退出仍可能卡住——353第5项／A。** 范围为`entrypoints/server.py`及现有`infra/shutdown.py`真实需要的接口；优先复用现有controller，不另建关闭owner。保留`a20f102b`的启动typed回滚失败立即退出2分支；已启动系统的绑定、URL输出、Web线程启动／运行异常，须在停止／等待／诊断前调用`controller.begin_shutdown()`，删除这些路径另起`ShutdownDeadline.start`的预算。Web线程失败先确保退出保护并通知主线程，再做诊断；显式记录入口与Web交接及已尝试的关闭，清理／诊断异常不能重复stop，也不能跳过尚未尝试的owner。watchdog启动失败及回收不完整均显式失败退出2，强退无同步日志、终端或时间线读取前置；完整回收后保留原异常及控制异常语义，已有首次／再次信号规则和原期限不变。
+
+   验收：扩展`tests/system/unit/test_server_entrypoint.py`、`test_shutdown_diagnostics.py`并复验`tests/infra/unit/test_signal_cancellation.py`。覆盖无信号、已有信号、清理期间信号、二次信号、绑定／输出／线程启动／运行失败、关闭／诊断再失败及watchdog启动失败；Web和system各停止至多一次，普通异常／KeyboardInterrupt／SystemExit在完整回收后原样传播。用测试自有短命子进程组合阻塞日志和非daemon尾线程，核原短期限及真实退出码2；不启动活动服务，不代签真实30秒门。
+
+2．**公司材料安全读取——353材料I/O／原company材料负责人，332协同。** 只接续4.8“company材料剩余两项修复”原段第1项及其最新实施记录，不另派工。原范围为`infra/regular_file.py`、`download/infra/company_document_files.py`、`company_raw_files.py`、`company_evidence_index.py`及全部材料消费者；目标是同一受管FD普通文件／身份／上限核验，正文压缩与解压均有界，保留合法PDF硬链接与原件，初始化材料读取移出长写事务。验收沿该原段的FIFO、链接／替换／增长／超限、坏压缩／摘要、取消及事务内零材料读取矩阵；不能清引用后删除尚待恢复的材料，不承诺中断任意内核磁盘阻塞。
+
+3．**相同正文重复预约和写入——沿同一company材料原批次／332正文幂等。** 接续4.8原计划第2、3项，依赖安全读取；同时闭合`pending_documents`最坏容量前置、`commit_document`预约和文件write三层，不能只改最后一层。有效同摘要完整核验后复用，净新增正文容量为零；损坏同名材料失败保全，不自动覆盖。验收须证明正文额度满且磁盘余量安全时重复正文仍成功、新正文仍拒绝，同正文不同公告的原PDF和正式凭据独立，以及取消、并发清理、回滚／重启后的原正式记录不变。文件操作次数减少只作正确性结果，吞吐收益交4.5实测后再裁定。
+
+4．**发布观察失败的HTTP和健康状态——281原状态／API记录／A。** 范围为`http_api/handlers/product_handler.py`、`recommendation/infra/status_projection.py`及必要的已有类型消费者。白名单补`market_data.published_history_observation_failure`、参考／公司投影的`publication_observation_failure`和`scoring_profile.maintenance[]`同名字段，只输出安全失败代码。模型健康只计当前profile、`owned=True`的头，按profile／strategy去重；其它档位失败逐行可见但不误降级当前档位。下一次成功观察自然恢复对应原因，其它原因保留；不改重启提示算法，不热切换、清空最近有效身份／模型／快照，不给HTTP增加文件／数据库I/O。
+
+   验收：扩展`tests/http_api/contract/test_web_contract.py`的维护状态节点、`tests/system/contract/test_bootstrap.py`的观察失败降级节点，复验`tests/recommendation/component/runtime/test_publication_observation.py`及`tests/training/unit/models/test_model_publication_observation.py`相关节点。四来源失败均公开、当前／其它档位区分、去重计数、恢复与其它失败共存、异常载荷白名单及请求零I/O均须有证据。
+
+5．**终端研究状态统计——213原记录／A协调B/C。** 先由原owner登记三标签的生成owner、时间可见性、粒度和覆盖分母；c第15章尚未规定完整粒度／阈值，不能依据字段名称默认为已批准合同。建议采用每策略／交易日唯一的市场、波动、流动性三元状态，同日混值拒绝、每日计数一次；若真实用途要求板级／个股级，应一并裁定统计分母及40日覆盖解释。裁决不能从现有证据推出时，先向用户提出这一具体语义选择，其它独立合法工作可继续，不读取真实留出试答案。
+
+   实施／验收：裁决明确后切`training/domain/evaluation/terminal_holdout.py`、`terminal_inputs.py`、输入及报告codec的全部消费者，停止按代码排序取`day_rows[0]`作为日状态。用`tests/training/unit/research/domain/test_terminal_holdout.py`、`unit/execution/test_terminal_holdout_inputs.py`及报告相关节点验证同日混值、股票顺序／代码重排、状态缺失和各状态覆盖边界；合法同一输入统计不随股票排序变化。按真实切换窄更新c，旧报告不补签。
+
+6．**换手门及四档研究覆盖——沿213同一原阶段。** `terminal_holdout.py`及`tomorrow_historical.py`等实际消费者统一比较未显示舍入的真实指标：候选换手减固定对照换手≤0，不另加0.05或epsilon宽容。四档接线须同批核`selection_experiment.py`、`risk_cost_population.py`、`research_plan.py`、`research_settings.py`、证据／报告codec、application执行及CLI；删除把非V2一律当V3候选的分支，不能只放开profile白名单。按c绑定V1独立排序器及收益门、V2行业树、V3行业Ridge、V5 TCN／序列的真实身份；生产对照与完整生产链臂复现各档排序／local_score动作门，候选／消融臂只按预登记的单因素变化执行，身份独立且不改变生产。候选、总体、固定对照、成本、日期分区、模型组件和特征／训练摘要进入同一不可变计划；档位＋策略身份须贯穿selection、terminal父状态、输入、开启记录及报告，在开启前核一致，不升级或重置旧记录。先登记各档合法候选，V1尚缺的具体候选不凭空补值；V5沿c既有窗口比较和当前10轮，不新增格式版本或生产训练。
+
+   验收：现有selection的domain／application测试、terminal与研究计划／报告测试用合成证据覆盖四档双策略八身份。换手相同／下降通过，任意正向劣化拒绝；错档／错头／模型／候选／日期／成本在读取收益前拒绝，生产对照／完整链臂排序符合各档合同，合法预登记消融臂不被改写为生产策略。20／50bp及100bp压力、六席／风险、既有预算与一次开启合同不降门；旧研究保留原身份，不把V2/V3结论当四档通过。
+
+7．**只接受当前模型工件——344／C主责，281／A核服务消费者。** 以writer实际结构为准：标准顶层只接受`*_head_recent_refit_metadata`，V1顶层只接受`learned_rank_final_head_model/metadata`；当前final内嵌的近期诊断模型、计划及校准证据仍合法必需，不能全文删除diagnostic相关标识。原子切`model_bundles/bundle_codec.py`的完整decoder与发布身份decoder／metadata解析、`bundle_snapshot.py`、`profile_publication.py`及V1 `models.py`的完整读取／只读身份分支，核engine／V1复用、到期、`profile_factory.py`、baseline身份及training_alignment／v5_training等诊断消费者。
+
+   验收：`tests/training/unit/models/`的publication、observation、recovery及workspace相关节点，V1训练和`tests/recommendation/unit/scoring/test_profile_factory.py`相关节点。当前四档双头加载／观察／复用／唯一previous恢复成功；旧普通metadata、旧refit、V1旧顶层诊断及混组在所有入口一致拒绝，目录／previous不被改写或自动删除。恢复时正式根已存在的早返也须核当前内容，不能只凭文件齐全绕过decoder；完整正式组、合法部分工作区和唯一previous仍分别按原保护规则处理。观察只读metadata，不加载native模型。正向fixture用当前writer结构，旧fixture保留用于拒绝验证；不搬迁、升级、删模型或给旧工件补身份。
+
+8．**历史业务算术唯一owner——353第4项／A。** 先登记`infra/market_data/history/history.py`的类型、函数及全部导入／mock消费者；当前该模块无I/O，目标是`recommendation/domain/market`下明确的历史指标单元，连同DailyBar、价格基准、会话类型、HistoryProfile／Context及纯计算原子迁入。切换推荐normalization、共享／发布历史、对齐／缓存身份、outcome、供应商adapter和performance中的消费者，以及scripts／tests／helpers；完成后删除旧模块及空路径，不留转发壳、兼容导出或第二算法。adapter继续拥有网络／文件／SQLite，domain不反向导入infra。
+
+   验收：复用history cost／price basis、market features、shared history projection、candidate history tail、quote factor cache及脚本消费者定向节点；纯搬迁不机械新增测试。公式、单位、窗口、完成日、停牌分母及缺失语义等价，旧路径零活动引用，domain无I/O／infra反向依赖。迁入domain会进入`TrainingImplementationIdentity`摘要，须如实记录实现身份及复用合同变化，不改摘要算法或加忽略伪装零重训；保留旧模型／历史／冻结身份，不自动拟合，不启用性能候选。与第7项共享`market_factor_inputs.py`等真实消费者的修改须串行或明确到hunk；364正在修改outcome历史消费者，须等其原owner交付后按最新代码重枚举，不接管、不覆盖，也不恢复其已删除的DailyBar收益依赖。
+
+9．**终端研究开启前资源准入——沿213原阶段，C只承接后续性能实测。** 范围为`application/terminal_holdout_execution.py`、`infra/research/terminal_holdout_inputs.py`、现有训练资源port／预算及组合根必要注入。固定顺序为父资格／计划→有界metadata及普通文件FD属性→资源准入并持有reservation→原子开启记录落盘同步→首次收益读取→评价／发布→释放reservation。预检只能用预登记行数／日期、文件属性／大小、配置与系统资源限制，不预读、抽样或算收益内容摘要；估算覆盖两策略行对象、排序／分组及bootstrap工作集，缺可信上界明确拒绝。沿已有内存预算复用，等待须有原期限和取消；FD保持或复核身份，实际读取仍核上限和摘要。
+
+   验收：现有terminal输入、strategy terminal执行、报告及memory admission节点覆盖预检失败零收益读取且无marker，准入后并发只有一个开启者，取消／异常释放reservation。原“开前删除文件也烧资格”fixture须拆成预检缺失不烧资格，以及marker已落盘后解析／摘要／取消／发布失败仍永久消耗资格；换输出目录不可重开、失败marker不可撤销、报告发布幂等保持。仅合成／仓库外隔离fixture；流式评价或内存优化另需等价证据和4.5实测，不在此项直接启用。
+
+**执行顺序和交付指令：** A先处理第1项，再在共享消费者可切换时处理第8项，闭合自己负责的353完整剩余范围及对应门禁，提交推送后停止；同一执行者须等下次用户明确继续后再接281第4项，不能按353→281→353来回拆阶段。已有独立281负责人的第4项、company材料原owner的第2→3项及C原344的第7项，可以在范围明确后并行，不接管其它owner独立批次，不因其待验整体停工，不占用对方index，也不替其标记完成。第8项的共享消费者按上条顺序交接；213内部按第5项语义裁决／第6项候选预登记→第9项资源准入→第5、6项完整消费者和回归收口。各条是原阶段内部工作单元，不能另建阶段拆走剩余工作，也不能以单条通过关闭整个353／281／344／213；用户每次继续只执行自己负责的一个完整原阶段，满足原关闭条件后按AGENTS提交一个Conventional Commit、立即push同名上游、核远端到达并停止。未满足完成条件继续原阶段，不切新阶段掩盖剩余项；其它原owner的独立作业不因此停工。
+
+**实施时最小充分门禁：** 显式选择本条列出的相关pytest节点；直接命令只用`.venv/bin/python3 -m pytest -o addopts='' --strict-markers -q`加实际节点及仓库外XML路径，Python逻辑改动跑受影响Ruff E9/F/B/UP，公共类型／复杂边界再跑定向mypy。只改文档则完整diff Review与`git diff --check`，不跑测试；原阶段要求完整功能回归时，先核真实调用范围并排除performance、format_tools及会触发未授权脚本的节点。Review须覆盖新增／删除文件、全部消费者、旧路径／双owner／隐藏fallback；权威b/c/d/e只在对应行为实际切换后窄更新。任何未运行、旧基线失败或环境限制单列，不改断言／门槛凑通过。
+
+**真实验收仍沿原记录：** 353冻结功能回归、281同一出生身份真实繁忙退出≤30秒／五个新鲜轮／冻结恢复、362公司完整终态与持续风险／字段证据、344八头交接与质量、4.5唯一C的本机HDD性能、213独立确认及一次留出分别核销。本次计划不授权新启动真实服务、下载、训练、读取真实留出、数据删除／重建／切换、发布或新性能执行者；已有单独授权由原owner继续，不因该计划取消。缺现场条件只保留相应待验，不当作新bug，也不把fixture、HTTP200或进程存活补签成通过。
 
 当前接续注意：
 
