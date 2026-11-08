@@ -11,7 +11,8 @@ from itertools import islice
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar, cast
+from trader.infra.shutdown import ShutdownDeadline
 
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
@@ -65,6 +66,15 @@ class SelectedTrainingPreparationError(RuntimeError):
     """One profile's input boundary failed without stopping other selected profiles."""
 
 
+class SelectedTrainingDrainError(RuntimeError):
+    """Unfinished fitting keeps its resources after a bounded failure drain."""
+
+    def __init__(self, pending: tuple[Future[object], ...], deadline: ShutdownDeadline) -> None:
+        super().__init__("selected_training_shutdown_incomplete")
+        self.pending = pending
+        self.deadline = deadline
+
+
 class _PreparationFailure(ValueError):
     def __init__(self, reason: str, diagnostic: TrainingErrorDiagnostic) -> None:
         super().__init__(reason)
@@ -72,6 +82,8 @@ class _PreparationFailure(ValueError):
 
 
 class SelectedTrainingSessionPort(Protocol[ResultT]):
+    def abort(self) -> ShutdownDeadline: ...
+
     def prepare_task(
         self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort,
     ) -> SelectedTrainingTask[ResultT]: ...
@@ -137,6 +149,7 @@ def TrainSelectedProfiles(operations: SelectedTrainingPort[ResultT], executor: E
                 settings=operations.settings,
                 on_outcome=operations.on_outcome,
                 observer=operations.observer,
+                abort=session.abort,
             )
         return session.completed(run)
 
@@ -168,6 +181,7 @@ def RunSelectedTrainingTasks(
     settings: TrainingFanoutSettings,
     on_outcome: Callable[[SelectedTrainingOutcome[ResultT]], None] | None = None,
     observer: TrainingExecutionObserver | None = None,
+    abort: Callable[[], ShutdownDeadline] | None = None,
 ) -> SelectedTrainingRun[ResultT]:
     if not tasks or len({task.profile for task in tasks}) != len(tasks):
         raise ValueError("training_requires_unique_selected_profiles")
@@ -178,6 +192,7 @@ def RunSelectedTrainingTasks(
         settings,
         on_outcome,
         observer,
+        abort,
     ).execute(read_rows)
 
 
@@ -190,6 +205,7 @@ class _TrainingFanout(Generic[ResultT]):
         settings: TrainingFanoutSettings,
         on_outcome: Callable[[SelectedTrainingOutcome[ResultT]], None] | None,
         observer: TrainingExecutionObserver | None,
+        abort: Callable[[], ShutdownDeadline] | None,
     ) -> None:
         self.tasks = tasks
         self.executor = executor
@@ -197,6 +213,7 @@ class _TrainingFanout(Generic[ResultT]):
         self.settings = settings
         self.on_outcome = on_outcome
         self.observer = observer
+        self.abort = abort
         self.queues: tuple[Queue[tuple[HistoryTrainingRow, ...] | None], ...] = tuple(
             _TrainingQueue(settings.queue_batches, task.profile, observer) for task in tasks
         )
@@ -302,12 +319,21 @@ class _TrainingFanout(Generic[ResultT]):
                 self.futures.append(self.executor.submit(self._run, index))
             with read_rows(dates) if dates else nullcontext(iter(())) as rows:
                 scanned = self._stream(rows)
-            wait(self.futures)
+            while wait(self.futures, timeout=0.05)[1]:
+                if self.cancelled():
+                    raise InterruptedError("selected_training_cancelled")
             outcomes = tuple(future.result() for future in self.futures)
             return SelectedTrainingRun(outcomes, int(bool(dates)), scanned)
-        except BaseException:
+        except BaseException as exc:
             self.stopped.set()
-            wait(self.futures)
+            deadline = self.abort() if self.abort is not None else ShutdownDeadline.start(30.0)
+            for future in self.futures:
+                future.cancel()
+            _, pending = wait(self.futures, timeout=deadline.remaining_seconds())
+            if pending:
+                raise SelectedTrainingDrainError(
+                    tuple(cast("Future[object]", future) for future in pending), deadline,
+                ) from exc
             raise
         finally:
             # Failed consumers can leave bounded batches behind, including when
@@ -326,6 +352,7 @@ __all__ = [
     "SelectedTrainingOutcome",
     "SelectedTrainingPort",
     "SelectedTrainingPreparationError",
+    "SelectedTrainingDrainError",
     "SelectedTrainingRun",
     "SelectedTrainingSessionPort",
     "SelectedTrainingTask",

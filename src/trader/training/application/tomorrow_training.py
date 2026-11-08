@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from datetime import date
 from typing import Literal, Protocol
 
@@ -172,6 +173,17 @@ class TomorrowTrainingProgressPort(Protocol):
     def publish(self, progress: TomorrowTrainingProgress) -> None: ...
 
 
+class CancellableTrainingProgress:
+    def __init__(self, target: TomorrowTrainingProgressPort, cancelled: Callable[[], bool]) -> None:
+        self._target = target
+        self._cancelled = cancelled
+
+    def publish(self, progress: TomorrowTrainingProgress) -> None:
+        if self._cancelled():
+            raise InterruptedError("profile training cancelled")
+        self._target.publish(progress)
+
+
 @dataclass(frozen=True)
 class TomorrowTrainingWindow:
     split: TrainingDateSplit
@@ -244,6 +256,7 @@ class ProductionTrainingWindow:
 
 
 __all__ = [
+    "CancellableTrainingProgress",
     "TOMORROW_TRAINING_COMPUTE_THREADS",
     "TOMORROW_TRAINING_PEAK_RSS_MIB",
     "TomorrowTrainingProgress",

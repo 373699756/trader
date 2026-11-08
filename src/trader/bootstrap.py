@@ -70,7 +70,7 @@ from trader.download.domain.price_review import PriceReviewBudget
 from trader.download.infra.tencent_request_budget import TencentRequestBudget
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.download.infra.qfq_update_runner import QfqShutdown, QfqUpdateRunner, StopQfqWorkers
+from trader.download.infra.qfq_update_runner import QfqShutdown, QfqShutdownScope, QfqUpdateRunner
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
@@ -98,6 +98,7 @@ from trader.infra.disk_probe import DiskProbe
 from trader.infra.disk_runtime import ConfigureDisk
 from trader.infra.disk_types import DiskMedium
 from trader.infra.workers import BoundedExecutor, InjectedExecutor, WorkerScope
+from trader.infra.shutdown import ShutdownBudget
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
@@ -597,7 +598,11 @@ def ExecuteHistoryDownload(
         worker_count=configuration.history_workers, queue_capacity=0, thread_name_prefix="history-download"
     )
     history_writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="history-writer")
-    with ExitStack() as http_resources, WorkerScope((history_pool, history_writer), timeout_seconds=shutdown_timeout_seconds):
+    shutdown_budget = ShutdownBudget(shutdown_timeout_seconds)
+    with ExitStack() as http_resources, WorkerScope(
+        (history_pool, history_writer), timeout_seconds=shutdown_timeout_seconds,
+        shutdown_deadline=shutdown_budget.begin,
+    ):
         with BaoStockHistorySupplier(configuration, progress=progress, cancel_requested=cancel_requested,
                                      vendor_lock=ProcessLock(configuration.reference_root / "baostock.lock", label="BaoStock"),
                                      price_total_seconds=configuration.supplier_timeout_seconds,
@@ -633,6 +638,7 @@ def ExecuteHistoryDownload(
                 resources=HistorySyncResources(
                     history_pool, history_writer, disk_kind=disk_kind, repair_only=repair_only,
                     price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(configuration.price_review),
+                    shutdown=shutdown_budget,
                 ),
             )
 
@@ -684,15 +690,10 @@ def ExecuteQfqDownload(
         queue_capacity=0,
         thread_name_prefix="qfq-download",
     )
-    try:
-        qfq_pool.start()
-    except (OSError, RuntimeError) as exc:
-        failures(DownloadFailureContext("worker_start"), exc)
-        raise
     qfq_writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="qfq-writer")
+    shutdown_budget = ShutdownBudget(shutdown_timeout_seconds)
     with ExitStack() as http_resources:
-        try:
-            qfq_writer.start()
+        with QfqShutdownScope(QfqShutdown(qfq_writer, qfq_pool, report, failures), shutdown_budget, started, cancel_requested) as shutdown:
             http_pool = TencentSessionPool(
                 tuple(
                     http_resources.enter_context(OpenExternalHttp())
@@ -733,17 +734,13 @@ def ExecuteQfqDownload(
                 repair_only=repair_only,
                 failures=failures,
                 price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(qfq_configuration.price_review),
+                shutdown=shutdown_budget,
             )
-            return QfqUpdateRunner(
+            result = QfqUpdateRunner(
                 history, updater, v2, v3, paths.daily_window.with_suffix(".lock"), ShanghaiClock(now).now,
                 failures=failures,
             ).execute()
-        except (OSError, RuntimeError, ValueError) as exc:
-            if not cancel_requested():
-                failures(DownloadFailureContext("resource_or_command", elapsed_seconds=time.monotonic() - started), exc)
-            raise
-        finally:
-            StopQfqWorkers(QfqShutdown(qfq_writer, qfq_pool, report, failures), shutdown_timeout_seconds, started)
+    return shutdown.finish(result)
 
 
 def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Path, sqlite_policy: SqliteIoPolicy) -> ResearchEvidenceResult:

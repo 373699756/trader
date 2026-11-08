@@ -55,6 +55,32 @@ def test_one_prepared_full_reference_is_shared_in_order(target):
     assert ProjectSyncResult(result)["status"] == "completed"
 
 
+@pytest.mark.parametrize("failure", (None, "source_unavailable", "cancelled"))
+def test_market_shutdown_failure_preserves_the_published_result_and_original_failure(failure):
+    market = QfqUpdateResult(
+        _NOW.date(), 17, changed_files=("daily_window.sqlite3",), changed_rows=42,
+        failure_reason=failure, shutdown_failure="qfq_shutdown_incomplete",
+    )
+
+    def forbidden(_reference):
+        pytest.fail("market command must not start another task")
+
+    result = SyncData(
+        lambda: PreparedFixture(_NOW), forbidden, lambda _reference: market, forbidden, lambda: False,
+    ).execute("market")
+    task, = result.tasks
+    assert task.market is market
+    assert task.status == ("cancelled" if failure == "cancelled" else "failed")
+    assert task.reason == "qfq_shutdown_incomplete"
+    assert result.exit_code == (130 if failure == "cancelled" else 1)
+    assert market.needs_retry
+    projected = ProjectSyncResult(result)["tasks"][0]
+    assert projected["failure_reason"] == failure
+    assert projected["shutdown_failure"] == "qfq_shutdown_incomplete"
+    assert projected["changed_rows"] == 42 and projected["completed_codes"] == 17
+    assert tuple(projected["changed_files"]) == market.changed_files
+
+
 @pytest.mark.parametrize("pending", (False, True))
 def test_failed_or_incomplete_history_continues_market_and_company(pending):
     calls = []

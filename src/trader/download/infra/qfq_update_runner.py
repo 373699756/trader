@@ -8,13 +8,14 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from types import TracebackType
 from zoneinfo import ZoneInfo
 
 from trader.download.application.progress_message import ProgressLevel
 from trader.download.application.qfq_download_progress import QfqFailureCode, QfqMessage
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.application.update_qfq import UpdateQfqWindows
+from trader.download.application.update_qfq import QfqWriterDrainError, UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.domain.prepared_reference import PreparedReference
@@ -24,7 +25,7 @@ from trader.download.infra.qfq_progress import QfqLocalProgress
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.domain.download_failure import DownloadFailureContext
-from trader.infra.shutdown import ShutdownDeadline
+from trader.infra.shutdown import CollectShutdownFailures, ShutdownBudget, ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.infra.workers import ManagedWorkerExecutor
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -48,19 +49,82 @@ def StopQfqWorkers(
     started_at: float,
     *,
     monotonic: Callable[[], float] = time.monotonic,
-) -> None:
+    deadline: ShutdownDeadline | None = None,
+) -> ShutdownReport:
     """Drain explicitly owned paired workers under one deadline and report failure."""
-    deadline = ShutdownDeadline.start(timeout_seconds, monotonic=monotonic)
-    writer_stopped = resources.writer.stop(wait=True, cancel_futures=True, deadline=deadline)
-    stopped = resources.downloads.stop(wait=True, cancel_futures=True, deadline=deadline)
-    if not stopped.completed or not writer_stopped.completed:
+    deadline = deadline or ShutdownDeadline.start(timeout_seconds, monotonic=monotonic)
+    steps: list[ShutdownStep] = []
+    for name, worker in (("qfq-writer", resources.writer), ("qfq-download", resources.downloads)):
+        with CollectShutdownFailures(deadline, steps, name):
+            steps.append(worker.stop(wait=True, cancel_futures=True, deadline=deadline))
+    result = ShutdownReport.from_steps(deadline, steps)
+    if not result.completed:
         resources.failures(
             DownloadFailureContext("shutdown", elapsed_seconds=monotonic() - started_at),
-            RuntimeError("qfq_worker_deadline_exceeded"),
+            RuntimeError("qfq_shutdown_incomplete"),
         )
         resources.report(QfqMessage(
-            "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR,
+            "关闭失败", "qfq_shutdown_incomplete", level=ProgressLevel.ERROR,
         ))
+    return result
+
+
+class QfqShutdownScope:
+    """Own injected market workers and apply their real cleanup result once."""
+
+    def __init__(
+        self,
+        resources: QfqShutdown,
+        shutdown: ShutdownBudget,
+        started_at: float,
+        cancelled: Callable[[], bool],
+    ) -> None:
+        self._resources = resources
+        self._shutdown = shutdown
+        self._started_at = started_at
+        self._cancelled = cancelled
+        self._report: ShutdownReport | None = None
+
+    def __enter__(self) -> QfqShutdownScope:
+        try:
+            self._resources.downloads.start()
+            self._resources.writer.start()
+        except (OSError, RuntimeError) as exc:
+            try:
+                self._resources.failures(
+                    DownloadFailureContext("worker_start", elapsed_seconds=time.monotonic() - self._started_at), exc,
+                )
+            finally:
+                self.close()
+            raise
+        except BaseException:
+            self.close()
+            raise
+        return self
+
+    def __exit__(
+        self, exception_type: type[BaseException] | None, exception: BaseException | None, traceback: TracebackType | None,
+    ) -> None:
+        try:
+            if isinstance(exception, (OSError, RuntimeError, ValueError)) and not self._cancelled():
+                self._resources.failures(
+                    DownloadFailureContext("resource_or_command", elapsed_seconds=time.monotonic() - self._started_at),
+                    exception,
+                )
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self._report is None:
+            self._report = StopQfqWorkers(
+                self._resources, self._shutdown.timeout_seconds, self._started_at,
+                deadline=self._shutdown.begin(),
+            )
+
+    def finish(self, result: QfqUpdateResult) -> QfqUpdateResult:
+        if self._report is None:
+            raise RuntimeError("qfq_shutdown_report_missing")
+        return result if self._report.completed else replace(result, shutdown_failure="qfq_shutdown_incomplete")
 
 
 @dataclass(frozen=True)
@@ -80,13 +144,20 @@ class QfqUpdateRunner:
         stage = "maintenance_lock"
         result: QfqUpdateResult | None = None
         try:
-            with HistoryMaintenanceLock(self.lock_path):
+            with HistoryMaintenanceLock(self.lock_path) as lease:
                 stage = "initial_integrity"
                 if Path(f"{self.v2.path}.sha256").is_file():
                     self.v2.verify_integrity()
                 if not seed_only:
                     stage = "update"
-                    result = self.updater.execute(self.now())
+                    try:
+                        result = self.updater.execute(self.now())
+                    except QfqWriterDrainError as exc:
+                        lease.retain_until(exc.pending)
+                        result = exc.result
+                        changed.update(result.changed_files)
+                        rows += result.changed_rows
+                        raise
                     changed.update(result.changed_files)
                     rows += result.changed_rows
                     return result
@@ -155,7 +226,8 @@ class QfqUpdateRunner:
             )
             if result is not None:
                 return replace(
-                    result, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason
+                    result, changed_files=tuple(sorted(changed)), changed_rows=rows,
+                    failure_reason=result.failure_reason or reason,
                 )
             return QfqUpdateResult(None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason)
 

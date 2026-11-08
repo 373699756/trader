@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, replace
+from contextlib import AbstractContextManager, ExitStack, contextmanager
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from itertools import islice
 from time import monotonic
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -38,6 +38,8 @@ from trader.download.domain.qfq_window import (
     QfqPriceReviewSummary,
 )
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
+from trader.infra.future_cleanup import CloseAfterFutures
+from trader.infra.shutdown import ShutdownBudget, ShutdownDeadline
 from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.domain.download_failure import DownloadFailureContext
 
@@ -57,6 +59,16 @@ class QfqPairPublicationError(RuntimeError):
         self.codes = codes
         self.files = files
         self.rows = rows
+
+
+class QfqWriterDrainError(RuntimeError):
+    """Retain a live paired writer and publication scope after bounded waiting."""
+
+    def __init__(self, pending: Future[object], result: QfqUpdateResult, deadline: ShutdownDeadline) -> None:
+        super().__init__("qfq_writer_shutdown_incomplete")
+        self.pending = pending
+        self.result = result
+        self.deadline = deadline
 
 
 class QfqWindowPort(Protocol):
@@ -192,6 +204,7 @@ class UpdateQfqWindows:
     price_review_budget: PriceReviewBudget | None = None
     batch_planning_candidate: bool = False
     skip_cooling_tencent_probe: bool = False
+    shutdown: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(30.0))
 
     def __post_init__(self) -> None:
         workers = self.configuration.workers if self.workers is None else self.workers
@@ -264,9 +277,16 @@ class UpdateQfqWindows:
 
     @contextmanager
     def _publication_check(self) -> Iterator[None]:
-        with self.v2.publication(self.v3):
+        scope = ExitStack()
+        scope.enter_context(self.v2.publication(self.v3))
+        try:
             yield
             self.report(QfqMessage("数据库文件校验", "主文件及WAL整体指纹", state="开始"))
+        except QfqWriterDrainError as exc:
+            exc.pending = CloseAfterFutures(scope.pop_all().close, (exc.pending,))
+            raise
+        finally:
+            scope.close()
         self.report(QfqMessage(
             "数据库文件校验",
             "主文件及WAL整体指纹已完成", state="完成", finished=True,
@@ -687,8 +707,17 @@ class UpdateQfqWindows:
             for future in futures:
                 future.cancel()
             if writing is not None:
-                # Never release the maintenance lock while a paired transaction is still running.
-                writing.result()
+                deadline = self.shutdown.begin()
+                try:
+                    writing.result(timeout=deadline.remaining_seconds())
+                except TimeoutError as exc:
+                    if not writing.done():
+                        raise QfqWriterDrainError(
+                            cast("Future[object]", writing),
+                            progress.snapshot(self.cancel_requested(), failure_reason="qfq_writer_shutdown_incomplete"),
+                            deadline,
+                        ) from exc
+                    raise
             progress.publish("价格更新", f"已处理 {progress.processed}/{progress.total} | 待重试 {progress.pending}",
                              state="取消" if self.cancel_requested() else "失败" if failure_reason or not finished_normally else "完成",
                              finished=True, label=download_stage)

@@ -101,7 +101,9 @@ class SyncData:
             market = self.market(reference)
             stopped = market.failure_reason == "cancelled" or self.cancelled()
             return SyncTaskResult(
-                task, "cancelled" if stopped else "pending" if market.needs_retry else "completed", market=market
+                task, "cancelled" if stopped else "failed" if market.shutdown_failure
+                else "pending" if market.needs_retry else "completed",
+                reason=market.shutdown_failure, market=market,
             )
         company = self.company(reference)
         stopped = self.cancelled() or "task:cancelled" in company.failures

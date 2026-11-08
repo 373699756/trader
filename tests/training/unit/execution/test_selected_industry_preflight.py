@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from threading import Event
+import time
 
 import pytest
+from threadpoolctl import threadpool_info
 
 from tests.helpers.download.history.qfq_windows import _cell
 from tests.helpers.download.published_history import publish_history_fixture
@@ -25,7 +28,9 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.infra.settings import LoadRuntimeSettings
 from trader.training.application.learned_rank_training import V1TrainingResult
-from trader.training.application.selected_training import SelectedTrainingRun, SelectedTrainingTask, TrainSelectedProfiles, TrainingLocations
+from trader.training.application.selected_training import SelectedTrainingDrainError, SelectedTrainingRun, SelectedTrainingTask, TrainSelectedProfiles, TrainingLocations
+from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError, HistoryMaintenanceLock
+from trader.infra.shutdown import ShutdownDeadline
 from trader.training.infra import selected_training
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
@@ -76,6 +81,91 @@ def _request(tmp_path: Path, *, industry: bool) -> SelectedTrainingRequest:
         fanout_settings=resources.fanout,
         sample_settings=resources.samples,
     )
+
+
+@pytest.mark.parametrize("cooperative", (False, True))
+def test_source_failure_cancels_cached_fitting_and_retains_locks_until_actual_exit(tmp_path, monkeypatch, cooperative):
+    entered, release, native_closed = Event(), Event(), Event()
+    started_at, deadlines = [], []
+    source_error = OSError("source_fixture_failure")
+    request = _request(tmp_path, industry=True)
+    native_before = {(item["filepath"], item["user_api"]): item["num_threads"] for item in threadpool_info()}
+
+    def begin_shutdown():
+        deadline = ShutdownDeadline.start(0.3 if cooperative else 0.05)
+        deadlines.append(deadline)
+        return deadline
+
+    request = replace(request, profiles=("v1", "v3"), progresses=(_Progress(), _Progress()), begin_shutdown=begin_shutdown)
+    original_runtime = request.cpu_budget.native_runtime
+
+    @contextmanager
+    def native_runtime(_budget):
+        try:
+            with original_runtime() as controller:
+                yield controller
+        finally:
+            native_closed.set()
+
+    def prepare(factory, profile, _progress):
+        if profile == "v3":
+            day = factory.history.snapshot.calendar.open_dates[-1]
+            return SelectedTrainingTask(profile, frozenset((day,)), tuple)
+
+        def cached_fit(_rows):
+            started_at.append(time.monotonic())
+            entered.set()
+            if cooperative:
+                while not factory.selection.cancelled():
+                    assert not release.wait(0.01)
+                raise InterruptedError("selected_training_cancelled")
+            assert release.wait(5)
+            return 42
+
+        return SelectedTrainingTask(profile, frozenset(), cached_fit)
+
+    @contextmanager
+    def broken_rows(_session, _dates):
+        assert entered.wait(5)
+        raise source_error
+        yield iter(())
+
+    monkeypatch.setattr(type(request.cpu_budget), "native_runtime", native_runtime)
+    monkeypatch.setattr(selected_training._TrainingTaskFactory, "prepare", prepare)
+    monkeypatch.setattr(selected_training._SelectedTrainingSession, "read_rows", broken_rows)
+    paths = (request.paths.history.with_name(".history.lock"), *(request.paths.models / f".{profile}.training.lock" for profile in request.profiles))
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        expected = OSError if cooperative else SelectedTrainingDrainError
+        with pytest.raises(expected) as caught:
+            TrainSelectedProfiles(
+                SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _as_of: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),
+                executor,
+            )
+        assert len(deadlines) == 1
+        assert time.monotonic() - started_at[0] < 1
+        assert not request.cancelled()
+        if cooperative:
+            assert caught.value is source_error and native_closed.is_set()
+        else:
+            assert caught.value.__cause__ is source_error
+            assert caught.value.deadline is deadlines[0]
+            assert not native_closed.is_set()
+            assert {
+                (item["filepath"], item["user_api"]): item["num_threads"]
+                for item in threadpool_info() if item["user_api"] == "openmp"
+            } == {key: value for key, value in native_before.items() if key[1] == "openmp"}
+            for path in paths:
+                with pytest.raises(HistoryMaintenanceAlreadyRunningError), HistoryMaintenanceLock(path):
+                    pytest.fail("unfinished fitting lost its lease")
+    finally:
+        release.set()
+        executor.shutdown(wait=True)
+    assert native_closed.is_set()
+    assert {(item["filepath"], item["user_api"]): item["num_threads"] for item in threadpool_info()} == native_before
+    for path in paths:
+        with HistoryMaintenanceLock(path):
+            pass
 
 
 def test_missing_industry_rejects_v1_before_reading_prices_or_fitting(tmp_path, monkeypatch):

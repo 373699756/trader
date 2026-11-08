@@ -29,6 +29,8 @@ from trader.download.domain.qfq_window import (
     QfqWindowIncompleteError,
 )
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
+from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError
+from trader.infra.shutdown import ShutdownBudget
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.domain.qfq_planning import QfqNonTradingFact
@@ -78,6 +80,70 @@ def test_shared_pair_and_checkpoint_commit_once_and_noop_preserves_bytes(tmp_pat
         0,
     )
     assert _fingerprints(tmp_path) == before
+
+
+@pytest.mark.parametrize("broken_report", (False, True))
+def test_qfq_cancelled_writer_keeps_lease_through_deferred_publication(tmp_path, monkeypatch, broken_report):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    entered, release = Event(), Event()
+    entered_at = []
+    sealing, finish_sealing = Event(), Event()
+    original = SQLiteQfqWindowCache.replace_paired_windows
+    publish = SQLiteQfqWindowCache.publish_file
+
+    def blocked_write(cache, *args, **kwargs):
+        result = original(cache, *args, **kwargs)
+        entered_at.append(time.monotonic())
+        entered.set()
+        assert release.wait(5)
+        return result
+
+    def blocked_publish(cache):
+        if entered.is_set():
+            sealing.set()
+            assert finish_sealing.wait(5)
+        return publish(cache)
+
+    monkeypatch.setattr(SQLiteQfqWindowCache, "replace_paired_windows", blocked_write)
+    monkeypatch.setattr(SQLiteQfqWindowCache, "publish_file", blocked_publish)
+    network, writer = ThreadPoolExecutor(max_workers=1), ThreadPoolExecutor(max_workers=1)
+
+    def report(_message):
+        if broken_report and entered.is_set():
+            raise OSError("controlled report failure")
+
+    updater = replace(
+        _updater(tmp_path, Supplier()), worker_pool=network, writer_pool=writer,
+        cancel_requested=entered.is_set, shutdown=ShutdownBudget(0.05), report=report,
+    )
+    lock_path = tmp_path / "market.lock"
+    runner = QfqUpdateRunner(None, updater, updater.v2, updater.v3, lock_path, lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
+    try:
+        if broken_report:
+            with pytest.raises(OSError, match="controlled report failure"):
+                runner.execute()
+        else:
+            result = runner.execute()
+            assert result.failure_reason == "cancelled"
+        assert entered.is_set()
+        assert time.monotonic() - entered_at[0] < 2
+        with pytest.raises(HistoryMaintenanceAlreadyRunningError), HistoryMaintenanceLock(lock_path):
+            pytest.fail("a live paired writer lost its lease")
+        release.set()
+        assert sealing.wait(5)
+        with pytest.raises(HistoryMaintenanceAlreadyRunningError), HistoryMaintenanceLock(lock_path):
+            pytest.fail("publication cleanup lost its lease")
+    finally:
+        release.set()
+        finish_sealing.set()
+        writer.shutdown(wait=True)
+        network.shutdown(wait=True)
+    with HistoryMaintenanceLock(lock_path):
+        pass
+    updater.v2.verify_integrity()
+    assert updater.v2.read_code("600001").cells
 
 
 def test_batch_iteration_opens_once_per_32_codes_and_closes_before_yield(tmp_path, monkeypatch):

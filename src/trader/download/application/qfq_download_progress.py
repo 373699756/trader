@@ -246,7 +246,7 @@ class QfqDownloadProgress:
         )
 
     def finish(
-        self, cancelled: bool, *, failure_reason: Literal["qfq_worker_unavailable"] | None = None
+        self, cancelled: bool, *, failure_reason: Literal["qfq_worker_unavailable", "qfq_writer_shutdown_incomplete"] | None = None
     ) -> QfqUpdateResult:
         # Unsubmitted stocks remain retryable, distinct from an attempted supplier failure.
         unfinished = self.total - self.processed if cancelled or failure_reason else 0
@@ -254,21 +254,7 @@ class QfqDownloadProgress:
             self._add_pending_reason(
                 "cancelled_before_processing" if cancelled else "worker_unavailable_before_processing", unfinished
             )
-        result = QfqUpdateResult(
-            self.day,
-            self.completed,
-            self.pending + unfinished,
-            tuple(sorted(self.changed)),
-            self.rows,
-            self.skipped,
-            "cancelled" if cancelled else failure_reason,
-            self.pending_reasons,
-            self.no_trade_data,
-            self.latest_missing,
-            self.latest_suspended,
-            self.latest_inferred_suspended,
-            price_review=self.price_review,
-        )
+        result = self.snapshot(cancelled, failure_reason=failure_reason)
         stage = (
             "已取消"
             if cancelled
@@ -293,6 +279,27 @@ class QfqDownloadProgress:
             )
         self.summary(stage, level=level)
         return result
+
+    def snapshot(
+        self, cancelled: bool, *, failure_reason: Literal["qfq_worker_unavailable", "qfq_writer_shutdown_incomplete"] | None = None,
+    ) -> QfqUpdateResult:
+        """Capture known durable counts without reporting or performing external I/O."""
+        unfinished = self.total - self.processed if cancelled or failure_reason else 0
+        return QfqUpdateResult(
+            self.day,
+            self.completed,
+            self.pending + unfinished,
+            tuple(sorted(self.changed)),
+            self.rows,
+            self.skipped,
+            "cancelled" if cancelled else failure_reason,
+            self.pending_reasons,
+            self.no_trade_data,
+            self.latest_missing,
+            self.latest_suspended,
+            self.latest_inferred_suspended,
+            price_review=self.price_review,
+        )
 
 
 def _source_label(source: str) -> str:

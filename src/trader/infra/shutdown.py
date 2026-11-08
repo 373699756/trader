@@ -60,6 +60,25 @@ class ShutdownStep:
     detail: str = ""
 
 
+class ShutdownBudget:
+    """Establish one lazily started deadline shared by nested resource owners."""
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self._timeout_seconds = timeout_seconds
+        self._deadline: ShutdownDeadline | None = None
+        self._lock = threading.Lock()
+
+    def begin(self, deadline: ShutdownDeadline | None = None) -> ShutdownDeadline:
+        with self._lock:
+            if self._deadline is None:
+                self._deadline = deadline or ShutdownDeadline.start(self._timeout_seconds)
+            return self._deadline
+
+    @property
+    def timeout_seconds(self) -> float:
+        return self._timeout_seconds
+
+
 @dataclass(frozen=True)
 class ShutdownSpan:
     name: str
@@ -364,6 +383,7 @@ __all__ = [
     "ReadShutdownTimeline",
     "RecordShutdownEvent",
     "ShutdownDeadline",
+    "ShutdownBudget",
     "ShutdownIncompleteError",
     "ShutdownReport",
     "ShutdownSignalController",

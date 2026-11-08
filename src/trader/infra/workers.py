@@ -57,13 +57,17 @@ class WorkerScope:
     successfully started, including cleanup after a later start fails.
     """
 
-    def __init__(self, workers: tuple[ManagedWorkerExecutor, ...], *, timeout_seconds: float) -> None:
+    def __init__(
+        self, workers: tuple[ManagedWorkerExecutor, ...], *, timeout_seconds: float,
+        shutdown_deadline: Callable[[], ShutdownDeadline] | None = None,
+    ) -> None:
         if not workers or type(timeout_seconds) not in {int, float} or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("worker_scope_options_invalid")
         if len({id(worker) for worker in workers}) != len(workers):
             raise ValueError("worker_scope_duplicate_owner")
         self._workers = workers
         self._timeout_seconds = timeout_seconds
+        self._shutdown_deadline = shutdown_deadline
         self._started: list[ManagedWorkerExecutor] = []
         self._entered = False
         self._closed = False
@@ -91,7 +95,7 @@ class WorkerScope:
         if self._closed:
             return
         self._closed = True
-        deadline = ShutdownDeadline.start(self._timeout_seconds)
+        deadline = self._shutdown_deadline() if self._shutdown_deadline is not None else ShutdownDeadline.start(self._timeout_seconds)
         failure: BaseException | None = None
         incomplete: list[str] = []
         for worker in reversed(self._started):
@@ -421,12 +425,25 @@ def SubmitWithBackpressure(
     **kwargs: _P.kwargs,
 ) -> Future[_T]:
     """Wait briefly for a completed worker's capacity callback before rejecting."""
-    deadline = time.monotonic() + _CAPACITY_WAIT_SECONDS
+    return SubmitBeforeDeadline(
+        executor, ShutdownDeadline.start(_CAPACITY_WAIT_SECONDS), function, *args, **kwargs,
+    )
+
+
+def SubmitBeforeDeadline(
+    executor: WorkerExecutor,
+    deadline: ShutdownDeadline,
+    function: Callable[_P, _T],
+    /,
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> Future[_T]:
+    """Use the caller's remaining budget for worker capacity, without restarting it."""
     while True:
         future = executor.submit(function, *args, **kwargs)
         if future is not None:
             return future
-        remaining = deadline - time.monotonic()
+        remaining = deadline.remaining_seconds()
         if remaining <= 0:
             completed: Future[_T] = Future()
             completed.set_exception(WorkerResourceRejectedError("resource_rejected: worker capacity unavailable"))
@@ -460,5 +477,6 @@ __all__ = [
     "WorkerFutureExecutor",
     "InjectedExecutor",
     "SubmitOrReject",
+    "SubmitBeforeDeadline",
     "SubmitWithBackpressure",
 ]

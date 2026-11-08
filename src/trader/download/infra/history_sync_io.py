@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import date
+from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,8 +31,10 @@ from trader.download.infra.history_control_index import (
 )
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_flow import (
-    DownloadFailure, HistoryDownloadFlow, HistoryDownloadResources, HistoryInferredReviewResult,
+    DownloadFailure, HistoryDownloadFlow, HistoryDownloadResources, HistoryInferredReviewResult, HistoryWriterDrainError,
 )
+from trader.infra.shutdown import ShutdownBudget
+from trader.infra.future_cleanup import CloseAfterFutures
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_inferred_review import HistoryInferredReviewIndex, IsHistoryReviewBusy
 from trader.download.infra.history_price_repair import HistoryPriceRepair
@@ -63,6 +66,7 @@ class HistorySyncResources:
     exact_month_ranges: bool = False
     fingerprint_before_statistics: bool = False
     reuse_catalog_fingerprint: bool = False
+    shutdown: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(30.0))
 
 
 @dataclass(frozen=True)
@@ -96,7 +100,7 @@ class HistorySyncIo:
     @contextmanager
     def lease(self) -> Iterator[None]:
         try:
-            with HistoryMaintenanceLock(self.configuration.history_root.with_name(".history.lock")):
+            with HistoryMaintenanceLock(self.configuration.history_root.with_name(".history.lock")) as lease:
                 PublishHistoryProgress(self.progress, "disk_profile", "completed", current_item=self.resources.disk_kind)
                 root = self.configuration.history_root
                 if (root / "control.sqlite3").exists() or (
@@ -108,7 +112,13 @@ class HistorySyncIo:
                 self.control.initialize()
                 PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "catalog_schema")
                 PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1))
-                yield
+                try:
+                    yield
+                except HistoryWriterDrainError as exc:
+                    lease.retain_until(exc.pending)
+                    if self.cancel() or isinstance(exc.__cause__, KeyboardInterrupt):
+                        raise KeyboardInterrupt from exc
+                    raise
         except HistoryMaintenanceAlreadyRunningError as exc:
             raise HistorySyncAlreadyRunningError("history_maintenance_running") from exc
         except sqlite3.Error as exc:
@@ -194,6 +204,11 @@ class HistorySyncIo:
         )
         try:
             yield batch
+        except HistoryWriterDrainError as exc:
+            exc.pending = CloseAfterFutures(
+                partial(self._seal_deferred_review, files, include_created=True), (exc.pending,),
+            )
+            raise
         except KeyboardInterrupt:
             self._seal_deferred_review(files, include_created=True)
             raise
@@ -253,6 +268,7 @@ class HistorySyncIo:
                 ),
                 self.cancel,
                 self.progress,
+                self.resources.shutdown,
             ),
             sqlite_policy=self.sqlite_policy,
             batched_price_reads=self.resources.batched_price_reads,

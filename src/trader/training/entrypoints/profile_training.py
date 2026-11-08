@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 
 from trader.infra.serialization.canonical import CanonicalValue, ContentHash
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.training_diagnostics import TrainingOperationIssue
@@ -14,17 +12,6 @@ from trader.training.domain.training_date_coverage import TrainingDateCoverage
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
 from trader.training.entrypoints.report_output import ProjectTrainingError
-
-
-class CancellableTrainingProgress:
-    def __init__(self, target: TomorrowTrainingProgressPort, cancelled: Callable[[], bool]) -> None:
-        self._target = target
-        self._cancelled = cancelled
-
-    def publish(self, progress: TomorrowTrainingProgress) -> None:
-        if self._cancelled():
-            raise InterruptedError("profile training cancelled")
-        self._target.publish(progress)
 
 
 def ProjectProfileTrainingResult(profile: ScoringProfileId, result: TrainingRunResult) -> dict[str, object]:
@@ -222,6 +209,6 @@ def ProjectTrainingIndustryCoverage(snapshot: CurrentIndustrySnapshot) -> dict[s
 
 __all__ = [
     "ProjectProfileTrainingResult", "ProjectLearnedRankTrainingResult", "ProjectTrainingOperationIssues",
-    "CancellableTrainingProgress", "ProjectTrainingDateCoverage", "TrainingDateCoverageSummary",
+    "ProjectTrainingDateCoverage", "TrainingDateCoverageSummary",
     "ProjectTrainingIndustryCoverage", "TrainingDateRangeSummary",
 ]

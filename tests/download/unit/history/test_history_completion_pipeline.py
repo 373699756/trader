@@ -8,10 +8,12 @@ from dataclasses import replace
 from datetime import date, timedelta
 from itertools import count
 from threading import Event, Lock, get_ident
+from functools import partial
 
 import pytest
 
 from tests.helpers.download.history_fixtures import RunHistoryFixture
+from tests.helpers.download import history_fixtures
 from tests.helpers.download.history.history_sync_progress import _compact_log
 from tests.helpers.download.history.infra.history_sync import NOW, FakeSupplier, ProgressRecorder, _configuration, _download
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
@@ -20,7 +22,9 @@ from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra import history_download_flow as module
-from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_control_index import HistoryControlIndex, HistoryMaintenanceAlreadyRunningError, HistoryMaintenanceLock
+from trader.download.infra.history_sync_io import HistorySyncResources
+from trader.infra.shutdown import ShutdownBudget
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPriceWriteSession
@@ -31,6 +35,51 @@ from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.sample_builder import _SampleBuildState
 
 DAYS = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+
+@pytest.mark.parametrize("phase", ("write", "close"))
+def test_cancelled_history_returns_within_budget_and_retains_lease_until_writer_closes(tmp_path, monkeypatch, phase):
+    entered, release = Event(), Event()
+    entered_at = []
+    closed = []
+    commit, close = HistoryDirectPrices.commit_pipeline, HistoryDirectPrices.close_pipeline
+
+    def blocked_commit(prices, results):
+        commit(prices, results)
+        if phase == "write":
+            entered_at.append(time.monotonic())
+            entered.set()
+            assert release.wait(5)
+
+    def blocked_close(prices):
+        if phase == "close":
+            entered_at.append(time.monotonic())
+            entered.set()
+            assert release.wait(5)
+        close(prices)
+        closed.append(get_ident())
+
+    monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", blocked_commit)
+    monkeypatch.setattr(HistoryDirectPrices, "close_pipeline", blocked_close)
+    monkeypatch.setattr(history_fixtures, "HistorySyncResources", partial(HistorySyncResources, shutdown=ShutdownBudget(0.05)))
+    network, writer = ThreadPoolExecutor(max_workers=2), ThreadPoolExecutor(max_workers=1)
+    try:
+        result = RunHistoryFixture(
+            _configuration(tmp_path), FakeSupplier(DAYS), clock=lambda: NOW,
+            worker_pool=network, writer_pool=writer, cancel_requested=entered.is_set,
+        )
+        assert entered.is_set() and result.state == "cancelled"
+        assert time.monotonic() - entered_at[0] < 1
+        assert not closed
+        with pytest.raises(HistoryMaintenanceAlreadyRunningError), HistoryMaintenanceLock(tmp_path.with_name(".history.lock")):
+            pytest.fail("a live writer lost its maintenance lease")
+    finally:
+        release.set()
+        writer.shutdown(wait=True)
+        network.shutdown(wait=True)
+    assert closed and all(identity != get_ident() for identity in closed)
+    with HistoryMaintenanceLock(tmp_path.with_name(".history.lock")):
+        pass
 
 
 def test_initial_resume_keeps_bulk_hdd_write_tuning_until_publication(tmp_path, monkeypatch):

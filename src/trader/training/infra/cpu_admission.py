@@ -62,7 +62,7 @@ class TrainingCpuBudget:
     def native_runtime(self) -> Iterator[ThreadpoolController]:
         """Enter after selected libraries load; restore only after all workers leave."""
         controller = ThreadpoolController()
-        with controller.limit(limits=self.native_threads):
+        with controller.limit(limits=self.native_threads, user_api="blas"):
             yield controller
 
 

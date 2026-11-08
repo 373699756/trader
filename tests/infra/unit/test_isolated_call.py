@@ -1,6 +1,5 @@
 """Real child-process execution, timeout, cancellation and cleanup."""
 
-import math
 import multiprocessing
 import threading
 import time
@@ -14,7 +13,7 @@ from trader.infra.isolated_call import RunIsolatedCall
 
 def test_isolated_success_and_failure_reap_children():
     before = {child.pid for child in multiprocessing.active_children()}
-    assert RunIsolatedCall(partial(math.sqrt, 9), 5) == 3
+    assert RunIsolatedCall(partial(bytes, b"3"), 5) == b"3"
     with pytest.raises(RuntimeError, match="sdk_failed_ValueError"):
         RunIsolatedCall(partial(int, "private invalid input"), 5)
     assert {child.pid for child in multiprocessing.active_children()} == before

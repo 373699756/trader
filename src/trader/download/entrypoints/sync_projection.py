@@ -46,6 +46,7 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
                 "changed_rows": market.changed_rows,
                 "skipped_codes": market.skipped_codes,
                 "failure_reason": market.failure_reason,
+                "shutdown_failure": market.shutdown_failure,
                 "pending_reasons": [{"reason": item.reason, "count": item.count} for item in market.pending_reasons],
             }
         )

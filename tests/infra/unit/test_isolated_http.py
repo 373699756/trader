@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.infra.http_contracts import HttpCancelled, HttpRequest, HttpResponse, HttpTimeout
+from trader.infra.http_contracts import HttpCancelled, HttpError, HttpRequest, HttpResponse, HttpTimeout
 from trader.infra.isolated_http import IsolatedHttpExecutor
 
 
@@ -34,6 +34,27 @@ class _ReusableTransport(_BlockedTransport):
         if request.url == "block":
             time.sleep(30)
         return HttpResponse(200, f"{os.getpid()}:{self.requests}".encode())
+
+
+class _EchoTransport(_BlockedTransport):
+    def execute(self, request):
+        assert request.method == "POST"
+        return HttpResponse(201, request.body or b"", request.headers, "latin-1")
+
+
+def test_wire_round_trip_preserves_binary_body_headers_and_response_limit():
+    before = {process.pid for process in multiprocessing.active_children()}
+    executor = IsolatedHttpExecutor(worker_count=1, transport_factory=_EchoTransport)
+    executor.start()
+    content = bytes(range(256)) * 4096
+    try:
+        response = executor.execute(HttpRequest("POST", "fixture", 3, headers=(("x-fixture", "中文"),), body=content))
+        assert response == HttpResponse(201, content, (("x-fixture", "中文"),), "latin-1")
+        with pytest.raises(HttpError):
+            executor.execute(HttpRequest("POST", "fixture", 3, body=content, max_response_bytes=1024))
+    finally:
+        assert executor.stop().completed
+    assert {process.pid for process in multiprocessing.active_children()} == before
 
 
 def test_healthy_requests_reuse_process_and_transport_but_timeout_replaces_worker():

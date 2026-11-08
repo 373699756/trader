@@ -12,9 +12,10 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from threading import Event, Lock
+from typing import cast
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
@@ -47,7 +48,8 @@ from trader.download.infra.history_inferred_review import (
 )
 from trader.download.infra.history_sync_failure import HistoryFailureDetail, HistorySyncFailureError
 from trader.download.infra.history_write_tuning import HistoryWriteTuning
-from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
+from trader.infra.workers import SubmitBeforeDeadline, SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
+from trader.infra.shutdown import ShutdownBudget, ShutdownDeadline
 
 _FATAL = frozenset({"history_st_reference_conflict", "history_supplier_identity_conflict"})
 _LOGGER = logging.getLogger(__name__)
@@ -70,6 +72,16 @@ class HistoryDownloadResources:
     tuning: HistoryWriteTuning
     cancel: Callable[[], bool]
     progress: HistorySyncProgressPort | None
+    shutdown: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(30.0))
+
+
+class HistoryWriterDrainError(RuntimeError):
+    """A live writer retains the maintenance lease after a bounded drain."""
+
+    def __init__(self, pending: Future[object], deadline: ShutdownDeadline) -> None:
+        super().__init__("history_writer_shutdown_incomplete")
+        self.pending = pending
+        self.deadline = deadline
 
 
 @dataclass(frozen=True)
@@ -204,6 +216,13 @@ class HistoryDownloadFlow:
         )
 
     def _commit(self, batch: tuple[_PreparedResult, ...]) -> _WriteResult:
+        try:
+            return self._commit_prices(batch)
+        finally:
+            if self._stopped.is_set():
+                self._resources.prices.close_pipeline()
+
+    def _commit_prices(self, batch: tuple[_PreparedResult, ...]) -> _WriteResult:
         started = time.monotonic()
         self._check()
         results = tuple(item.price for item in batch)
@@ -654,6 +673,7 @@ class _TencentPipeline:
         self._write_started: float | None = None
         self._exhausted = False
         self._writer_closed = False
+        self._closing: Future[None] | None = None
         self._last_commit = self._last_report = time.monotonic()
         self._last_confirmed = self._last_report
 
@@ -671,13 +691,16 @@ class _TencentPipeline:
             self._close_writer()
         finally:
             original_failure = sys.exc_info()[1]
-            self._cancel_pending()
-            try:
-                self._close_writer()
-            except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
-                if original_failure is None:
-                    raise
-                _LOGGER.error("history_writer_cleanup_failed diagnostic=%s", HistoryFailureDetail(exc))
+            if not isinstance(original_failure, HistoryWriterDrainError):
+                try:
+                    self._cancel_pending()
+                    self._close_writer()
+                except HistoryWriterDrainError as exc:
+                    raise exc from original_failure
+                except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+                    if original_failure is None:
+                        raise
+                    _LOGGER.error("history_writer_cleanup_failed diagnostic=%s", HistoryFailureDetail(exc))
         return self._pipeline_progress()
 
     def _acknowledge(self) -> None:
@@ -812,9 +835,12 @@ class _TencentPipeline:
             future.cancel()
         if self._writing is not None:
             self._writing.cancel()
-            # Keep the maintenance lock until the sole writer exits, even on error.
+            deadline = self._flow._resources.shutdown.begin()
             try:
-                self._writing.result()
+                self._writing.result(timeout=deadline.remaining_seconds())
+            except TimeoutError as exc:
+                if not self._writing.done():
+                    raise HistoryWriterDrainError(cast("Future[object]", self._writing), deadline) from exc
             except BaseException:
                 pass  # Preserve the original failure while joining cleanup.
 
@@ -822,8 +848,18 @@ class _TencentPipeline:
         if self._writer_closed:
             return
         started = time.monotonic()
-        future = SubmitWithBackpressure(self._flow._resources.writer, self._flow._resources.prices.close_pipeline)
-        future.result()
+        shutdown = self._flow._resources.shutdown
+        deadline = shutdown.begin() if self._flow._stopped.is_set() else ShutdownDeadline.start(shutdown.timeout_seconds)
+        if self._closing is None:
+            self._closing = SubmitBeforeDeadline(
+                self._flow._resources.writer, deadline, self._flow._resources.prices.close_pipeline,
+            )
+        try:
+            self._closing.result(timeout=deadline.remaining_seconds())
+        except TimeoutError as exc:
+            if not self._closing.done():
+                raise HistoryWriterDrainError(cast("Future[object]", self._closing), shutdown.begin(deadline)) from exc
+            raise
         self._write_seconds += time.monotonic() - started
         self._writer_closed = True
 
@@ -831,6 +867,7 @@ class _TencentPipeline:
 __all__ = [
     "HistoryDownloadFlow",
     "HistoryDownloadResources",
+    "HistoryWriterDrainError",
     "HistoryInferredReviewResult",
     "DownloadFailure",
 ]

@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from functools import partial
 from pathlib import Path
+from threading import Event
 from threadpoolctl import ThreadpoolController
 
 from trader.download.domain.history_revision import HistoryTrainingRow
@@ -31,9 +32,12 @@ from trader.training.application.selected_training import (
     SelectedTrainingRun,
     SelectedTrainingSessionPort,
     SelectedTrainingTask,
+    SelectedTrainingDrainError,
     TrainingLocations,
 )
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
+from trader.training.application.tomorrow_training import CancellableTrainingProgress, TomorrowTrainingProgress, TomorrowTrainingProgressPort
+from trader.infra.future_cleanup import CloseAfterFutures
+from trader.infra.shutdown import ShutdownDeadline
 from trader.training.domain.v1.training_plan import BuildLearnedRankReadDates
 from trader.training.infra.engine import FitSelectedProfile, InspectSelectedProfile, ProfileTrainingRequest
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
@@ -77,10 +81,9 @@ def _run_with_native_limits(
     threads: int,
     rows: Iterator[HistoryTrainingRow],
 ) -> SelectedProfileResult:
-    # OpenMP limits may be thread-local. All workers use the same baseline;
-    # only the owning thread restores process-wide limits after the fan-out joins.
-    controller.limit(limits=threads)
-    return execute(rows)
+    # BLAS belongs to the job scope; each worker owns and restores its OpenMP state.
+    with controller.limit(limits=threads, user_api="openmp"):
+        return execute(rows)
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,7 @@ class SelectedTrainingRequest:
     measurements: TrainingExecutionMeasurements | None = field(default=None, kw_only=True)
     execution_options: TrainingExecutionOptions = field(default_factory=TrainingExecutionOptions, kw_only=True)
     memory_capacity_bytes: int | None = field(default=None, kw_only=True)
+    begin_shutdown: Callable[[], ShutdownDeadline] | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -142,7 +146,14 @@ class SelectedTrainingAdapter:
     @contextmanager
     def open(self) -> Iterator[SelectedTrainingSessionPort[SelectedProfileResult]]:
         request, paths = self.request, self.request.paths
-        with ExitStack() as scope:
+        stopped = Event()
+
+        def cancelled() -> bool:
+            return stopped.is_set() or self.request.cancelled()
+
+        request = replace(request, cancelled=cancelled)
+        scope = ExitStack()
+        try:
             scope.enter_context(HistoryMaintenanceLock(paths.history.with_name(".history.lock")))
             for profile in request.profiles:
                 scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
@@ -154,7 +165,13 @@ class SelectedTrainingAdapter:
             factory = _TrainingTaskFactory(
                 request, history, scope, self._measurements, sqlite_policy=self.sqlite_policy,
             )
-            yield _SelectedTrainingSession(request, history, factory, self._measurements)
+            yield _SelectedTrainingSession(request, history, factory, self._measurements, stopped)
+        except SelectedTrainingDrainError as exc:
+            cleanup = CloseAfterFutures(scope.pop_all().close, exc.pending)
+            exc.pending = (cleanup,)
+            raise
+        finally:
+            scope.close()
 
 
 @dataclass
@@ -163,12 +180,20 @@ class _SelectedTrainingSession:
     history: SQLiteHistoryTrainingInputSnapshot
     factory: _TrainingTaskFactory
     measurements: TrainingExecutionMeasurements
+    stopped: Event
     physical_rows: int = 0
+
+    def abort(self) -> ShutdownDeadline:
+        self.stopped.set()
+        return (
+            self.request.begin_shutdown() if self.request.begin_shutdown is not None
+            else ShutdownDeadline.start(self.request.runtime.pipeline.shutdown_timeout_seconds)
+        )
 
     def prepare_task(
         self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort,
     ) -> SelectedTrainingTask[SelectedProfileResult]:
-        return self.factory.prepare(profile, progress)
+        return self.factory.prepare(profile, CancellableTrainingProgress(progress, self.request.cancelled))
 
     @contextmanager
     def read_rows(self, dates: frozenset[date]) -> Iterator[Iterator[HistoryTrainingRow]]:
@@ -209,10 +234,18 @@ class _SelectedTrainingSession:
     def native_runtime(
         self, tasks: tuple[SelectedTrainingTask[SelectedProfileResult], ...],
     ) -> Iterator[tuple[SelectedTrainingTask[SelectedProfileResult], ...]]:
-        with self.request.cpu_budget.native_runtime() as controller:
+        scope = ExitStack()
+        controller = scope.enter_context(self.request.cpu_budget.native_runtime())
+        try:
             yield tuple(replace(task, execute=partial(
                 _run_with_native_limits, task.execute, controller, self.request.cpu_budget.native_threads,
             )) for task in tasks)
+        except SelectedTrainingDrainError as exc:
+            cleanup = CloseAfterFutures(scope.pop_all().close, exc.pending)
+            exc.pending = (cleanup,)
+            raise
+        finally:
+            scope.close()
 
     def completed(
         self, run: SelectedTrainingRun[SelectedProfileResult],

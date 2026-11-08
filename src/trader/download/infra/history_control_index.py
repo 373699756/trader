@@ -9,7 +9,9 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
 from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -108,15 +110,38 @@ class HistoryDiskPreflightStatus:
 class HistoryMaintenanceLock:
     def __init__(self, path: Path) -> None:
         self._lock = ProcessLock(path)
+        self._pending = 0
+        self._release_requested = False
+        self._guard = threading.Lock()
 
     def acquire(self) -> None:
-        try:
-            self._lock.acquire()
-        except ProcessLockError as exc:
-            raise HistoryMaintenanceAlreadyRunningError("history maintenance is already running") from exc
+        with self._guard:
+            if self._pending:
+                raise HistoryMaintenanceAlreadyRunningError("history writer is still running")
+            try:
+                self._lock.acquire()
+            except ProcessLockError as exc:
+                raise HistoryMaintenanceAlreadyRunningError("history maintenance is already running") from exc
+            self._release_requested = False
 
     def release(self) -> None:
-        self._lock.release()
+        with self._guard:
+            self._release_requested = True
+            if not self._pending:
+                self._lock.release()
+
+    def retain_until(self, future: Future[object]) -> None:
+        """Keep this lease across an incomplete writer drain, including callbacks."""
+        with self._guard:
+            self._pending += 1
+
+        def finished(_future: Future[object]) -> None:
+            with self._guard:
+                self._pending -= 1
+                if self._release_requested and not self._pending:
+                    self._lock.release()
+
+        future.add_done_callback(finished)
 
     def __enter__(self) -> HistoryMaintenanceLock:
         self.acquire()

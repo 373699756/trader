@@ -21,7 +21,6 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.training.application.resources import TrainingFanoutSettings, TrainingMemoryAdmission, TrainingSampleSettings
 from trader.training.application.selected_training import SelectedProfileResult, SelectedTrainingOutcome, SelectedTrainingPort, SelectedTrainingRun, TrainSelectedProfiles, TrainingLocations
 from trader.training.entrypoints.profile_training import (
-    CancellableTrainingProgress,
     ProjectLearnedRankTrainingResult,
     ProjectProfileTrainingResult,
     ProjectTrainingOperationIssues,
@@ -29,6 +28,7 @@ from trader.training.entrypoints.profile_training import (
     TrainingDateCoverageSummary,
     TrainingDateRangeSummary,
 )
+from trader.training.application.tomorrow_training import CancellableTrainingProgress
 from trader.training.entrypoints.tomorrow_training_progress import (
     ReadTrainingProgressLayout,
     StderrTomorrowTrainingProgress,
@@ -192,6 +192,7 @@ def _run_selected_training(
                 sample_settings=sample_settings,
                 measurements=measurements,
                 memory_capacity_bytes=memory_capacity_bytes,
+                begin_shutdown=cancelled.shutdown_deadline,
             )
             run = TrainSelectedProfiles(
                 prepare_training(selection), WorkerFutureExecutor(executor),

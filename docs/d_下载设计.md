@@ -204,6 +204,8 @@ Tencent明确停牌解析沿348复用，不另加清单或报价请求。market�
 
 ## 3. history：完整历史
 
+history／market失败或取消时，在等待单writer前建立关闭期限，后续worker关闭沿用同一剩余预算。等待超期不解除维护锁：由实际writer及其后续文件封存完成后释放，事务和封存仍由原owner执行，不能用返回超时替代真实回收。market清理尝试全部worker并消费真实关闭报告；未完成时结果保留原价格变更、凭据及业务失败，另给`shutdown_failure`，同步任务判failed并返回非零；用户取消仍为130。
+
 `catalog.sqlite3`的控制、下载及修复表由`HistoryControlIndex.initialize`一次创建并统一校验；修复表包括`price_repair_attempt`、`price_tencent_check`、`price_source`和`price_replacement`。已有库缺表或列定义不符时明确拒绝，`HistoryPriceRepair`不单独补表，也不把缺失的来源或恢复候选重建为空。完整当前库重开保留原来源、重查日期、回执和待回放候选；不兼容资料按明确范围删除后重新下载，本批不执行活动资料删除或重建。
 
 `price-repair-audit`只在仓库外工作目录用当前完整结构验证补缺和旧快照不变，不再删表演练旧格式迁移，也不直接修改任务完成标志。首次导出和重跑均通过原同步用例推进状态，始终核对首个实际导出快照与输入窗口匹配且未被后续修复改写。写入前核实际历史／参考输出与输入历史及绑定参考隔离，拒绝目录／文件符号链接及多硬链接；此隔离诊断不授权修改输入资料。

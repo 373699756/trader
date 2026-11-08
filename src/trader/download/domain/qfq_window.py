@@ -132,13 +132,17 @@ class QfqUpdateResult:
     latest_suspended_codes: int = 0
     latest_inferred_suspended_codes: int = 0
     price_review: QfqPriceReviewSummary = field(default_factory=QfqPriceReviewSummary)
+    shutdown_failure: str | None = None
 
     @property
     def needs_retry(self) -> bool:
         widespread_missing = self.latest_missing_codes + self.latest_inferred_suspended_codes >= max(
             20, (self.completed_codes + 99) // 100
         )
-        return self.pending_codes > 0 or self.failure_reason is not None or widespread_missing
+        return (
+            self.pending_codes > 0 or self.failure_reason is not None
+            or self.shutdown_failure is not None or widespread_missing
+        )
 
 
 def CompletedDailyCutoff(observed_at: datetime) -> date:

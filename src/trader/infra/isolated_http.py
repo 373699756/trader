@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import multiprocessing
+import socket
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
-from typing import cast
 
 from trader.infra.http_contracts import HttpCancelled, HttpError, HttpRequest, HttpResponse, HttpTimeout, HttpTransport
+from trader.infra.http_ipc_codec import ReceiveHttpOutcome, ReceiveHttpRequest, SendHttpOutcome, SendHttpRequest
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 
 
@@ -21,19 +21,19 @@ class _HttpOutcome:
     failure: str = ""
 
 
-def _serve(connection: Connection, transport_factory: Callable[[], HttpTransport]) -> None:
+def _serve(connection: socket.socket, transport_factory: Callable[[], HttpTransport]) -> None:
     try:
         with transport_factory() as transport:
             while True:
-                request = cast(HttpRequest, connection.recv())
+                request = ReceiveHttpRequest(connection)
                 try:
                     outcome = _HttpOutcome(transport.execute(request))
                 except HttpTimeout:
                     outcome = _HttpOutcome(None, "timeout")
                 except HttpError:
                     outcome = _HttpOutcome(None, "transport")
-                connection.send(outcome)
-    except (EOFError, BrokenPipeError):
+                SendHttpOutcome(connection, outcome.response, outcome.failure)
+    except (EOFError, OSError, ValueError, KeyError, TypeError):
         return
     finally:
         connection.close()
@@ -41,7 +41,7 @@ def _serve(connection: Connection, transport_factory: Callable[[], HttpTransport
 
 @dataclass(eq=False)
 class _Worker:
-    connection: Connection
+    connection: socket.socket
     process: BaseProcess
 
     def dispose(self) -> None:
@@ -78,11 +78,13 @@ class IsolatedHttpExecutor:
             self._running = True
             return True
 
-    def _check(self, request: HttpRequest, deadline: float) -> None:
+    def _check(self, request: HttpRequest, deadline: float) -> float:
         if not self._running or (request.cancel_requested is not None and request.cancel_requested()):
             raise HttpCancelled("http_cancelled")
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise HttpTimeout("http_deadline_exceeded")
+        return remaining
 
     def _acquire(self, request: HttpRequest, deadline: float) -> _Worker | None:
         with self._condition:
@@ -95,7 +97,7 @@ class IsolatedHttpExecutor:
 
     def _spawn(self) -> _Worker:
         context = multiprocessing.get_context("spawn")
-        parent, child = context.Pipe()
+        parent, child = socket.socketpair()
         worker = _Worker(parent, context.Process(target=_serve, args=(child, self._transport_factory), daemon=True))
         try:
             worker.process.start()
@@ -115,23 +117,21 @@ class IsolatedHttpExecutor:
         try:
             worker = worker or self._spawn()
             self._check(request, deadline)
-            worker.connection.send(replace(request, deadline=deadline, cancel_requested=None))
-            while True:
-                self._check(request, deadline)
-                if worker.connection.poll(min(0.05, max(0.0, deadline - time.monotonic()))):
-                    outcome = cast(_HttpOutcome, worker.connection.recv())
-                    self._check(request, deadline)
-                    if outcome.failure == "timeout":
-                        raise HttpTimeout("http_timeout")
-                    if outcome.response is None:
-                        raise HttpError("http_transport_failed")
-                    reusable = True
-                    return outcome.response
-                if not worker.process.is_alive():
-                    raise HttpError("http_worker_exited")
+            def check() -> float:
+                return self._check(request, deadline)
+
+            SendHttpRequest(worker.connection, replace(request, deadline=deadline, cancel_requested=None), check)
+            response, failure = ReceiveHttpOutcome(worker.connection, request.max_response_bytes, check)
+            check()
+            if failure == "timeout":
+                raise HttpTimeout("http_timeout")
+            if response is None:
+                raise HttpError("http_transport_failed")
+            reusable = True
+            return response
         except HttpError:
             raise
-        except (EOFError, OSError) as exc:
+        except (EOFError, OSError, ValueError, KeyError) as exc:
             raise HttpError("http_worker_failed") from exc
         finally:
             # Do not release capacity until a cancelled worker is fully reaped.

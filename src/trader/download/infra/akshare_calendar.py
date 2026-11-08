@@ -17,18 +17,20 @@ class AkshareCalendarTimeoutError(TimeoutError):
 
 def FetchAkshareCalendar(timeout_seconds: float, *, execute: IsolatedCall) -> tuple[date, ...]:
     try:
-        return execute(_read_calendar, timeout_seconds)
+        payload = execute(_read_calendar, timeout_seconds)
+        return tuple(date.fromisoformat(value) for value in payload.decode("ascii").splitlines())
     except TimeoutError as exc:
         raise AkshareCalendarTimeoutError(timeout_seconds) from exc
 
 
-def _read_calendar() -> tuple[date, ...]:
+def _read_calendar() -> bytes:
     import akshare
 
     frame = akshare.tool_trade_date_hist_sina()
     if "trade_date" not in frame.columns:
         raise ValueError("calendar_schema_invalid")
-    return tuple(sorted({date.fromisoformat(str(value)[:10]) for value in frame["trade_date"]}))
+    days = sorted({date.fromisoformat(str(value)[:10]) for value in frame["trade_date"]})
+    return "\n".join(day.isoformat() for day in days).encode("ascii")
 
 
 __all__ = ["AkshareCalendarTimeoutError", "FetchAkshareCalendar"]
