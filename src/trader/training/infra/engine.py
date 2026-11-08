@@ -7,12 +7,14 @@ from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
 from trader.training.application.resources import TrainingSampleSettings
 from trader.training.application.profile_training import (
-    HeadTrainingResult, InspectProfileReuse, PreparedTrainingHead, PreparedTrainingSamples, ProfileFittingPort,
+    HeadTrainingResult, InspectProfileDateAdmission, InspectProfileReuse, PreparedTrainingHead, PreparedTrainingSamples, ProfileFittingPort,
     ProfileTrainingOperationError, PublishedTrainingHead, TrainProfile, TrainingRunResult, TrainingStatus,
 )
 from trader.training.domain.profile_training import (
-    BuildProfileDiagnosticPlan, PlannedTrainingHead, ProfileTrainingHead, ProfileTrainingPlan, ProfileTrainingSource,
+    BuildProfileDiagnosticPlan, BuildProfileTrainingPlan, PlannedTrainingHead, ProfileTrainingHead, ProfileTrainingPlan, ProfileTrainingSource,
+    ProfileTrainingDateRequirements,
 )
+from trader.training.domain.training_date_coverage import TrainingDateCoverage
 
 import json
 import os
@@ -288,6 +290,15 @@ def InspectSelectedProfile(
         raise ValueError(reason)
     cache = _sample_cache_for(history.snapshot, split, request, sqlite_policy=sqlite_policy)
     reused = _reuse_profile(history, request)
+    if reused is None:
+        plan = BuildProfileTrainingPlan(_read_profile_source(history, request))
+        bounds = history.snapshot.date_upper_bounds(
+            ProfileTrainingDateRequirements(plan), history_sessions=request.profile.history_sessions,
+            history_excludes_signal=request.profile.algorithm == "tcn",
+        )
+        blocked = InspectProfileDateAdmission(plan, bounds, basis="metadata_upper_bound")
+        if blocked is not None:
+            return request, cache, frozenset(), blocked
     dates = frozenset() if reused is not None or cache.inspect() else _production_window(history.snapshot, split).readable_dates
     return request, cache, dates, reused
 
@@ -333,6 +344,12 @@ class _ProfileTrainingAdapter:
             )
             return _read_profile_source(self.history, self.request, target_matches=target_matches)
 
+    def date_upper_bounds(self, plan: ProfileTrainingPlan) -> tuple[TrainingDateCoverage, ...]:
+        return self.history.snapshot.date_upper_bounds(
+            ProfileTrainingDateRequirements(plan), history_sessions=self.request.profile.history_sessions,
+            history_excludes_signal=self.request.profile.algorithm == "tcn",
+        )
+
     def has_industry_window(
         self, readable_dates: frozenset[date], anchors: frozenset[date] | None = None,
     ) -> bool:
@@ -367,12 +384,26 @@ class _ProfileTrainingAdapter:
                     ),
                     cache, aligned_rows=self.aligned_rows, observer=request.execution_observer,
                 )
-                self.final_counts = tuple(
-                    (contract, samples.final_fit_counts(contract, head.final_fit))
+                final_inspected = tuple(
+                    (contract, samples.inspect_final_fit(contract, head.final_fit))
                     for contract, head in zip(request.contracts, plan.heads, strict=True)
                 )
+                self.final_counts = tuple((contract, item.industries) for contract, item in final_inspected)
                 coverage = tuple(item for contract in request.contracts for item in samples.coverage(contract))
-                return PreparedTrainingSamples(coverage, samples.database_size_bytes)
+                dates = []
+                for requirement in ProfileTrainingDateRequirements(plan):
+                    contract = next(item for item in request.contracts if item.strategy is requirement.strategy)
+                    if requirement.partition == "final_fitting":
+                        available = next(item.available_dates for selected, item in final_inspected if selected is contract)
+                    else:
+                        partition = "training" if requirement.partition == "fitting" else requirement.partition
+                        gaps = next(item.missing for item in coverage if (
+                            item.target == contract.target_column and item.partition == partition
+                        ))
+                        missing = frozenset(item.trade_date for item in gaps)
+                        available = tuple(day for day in requirement.required_dates if day not in missing)
+                    dates.append(requirement.observe(available, "sample_index"))
+                return PreparedTrainingSamples(coverage, samples.database_size_bytes, date_coverage=tuple(dates))
 
     def _require_cache(self) -> TrainingSampleCache:
         if self.cache is None:

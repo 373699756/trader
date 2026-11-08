@@ -31,7 +31,10 @@ from trader.training.domain.v1.learned_rank import (
     LEARNED_RANK_CONTRACT, LearnedRankDateSplit, LearnedRankFinalHead, LearnedRankFinalPair,
     LearnedRankHead, V1TrainingSettings,
 )
-from trader.training.domain.v1.training_plan import LearnedRankTrainingPlan, LearnedRankTrainingSource
+from trader.training.domain.v1.training_plan import (
+    BuildLearnedRankTrainingPlan, LearnedRankTrainingDateRequirements, LearnedRankTrainingPlan, LearnedRankTrainingSource,
+)
+from trader.training.domain.training_date_coverage import TrainingDateCoverage
 from trader.training.infra.execution_options import BASELINE_EXECUTION_OPTIONS, TrainingExecutionOptions
 from trader.training.infra.fitting_resources import ReserveTrainingFittingResources
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
@@ -174,6 +177,12 @@ class _PinnedLearnedRankSession(_LearnedRankInspection):
     def progress(self) -> TomorrowTrainingProgressPort | None:
         return self.adapter.progress
 
+    def date_upper_bounds(self, plan: LearnedRankTrainingPlan) -> tuple[TrainingDateCoverage, ...]:
+        return self.input_source.snapshot.date_upper_bounds(
+            LearnedRankTrainingDateRequirements(plan), history_sessions=plan.settings.history_sessions,
+            history_excludes_signal=True,
+        )
+
     @contextmanager
     def samples(self) -> Iterator[learned_rank_training.LearnedRankSamplesPort]:
         with TemporaryTrainingSamples(self.adapter.sample_root, "v1") as directory:
@@ -203,8 +212,16 @@ class _LearnedRankSamples:
                     stream=LearnedRankSampleStream(adapter.progress, adapter.cancel_requested, adapter.aligned_rows),
                     final_fit_plans=plan.final_fit_plans,
                 )
+            coverage = index.coverage(plan.splits, final_fit_plans=plan.final_fit_plans)
+            dates = tuple(
+                requirement.observe(tuple(day for day in requirement.required_dates if day not in next(
+                    item.missing_dates for item in coverage
+                    if item.strategy is requirement.strategy and item.partition == requirement.partition
+                )), "sample_index")
+                for requirement in LearnedRankTrainingDateRequirements(plan)
+            )
             return learned_rank_training.PreparedLearnedRankSamples(
-                counts, index.coverage(plan.splits, final_fit_plans=plan.final_fit_plans), sample_path.stat().st_size,
+                counts, coverage, sample_path.stat().st_size, date_coverage=dates,
             )
 
     @contextmanager
@@ -278,6 +295,25 @@ def InspectV1Training(
     ))
 
 
+def InspectV1TrainingDates(
+    source: LearnedRankInputPort, settings: V1TrainingSettings, *,
+    compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
+) -> learned_rank_training.V1TrainingResult | None:
+    identity = _training_source(source, settings, compute_threads)
+    try:
+        plan = BuildLearnedRankTrainingPlan(identity, settings)
+    except ValueError as exc:
+        if str(exc) != "learned_rank_calendar_insufficient":
+            raise
+        return learned_rank_training.V1TrainingResult(
+            "blocked", identity.identity_hash, identity.training_input_hash, 0, failure_reasons=(str(exc),),
+        )
+    bounds = source.snapshot.date_upper_bounds(
+        LearnedRankTrainingDateRequirements(plan), history_sessions=settings.history_sessions, history_excludes_signal=True,
+    )
+    return learned_rank_training.InspectLearnedRankDateAdmission(plan, bounds, basis="metadata_upper_bound")
+
+
 def RunV1Training(
     input_factory: Callable[[], LearnedRankInputPort],
     model_root: Path,
@@ -309,5 +345,6 @@ def RunV1Training(
 __all__ = [
     "LearnedRankTrainingAdapter",
     "InspectV1Training",
+    "InspectV1TrainingDates",
     "RunV1Training",
 ]

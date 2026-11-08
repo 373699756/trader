@@ -1,7 +1,7 @@
 """Learned-rank training decisions over explicit sample, fitting and publication ports."""
 
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from trader.recommendation.domain.publication.models import Strategy
@@ -12,6 +12,7 @@ from trader.training.application.training_diagnostics import (
     BuildTrainingOperationIssue, NotifyTrainingCommit, TrainingIssueStage, TrainingOperationIssue,
 )
 from trader.training.domain.final_fit import FinalFitDatePlan
+from trader.training.domain.training_date_coverage import TrainingDateBasis, TrainingDateCoverage, TrainingDateCoverageMatches
 from trader.training.domain.v1.learned_rank import (
     LearnedRankDateSplit, LearnedRankFinalHead, LearnedRankFinalPair, LearnedRankHead, V1TrainingSettings,
 )
@@ -19,12 +20,13 @@ from trader.training.domain.v1.training_plan import (
     BuildLearnedRankTrainingPlan, CanReuseLearnedRankPair, EstimateLearnedRankFittingBytes,
     LearnedRankCoverageFailures, LearnedRankPartitionCoverage, LearnedRankSampleCounts,
     LearnedRankTrainingPlan, LearnedRankTrainingSource,
+    LearnedRankTrainingDateRequirements,
 )
 
 
 @dataclass(frozen=True)
 class V1TrainingResult:
-    status: Literal["engineering_ready", "failed"]
+    status: Literal["engineering_ready", "blocked", "failed"]
     run_id: str
     training_input_hash: str
     sample_database_peak_bytes: int
@@ -34,6 +36,7 @@ class V1TrainingResult:
     coverage: tuple[LearnedRankPartitionCoverage, ...] = ()
     reused: bool = False
     post_commit_issues: tuple[TrainingOperationIssue, ...] = ()
+    date_coverage: tuple[TrainingDateCoverage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,7 @@ class PreparedLearnedRankSamples:
     counts: LearnedRankSampleCounts
     coverage: tuple[LearnedRankPartitionCoverage, ...]
     peak_bytes: int
+    date_coverage: tuple[TrainingDateCoverage, ...] = field(kw_only=True)
 
 
 class LearnedRankTrainingOperationError(RuntimeError):
@@ -79,6 +83,8 @@ class LearnedRankTrainingSessionPort(LearnedRankInspectionPort, Protocol):
 
     def samples(self) -> AbstractContextManager[LearnedRankSamplesPort]: ...
 
+    def date_upper_bounds(self, plan: LearnedRankTrainingPlan) -> tuple[TrainingDateCoverage, ...]: ...
+
     def publish_pair(self, pair: LearnedRankFinalPair) -> None: ...
 
 
@@ -108,6 +114,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
     counts: LearnedRankSampleCounts | None = None
     peak_bytes = 0
     coverage: tuple[LearnedRankPartitionCoverage, ...] = ()
+    date_coverage: tuple[TrainingDateCoverage, ...] = ()
     published_heads: tuple[LearnedRankFinalHead, ...] | None = None
     post_commit_issues: list[TrainingOperationIssue] = []
     post_commit_stage: TrainingIssueStage = "scope_cleanup"
@@ -118,13 +125,33 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
             reused = InspectLearnedRankTraining(session)
             if reused is not None:
                 return reused
-            plan = BuildLearnedRankTrainingPlan(source, session.settings)
+            try:
+                plan = BuildLearnedRankTrainingPlan(source, session.settings)
+            except ValueError as exc:
+                if str(exc) != "learned_rank_calendar_insufficient":
+                    raise
+                return V1TrainingResult("blocked", run_id, input_hash, peak_bytes, failure_reasons=(str(exc),))
+            date_coverage = session.date_upper_bounds(plan)
+            admission = InspectLearnedRankDateAdmission(plan, date_coverage, basis="metadata_upper_bound")
+            if admission is not None:
+                return admission
             with session.samples() as samples:
                 prepared = samples.build(plan)
                 counts, coverage, peak_bytes = prepared.counts, prepared.coverage, prepared.peak_bytes
+                date_coverage = (*date_coverage, *prepared.date_coverage)
                 failures = LearnedRankCoverageFailures(coverage, plan)
                 if failures:
-                    return V1TrainingResult("failed", run_id, input_hash, peak_bytes, (), counts, failures, coverage)
+                    status: Literal["failed", "blocked"] = "failed" if failures == ("learned_rank_sample_coverage_contract_invalid",) else "blocked"
+                    return V1TrainingResult(
+                        status, run_id, input_hash, peak_bytes, (), counts, failures, coverage,
+                        date_coverage=date_coverage,
+                    )
+                admission = InspectLearnedRankDateAdmission(plan, prepared.date_coverage, basis="sample_index")
+                if admission is not None:
+                    return V1TrainingResult(
+                        admission.status, run_id, input_hash, peak_bytes, (), counts, admission.failure_reasons,
+                        coverage, date_coverage=date_coverage,
+                    )
                 heads = []
                 with samples.fitting(EstimateLearnedRankFittingBytes(coverage)) as fitting:
                     diagnostics = []
@@ -156,6 +183,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
         return V1TrainingResult(
             "engineering_ready", run_id, input_hash, peak_bytes, published_heads, counts, coverage=coverage,
             post_commit_issues=tuple(post_commit_issues),
+            date_coverage=date_coverage,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         if published_heads is not None:
@@ -164,10 +192,37 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
                 post_commit_issues=(
                     *post_commit_issues, BuildTrainingOperationIssue(post_commit_stage, exc),
                 ),
+                date_coverage=date_coverage,
             )
         if not isinstance(exc, LearnedRankTrainingOperationError):
             raise
-        return V1TrainingResult("failed", run_id, input_hash, peak_bytes, (), counts, (str(exc),), coverage)
+        return V1TrainingResult(
+            "failed", run_id, input_hash, peak_bytes, (), counts, (str(exc),), coverage, date_coverage=date_coverage,
+        )
+
+
+def InspectLearnedRankDateAdmission(
+    plan: LearnedRankTrainingPlan, coverage: tuple[TrainingDateCoverage, ...], *, basis: TrainingDateBasis,
+) -> V1TrainingResult | None:
+    requirements = LearnedRankTrainingDateRequirements(plan)
+    if not TrainingDateCoverageMatches(requirements, coverage, basis=basis):
+        return V1TrainingResult(
+            "failed", plan.source.identity_hash, plan.source.training_input_hash, 0,
+            failure_reasons=("learned_rank_sample_coverage_contract_invalid",), date_coverage=coverage,
+        )
+    failures = tuple(
+        f"training_signal_dates_upper_bound_insufficient:{item.strategy.value}:{item.partition}"
+        if item.basis == "metadata_upper_bound" else (
+            f"learned_rank_final_fit_dates_insufficient:{item.strategy.value}"
+            if item.partition == "final_fitting"
+            else f"learned_rank_sample_dates_insufficient:{item.strategy.value}:{item.partition}"
+        )
+        for item in coverage if item.missing_dates
+    )
+    return None if not failures else V1TrainingResult(
+        "blocked", plan.source.identity_hash, plan.source.training_input_hash, 0,
+        failure_reasons=failures, date_coverage=coverage,
+    )
 
 
 def _progress(
@@ -189,4 +244,5 @@ __all__ = [
     "LearnedRankFittingPort", "LearnedRankSamplesPort", "LearnedRankInspectionPort",
     "LearnedRankTrainingSessionPort", "LearnedRankTrainingPort",
     "InspectLearnedRankTraining", "TrainLearnedRank",
+    "InspectLearnedRankDateAdmission",
 ]

@@ -16,7 +16,7 @@ from trader.training.application.profile_training import (
     PublishedTrainingHead,
     TrainProfile,
 )
-from trader.training.domain.profile_training import ProfileTrainingHead, ProfileTrainingSource
+from trader.training.domain.profile_training import ProfileTrainingHead, ProfileTrainingSource, ProfileTrainingDateRequirements
 from trader.training.domain.sample_coverage import SampleCoverage
 from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescriptor, REQUIRED_DAILY_FIELDS
 from trader.training.entrypoints.profile_training import ProjectProfileTrainingResult
@@ -54,6 +54,9 @@ class _Training:
 
     def read_source(self):
         return self.source
+
+    def date_upper_bounds(self, plan):
+        return tuple(item.observe(item.required_dates, "metadata_upper_bound") for item in ProfileTrainingDateRequirements(plan))
 
     def has_industry_window(self, readable_dates, anchors=None):
         assert readable_dates and (anchors is None or anchors <= readable_dates)
@@ -93,7 +96,17 @@ class _Training:
         elif self.coverage_case == "forged_dates":
             coverage = (replace(coverage[0], expected_dates=1, effective_dates=1), *coverage[1:])
         self.calls.append("samples")
-        return PreparedTrainingSamples(coverage, 123)
+        dates = tuple(
+            requirement.observe(
+                requirement.required_dates[:next((
+                    item.effective_dates for item in coverage
+                    if item.target == ("target_t1" if requirement.strategy is Strategy.TOMORROW else "target_d25_aggregate")
+                    and item.partition == ("training" if requirement.partition == "fitting" else requirement.partition)
+                ), len(requirement.required_dates))],
+                "sample_index",
+            ) for requirement in ProfileTrainingDateRequirements(plan)
+        )
+        return PreparedTrainingSamples(coverage, 123, date_coverage=dates)
 
     @contextmanager
     def fitting(self, plan):
@@ -168,7 +181,8 @@ def test_adapter_reported_expected_count_cannot_justify_too_few_effective_dates(
 
     assert training.calls == ["samples"]
     assert result.status == "blocked"
-    assert all(head.failure_reasons == ("profile_training_effective_dates_insufficient",) for head in result.heads)
+    assert result.heads[0].failure_reasons == ("profile_training_effective_dates_insufficient",)
+    assert result.heads[1].failure_reasons == ("profile_pair_admission_blocked",)
     assert result.heads[0].coverage[0].expected_dates == 61
 
 
@@ -179,7 +193,27 @@ def test_sample_date_gap_blocks_both_heads_before_any_native_fit_or_publication(
 
     assert training.calls == ["samples"]
     assert result.status == "blocked"
-    assert all(head.failure_reasons == ("profile_training_effective_dates_insufficient",) for head in result.heads)
+    assert result.heads[0].failure_reasons == ("profile_training_effective_dates_insufficient",)
+    assert result.heads[1].failure_reasons == ("profile_pair_admission_blocked",)
+    first, second = (tuple(item for item in head.date_coverage if item.basis == "sample_index") for head in result.heads)
+    assert first[0].missing_dates and not any(item.missing_dates for item in second)
+
+
+def test_metadata_upper_bound_cannot_replace_exact_sample_index_evidence(monkeypatch):
+    training = _Training()
+    build = training.prepare_samples
+
+    def wrong_basis(plan, window):
+        prepared = build(plan, window)
+        return replace(prepared, date_coverage=tuple(
+            replace(item, basis="metadata_upper_bound") for item in prepared.date_coverage
+        ))
+
+    monkeypatch.setattr(training, "prepare_samples", wrong_basis)
+    result = TrainProfile(training)
+    assert training.calls == ["samples"]
+    assert result.status == "blocked"
+    assert all(head.failure_reasons == ("profile_training_coverage_contract_invalid",) for head in result.heads)
     assert result.heads[0].coverage[0].expected_dates == 61
 
 

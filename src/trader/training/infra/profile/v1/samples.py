@@ -241,7 +241,10 @@ class LearnedRankSampleIndex:
             for name, days in partitions:
                 rows = tuple(counts.get(day, (0, 0))[position] for day in days)
                 result.append(
-                    LearnedRankPartitionCoverage(strategy, name, len(days), sum(value > 0 for value in rows), sum(rows))
+                    LearnedRankPartitionCoverage(
+                        strategy, name, len(days), sum(value > 0 for value in rows), sum(rows),
+                        tuple(day for day, count in zip(days, rows, strict=True) if not count),
+                    )
                 )
         return tuple(result)
 

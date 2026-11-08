@@ -92,8 +92,9 @@ def test_missing_industry_rejects_v1_before_reading_prices_or_fitting(tmp_path, 
     with ThreadPoolExecutor(max_workers=1) as executor:
         result = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: CurrentIndustrySnapshotFixture(()), clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
     assert result.history_scan_passes == result.history_rows_read == 0
-    assert result.outcomes[0].failure == "history_industry_coverage_insufficient"
-    assert result.outcomes[0].result is None
+    assert result.outcomes[0].failure is None
+    assert result.outcomes[0].result.status == "blocked"
+    assert all(item.effective_dates == 0 for item in result.outcomes[0].result.date_coverage)
 
 
 def test_current_industry_applies_to_all_signal_dates_regardless_of_old_interval(tmp_path, monkeypatch):

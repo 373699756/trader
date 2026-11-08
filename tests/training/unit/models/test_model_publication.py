@@ -65,7 +65,7 @@ def _legacy_refit_documents(contract):
     evidence = metadata["final_fit"]
     calendar = tuple(date.fromisoformat(day) for day in evidence["calendar_dates"])
     research = BuildTrainingDateSplit(
-        calendar, parent_manifest_hash=metadata["training_input"]["training_input_hash"],
+        calendar, parent_manifest_hash=metadata["training_input"]["price_snapshot_hash"],
         fit_dates=len(evidence["fit_dates"]), early_stopping_sessions=0, history_sessions=61,
     )
     split_hash = ContentHash({

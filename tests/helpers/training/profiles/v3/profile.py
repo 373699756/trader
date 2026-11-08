@@ -14,6 +14,9 @@ from trader.training.infra.model_evaluation import RECENT_PREDICTION_EVALUATION_
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan, PRODUCTION_DIAGNOSTIC_CONTRACT
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.domain.training_input_identity import BuildTrainingInputHash, TRAINING_INDUSTRY_POLICY
+from trader.training.infra.training_industry_metadata import ProjectTrainingIndustrySnapshot
+from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 
 
 @lru_cache(maxsize=2)
@@ -76,13 +79,19 @@ def _documents(
     *, industry: str = "银行",
 ) -> tuple[dict[str, object], dict[str, object]]:
     codes = ["600000", "600001"]
+    current_industry = CurrentIndustrySnapshotFixture(tuple(codes))
+    input_hash = BuildTrainingInputHash("a" * 64, current_industry.content_hash)
     input_document = _hash(
         {
             "schema_version": f"{profile.profile_id}_head_training_input_manifest",
             "profile_id": profile.profile_id,
             "strategy_head": contract.strategy.value,
             "training_input_scope": "complete_manifest",
-            "training_input_hash": "a" * 64,
+            "training_input_hash": input_hash,
+            "price_snapshot_hash": "a" * 64,
+            "industry_policy": TRAINING_INDUSTRY_POLICY,
+            "industry_content_hash": current_industry.content_hash,
+            "industry_snapshot": ProjectTrainingIndustrySnapshot(current_industry),
             "training_run_hash": "9" * 64,
             "label_cutoff": "2026-09-08",
             "source_identity_hash": "1" * 64,
@@ -128,7 +137,10 @@ def _documents(
             "model_id": contract.model_id,
             "strategy_head": contract.strategy.value,
             "training_input_scope": "complete_manifest",
-            "training_input_hash": "a" * 64,
+            "training_input_hash": input_hash,
+            "price_snapshot_hash": "a" * 64,
+            "industry_policy": TRAINING_INDUSTRY_POLICY,
+            "industry_content_hash": current_industry.content_hash,
             "training_run_hash": "9" * 64,
             "label_cutoff": "2026-09-08",
             "source_identity_hash": "1" * 64,

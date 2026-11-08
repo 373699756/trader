@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal
+from typing import Literal, cast
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.publication.models import Strategy
@@ -11,6 +11,7 @@ from trader.training.domain.final_fit import BuildFinalFitDatePlan, FinalFitDate
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan, ProductionDiagnosticDatePlan
 from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescriptor
 from trader.training.domain.training_input_identity import BuildTrainingInputHash
+from trader.training.domain.training_date_coverage import TrainingDatePartition, TrainingDateRequirement
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,18 @@ def BuildProfileTrainingPlan(source: ProfileTrainingSource) -> ProfileTrainingPl
     return ProfileTrainingPlan(source, split, heads, run_id)
 
 
+def ProfileTrainingDateRequirements(plan: ProfileTrainingPlan) -> tuple[TrainingDateRequirement, ...]:
+    return tuple(
+        TrainingDateRequirement(head.strategy, cast(TrainingDatePartition, partition), plan.source.source_cutoff, head.label_cutoff, dates)
+        for head in plan.heads
+        for partition, dates in (
+            ("fitting", plan.split.fitting_dates), ("early_stopping", plan.split.early_stopping_dates),
+            ("calibration", plan.split.calibration_dates), ("validation", plan.split.validation_dates),
+            ("final_fitting", head.final_fit.fit_dates),
+        )
+    )
+
+
 __all__ = [
     "BuildProfileDiagnosticPlan",
     "BuildProfileTrainingPlan",
@@ -127,4 +140,5 @@ __all__ = [
     "ProfileTrainingHead",
     "ProfileTrainingPlan",
     "ProfileTrainingSource",
+    "ProfileTrainingDateRequirements",
 ]

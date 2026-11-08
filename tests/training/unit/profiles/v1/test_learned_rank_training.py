@@ -672,7 +672,7 @@ def test_missing_required_initial_warmup_blocks_incomplete_diagnostic_dates_befo
         pass
     assert not reached, "incomplete diagnostic dates must be rejected before fitting or publication"
     assert result is not None
-    assert result.status == "failed"
+    assert result.status == "blocked"
     assert "learned_rank_sample_dates_insufficient:d25:fitting" in result.failure_reasons
     coverage = next(item for item in result.coverage if item.strategy is Strategy.D25 and item.partition == "fitting")
     assert (coverage.expected_dates, coverage.effective_dates, coverage.rows) == (54, 53, 636)
@@ -728,7 +728,7 @@ def test_each_diagnostic_partition_requires_its_complete_global_dates_before_fit
     monkeypatch.setattr(history, "iter_training_rows", unobserved_signal)
     result, reached = _run_v1_without_fitting(tmp_path, monkeypatch, history, settings)
     assert reached == () and result is not None
-    assert result.status == "failed"
+    assert result.status == "blocked"
     assert f"learned_rank_sample_dates_insufficient:tomorrow:{partition}" in result.failure_reasons
     coverage = next(item for item in result.coverage if item.strategy is Strategy.TOMORROW and item.partition == partition)
     assert coverage.effective_dates < coverage.expected_dates and coverage.rows > 0
@@ -784,7 +784,7 @@ def test_missing_d25_partition_fails_before_either_head_fit_and_reports_coverage
         settings=_settings(), sqlite_policy=SqlitePolicyFixture(),
         sample_settings=TrainingSampleSettingsFixture(),
     )
-    assert result.status == "failed"
+    assert result.status == "blocked"
     assert result.failure_reasons == tuple(
         f"learned_rank_sample_partition_empty:d25:{name}"
         for name in ("fitting", "early_stopping", "calibration", "validation", "final_fitting")
@@ -858,7 +858,7 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
         assert profile.heads[head.strategy].evidence.activation_basis == "manual_user_override"
         assert profile.heads[head.strategy].evidence.historical_status == "historical_unavailable"
         assert LearnedRankPredictor(head).predict(()) == ()
-    # Failed and cancelled retraining leave the complete previously published pair intact.
+    # Blocked and cancelled retraining leave the complete previously published pair intact.
     failed = RunV1Training(
         lambda: history,
         model_root,
@@ -867,7 +867,7 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
         settings=replace(_settings(), minimum_training_rows=99999), sqlite_policy=SqlitePolicyFixture(),
         sample_settings=TrainingSampleSettingsFixture(),
     )
-    assert failed.status == "failed" and {path.relative_to(profile_root): path.read_bytes() for path in paths} == before
+    assert failed.status == "blocked" and {path.relative_to(profile_root): path.read_bytes() for path in paths} == before
     assert not sample_root.exists()
     with pytest.raises(InterruptedError):
         RunV1Training(

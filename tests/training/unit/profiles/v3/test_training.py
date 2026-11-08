@@ -258,8 +258,36 @@ def test_latest_final_day_is_required_before_any_fit_without_resource_ports(tmp_
     monkeypatch.setattr("trader.training.infra.engine.RefitIndustryModels", lambda *_args, **_kwargs: pytest.fail("invalid final dates must not refit"))
     result = run_v3_training(tmp_path / "history", tmp_path / "models")
     assert result.status == "blocked"
-    assert all(head.failure_reasons == ("final_fit_effective_dates_insufficient",) for head in result.heads)
+    missing = next(head for head in result.heads if head.strategy is (Strategy.TOMORROW if maturity == 1 else Strategy.D25))
+    other = next(head for head in result.heads if head is not missing)
+    assert missing.failure_reasons == ("final_fit_effective_dates_insufficient",)
+    assert other.failure_reasons == ("profile_pair_admission_blocked",)
+    observed = next(item for item in missing.date_coverage if item.basis == "sample_index" and item.partition == "final_fitting")
+    assert observed.missing_dates == (missing_day,)
+    assert not any(item.missing_dates for item in other.date_coverage)
     assert all(head.diagnostic_plan is not None and not head.model_hash for head in result.heads)
+    assert not tuple((tmp_path / "models").rglob("model.json"))
+
+
+@pytest.mark.parametrize("run_training", (run_v2_training, run_v3_training))
+def test_both_heads_report_their_own_final_date_gaps_before_any_fit(tmp_path, monkeypatch, run_training):
+    history = _cadence_history(tmp_path / "history")
+    _patch_history(monkeypatch, history)
+    tomorrow_gap, d25_gap = history.snapshot.calendar.open_dates[-2], history.snapshot.calendar.open_dates[-7]
+
+    def build(request, **_kwargs):
+        _populate_samples(request)
+        request.index._connection.run("UPDATE samples SET target_t1=NULL WHERE trade_date=?", (EncodeDate(tomorrow_gap),))
+        request.index._connection.run("UPDATE samples SET target_d25_aggregate=NULL WHERE trade_date=?", (EncodeDate(d25_gap),))
+
+    monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build)
+    monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", lambda *_a, **_kw: pytest.fail("coverage must finish before fitting"))
+    result = run_training(tmp_path / "history", tmp_path / "models")
+    assert result.status == "blocked"
+    for head, missing in zip(result.heads, (tomorrow_gap, d25_gap), strict=True):
+        observed = next(item for item in head.date_coverage if item.basis == "sample_index" and item.partition == "final_fitting")
+        assert observed.missing_dates == (missing,)
+        assert head.failure_reasons == ("final_fit_effective_dates_insufficient",)
     assert not tuple((tmp_path / "models").rglob("model.json"))
 
 

@@ -40,7 +40,7 @@ from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
-from trader.training.infra.profile.v1.training import InspectV1Training, RunV1Training
+from trader.training.infra.profile.v1.training import InspectV1Training, InspectV1TrainingDates, RunV1Training
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
@@ -228,11 +228,12 @@ class _TrainingTaskFactory:
         )
         if reused is not None:
             return SelectedTrainingTask("v1", frozenset(), partial(_reused, reused))
+        blocked = InspectV1TrainingDates(self.history, settings, compute_threads=selection.cpu_budget.profile_threads.v1)
+        if blocked is not None:
+            return SelectedTrainingTask("v1", frozenset(), partial(_reused, blocked))
         dates = AlignmentReadDates(calendar, BuildLearnedRankReadDates(
             calendar, self.history.snapshot.source_cutoff, settings,
         ))
-        if not self.history.has_industry_window(dates, 1):
-            raise ValueError("history_industry_coverage_insufficient")
         execute = partial(
             RunV1Training,
             lambda: self.history,

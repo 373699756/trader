@@ -10,6 +10,7 @@ from trader.training.application.tomorrow_training import TomorrowTrainingProgre
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.training_diagnostics import TrainingOperationIssue
+from trader.training.domain.training_date_coverage import TrainingDateCoverage
 
 
 class CancellableTrainingProgress:
@@ -41,6 +42,7 @@ def ProjectProfileTrainingResult(profile: ScoringProfileId, result: TrainingRunR
                 "training_rows": head.training_rows,
                 "validation_rows": head.validation_rows,
                 "failure_reasons": list(head.failure_reasons),
+                "date_coverage": [ProjectTrainingDateCoverage(item) for item in head.date_coverage],
                 "source_cutoff": head.final_fit.source_cutoff.isoformat() if head.final_fit is not None else None,
                 "label_cutoff": head.label_cutoff.isoformat() if head.label_cutoff is not None else None,
                 "final_fit_start": head.final_fit.fit_dates[0].isoformat() if head.final_fit is not None else None,
@@ -94,6 +96,7 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
         "training_input_hash": result.training_input_hash,
         "sample_database_peak_bytes": result.sample_database_peak_bytes,
         "failure_reasons": list(result.failure_reasons),
+        "date_coverage": [ProjectTrainingDateCoverage(item) for item in result.date_coverage],
         "post_commit_issues": ProjectTrainingOperationIssues(result.post_commit_issues),
         "sample_counts": CanonicalValue(result.sample_counts),
         "coverage": [
@@ -149,7 +152,39 @@ def ProjectTrainingOperationIssues(issues: tuple[TrainingOperationIssue, ...]) -
     ]
 
 
+def ProjectTrainingDateCoverage(coverage: TrainingDateCoverage) -> dict[str, object]:
+    return {
+        "strategy": coverage.strategy.value,
+        "partition": coverage.partition,
+        "basis": coverage.basis,
+        "source_cutoff": coverage.source_cutoff.isoformat(),
+        "label_cutoff": coverage.label_cutoff.isoformat(),
+        "expected_dates": coverage.expected_dates,
+        "effective_dates": coverage.effective_dates,
+        "required_dates": [day.isoformat() for day in coverage.required_dates],
+        "available_dates": [day.isoformat() for day in coverage.available_dates],
+        "missing_dates": [day.isoformat() for day in coverage.missing_dates],
+    }
+
+
+def TrainingDateCoverageSummary(coverage: tuple[TrainingDateCoverage, ...]) -> str:
+    names = {"fitting": "诊断拟合", "early_stopping": "早停", "calibration": "校准",
+             "validation": "验证", "final_fitting": "最终拟合"}
+    details = []
+    for item in coverage:
+        missing = item.missing_dates
+        if not missing:
+            continue
+        head = "明日" if item.strategy.value == "tomorrow" else "D25"
+        available = "至多" if item.basis == "metadata_upper_bound" else "有效"
+        dates = "、".join(day.isoformat() for day in missing[:2])
+        if len(missing) > 2:
+            dates += f"等{len(missing)}日"
+        details.append(f"{head}·{names[item.partition]} {available}{item.effective_dates}/{item.expected_dates}日（缺{dates}）")
+    return "；".join(details)
+
+
 __all__ = [
     "ProjectProfileTrainingResult", "ProjectLearnedRankTrainingResult", "ProjectTrainingOperationIssues",
-    "CancellableTrainingProgress",
+    "CancellableTrainingProgress", "ProjectTrainingDateCoverage", "TrainingDateCoverageSummary",
 ]

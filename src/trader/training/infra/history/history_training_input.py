@@ -34,6 +34,8 @@ from trader.training.domain.tomorrow_training_input import (
     FrozenDailyInputDescriptor,
 )
 from trader.training.domain.training_input_identity import BuildTrainingInputHash
+from trader.training.domain.training_date_coverage import PossibleTrainingSignalDates, TrainingDateCoverage, TrainingDateRequirement
+from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,28 @@ class HistoryTrainingInputSnapshot:
     @property
     def training_input_hash(self) -> str:
         return BuildTrainingInputHash(self.snapshot_hash, self.industry_snapshot.content_hash)
+
+    def possible_signal_dates(
+        self, *, history_sessions: int, history_excludes_signal: bool, maturity_sessions: int,
+    ) -> tuple[date, ...]:
+        return PossibleTrainingSignalDates(
+            self.calendar.open_dates, self.source_cutoff,
+            tuple(member.code for member in self.industry_snapshot.members), self.listing_intervals,
+            history_sessions=history_sessions, history_excludes_signal=history_excludes_signal,
+            maturity_sessions=maturity_sessions,
+        )
+
+    def date_upper_bounds(
+        self, requirements: tuple[TrainingDateRequirement, ...], *, history_sessions: int, history_excludes_signal: bool,
+    ) -> tuple[TrainingDateCoverage, ...]:
+        return tuple(
+            requirement.observe(possible, "metadata_upper_bound")
+            for strategy, maturity in ((Strategy.TOMORROW, 1), (Strategy.D25, 5))
+            for possible in (self.possible_signal_dates(
+                history_sessions=history_sessions, history_excludes_signal=history_excludes_signal, maturity_sessions=maturity,
+            ),)
+            for requirement in requirements if requirement.strategy is strategy
+        )
 
     @property
     def universe_count(self) -> int:

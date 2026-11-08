@@ -1,7 +1,7 @@
 """Production profile training policy over explicitly injected I/O and fitting ports."""
 
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Literal, Protocol
 
@@ -16,10 +16,12 @@ from trader.training.domain.profile_training import (
     PlannedTrainingHead,
     ProfileTrainingPlan,
     ProfileTrainingSource,
+    ProfileTrainingDateRequirements,
 )
 from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan
 from trader.training.domain.sample_coverage import SampleCoverage
 from trader.training.domain.tomorrow_training_input import EvaluateTomorrowTrainingInput
+from trader.training.domain.training_date_coverage import TrainingDateBasis, TrainingDateCoverage, TrainingDateCoverageMatches
 
 TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
 
@@ -44,6 +46,7 @@ class HeadTrainingResult:
     coverage: tuple[SampleCoverage, ...] = ()
     final_fit: FinalFitDatePlan | None = None
     diagnostic_plan: ProductionDiagnosticDatePlan | None = None
+    date_coverage: tuple[TrainingDateCoverage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,7 @@ class TrainingRunResult:
 class PreparedTrainingSamples:
     coverage: tuple[SampleCoverage, ...]
     peak_bytes: int
+    date_coverage: tuple[TrainingDateCoverage, ...] = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,8 @@ class ProfileFittingPort(Protocol):
 
 class ProfileTrainingPort(Protocol):
     def read_source(self) -> ProfileTrainingSource: ...
+
+    def date_upper_bounds(self, plan: ProfileTrainingPlan) -> tuple[TrainingDateCoverage, ...]: ...
 
     def has_industry_window(
         self, readable_dates: frozenset[date], anchors: frozenset[date] | None = None,
@@ -162,6 +168,10 @@ def TrainProfile(
     ).failure_reasons
     if failures:
         return _blocked_run(source, failures[0], plan=plan)
+    date_coverage = operations.date_upper_bounds(plan)
+    admission = InspectProfileDateAdmission(plan, date_coverage, basis="metadata_upper_bound")
+    if admission is not None:
+        return admission
     if progress is not None:
         progress.publish(TomorrowTrainingProgress("training_preparation", "completed", 1, 1))
     completed: list[HeadTrainingResult] = []
@@ -175,6 +185,16 @@ def TrainProfile(
         samples = operations.prepare_samples(plan, window)
         peak_bytes = samples.peak_bytes
         coverage = _expected_coverage(plan.split, samples.coverage)
+        date_coverage = (*date_coverage, *samples.date_coverage)
+        admission = InspectProfileDateAdmission(plan, samples.date_coverage, basis="sample_index")
+        if admission is not None:
+            return replace(admission, sample_database_peak_bytes=peak_bytes, heads=tuple(
+                replace(head, date_coverage=tuple(item for item in date_coverage if item.strategy is head.strategy),
+                        coverage=tuple(item for item in coverage if item.target == (
+                            "target_t1" if head.strategy is Strategy.TOMORROW else "target_d25_aggregate"
+                        )))
+                for head in admission.heads
+            ))
         if any(item.effective_dates != item.expected_dates for item in coverage):
             raise ProfileTrainingOperationError("profile_training_effective_dates_insufficient")
         with operations.fitting(plan) as fitting:
@@ -233,12 +253,42 @@ def TrainProfile(
                 if not any(item.strategy is head.strategy for item in completed)
             )
     ordered = tuple(
-        replace(next(item for item in completed if item.strategy is head.strategy), diagnostic_plan=plan.split)
+        replace(
+            next(item for item in completed if item.strategy is head.strategy), diagnostic_plan=plan.split,
+            date_coverage=tuple(item for item in date_coverage if item.strategy is head.strategy),
+        )
         for head in source.heads
     )
     return TrainingRunResult(
         plan.run_id, source.training_input_hash, peak_bytes, ordered, post_commit_issues=tuple(post_commit_issues),
     )
+
+
+def InspectProfileDateAdmission(
+    plan: ProfileTrainingPlan, coverage: tuple[TrainingDateCoverage, ...], *, basis: TrainingDateBasis,
+) -> TrainingRunResult | None:
+    requirements = ProfileTrainingDateRequirements(plan)
+    if not TrainingDateCoverageMatches(requirements, coverage, basis=basis):
+        return _blocked_run(plan.source, "profile_training_coverage_contract_invalid", plan=plan)
+    if not any(item.missing_dates for item in coverage):
+        return None
+    heads = []
+    for head in plan.heads:
+        observed = tuple(item for item in coverage if item.strategy is head.strategy)
+        reasons = tuple(dict.fromkeys(
+            f"training_signal_dates_upper_bound_insufficient:{item.partition}"
+            if item.basis == "metadata_upper_bound" else (
+                "final_fit_effective_dates_insufficient" if item.partition == "final_fitting"
+                else "profile_training_effective_dates_insufficient"
+            )
+            for item in observed if item.missing_dates
+        )) or ("profile_pair_admission_blocked",)
+        heads.append(replace(
+            _blocked_head(plan.source, head.strategy, reasons[0]), run_id=plan.run_id,
+            label_cutoff=head.label_cutoff, final_fit=head.final_fit, diagnostic_plan=plan.split,
+            failure_reasons=reasons, date_coverage=observed,
+        ))
+    return TrainingRunResult(plan.run_id, plan.source.training_input_hash, 0, tuple(heads))
 
 
 def _require_industry_coverage(
@@ -306,6 +356,7 @@ def _blocked_run(
 __all__ = [
     "HeadTrainingResult",
     "InspectProfileReuse",
+    "InspectProfileDateAdmission",
     "PreparedTrainingHead",
     "PreparedTrainingSamples",
     "ProfileFittingPort",

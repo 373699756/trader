@@ -2,11 +2,12 @@
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal
+from typing import Literal, cast
 
 from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.training.domain.training_input_identity import BuildTrainingInputHash
+from trader.training.domain.training_date_coverage import TrainingDatePartition, TrainingDateRequirement
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FinalFitDatePlan
 from trader.training.domain.v1.learned_rank import (
     BuildLearnedRankDateSplit, LearnedRankDateSplit, LearnedRankFinalPair, V1TrainingSettings,
@@ -33,6 +34,7 @@ class LearnedRankPartitionCoverage:
     expected_dates: int
     effective_dates: int
     rows: int
+    missing_dates: tuple[date, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,20 @@ def CanReuseLearnedRankPair(pair: LearnedRankFinalPair, plan: LearnedRankTrainin
     )
 
 
+def LearnedRankTrainingDateRequirements(plan: LearnedRankTrainingPlan) -> tuple[TrainingDateRequirement, ...]:
+    return tuple(
+        TrainingDateRequirement(strategy, cast(TrainingDatePartition, partition), plan.source.source_cutoff, final_fit.fit_dates[-1], dates)
+        for strategy, split, final_fit in zip(
+            (Strategy.TOMORROW, Strategy.D25), plan.splits, plan.final_fit_plans, strict=True,
+        )
+        for partition, dates in (
+            ("fitting", split.fitting), ("early_stopping", split.early_stopping),
+            ("calibration", split.calibration), ("validation", split.validation),
+            ("final_fitting", final_fit.fit_dates),
+        )
+    )
+
+
 def LearnedRankCoverageFailures(
     coverage: tuple[LearnedRankPartitionCoverage, ...], plan: LearnedRankTrainingPlan,
 ) -> tuple[str, ...]:
@@ -164,5 +180,6 @@ __all__ = [
     "BuildLearnedRankReadDates",
     "CanReuseLearnedRankPair",
     "LearnedRankCoverageFailures",
+    "LearnedRankTrainingDateRequirements",
     "EstimateLearnedRankFittingBytes",
 ]

@@ -37,6 +37,7 @@ from trader.training.domain.v1.training_plan import (
     LearnedRankSampleCounts,
     LearnedRankTrainingPlan,
     LearnedRankTrainingSource,
+    LearnedRankTrainingDateRequirements,
 )
 from trader.training.entrypoints.profile_training import ProjectLearnedRankTrainingResult
 
@@ -99,6 +100,9 @@ class _Training:
     def check_cancelled(self) -> None:
         pass
 
+    def date_upper_bounds(self, plan):
+        return tuple(item.observe(item.required_dates, "metadata_upper_bound") for item in LearnedRankTrainingDateRequirements(plan))
+
     def read_pair(self) -> LearnedRankFinalPair | None:
         return self.pair
 
@@ -154,7 +158,16 @@ class _Training:
             coverage[-1] = replace(coverage[-1], expected_dates=1, effective_dates=1)
         elif self.coverage_case == "wrong_expected_dates":
             coverage[-1] = replace(coverage[-1], expected_dates=1)
-        return PreparedLearnedRankSamples(LearnedRankSampleCounts(3400, 900, 0, 0, 0, 0, 0), tuple(coverage), 123)
+        dates = tuple(
+            requirement.observe(requirement.required_dates[:next((
+                item.effective_dates for item in coverage
+                if item.strategy is requirement.strategy and item.partition == requirement.partition
+            ), len(requirement.required_dates))], "sample_index")
+            for requirement in LearnedRankTrainingDateRequirements(plan)
+        )
+        return PreparedLearnedRankSamples(
+            LearnedRankSampleCounts(3400, 900, 0, 0, 0, 0, 0), tuple(coverage), 123, date_coverage=dates,
+        )
 
     @contextmanager
     def fitting(self, required_bytes: int) -> Iterator[LearnedRankFittingPort]:
@@ -223,6 +236,23 @@ def test_complete_pair_is_published_after_fitting_resources_are_released() -> No
     assert training.required_bytes == 450 * 512 + 256 * 1024**2
 
 
+def test_v1_metadata_upper_bound_is_not_exact_sample_evidence(monkeypatch):
+    training = _Training()
+    build = training.build
+
+    def wrong_basis(plan):
+        prepared = build(plan)
+        return replace(prepared, date_coverage=tuple(
+            replace(item, basis="metadata_upper_bound") for item in prepared.date_coverage
+        ))
+
+    monkeypatch.setattr(training, "build", wrong_basis)
+    result = TrainLearnedRank(training)
+    assert result.status == "failed"
+    assert result.failure_reasons == ("learned_rank_sample_coverage_contract_invalid",)
+    assert training.events == ["samples_open", "samples_closed"]
+
+
 class _CompletionFailure:
     def publish(self, event):
         if event.stage == "artifact_publish" and event.state == "completed":
@@ -263,7 +293,7 @@ def test_incomplete_final_dates_block_both_heads_and_publication() -> None:
 
     result = TrainLearnedRank(training)
 
-    assert result.status == "failed" and result.heads == ()
+    assert result.status == "blocked" and result.heads == ()
     assert result.failure_reasons == ("learned_rank_final_fit_dates_insufficient:d25",)
     assert training.events == ["samples_open", "samples_closed"]
     assert training.scopes == [] and training.pair is None
@@ -293,7 +323,7 @@ def test_v1_coverage_counts_are_admitted_against_the_actual_plan(case: str, reas
 
     result = TrainLearnedRank(training)
 
-    assert result.status == "failed" and result.heads == ()
+    assert result.status == "blocked" and result.heads == ()
     assert result.failure_reasons == (reason,)
     assert training.events == ["samples_open", "samples_closed"]
     assert training.scopes == [] and training.pair is None

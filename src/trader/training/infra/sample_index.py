@@ -92,6 +92,12 @@ class FinalFitIndustryCounts:
 
 
 @dataclass(frozen=True)
+class FinalFitSampleInspection:
+    industries: tuple[FinalFitIndustryCounts, ...]
+    available_dates: tuple[date, ...]
+
+
+@dataclass(frozen=True)
 class TrainingIndustryData:
     training: TrainingSampleMatrix
     early_stopping: TrainingSampleMatrix
@@ -326,6 +332,14 @@ class SQLiteTrainingSampleIndex:
     def final_fit_counts(
         self, contract: TrainedHeadContract, plan: FinalFitDatePlan,
     ) -> tuple[FinalFitIndustryCounts, ...]:
+        inspection = self.inspect_final_fit(contract, plan)
+        if inspection.available_dates != plan.fit_dates:
+            raise ValueError("final_fit_effective_dates_insufficient")
+        return inspection.industries
+
+    def inspect_final_fit(
+        self, contract: TrainedHeadContract, plan: FinalFitDatePlan,
+    ) -> FinalFitSampleInspection:
         target, dates = self._final_fit_selection(contract, plan)
         placeholders = ",".join("?" for _day in dates)
         result = self._connection.run(
@@ -349,9 +363,9 @@ class SQLiteTrainingSampleIndex:
                     )
         finally:
             result.close()
-        if effective != set(dates):
-            raise ValueError("final_fit_effective_dates_insufficient")
-        return tuple(totals[industry] for industry in sorted(totals))
+        return FinalFitSampleInspection(
+            tuple(totals[industry] for industry in sorted(totals)), tuple(DecodeDate(day) for day in sorted(effective)),
+        )
 
     def iter_final_fit_batches(
         self,
@@ -939,6 +953,7 @@ __all__ = [
     "TargetMetric",
     "TrainingIndustryCounts",
     "FinalFitIndustryCounts",
+    "FinalFitSampleInspection",
     "TrainingIndustryData",
     "TrainingSample",
     "TrainingSampleMatrix",
