@@ -218,6 +218,7 @@ def _run_selected_training(
                             paths.models,
                             datetime.now(ZoneInfo("Asia/Shanghai")),
                             load_expectation=load_expectation,
+                            maintenance_path=paths.training_maintenance,
                             selected_profile=contract, sqlite_policy=sqlite_policy,
                         )
                         payload["maintenance"] = [ProjectHeadTrainingStatus(head) for head in maintenance]

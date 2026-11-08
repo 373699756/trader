@@ -27,6 +27,26 @@ from trader.training.infra.memory_admission import TrainingMemoryBudget
 _CURRENT_INDUSTRY = CurrentIndustrySnapshotFixture(("000001", *(f"60000{number}" for number in range(6))))
 
 
+@pytest.mark.parametrize("external_history,external_training", ((False, False), (True, False), (False, True), (True, True)))
+def test_training_locations_keep_maintenance_with_the_selected_training_root(tmp_path, external_history, external_training):
+    from trader.infra.settings.data_paths import DataPaths
+    from trader.training.infra.selected_training import ResolveTrainingLocations
+
+    configured = DataPaths(tmp_path / "data")
+    history_root = tmp_path / "external-history" if external_history else None
+    training_root = tmp_path / "external-training" if external_training else None
+
+    locations = ResolveTrainingLocations(configured, history_root, training_root)
+
+    assert locations.history == (history_root if external_history else configured.history)
+    assert locations.models == (training_root / "models" if external_training else configured.models)
+    assert locations.samples == (training_root / "samples" if external_training else configured.samples)
+    assert locations.training_maintenance == (
+        training_root / "maintenance.sqlite3" if external_training else configured.training_maintenance
+    )
+    assert not tuple(tmp_path.iterdir())
+
+
 class _Clock:
     def __init__(self):
         self.value = 100.0
@@ -560,7 +580,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
         executor=workers,
         memory_admission=memory_budget,
         cpu_budget=cpu_budget,
-        paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
+        paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples", tmp_path / "maintenance.sqlite3"),
         sqlite_policy=SqlitePolicyFixture(),
         load_expectation=HistoryTrainingExpectationFixture,
         prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),

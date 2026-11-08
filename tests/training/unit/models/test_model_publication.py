@@ -207,6 +207,7 @@ def test_model_publication_state_is_fixed_until_restart_without_constructing_new
     now = datetime(2026, 10, 20, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
     projection = PublishedTrainingState(
         tmp_path / "history", tmp_path, loaded.publications, owned_profile="v3", wall_clock=lambda: now,
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture()
     )
     projection.initialize()
@@ -235,6 +236,7 @@ def test_model_publication_state_is_fixed_until_restart_without_constructing_new
     assert tuple(head.disk for head in current) == updated.publications
     restarted = PublishedTrainingState(
         tmp_path / "history", tmp_path, updated.publications, owned_profile="v3", wall_clock=lambda: now,
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture()
     )
     restarted.initialize()

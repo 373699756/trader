@@ -114,6 +114,7 @@ flowchart TD
 | 证券、ST、行业 | `data/market/reference/company_st.sqlite3`、`industry.sqlite3` | d 第2、8章 | 手动更新、启动批量读取 |
 | 公司采集与正式事实 | `data/company/raw/company_collection.sqlite3`、`company_facts.sqlite3` | d 第5、8章 | 采集账本和轻量正式事实分开 |
 | 样本与模型 | `data/training/` | e 第3、7章 | 身份固定、有界批读、各档双头发布 |
+| 训练到期与提醒 | `data/training/maintenance.sqlite3` | e 第3.7节 | 训练owner独立事务、同日提醒first-wins；历史catalog只读，不随历史重排复制 |
 | 冻结、序号、研究 | `data/recommendation/<profile>/`、`data/research/<profile>/` | c 第12章、e 第8章 | 追加正式事实、按日期查询、研究隔离 |
 
 这是路径索引，不证明本次检查过活动库。后续字典应从 schema、SQL 和消费者核对，不能只抄某次落盘清单。年度价格表只写一套结构及分区规则，不把2018–2026同一字段表重复九次。

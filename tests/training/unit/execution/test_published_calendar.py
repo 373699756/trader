@@ -60,7 +60,7 @@ def test_four_profiles_publish_and_reuse_the_real_history_calendar(tmp_path: Pat
         tuple(_Progress() for _ in range(4)),
         lambda: False,
         TrainingMemoryBudget(memory_capacity),
-        TrainingLocations(history_root, tmp_path / "models", tmp_path / "samples"),
+        TrainingLocations(history_root, tmp_path / "models", tmp_path / "samples", tmp_path / "maintenance.sqlite3"),
         cpu_budget=TrainingCpuBudget(2, settings=resources.cpu),
         fanout_settings=resources.fanout,
         sample_settings=resources.samples,

@@ -58,6 +58,7 @@ from trader.training.infra.history.history_training_due import (
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.history.history_training_expectation import HistoryTrainingExpectation
 from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceIndex
+from trader.training.infra.history.training_reminder_status import ReadTrainingReminderStatus
 from trader.training.infra.model_bundles.bundle_snapshot import PublishedHeadBundle
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -355,12 +356,17 @@ def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_
     root = tmp_path / "history"
     dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
-    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture())
+    catalog = root / "catalog.sqlite3"
+    receipt = Path(f"{catalog}.sha256")
+    published_bytes = catalog.read_bytes(), receipt.read_bytes()
+    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, maintenance_path=tmp_path / "maintenance.sqlite3", load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture())
     assert {(head.profile_id, head.strategy) for head in heads} == {
         (profile, strategy) for profile in ("v2", "v3") for strategy in (Strategy.TOMORROW, Strategy.D25)
     }
     assert len({head.due.due_identity for head in heads}) == 4
     assert all(head.due.training_due and head.failure == "missing" for head in heads)
+    assert (tmp_path / "maintenance.sqlite3").is_file()
+    assert (catalog.read_bytes(), receipt.read_bytes()) == published_bytes
     for profile in ("v2", "v3"):
         pair = [head for head in heads if head.profile_id == profile]
         assert pair[0].due.current_label_cutoff > pair[1].due.current_label_cutoff
@@ -370,7 +376,7 @@ def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_
     monkeypatch.setattr(
         due_module, "EvaluateHistoryTrainingDue", lambda *args: pytest.fail("startup must never calculate due state")
     )
-    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", load_expectation=HistoryTrainingExpectationFixture, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
+    projection = PublishedTrainingState(root, tmp_path / "models", (), maintenance_path=tmp_path / "maintenance.sqlite3", owned_profile="v3", load_expectation=HistoryTrainingExpectationFixture, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     projection.initialize()
     assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
     assert all(head.owned == (head.profile_id == "v3") for head in projection.status())
@@ -383,6 +389,35 @@ def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_
     )
     projection.initialize()
     assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
+
+
+def test_startup_without_a_maintenance_database_preserves_history_and_creates_no_files(tmp_path, prepared_history):
+    root = tmp_path / "history"
+    dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
+    prepared_history(root, dates)
+    catalog = root / "catalog.sqlite3"
+    receipt = Path(f"{catalog}.sha256")
+    published_bytes = catalog.read_bytes(), receipt.read_bytes()
+    maintenance_path = tmp_path / "training/maintenance.sqlite3"
+    projection = PublishedTrainingState(
+        root, tmp_path / "models", (),
+        maintenance_path=maintenance_path,
+        owned_profile="v3",
+        load_expectation=HistoryTrainingExpectationFixture,
+        wall_clock=lambda: NOW,
+        sqlite_policy=SqlitePolicyFixture(),
+    )
+
+    projection.initialize()
+    reminder = ReadTrainingReminderStatus(
+        root, NOW, maintenance_path=maintenance_path, sqlite_policy=SqlitePolicyFixture(),
+    )
+
+    assert len(projection.status()) == 4
+    assert all(head.due is not None and head.due.training_due for head in projection.status())
+    assert reminder.reason == "history_due_state_unavailable"
+    assert not maintenance_path.parent.exists()
+    assert (catalog.read_bytes(), receipt.read_bytes()) == published_bytes
 
 
 def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(
@@ -409,10 +444,10 @@ def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(
         )
     assert result.state == "already_current"
     assert result.published
-    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture())
+    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, maintenance_path=tmp_path / "maintenance.sqlite3", load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture())
     assert len(heads) == 4
     assert all(head.failure == "corrupt" and head.due.training_due for head in heads)
-    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", load_expectation=HistoryTrainingExpectationFixture, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
+    projection = PublishedTrainingState(root, tmp_path / "models", (), maintenance_path=tmp_path / "maintenance.sqlite3", owned_profile="v3", load_expectation=HistoryTrainingExpectationFixture, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     projection.initialize()
     assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
 
@@ -632,6 +667,7 @@ def test_training_due_uses_the_published_snapshot_label_cutoff_and_marks_initial
     evaluation = EvaluateHistoryTrainingDue(
         HistoryTrainingDueQuery(
             history_root, tmp_path / "train", NOW, V3_TRAINING_PROFILE,
+            maintenance_path=tmp_path / "maintenance.sqlite3",
             industry_snapshot=CurrentIndustrySnapshotFixture(("600001",), observed_at=NOW),
             expected_training_contract_hash="9" * 64,
         ), sqlite_policy=SqlitePolicyFixture()
@@ -669,6 +705,7 @@ def test_training_due_expands_revision_cache_invalidation_to_the_selected_profil
     evaluation = EvaluateHistoryTrainingDue(
         HistoryTrainingDueQuery(
             history_root, tmp_path / "train", NOW, V2_TRAINING_PROFILE,
+            maintenance_path=tmp_path / "maintenance.sqlite3",
             industry_snapshot=CurrentIndustrySnapshotFixture(("600001",), observed_at=NOW),
             expected_training_contract_hash="9" * 64,
         ), sqlite_policy=SqlitePolicyFixture()
@@ -716,6 +753,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     monkeypatch.setattr(due_module, "_inspect_profile", lambda _root, profile: ((bundle,), None) if profile.profile_id == "v3" else ((), "missing"))
     projection = PublishedTrainingState(
         history_root, tmp_path / "train", (), owned_profile="v3",
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         load_expectation=HistoryTrainingExpectationFixture, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
     )
     with monkeypatch.context() as only_metadata:
@@ -730,6 +768,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
             tmp_path / "train",
             NOW,
             V3_TRAINING_PROFILE,
+            maintenance_path=tmp_path / "maintenance.sqlite3",
             expected_training_contract_hash=contract_hash,
             industry_snapshot=industry,
         ), sqlite_policy=SqlitePolicyFixture()
@@ -770,6 +809,7 @@ def test_training_due_binds_current_industry_semantics_and_expected_contract(
     monkeypatch.setattr(due_module, "_current_bundle", lambda *_args: (bundle, False))
     before = HistoryTrainingDueQuery(
         root, tmp_path / "train", NOW, V3_TRAINING_PROFILE,
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         industry_snapshot=industry, expected_training_contract_hash=contract_hash,
     )
     previous = EvaluateHistoryTrainingDue(before, sqlite_policy=SqlitePolicyFixture())
@@ -790,6 +830,7 @@ def test_training_due_binds_current_industry_semantics_and_expected_contract(
     )
     projection = PublishedTrainingState(
         root, tmp_path / "train", (), owned_profile="v3",
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         load_expectation=lambda _profile, _as_of: expectation,
         wall_clock=lambda: NOW + timedelta(hours=2), sqlite_policy=SqlitePolicyFixture(),
     )
@@ -816,6 +857,7 @@ def test_missing_expected_inputs_are_unknown_without_forcing_a_training_due(tmp_
 
     statuses = EvaluateAllHistoryTrainingDue(
         tmp_path / "history", tmp_path / "models", NOW,
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         load_expectation=unavailable, sqlite_policy=SqlitePolicyFixture(),
     )
     assert all(item.due is None and item.failure == "training_inputs_unavailable" for item in statuses)
@@ -853,6 +895,7 @@ def test_due_identity_includes_the_old_training_population_industry_projection(t
     monkeypatch.setattr(due_module, "_current_bundle", lambda *_args: (bundle, False))
     query = HistoryTrainingDueQuery(
         root, tmp_path / "train", NOW, V3_TRAINING_PROFILE,
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         industry_snapshot=industry, expected_training_contract_hash="9" * 64,
     )
     previous = EvaluateHistoryTrainingDue(query, sqlite_policy=SqlitePolicyFixture())
@@ -865,6 +908,7 @@ def test_due_identity_includes_the_old_training_population_industry_projection(t
     monkeypatch.setattr(due_module, "_inspect_profile", lambda _root, profile: ((bundle,), None) if profile.profile_id == "v3" else ((), "missing"))
     projection = PublishedTrainingState(
         root, tmp_path / "train", (), owned_profile="v3", load_expectation=lambda _profile, _at: expectation,
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
     )
     with monkeypatch.context() as only_metadata:

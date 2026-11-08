@@ -32,6 +32,7 @@ class TrainingLocations:
     history: Path
     models: Path
     samples: Path
+    training_maintenance: Path
 
 
 @dataclass(frozen=True)

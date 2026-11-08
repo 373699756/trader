@@ -454,7 +454,6 @@ class HistoryControlIndex:
         path: Path,
         inputs: HistoryRebuildInput,
         *,
-        copy_related_records: Callable[[Path], None],
         fault_injector: FaultInjector | None = None, sqlite_policy: SqliteIoPolicy,
     ) -> None:
         state = inputs.state
@@ -484,7 +483,6 @@ class HistoryControlIndex:
                 rebuilt._save(record, publications.get(record.content_hash))
             if state.published_snapshot is not None:
                 rebuilt.publish_snapshot(state.published_snapshot)
-            copy_related_records(temporary)
             if rebuilt.load_state() != state:
                 raise HistoryControlError("rebuilt history control state does not match its source")
             _checkpoint_wal(temporary, sqlite_policy=sqlite_policy)

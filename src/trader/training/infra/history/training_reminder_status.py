@@ -15,11 +15,13 @@ from trader.training.domain.training_reminder import DeriveTrainingReminderStatu
 from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceError, TrainingMaintenanceIndex
 
 
-def ReadTrainingReminderStatus(history_root: Path, observed_at: datetime, *, sqlite_policy: SqliteIoPolicy) -> TrainingReminderStatus:
+def ReadTrainingReminderStatus(
+    history_root: Path, observed_at: datetime, *, maintenance_path: Path, sqlite_policy: SqliteIoPolicy,
+) -> TrainingReminderStatus:
     publication = HistoryControlIndex(history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
     try:
         published = publication.load_published_state()
-        control = TrainingMaintenanceIndex(history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_state(
+        control = TrainingMaintenanceIndex(maintenance_path, sqlite_policy=sqlite_policy).load_state(
             published_snapshot=published.snapshot if published is not None else None
         )
     except (HistoryControlError, TrainingMaintenanceError):

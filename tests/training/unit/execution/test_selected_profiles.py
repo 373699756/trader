@@ -84,7 +84,7 @@ def test_shared_reader_closes_nested_streams_even_when_callers_retain_them(tmp_p
         (_Progress(), _Progress()),
         cancelled.is_set,
         TrainingMemoryBudget(1024),
-        TrainingLocations(history.history_root, tmp_path / "models", tmp_path / "samples"),
+        TrainingLocations(history.history_root, tmp_path / "models", tmp_path / "samples", tmp_path / "maintenance.sqlite3"),
         cpu_budget=TrainingCpuBudget(2, settings=TrainingResourceSettingsFixture().cpu),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
         sample_settings=TrainingSampleSettingsFixture(),

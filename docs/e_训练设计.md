@@ -232,12 +232,14 @@ V1独立诊断日期切分由 `BuildLearnedRankDateSplit` 拥有：拟合、早�
 
 ### 3.7 训练到期和提醒表
 
-数据库是 `data/market/history/catalog.sqlite3`，表owner是 `training/infra/history/training_maintenance_index.py::TrainingMaintenanceIndex`；同文件中的历史发布表仍归download。`history_training_due.py`和训练提醒流程写入，状态/提醒读取及隔离重排复制流程消费；同身份冲突拒绝覆盖。三个表都是 `WITHOUT ROWID`，没有额外二级索引；提醒表与领取表的 `due_id`外键指向 `training_due`。
+数据库是独立的 `data/training/maintenance.sqlite3`，唯一owner是 `training/infra/history/training_maintenance_index.py::TrainingMaintenanceIndex`。组合根经`DataPaths.training_maintenance`显式注入，指定外部训练目录时使用该目录的`maintenance.sqlite3`；`history_training_due.py`和训练提醒流程写入，启动维护状态及提醒状态只读消费。历史catalog和年库仍只归download，训练维护不写入、不重封、不跟随历史重排复制。三个业务表都是 `WITHOUT ROWID`，没有额外二级索引；提醒表与领取表的 `due_id`外键指向 `training_due`。
 
 日期仍用整数日，时刻用UTC纪元微秒并在程序边界解为上海时区；不能按文本或毫秒猜测。
 
 | 表/列 | 类型、空值 | 用途 |
 | --- | --- | --- |
+| `schema_contract.singleton` | INTEGER主键，仅1 | 独立维护库唯一合同记录 |
+| `schema_id` | TEXT非空，仅`training_maintenance` | 当前实际表结构身份，不作数字版本或迁移编号 |
 | `training_due.due_id` | TEXT主键 | 不可变到期身份，含档位/头等业务身份编码 |
 | `reason` | TEXT非空 | 到期/未到期/资料不足等类型化原因，具体枚举由domain校验 |
 | `baseline_date` | INTEGER可空 | 上次有效训练标签截止，无基线可空 |
@@ -257,7 +259,7 @@ V1独立诊断日期切分由 `BuildLearnedRankDateSplit` 拥有：拟合、早�
 | `failure_code` | TEXT可空 | 通知降级原因，不含完整异常载荷 |
 | `content_hash` | BLOB非空，32字节 | 通知结果完整性 |
 
-读取不会为缺表自动建库；写入在确认 `history_catalog` 实际结构和合同标识后创建完整表组并事务提交，不使用数字schema编号。训练维护写入持有与history同步相同的互斥锁，写前核验已有文件发布；已发布但缺凭据或摘要失配时拒绝写入，不自动补签。真实改动提交并关闭writer后，通过公共`PublishSqliteFile`封存整个catalog，保留原历史快照身份；幂等、回滚与只读路径不重新封存。封存失败保留实际已提交记录与旧回执并明确报错，不谎报完成。仅完成训练模型可读不能替代到期状态检查；提醒领取也不代表训练或桌面通知已经成功。
+独立库的`schema_contract`只声明`training_maintenance`实际结构，不使用数字schema编号。缺失库的只读查询返回无维护记录且不创建文件；首次写入在一个事务中安装完整结构、固定合同标识和保存记录。已有库必须先只读校验结构再建立writer，误传history catalog、不兼容结构、特殊文件及符号链接均拒绝，不补列、不改写其主库、已提交WAL或发布凭据；SQLite只读打开仍可能建立临时共享索引或空WAL，不将它们当成正式内容修订。确认维护库归属后，writer使用独立`maintenance.lock`及SQLite WAL/FULL持久事务，提交前中断丢弃未提交内容并允许重试，已提交记录由新实例重读并按原身份幂等；无需另写文件摘要或封存下载资料，同日提醒认领仍first-wins。原catalog内的旧维护记录不自动搬迁、回读或清空，新库缺失不能冒充旧提醒状态已延续；活动资料和旧记录的实际切换仍需具体授权。仅完成训练模型可读不能替代到期状态检查；提醒领取也不代表训练或桌面通知已经成功。
 
 ## 4. 一次作业如何并行
 

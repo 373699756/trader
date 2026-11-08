@@ -525,7 +525,7 @@ def ExecuteSelectedTraining(
 
 
 def ExecuteTrainingReminderStatus(settings: RuntimeSettings) -> TrainingReminderStatus:
-    return ReadTrainingReminderStatus(settings.data_paths.history, ShanghaiClock(_utc_now).now(), sqlite_policy=BuildSqlitePolicy(settings))
+    return ReadTrainingReminderStatus(settings.data_paths.history, ShanghaiClock(_utc_now).now(), maintenance_path=settings.data_paths.training_maintenance, sqlite_policy=BuildSqlitePolicy(settings))
 
 
 def ExecuteHistoryAutomationRemoval() -> tuple[Path, ...]:
@@ -926,7 +926,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     policy = policy_settings.BuildRecommendationPolicy(context.strategy)
     model_publications = PublishedTrainingState(
         paths.history, paths.models, loaded_profile.publications if loaded_profile else (),
-        owned_profile=profile_id, wall_clock=ShanghaiClock(now).now, sqlite_policy=sqlite_policy,
+        maintenance_path=paths.training_maintenance, owned_profile=profile_id, wall_clock=ShanghaiClock(now).now, sqlite_policy=sqlite_policy,
         load_expectation=HistoryTrainingExpectationReader(
             partial(ReadIndustrySnapshot, paths.reference, sqlite_policy=sqlite_policy),
             partial(LoadProfileTrainingSettings, settings.project_root),

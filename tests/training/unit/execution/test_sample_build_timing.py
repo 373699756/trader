@@ -128,7 +128,7 @@ def test_selected_factory_injects_the_same_job_observer_into_both_builder_owners
         (Mock(),),
         lambda: False,
         TrainingMemoryBudget(1024),
-        TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
+        TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples", tmp_path / "maintenance.sqlite3"),
         cpu_budget=TrainingCpuBudget(3, settings=TrainingResourceSettingsFixture().cpu),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
         sample_settings=TrainingSampleSettingsFixture(),

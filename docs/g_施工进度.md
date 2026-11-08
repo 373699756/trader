@@ -28,7 +28,17 @@
 
 本章保留最近交付切片及其剩余项，`completed`只关闭标题注明的范围；接续时先看最新要求及替代说明，再查第4章原任务。358已替代正常训练的历史时点行业分组要求，旧过程记录不再构成训练前置；357本地落库性能仍开放，既有后台已停止。
 
-### 训练维护写入后的历史目录封存（361，2026-11-08，completed）
+### 训练维护写入与历史发布隔离（361，2026-11-08，completed）
+
+本次接续：用户已授权实施最近两天Review计划，并明确选择独立训练维护库。基线`4e18a232`；只处理维护事务提交后封存失败会使已发布历史不可读且无法普通重试的残余缺口。唯一owner仍为`TrainingMaintenanceIndex`，路径改为`data/training/maintenance.sqlite3`；组合根、训练维护／到期观察、提醒状态及全部测试消费者同批切换，删除对history catalog的维护写入、重封、`copy_state`及无生产消费者的重建复制hook。361本次接续completed，不另建阶段；353的IPC／关闭、362公司资料及其它工作树差集保持原owner。
+
+实际改动（本次接续）：独立当前schema、维护锁和WAL/FULL事务；已有文件先只读核归属，拒绝旧catalog／不兼容结构／特殊路径，不改写主库、已提交WAL和发布凭据。缺失或初次事务回滚后的空库只读返回无记录，不建库、不补列；首次写入完整初始化，提交前中断后可按真实读后写流程重试，已提交提醒认领仍first-wins。显式外部训练目录同时接管维护库路径，仅覆盖历史输入不改变维护归属；模型／样本／历史身份未改变，独立维护不随历史重建复制。b/d/e字典及f问题证据同步，bootstrap本批候选仍1500行。
+
+验证（本次接续）：从HEAD与精确暂存差集生成独立候选`/tmp/trader-361-candidate-20261108.yKKv6Q`，已核实际导入、26个Python文件与index逐字节一致。最终核心53项通过（195.14秒，`/tmp/trader-361-independent-maintenance-candidate-core-20261108.xml`）；维护消费者15项通过，空库读后写修复后的2项真实消费者复验通过，报告同前缀`candidate-consumers`／`candidate-retry-consumers`，不将重叠项相加。9个产品源码mypy、26个受影响Python Ruff E9/F/B/UP（忽略E501）、完整暂存diff独立Review及git diff --check通过。修前hot-journal两个场景失败、WAL后恢复通过；初轮两次核心组的SQLite临时SHM／空WAL断言失败保留原报告，只修fixture口径，主库／非空WAL／凭据保护未放宽。
+
+既有失败（本次接续）：共享辅助组252通过／9失败；独立候选入口组125通过／同9失败，报告为`/tmp/trader-361-independent-maintenance-{consumers,candidate-entrypoints}-20261108.xml`，均不签整组通过。已用HEAD纯内存复现：4项V5测试仍期望底层ImportError，但356实际诊断为包装后的SelectedTrainingPreparationError；5项alignment测试未创建或mock358新增读取的runtime配置，进入ConfigurationError而非probe。它们分别沿原356/358及353消费者收口，不在361改诊断合同或接管其它owner，不以旧缓存或其它通过报告覆盖失败。
+
+未完成项（本次接续）：本批代码与隔离验证无。未访问、迁移或清空活动旧记录，未重封历史回执、重启服务、运行真实训练、性能或收益作业；独立新库不从旧catalog回读、不双写、不自动迁移，不能宣称既有提醒连续性已经切换。活动资料及旧记录实际切换另须具体授权；Review其余问题与上述9项旧消费者失败继续由原阶段／owner接续。
 
 用户报告启动历史预读与full_market反复出现`sqlite_publication_checksum_mismatch`。本批只负责训练维护写入及其文件发布边界，不接管其它未提交实现。只读检查确认短窗库摘要匹配，history/catalog摘要不匹配且SQLite quick_check通过；catalog最新写入晚于回执约12小时，最新到期记录与写入时刻吻合。训练维护owner写入到期／领取／提醒后遗漏文件封存，尚未据此排除其它内容变化或签全量历史完整。
 

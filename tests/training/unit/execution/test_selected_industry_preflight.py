@@ -71,7 +71,7 @@ def _request(tmp_path: Path, *, industry: bool) -> SelectedTrainingRequest:
         (_Progress(),),
         lambda: False,
         TrainingMemoryBudget(1024**2),
-        TrainingLocations(root, tmp_path / "models", tmp_path / "samples"),
+        TrainingLocations(root, tmp_path / "models", tmp_path / "samples", tmp_path / "maintenance.sqlite3"),
         cpu_budget=TrainingCpuBudget(2, settings=resources.cpu),
         fanout_settings=resources.fanout,
         sample_settings=resources.samples,

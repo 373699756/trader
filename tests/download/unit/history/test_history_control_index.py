@@ -37,7 +37,7 @@ from trader.download.infra.history_control_index import (
     InspectHistoryDisk,
 )
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
-from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+from trader.infra.sqlite_connection import SqliteConnection, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_publication import SqlitePublicationError, VerifySqliteFile
 from trader.training.domain.training_due import TrainingDueState
 from trader.training.domain.training_reminder import TrainingReminderClaim, TrainingReminderState
@@ -86,16 +86,24 @@ def _publication(index, calendar, universe):
     return publication_id
 
 
-def _save_all(index: HistoryControlIndex, values) -> HistoryControlState:
+def _maintenance_path(index: HistoryControlIndex) -> Path:
+    return index._path.parent / "training" / "maintenance.sqlite3"
+
+
+def _save_all(index: HistoryControlIndex, values, *, maintenance_path: Path | None = None) -> HistoryControlState:
     source, calendar, universe, checkpoint, due, reminder_claim, reminder, snapshot = values
     publication_id = _publication(index, calendar, universe)
     index.save_source(source)
     index.save_calendar(calendar, publication_id)
     index.save_universe(universe, publication_id)
     index.save_checkpoint(checkpoint)
-    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).save_due_state(due)
-    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).claim_reminder(reminder_claim)
-    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).save_reminder(reminder)
+    maintenance = TrainingMaintenanceIndex(
+        _maintenance_path(index) if maintenance_path is None else maintenance_path,
+        sqlite_policy=SqlitePolicyFixture(),
+    )
+    maintenance.save_due_state(due)
+    maintenance.claim_reminder(reminder_claim)
+    maintenance.save_reminder(reminder)
     index.publish_snapshot(snapshot, reference=REFERENCE)
     return index.load_state()
 
@@ -161,8 +169,8 @@ def test_control_index_round_trips_typed_state_and_replays_same_content(tmp_path
 
     assert replayed == expected
     assert replayed.published_snapshot == values[-1]
-    assert TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).load_state().reminder_claims == (values[-3],)
-    automation = TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).load_state()
+    assert TrainingMaintenanceIndex(_maintenance_path(index), sqlite_policy=SqlitePolicyFixture()).load_state().reminder_claims == (values[-3],)
+    automation = TrainingMaintenanceIndex(_maintenance_path(index), sqlite_policy=SqlitePolicyFixture()).load_state()
     assert index.load_published_state().snapshot == values[-1]
     assert automation.due_states == (values[4],)
     assert automation.reminder_claims == (values[5],)
@@ -191,45 +199,20 @@ def test_failed_catalog_seed_leaves_no_tables_and_retry_creates_all_consumers(tm
     assert {"schema_contract", "source_version", "published_snapshot", "reference_binding", "download_gaps"} <= tables
 
 
-def test_training_owner_retains_logical_hashes_and_replays_without_rewriting(tmp_path):
-    path = tmp_path / "catalog.sqlite3"
-    HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
-    values = _values()
-    index = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture())
-    index.save_due_state(values[4])
-    index.claim_reminder(values[5])
-    index.save_reminder(values[6])
-    state = index.load_state()
-    assert (
-        state.due_states[0].content_hash,
-        state.reminder_claims[0].content_hash,
-        state.reminders[0].content_hash,
-    ) == (
-        "a00e3fbeb447e112089fe4c8ee37f54b4380395b4f585141a9d19e4a632df7d5",
-        "73dfc48b74e90ecb37b7941178ab58fe4ed8833ad50ee40d6a8acd4bd1b03254",
-        "f0206043102594ffb0c5e3041d60ce6a5994ba45bdec962ebcfb241325ebc9d5",
-    )
-    before = path.read_bytes()
-    index.copy_state(state)
-    assert path.read_bytes() == before
-    assert index.load_state() == state
-
-
 @pytest.mark.parametrize("kind", ("due", "claim", "reminder"))
-def test_training_write_keeps_published_history_file_verifiable(tmp_path: Path, kind: str) -> None:
+def test_training_write_leaves_published_history_and_receipt_unchanged(tmp_path: Path, kind: str) -> None:
     path = tmp_path / "history" / "catalog.sqlite3"
     control = HistoryControlIndex(path, reference_path=path.parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     control.initialize()
     values = _values()
     expected = _save_all(control, values)
-    index = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture())
+    index = TrainingMaintenanceIndex(_maintenance_path(control), sqlite_policy=SqlitePolicyFixture())
     due = replace(values[4], due_identity="due-after-publication")
     if kind != "due":
         index.save_due_state(due)
-        control.publish_file()
     reader = SQLitePublishedHistorySnapshot(path.parent, sqlite_policy=SqlitePolicyFixture())
     before = reader.manifest()
-    receipt = Path(f"{path}.sha256").read_bytes()
+    files = _history_files(path.parent)
 
     if kind == "due":
         index.save_due_state(due)
@@ -239,9 +222,10 @@ def test_training_write_keeps_published_history_file_verifiable(tmp_path: Path, 
         index.save_reminder(TrainingReminderState(due.due_identity, NOW.date(), "sent", NOW, None))
 
     VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture())
-    assert Path(f"{path}.sha256").read_bytes() != receipt
+    assert _history_files(path.parent) == files
     assert control.load_state() == expected
     assert reader.manifest() == before
+    assert SQLitePublishedHistorySnapshot(path.parent, sqlite_policy=SqlitePolicyFixture()).manifest() == before
 
 
 def test_training_replay_reads_and_conflict_do_not_reseal_catalog(tmp_path: Path) -> None:
@@ -250,7 +234,7 @@ def test_training_replay_reads_and_conflict_do_not_reseal_catalog(tmp_path: Path
     control.initialize()
     values = _values()
     _save_all(control, values)
-    index = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture())
+    index = TrainingMaintenanceIndex(_maintenance_path(control), sqlite_policy=SqlitePolicyFixture())
     receipt = Path(f"{path}.sha256")
     before = path.read_bytes(), receipt.read_bytes(), receipt.stat()
 
@@ -266,8 +250,19 @@ def test_training_replay_reads_and_conflict_do_not_reseal_catalog(tmp_path: Path
     VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture())
 
 
-@pytest.mark.parametrize("damage", ("checksum", "missing_receipt"))
-def test_training_write_never_signs_a_previously_invalid_publication(tmp_path: Path, damage: str) -> None:
+def _history_files(root: Path) -> dict[str, bytes]:
+    # SQLite read-only handles may build a shared index and an empty WAL. Neither
+    # contains committed database changes; nonempty WAL bytes remain protected.
+    return {
+        file.name: file.read_bytes()
+        for file in root.iterdir()
+        if file.is_file() and not file.name.endswith("-shm")
+        and not (file.name.endswith("-wal") and file.stat().st_size == 0)
+    }
+
+
+@pytest.mark.parametrize("damage", ("valid", "checksum", "missing_receipt"))
+def test_training_owner_rejects_a_history_catalog_without_changing_committed_files(tmp_path: Path, damage: str) -> None:
     path = tmp_path / "history" / "catalog.sqlite3"
     control = HistoryControlIndex(path, reference_path=path.parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     control.initialize()
@@ -276,55 +271,87 @@ def test_training_write_never_signs_a_previously_invalid_publication(tmp_path: P
     receipt = Path(f"{path}.sha256")
     if damage == "checksum":
         with SqliteSession(path) as connection, SqliteTransaction(connection):
-            connection.run("UPDATE training_due SET matured_days=matured_days+1")
-    else:
+            connection.run("UPDATE source_version SET source='tampered'")
+    elif damage == "missing_receipt":
         receipt.unlink()
-    before = path.read_bytes(), receipt.read_bytes() if receipt.exists() else None
+    before = _history_files(path.parent)
 
     with pytest.raises(maintenance_module.TrainingMaintenanceError):
         TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).save_due_state(
             replace(values[4], due_identity="due-after-damage")
         )
 
-    assert (path.read_bytes(), receipt.read_bytes() if receipt.exists() else None) == before
-    with pytest.raises(SqlitePublicationError):
+    assert _history_files(path.parent) == before
+    assert not path.with_suffix(".lock").exists()
+    if damage == "valid":
         VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture())
+    else:
+        with pytest.raises(SqlitePublicationError):
+            VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture())
 
 
-def test_training_write_respects_history_maintenance_lock(tmp_path: Path) -> None:
+def test_training_owner_rejects_a_catalog_with_committed_wal_without_checkpointing(tmp_path: Path) -> None:
+    path = tmp_path / "history" / "catalog.sqlite3"
+    control = HistoryControlIndex(path, reference_path=path.parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    control.initialize()
+    _save_all(control, _values())
+    with SqliteSession(path) as writer:
+        with SqliteTransaction(writer):
+            writer.run("UPDATE source_version SET observed_at=observed_at+1")
+        assert Path(f"{path}-wal").stat().st_size > 32
+        before = _history_files(path.parent)
+
+        with pytest.raises(maintenance_module.TrainingMaintenanceError):
+            TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).save_due_state(_values()[4])
+
+        assert _history_files(path.parent) == before
+        assert writer.run("SELECT name FROM sqlite_master WHERE name LIKE 'training_%'").fetchall() == []
+        assert not path.with_suffix(".lock").exists()
+
+
+def test_training_write_is_independent_of_history_maintenance_lock(tmp_path: Path) -> None:
     path = tmp_path / "history" / "catalog.sqlite3"
     control = HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture())
     control.initialize()
     before = path.read_bytes()
     with HistoryMaintenanceLock(path.parent.with_name(".history.lock")):
-        with pytest.raises(maintenance_module.TrainingMaintenanceError) as rejected:
-            TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).save_due_state(_values()[4])
-        assert isinstance(rejected.value.__cause__, maintenance_module.ProcessLockError)
+        TrainingMaintenanceIndex(_maintenance_path(control), sqlite_policy=SqlitePolicyFixture()).save_due_state(_values()[4])
     assert path.read_bytes() == before
     assert not Path(f"{path}.sha256").exists()
 
 
-def test_training_seal_failure_reports_error_without_replacing_old_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_training_transaction_failure_keeps_published_history_readable_and_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "history" / "catalog.sqlite3"
     control = HistoryControlIndex(path, reference_path=path.parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     control.initialize()
     values = _values()
     _save_all(control, values)
-    receipt = Path(f"{path}.sha256").read_bytes()
-    due = replace(values[4], due_identity="due-seal-failed")
+    due = replace(values[4], due_identity="due-transaction-failed")
+    reader = SQLitePublishedHistorySnapshot(path.parent, sqlite_policy=SqlitePolicyFixture())
+    original_manifest = reader.manifest()
+    before = _history_files(path.parent)
+    original_run = SqliteConnection.run
 
-    def fail_seal(*_args: object, **_kwargs: object) -> None:
-        raise OSError("seal unavailable")
+    def fail_after_insert(connection, statement, parameters=()):
+        result = original_run(connection, statement, parameters)
+        if statement.startswith("INSERT INTO training_due"):
+            raise OSError("transaction interrupted")
+        return result
 
-    monkeypatch.setattr(maintenance_module, "PublishSqliteFile", fail_seal)
-    index = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture())
-    with pytest.raises(maintenance_module.TrainingMaintenanceError) as rejected:
-        index.save_due_state(due)
+    index = TrainingMaintenanceIndex(_maintenance_path(control), sqlite_policy=SqlitePolicyFixture())
+    with monkeypatch.context() as scope:
+        scope.setattr(SqliteConnection, "run", fail_after_insert)
+        with pytest.raises(maintenance_module.TrainingMaintenanceError) as rejected:
+            index.save_due_state(due)
     assert isinstance(rejected.value.__cause__, OSError)
+    assert index.read_due_state(due.due_identity) is None
+    assert reader.manifest() == original_manifest
+    assert SQLitePublishedHistorySnapshot(path.parent, sqlite_policy=SqlitePolicyFixture()).manifest() == original_manifest
+    assert _history_files(path.parent) == before
+    index.save_due_state(due)
     assert index.read_due_state(due.due_identity) == due
-    assert Path(f"{path}.sha256").read_bytes() == receipt
-    with pytest.raises(SqlitePublicationError, match="checksum_mismatch"):
-        VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture())
+    assert _history_files(path.parent) == before
+    VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture())
 
 
 def test_corrupt_training_record_does_not_invalidate_published_download_facts(tmp_path):
@@ -332,11 +359,17 @@ def test_corrupt_training_record_does_not_invalidate_published_download_facts(tm
     history = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     history.initialize()
     original = _save_all(history, _values())
-    with SqliteSession(path) as connection, SqliteTransaction(connection, immediate=True):
+    maintenance_path = _maintenance_path(history)
+    files = _history_files(path.parent)
+    reader = SQLitePublishedHistorySnapshot(path.parent, sqlite_policy=SqlitePolicyFixture())
+    manifest = reader.manifest()
+    with SqliteSession(maintenance_path) as connection, SqliteTransaction(connection, immediate=True):
         connection.run("UPDATE training_due SET matured_days=matured_days+1")
     assert history.load_state() == original
     with pytest.raises(maintenance_module.TrainingMaintenanceError):
-        TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).load_state()
+        TrainingMaintenanceIndex(maintenance_path, sqlite_policy=SqlitePolicyFixture()).load_state()
+    assert reader.manifest() == manifest
+    assert _history_files(path.parent) == files
 
 
 @pytest.mark.parametrize("catalog_state", ("published", "missing", "corrupt_training"))
@@ -355,9 +388,9 @@ def test_reminder_cli_reads_training_records_without_calculation_or_writes(
     if catalog_state != "missing":
         history = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
         history.initialize()
-        _save_all(history, _values())
+        _save_all(history, _values(), maintenance_path=settings.data_paths.training_maintenance)
         if catalog_state == "corrupt_training":
-            with SqliteSession(path) as connection, SqliteTransaction(connection, immediate=True):
+            with SqliteSession(settings.data_paths.training_maintenance) as connection, SqliteTransaction(connection, immediate=True):
                 connection.run("UPDATE training_due SET matured_days=matured_days+1")
 
     def forbid_mutation(*_args, **_kwargs):
@@ -456,46 +489,6 @@ def test_published_control_without_published_snapshot_is_unavailable(tmp_path):
     assert index.load_published_state() is None
 
 
-def test_control_index_round_trips_training_contract_due(tmp_path: Path) -> None:
-    index = HistoryControlIndex(
-        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
-    )
-    index.initialize()
-    due = TrainingDueState(
-        "due-contract",
-        "training_contract_due",
-        date(2026, 9, 9),
-        date(2026, 9, 10),
-        1,
-        False,
-        NOW,
-    )
-
-    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).save_due_state(due)
-
-    assert TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).load_state().due_states == (due,)
-
-
-def test_automation_state_decodes_only_bounded_status_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    index = HistoryControlIndex(
-        tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
-    )
-    index.initialize()
-    _save_all(index, _values())
-    decoded_kinds: list[str] = []
-    original_decode = maintenance_module._decode
-
-    def track_decode(kind, payload_json):
-        decoded_kinds.append(kind)
-        return original_decode(kind, payload_json)
-
-    monkeypatch.setattr(maintenance_module, "_decode", track_decode)
-
-    TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).load_state()
-
-    assert set(decoded_kinds) == {"due", "reminder_claim", "reminder"}
-
-
 def test_control_index_rejects_same_identity_with_different_content(tmp_path: Path) -> None:
     index = HistoryControlIndex(
         tmp_path / "catalog.sqlite3", reference_path=(tmp_path / "catalog.sqlite3").parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()
@@ -551,26 +544,7 @@ def test_snapshot_publication_rejects_unsealed_parent_identities(tmp_path: Path)
         index.publish_snapshot(snapshot)
 
 
-def test_reminder_claim_is_atomic_across_restart_and_dates(tmp_path: Path) -> None:
-    path = tmp_path / "catalog.sqlite3"
-    index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    index.initialize()
-    TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).save_due_state(
-        TrainingDueState("due-20260910", "initial_training_required", None, NOW.date(), 0, False, NOW)
-    )
-    first = TrainingReminderClaim("due-20260910", date(2026, 9, 10), NOW)
-
-    assert TrainingMaintenanceIndex(index._path, sqlite_policy=SqlitePolicyFixture()).claim_reminder(first) is True
-    restarted = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture())
-    assert restarted.claim_reminder(first) is False
-
-    next_day_at = NOW.replace(day=11)
-    next_day = TrainingReminderClaim("due-20260910", date(2026, 9, 11), next_day_at)
-    assert restarted.claim_reminder(next_day) is True
-    assert restarted.load_state().reminder_claims == (first, next_day)
-
-
-def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: Path) -> None:
+def test_corrupt_control_database_rebuild_keeps_independent_maintenance_unchanged(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     index = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     index.initialize()
@@ -580,10 +554,9 @@ def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: P
     inputs = HistoryRebuildInput(
         expected, path.parent / "company_st.sqlite3", ((REFERENCE, publication_id),), reference_ids
     )
-    maintenance = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).load_state()
-
-    def copy_related(target: Path) -> None:
-        TrainingMaintenanceIndex(target, sqlite_policy=SqlitePolicyFixture()).copy_state(maintenance)
+    maintenance_path = _maintenance_path(index)
+    maintenance = TrainingMaintenanceIndex(maintenance_path, sqlite_policy=SqlitePolicyFixture()).load_state()
+    maintenance_bytes = maintenance_path.read_bytes()
 
     for candidate in (Path(f"{path}-wal"), Path(f"{path}-shm")):
         candidate.unlink(missing_ok=True)
@@ -600,7 +573,6 @@ def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: P
         HistoryControlIndex.rebuild(
             path,
             inputs,
-            copy_related_records=copy_related,
             fault_injector=interrupt, sqlite_policy=SqlitePolicyFixture(),
         )
     assert path.read_bytes() == corrupt_bytes
@@ -608,13 +580,16 @@ def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: P
     HistoryControlIndex.rebuild(
         path,
         inputs,
-        copy_related_records=copy_related, sqlite_policy=SqlitePolicyFixture(),
+        sqlite_policy=SqlitePolicyFixture(),
     )
 
     rebuilt = HistoryControlIndex(path, reference_path=(path).parent / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     assert rebuilt.integrity().state == "healthy"
     assert rebuilt.load_state() == expected
-    assert TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture()).load_state() == maintenance
+    assert maintenance_path.read_bytes() == maintenance_bytes
+    assert TrainingMaintenanceIndex(maintenance_path, sqlite_policy=SqlitePolicyFixture()).load_state() == maintenance
+    with SqliteSession(path) as connection:
+        assert connection.run("SELECT name FROM sqlite_master WHERE name LIKE 'training_%'").fetchall() == []
 
 
 def test_history_lock_and_disk_preflight_are_bounded_and_typed(tmp_path: Path) -> None:

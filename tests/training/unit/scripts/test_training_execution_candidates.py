@@ -35,7 +35,7 @@ def _request(tmp_path, resources):
         (),
         lambda: False,
         TrainingMemoryBudget(1024),
-        TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
+        TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples", tmp_path / "maintenance.sqlite3"),
         cpu_budget=TrainingCpuBudget(4, resources.cpu),
         fanout_settings=resources.fanout,
         sample_settings=resources.samples,

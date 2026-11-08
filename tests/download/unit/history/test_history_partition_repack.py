@@ -380,6 +380,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
             tmp_path / "data/training/models",
             NOW,
             V3_TRAINING_PROFILE,
+            maintenance_path=tmp_path / "data/training/maintenance.sqlite3",
             expected_training_contract_hash=contract_hash,
             industry_snapshot=industry,
         ), sqlite_policy=SqlitePolicyFixture()

@@ -44,6 +44,10 @@ class DataPaths:
     def samples(self) -> Path:
         return self.root / "training/samples"
 
+    @property
+    def training_maintenance(self) -> Path:
+        return self.root / "training/maintenance.sqlite3"
+
     def recommendation(self, profile: str) -> Path:
         _validate_profile(profile)
         return self.root / "recommendation" / profile

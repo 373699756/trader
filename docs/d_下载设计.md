@@ -673,7 +673,7 @@ HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒�
 
 | 资料 | 发布所有者 | 加载消费者及必要业务读取 |
 | --- | --- | --- |
-| history年库和catalog | `HistoryPricePartition`/`HistoryDirectPrices`、`HistoryControlIndex`及同步收尾；同catalog的训练维护写入由`TrainingMaintenanceIndex`在提交关闭后封存，见e第3.7节 | 快照加载检查catalog，`HistorySnapshotReader`按物理年库复用文件核验；实际价格查询、覆盖/行数及原序号隔离保留 |
+| history年库和catalog | `HistoryPricePartition`/`HistoryDirectPrices`、`HistoryControlIndex`及同步收尾；训练维护记录独立写入`data/training/maintenance.sqlite3`，不写catalog或更新其凭据，见e第3.7节 | 快照加载检查catalog，`HistorySnapshotReader`按物理年库复用文件核验；实际价格查询、覆盖/行数及原序号隔离保留 |
 | market共享短窗 | `SQLiteQfqWindowCache`，同一轮两档写入归入一次文件发布；发布成员切换不删除保留资料 | 所有读入口核验同一物理文件；窗口规划只查日期/来源，manifest只选当前发布成员及其已提交窗口身份，不重复复算价格内容 |
 | company正式事实 | `SQLiteCompanyFactsIndex`；正式预读连接在写入前关闭，避免其最后退出改变已封存WAL | `SQLiteCompanyEvidenceReader`及排除证据读取复用文件核验；事实编译和业务投影仍按需查询，采集库不被当成正式发布 |
 
@@ -699,7 +699,7 @@ history已有完整命令中的年度回写及连接关闭等待证据，不能�
 
 ### 8.1 核对范围、编码与读写所有权
 
-以下以提交 `2f0a8710` 的 DDL、codec 和读写调用为依据，静态核对当前定义；没有打开活动数据库，也不沿用旧稿的 schema 编号或表列总数。路径以 `data_dir=data` 为例，年度分区只列一套结构。训练在同一 catalog 中维护的到期／提醒关系由 [e 第3.7节](e_训练设计.md#37-训练到期和提醒表)定义，推荐冻结和研究关系由 c 第16.7节定义，本章不复制其它业务的表。
+以下以提交 `2f0a8710` 的 DDL、codec 和读写调用为依据，后续仅按实际切换更新定义；没有打开活动数据库，也不沿用旧稿的 schema 编号或表列总数。路径以 `data_dir=data` 为例，年度分区只列一套结构。训练独立维护库中的到期／提醒关系由 [e 第3.7节](e_训练设计.md#37-训练到期和提醒表)定义，不再写入下载catalog；推荐冻结和研究关系由 c 第16.7节定义，本章不复制其它业务的表。
 
 表内按字段类型分组，组内每个名字都是实际列；没有省略为“其它字段”。`?` 表示可空，其余为显式 NOT NULL 或主键隐含非空；普通 rowid 表的 INTEGER PRIMARY KEY 是自动分配的 rowid，不能把 PRAGMA 的 notnull 显示值当成可持久化 NULL。`WR` 表示 WITHOUT ROWID，PK／UQ 分别为主键／唯一约束，均有 SQLite 的相应键索引；“无另建索引”不表示没有这些键索引。除明确列出的 DEFAULT 外没有列默认值。CHECK／FK 的完整表达式以所链接 DDL 为准，下表保留影响解释的范围、关系与编码。
 
@@ -770,7 +770,7 @@ history已有完整命令中的年度回写及连接关闭等待证据，不能�
 | download_inferred_suspension（WR） | code TEXT；trade_date/checked_cutoff D；observation_sequence INTEGER | PK(code,trade_date)；索引 download_inferred_review_due_idx(checked_cutoff,code,trade_date)，有预算的推定停牌复查读取／回写 |
 | download_inferred_cursor | singleton INTEGER；after_code TEXT | PK(singleton=1)；有界复查发现游标，不替代逐日已确认状态 |
 
-catalog 还包含第8.5节共同定义的 price_tencent_check、price_repair_attempt；它们由本库writer的原事务持有，没有独立修复数据库。catalog中训练owner的表沿e第3.7节创建、读写，不纳入下载结构所有权。
+catalog 还包含第8.5节共同定义的 price_tencent_check、price_repair_attempt；它们由本库writer的原事务持有，没有独立修复数据库。训练到期与提醒表只在e第3.7节的独立维护库创建、读写；旧catalog内已有训练表原样保留，不再作为活动维护状态读取或改写。
 
 ### 8.4 年度价格表及共享价格列
 

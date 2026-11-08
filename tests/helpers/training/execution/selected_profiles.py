@@ -112,7 +112,7 @@ def BuildFourProfileRequest(
         tuple(_Progress() for _ in range(4)),
         lambda: False,
         TrainingMemoryBudget(3 * 1024**3),
-        TrainingLocations(history.history_root, directory / "models", directory / "samples"),
+        TrainingLocations(history.history_root, directory / "models", directory / "samples", directory / "maintenance.sqlite3"),
         cpu_budget=TrainingCpuBudget(4 if candidate else 2, settings=cpu_settings),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
         sample_settings=TrainingSampleSettingsFixture(),

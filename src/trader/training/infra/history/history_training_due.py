@@ -68,6 +68,7 @@ class HistoryTrainingDueQuery:
     observed_at: datetime
     profile: TrainedProfileContract
     strategy: Strategy = Strategy.TOMORROW
+    maintenance_path: Path = field(kw_only=True)
     industry_snapshot: CurrentIndustrySnapshot = field(kw_only=True)
     expected_training_contract_hash: str = field(kw_only=True)
     persist: bool = True
@@ -93,7 +94,7 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery, *, sqlite_policy:
     strategy = query.strategy
     expected_training_contract_hash = query.expected_training_contract_hash
     control = HistoryControlIndex(history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
-    maintenance = TrainingMaintenanceIndex(history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
+    maintenance = TrainingMaintenanceIndex(query.maintenance_path, sqlite_policy=sqlite_policy)
     try:
         state = control.load_state()
     except HistoryControlError:
@@ -366,6 +367,7 @@ def EvaluateAllHistoryTrainingDue(
     training_root: Path,
     observed_at: datetime,
     *,
+    maintenance_path: Path,
     load_expectation: Callable[[TrainedProfileContract, datetime], HistoryTrainingExpectation],
     selected_profile: TrainedProfileContract | None = None, sqlite_policy: SqliteIoPolicy,
     persist: bool = True,
@@ -387,6 +389,7 @@ def EvaluateAllHistoryTrainingDue(
                         observed_at,
                         profile,
                         strategy,
+                        maintenance_path=maintenance_path,
                         industry_snapshot=expectation.industry_snapshot,
                         expected_training_contract_hash=expectation.contract_hash(strategy),
                         persist=persist,
@@ -419,6 +422,7 @@ class PublishedTrainingState:
         training_root: Path,
         loaded: tuple[ModelPublicationIdentity, ...],
         *,
+        maintenance_path: Path,
         owned_profile: ScoringProfileId,
         load_expectation: Callable[[TrainedProfileContract, datetime], HistoryTrainingExpectation],
         wall_clock: Callable[[], datetime], sqlite_policy: SqliteIoPolicy,
@@ -426,6 +430,7 @@ class PublishedTrainingState:
         self._sqlite_policy = sqlite_policy
         self._history_root = history_root
         self._training_root = training_root
+        self._maintenance_path = maintenance_path
         self._loaded = loaded
         self._owned_profile = owned_profile
         self._load_expectation = load_expectation
@@ -488,6 +493,7 @@ class PublishedTrainingState:
                         observed_at,
                         profile,
                         strategy,
+                        maintenance_path=self._maintenance_path,
                         industry_snapshot=expectation.industry_snapshot,
                         expected_training_contract_hash=expectation.contract_hash(strategy),
                         persist=False,
@@ -504,7 +510,7 @@ class PublishedTrainingState:
                         baseline_industry_hash=baseline_industry_hash,
                     )
                     try:
-                        due = TrainingMaintenanceIndex(self._history_root / "catalog.sqlite3", sqlite_policy=self._sqlite_policy).read_due_state(
+                        due = TrainingMaintenanceIndex(self._maintenance_path, sqlite_policy=self._sqlite_policy).read_due_state(
                             identity, latest=True
                         )
                     except TrainingMaintenanceError:

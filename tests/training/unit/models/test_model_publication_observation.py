@@ -220,6 +220,7 @@ def test_model_observation_updates_restart_hint_and_preserves_loaded_identity_on
     loaded = LoadScoringProfile("v3", training_root=tmp_path).publications
     state = PublishedTrainingState(
         tmp_path / "history", tmp_path, loaded, owned_profile="v3",
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         load_expectation=HistoryTrainingExpectationFixture,
         wall_clock=lambda: datetime(2026, 11, 8, tzinfo=ZoneInfo("Asia/Shanghai")),
         sqlite_policy=SqlitePolicyFixture(),

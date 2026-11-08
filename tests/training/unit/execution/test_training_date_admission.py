@@ -86,7 +86,7 @@ def test_all_four_profiles_reject_impossible_listing_dates_before_shared_price_s
     request = SelectedTrainingRequest(
         LoadRuntimeSettings(Path(__file__).resolve().parents[4] / "config/runtime.json"),
         ("v1", "v2", "v3", "v5"), tuple(_Progress() for _ in range(4)), lambda: False,
-        TrainingMemoryBudget(1024**2), TrainingLocations(history_root, tmp_path / "models", tmp_path / "samples"),
+        TrainingMemoryBudget(1024**2), TrainingLocations(history_root, tmp_path / "models", tmp_path / "samples", tmp_path / "maintenance.sqlite3"),
         cpu_budget=TrainingCpuBudget(2, settings=resources.cpu), fanout_settings=resources.fanout,
         sample_settings=resources.samples,
     )
