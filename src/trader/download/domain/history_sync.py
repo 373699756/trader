@@ -245,6 +245,49 @@ class HistoryStEligibilitySummary:
 
 
 @dataclass(frozen=True)
+class HistoryStCheckFailure:
+    code: str
+    name: str
+    reason: str
+    diagnostic: str
+    attempts: int
+    maximum_attempts: int
+    elapsed_seconds: float
+    timeout_seconds: float
+
+    def __post_init__(self) -> None:
+        if (
+            len(self.code) != 6 or not self.code.isdigit() or not self.reason
+            or type(self.attempts) is not int or type(self.maximum_attempts) is not int
+            or not 0 <= self.attempts <= self.maximum_attempts or self.maximum_attempts < 1
+            or not math.isfinite(self.elapsed_seconds) or self.elapsed_seconds < 0
+            or not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0
+        ):
+            raise ValueError("history_st_check_failure_invalid")
+
+
+@dataclass(frozen=True)
+class HistoryStCheckProgress:
+    processed: int
+    persisted: int
+    total: int
+    summary: HistoryStEligibilitySummary | None = None
+    failures: tuple[HistoryStCheckFailure, ...] = ()
+    cache_only: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            any(type(value) is not int for value in (self.processed, self.persisted, self.total))
+            or not 0 <= self.persisted <= self.processed <= self.total
+            or type(self.cache_only) is not bool
+            or self.summary is not None and (
+                self.processed != self.total or self.persisted != self.total or self.summary.total != self.total
+            )
+        ):
+            raise ValueError("history_st_check_progress_invalid")
+
+
+@dataclass(frozen=True)
 class HistoryPipelineProgress:
     downloaded_codes: int
     queued_codes: int
@@ -451,6 +494,8 @@ __all__ = [
     "HistorySyncProgressStage",
     "HistoryGapSummary",
     "HistoryStEligibilitySummary",
+    "HistoryStCheckFailure",
+    "HistoryStCheckProgress",
     "HistoryTencentSummary",
     "HistoryTwoStageSupplier",
     "HistoryPipelineProgress",

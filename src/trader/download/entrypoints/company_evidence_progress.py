@@ -20,7 +20,7 @@ from trader.download.domain.company_evidence import (
     CompanyOperationKind, CompanyOperationProgress, CompanyPublicationProgress, CompanyStockProgress,
     DisclosurePartition, EvidenceSyncProgress,
 )
-from trader.download.domain.history_sync import HistoryStEligibilitySummary
+from trader.download.domain.history_sync import HistoryStCheckFailure, HistoryStCheckProgress
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.download_failure import DownloadFailureObservation
 from trader.download.entrypoints.company_result_feedback import CompanyResultFeedback
@@ -28,23 +28,50 @@ from trader.download.entrypoints.company_result_feedback import CompanyResultFee
 
 def ReportStPreparation(
     progress: Callable[[EvidenceSyncProgress], None] | None,
-    completed: int,
-    total: int,
-    summary: HistoryStEligibilitySummary | None,
+    observation: HistoryStCheckProgress,
 ) -> None:
     if progress is not None:
         progress(
             EvidenceSyncProgress(
                 "st_eligibility",
-                completed,
-                total - completed,
+                observation.processed,
+                observation.total - observation.processed,
                 0,
                 0,
                 0,
-                f"unknown:{summary.unknown}" if summary and summary.unknown else "",
-                sources=("local",),
+                status="complete" if observation.summary is not None else "running",
+                sources=("sina_company_name_history",),
+                st_check=observation,
             )
         )
+
+
+def _st_failure_message(failure: HistoryStCheckFailure) -> ProgressMessage:
+    return ProgressMessage(tuple(ProgressField(value, ProgressLevel.WARNING) for value in (
+        "来源 新浪", f"股票 {failure.code} {ShortProgressText(failure.name, 20)}",
+        f"原因码 {failure.reason}", f"诊断 {failure.diagnostic}",
+        f"尝试 {failure.attempts}/{failure.maximum_attempts}",
+        f"核验累计 {failure.elapsed_seconds:.3f}秒", f"单次超时上限 {failure.timeout_seconds:.3f}秒",
+        "结果 待核，保守排除unknown", "后续 本股不进入本轮同步，下次ST核验重查",
+    )), task=ProgressTask("参考", "ST核验失败", "ST核验失败"), state="失败", finished=True,
+       stock_failure_code=failure.code, immediate=True, heartbeat=False)
+
+
+def _st_progress_message(observation: HistoryStCheckProgress) -> ProgressMessage:
+    summary = observation.summary
+    warning = summary is not None and summary.unknown > 0
+    source = "本地缓存（原来源 新浪）" if observation.cache_only else "新浪"
+    fields = [f"已核验 {observation.processed}/{observation.total}股", f"已保存 {observation.persisted}/{observation.total}股"]
+    if summary is not None:
+        fields.extend((f"通过 {summary.clear}股", f"曾ST排除 {summary.ever_st}股", f"待核排除 {summary.unknown}股",
+                       "结果 核验结束，存在待核排除" if warning else "结果 核验结束"))
+    else:
+        fields.append("结果 核验中")
+    fields.append(f"来源 {source}")
+    return ProgressMessage(tuple(ProgressField(value, ProgressLevel.WARNING if warning else ProgressLevel.NORMAL) for value in fields),
+                           task=ProgressTask("参考", "ST资格", "ST资格"),
+                           state="完成" if summary is not None else "处理中", finished=summary is not None,
+                           immediate=True)
 
 
 def ReportCompanyStock(
@@ -238,6 +265,9 @@ class CompanyEvidenceProgress:
             facts = self._latest.get("facts")
             if facts is not None and facts.status == "running":
                 self._latest["facts"] = replace(facts, status="complete")
+        if progress.component == "st_eligibility" and progress.st_check is not None:
+            return (*(_st_failure_message(failure) for failure in progress.st_check.failures),
+                    _st_progress_message(progress.st_check))
         if progress.component in {"st_eligibility", "calendar"}:
             return (self._message(progress, immediate=True),)
         if progress.component == "resume":

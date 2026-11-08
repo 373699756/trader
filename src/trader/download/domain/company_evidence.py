@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from trader.download.domain.company_annual_income import CompanyAnnualIncome
     from trader.download.domain.download_failure import DownloadFailureObservation
+    from trader.download.domain.history_sync import HistoryStCheckProgress
 
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.prepared_reference import PreparedReference
@@ -727,6 +728,7 @@ class EvidenceSyncProgress:
     recovery: CompanyRecoveryDecision | None = None
     diagnostic: DownloadFailureObservation | None = None
     run_id: str = ""
+    st_check: HistoryStCheckProgress | None = None
 
     def __post_init__(self) -> None:
         markets = tuple(market for market, _dates in self.market_dates)
@@ -735,6 +737,7 @@ class EvidenceSyncProgress:
             or len(set(markets)) != len(markets)
             or any(market not in {"sse", "szse", "bse"} for market in markets)
             or self.structured is not None and self.structured.query.component != self.component
+            or self.st_check is not None and self.component != "st_eligibility"
             or self.existing_published_codes is not None and (
                 self.component not in {"resume", "complete"} or type(self.existing_published_codes) is not int
                 or self.existing_published_codes < 0
