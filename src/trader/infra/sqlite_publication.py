@@ -47,6 +47,7 @@ class VerifiedSqlitePublication:
     fingerprint: SqlitePublicationFingerprint
     database_header: bytes
     wal_header: bytes | None
+    sqlite_readability_verified: bool = True
 
 
 @dataclass(frozen=True)
@@ -121,16 +122,19 @@ def _fingerprint(
     path: Path,
     check: Callable[[], None] | None,
     sqlite_policy: SqliteIoPolicy,
+    *,
+    file_only: bool = False,
 ) -> PreparedSqlitePublication:
     if check is not None:
         check()
-    try:
-        with closing(OpenSqliteConnection(
-            path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy,
-        )) as connection:
-            connection.run("SELECT COUNT(*) FROM sqlite_master").require_one()
-    except sqlite3.DatabaseError as exc:
-        raise SqlitePublicationError("sqlite_publication_database_unreadable") from exc
+    if not file_only:
+        try:
+            with closing(OpenSqliteConnection(
+                path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy,
+            )) as connection:
+                connection.run("SELECT COUNT(*) FROM sqlite_master").require_one()
+        except sqlite3.DatabaseError as exc:
+            raise SqlitePublicationError("sqlite_publication_database_unreadable") from exc
     before = _stamp(path)
     if before is None:
         raise AssertionError("required SQLite file stamp missing")
@@ -236,8 +240,9 @@ def VerifySqliteFile(
     sqlite_policy: SqliteIoPolicy,
     previous: VerifiedSqlitePublication | None = None,
     check: Callable[[], None] | None = None,
+    file_only: bool = False,
 ) -> VerifiedSqlitePublication:
-    """Verify a published file on load, reusing an unchanged caller-owned verification."""
+    """Verify original receipts/headers/full SHA; file_only leaves SQLite readability to its caller."""
     if check is not None:
         check()
     database = _stamp(path)
@@ -248,15 +253,17 @@ def VerifySqliteFile(
         raise AssertionError("required publication file stamp missing")
     if previous is not None and (
         previous.database == database and previous.wal == wal and previous.receipt == receipt
+        and (file_only or previous.sqlite_readability_verified)
         and _same_headers(path, previous.database_header, previous.wal_header)
     ):
         return previous
     expected = _read_receipt(receipt_path)
-    actual = _fingerprint(path, check, sqlite_policy)
+    actual = _fingerprint(path, check, sqlite_policy, file_only=file_only)
     if expected != actual.fingerprint or receipt != _stamp(receipt_path):
         raise SqlitePublicationError("sqlite_publication_checksum_mismatch")
     return VerifiedSqlitePublication(
-        actual.database, actual.wal, receipt, actual.fingerprint, actual.database_header, actual.wal_header
+        actual.database, actual.wal, receipt, actual.fingerprint, actual.database_header, actual.wal_header,
+        sqlite_readability_verified=not file_only,
     )
 
 

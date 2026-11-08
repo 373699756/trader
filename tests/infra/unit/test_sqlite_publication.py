@@ -128,3 +128,43 @@ def test_non_sqlite_replacement_reports_publication_error_with_cause(tmp_path):
         module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), previous=previous)
 
     assert isinstance(raised.value.__cause__, sqlite3.DatabaseError)
+
+
+def test_file_only_verification_reuses_receipt_owner_without_opening_sqlite(tmp_path, monkeypatch):
+    path = tmp_path / "prices.sqlite3"
+    _create(path)
+    published = module.PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
+    before = path.read_bytes()
+
+    def forbidden(*_arguments, **_keywords):
+        pytest.fail("file-only verification must not open SQLite or create WAL/SHM")
+
+    monkeypatch.setattr(module, "OpenSqliteConnection", forbidden)
+    verified = module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), file_only=True)
+    assert verified.fingerprint == published and verified.sqlite_readability_verified is False
+    assert path.read_bytes() == before
+    receipt = Path(str(path) + ".sha256")
+    payload = json.loads(receipt.read_text())
+    payload["database_sha256"] = "0" * 64
+    receipt.write_text(json.dumps(payload))
+    with pytest.raises(module.SqlitePublicationError, match="checksum_mismatch"):
+        module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), file_only=True)
+
+
+def test_file_only_memo_cannot_skip_default_sqlite_readability_check(tmp_path, monkeypatch):
+    path = tmp_path / "prices.sqlite3"
+    _create(path)
+    module.PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
+    previous = module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), file_only=True)
+    original = module.OpenSqliteConnection
+    calls = 0
+
+    def tracked(*arguments, **keywords):
+        nonlocal calls
+        calls += 1
+        return original(*arguments, **keywords)
+
+    monkeypatch.setattr(module, "OpenSqliteConnection", tracked)
+    verified = module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), previous=previous)
+    assert calls == 1 and verified.sqlite_readability_verified is True
+    assert verified.fingerprint == previous.fingerprint

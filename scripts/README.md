@@ -14,6 +14,22 @@
 
 公司资料重下后的旧风险对照沿同一`download/company/coverage`动作，显式组合`--company-database-audit --company-risk-baseline /external/baseline-risks.json`，并用`--company-collection-database`、`--company-evidence-database`选定采集库和正式库。基线只读，上限4MiB、10000条风险及50000条证据；比较原风险业务字段和来源证据集合，忽略自增ID，分别报告精确保留、缺失及变化待审。比较与原数据库审计共用总期限，公开报告只含身份、变更字段名和证据保全状态，不含案件正文或原字段值。缺失不等于解除，快照变化或无正式发布不能签稳定完成；该对照不证明供应商原值、其它附表或全市场资料正确。此参数不能与隔离回放目录组合，也不会启动同步或初始化数据库。
 
+真实价格字段与逐股日期深扫沿既有`download/history/publication`和`download/history/qfq`，显式加`--price-field-audit`；不加时保留原快审语义。两者只读数据库，分别报告实际选中行数、core NULL／非法类型／非有限数值／价格范围／OHLC次序／负量额、合法qfq辅助空值及raw原始辅助字段缺失。历史严格按正式快照各月的实际sequence选择观察，年度观察只提取一次到最多320万身份的内存SQLite索引，再顺序读年度修订，不逐行查询磁盘观察索引。manifest行数单列，不当作实际扫描数量；不会反推原始前收或把缺失涨幅填0。逐股日期按已发布本地参考的上市区间和交易日历核对，确认非交易、来源推定及未解释缺日分列；推定不作为明确停牌豁免。原始供应商报文和逐条修订hash未重算的界限在报告中保留，不以文件SHA正确代替字段正确。
+
+```bash
+.venv/bin/python3 scripts/tools.py --business download --module history --action publication \
+  --history-root /external/frozen-data/market/history --price-field-audit \
+  --audit-budget-seconds 3500 --command-timeout-seconds 3600 \
+  --audit-checkpoint /external/history-audit-checkpoint.json --report /external/history-fields.json
+.venv/bin/python3 scripts/tools.py --business download --module history --action qfq \
+  --qfq-database /external/frozen-data/market/daily_window.sqlite3 --price-field-audit \
+  --runtime-config /external/frozen/config/runtime.json \
+  --audit-budget-seconds 3500 --command-timeout-seconds 3600 \
+  --audit-checkpoint /external/market-audit-checkpoint.json --report /external/market-fields.json
+```
+
+`--audit-budget-seconds`覆盖SQL、SHA、解析及本地循环，总期限须比公共命令至少少10秒；省略时自动保留这10秒。超时／取消返回非0和`complete=false`，保留已完成单元与在途计数，不把未访问日期或上次已完成年度签成全库通过。公开JSON仍使用原报告schema身份，`summary.field_audit`新增分段证据，SHA、字段及SQLite完整性分别报告。可选`--audit-checkpoint`只允许显式仓库外路径，与报告、输入数据库、WAL、凭据及配置分离；源码、配置、正式发布身份及全部实际源文件／WAL摘要完全相同才复用完整年度或档位，空WAL存在与不存在也分别核对。输入变化明确拒绝旧检查点，不迁移或清空源资料；检查点原子写入，部分单元下次重扫，复用不免除本轮源指纹核验。
+
 当前行业的批量协议核验沿同一`download/history/industry`动作，显式指定2–50个有序、不重复的六位代码、共同日期窗及全新仓库外目录。例如：
 
 ```bash
@@ -27,6 +43,8 @@
 BaoStock慢补缺沿既有`download/history/concurrency`诊断，不另建临时下载器。显式选择`--baostock-serial-only --baostock-sizes 1 --codes 000708 --baostock-sessions 2000`，先取交易日历，再对精确2000交易日分别计首响应、读取、尾部空页和日期一致性校验；`network_ms`不含节流，读取总耗时包含翻页，不能再次相加。加`--baostock-production`则使用当前`config/download.json`和真实供应商子进程／Gateway，核对完整配对及每日事实，命令中的SDK超时／候选间隔不覆盖生产配置；该模式只准一个样本规模、一轮及一个间隔。两种模式均只输出白名单计时、行数及安全供应商错误编号，不保存价格载荷或打开活动历史库；生产模式的证券上市日期是假定在窗口前的显式诊断元数据，不能签真实资格或全市场性能。
 
 补缺落库的Linux分段诊断沿`download/history/repair`，显式选择`--history-root`、`--repair-profile-year 2026 --repair-profile-code 601699`及全新仓库外`--database-probe-directory`。它要求该股已有完整、未发布的恢复候选，源库须保持静止；仅只读备份所选年度完整文件，在副本调用现行替换方法，零网络，报告筛变／写入／提交／关闭、实际变更行数与I/O。年度文件上限700MiB且先核空间，源catalog／年度库及WAL的身份、大小、修改时间须前后一致，源变化明确失败。无目标年或零变更为empty，不签有效性能；备份不计业务耗时，嵌套阶段不可相加，复制后的缓存未经控制，不能冒充冷HDD基线。默认repair审计不加载此可选计量依赖。
+
+repair可用`--repair-codes 300118 600001`显式选择1至5个不重复六位样本，仍必须提供仓库外`--database-probe-directory`；只向该动作的隔离worker传递`--codes`，不改变活动库待补库存或自动发起其它动作。实际补采、旧发布保护及复跑结果按该worker真实报告验收，参数接通不表示真实修复已完成。
 
 荐股公共原始因子复用候选只在显式连续回放中选择，默认`baseline`，不修改生产服务。D在冻结版本上使用相同配置、模型、股票数和tick数分别运行基线及下列候选；删去`--performance-factor-candidate raw_factor_reuse`即为基线。它使用现有共享`quote_factor_inputs`容量和`feature_batches`字节预算，合并完全相同的报价、日线、历史摘要、horizons和基础配置；命中后返回独立可变副本，风险/证据/分钟及模型组装仍走原流程。非有限输入不写此候选缓存，交原计算处理，原异常也继续传播。`raw_factor_computations`仅统计可规范序列化输入的候选原计算完成次数（包括缓存拒写），基线为null；不把缓存命中计数当作省下的函数调用。`feature_group_max_bytes`包含基础、候选和横截面的整个特征组，仍需另看实际RSS。
 

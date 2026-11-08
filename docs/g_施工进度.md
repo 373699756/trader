@@ -14,7 +14,15 @@ B实际改动及验证：history将辅助日期纳入原任务，普通pending�
 
 B集中定向216项通过（`/tmp/trader-365-B-integration-20261108.xml`）；独立Review再发现并修复market部分候选遮蔽正式已知字段，最终market文件22项通过（`/tmp/trader-market-fill-final-20261108.xml`），组间重叠不相加。history恢复／跨年／取消及scope定向15项、早期核心82项通过，受影响产品Ruff E9/F/B/UP和mypy、bash语法及完整diff Review通过；未运行格式工具，PowerShell仅静态Review。既有market辅助组127通过／1项旧heartbeat文案断言失败，已在HEAD复现，不签整组通过；报告`/tmp/trader-market-fill-regression-20261108.xml`。
 
-未完成项：C诊断Review收尾、D真实来源和明确股票窗口补采验收仍在本阶段接续。隔离真实300118已初验4处辅助待补归零、旧快照不变及二次零请求，正式验收另记后续实际报告。当前资料不应因可补字段或推定状态删除重下；不兼容／损坏须另据具体证据处理，不把来源不可取得误称为代码已补齐。
+C实际改动：沿原tools的publication／qfq动作新增显式`--price-field-audit`、总预算及仓库外检查点。按实际月sequence选正式观察，年度一次提取身份到有界内存索引，再顺序读实际修订；字段、逐股日历／上市区间、确认／推定／未解释状态、SHA、SQLite完整性及market绑定摘要分别报告。整月缺partition、窗内额外闭市日、部分扫描、输入漂移均不签通过；无／空WAL用immutable读取，读取发布前、SHA前后和扫描后核对DB／WAL身份。原`sqlite_publication`唯一owner提供显式file-only校验，仍复用原header／stamp／SHA／receipt；默认生产可读性验证及缓存级别不放宽，不复制凭据codec。报告／检查点在任何业务参数错误前排除源目录，恢复须源码、配置、正式身份及实际文件指纹全同。repair动作接通1至5股隔离样本，源核心缺口计数只含样本，冲突profile参数提前拒绝。
+
+C验证：前期集中72项通过（`/tmp/trader-price-field-audit-final-review-20261108.xml`）；metadata漂移及file-only收尾后，完整审计文件与publication原回归62项全部通过（`/tmp/trader-price-field-metadata-guard-20261108.xml`），组间重叠不累加。D后端样本隔离／字段补齐／父发布保护／二次零请求8项通过（`/tmp/trader-price-repair-audit-scope-20261108.xml`）。相关Ruff E9/F/B/UP、6源码mypy、完整差集及独立Review通过；未运行格式工具或性能作业。
+
+D阶段性真实证据：原history／market互斥锁下复制45文件至`.runtime/trader/365-before-bounded-fill-20261108`，11个数据库及WAL的完整备份SHA／大小与原发布凭据全部匹配，未清库。隔离真实300118／2000会话补采4处辅助待补归零，旧快照不变、再次零供应商股票窗口请求，报告`/tmp/trader-365-isolated-repair-01.json`。正常`run.sh sync history --fill --repair-codes 300118`已启动活动资料有界验收，目前仍在HDD本地事实核对，尚无业务完成回执，不以心跳签通过。
+
+真实market深扫及同身份恢复已完成：两档均4402股，V2为251会话／1092971行、V3为61会话／267716行；合计1360687行，核心非法值、意外日期、未解释缺日及配对身份不一致均0，SHA、SQLite完整性、字段及绑定摘要全部通过。仍有推定非交易1574档位股日及原始辅助NULL2721374值，整体degraded；两档重叠，不当作唯一物理记录数相加。报告`/tmp/trader-365-market-before-fields-20261108.json`；原检查点再次实际核源后复用2个完成单元（`/tmp/trader-365-market-resume-fields-20261108.json`），零来源请求／业务写入。这不签供应商原始报文逐值正确或原始专属字段全部已补齐。
+
+未完成项：D活动history／market明确股票补采终态、父发布及总体保护复核和history深扫在本阶段继续。当前资料不应因可补字段或推定状态删除重下；不兼容／损坏须另据具体证据处理，不把来源不可取得误称为代码已补齐。362的68项风险停止后最新对照为24项精确保留、44项待核、0项已识别变化；company由用户手动接续，本批不重启或关闭362。
 
 ### 收益可交易性未知值修复（364，2026-11-08，completed）
 

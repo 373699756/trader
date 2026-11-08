@@ -34,6 +34,10 @@ class HistoryOptions:
     database_probe_directory: Path | None = None
     repair_profile_year: int | None = None
     repair_profile_code: str | None = None
+    repair_codes: tuple[str, ...] = ()
+    price_field_audit: bool = False
+    audit_checkpoint: Path | None = None
+    audit_budget_seconds: float | None = None
     sqlite_page_sample_count: int = 1
     sqlite_query_rounds: int = 3
     sqlite_revision_write_sample_count: int = 512

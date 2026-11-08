@@ -21,7 +21,7 @@ from typing import cast
 from unittest.mock import patch
 
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockSecurity
-from trader.download.domain.history_price_qualification import QualifyHistoryPairs, QualifyReplacementWindow
+from trader.download.domain.history_price_qualification import NeedsPriceSupplement, QualifyHistoryPairs, QualifyReplacementWindow
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.price_review import PriceReviewRequestBudget
@@ -94,21 +94,32 @@ def _require_isolated_work_paths(
                     raise ValueError("audit_work_root_contains_alias")
 
 
-def _audit(root: Path, work_root: Path | None = None, *, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
+def _audit(
+    root: Path, work_root: Path | None = None, *, sqlite_policy: SqliteIoPolicy,
+    selected_codes: tuple[str, ...] | None = None,
+) -> dict[str, object]:
     control = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
     state = control.load_published_state()
     if state is None:
         raise ValueError("audit_requires_published_history")
     gaps = HistoryDownloadIndex(root / "catalog.sqlite3", sqlite_policy=sqlite_policy).gaps_by_code()
-    codes = frozenset(gaps)
+    codes = frozenset(gaps) if selected_codes is None else frozenset(selected_codes)
+    if selected_codes is not None and (
+        not 1 <= len(selected_codes) <= 5 or len(codes) != len(selected_codes)
+        or any(re.fullmatch(r"[0-9]{6}", code) is None for code in selected_codes)
+    ):
+        raise ValueError("repair_audit_codes_invalid")
     if len(codes) > 50:
         raise ValueError("audit_problem_stock_limit_50")
     reference = control.read_universe_reference(state.universe.content_hash)
     universe = tuple(item for item in reference.eligible_universe if item.code in codes)
+    if selected_codes is not None and codes != frozenset(item.code for item in universe):
+        raise ValueError("repair_audit_code_outside_published_universe")
     snapshot = state.snapshot
     source = HistoryDirectPrices(root, snapshot.sequence, snapshot, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=sqlite_policy)
     dates = state.calendar.open_dates
     windows = tuple(PublishedHistoryWindow(item.code, tuple(ProjectHistoryCell(cell) for cell in source.read(item.code, dates))) for item in universe)
+    supplements_before = sum(NeedsPriceSupplement(cell) for window in windows for cell in window.cells)
     if not universe:
         return {"status": "passed", "summary": {"problem_stocks": 0, "network_requests": 0}}
     historical = ReadBoundHistoryReference(root, state.source.supplier_contract, sqlite_policy=sqlite_policy)
@@ -164,12 +175,36 @@ def _audit(root: Path, work_root: Path | None = None, *, sqlite_policy: SqliteIo
             old = HistoryDirectPrices(configuration.history_root, before.sequence, before, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=sqlite_policy)
             unchanged = all(tuple(ProjectHistoryCell(cell) for cell in old.read(window.code, tuple(cell.trade_date for cell in window.cells))) == window.cells for window in windows)
             remaining = HistoryDownloadIndex(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy).gaps_by_code()
+            latest = HistoryControlIndex(
+                configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy,
+            ).load_published_state()
+            if latest is None:
+                raise RuntimeError("audit_repair_publication_missing")
+            current = HistoryDirectPrices(
+                configuration.history_root, latest.snapshot.sequence, latest.snapshot,
+                HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=sqlite_policy,
+            )
+            supplements_after = sum(
+                NeedsPriceSupplement(ProjectHistoryCell(cell))
+                for security in universe for cell in current.read(security.code, dates)
+            )
+            calls_before_repeat = supplier.calls
+            repeated = ExecuteHistorySync(
+                configuration, supplier, clock=lambda: observed, sqlite_policy=sqlite_policy,
+                resources=HistorySyncResources(repair_only=True),
+            ) if not repaired.needs_retry else None
+            repeat_requests = supplier.calls - calls_before_repeat
             attempts = []
             with SqliteSession(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy) as connection:
                 attempts = [dict(zip(("code", "state", "reason", "days"), tuple(row), strict=True)) for row in connection.run("SELECT code,state,reason,COUNT(*) FROM price_repair_attempt GROUP BY code,state,reason ORDER BY code")]
             return {
-                "status": "passed" if repaired.state in ("completed", "already_current") and not remaining and unchanged else "degraded",
-                "summary": {"problem_stocks": len(universe), "sessions": len(dates), "gap_days_before": sum(map(len, gaps.values())), "gap_days_after": sum(map(len, remaining.values())), "supplier_stock_requests": supplier.calls, "state": repaired.state, "reason": repaired.reason, "old_snapshot_unchanged": unchanged, "repaired_stocks": len(HistoryPriceRepair(configuration.history_root, sqlite_policy=sqlite_policy).baostock_codes()), "attempts": attempts, "active_data_written": False},
+                "status": "passed" if repaired.state in ("completed", "already_current") and not remaining
+                and not supplements_after and unchanged and repeated is not None and not repeated.needs_retry
+                and repeat_requests == 0 else "degraded",
+                "summary": {"problem_stocks": len(universe), "sessions": len(dates), "gap_days_before": sum(len(gaps.get(code, ())) for code in codes), "gap_days_after": sum(map(len, remaining.values())), "supplier_stock_requests": supplier.calls, "state": repaired.state, "reason": repaired.reason, "old_snapshot_unchanged": unchanged, "repaired_stocks": len(HistoryPriceRepair(configuration.history_root, sqlite_policy=sqlite_policy).baostock_codes()), "attempts": attempts, "active_data_written": False,
+                            "supplement_cells_before": supplements_before, "supplement_cells_after": supplements_after,
+                            "repeat_supplier_stock_requests": repeat_requests if repeated is not None else None,
+                            "repeat_state": repeated.state if repeated is not None else None},
             }
 
 
@@ -292,7 +327,10 @@ def Main() -> int:
     parser.add_argument("--work-root", type=Path)
     parser.add_argument("--repair-profile-year", type=int)
     parser.add_argument("--repair-profile-code")
+    parser.add_argument("--codes", nargs="+")
     args = parser.parse_args()
+    if args.codes is not None and (args.repair_profile_year is not None or args.repair_profile_code is not None):
+        parser.error("--codes cannot be combined with --repair-profile-year or --repair-profile-code")
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
@@ -312,5 +350,10 @@ def Main() -> int:
         source = args.history_root.resolve()
         if work.is_relative_to(source) or source.is_relative_to(work):
             parser.error("work root must not overlap source history")
-    emit_report({"schema_version": "price-repair-audit", **_audit(args.history_root, args.work_root, sqlite_policy=sqlite_policy)})
+    if args.codes is not None and args.work_root is None:
+        parser.error("explicit repair codes require an external work root")
+    emit_report({"schema_version": "price-repair-audit", **_audit(
+        args.history_root, args.work_root, sqlite_policy=sqlite_policy,
+        selected_codes=tuple(args.codes) if args.codes is not None else None,
+    )})
     return 0

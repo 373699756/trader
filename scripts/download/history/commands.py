@@ -166,6 +166,7 @@ def BuildCommands(
             (
                 python_executable, "-m", "scripts.download.history.history_publication_audit",
                 "--history-root", str(options.history_root), "--runtime-config", str(options.runtime_config),
+                *_field_audit_arguments(options),
             ),
             common_timeout,
         ),)
@@ -190,9 +191,9 @@ def BuildCommands(
     elif options.action_identity == "price-repair-audit":
         commands = (DiagnosticCommand(
             "price_repair_audit",
-            (python_executable, "-m", "scripts.download.history.price_repair_audit", "--history-root", str(options.history_root), *(("--work-root", str(options.database_probe_directory)) if options.database_probe_directory is not None else ()))
-            + (("--repair-profile-year", str(options.repair_profile_year), "--repair-profile-code", str(options.repair_profile_code),
-                "--runtime-config", str(options.runtime_config))
+            (python_executable, "-m", "scripts.download.history.price_repair_audit", "--history-root", str(options.history_root), "--runtime-config", str(options.runtime_config), *(("--work-root", str(options.database_probe_directory)) if options.database_probe_directory is not None else ()))
+            + (("--codes", *options.repair_codes) if options.repair_codes else ())
+            + (("--repair-profile-year", str(options.repair_profile_year), "--repair-profile-code", str(options.repair_profile_code))
                if options.repair_profile_year is not None else ()),
             common_timeout,
         ),)
@@ -288,6 +289,7 @@ def BuildCommands(
                 "--runtime-config", str(options.runtime_config),
                 "--database",
                 str(options.qfq_database),
+                *_field_audit_arguments(options),
             ),
             common_timeout,
         ),)
@@ -303,7 +305,7 @@ def BuildCommands(
         raise ValueError("unsupported download/history action")
     if options.action_identity in {
         "baostock-qfq-shadow", "tencent-download", "tencent-history-window",
-        "history-source-compare", "price-repair-audit", "history-space",
+        "history-source-compare", "history-space",
         "download-performance",
     }:
         commands = tuple(replace(
@@ -315,6 +317,16 @@ def BuildCommands(
             prepare=partial(PrepareDatabaseCommand, options.database_probe_directory, options.runtime_config, command.name),
         ) for command in commands)
     return tuple(replace(command, argv=WorkerArguments(command.argv)) for command in commands)
+
+
+def _field_audit_arguments(options: HistoryOptions) -> tuple[str, ...]:
+    if not options.price_field_audit:
+        return ()
+    budget = options.audit_budget_seconds if options.audit_budget_seconds is not None else options.command_timeout_seconds - 10
+    return (
+        "--price-field-audit", "--audit-budget-seconds", str(budget),
+        *(("--audit-checkpoint", str(options.audit_checkpoint)) if options.audit_checkpoint is not None else ()),
+    )
 
 
 def _history_command(options: HistoryOptions, python_executable: str) -> tuple[str, ...]:

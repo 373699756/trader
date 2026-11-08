@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import sqlite3
+import time
 from collections.abc import Sequence
+from contextlib import closing
 from datetime import date
 from pathlib import Path
 
@@ -45,6 +48,10 @@ def BuildParser(
         database_probe_directory=None,
         repair_profile_year=None,
         repair_profile_code=None,
+        repair_codes=(),
+        price_field_audit=False,
+        audit_checkpoint=None,
+        audit_budget_seconds=None,
         sqlite_page_sample_count=1,
         sqlite_query_rounds=3,
         sqlite_revision_write_sample_count=512,
@@ -73,6 +80,7 @@ def BuildParser(
         cninfo_cache_evidence=None,
         cninfo_cache_codes=(),
         cninfo_cache_candidate="baseline",
+        report="-",
     )
     if action_identity in ("history","baostock-concurrency","tencent-download","tencent-history-window","history-source-compare",):
         parser.add_argument('--codes', nargs='+', default=('600519', '300750', '688981'), help='one to 50 A-share codes, or up to 100 for baostock-concurrency')
@@ -109,6 +117,7 @@ def BuildParser(
     if action_identity in ("history-sqlite","price-repair-audit","history-write","download-performance",):
         parser.add_argument('--database-probe-directory', type=Path, help='new external directory for SQLite benchmarks')
     if action_identity == "price-repair-audit":
+        parser.add_argument('--repair-codes', nargs='+', help='explicit 1..5 unique six-digit repair sample codes; external probe directory required')
         parser.add_argument('--repair-profile-year', type=int, help='profile one annual replacement on a complete isolated copy; no network')
         parser.add_argument('--repair-profile-code', help='six-digit code with an unpublished repair journal candidate')
     if action_identity in ("history-sqlite",):
@@ -135,6 +144,10 @@ def BuildParser(
         parser.add_argument('--history-publication-profile', action='store_true', help='history-write: profile isolated publication; optional history-root replays published files, no network')
     if action_identity in ("qfq-sqlite","download-failures",):
         parser.add_argument('--qfq-database', type=Path)
+    if action_identity in ("history-publication", "qfq-sqlite"):
+        parser.add_argument('--price-field-audit', action='store_true', help='explicit full published field and per-stock date scan, no network or source writes')
+        parser.add_argument('--audit-checkpoint', type=Path, help='external checkpoint; exact source/config/publication/file fingerprints required for resume')
+        parser.add_argument('--audit-budget-seconds', type=float, help='total deep-audit deadline; reserve at least 10 seconds inside command timeout')
     if action_identity == "history-daily-capability":
         parser.add_argument('--universe-size', dest='capability_universe_size', type=int, default=5453)
         parser.add_argument('--code', dest='capability_code', default='600519')
@@ -158,6 +171,11 @@ def BuildParser(
 
 
 def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
+    _prevalidate_audit_outputs(args)
+    if args.audit_checkpoint is not None and (
+        args.audit_checkpoint.is_symlink() or any(parent.is_symlink() for parent in args.audit_checkpoint.parents)
+    ):
+        raise ValueError("price_audit_checkpoint_unsafe")
     options = HistoryOptions(
         action_identity=args.action_identity,
         command_timeout_seconds=args.command_timeout_seconds,
@@ -180,6 +198,10 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         database_probe_directory=ExternalPath(args.database_probe_directory, "--database-probe-directory"),
         repair_profile_year=args.repair_profile_year,
         repair_profile_code=args.repair_profile_code,
+        repair_codes=tuple(args.repair_codes or ()),
+        price_field_audit=args.price_field_audit,
+        audit_checkpoint=ExternalPath(args.audit_checkpoint, "--audit-checkpoint"),
+        audit_budget_seconds=args.audit_budget_seconds,
         sqlite_page_sample_count=args.sqlite_page_sample_count,
         sqlite_query_rounds=args.sqlite_query_rounds,
         sqlite_revision_write_sample_count=args.sqlite_revision_write_sample_count,
@@ -211,6 +233,18 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
     )
     if not math.isfinite(options.command_timeout_seconds) or not 0 < options.command_timeout_seconds <= 7200:
         raise ValueError("command timeout must be positive and must not exceed 7200 seconds")
+    if options.repair_codes and (
+        options.action_identity != "price-repair-audit" or options.database_probe_directory is None
+        or not 1 <= len(options.repair_codes) <= 5 or len(set(options.repair_codes)) != len(options.repair_codes)
+        or any(re.fullmatch(r"[0-9]{6}", code) is None for code in options.repair_codes)
+    ):
+        raise ValueError("--repair-codes requires 1..5 unique six-digit codes and an external --database-probe-directory")
+    if (options.audit_checkpoint is not None or options.audit_budget_seconds is not None) and not options.price_field_audit:
+        raise ValueError("audit checkpoint and budget require --price-field-audit")
+    if options.price_field_audit:
+        budget = options.audit_budget_seconds if options.audit_budget_seconds is not None else options.command_timeout_seconds - 10
+        if not math.isfinite(budget) or not 0 < budget <= options.command_timeout_seconds - 10:
+            raise ValueError("audit budget must be positive with ten seconds reserved inside command timeout")
     selected_source = bool(options.official_announcements or options.cninfo_query_codes or options.cninfo_cache_evidence)
     if selected_source != (options.industry_work_root is not None):
         raise ValueError("industry source selection and --industry-work-root must be set together")
@@ -313,4 +347,75 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
             raise ValueError("flush thresholds must fit the bounded pipeline")
         if options.baseline_checkout is not None or options.history_publication_profile and options.history_root is not None:
             raise ValueError("flush thresholds require the synthetic history writer, not a layout comparison or published replay")
+    _validate_audit_outputs(options, args.report)
     return options
+
+
+def _validate_audit_outputs(options: HistoryOptions, report: str) -> None:
+    if options.action_identity not in ("history-publication", "qfq-sqlite"):
+        return
+    outputs = ([Path(report)] if report != "-" else []) + ([options.audit_checkpoint] if options.audit_checkpoint is not None else [])
+    if not outputs:
+        return
+    from trader.infra.settings import LoadRuntimeSettings
+
+    directories = [options.runtime_config.parent.resolve()]
+    if options.history_root is not None:
+        directories.append(options.history_root.resolve())
+    if options.qfq_database is not None:
+        directories.append(options.qfq_database.parent.resolve())
+    _require_audit_output_separation(outputs, directories, options.action_identity)
+    try:
+        settings = LoadRuntimeSettings(options.runtime_config)
+    except (OSError, RuntimeError, ValueError):
+        BuildParser(options.action_identity).error("audit source/output separation requires readable runtime configuration")
+    if options.action_identity == "qfq-sqlite":
+        database = options.qfq_database if options.qfq_database is not None else settings.data_paths.daily_window
+        directories.extend((database.parent.resolve(), settings.data_paths.reference_database.parent.resolve()))
+    else:
+        root = options.history_root if options.history_root is not None else settings.data_paths.history
+        root = root.resolve()
+        directories.append(root)
+        reference = root.parent / "reference" / "company_st.sqlite3"
+        catalog = root / "catalog.sqlite3"
+        if catalog.is_symlink():
+            BuildParser(options.action_identity).error("audit source/output separation cannot use a linked catalog")
+        if catalog.is_file():
+            deadline = time.monotonic() + 1.0
+            try:
+                with closing(sqlite3.connect(catalog.as_uri() + "?mode=ro", uri=True, timeout=1.0)) as connection:
+                    connection.execute("PRAGMA query_only=ON")
+                    connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                    rows = connection.execute("SELECT reference_file FROM schema_contract LIMIT 2").fetchall()
+                if len(rows) != 1 or not isinstance(rows[0][0], str) or not rows[0][0]:
+                    BuildParser(options.action_identity).error("audit source/output reference binding is unavailable")
+                reference = (root / rows[0][0]).resolve()
+            except (OSError, sqlite3.Error):
+                BuildParser(options.action_identity).error("audit source/output reference binding cannot be read")
+        directories.append(reference.parent.resolve())
+    _require_audit_output_separation(outputs, directories, options.action_identity)
+
+
+def _require_audit_output_separation(outputs: Sequence[Path], directories: Sequence[Path], action: str) -> None:
+    for output in outputs:
+        target = output.resolve()
+        if any(target == directory or target.is_relative_to(directory) or directory.is_relative_to(target) for directory in directories):
+            # SystemExit prevents core.Main from serializing even an error
+            # report into the rejected source path after a business ValueError.
+            BuildParser(action).error("audit report and checkpoint must be separate from history, market, reference and configuration source directories")
+
+
+def _prevalidate_audit_outputs(args: argparse.Namespace) -> None:
+    if args.action_identity not in ("history-publication", "qfq-sqlite") or args.report == "-" and args.audit_checkpoint is None:
+        return
+    try:
+        inputs = HistoryOptions(
+            action_identity=args.action_identity,
+            runtime_config=Path(args.runtime_config).expanduser().resolve(),
+            history_root=args.history_root.expanduser().resolve() if args.history_root is not None else None,
+            qfq_database=args.qfq_database.expanduser().resolve() if args.qfq_database is not None else None,
+            audit_checkpoint=args.audit_checkpoint.expanduser().resolve() if args.audit_checkpoint is not None else None,
+        )
+        _validate_audit_outputs(inputs, args.report)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        BuildParser(args.action_identity).error("audit output/source separation must be approved before validating other options")
