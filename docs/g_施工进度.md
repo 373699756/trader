@@ -4,6 +4,18 @@
 
 ## 1. 待完成任务
 
+### 收益可交易性未知值修复（364，2026-11-08，completed）
+
+用户已批准下载审计问题的A→B→C→D实施计划。本批沿A处理正式历史涨跌幅NULL被转0及未知结算占据不可变收益键，基线`6bd18bc3`；company真实下载沿362并行，353／332公司材料修复保持原owner。本批不联网、不改活动资料、数据库结构、评分参数或既有冻结／收益。
+
+实际改动：收益投影唯一owner仍为`recommendation/infra/market_data/outcome_history.py`，在线`PairOutcomeHistory`和正式历史`OutcomeBars`共同调用`BuildOutcomeBar`；删除收益链经`DailyBar`补0的路径，特征链的float合同保留。有真实正成交量的非一字NULL涨幅仍可交易，一字NULL、非法涨幅／成交量保持UNKNOWN；零量和有效涨幅沿原判定。`tradability_unknown`／`invalid_reference_bar`新增可重试，应用过滤与原SQLite写门共同阻止新未知结果占键；旧已有键不重开，SQL／codec／数据库结构不变。c15.5按实际行为同步。
+
+验证：集中定向131项全部通过，报告`/tmp/trader-outcome-null-364-final-20261108.xml`。覆盖真实样本fixture、普通NULL结算、正负／非有限数值、缺侧／必需字段、排序／重复、双供应商配对、Tomorrow／D25、未知补证重试、SQLite拒绝新未知及旧记录bytes/hash／冻结身份保护；前期单文件复验不另合计。受影响7个Python文件Ruff E9/F/B/UP、3产品源码mypy及完整差集与独立Review、git diff --check通过，未运行格式工具。
+
+真实单点复核：按正式snapshot3／月partition2经原reader读取`300118/2018-08-08`，核年度文件凭据和原修订codec，再执行新投影。原始涨幅／前收仍NULL，raw四价8.67、qfq四价7.83，收益状态为UNKNOWN；源数据库及正式发布身份前后未变。报告`/tmp/trader-outcome-null-364-real-check-20261108.json`，零网络／源写入；不以该样本认定法定跌停或已有收益受影响。
+
+未完成项：A批无。364仅关闭A批；后续下载补采／复核能力、审计固化和明确范围真实资料验收仍按已批准计划接续，362保持原任务。本批未更新活动价格、旧收益、冻结或模型，未重启服务、训练或运行性能／完整收益验收。
+
 ### run.sh后台监控与启动故障诊断（363，2026-11-08，completed）
 
 用户要求后台运行run.sh、监控报错并修复。本批基线`06528126`，只处理荐股启动失败的安全分类、健康状态和既有只读诊断；阶段362公司备份／隔离下载记录及未跟踪data保持原归属，不接管下载、重训或性能任务。

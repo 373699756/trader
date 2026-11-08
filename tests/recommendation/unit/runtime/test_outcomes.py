@@ -201,12 +201,55 @@ def test_retryable_outcome_cannot_occupy_immutable_horizon(tmp_path: Path) -> No
         quality_reason="benchmark_missing",
     )
     horizon_not_due = replace(benchmark_missing, status="insufficient_data", quality_reason="horizon_not_due")
+    tradability_unknown = replace(horizon_not_due, quality_reason="tradability_unknown")
+    invalid_reference = replace(horizon_not_due, quality_reason="invalid_reference_bar")
 
-    for retryable in (benchmark_missing, horizon_not_due):
+    for retryable in (benchmark_missing, horizon_not_due, tradability_unknown, invalid_reference):
         with pytest.raises(ValueError, match="retryable recommendation outcomes"):
             index.save_recommendation_outcomes((retryable,))
 
     assert not (tmp_path / "outcomes.sqlite3").exists()
+    index.save_recommendation_outcomes((_outcome(),))
+    with SqliteSession(tmp_path / "outcomes.sqlite3") as connection:
+        assert connection.run("SELECT status FROM recommendation_outcomes").require_one()[0] == "complete"
+
+
+@pytest.mark.parametrize("reason", ("tradability_unknown", "invalid_reference_bar"))
+def test_existing_unknown_outcome_keeps_its_immutable_horizon(tmp_path: Path, monkeypatch, reason: str) -> None:
+    original = freeze(Strategy.TOMORROW)
+    formal = CommittedFreezeRecord(original, NOW, "scheduled")
+    index = _index(tmp_path, formal)
+    unknown = RecommendationOutcome(
+        snapshot_id=formal.version,
+        strategy=Strategy.TOMORROW,
+        recommend_date=formal.trade_date.isoformat(),
+        stock_code=original.items[0].code,
+        horizon=1,
+        status="insufficient_data",
+        settled_at=NOW,
+        anchor_raw_price=10.0,
+        anchor_qfq_price=None,
+        atr20_pct=None,
+        quality_reason=reason,
+    )
+    # Seed a previously accepted result through the unchanged production codec.
+    with monkeypatch.context() as previous_policy:
+        previous_policy.setattr(RecommendationOutcome, "is_retryable", property(lambda self: False))
+        index.save_recommendation_outcomes((unknown,))
+    database = tmp_path / "outcomes.sqlite3"
+    with SqliteSession(database) as connection:
+        before = tuple(connection.run("SELECT record_hash,record_bytes FROM recommendation_outcomes").require_one())
+
+    assert unknown.is_retryable
+    assert index.pending_outcome_targets(limit=10) == ()
+    assert all(summary.complete_count == 0 for summary in index.summaries(Strategy.TOMORROW))
+    with pytest.raises(OutcomeEvidenceConflictError, match="recommendation outcome"):
+        index.save_recommendation_outcomes((_outcome(snapshot_id=formal.version),))
+
+    with SqliteSession(database) as connection:
+        after = tuple(connection.run("SELECT record_hash,record_bytes FROM recommendation_outcomes").require_one())
+    assert after == before
+    assert index._freezes.record is formal
 
 
 def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:

@@ -265,6 +265,33 @@ def test_adapter_rejects_incomplete_settlement_without_poisoning_immutable_evide
     assert index.saved[0].status == "complete"
 
 
+@pytest.mark.parametrize("unknown_index", (0, 1))
+def test_adapter_retries_unknown_trade_evidence_after_source_recovery(
+    application_feature_factory, unknown_index: int,
+) -> None:
+    bars = (
+        _bar("2026-07-20", 10.0, 10.1, 9.9, 10.0),
+        _bar("2026-07-21", 10.0, 10.3, 9.6, 10.2),
+    )
+    pending = tuple(
+        replace(bar, trading_status=OutcomeTradingStatus.UNKNOWN) if position == unknown_index else bar
+        for position, bar in enumerate(bars)
+    )
+    market_data = _MarketData((application_feature_factory("600001", NOW),), bars=pending)
+    index = _OutcomeIndex()
+    adapter = OutcomeSettlementAdapter(market_data, _service(market_data, index))
+
+    with pytest.raises(SettlementUnavailableError, match="settlement_outcomes_incomplete"):
+        adapter.settle(NOW)
+    assert index.saved == ()
+
+    market_data.bars = bars
+    adapter.settle(NOW)
+    assert len(index.saved) == 1
+    assert index.saved[0].status == "complete"
+    assert index.saved[0].exit_status.value == "tradable"
+
+
 def test_d25_settlement_includes_t4_but_only_evaluates_pending_horizons(application_feature_factory) -> None:
     class _D25OutcomeIndex(_OutcomeIndex):
         def pending_outcome_targets(self, *, limit):

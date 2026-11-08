@@ -508,6 +508,8 @@ D25机会标签、固定六槽贡献、入选均值和真实资金收益分别�
 
 研究进场锚点为D日15:00，价格有限且为正，须有当时生效资格与交易状态；该锚点不证明实际可成交。Tomorrow退出为T+1前复权收盘；D25包含T+2、T+3、T+4、T+5四个期限，逐期计算`exit_price/entry_price−1−benchmark_return−round_trip_cost`再取四项算术平均，不能取未来最高价。只补已成熟且缺失的结算，已保存结果不因后来价格修订改写。raw用于交易可行性事实，qfq用于可比收益；盘中raw锚点按推荐日同源raw/qfq关系换算，不能直接和另一口径的退出价相除。退出不可卖仍保留可信收盘估值，无有效收盘才沿用前有效价，并另报延迟退出压力。缺交易日、停牌、不可退出和基准缺失分别记录。未建模的风险概率保持“未建模”，不拿总体严重亏损频率冒充个股概率。收益及退出口径见迁移前第12.1，结算原件保护另见本篇第12章。
 
+收益投影保留原始涨跌幅的未知身份。价格有效且有真实正成交量的非一字行情，缺该涨跌幅仍可判可交易；一字价缺原始涨跌幅则为UNKNOWN，非法涨跌幅或成交量也保持UNKNOWN，零量沿原停牌合同。有效涨跌幅沿现行一字下跌判定，不借缺项修复改阈值或声称完成法定跌停核验。`tradability_unknown`及`invalid_reference_bar`与未成熟、缺基准一样保留重试，不写入新的不可变收益键；已有结算记录仍按原键只读，不自动重开或改写。
+
 #### 当前配置及实际消费者
 
 `config/research.json`由`training/infra/research_settings.py::LoadResearchSettings`解析为domain的不可变`ResearchSettings`，与成本场景组成`ResearchExecutionPlan`。`bootstrap.ExecuteResearchEvidence`把同一计划注入完整总体选择与终端留出用例；下列校验都发生在收益行读取前，不表示已运行真实研究：

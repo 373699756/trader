@@ -203,7 +203,8 @@ class RecommendationOutcome:
         """Whether later source evidence can complete this horizon without changing its identity."""
 
         return self.status == "benchmark_missing" or (
-            self.status == "insufficient_data" and self.quality_reason == "horizon_not_due"
+            self.status == "insufficient_data"
+            and self.quality_reason in {"horizon_not_due", "tradability_unknown", "invalid_reference_bar"}
         )
 
     @property

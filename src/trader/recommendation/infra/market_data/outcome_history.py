@@ -10,6 +10,25 @@ from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomePric
 _MINIMUM_ONE_PRICE_LIMIT_DOWN_PCT = -4.5
 
 
+def BuildOutcomeBar(
+    *,
+    trade_date: str,
+    qfq: OutcomePrice,
+    raw: OutcomePrice,
+    volume: float,
+    pct_change: float | None,
+    source: str,
+) -> OutcomeBar:
+    """Preserve unknown raw changes when a one-price session cannot be classified."""
+    return OutcomeBar(
+        trade_date=trade_date,
+        qfq=qfq,
+        raw=raw,
+        trading_status=_trading_status(raw, volume, pct_change),
+        source=source,
+    )
+
+
 def PairOutcomeHistory(
     qfq_bars: tuple[DailyBar, ...],
     raw_bars: tuple[DailyBar, ...],
@@ -27,11 +46,12 @@ def PairOutcomeHistory(
         if qfq.source != raw.source:
             raise ValueError("outcome raw/qfq bars must come from the same source")
         paired.append(
-            OutcomeBar(
+            BuildOutcomeBar(
                 trade_date=trade_date,
                 qfq=_prices(qfq),
                 raw=_prices(raw),
-                trading_status=_trading_status(raw),
+                volume=raw.volume,
+                pct_change=raw.pct_change,
                 source=raw.source,
             )
         )
@@ -51,15 +71,23 @@ def _prices(bar: DailyBar) -> OutcomePrice:
     return OutcomePrice(bar.open_price, bar.high, bar.low, bar.close)
 
 
-def _trading_status(raw: DailyBar) -> OutcomeTradingStatus:
-    if not math.isfinite(raw.volume) or not math.isfinite(raw.pct_change):
+def _trading_status(raw: OutcomePrice, volume: float, pct_change: float | None) -> OutcomeTradingStatus:
+    if not math.isfinite(volume) or volume < 0.0:
         return OutcomeTradingStatus.UNKNOWN
-    if raw.volume <= 0.0:
+    if pct_change is not None and not math.isfinite(pct_change):
+        return OutcomeTradingStatus.UNKNOWN
+    if volume == 0.0:
         return OutcomeTradingStatus.SUSPENDED
     one_price = len({raw.open_price, raw.high, raw.low, raw.close}) == 1
-    if one_price and raw.pct_change <= _MINIMUM_ONE_PRICE_LIMIT_DOWN_PCT:
-        return OutcomeTradingStatus.ONE_PRICE_LIMIT_DOWN
+    if one_price:
+        if pct_change is None:
+            return OutcomeTradingStatus.UNKNOWN
+        if pct_change <= _MINIMUM_ONE_PRICE_LIMIT_DOWN_PCT:
+            return OutcomeTradingStatus.ONE_PRICE_LIMIT_DOWN
     return OutcomeTradingStatus.TRADABLE
 
 
-__all__ = ["PairOutcomeHistory"]
+__all__ = [
+    "BuildOutcomeBar",
+    "PairOutcomeHistory",
+]
