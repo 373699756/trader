@@ -6,14 +6,16 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
 from trader.download.domain.history_control import HistorySnapshot
+from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, DecodeTime, EncodeDate, EncodeHash, EncodeTime
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.infra.sqlite_publication import PublishSqliteFile, SqlitePublicationError, VerifySqliteFile
 from trader.training.domain.training_due import TrainingDueReason, TrainingDueState
 from trader.training.domain.training_reminder import (
     TrainingMaintenanceState,
@@ -58,31 +60,47 @@ class TrainingMaintenanceIndex:
     @contextmanager
     def _connection(self, *, write: bool = False) -> Iterator[SqliteConnection]:
         try:
-            with (
-                SqliteSession(
-                    self._path, SqliteConnectionOptions(read_only=not write, foreign_keys=True), sqlite_policy=self._sqlite_policy
-                ) as connection,
-                SqliteTransaction(connection, immediate=write),
-            ):
-                contract = connection.run(
-                    "SELECT schema_id FROM schema_contract WHERE singleton=1"
-                ).fetchone()
-                if contract is None or tuple(contract) != ("history_catalog",):
-                    raise TrainingMaintenanceError("training maintenance catalog identity is invalid")
-                existing = {
-                    row[0]
-                    for row in connection.run(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                        "('training_due','training_reminder_claim','training_reminder')"
-                    )
-                }
-                if existing and existing != set(_TABLES.values()):
-                    raise TrainingMaintenanceError("training maintenance schema is incomplete")
-                if write and not existing:
-                    for statement in _SCHEMA:
-                        connection.run(statement)
-                yield connection
-        except (sqlite3.Error, TypeError, ValueError) as exc:
+            lease = (
+                ProcessLock(self._path.parent.with_name(".history.lock"), label="history-maintenance")
+                if write else nullcontext()
+            )
+            with lease:
+                has_receipt = Path(f"{self._path}.sha256").exists() if write else False
+                if has_receipt:
+                    VerifySqliteFile(self._path, sqlite_policy=self._sqlite_policy)
+                with (
+                    SqliteSession(
+                        self._path, SqliteConnectionOptions(read_only=not write, foreign_keys=True), sqlite_policy=self._sqlite_policy
+                    ) as connection,
+                    SqliteTransaction(connection, immediate=write),
+                ):
+                    contract = connection.run(
+                        "SELECT schema_id FROM schema_contract WHERE singleton=1"
+                    ).fetchone()
+                    if contract is None or tuple(contract) != ("history_catalog",):
+                        raise TrainingMaintenanceError("training maintenance catalog identity is invalid")
+                    if write and not has_receipt and connection.run(
+                        "SELECT 1 FROM published_snapshot WHERE singleton=1"
+                    ).fetchone() is not None:
+                        raise TrainingMaintenanceError("sqlite_publication_file_missing")
+                    existing = {
+                        row[0]
+                        for row in connection.run(
+                            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                            "('training_due','training_reminder_claim','training_reminder')"
+                        )
+                    }
+                    if existing and existing != set(_TABLES.values()):
+                        raise TrainingMaintenanceError("training maintenance schema is incomplete")
+                    if write and not existing:
+                        for statement in _SCHEMA:
+                            connection.run(statement)
+                    yield connection
+                    changed = connection.total_changes > 0
+                # The last writer must close before hashing, including its WAL checkpoint.
+                if write and changed:
+                    PublishSqliteFile(self._path, sqlite_policy=self._sqlite_policy)
+        except (OSError, sqlite3.Error, TypeError, ValueError, ProcessLockError, SqlitePublicationError) as exc:
             raise TrainingMaintenanceError("training maintenance database unavailable") from exc
 
     def save_due_state(self, value: TrainingDueState) -> None:

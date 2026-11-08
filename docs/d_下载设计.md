@@ -671,7 +671,7 @@ HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒�
 
 | 资料 | 发布所有者 | 加载消费者及必要业务读取 |
 | --- | --- | --- |
-| history年库和catalog | `HistoryPricePartition`/`HistoryDirectPrices`、`HistoryControlIndex`及同步收尾 | 快照加载检查catalog，`HistorySnapshotReader`按物理年库复用文件核验；实际价格查询、覆盖/行数及原序号隔离保留 |
+| history年库和catalog | `HistoryPricePartition`/`HistoryDirectPrices`、`HistoryControlIndex`及同步收尾；同catalog的训练维护写入由`TrainingMaintenanceIndex`在提交关闭后封存，见e第3.7节 | 快照加载检查catalog，`HistorySnapshotReader`按物理年库复用文件核验；实际价格查询、覆盖/行数及原序号隔离保留 |
 | market共享短窗 | `SQLiteQfqWindowCache`，同一轮两档写入归入一次文件发布；发布成员切换不删除保留资料 | 所有读入口核验同一物理文件；窗口规划只查日期/来源，manifest只选当前发布成员及其已提交窗口身份，不重复复算价格内容 |
 | company正式事实 | `SQLiteCompanyFactsIndex`；正式预读连接在写入前关闭，避免其最后退出改变已封存WAL | `SQLiteCompanyEvidenceReader`及排除证据读取复用文件核验；事实编译和业务投影仍按需查询，采集库不被当成正式发布 |
 

@@ -6,6 +6,18 @@
 
 本章保留最近交付切片及其剩余项，`completed`只关闭标题注明的范围；接续时先看最新要求及替代说明，再查第4章原任务。358已替代正常训练的历史时点行业分组要求，旧过程记录不再构成训练前置；357本地落库性能仍开放，既有后台已停止。
 
+### 训练维护写入后的历史目录封存（361，2026-11-08，completed）
+
+用户报告启动历史预读与full_market反复出现`sqlite_publication_checksum_mismatch`。本批只负责训练维护写入及其文件发布边界，不接管其它未提交实现。只读检查确认短窗库摘要匹配，history/catalog摘要不匹配且SQLite quick_check通过；catalog最新写入晚于回执约12小时，最新到期记录与写入时刻吻合。训练维护owner写入到期／领取／提醒后遗漏文件封存，尚未据此排除其它内容变化或签全量历史完整。
+
+实际改动：原`TrainingMaintenanceIndex`写入共用history互斥锁，先核验已有回执，拒绝既有失配／已发布但缺凭据的目录；真实事务提交并关闭writer后才重新封存，回滚／幂等／只读不补签。表、快照、数据目录及模型身份不迁移，d6.1／e3.7同步实际封存合同。起始基线`c10621d2`，交付前359已推送`7df964ed`，其改动及360工作树保持原归属。
+
+验证：旧实现的到期／领取／提醒三项全部复现checksum失配（`/tmp/trader-361-before-fix.xml`）；修后历史控制、参考codec及物理重排到期边界合计63项通过（`/tmp/trader-361-history-final.xml`）。受影响Ruff E9/F/B/UP、单源码mypy、完整差集Review及`git diff --check`通过；未运行格式、真实同步／训练、性能、桌面或整轮荐股验收。
+
+现场恢复：先只读确认九个年度价格库及独立短窗文件SHA全部匹配，在`/tmp/trader-360-recovery-8_sjvfzo`复制catalog／参考演练，仅更新副本回执后快照可加载，12条due记录解码核验通过。用户随后明确授权“仅恢复该校验回执”；持有原history锁，复核活动catalog与隔离副本完整指纹相同，备份旧回执到该目录`active-catalog-original.sha256`，仅重封`data/market/history/catalog.sqlite3.sha256`。现场复验文件指纹及真实manifest读取通过；主库与WAL代际、全部typed控制记录、发布序号2和12条训练到期记录均未改变。未删除／重建／迁移任何库，未改价格、模型、冻结或预算。
+
+未完成项：本批实现与获授权的回执恢复无。已有服务进程的失败预读状态仍须用户重启后重新加载；未停止用户进程，不用manifest通过替代完整full_market或桌面验收。
+
 ### ST核验短暂失败恢复与待核诊断（359，2026-11-08，completed，免费来源只读验收已完成）
 
 免费来源验收接续completed：用户明确要求自行测试东财速度及所需信息正确性，沿359扩展既有download/company/sources的显式ST只读模式，不接入生产。绑定同一已发布参考的1–64只股票及既有状态，最多5轮东财＋一次新浪、4个worker、单次15秒及1MiB，无隐藏重试。独立审计owner为scripts/download/company/company_st_source_audit，消费者为原CLI/options/commands、research_source_compare及reporting白名单投影，全部同批接线，无第二生产来源／数据库或新格式版本。源码起始基线`5c6a1a0b`，358第三批及用户data保持原归属。
