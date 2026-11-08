@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import pytest
 
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
-from trader.infra.market_data.history.history import HistorySessionKind, SummarizeHistoryMetrics
+from trader.recommendation.domain.market.history_metrics import HistorySessionKind, SummarizeHistoryMetrics
 from trader.recommendation.infra.market_data.aligned_history_bars import BuildAlignedHistoryBars
 from trader.recommendation.infra.market_data.published_history_bars import QfqBars
 from trader.recommendation.infra.normalization.history_price_basis import RebaseHistoryPrices

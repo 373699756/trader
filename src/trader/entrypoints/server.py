@@ -9,9 +9,10 @@ import logging
 import os
 import sys
 import threading
-from dataclasses import asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Generic, Protocol, TypeVar, cast
 
 from flask import Flask
 from werkzeug.serving import BaseWSGIServer, make_server
@@ -29,11 +30,20 @@ from trader.infra.shutdown import (
     ShutdownReport,
     ShutdownSignalController,
     ShutdownStep,
+    ShutdownWatchdogStartError,
 )
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 
 _LOGGER = logging.getLogger(__name__)
+_StopResultT = TypeVar("_StopResultT")
+
+
+@dataclass(frozen=True)
+class _PendingShutdown(Generic[_StopResultT]):
+    completed: threading.Event
+    results: list[_StopResultT]
+    errors: list[BaseException]
 
 
 class _StoppableSystem(Protocol):
@@ -98,6 +108,10 @@ def _run_system(
 
     def request_shutdown(_deadline: ShutdownDeadline) -> None:
         shutdown_requested.set()
+        if not controller.watchdog_started:
+            # Returning would expose synchronous startup rollback without any
+            # guard capable of ending a blocked resource cleanup.
+            os._exit(2)
         _start_shutdown_diagnostics(_deadline)
 
     controller = ShutdownSignalController(
@@ -107,26 +121,23 @@ def _run_system(
     )
     started = False
     delegated = False
+    cleanup_started = False
+    server: BaseWSGIServer | None = None
     try:
         controller.install()
         try:
             started = system.start()
         except ShutdownIncompleteError:
-            # Startup owners have already attempted rollback under the original
-            # deadline. Incomplete cleanup must not enter Python's thread joins,
-            # repeat stop(), or wait for diagnostic I/O before failing the process.
+            # Startup owners already own rollback; incomplete cleanup must not
+            # enter Python's thread joins, repeat stop(), or wait for diagnostic I/O.
             os._exit(2)
         if shutdown_requested.is_set():
-            deadline = controller.deadline or ShutdownDeadline.start(timeout_seconds)
+            cleanup_started = True
             if started:
-                report = _stop_system(system, deadline)
-                if not report.completed:
-                    _log_shutdown_report(report)
-                    os._exit(2)
-            controller.mark_completed()
-            RecordShutdownEvent(deadline, "return_ready")
-            if started:
-                _queue_shutdown_report(report, deadline)
+                _shutdown_resources(system, controller=controller)
+            else:
+                _begin_shutdown(controller)
+                controller.mark_completed()
             return controller.exit_code
         if not started:
             controller.mark_completed()
@@ -147,16 +158,13 @@ def _run_system(
             system,
             controller=controller,
             shutdown_requested=shutdown_requested,
-            timeout_seconds=timeout_seconds,
         )
+    except ShutdownWatchdogStartError:
+        os._exit(2)
     except BaseException:
-        if started and not delegated:
-            deadline = controller.deadline or ShutdownDeadline.start(timeout_seconds)
-            report = _stop_system(system, deadline)
-            if not report.completed:
-                _log_shutdown_report(report)
-                os._exit(2)
-            controller.mark_completed()
+        if started and not delegated and not cleanup_started:
+            cleanup_started = True
+            _shutdown_resources(system, controller=controller, server=server)
         raise
     finally:
         controller.restore()
@@ -172,6 +180,8 @@ def _serve_until_signal(
 
     def request_shutdown(_deadline: ShutdownDeadline) -> None:
         shutdown_requested.set()
+        if not controller.watchdog_started:
+            os._exit(2)
         _start_shutdown_diagnostics(_deadline)
 
     controller = ShutdownSignalController(
@@ -186,7 +196,6 @@ def _serve_until_signal(
             system,
             controller=controller,
             shutdown_requested=shutdown_requested,
-            timeout_seconds=timeout_seconds,
         )
     finally:
         controller.restore()
@@ -198,7 +207,6 @@ def _serve_with_controller(
     *,
     controller: ShutdownSignalController,
     shutdown_requested: threading.Event,
-    timeout_seconds: float,
 ) -> int:
     server_failed = threading.Event()
 
@@ -206,67 +214,126 @@ def _serve_with_controller(
         try:
             server.serve_forever()
         except BaseException:
-            _LOGGER.exception("web server terminated unexpectedly")
+            _begin_shutdown(controller)
             server_failed.set()
             shutdown_requested.set()
+            try:
+                _LOGGER.exception("web server terminated unexpectedly")
+            except Exception:
+                pass
 
+    web_thread: threading.Thread | None = None
     try:
         web_thread = threading.Thread(target=serve, name="trader-web", daemon=False)
         web_thread.start()
         shutdown_requested.wait()
-        deadline = controller.deadline or ShutdownDeadline.start(timeout_seconds)
-        RecordShutdownEvent(deadline, "shutdown_wakeup")
-        steps = [_stop_web(server, web_thread, deadline)]
-        system_report = _stop_system(system, deadline)
-        steps.extend(system_report.steps)
-        report = ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
-        if not report.completed:
-            _log_shutdown_report(report)
-            os._exit(2)
+    except ShutdownWatchdogStartError:
+        os._exit(2)
+    except BaseException:
+        _shutdown_resources(system, controller=controller, server=server, web_thread=web_thread)
+        raise
+    _shutdown_resources(system, controller=controller, server=server, web_thread=web_thread)
+    return 2 if server_failed.is_set() else controller.exit_code
+
+
+def _begin_shutdown(controller: ShutdownSignalController) -> ShutdownDeadline:
+    try:
+        return controller.begin_shutdown()
+    except ShutdownWatchdogStartError:
+        # Owned resources cannot safely enter cleanup or diagnostics without
+        # protection against blocked I/O and the interpreter's thread joins.
+        os._exit(2)
+
+
+def _shutdown_resources(
+    system: _StoppableSystem,
+    *,
+    controller: ShutdownSignalController,
+    server: BaseWSGIServer | None = None,
+    web_thread: threading.Thread | None = None,
+) -> None:
+    deadline = _begin_shutdown(controller)
+    steps: list[ShutdownStep] = []
+    forced = False
+    web_stop: _PendingShutdown[None] | None = None
+    system_stop: _PendingShutdown[ShutdownReport] | None = None
+    try:
+        system_stop = _start_system_stop(system, deadline)
+    except BaseException as exc:
+        steps.append(ShutdownStep(
+            "application", False, deadline.expired, detail=f"system shutdown failed:{type(exc).__name__}",
+        ))
+    if server is not None:
+        try:
+            web_stop = _start_web_stop(server, web_thread, deadline)
+        except BaseException as exc:
+            steps.append(ShutdownStep("web", False, deadline.expired, detail=f"web shutdown failed:{type(exc).__name__}"))
+    # Both owners receive stop before either wait can consume the shared budget.
+    if web_stop is not None and server is not None:
+        try:
+            steps.append(_wait_web_stop(web_stop, web_thread, deadline))
+        except BaseException as exc:
+            steps.append(ShutdownStep("web", False, deadline.expired, detail=f"web shutdown failed:{type(exc).__name__}"))
+    if system_stop is not None:
+        try:
+            report = _wait_system_stop(system_stop, deadline)
+            steps.extend(report.steps)
+            forced = report.forced
+        except BaseException as exc:
+            steps.append(ShutdownStep(
+                "application", False, deadline.expired, detail=f"system shutdown failed:{type(exc).__name__}",
+            ))
+    report = ShutdownReport.from_steps(deadline, steps, forced=forced or deadline.expired)
+    if not report.completed:
+        # A report already means all owners were attempted. Diagnostic I/O must
+        # neither delay hard exit nor cause the caller to repeat those attempts.
+        os._exit(2)
+    try:
         controller.mark_completed()
         RecordShutdownEvent(deadline, "return_ready")
         _queue_shutdown_report(report, deadline)
-        if server_failed.is_set():
-            return 2
-        return controller.exit_code
-    except BaseException:
-        deadline = controller.deadline or ShutdownDeadline.start(timeout_seconds)
-        report = _stop_system(system, deadline)
-        if not report.completed:
-            _log_shutdown_report(report)
-            os._exit(2)
-        controller.mark_completed()
-        raise
+    except Exception:
+        # Projection is best effort after resources have closed; its failure
+        # must not replace the original service error or repeat cleanup.
+        pass
 
 
-def _stop_web(
+def _start_web_stop(
     server: BaseWSGIServer,
-    web_thread: threading.Thread,
+    web_thread: threading.Thread | None,
     deadline: ShutdownDeadline,
-) -> ShutdownStep:
-    completed = threading.Event()
-    errors: list[BaseException] = []
+) -> _PendingShutdown[None]:
 
     def stop() -> None:
         try:
-            with ObserveShutdownStep(deadline, "web:stopper"):
+            if web_thread is not None and web_thread.ident is not None:
                 server.shutdown()
-                server.server_close()
-        except BaseException as exc:
-            errors.append(exc)
         finally:
-            completed.set()
+            server.server_close()
 
-    stopper = threading.Thread(target=stop, name="trader-web-stop", daemon=True)
-    stopper.start()
+    try:
+        return _start_shutdown_task(deadline, "web:stopper", "trader-web-stop", stop)
+    except RuntimeError:
+        if web_thread is None or web_thread.ident is None:
+            # A bound socket has no serving loop to shut down. Even when its
+            # stopper cannot start, close it under the already armed guard.
+            server.server_close()
+        raise
+
+
+def _wait_web_stop(
+    pending: _PendingShutdown[None],
+    web_thread: threading.Thread | None,
+    deadline: ShutdownDeadline,
+) -> ShutdownStep:
     with ObserveShutdownStep(deadline, "web:wait"):
-        stopped = completed.wait(deadline.remaining_seconds())
-        if stopped:
+        stopped = pending.completed.wait(deadline.remaining_seconds())
+        if stopped and web_thread is not None and web_thread.ident is not None:
             web_thread.join(deadline.remaining_seconds())
-    finished = stopped and not web_thread.is_alive() and not errors
+    finished = stopped and (web_thread is None or not web_thread.is_alive()) and not pending.errors
     detail = ""
-    if errors:
-        detail = f"web shutdown failed:{type(errors[0]).__name__}"
+    if pending.errors:
+        detail = f"web shutdown failed:{type(pending.errors[0]).__name__}"
     elif not finished:
         detail = "web server remains active"
     return ShutdownStep(
@@ -278,47 +345,57 @@ def _stop_web(
 
 
 def _stop_system(system: _StoppableSystem, deadline: ShutdownDeadline) -> ShutdownReport:
-    completed = threading.Event()
-    result: list[ShutdownReport] = []
-    errors: list[BaseException] = []
+    return _wait_system_stop(_start_system_stop(system, deadline), deadline)
 
-    def stop() -> None:
-        try:
-            with ObserveShutdownStep(deadline, "application:stopper"):
-                report = system.stop(deadline=deadline)
-                if not isinstance(report, ShutdownReport):
-                    raise TypeError("system_stop_report_required")
-                result.append(report)
-        except BaseException as exc:
-            errors.append(exc)
-        finally:
-            completed.set()
 
-    stopper = threading.Thread(target=stop, name="trader-system-stop", daemon=True)
-    stopper.start()
+def _start_system_stop(system: _StoppableSystem, deadline: ShutdownDeadline) -> _PendingShutdown[ShutdownReport]:
+    def stop() -> ShutdownReport:
+        report = system.stop(deadline=deadline)
+        if not isinstance(report, ShutdownReport):
+            raise TypeError("system_stop_report_required")
+        return report
+
+    return _start_shutdown_task(deadline, "application:stopper", "trader-system-stop", stop)
+
+
+def _wait_system_stop(pending: _PendingShutdown[ShutdownReport], deadline: ShutdownDeadline) -> ShutdownReport:
     with ObserveShutdownStep(deadline, "application:wait"):
-        finished = completed.wait(deadline.remaining_seconds())
-    if finished and result:
-        return result[0]
+        finished = pending.completed.wait(deadline.remaining_seconds())
+    if finished and pending.results:
+        return pending.results[0]
     detail = ""
-    if errors:
-        detail = f"system shutdown failed:{type(errors[0]).__name__}"
+    if pending.errors:
+        detail = f"system shutdown failed:{type(pending.errors[0]).__name__}"
     elif not finished:
         detail = "system shutdown exceeded process deadline"
     step = ShutdownStep(
         name="application",
-        completed=finished and bool(result) and not errors,
+        completed=finished and bool(pending.results) and not pending.errors,
         timed_out=not finished,
         detail=detail,
     )
     return ShutdownReport.from_steps(deadline, (step, *PendingShutdownSteps(deadline)))
 
 
-def _log_shutdown_report(report: ShutdownReport) -> None:
-    _LOGGER.error(
-        "shutdown deadline exceeded: %s",
-        json.dumps(asdict(report), ensure_ascii=False, sort_keys=True, indent=2),
-    )
+def _start_shutdown_task(
+    deadline: ShutdownDeadline,
+    step_name: str,
+    thread_name: str,
+    stop: Callable[[], _StopResultT],
+) -> _PendingShutdown[_StopResultT]:
+    pending: _PendingShutdown[_StopResultT] = _PendingShutdown(threading.Event(), [], [])
+
+    def run() -> None:
+        try:
+            with ObserveShutdownStep(deadline, step_name):
+                pending.results.append(stop())
+        except BaseException as exc:
+            pending.errors.append(exc)
+        finally:
+            pending.completed.set()
+
+    threading.Thread(target=run, name=thread_name, daemon=True).start()
+    return pending
 
 
 def _start_shutdown_diagnostics(deadline: ShutdownDeadline) -> None:
@@ -351,13 +428,17 @@ def _start_shutdown_diagnostics(deadline: ShutdownDeadline) -> None:
                 return
             threading.Event().wait(min(5.0, deadline.remaining_seconds()))
 
-    threading.Thread(target=project, name="trader-shutdown-diagnostics", daemon=True).start()
+    try:
+        threading.Thread(target=project, name="trader-shutdown-diagnostics", daemon=True).start()
+    except RuntimeError:
+        # The already armed guard remains authoritative when optional
+        # diagnostics cannot start; do not replace the cancellation failure.
+        pass
 
 
 def _queue_shutdown_report(report: ShutdownReport, deadline: ShutdownDeadline) -> None:
-    timeline = ReadShutdownTimeline(deadline)
-
     def project() -> None:
+        timeline = ReadShutdownTimeline(deadline)
         _LOGGER.warning("shutdown completed: %s", json.dumps({
             "process_identity": _shutdown_process_identity(),
             "started_at_monotonic": deadline.started_at_monotonic,

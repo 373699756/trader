@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import ParamSpec, TypeVar
 
 from trader.infra.cache_contracts import CacheRequestKey, RequestKey
-from trader.infra.market_data.history.history import DailyBar
+from trader.recommendation.domain.market.history_metrics import DailyBar
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.models import (
     MarketQuote,

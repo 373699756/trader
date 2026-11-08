@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -56,7 +57,7 @@ def test_shutdown_failure_collection_preserves_process_control_exceptions(interr
 
 
 @pytest.mark.parametrize("blocked_owner", ("control", "score_wave"))
-def test_outer_shutdown_timeout_reports_the_profile_and_blocked_runtime_owner(monkeypatch, caplog, blocked_owner):
+def test_outer_shutdown_timeout_reports_the_profile_and_blocked_runtime_owner(monkeypatch, blocked_owner):
     scheduler = _round_cleanup_runtime()
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
@@ -111,8 +112,6 @@ def test_outer_shutdown_timeout_reports_the_profile_and_blocked_runtime_owner(mo
         assert all(not steps[name].completed and steps[name].timed_out for name in (
             "profile:v5", "resources:supervisor", blocked_name,
         ))
-        server_entrypoint._log_shutdown_report(report)
-        assert all(name in caplog.text for name in ("profile:v5", "resources:supervisor", blocked_name))
     finally:
         release.set()
         assert finished.wait(3), "controlled shutdown thread did not finish"
@@ -284,7 +283,8 @@ threading.Thread(target=lambda: threading.Event().wait(0.5), name='controlled-ex
 controller.handle(signal.SIGTERM)
 controller.mark_completed()
 """.replace("PROTECT", repr(protect_process_exit))
-    environment = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
+    root = Path(__file__).resolve().parents[3]
+    environment = dict(os.environ, PYTHONPATH=os.pathsep.join((str(root / "src"), str(root))))
     completed = subprocess.run((sys.executable, "-c", code), env=environment, timeout=5, check=False)
     assert completed.returncode == expected_code
 
@@ -302,6 +302,27 @@ def test_final_shutdown_projection_does_not_hold_up_the_caller(monkeypatch):
     monkeypatch.setattr(server_entrypoint._LOGGER, "warning", blocked_log)
     deadline = ShutdownDeadline.start(1)
     report = ShutdownReport.from_steps(deadline, (ShutdownStep("application", True, False),))
+    try:
+        server_entrypoint._queue_shutdown_report(report, deadline)
+        assert entered.wait(1)
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(3)
+
+
+def test_final_shutdown_projection_reads_the_timeline_only_in_its_daemon(monkeypatch):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def read_timeline(_deadline):
+        entered.set()
+        assert release.wait(3), "controlled timeline projection was not released"
+        return ()
+
+    monkeypatch.setattr(server_entrypoint, "ReadShutdownTimeline", read_timeline)
+    monkeypatch.setattr(server_entrypoint._LOGGER, "warning", lambda *_args, **_kwargs: finished.set())
+    deadline = ShutdownDeadline.start(1)
+    report = ShutdownReport.from_steps(deadline, (ShutdownStep("fixture", True, False),))
     try:
         server_entrypoint._queue_shutdown_report(report, deadline)
         assert entered.wait(1)

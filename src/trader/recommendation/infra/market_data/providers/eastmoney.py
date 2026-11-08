@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 from trader.infra.http_contracts import HttpError, HttpTransport
-from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.recommendation.domain.market.history_metrics import DailyBar, PriceAdjustment
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.tail import MinuteBar
 from trader.recommendation.domain.publication.preview import PreviewContext

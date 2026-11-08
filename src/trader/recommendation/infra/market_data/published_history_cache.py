@@ -11,7 +11,7 @@ from datetime import date, datetime, time
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.published_history import PublishedHistoryManifest
 from trader.infra.cache_contracts import CanonicalJsonBytes
-from trader.infra.market_data.history.history import (
+from trader.recommendation.domain.market.history_metrics import (
     BuildHistoryContext,
     DailyBar,
     HistoryContext,

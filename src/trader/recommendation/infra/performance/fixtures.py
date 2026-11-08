@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 from typing import cast
 
 from trader.infra.cache_contracts import CanonicalJsonBytes
-from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext, PriceAdjustment
+from trader.recommendation.domain.market.history_metrics import BuildHistoryContext, DailyBar, HistoryContext, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings.models import PerformanceBudgetSettings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (

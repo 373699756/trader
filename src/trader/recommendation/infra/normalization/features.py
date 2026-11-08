@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from trader.recommendation.infra.settings.models import StrategySettings
 
 from trader.infra.cache_contracts import BoundedCache, CacheIdentity, RequestKey
-from trader.infra.market_data.history.history import (
+from trader.recommendation.domain.market.history_metrics import (
     DailyBar,
     HistoryContext,
     RequireQfqHistory,

@@ -701,6 +701,18 @@ history发布专项继续沿本节原P09/P45/P65及327/349：先补本机可比�
 
 ### 4.8 工程审查全面修复（353）
 
+- **服务异常关闭与历史算法owner接续（2026-11-08，completed，仅本批，沿第5／4项；353整阶段仍in_progress）**：用户已授权按九项计划实施，开工`6ea91aac`；等364交付`b5d63179`后再切消费者，交付前继承company的`99ee8067`。绑定／输出／Web启动与运行异常共用原controller期限及看门狗，两个已有owner先派发停止再等待，不因诊断或关闭再次异常重入stop；未运行的绑定socket只close。看门狗启动失败在信号回调直接失败退出2，不先回穿业务栈进入可能阻塞的启动回滚；完整回收后的主异常／控制异常和首次／再次信号语义保持。删除死日志helper，诊断启动／时间线投影只尽力异步进行，强退不等日志。
+
+  owner切换：历史类型和纯算法已从`infra/market_data/history/history.py`迁至`recommendation/domain/market/history_metrics.py`，16产品、4脚本、10测试／helper全部直接切换；旧模块与空init删除，两个实际架构owner消费者同步更新，旧service负断言保留。新模块与基线原件逐字节一致：363行、13468 bytes，SHA256为`df9bdf28b565e5c069c2def85a2e1bfdd657913c1444b5aaffd378b80ec8a031`；30消费者均只有import路径变化，364未知涨跌幅／独立收益投影不回退。b第2／3章按实际切换窄更新，f第10章记录观测待修证据。
+
+  验证：仓库外`99ee8067`＋本批精确差集的冻结候选，显式PYTHONPATH绑定其src／root：历史、完成日、停牌、raw/qfq、缓存、脚本及364收益消费者158项通过（`/tmp/trader-353-history-owner-final-20261108.xml`）；退出与观测消费者102项通过、1个已证基线失败节点deselected（`/tmp/trader-353-server-shutdown-final-20261108.xml`）。两组无重叠，共260项；其中退出原定向组81项亦单独通过，含真实自有子进程的阻塞日志／非daemon尾、无信号异常及watchdog失败叠加阻塞启动回滚，所有子进程由测试回收。35个现存Python文件Ruff E9/F/B/UP、18产品＋4脚本正常mypy、完整diff及两组独立Review修正后复核通过；未运行格式或真实业务作业。
+
+  验证边界：全局架构组7通过／1失败，最新冻结基线及候选均为相同8条download应用层primitive导入违规，逐项集合相同（`/tmp/trader-353-owner-final-proof-20261108.json`、`/tmp/trader-353-owner-boundaries-final-20261108.xml`），未扩大白名单。观测器将合法正偏移误判degraded的节点在显式冻结base／candidate各复现，报告`/tmp/trader-353-shutdown-observation-{base,candidate}-frozen-20261108.xml`；它不代表真实进程未退出。首轮扩展观测候选组1失败如实保留，未冒充通过；最终只排除这一已证节点。初次子进程未显式传快照src的轮次不作冻结对照，最终验证与上述复现均已显式绑定。
+
+  实现身份：相同冻结基线上，仅新增domain历史模块进入原TrainingImplementationIdentity输入；摘要由`5681abe6cce1904e63a2c53403e30737553fa05a5e345b8a934087f82286b783`变为`e35f10021a79a4e2d7e07c1e2a6fb0dac46969117cfeec9e2c851a415d454cc9`（`/tmp/trader-353-owner-source-proof-20261108.json`及final-proof）。数值等价不冒充实现身份不变，可能使旧训练复用合同失配；不改摘要算法、不补签模型、不自动拟合。
+
+  未完成项：本批第1／8项自有实现无；原8条架构债务及353其它原工程／平台欠项保留，观测解析缺口和真实30秒／新鲜轮／冻结恢复由原281接续，未签完整观察器或全仓发布门禁。材料两项由原owner的`99ee8067`关闭，本批只继承；344旧reader及213研究合同按原计划，不跨阶段施工。365、公司资料下载及其它owner工作树／index原样保护，不触碰活动资料、真实训练、留出或性能，不启用性能候选。
+
 - **启动回滚异常退出保障接续（2026-11-08，completed，仅本批，沿第5项；353整阶段仍in_progress）**：用户继续最近两天Review修复，基线`11e001ff`。服务入口未消费`start()`抛出的`ShutdownIncompleteError`，可能跳过退出保护并等待遗留非daemon线程。本批只在start调用处处理已明确回滚不完整的类型：owner已尝试关闭后，不再重复stop或新建期限，按原不完整回收失败策略直接退出2；强退不等待日志、时间线投影或诊断线程。原报告／因果链保留在异常对象中，强退时不保证来得及输出；回滚完整后的普通／进程控制异常仍保持原传播。b第3章窄更新实际入口合同，f第10章保留问题及证据。
 
   验证：修复前新增四项反例均失败（`/tmp/trader-353-server-startup-before-20261108.xml`），真实自有子进程被遗留非daemon线程及日志锁拖住，父进程3秒超时后已回收。修复后server入口、关闭诊断、信号取消、资源编排及多档启动五个定向文件70项全部通过（`/tmp/trader-353-server-startup-final-20261108.xml`），含新增7项：无／较早／较晚信号期限不重建预算，普通／KeyboardInterrupt／SystemExit异常原样传播，以及真实线程／日志阻塞时失败退出2。两Python文件Ruff E9/F/B/UP、server源码正常mypy、独立Review及完整diff／空白检查通过；未运行格式脚本。

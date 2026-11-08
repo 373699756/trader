@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
-from trader.infra.market_data.history.history import DailyBar, HistoryContext, HistoryProfile
+from trader.recommendation.domain.market.history_metrics import DailyBar, HistoryContext, HistoryProfile
 
 
 def RebaseHistoryPrices(

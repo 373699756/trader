@@ -20,7 +20,7 @@ from tests.helpers.recommendation.market_data import (
     _quote,
 )
 from trader.infra.cache import BoundedLruCache
-from trader.infra.market_data.history.history import BuildHistoryContext
+from trader.recommendation.domain.market.history_metrics import BuildHistoryContext
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.normalization import factor_history

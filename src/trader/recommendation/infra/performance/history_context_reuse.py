@@ -3,7 +3,7 @@
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from trader.infra.market_data.history.history import (
+from trader.recommendation.domain.market.history_metrics import (
     BuildHistoryContext, DailyBar, HistoryContext, HistoryProfile, SummarizeHistoryMetrics,
 )
 from trader.infra.serialization.canonical import ContentHash

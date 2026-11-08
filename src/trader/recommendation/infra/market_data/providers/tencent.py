@@ -16,7 +16,7 @@ from typing_extensions import NotRequired, Unpack
 
 from trader.download.infra.tencent_daily import FetchTencentDailyRows, TencentDailyQuery, TencentDailyRow
 from trader.infra.http_contracts import HttpConnectionError, HttpError, HttpStatusError, HttpTimeout, HttpTransport
-from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.recommendation.domain.market.history_metrics import DailyBar, PriceAdjustment
 from trader.infra.workers import (
     BoundedExecutor,
     InjectedExecutor,

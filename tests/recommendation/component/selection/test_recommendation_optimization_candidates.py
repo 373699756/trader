@@ -12,7 +12,7 @@ from tests.helpers.recommendation.market_data import _history_bars
 from tests.helpers.recommendation.runtime.recommendation_boundaries import _features, _runtime_policy
 from tests.helpers.recommendation.publication.tomorrow_projection import EVALUATED_AT, _verified_feature
 from trader.infra.cache import BoundedLruCache
-from trader.infra.market_data.history.history import BuildHistoryContext
+from trader.recommendation.domain.market.history_metrics import BuildHistoryContext
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import ScoredSelectionIdentity, ScoredSelectionOptions
 from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService

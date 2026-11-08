@@ -23,7 +23,7 @@ from trader.download.infra import tushare_records as tushare_records_module
 from trader.download.infra.exchange_security_master import ExchangeSecurityMasterClient
 from tests.helpers.download.market_client import TushareClientFixture as TushareClient
 from trader.infra.cache import BoundedLruCache
-from trader.infra.market_data.history.history import (
+from trader.recommendation.domain.market.history_metrics import (
     BuildHistoryContext,
     DailyBar,
     HistoryAdjustmentError,

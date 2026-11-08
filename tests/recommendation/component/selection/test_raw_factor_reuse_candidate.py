@@ -22,7 +22,7 @@ from tests.helpers.recommendation.market_data import (
     _tail_minute_bars,
 )
 from trader.infra.cache import BoundedLruCache
-from trader.infra.market_data.history.history import BuildHistoryContext, HistoryAdjustmentError, PriceAdjustment
+from trader.recommendation.domain.market.history_metrics import BuildHistoryContext, HistoryAdjustmentError, PriceAdjustment
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.domain.market.research import CorporateRiskCategory, CorporateRiskFact, FinancialReport, ResearchObservation
 from trader.recommendation.infra.normalization.features import FeatureBuilder

@@ -48,6 +48,8 @@ domain 不读配置、时间、网络、文件或数据库。application 依赖�
 
 顶层`infra/settings`只持有运行配置与技术解析。荐股策略、Long清单、因子和风险配置由`recommendation/infra/settings`持有，训练资源由`training/infra/resource_settings`解析；旧业务配置路径删除，消费者直接使用各owner。特征schema归`recommendation/domain/market/feature_schema`，配置校验不依赖特征构建实现；下载当前行业准入使用自身domain合同，不构造荐股模型对象。
 
+历史日线值、价格基准和会话类型，以及均线、ATR、波动、回撤、Amihud与历史上下文计算，统一由`recommendation/domain/market/history_metrics.py`持有；供应商、发布历史和缓存adapter只负责事实解析与投影。原公共infra历史算法路径及导出删除，全部消费者直接使用新owner；公式、单位、窗口、完成日和停牌语义不因迁移变化。源码进入domain后纳入原训练实现摘要，复用合同变化须如实保留，不重贴旧模型或冻结身份。
+
 `HttpRequestScope`仅接收显式HTTP工厂，管理单次请求的打开和关闭；`WorkerScope`仅管理root注入的执行器，部分启动失败和正常退出均以同一截止回收已启动资源。资源构造仍由`bootstrap.py`持有。HTTP关闭先取消并拒绝新请求，锁忙显式报告pending，在途调用的finally负责最终关闭；请求关闭与完成关闭分开观察，避免执行器已超时后又无期限等待HTTP锁。
 
 ## 3. 启动、运行和退出
@@ -84,6 +86,8 @@ flowchart TD
 资源或档位的普通关闭异常须记入原`ShutdownReport`后继续尝试其余owner，跨档仍逆序关闭，第一档最后回收共享资源；失败诊断只保留有界异常类型因果链，不输出原异常载荷。部分启动失败也回收已尝试启动的owner，关闭不完整时保留报告与原启动异常因果，外层沿用已有回滚期限；预算句柄由application资源编排统一最后关闭并计入报告。缓存停止可先释放等待者，但真实loader登记和计数仅在loader退出后移除，重复停止不得因等待者已释放而报告全部回收。
 
 `trader-server`启动收到`ShutdownIncompleteError`时，回滚owner已经尝试关闭；入口按不完整回收策略立即失败退出2，不重复stop或创建新期限，也不等待日志、时间线投影或诊断线程。原报告及启动因果保留在异常中，强退时不保证来得及输出。回滚完整后的普通异常和进程控制异常仍按原身份传播。
+
+系统已启动后的绑定、地址输出及Web线程启动／运行失败，先由原controller建立或复用关闭期限及看门狗；Web异常先通知主线程，再做诊断。Web与应用两个owner的停止先派发再按同一期限等待，不因诊断或清理异常重复停止；已绑定但尚未运行的Web仅关闭socket，不调用需要服务循环响应的shutdown。看门狗启动失败或回收不完整立即失败退出2，完整回收后保留原主线程异常／控制异常语义。日志及时间线投影仅尽力异步输出，不作为硬退出前置条件。
 
 隔离HTTP与SDK使用有上限的字节帧，父进程在完整帧头、正文收发的每一段复核原期限和取消，不以poll可读代表整帧已经到达。HTTP只传公开请求／响应字段及原始正文，metadata上限64KiB、请求正文16MiB，响应沿用请求的max_response_bytes；SDK只返回至多1MiB的字节结果，由供应商adapter解码，父进程不反序列化子进程给出的Python对象。超时、取消及中途退出均丢弃并有界回收该worker，健康HTTP进程继续复用；物理请求预算规则不变。
 

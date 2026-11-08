@@ -31,7 +31,7 @@ from scripts.download.market.market_factor_inputs import HistoryAtCut
 from scripts.download.market.market_factor_inputs import ModelFeatureRequirements
 from scripts.download.market.market_factor_inputs import ReadReferences
 from scripts.download.market.market_factor_text import RenderMarketFactorText
-from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.recommendation.domain.market.history_metrics import DailyBar, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.infra.settings.loading import LoadStrategySettings

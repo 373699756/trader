@@ -20,7 +20,7 @@ PROJECT_ROOT = TOOL_ROOT
 
 from scripts.download.history.history_fallback import FallbackHistoryClient  # noqa: E402
 from trader.bootstrap import OpenExternalHttp  # noqa: E402
-from trader.infra.market_data.history.history import DailyBar  # noqa: E402
+from trader.recommendation.domain.market.history_metrics import DailyBar  # noqa: E402
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient  # noqa: E402
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient  # noqa: E402
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide
-from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.recommendation.domain.market.history_metrics import DailyBar, PriceAdjustment
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomeHorizons, OutcomePrice, OutcomeTradingStatus
 from trader.recommendation.infra.market_data import outcome_history, published_history_bars

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.infra.market_data.history.history import DailyBar, HistoryContext
+from trader.recommendation.domain.market.history_metrics import DailyBar, HistoryContext
 from trader.recommendation.domain.market.tail import MinuteBar
 
 

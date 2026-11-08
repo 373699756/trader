@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from trader.download.infra.current_industry_publication import CurrentIndustryCache
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.reference_index import SQLiteReferenceIndex
-from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
+from trader.recommendation.domain.market.history_metrics import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.infra.settings.loading import LoadStrategySettings

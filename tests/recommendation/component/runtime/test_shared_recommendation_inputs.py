@@ -27,7 +27,7 @@ from tests.helpers.recommendation.runtime.published_input_preloader import _cach
 from tests.helpers.shared.cold_start import _empty_config
 from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, PriceAdjustment
+from trader.recommendation.domain.market.history_metrics import BuildHistoryContext, DailyBar, PriceAdjustment
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.ports.market_data import MarketDataPendingError

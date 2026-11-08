@@ -14,7 +14,7 @@ from tests.helpers.recommendation.market.candidate_history_tail import HistoryIn
 from tests.helpers.recommendation.publication.shared_history_projection import _cache
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.infra.cache import BoundedLruCache
-from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, PriceAdjustment
+from trader.recommendation.domain.market.history_metrics import BuildHistoryContext, DailyBar, PriceAdjustment
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.domain.market.price_basis import HistoryPriceAnchor, HistoryPriceBasis, ResolveHistoryPriceScale
 from trader.recommendation.domain.publication.preview import PreviewContext

@@ -38,7 +38,6 @@ TARGET_PACKAGES = (
     "recommendation/application/runtime",
     "recommendation/application/pipeline/freeze_publish",
     "infra/settings",
-    "infra/market_data/history",
     "infra/market_data/references",
     "recommendation/infra/market_data",
     "infra/serialization",
@@ -221,10 +220,13 @@ def test_business_and_delivery_boundaries_do_not_import_provider_implementations
 
 def test_market_history_references_and_services_are_partitioned() -> None:
     market_root = SOURCE_ROOT / "infra" / "market_data"
-    history_root = market_root / "history"
+    history_metrics = SOURCE_ROOT / "recommendation" / "domain" / "market" / "history_metrics.py"
     references_root = market_root / "references"
     service_root = SOURCE_ROOT / "recommendation" / "infra" / "market_data"
-    assert history_root.is_dir()
+    assert history_metrics.is_file()
+    assert not any(
+        path for path in (market_root / "history").rglob("*.py") if "__pycache__" not in path.parts
+    )
     assert references_root.is_dir()
     assert service_root.is_dir()
     assert (service_root / "market_feature_service.py").is_file()

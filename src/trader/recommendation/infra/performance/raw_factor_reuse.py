@@ -8,7 +8,7 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.infra.cache_contracts import CacheIdentity, RequestKey
-from trader.infra.market_data.history.history import DailyBar, HistoryContext
+from trader.recommendation.domain.market.history_metrics import DailyBar, HistoryContext
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.feature_schema import FEATURE_SCHEMA_ID

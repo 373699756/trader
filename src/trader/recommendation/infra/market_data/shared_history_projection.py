@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow, ValidatePublishedHistoryCodes
 from trader.infra.cache_contracts import CanonicalJsonBytes
-from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
+from trader.recommendation.domain.market.history_metrics import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.settings.models import HistoryPreloadSettings
 from trader.recommendation.infra.market_data.aligned_history_bars import AlignedHistoryBars, BuildAlignedHistoryBars
 

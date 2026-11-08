@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.recommendation.market_data import _history_price_basis
-from trader.infra.market_data.history.history import (
+from trader.recommendation.domain.market.history_metrics import (
     BuildHistoryContext,
     DailyBar,
     PriceAdjustment,

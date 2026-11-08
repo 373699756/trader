@@ -7,7 +7,7 @@ from datetime import date
 import math
 
 from trader.download.domain.published_history import PublishedHistoryWindow
-from trader.infra.market_data.history.history import DailyBar, HistorySessionKind, PriceAdjustment
+from trader.recommendation.domain.market.history_metrics import DailyBar, HistorySessionKind, PriceAdjustment
 from trader.recommendation.domain.market.history_alignment import (
     AlignedMarketSession,
     AlignMarketSession,
