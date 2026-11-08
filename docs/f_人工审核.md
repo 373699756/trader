@@ -402,3 +402,73 @@ Q24的价格差异检查只比较同源qfq OHLC，不因量额单独变化触发
 旧工件多格式reader、下载未消费配置/分散附属结构、换手允许增加0.05、选择实验仅V2/V3、C27质量失败、真实行业/字段/八头/五轮/30秒及性能欠项仍沿g原记录，不重复新增阶段或P编号。
 
 建议原owner先完成“已交修复与窄日志差集整合→353本批清理/截止/终态反例→334发布组合恢复及332材料幂等→281 API validator和353算法owner→213状态粒度裁决”，再接依赖合法输入的功能验收及C唯一性能队列。其它已授权就绪任务仍可沿原记录并行，不能为本次Review停掉开发或用户进程。审查记录不是新的实现、业务作业、删除、重建、留出读取或发布授权，也不改变既有明确授权。
+
+## 7. 实时荐股输入与准确性复核（2026-11-08）
+
+用户要求重新找出老训练资料及其它影响实时荐股准确性的因素。基线为`c846f2ca`，按下载发布→历史与实时特征→模型→硬门／总体／排名→冻结／展示核对，确认以下1项P1、6项P2；它们尚未修复。证据为源码追链、现有fixture上的小型纯内存反例和八个固定模型元数据路径的只读检查；未启动实际下载、服务、训练、性能或真实留出作业，没有修改活动资料，也没有测出真实发生频率或收益损失比例。
+
+### 7.1 Q29／P1：最新报告利润已转正，旧完整亏损仍可能触发硬过滤
+
+**当前回答：已确认。** [CompileCompanyFacts](../src/trader/download/domain/company_facts.py#L92)先找到最新报告，再优先选择八个字段全完整的报告；最新报告部分字段为空时，会保留较旧完整报告。这种完整财务视图保留本身符合d及现有测试，问题是[荐股投影](../src/trader/recommendation/infra/market_data/published_company_research.py#L558)只把这一个旧报告交给`financial_history`，失去真正最新报告的独立利润证据。[亏损判断](../src/trader/recommendation/domain/market/research.py#L327)先返回负利润的1，再检查`financial:`错误，PARTIAL状态不能撤回错误硬拒绝。
+
+**已运行反例：** 旧2026-03-31报告完整、归母／扣非为−10／−8；新2026-06-30报告归母／扣非为3／2，仅EPS为空。经真实Compile→`_observation`→`DeriveLatestDisclosedReportLoss`，采用报告仍为03-31，亏损门为1。不能把“最新报告其它字段尚缺”解释为“已确认最新仍亏损”；当前两项利润已知和最新性未知也需区分。
+
+**影响与修复边界：** 四档动态硬过滤可能误删股票；同时可能与下面的总体重放问题叠加。保留旧完整财报及其真实日期用于原用途，另让最新披露亏损门消费真实最新同一报表的利润；不跨期拼字段、不用旧报告冒充最新，不因这一修复清除合法持续风险。下载事实投影和荐股消费者须原子切换；由原公司事实／荐股owner接续，不在本次Review改库。
+
+### 7.2 Q30／P2：550日财报年龄限制未进入实际派生评分
+
+**当前回答：已确认。** `config/long.json`的`maximum_age_days=550`被解析为`LongResearchPolicy.financial_max_age_days`，源码除声明、校验和配置读取没有生产消费。[DeriveLongResearchFeatures](../src/trader/recommendation/domain/market/research.py#L293)直接以报告计算价值、成长、质量和财务恶化；[加载投影](../src/trader/recommendation/infra/market_data/published_company_research.py#L507)只拒未来披露／报告期，没有年龄门。通用报价／历史质量和本地动态过滤未补做财报年龄核验，DeepSeek证据年龄限制也不能修正已经形成的本地分。
+
+**已运行反例：** 同一观察时点的新公司快照，包含900天前已披露的完整财报。实际`financial_history_complete=True`、快照年龄0秒，仍算出价值80.3571、成长90、质量67.5、亏损门0；配置的550日没有作用。这里确认的是普通财务因子的超龄使用，不能据此判定实际库全部财报超龄。
+
+**影响与修复边界：** D25等消费财务组件的评分及Tomorrow财务奖励可能使用过期财报。按各字段合同，以实际观察时间核验原报告披露时间，超龄的普通派生值输出缺失及明确原因；新本地快照时间不能刷新原报告年龄。**不得因此把最新正式亏损或未解除风险自动清零**，它们具有独立合同；旧事实继续保留。由原财务特征／质量owner接续。
+
+### 7.3 Q31／P2：同日历史发布会改变同一行情的指标截止
+
+**当前回答：已确认。** [BuildFactorHistory](../src/trader/recommendation/infra/normalization/factor_history.py#L47)在历史含观察日D时，只把MA5／10／20、部分入场量退回D−1；MA60、突破高点、波动、回撤、均额及Amihud等仍消费含D的`history`或`bars[-20:]`。[历史缓存](../src/trader/recommendation/infra/market_data/published_history_cache.py#L381)允许预览及15点后的含D发布，因此不是不可达输入。
+
+**已运行反例：** 前61日价格10元、日成交额1亿元；D收10.5、最高10.8、成交额2.08亿元。相同现价及合法raw／qfq换算比例下，只把历史发布从D−1改成D，MA位置分100→75、突破分100→72.2222，20日成交额中位数两边都1亿元，满足现有流动性门。均额从1亿元变1.054亿元，波动也从0变1.0897，MA20及前日高点却仍按D−1。
+
+**影响与修复边界：** 因子进入两策略趋势分，可能改变V2／V3排名及V1／V5的`local_score`动作门。重点是允许含D的预览、盘后冷启动／合法fallback，不声称已经覆盖同日正式冻结。应统一投影截至D−1的完整因子窗口，不只修几条均线；保留Q25已修的换算和缺证拒绝，补全部受影响字段的前日／同日发布等价回归。由原荐股历史特征owner接续。
+
+### 7.4 Q32／P2：硬过滤拒绝者在重放时重新进入横截面分母
+
+**当前回答：已确认。** [PreselectionReplayFeature](../src/trader/recommendation/domain/selection/scored_selection.py#L436)的值白名单删除`latest_disclosed_report_loss`等本批已冻结硬过滤事实，随后[FilterCandidateInputs](../src/trader/recommendation/domain/selection/scored_selection.py#L465)在投影上重新过滤并构造板内参考，旧硬拒绝不再重现。正常全市场特征链会从正式公司研究生成该亏损标志，不仅是外部手工DTO可触发。
+
+**已运行反例：** 用现有`application_feature_factory`、`_runtime_policy`和`FilterFeatureCandidates`构造40只同板合格行情，末股亏损标志1。发现阶段输出拒绝600039／`latest_disclosed_report_loss`，板内样本39；冻结投影重放后拒绝列表为空，板内样本变40。Root独立复验同一输出。
+
+**影响与修复边界：** 污染其余合格股的板内分位及本地分，可能改变排名／动作。候选自身仍独立经过硬过滤，**不能据此声称亏损股直接获得可执行推荐**。应保留同一冻结市场切片中完整硬门输入，再重新执行过滤；不能复用旧结论、拼入新轮资料或扩大总体。补阳性／未知风险和分母一致性回归，由原候选筛选／横截面owner接续。
+
+### 7.5 Q33／P2：合法停牌日被移出20日Amihud分母
+
+**当前回答：已确认并交叉复核。** [Amihud计算](../src/trader/infra/market_data/history/history.py#L296)先过滤`amount=0`日，再除剩余日数；c字段合同是20个交易位置上的`abs(return)/max(amount,EPS)`均值。[日历对齐](../src/trader/recommendation/domain/market/history_alignment.py#L113)合法停牌生成零收益、零成交额，历史资格不因这种合法停牌拒绝。
+
+**已运行反例：** 20日中10个停牌日，另10日收益1%、成交额2亿元，实际Amihud为5e−5，合同值2.5e−5；成交额中位数／均额均1亿元，仍可通过流动性门。该值进入标准档及V1的成本百分位和净效用门，影响是否转化为排名／动作取决同板分布，未量化真实收益损失。
+
+**修复边界：** 保留20个交易位置，合法零收益停牌日贡献0；未知／非法源值不能借此补零。复用原计算owner及全部消费者，不改变模型覆盖所定义的既有成本人口，不取消成本门；由原历史算术／成本owner接续。
+
+### 7.6 Q34／P2：复用已经拒绝语义变化，到期提醒仍可能未到期
+
+**当前回答：已确认。** [EvaluateHistoryTrainingDue](../src/trader/training/infra/history/history_training_due.py#L140)只把价格修订作为输入变动，不消费最新行业语义；合同变化分支要求`expected_training_contract_hash`，但[正常调用](../src/trader/training/infra/history/history_training_due.py#L287)从不提供它。相对地，[训练复用](../src/trader/training/application/profile_training.py#L142)已比较组合输入及训练合同，两个消费者会给出相反结论。358的训练身份切换尚未使原提醒完整接纳行业语义变化。
+
+**已运行反例：** 同价格、成熟信号日不变，只改行业映射或训练合同，原模型复用由True变False；到期计算仍`not_due`／`training_due=False`，显式提供合同变化后才为`training_contract_due`。这不表示执行`train`会复用错误模型，问题是漏报应重新拟合的需求。
+
+**修复与待确认：** 由同一语义身份owner向提醒提供当前行业及实际训练合同；刷新时间、文档及纯物理变更不能冒充新训练依据。另已确认V1未接`PublishedTrainingState`维护枚举且bootstrap传`maintenance=None`，它缺同类采用／到期提示；是否统一四档的具体提醒策略沿原训练维护owner裁决，不把提醒到期自动升级为必须阻断实时预测。
+
+### 7.7 Q35／P2：新资料已发布，重启采用提示仍可能一直为false
+
+**当前回答：已确认。** 启动固定资料、训练成功后需重启服务采用新模型是现有设计，**不热切换本身不属于本项缺陷**。问题是[公司投影](../src/trader/recommendation/infra/market_data/published_company_research.py#L259)只在初始化同时赋`loaded`与`disk`身份，之后[状态](../src/trader/recommendation/infra/market_data/published_company_research.py#L362)比较两个未刷新的值；因此`restart_required=False`不能证明磁盘没有更新。证券参考、历史投影以及`PublishedTrainingState`亦为固定启动观察，没有发现后续磁盘身份观察入口。
+
+**已运行反例：** 用既有纯内存`_Reader`／`PublishedCompanyResearch`初始化`first`，随后reader正式发布变成`second`并新增调查事件；读取仍是旧epoch，真实发布second、reported disk first、loaded first、`restart_required=False`，访问发布数据只1次，新增风险没有被采用。保留旧epoch符合固定启动设计，漏提醒才是错误；不声称一次更新会越过既有风险降级或冻结保护。
+
+**修复边界：** 在正常轮次之外有界观察发布身份，或把未观察磁盘状态明确标成未知；不得每轮同步读业务库、后台下载／训练或静默混入新旧资料。同步／训练结束也应明确通知需重启采用。公司／参考／历史／模型各原owner共享明确的观测合同，不另建状态真相源。
+
+### 7.8 本轮数据现状、未确认项与不应误报的正常行为
+
+- Q26接续：本次只读核查默认模型目录时，V1／V2／V3六个头的`metadata.json`不存在；V5两个头存在，价格截止2026-11-06，最终拟合末日分别11-05／10-30，但`training_input`中缺`industry_policy`及`industry_snapshot`。因此不能声称四档已完成358当前行业规则重训；新codec会拒绝这种缺合同工件，不应让旧工件重贴身份。未启动训练、未加载原生模型或执行推断，结论只对应本次检查时点。
+- T+1／T+5成熟标签末日比最新价格日早属于正常边界。2026-11-06价格下，Tomorrow末信号11-05、D25末信号10-30；最新合法预测特征仍可使用11-06。不能为了“最新训练”引入未发生的未来收益。750／1000／750／61日历史窗口及最新行业统一历史分组也是用户已授权规则，不把它们本身当缺陷。
+- Q24／Q25修复路径已复核，本轮不重复登记。现有活动价格是否完全不含修复前污染，仍需原范围的隔离审计；修了后续路径不等于已给旧价格／样本／模型补签正确。公司字段真实覆盖、八头真实拟合和生产采用、独立收益／前瞻验收亦不能由本次小反例替代。
+- 成本总体按c7.1“保留本档原有预测合格总体”的专门合同处理；通用段落措辞存在理解冲突，未据此登记必须扩大成本人口的程序缺陷。评分缓存时间键曾被怀疑，但默认generation／分钟资格失效会保护，未复现越界复用；不把它列为确认项。
+- 本轮未发现新的报价量额单位、未来时间拒绝、分钟可执行年龄、模型分与`local_score`混用、DeepSeek数值评分、六席后补位或15:00 first-wins反例。Web已区分报价源年龄与评分完成时间，不将有意保留的旧完整快照一概指认为冒充新评分。这些是本轮核对边界，不是全量真实验收通过。
+
+建议原owner先处理Q29以及直接改变数值的Q30–Q33，再把Q34／Q35的训练需求与采用提示接完整；真实数据审计及收益验收继续沿原归属。这里只保存问题、证据、当前回答和待确认项，实施状态仍以g为准。
