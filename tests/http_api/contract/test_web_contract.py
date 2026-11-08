@@ -11,10 +11,12 @@ from trader.recommendation.application.pipeline.freeze_publish.event_stream impo
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import BuildFreezeCommitted
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
     FreezeQuerySources,
+    OutcomeTierSummary,
     UnifiedFreezeQueries,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
+from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
@@ -89,6 +91,75 @@ def test_only_unified_product_routes_are_registered() -> None:
         "/api/v2/tomorrow/current",
     ):
         assert client.get(removed).status_code == 404
+
+
+@pytest.mark.parametrize("change", (
+    {"tier": "watch"},
+    {"horizon": 5},
+    {"sample_count": 3},
+    {"complete_count": 2},
+    {"positive_count": 0},
+    {"average_net_excess_pct": 2.0},
+))
+def test_history_etag_tracks_outcome_summary_fields_and_availability(change):
+    freeze = _freeze()
+    record = CommittedFreezeRecord(freeze, freeze.observed_at, "scheduled")
+    original_hash = record.payload_hash
+    summary = OutcomeTierSummary("recommend", 1, 2, 1, 1, 1.0)
+
+    class History(_FreezeRecords):
+        def load(self, strategy, trade_date):
+            assert strategy is freeze.strategy and trade_date == freeze.trade_date
+            return record
+
+    class Summaries:
+        values = (summary,)
+        unavailable = False
+
+        def summaries(self, strategy, *, limit=31):
+            assert strategy is freeze.strategy
+            if self.unavailable:
+                raise OSError("controlled summary failure")
+            return self.values
+
+    summaries = Summaries()
+    queries = UnifiedFreezeQueries(
+        UnifiedFreezeIndex(),
+        UnifiedFreezeDraftIndex(),
+        History(),
+        _Clock(),
+        sources=FreezeQuerySources(outcome_summaries=summaries),
+    )
+    client = CreateApp(services=UnifiedWebServices(queries, UnifiedFreezeEventStream(), lambda: {})).test_client()
+    url = f"/api/freezes/tomorrow/history?date={freeze.trade_date.isoformat()}"
+    first = client.get(url)
+    original_etag = first.headers["ETag"]
+    assert first.status_code == 200
+    assert client.get(url, headers={"If-None-Match": original_etag}).status_code == 304
+
+    summaries.values = (replace(summary, **change),)
+    changed = client.get(url, headers={"If-None-Match": original_etag})
+    assert changed.status_code == 200
+    changed_etag = changed.headers["ETag"]
+    assert changed_etag != original_etag
+    assert changed.get_json()["outcome_summaries"][0].items() >= change.items()
+    assert client.get(url, headers={"If-None-Match": changed_etag}).status_code == 304
+
+    summaries.unavailable = True
+    failed = client.get(url, headers={"If-None-Match": changed_etag})
+    assert failed.status_code == 200
+    assert failed.headers["ETag"] != changed_etag
+    assert failed.get_json()["outcome_summaries"] == []
+    assert "outcome_summary_unavailable" in failed.get_json()["degraded_reasons"]
+    assert client.get(url, headers={"If-None-Match": failed.headers["ETag"]}).status_code == 304
+
+    summaries.unavailable = False
+    recovered = client.get(url, headers={"If-None-Match": failed.headers["ETag"]})
+    assert recovered.status_code == 200
+    assert recovered.headers["ETag"] == changed_etag
+    assert "outcome_summary_unavailable" not in recovered.get_json()["degraded_reasons"]
+    assert client.get(url, headers={"If-None-Match": changed_etag}).status_code == 304
+    assert record.payload_hash == original_hash
 
 
 def test_company_evidence_links_are_bounded_read_only_and_explicitly_projected():

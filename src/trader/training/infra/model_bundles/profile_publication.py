@@ -105,6 +105,12 @@ def ClearProfileStaging(profile_root: Path, *, timeout_seconds: float = 2.0) -> 
             shutil.rmtree(staging)
 
 
+def RequireProfilePublicationReady(profile_root: Path) -> None:
+    """While holding the publication lock, reject unresolved previous generations."""
+    if next(profile_root.parent.glob(f".{profile_root.name}.previous.*"), None) is not None:
+        raise ValueError("model publication has an unresolved previous directory")
+
+
 def PublishProfileBundles(
     profile_root: Path,
     profile: TrainedProfileContract,
@@ -148,6 +154,7 @@ def PublishProfileBundles(
         _validate_profile_pair(heads)
         _require_recent_diagnostics(head.model for head in heads)
         with ProfilePublicationLock(profile_root, timeout_seconds):
+            RequireProfilePublicationReady(profile_root)
             if profile_root.exists() or profile_root.is_symlink():
                 InspectProfileWorkspace(profile_root, allow_partial_heads=True)
                 os.replace(profile_root, previous)
@@ -315,4 +322,5 @@ __all__ = [
     "PublishProfileBundles",
     "RecoverProfileBundles",
     "RecoverProfilePublication",
+    "RequireProfilePublicationReady",
 ]

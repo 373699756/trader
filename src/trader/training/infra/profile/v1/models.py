@@ -48,7 +48,9 @@ from trader.training.domain.v1.learned_rank import (
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.training_dates import MAX_TRAINING_SESSIONS
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
-from trader.training.infra.model_bundles.profile_publication import InspectProfileWorkspace, ProfilePublicationLock, RecoverProfilePublication
+from trader.training.infra.model_bundles.profile_publication import (
+    InspectProfileWorkspace, ProfilePublicationLock, RecoverProfilePublication, RequireProfilePublicationReady,
+)
 from trader.training.infra.profile.composition import SingleHeadCombiner
 from trader.training.infra.profile.v1.settings import ParseV1TrainingSettings
 from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
@@ -278,6 +280,7 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None
         if _read_pair_directory(staging) != pair:
             raise ValueError("learned-rank staged pair differs")
         with ProfilePublicationLock(profile_root):
+            RequireProfilePublicationReady(profile_root)
             if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
                 raise ValueError("V1 model directory is invalid")
             if profile_root.exists():

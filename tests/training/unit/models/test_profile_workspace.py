@@ -211,6 +211,36 @@ def test_unknown_content_in_previous_directory_preserves_it_without_failing_the_
     assert "trained_profile_previous_cleanup_failed" in caplog.text
     assert not _publication_candidates(tmp_path)
 
+    formal_contents = _snapshot(root)
+    with pytest.raises(ValueError, match="unresolved previous directory"):
+        PublishProfileBundles(root, V3_TRAINING_PROFILE, _staged(tmp_path))
+
+    assert _snapshot(root) == formal_contents
+    assert _snapshot(previous) == contents
+    assert tuple(tmp_path.glob(".v3.previous.*")) == (previous,)
+    assert not _publication_candidates(tmp_path)
+
+
+def test_previous_directory_appearing_after_recovery_blocks_the_final_swap(tmp_path, monkeypatch):
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
+    root = tmp_path / "v3"
+    expected = _snapshot(root)
+    recover = profile_publication.RecoverProfileBundles
+    previous = tmp_path / (".v3.previous." + "a" * 32)
+
+    def leave_previous(profile_root, profile, *, timeout_seconds):
+        recover(profile_root, profile, timeout_seconds=timeout_seconds)
+        previous.mkdir()
+
+    monkeypatch.setattr(profile_publication, "RecoverProfileBundles", leave_previous)
+    with pytest.raises(ValueError, match="unresolved previous directory"):
+        PublishProfileBundles(root, V3_TRAINING_PROFILE, _staged(tmp_path))
+
+    assert _snapshot(root) == expected
+    assert tuple(tmp_path.glob(".v3.previous.*")) == (previous,)
+    assert not tuple(previous.iterdir())
+    assert not _publication_candidates(tmp_path)
+
 
 @pytest.mark.parametrize("missing", ("file", "head", "both_heads"))
 def test_owned_incomplete_models_can_still_be_cleaned_and_replaced_without_promoting_them(tmp_path, missing):

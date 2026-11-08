@@ -319,9 +319,24 @@ class UnifiedFreezeQueries:
         if self._outcome_summaries is None:
             return view
         try:
-            return replace(view, outcome_summaries=self._outcome_summaries.summaries(strategy))
+            view = replace(view, outcome_summaries=self._outcome_summaries.summaries(strategy))
         except (OSError, RuntimeError, ValueError):
-            return replace(view, degraded_reasons=(*view.degraded_reasons, "outcome_summary_unavailable"))
+            view = replace(view, degraded_reasons=(*view.degraded_reasons, "outcome_summary_unavailable"))
+        summary_identity = tuple(
+            (
+                item.tier,
+                item.horizon,
+                item.sample_count,
+                item.complete_count,
+                item.positive_count,
+                item.average_net_excess_pct,
+            )
+            for item in view.outcome_summaries
+        )
+        digest = hashlib.sha256(
+            json.dumps((summary_identity, view.degraded_reasons), ensure_ascii=True, separators=(",", ":")).encode()
+        ).hexdigest()[:16]
+        return replace(view, etag=f"{view.etag}+outcomes:{digest}")
 
     def dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
         if strategy is Strategy.LONG:

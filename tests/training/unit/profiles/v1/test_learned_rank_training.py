@@ -116,6 +116,15 @@ def test_v1_publication_cleanup_preserves_unknown_content(tmp_path, monkeypatch,
     assert len(preserved) == 1
     directory, expected = preserved[0]
     assert {path.relative_to(directory): path.read_bytes() for path in directory.rglob("*") if path.is_file()} == expected
+    if phase == "previous":
+        formal = {path.relative_to(root / "v1"): path.read_bytes() for path in (root / "v1").rglob("*") if path.is_file()}
+        with pytest.raises(ValueError, match="unresolved previous directory"):
+            PublishLearnedRankPair(root, pair)
+        assert ReadLearnedRankPair(root) == pair
+        assert {path.relative_to(root / "v1"): path.read_bytes() for path in (root / "v1").rglob("*") if path.is_file()} == formal
+        assert {path.relative_to(directory): path.read_bytes() for path in directory.rglob("*") if path.is_file()} == expected
+        assert tuple(root.glob(".v1.previous.*")) == (directory,)
+        assert not tuple(path for path in root.glob(".v1.publication.*") if path.name != ".v1.publication.lock")
 
 
 def test_matching_v1_pair_reuses_without_scanning_fitting_or_republishing(tmp_path, monkeypatch, reusable_pair):

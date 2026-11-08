@@ -612,6 +612,8 @@ V5大行业的 `tcn-batches-*`目录仅包含只读拟合缓存 `training/early_
 
 首次安装若只留下空目录或合法暂存工作目录，恢复该工作目录后仍无可复用模型，训练按原规则重新构建。新目录已经完成移入时保留该新组及其身份，不回滚到旧组；恢复流程不自动清理硬退出留下的其它候选或旧目录。这里的“旧组”指一次目录切换前的上一完整组，不授予旧格式兼容资格；现有decoder的历史分支差距见[第7章](#7-缓存复用检查与工件发布)。恢复后，配置、源资料、训练实现和日期分区仍须通过原复用合同；身份不匹配时正常重新拟合，不改写旧模型身份或收益资格。进程硬退出回归与SSD/HDD性能实测分别记录在g，不能互相替代。
 
+上一组清理失败或硬退出留下`.<profile>.previous.*`时，现有正式组仍可只读加载和按原合同复用；下一次发布必须在最终持锁切换之前拒绝未解决的旧目录，保留正式组及全部现场，不再制造第二份旧目录而使后续恢复无法唯一判定。该检查同时适用于V1与V2/V3/V5，不自动删除残留，也不改写已发布模型身份。
+
 ### 7.4 公共计算与校验的隔离候选
 
 P52/P55的候选由既有`sample_comparison_worker --construct-features`或完整作业`training_alignment`注册worker显式选择，生产训练不导入`computation_candidates.py`。`--computation-candidate`为`baseline/indexed_anchors/schema_cache/combined`，缺省baseline；样本worker离开特征构建模式、完整worker处于inputs-only模式均不能启用候选。C后台从同一冻结checkout、配置和输入在当前PC运行，数值摘要一致后再比较整作业成本；两台PC进度分别保留，不能把单轮报告或fixture当性能通过。
