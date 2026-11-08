@@ -41,7 +41,8 @@ def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy, preload_settings: Com
     usage_before = resource.getrusage(resource.RUSAGE_SELF)
     now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
     company_configuration = LoadCompanySyncConfiguration(_PROJECT_ROOT)
-    company_policy = LoadStrategySettings(_PROJECT_ROOT / "config/strategy.json").company_scoring
+    strategy = LoadStrategySettings(_PROJECT_ROOT / "config/strategy.json")
+    company_policy = strategy.company_scoring
     codes = tuple(str(600000 + offset) for offset in range(4402))
     documents = CompanyDocumentFiles(
         root / "text",
@@ -96,6 +97,7 @@ def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy, preload_settings: Com
         monotonic=time.monotonic,
         company_policy=company_policy,
         preload_settings=preload_settings,
+        financial_max_age_days=strategy.long_research.financial_max_age_days,
     )
     started = time.monotonic()
     research.initialize(codes, cancelled=lambda: False)

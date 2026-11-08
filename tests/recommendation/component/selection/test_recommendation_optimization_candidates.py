@@ -10,7 +10,7 @@ import pytest
 
 from tests.helpers.recommendation.market_data import _history_bars
 from tests.helpers.recommendation.runtime.recommendation_boundaries import _features, _runtime_policy
-from tests.helpers.recommendation.publication.tomorrow_projection import EVALUATED_AT
+from tests.helpers.recommendation.publication.tomorrow_projection import EVALUATED_AT, _verified_feature
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.history import BuildHistoryContext
 from trader.infra.settings import LoadRuntimeSettings
@@ -25,7 +25,10 @@ from tests.helpers.recommendation.publication.tomorrow_projection import _native
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import FilterFeatureCandidates
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import BuildScoredLocal, ScoredProjectionInputs
 from trader.recommendation.domain.candidate.filters import QuoteFreshnessBasis
-from trader.recommendation.domain.selection.scored_selection import PreselectionReplayFeature
+from trader.recommendation.domain.evidence.review import RiskFact
+from trader.recommendation.domain.market.models import Evidence
+from trader.recommendation.domain.publication.models import ScoredDisposition
+from trader.recommendation.domain.selection.scored_selection import BuildScoredCandidateReferences, PreselectionReplayFeature
 
 
 @pytest.fixture
@@ -159,11 +162,11 @@ def test_parallel_candidate_rejects_same_industry_groups_before_submitting():
         assert candidate.counts.completed == candidate.counts.peak_in_flight == 0
 
 
-@pytest.mark.parametrize("change", ("none_candidates", "empty_candidates", "quote", "value", "history"))
+@pytest.mark.parametrize("change", ("none_candidates", "empty_candidates", "quote", "value", "filter_value", "history"))
 def test_frozen_population_requires_exact_projection_and_independent_candidates(application_feature_factory, change):
     original = _features(application_feature_factory)
-    features = tuple(PreselectionReplayFeature(item) for item in original)
     policy = _runtime_policy()
+    features = tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in original)
     identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
     qualifications = FilterFeatureCandidates(
         original,
@@ -181,6 +184,8 @@ def test_frozen_population_requires_exact_projection_and_independent_candidates(
         features = (replace(features[0], quote=replace(features[0].quote, price=13.0)), *features[1:])
     elif change == "value":
         features = (replace(features[0], values={**features[0].values, "trend_score": 123.0}), *features[1:])
+    elif change == "filter_value":
+        features = (replace(features[0], values={**features[0].values, "latest_disclosed_report_loss": 1.0}), *features[1:])
     elif change == "history":
         features = (replace(features[0], history_days=features[0].history_days + 1), *features[1:])
     options = ScoredSelectionOptions(
@@ -196,6 +201,116 @@ def test_frozen_population_requires_exact_projection_and_independent_candidates(
         RankingSelectionService().select(
             features, policy, options, identity, population_qualifications=qualifications,
         )
+
+
+@pytest.mark.parametrize("risk_field", ("latest_disclosed_report_loss", "pledge_risk", "financial_fraud_history"))
+@pytest.mark.parametrize("risk_state", ("positive", "zero", "unknown"))
+def test_frozen_population_replays_risk_inputs_and_preserves_qualified_denominator(
+    application_feature_factory, risk_field, risk_state,
+):
+    policy = _runtime_policy()
+    original = tuple(
+        _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
+        for index in range(40)
+    )
+    value = policy.hard_filter.structured_risk_thresholds[risk_field] + 1.0 if risk_state == "positive" else (
+        None if risk_state == "unknown" else 0.0
+    )
+    original = (*original[:-1], replace(original[-1], values={**original[-1].values, risk_field: value}))
+    identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
+    qualifications = FilterFeatureCandidates(
+        original,
+        policy,
+        ScoredSelectionOptions(
+            evaluated_at=EVALUATED_AT,
+            max_age_seconds=30.0,
+            phase="candidate_discovery",
+            population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
+        ),
+        identity,
+    )
+    projected = tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in original)
+    replayed = FilterFeatureCandidates(
+        projected,
+        policy,
+        ScoredSelectionOptions(
+            evaluated_at=EVALUATED_AT, max_age_seconds=30.0, candidate_features=original[:-1],
+        ),
+        identity,
+        population_qualifications=qualifications,
+    )
+
+    for code, before in qualifications.population.evaluations.items():
+        after = replayed.population.evaluations[code]
+        assert (after.disposition, after.filter_reasons, after.optional_flags) == (
+            before.disposition, before.filter_reasons, before.optional_flags,
+        )
+    expected_size = 39 if risk_state == "positive" else 40
+    for filtered in (qualifications, replayed):
+        references = BuildScoredCandidateReferences(filtered)
+        assert tuple(item.population.sample_size for item in references.cross_sections) == (expected_size,)
+    last = replayed.population.evaluations[original[-1].quote.code]
+    assert last.features.values[risk_field] == value
+    if risk_state == "positive":
+        assert last.disposition is ScoredDisposition.REJECT
+        assert risk_field in {item.code for item in last.filter_reasons}
+    elif risk_state == "unknown":
+        assert last.disposition is ScoredDisposition.OBSERVE_ONLY
+        assert "structured_risk_unavailable" in {item.code for item in last.optional_flags}
+
+
+def test_frozen_population_keeps_candidate_supplement_and_review_risk_separate(application_feature_factory):
+    policy = _runtime_policy()
+    original = tuple(
+        _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10)))
+        for index in range(40)
+    )
+    identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
+    qualifications = FilterFeatureCandidates(
+        original,
+        policy,
+        ScoredSelectionOptions(
+            evaluated_at=EVALUATED_AT,
+            max_age_seconds=30.0,
+            phase="candidate_discovery",
+            population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
+        ),
+        identity,
+    )
+    supplemented = replace(
+        original[-1],
+        values={**original[-1].values, "latest_disclosed_report_loss": 1.0},
+        evidence=(Evidence("announcement", "announcement", "候选补查公告", "fixture", EVALUATED_AT),),
+        external_risk_facts=(RiskFact("review", "financial_deterioration", "high", 0.0, "deepseek", EVALUATED_AT, veto=True),),
+    )
+    projection = PreselectionReplayFeature(supplemented, hard_filter=policy.hard_filter)
+    assert not projection.evidence and not projection.external_risk_facts
+    assert "news_sentiment" not in projection.values
+    assert projection.values["latest_disclosed_report_loss"] == 1.0
+    result = RankingSelectionService().select(
+        tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in original),
+        policy,
+        ScoredSelectionOptions(
+            evaluated_at=EVALUATED_AT, max_age_seconds=30.0, candidate_features=(*original[:-1], supplemented),
+        ),
+        identity,
+        population_qualifications=qualifications,
+    )
+
+    assert result.selection.population_rejected_count == 0
+    assert not result.selection.population_filter_reason_counts
+    rejected = next(item for item in result.selection.evaluations if item.code == supplemented.quote.code)
+    assert rejected.disposition is ScoredDisposition.REJECT
+    assert "latest_disclosed_report_loss" in {item.code for item in rejected.filter_reasons}
+    assert supplemented.quote.code not in {item.code for item in result.selection.scored_candidates}
+    assert original[-1].values["latest_disclosed_report_loss"] == 0.0
+
+    native = replace(_native_input(original), candidate_features=original[:-1])
+    local = BuildScoredLocal(
+        native, policy, sequence=1, runtime=ScoredProjectionInputs(population_qualifications=qualifications),
+    )
+    assert not local.selection.population_rejected_count
+    assert not local.selection.population_filter_reason_counts
 
 
 def test_scoring_reuse_supports_local_projection_consumer(scoring_cache, application_feature_factory):
@@ -237,7 +352,7 @@ def test_frozen_population_cannot_revive_an_old_day_through_its_source_watermark
     )
 
     result = RankingSelectionService().select(
-        tuple(PreselectionReplayFeature(item) for item in previous),
+        tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in previous),
         policy,
         ScoredSelectionOptions(
             evaluated_at=EVALUATED_AT,
@@ -268,8 +383,8 @@ def test_scoring_reuse_binds_frozen_population_in_cache_and_fallback(
         ))
         for item in original
     )
-    features = tuple(PreselectionReplayFeature(item) for item in population)
     policy = _runtime_policy()
+    features = tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in population)
     identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
     qualifications = FilterFeatureCandidates(
         population,

@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import tempfile
+import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from itertools import islice
 from pathlib import Path
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle, TrainedHeadModelBundle
+from trader.infra.regular_file import ReadRegularFile
+from trader.training.domain.model_publication import ModelPublicationIdentity
+from trader.training.infra.model_bundles.bundle_codec import (
+    DecodeHeadPublicationIdentity, LoadHeadBundle, TrainedHeadModelBundle,
+)
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
 
@@ -76,9 +83,38 @@ def InspectPublishedHeadBundle(
     )
 
 
+def ReadPublishedHeadIdentity(
+    head_root: Path,
+    strategy: Strategy,
+    profile: TrainedProfileContract,
+    *,
+    cancel_requested: Callable[[], bool],
+) -> ModelPublicationIdentity:
+    """Read only bounded publication metadata inside a caller-owned profile lock."""
+    if cancel_requested():
+        raise InterruptedError("model_publication_observation_cancelled")
+    if not head_root.exists() and not head_root.is_symlink():
+        raise FileNotFoundError(head_root)
+    if not head_root.is_dir() or head_root.is_symlink():
+        raise ValueError("trained head directory is invalid")
+    files = {path.name for path in islice(head_root.iterdir(), 3)}
+    if files < {"model.json", "metadata.json"}:
+        raise FileNotFoundError("trained head fixed files are missing")
+    if files != {"model.json", "metadata.json"}:
+        raise ValueError("trained head fixed files are incomplete")
+    model_path = head_root / "model.json"
+    if model_path.is_symlink() or not model_path.is_file():
+        raise ValueError("trained head fixed file is invalid")
+    document = json.loads(ReadRegularFile(head_root / "metadata.json", maximum_bytes=8 * 1024 * 1024))
+    if cancel_requested():
+        raise InterruptedError("model_publication_observation_cancelled")
+    return DecodeHeadPublicationIdentity(document, strategy, profile)
+
+
 __all__ = [
     "PublishedHeadBundle",
     "InspectPublishedHeadBundle",
+    "ReadPublishedHeadIdentity",
     "LoadedPublishedHeadBundle",
     "MakeBundleStagingDirectory",
 ]

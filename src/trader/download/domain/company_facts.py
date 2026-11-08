@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 
 from trader.download.domain.company_descriptions import (
@@ -42,6 +42,7 @@ class CompanyFacts:
     announcement_state: CompanyDataState
     checked_at: datetime
     published_at: datetime
+    latest_financial: CompanyFinancial | None = field(kw_only=True)
 
     def __post_init__(self) -> None:
         EvidenceMarket(self.code)
@@ -53,6 +54,18 @@ class CompanyFacts:
             raise ValueError("company_facts_time_or_count_invalid")
         if self.financial is not None and self.financial.code != self.code:
             raise ValueError("company_facts_financial_identity_invalid")
+        if (
+            (self.financial is None) != (self.latest_financial is None)
+            or self.latest_financial is not None and (
+                self.latest_financial.code != self.code
+                or self.latest_financial.published_at > self.published_at
+                or self.latest_financial.report_date > self.published_at.date()
+                or self.financial is not None and (
+                    self.financial.report_date, self.financial.published_at
+                ) > (self.latest_financial.report_date, self.latest_financial.published_at)
+            )
+        ):
+            raise ValueError("company_facts_latest_financial_identity_invalid")
         if (
             any(item.code != self.code for item in self.unlock_schedule)
             or self.pledge
@@ -89,6 +102,9 @@ def CompileCompanyFacts(
     if (previous is not None and previous.financial is not None
             and previous.financial.published_at <= now and previous.financial.report_date <= now.date()):
         financials += (previous.financial,)
+    if (previous is not None and previous.latest_financial is not None
+            and previous.latest_financial.published_at <= now and previous.latest_financial.report_date <= now.date()):
+        financials += (previous.latest_financial,)
     latest_financial = max(financials, key=lambda item: (item.report_date, item.published_at)) if financials else None
     valid_financials = tuple(item for item in financials if _complete_financial(item))
     financial = max(valid_financials, key=lambda item: (item.report_date, item.published_at)) if valid_financials else latest_financial
@@ -178,6 +194,7 @@ def CompileCompanyFacts(
         CompanyDataState.COMPLETE if risk_complete else CompanyDataState.PARTIAL,
         source.source_checked_at or (previous.checked_at if previous else now),
         now,
+        latest_financial=latest_financial,
     )
 
 

@@ -86,6 +86,7 @@ class MarketDataHealth:
             "loaded_identity": research.loaded_identity,
             "disk_identity": research.disk_identity,
             "restart_required": research.restart_required,
+            "publication_observation_failure": research.publication_observation_failure,
             "planned_count": research.planned_count,
             "success_count": research.success_count,
             "error_count": research.error_count,
@@ -205,6 +206,7 @@ class MarketDataHealth:
                     "published_history_state": history.state,
                     "published_history_snapshot_hash": history.snapshot_hash,
                     "published_history_disk_snapshot_hash": history.disk_snapshot_hash,
+                    "published_history_observation_failure": history.publication_observation_failure,
                     "outcome_history_snapshot_hash": history.outcome_snapshot_hash,
                     "outcome_history_disk_snapshot_hash": history.outcome_disk_snapshot_hash,
                     "restart_required": history.restart_required
@@ -215,6 +217,7 @@ class MarketDataHealth:
                         "disk_identity": reference_publication.disk_identity,
                         "restart_required": reference_publication.restart_required,
                         "failure": reference_publication.failure,
+                        "publication_observation_failure": reference_publication.publication_observation_failure,
                     },
                     "published_history_data_cutoff": (
                         history.data_cutoff.isoformat() if history.data_cutoff is not None else None

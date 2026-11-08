@@ -102,9 +102,10 @@ def test_history_corrections_and_policy_changes_invalidate_equal_quotes(factor_c
     assert builder._raw_features(quote, bars[-20:], corrected_context) == _builder()._raw_features(
         quote, bars[-20:], corrected_context
     )
-    corrected_bars = (*bars[-20:-1], replace(bars[-1], high=100.0))
-    assert builder._raw_features(quote, corrected_bars, corrected_context) == _builder()._raw_features(
-        quote, corrected_bars, corrected_context
+    corrected_bars = (*bars[:-1], replace(bars[-1], high=100.0))
+    corrected_context = BuildHistoryContext(corrected_bars)
+    assert builder._raw_features(quote, corrected_bars[-20:], corrected_context) == _builder()._raw_features(
+        quote, corrected_bars[-20:], corrected_context
     )
     assert len(calls) == 3
     policy = replace(FEATURE_WEIGHT_POLICY, trend_score={"ma20_60_position": 1.0, "ma_slope": 0.0})

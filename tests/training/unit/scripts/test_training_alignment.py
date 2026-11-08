@@ -498,6 +498,8 @@ def test_published_training_source_rejects_writes_and_restores_all_hooks(tmp_pat
     original_connect = sqlite3.connect
     query = history_training_due.HistoryTrainingDueQuery(
         source, tmp_path / "output", datetime.now(timezone.utc), V3_TRAINING_PROFILE,
+        industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
+        expected_training_contract_hash="9" * 64,
     )
     with pytest.raises(InterruptedError) if failure else nullcontext():
         with ReadOnlyTrainingSource(source):

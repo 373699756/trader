@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
+from tests.helpers.training.history_training_due import HistoryTrainingExpectationFixture
 
 import hashlib
 import shutil
@@ -31,7 +32,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.download.domain.history_control import HistorySnapshot, HistorySnapshotPartition
+from trader.download.domain.history_control import HistoryPublishedControlState, HistorySnapshot, HistorySnapshotPartition
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext
@@ -55,10 +56,12 @@ from trader.training.infra.history.history_training_due import (
     _revised_dates_since_bundle,
 )
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+from trader.training.infra.history.history_training_expectation import HistoryTrainingExpectation
 from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceIndex
 from trader.training.infra.model_bundles.bundle_snapshot import PublishedHeadBundle
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.domain.training_input_identity import BuildTrainingInputHash
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -352,7 +355,7 @@ def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_
     root = tmp_path / "history"
     dates = tuple(date(2026, 7, 12) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
-    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, sqlite_policy=SqlitePolicyFixture())
+    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture())
     assert {(head.profile_id, head.strategy) for head in heads} == {
         (profile, strategy) for profile in ("v2", "v3") for strategy in (Strategy.TOMORROW, Strategy.D25)
     }
@@ -367,7 +370,7 @@ def test_four_heads_persist_distinct_due_states_and_startup_only_reads_them(tmp_
     monkeypatch.setattr(
         due_module, "EvaluateHistoryTrainingDue", lambda *args: pytest.fail("startup must never calculate due state")
     )
-    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
+    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", load_expectation=HistoryTrainingExpectationFixture, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     projection.initialize()
     assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
     assert all(head.owned == (head.profile_id == "v3") for head in projection.status())
@@ -406,10 +409,10 @@ def test_corrupt_model_keeps_valid_history_trainable_and_exposes_retraining_due(
         )
     assert result.state == "already_current"
     assert result.published
-    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, sqlite_policy=SqlitePolicyFixture())
+    heads = EvaluateAllHistoryTrainingDue(root, tmp_path / "models", NOW, load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture())
     assert len(heads) == 4
     assert all(head.failure == "corrupt" and head.due.training_due for head in heads)
-    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
+    projection = PublishedTrainingState(root, tmp_path / "models", (), owned_profile="v3", load_expectation=HistoryTrainingExpectationFixture, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture())
     projection.initialize()
     assert tuple(head.due for head in projection.status()) == tuple(head.due for head in heads)
 
@@ -627,7 +630,11 @@ def test_training_due_uses_the_published_snapshot_label_cutoff_and_marks_initial
     prepared_history(history_root, dates)
 
     evaluation = EvaluateHistoryTrainingDue(
-        HistoryTrainingDueQuery(history_root, tmp_path / "train", NOW, V3_TRAINING_PROFILE), sqlite_policy=SqlitePolicyFixture()
+        HistoryTrainingDueQuery(
+            history_root, tmp_path / "train", NOW, V3_TRAINING_PROFILE,
+            industry_snapshot=CurrentIndustrySnapshotFixture(("600001",), observed_at=NOW),
+            expected_training_contract_hash="9" * 64,
+        ), sqlite_policy=SqlitePolicyFixture()
     )
 
     assert evaluation is not None
@@ -660,7 +667,11 @@ def test_training_due_expands_revision_cache_invalidation_to_the_selected_profil
     )
 
     evaluation = EvaluateHistoryTrainingDue(
-        HistoryTrainingDueQuery(history_root, tmp_path / "train", NOW, V2_TRAINING_PROFILE), sqlite_policy=SqlitePolicyFixture()
+        HistoryTrainingDueQuery(
+            history_root, tmp_path / "train", NOW, V2_TRAINING_PROFILE,
+            industry_snapshot=CurrentIndustrySnapshotFixture(("600001",), observed_at=NOW),
+            expected_training_contract_hash="9" * 64,
+        ), sqlite_policy=SqlitePolicyFixture()
     )
 
     assert evaluation is not None
@@ -684,10 +695,11 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     baseline = HistoryControlIndex(history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     assert baseline is not None
     contract_hash = "9" * 64
+    industry = CurrentIndustrySnapshotFixture(("600001",), observed_at=NOW)
     bundle = PublishedHeadBundle(
         tmp_path / "train/tomorrow-v3/model.json",
         Strategy.TOMORROW,
-        "f" * 64,
+        BuildTrainingInputHash(baseline.content_hash, industry.content_hash),
         baseline.source_identity_hash,
         baseline.label_cutoff,
         contract_hash,
@@ -701,6 +713,16 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     later_dates = (*first_dates, date(2026, 9, 10))
     RunHistoryFixture(configuration, _Supplier(later_dates), clock=lambda: NOW)
     monkeypatch.setattr(due_module, "_current_bundle", lambda _root, _profile, _strategy: (bundle, False))
+    monkeypatch.setattr(due_module, "_inspect_profile", lambda _root, profile: ((bundle,), None) if profile.profile_id == "v3" else ((), "missing"))
+    projection = PublishedTrainingState(
+        history_root, tmp_path / "train", (), owned_profile="v3",
+        load_expectation=HistoryTrainingExpectationFixture, wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
+    )
+    with monkeypatch.context() as only_metadata:
+        only_metadata.setattr(due_module, "HistorySnapshotReader", lambda *_args, **_kwargs: pytest.fail("refresh must not scan prices"))
+        projection.initialize()
+    pending = next(item for item in projection.status() if item.profile_id == "v3" and item.strategy is Strategy.TOMORROW)
+    assert pending.due is None and pending.failure == "training_due_unavailable"
 
     evaluation = EvaluateHistoryTrainingDue(
         HistoryTrainingDueQuery(
@@ -709,6 +731,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
             NOW,
             V3_TRAINING_PROFILE,
             expected_training_contract_hash=contract_hash,
+            industry_snapshot=industry,
         ), sqlite_policy=SqlitePolicyFixture()
     )
 
@@ -716,6 +739,143 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     assert evaluation.state.reason == "not_due"
     assert evaluation.state.matured_label_days_since_training == 1
     assert evaluation.revised_dates == ()
+    with monkeypatch.context() as only_metadata:
+        only_metadata.setattr(due_module, "HistorySnapshotReader", lambda *_args, **_kwargs: pytest.fail("refresh must not scan prices"))
+        projection.refresh()
+    refreshed = next(item for item in projection.status() if item.profile_id == "v3" and item.strategy is Strategy.TOMORROW)
+    assert refreshed.due == evaluation.state
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    (("industry", "input_revision_due"), ("refresh", "not_due"), ("outside_universe", "not_due"),
+     ("contract", "training_contract_due")),
+)
+def test_training_due_binds_current_industry_semantics_and_expected_contract(
+    tmp_path, monkeypatch, prepared_history, change, reason,
+):
+    root = tmp_path / "history"
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    prepared_history(root, dates)
+    baseline = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    industry = CurrentIndustrySnapshotFixture(("600001",), observed_at=NOW)
+    contract_hash = "9" * 64
+    bundle = PublishedHeadBundle(
+        tmp_path / "train/model.json", Strategy.TOMORROW,
+        BuildTrainingInputHash(baseline.content_hash, industry.content_hash),
+        baseline.source_identity_hash, baseline.label_cutoff, contract_hash,
+        "a" * 64, "b" * 64, "c" * 64, "d" * 64, "e" * 64,
+        price_snapshot_hash=baseline.content_hash,
+    )
+    monkeypatch.setattr(due_module, "_current_bundle", lambda *_args: (bundle, False))
+    before = HistoryTrainingDueQuery(
+        root, tmp_path / "train", NOW, V3_TRAINING_PROFILE,
+        industry_snapshot=industry, expected_training_contract_hash=contract_hash,
+    )
+    previous = EvaluateHistoryTrainingDue(before, sqlite_policy=SqlitePolicyFixture())
+    assert previous.state.reason == "not_due"
+    if change == "industry":
+        industry = CurrentIndustrySnapshotFixture(
+            ("600001",), sectors=(("I65", "软件和信息技术服务业"),), observed_at=NOW,
+        )
+    elif change == "refresh":
+        industry = replace(industry, observed_at=NOW + timedelta(hours=1), publication_hash="a" * 64)
+    elif change == "outside_universe":
+        industry = CurrentIndustrySnapshotFixture(("600001", "600002"), observed_at=NOW)
+    else:
+        contract_hash = "8" * 64
+    monkeypatch.setattr(due_module, "_inspect_profile", lambda _root, profile: ((bundle,), None) if profile.profile_id == "v3" else ((), "missing"))
+    expectation = HistoryTrainingExpectation(
+        industry, ((Strategy.TOMORROW, contract_hash), (Strategy.D25, contract_hash)),
+    )
+    projection = PublishedTrainingState(
+        root, tmp_path / "train", (), owned_profile="v3",
+        load_expectation=lambda _profile, _as_of: expectation,
+        wall_clock=lambda: NOW + timedelta(hours=2), sqlite_policy=SqlitePolicyFixture(),
+    )
+    with monkeypatch.context() as only_metadata:
+        only_metadata.setattr(due_module, "HistorySnapshotReader", lambda *_args, **_kwargs: pytest.fail("startup must not scan prices"))
+        projection.initialize()
+    projected = next(item for item in projection.status() if item.profile_id == "v3" and item.strategy is Strategy.TOMORROW)
+    assert projected.due.reason == reason
+    current = EvaluateHistoryTrainingDue(
+        replace(before, observed_at=NOW + timedelta(hours=2), industry_snapshot=industry,
+                expected_training_contract_hash=contract_hash),
+        sqlite_policy=SqlitePolicyFixture(),
+    )
+    assert current.state.reason == reason
+    assert current.state.training_due is (change in {"industry", "contract"})
+    assert current.state.input_revision is (change == "industry")
+    assert (current.state.due_identity == previous.state.due_identity) is (change in {"refresh", "outside_universe"})
+    assert not current.revised_dates and not current.invalidated_cache_dates
+
+
+def test_missing_expected_inputs_are_unknown_without_forcing_a_training_due(tmp_path):
+    def unavailable(_profile, _observed_at):
+        raise FileNotFoundError("missing configuration or current industry")
+
+    statuses = EvaluateAllHistoryTrainingDue(
+        tmp_path / "history", tmp_path / "models", NOW,
+        load_expectation=unavailable, sqlite_policy=SqlitePolicyFixture(),
+    )
+    assert all(item.due is None and item.failure == "training_inputs_unavailable" for item in statuses)
+
+
+def test_due_identity_includes_the_old_training_population_industry_projection(tmp_path, prepared_history, monkeypatch):
+    root = tmp_path / "history"
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    prepared_history(root, dates)
+    control = HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    state = control.load_state()
+    published = control.load_published_state()
+    old_universe = replace(
+        published.universe,
+        securities=(*published.universe.securities, replace(published.universe.securities[0], code="600002")),
+    )
+    baseline = replace(published.snapshot, sequence=published.snapshot.sequence + 1, universe_hash=old_universe.content_hash)
+    current = replace(published.snapshot, sequence=baseline.sequence + 1)
+    state = replace(
+        state, universes=(*state.universes, old_universe), snapshots=(*state.snapshots, baseline, current),
+        snapshot_hash=current.content_hash,
+    )
+    published = HistoryPublishedControlState(current, published.source, published.calendar, published.universe)
+    monkeypatch.setattr(HistoryControlIndex, "load_state", lambda _self: state)
+    monkeypatch.setattr(HistoryControlIndex, "load_published_state", lambda _self: published)
+    monkeypatch.setattr(due_module, "_revised_dates_since_bundle", lambda *_args, **_kwargs: ())
+    industry = CurrentIndustrySnapshotFixture(("600001", "600002"), observed_at=NOW)
+    bundle = PublishedHeadBundle(
+        tmp_path / "train/model.json", Strategy.TOMORROW,
+        BuildTrainingInputHash(baseline.content_hash, industry.content_hash),
+        baseline.source_identity_hash, baseline.label_cutoff, "9" * 64,
+        "a" * 64, "b" * 64, "c" * 64, "d" * 64, "e" * 64,
+        price_snapshot_hash=baseline.content_hash,
+    )
+    monkeypatch.setattr(due_module, "_current_bundle", lambda *_args: (bundle, False))
+    query = HistoryTrainingDueQuery(
+        root, tmp_path / "train", NOW, V3_TRAINING_PROFILE,
+        industry_snapshot=industry, expected_training_contract_hash="9" * 64,
+    )
+    previous = EvaluateHistoryTrainingDue(query, sqlite_policy=SqlitePolicyFixture())
+    assert previous.state.reason == "not_due"
+    changed = CurrentIndustrySnapshotFixture(
+        ("600001", "600002"), sectors=(("J66", "货币金融服务"), ("I65", "软件和信息技术服务业")), observed_at=NOW,
+    )
+    assert changed.project(("600001",)).content_hash == industry.project(("600001",)).content_hash
+    expectation = HistoryTrainingExpectation(changed, ((Strategy.TOMORROW, "9" * 64), (Strategy.D25, "9" * 64)))
+    monkeypatch.setattr(due_module, "_inspect_profile", lambda _root, profile: ((bundle,), None) if profile.profile_id == "v3" else ((), "missing"))
+    projection = PublishedTrainingState(
+        root, tmp_path / "train", (), owned_profile="v3", load_expectation=lambda _profile, _at: expectation,
+        wall_clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
+    )
+    with monkeypatch.context() as only_metadata:
+        only_metadata.setattr(due_module, "HistorySnapshotReader", lambda *_args, **_kwargs: pytest.fail("startup must not scan prices"))
+        projection.initialize()
+    projected = next(item for item in projection.status() if item.profile_id == "v3" and item.strategy is Strategy.TOMORROW)
+    assert projected.due.reason == "input_revision_due"
+    current_due = EvaluateHistoryTrainingDue(replace(query, industry_snapshot=changed), sqlite_policy=SqlitePolicyFixture())
+    assert current_due.state.reason == "input_revision_due"
+    assert current_due.state.due_identity != previous.state.due_identity
+    assert current_due.state.due_identity == projected.due.due_identity
 
 
 def test_revision_detection_compares_semantic_rows_only_in_changed_months(

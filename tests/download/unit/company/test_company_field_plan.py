@@ -57,6 +57,7 @@ def _facts(*, risks=(), positives=()):
         announcement_state=CompanyDataState.PARTIAL,
         checked_at=AT,
         published_at=AT,
+        latest_financial=None,
     )
 
 

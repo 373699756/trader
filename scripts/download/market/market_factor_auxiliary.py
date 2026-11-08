@@ -53,6 +53,7 @@ def ProbeAuxiliary(
         monotonic=time.monotonic,
         company_policy=company_policy,
         preload_settings=preload_settings,
+        financial_max_age_days=policy.financial_max_age_days,
     )
     reader.initialize(codes[:3], cancelled=lambda: False)
     for index, code in enumerate(codes[:3]):

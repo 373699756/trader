@@ -235,6 +235,7 @@ def test_explicit_issuer_termination_keeps_existing_same_event_cancellation(acto
         announcement_state=CompanyDataState.COMPLETE,
         checked_at=_NOW,
         published_at=_NOW,
+        latest_financial=CompanyFinancial("002174", _NOW.date(), _NOW, 1, 5, 25, 25, 25, 10, 100, 90),
     )
     policy = CompanyScoringPolicyFixture(enabled=True)
     calendar = CompanyScoringCalendar(tuple(

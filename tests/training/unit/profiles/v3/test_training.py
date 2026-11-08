@@ -31,8 +31,8 @@ from trader.training.domain.production_diagnostic_dates import BuildProductionDi
 from trader.training.infra.engine import (
     ProfileTrainingRequest,
     RunProfileTraining,
-    _training_contract_hash,
 )
+from trader.training.infra.training_contract import BuildTrainingContractHash
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.bundle_codec import TrainedLightGBMModelSnapshot, TrainedRidgeModelSnapshot
@@ -477,7 +477,7 @@ def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_pat
         snapshot.input_scope, len(snapshot.training_codes), snapshot.universe_count,
         settings.fit_dates, V3_TRAINING_PROFILE.history_sessions, settings.fitting.minimum_industry_training_rows,
         tuple(ProfileTrainingHead(
-            head.strategy, head.maturity_sessions, _training_contract_hash(V3_TRAINING_PROFILE, head, settings),
+            head.strategy, head.maturity_sessions, BuildTrainingContractHash(V3_TRAINING_PROFILE, head, settings),
         ) for head in HEAD_CONTRACTS),
         history.describe_frozen_daily_input(),
         industry_content_hash=snapshot.industry_snapshot.content_hash,
@@ -485,9 +485,9 @@ def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_pat
     assert tuple(head.label_cutoff for head in plan.heads) == (
         snapshot.calendar.open_dates[-2], snapshot.calendar.open_dates[-6],
     )
-    hashes = {_training_contract_hash(V3_TRAINING_PROFILE, contract, settings) for contract in HEAD_CONTRACTS}
+    hashes = {BuildTrainingContractHash(V3_TRAINING_PROFILE, contract, settings) for contract in HEAD_CONTRACTS}
     assert len(hashes) == 2
-    assert _training_contract_hash(V3_TRAINING_PROFILE, TOMORROW_HEAD_CONTRACT, settings) == _training_contract_hash(
+    assert BuildTrainingContractHash(V3_TRAINING_PROFILE, TOMORROW_HEAD_CONTRACT, settings) == BuildTrainingContractHash(
         V3_TRAINING_PROFILE, TOMORROW_HEAD_CONTRACT, settings
     )
 

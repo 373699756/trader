@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from datetime import date, datetime
 from typing import TypedDict
 
-from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture, StrategySettingsFixture
 from tests.helpers.shared.configuration import RuntimeSettingsFixture
 from trader.infra.settings.models import CompanyPreloadSettings
 from trader.recommendation.domain.scoring.company import CompanyScoringPolicy
@@ -31,6 +31,7 @@ class PublishedCompanyResearchFixture(PublishedCompanyResearch):
         reserve_bytes: Callable[[int], bool] | None = None,
         source_versions: Callable[[], Mapping[str, str]] | None = None,
         config_version: str = "company",
+        financial_max_age_days: int | None = None,
     ) -> None:
         options: _ResearchOptions = {}
         if reserve_bytes is not None:
@@ -45,5 +46,7 @@ class PublishedCompanyResearchFixture(PublishedCompanyResearch):
             company_policy=company_policy if company_policy is not None else CompanyScoringPolicyFixture(),
             preload_settings=preload_settings if preload_settings is not None else RuntimeSettingsFixture().pipeline.company_preload,
             config_version=config_version,
+            financial_max_age_days=financial_max_age_days if financial_max_age_days is not None
+            else StrategySettingsFixture().long_research.financial_max_age_days,
             **options,
         )

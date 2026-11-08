@@ -13,6 +13,8 @@ from trader.download.domain.published_history import PublishedHistoryManifest, P
 class PublishedHistoryReadPort(Protocol):
     def manifest(self) -> PublishedHistoryManifest | None: ...
 
+    def publication_identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str | None: ...
+
     def read_range(
         self,
         manifest: PublishedHistoryManifest,
@@ -48,6 +50,9 @@ class ReadPublishedHistoryUseCase:
 
     def manifest(self) -> PublishedHistoryManifest | None:
         return self.publication.manifest()
+
+    def publication_identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str | None:
+        return self.publication.publication_identity(cancel_requested=cancel_requested)
 
     def read_range(
         self,

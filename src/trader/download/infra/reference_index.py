@@ -35,13 +35,15 @@ class SQLiteReferenceIndex:
         self.path = path
 
     @contextmanager
-    def _connection(self, *, write: bool = False) -> Iterator[SqliteConnection]:
+    def _connection(
+        self, *, write: bool = False, cancel_requested: Callable[[], bool] | None = None
+    ) -> Iterator[SqliteConnection]:
         if self.path.is_symlink() or self.path.parent.is_symlink():
             raise ValueError("reference_path_unsafe")
         if write:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with closing(self._open(write=write)) as connection, SqliteTransaction(connection, immediate=write):
+            with closing(self._open(write=write, cancel_requested=cancel_requested)) as connection, SqliteTransaction(connection, immediate=write):
                 EnsureSqliteSchema(
                     connection,
                     REFERENCE_SCHEMA,
@@ -55,10 +57,15 @@ class SQLiteReferenceIndex:
                 raise ReferenceDatabaseIncompatibleError("reference_database_incompatible") from exc
             raise ValueError("reference_database_unavailable") from exc
 
-    def _open(self, *, write: bool) -> SqliteConnection:
+    def _open(self, *, write: bool, cancel_requested: Callable[[], bool] | None = None) -> SqliteConnection:
         # Short reference writes use SQLite's rollback journal and FULL durability.
         # Avoid repeated WAL creation/checkpointing when each batch closes its handle.
-        return OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=not write, foreign_keys=True), sqlite_policy=self._sqlite_policy)
+        return OpenSqliteConnection(
+            self.path,
+            SqliteConnectionOptions(read_only=not write, foreign_keys=True),
+            cancel_requested=cancel_requested,
+            sqlite_policy=self._sqlite_policy,
+        )
 
     def read_st(self) -> tuple[HistoryStEvidence, ...]:
         if not self.path.is_file():
@@ -181,14 +188,18 @@ class SQLiteReferenceIndex:
         with self._connection() as connection:
             return _read(connection, publication_id)
 
-    def identity(self) -> str | None:
+    def identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str | None:
+        if cancel_requested is not None and cancel_requested():
+            raise InterruptedError("reference_observation_cancelled")
         if not self.path.is_file():
             return None
-        with self._connection() as connection:
+        with self._connection(cancel_requested=cancel_requested) as connection:
             row = connection.run(
                 "SELECT p.publication_id,p.content_hash FROM reference_current c "
                 "JOIN reference_publication p USING(publication_id) WHERE c.singleton=1"
             ).fetchone()
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("reference_observation_cancelled")
             if row is None:
                 return None
             if row[0] != DecodeHash(row[1]):

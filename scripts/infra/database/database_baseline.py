@@ -125,7 +125,9 @@ class _SyncFixture:
         self.preload_settings = pipeline.history_preload
         self.company_preload_settings = pipeline.company_preload
         self.company_configuration = LoadCompanySyncConfiguration(PROJECT_ROOT)
-        self.company_policy = LoadStrategySettings(PROJECT_ROOT / "config/strategy.json").company_scoring
+        strategy = LoadStrategySettings(PROJECT_ROOT / "config/strategy.json")
+        self.company_policy = strategy.company_scoring
+        self.financial_max_age_days = strategy.long_research.financial_max_age_days
         self.paths = DataPaths(root)
         self.root = root
         self.sessions = sessions
@@ -291,6 +293,7 @@ class _SyncFixture:
             monotonic=time.monotonic,
             company_policy=self.company_policy,
             preload_settings=self.company_preload_settings,
+            financial_max_age_days=self.financial_max_age_days,
         )
         self._measure("startup_company", lambda: research.initialize(codes, cancelled=lambda: False))
 

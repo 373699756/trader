@@ -256,7 +256,7 @@ def ResearchComponentsFromObservation(
     if observation is None:
         return ResearchComponentCoverage("unknown", "unknown", "unknown", "unknown")
     financial: ResearchComponentStatus = "known_clear" if observation.financial is not None else "unknown"
-    if any(item.startswith(("financial:", "company_snapshot:")) for item in observation.source_errors):
+    if any(item.startswith(("financial:", "financial_scoring:", "company_snapshot:")) for item in observation.source_errors):
         financial = "stale" if observation.financial is not None else "unknown"
     at = observed_at or observation.loaded_at or observation.snapshot_at
     known_risk = any(at is None or _corporate_risk_is_effective(fact, at) for fact in observation.corporate_risk_facts)
@@ -295,12 +295,16 @@ def DeriveLongResearchFeatures(
     inputs: LongResearchInputs,
     policy: LongResearchPolicy,
     component_weights: FeatureComponentWeightPolicy,
+    *, observed_at: datetime,
 ) -> dict[str, float | None]:
+    financial = observation.financial if FinancialReportIsFresh(
+        observation.financial, observed_at, maximum_age_days=policy.financial_max_age_days,
+    ) else None
     event_features = _event_features(observation, policy)
     return {
-        "value_score": _valuation_score(observation.financial, inputs.price, policy),
-        "growth_score": _growth_score(observation.financial, policy),
-        "quality_score": _quality_score(observation.financial, policy),
+        "value_score": _valuation_score(financial, inputs.price, policy),
+        "growth_score": _growth_score(financial, policy),
+        "quality_score": _quality_score(financial, policy),
         "industry_policy_score": _industry_policy_score(
             observation,
             inputs.industry_strength,
@@ -308,9 +312,20 @@ def DeriveLongResearchFeatures(
             component_weights.industry_policy_score,
         ),
         "risk_protection_score": _protection_score(inputs, component_weights.risk_protection_score),
-        "financial_deterioration": _financial_deterioration(observation.financial, policy),
+        "financial_deterioration": _financial_deterioration(financial, policy),
         **event_features,
     }
+
+
+def FinancialReportIsFresh(
+    financial: FinancialReport | None, observed_at: datetime, *, maximum_age_days: int,
+) -> bool:
+    if observed_at.utcoffset() is None or type(maximum_age_days) is not int or maximum_age_days < 1:
+        raise ValueError("financial_freshness_context_invalid")
+    return (
+        financial is not None and financial.published_at <= observed_at and financial.report_date <= observed_at.date()
+        and 0 <= (observed_at.date() - financial.published_at.date()).days <= maximum_age_days
+    )
 
 
 def DeriveLatestDisclosedReportLoss(
@@ -331,7 +346,10 @@ def DeriveLatestDisclosedReportLoss(
         return 1.0
     if parent_profit is None or core_profit is None:
         return None
-    if any(item.startswith(("financial:", "company_snapshot:")) for item in observation.source_errors):
+    if any(
+        item.startswith(("financial:", "company_snapshot:")) and item != "financial:necessary_data_missing"
+        for item in observation.source_errors
+    ):
         return None
     return 0.0
 
@@ -546,6 +564,7 @@ __all__ = [
     "CorporateRiskFact",
     "MarketRegimePolicy",
     "FinancialReport",
+    "FinancialReportIsFresh",
     "LongResearchPolicy",
     "LongResearchInputs",
     "ResearchAnnouncement",

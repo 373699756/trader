@@ -70,6 +70,7 @@ class PublishedHistoryStatus:
     history_scan_count: int = 0
     history_window_count: int = 0
     maintenance_elapsed_seconds: float = 0.0
+    publication_observation_failure: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +130,7 @@ class PublishedHistoryCache:
         self._outcome_manifest: PublishedHistoryManifest | None = None
         self._disk_snapshot_hash: str | None = None
         self._outcome_disk_snapshot_hash: str | None = None
+        self._publication_observation_failure: str | None = None
         self._daily_pack: DailyFeaturePack | None = None
         self._entry_bytes = 0
         self._entries: dict[str, PublishedHistoryEntry] = {}
@@ -534,6 +536,27 @@ class PublishedHistoryCache:
                 for code in requested
             )
 
+    def observe_publication(self, cancelled: Callable[[], bool]) -> None:
+        if cancelled():
+            return
+        try:
+            identity = self._history.publication_identity(cancel_requested=cancelled)
+            outcome = (
+                identity if self._outcome_history is self._history
+                else self._outcome_history.publication_identity(cancel_requested=cancelled)
+                if self._outcome_history is not None else None
+            )
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            if not cancelled():
+                with self._lock:
+                    self._publication_observation_failure = f"history_observation:{type(exc).__name__}"
+            return
+        if not cancelled():
+            with self._lock:
+                self._disk_snapshot_hash = identity
+                self._outcome_disk_snapshot_hash = outcome
+                self._publication_observation_failure = None if identity is not None else "history_publication_unavailable"
+
     def status(self) -> PublishedHistoryStatus:
         with self._lock:
             manifest = self._manifest
@@ -557,6 +580,7 @@ class PublishedHistoryCache:
                 disk_snapshot_hash=self._disk_snapshot_hash,
                 outcome_snapshot_hash=self._outcome_manifest.snapshot_hash if self._outcome_manifest else None,
                 outcome_disk_snapshot_hash=self._outcome_disk_snapshot_hash,
+                publication_observation_failure=self._publication_observation_failure,
                 restart_required=(
                     (manifest.snapshot_hash if manifest else None) != self._disk_snapshot_hash
                     or (self._outcome_manifest.snapshot_hash if self._outcome_manifest else None)

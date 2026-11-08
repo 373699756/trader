@@ -118,6 +118,18 @@ def WriteCompanyFactRows(connection: SqliteConnection, facts: CompanyFacts, sour
     )
     connection.run("DELETE FROM company_facts WHERE code=?", (facts.code,))
     connection.run(f"INSERT INTO company_facts VALUES({','.join('?' for _ in values)})", values)
+    latest = facts.latest_financial
+    if latest is not None:
+        connection.run(
+            "INSERT INTO company_latest_financial VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (facts.code, EncodeCompanyDate(latest.report_date), EncodeCompanyTime(latest.published_at), *(
+                CompanyNumber(value) for value in (
+                    latest.basic_eps, latest.book_value_per_share, latest.revenue_growth_pct,
+                    latest.net_profit_growth_pct, latest.core_profit_growth_pct, latest.roe_pct,
+                    latest.parent_net_profit, latest.core_net_profit,
+                )
+            )),
+        )
     evidence: dict[str, int] = {}
 
     def reference(key: str) -> int:
@@ -241,6 +253,10 @@ def ReadCompanyFactRows(connection: SqliteConnection, codes: Sequence[str]) -> t
         return ()
     slots = ",".join("?" for _ in codes)
     main = connection.run(f"SELECT * FROM company_facts WHERE code IN ({slots}) ORDER BY code", codes).fetchall()
+    latest_financials = {
+        row["code"]: _latest_financial(row)
+        for row in connection.run(f"SELECT * FROM company_latest_financial WHERE code IN ({slots}) ORDER BY code", codes)
+    }
     risks: dict[str, list[CompanyRiskEvent]] = defaultdict(list)
     positives: dict[str, list[CompanyPositiveEvent]] = defaultdict(list)
     reviews: dict[str, list[CompanyReviewReason]] = defaultdict(list)
@@ -346,6 +362,7 @@ def ReadCompanyFactRows(connection: SqliteConnection, codes: Sequence[str]) -> t
                 sorted(reviews[row["code"]], key=lambda item: (item.scope, item.evidence_id or "", item.reason_code))
             ),
             tuple(unlocks[row["code"]]),
+            latest_financials.get(row["code"]),
         )
         for row in main
     )
@@ -392,12 +409,23 @@ def _positive(
     )
 
 
+def _latest_financial(row: sqlite3.Row) -> CompanyFinancial:
+    report = DecodeCompanyDate(row["report_date"])
+    if report is None:
+        raise ValueError("company_latest_financial_report_date_missing")
+    return CompanyFinancial(
+        CompanyIdentifier(row["code"]), report, RequireCompanyTime(row["disclosed_at"]),
+        *(CompanyNumber(row[key]) for key in COMPANY_FACT_COLUMNS[4:12]),
+    )
+
+
 def _facts(
     row: sqlite3.Row,
     risks: tuple[CompanyRiskEvent, ...],
     positives: tuple[CompanyPositiveEvent, ...],
     reviews: tuple[CompanyReviewReason, ...],
     unlocks: tuple[CompanyRatio, ...],
+    latest_financial: CompanyFinancial | None,
 ) -> CompanyFacts:
     code = CompanyIdentifier(row["code"])
     report, disclosed = (
@@ -434,6 +462,7 @@ def _facts(
         DecodeCompanyEnum(DATA_STATES, row["announcement_state"]),
         RequireCompanyTime(row["checked_at"]),
         RequireCompanyTime(row["published_at"]),
+        latest_financial=latest_financial,
     )
 
 

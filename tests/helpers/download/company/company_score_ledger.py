@@ -55,6 +55,7 @@ def _facts(documents=(), at=AT):
         CompanyDataState.COMPLETE,
         at,
         at,
+        latest_financial=CompanyFinancial("600001", at.date(), at, 1, 5, 25, 25, 25, 10, 100, 90),
     )
 
 

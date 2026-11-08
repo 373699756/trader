@@ -17,6 +17,7 @@ def ProjectHeadTrainingStatus(status: HeadTrainingStatus) -> dict[str, object]:
         "current_label_cutoff": due.current_label_cutoff.isoformat() if due and due.current_label_cutoff else None,
         "matured_label_days_since_training": due.matured_label_days_since_training if due else None,
         "failure": status.failure,
+        "publication_observation_failure": status.publication_observation_failure,
     }
 
 

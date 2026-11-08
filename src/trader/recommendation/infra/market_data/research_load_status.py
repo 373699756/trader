@@ -51,6 +51,7 @@ class ResearchLoaderStatus:
     loaded_identity: str = ""
     disk_identity: str = ""
     restart_required: bool = False
+    publication_observation_failure: str | None = None
 
 
 def ResearchComponentStatuses(observation: ResearchObservation) -> tuple[ResearchComponentStatus, ...]:

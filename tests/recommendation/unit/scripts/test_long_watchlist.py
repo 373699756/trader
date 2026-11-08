@@ -113,6 +113,7 @@ def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Pa
         "000001",
         observed_at=datetime(2026, 10, 9, 16, tzinfo=SHANGHAI),
         company_policy=strategy.company_scoring,
+        financial_max_age_days=strategy.long_research.financial_max_age_days,
         preload_settings=LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline.company_preload,
         exclusions={},
         evidence_database=index.facts_path,

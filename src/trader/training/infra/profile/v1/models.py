@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import tempfile
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date
+from itertools import islice
 from pathlib import Path
 from typing import cast
 
@@ -20,8 +22,9 @@ from lightgbm.basic import LightGBMError
 
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.infra.atomic_files import AtomicWriteJson
+from trader.infra.regular_file import ReadRegularFile
 from trader.infra.serialization.canonical import CanonicalValue, ContentHash
-from trader.infra.serialization.fields import IsFiniteNumber, IsInteger, IsNonEmptyText, IsTextSequence
+from trader.infra.serialization.fields import IsFiniteNumber, IsInteger, IsNonEmptyText, IsSha256Text, IsTextSequence
 from trader.infra.settings.parser import RequireExactKeys
 from trader.recommendation.application.ports.loaded_profile import (
     HeadRuntime,
@@ -318,6 +321,116 @@ def ReadLearnedRankPair(model_root: Path) -> LearnedRankPair:
         return _read_pair_directory(profile_root)
 
 
+def ReadV1PublicationIdentities(
+    model_root: Path,
+    *,
+    cancel_requested: Callable[[], bool],
+    timeout_seconds: float = 1.0,
+) -> tuple[ModelPublicationIdentity, ...]:
+    """Observe V1's declared pair identity without model bytes or native predictors."""
+    if cancel_requested():
+        raise InterruptedError("model_publication_observation_cancelled")
+    if not math.isfinite(timeout_seconds) or not 0.0 <= timeout_seconds <= 1.0:
+        raise ValueError("model publication observation timeout is invalid")
+    if not model_root.exists():
+        raise FileNotFoundError(model_root / "v1")
+    profile_root = model_root / "v1"
+    with ProfilePublicationLock(profile_root, timeout_seconds, cancel_requested=cancel_requested):
+        if not profile_root.exists() and not profile_root.is_symlink():
+            raise FileNotFoundError(profile_root)
+        if profile_root.is_symlink() or not profile_root.is_dir():
+            raise ValueError("V1 model directory is invalid")
+        documents = []
+        for strategy in _STRATEGIES:
+            if cancel_requested():
+                raise InterruptedError("model_publication_observation_cancelled")
+            directory = profile_root / strategy.value
+            if not directory.exists() and not directory.is_symlink():
+                raise FileNotFoundError(directory)
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError("V1 head directory is invalid")
+            files = {path.name for path in islice(directory.iterdir(), 3)}
+            if files < {"model.json", "metadata.json"}:
+                raise FileNotFoundError("V1 head files are missing")
+            if files != {"model.json", "metadata.json"}:
+                raise ValueError("V1 head directory has unexpected entries")
+            model_path = directory / "model.json"
+            if model_path.is_symlink() or not model_path.is_file():
+                raise ValueError("V1 head model path is invalid")
+            metadata = _object(json.loads(ReadRegularFile(
+                directory / "metadata.json", maximum_bytes=8 * 1024 * 1024,
+            )))
+            if cancel_requested():
+                raise InterruptedError("model_publication_observation_cancelled")
+            _verify_document(metadata, _METADATA_DOCUMENT_FIELDS, "V1 metadata")
+            _validate_metadata_identity(metadata, strategy)
+            documents.append(metadata)
+        first = documents[0]
+        if any(metadata[key] != first[key] for metadata in documents[1:] for key in _SHARED_METADATA_FIELDS):
+            raise ModelBundleContractError("V1 pair metadata differs")
+        identities = tuple(_metadata_publication_identity(metadata, strategy) for metadata, strategy in zip(
+            documents, _STRATEGIES, strict=True,
+        ))
+        inputs = tuple(_object(metadata["training_input"]) for metadata in documents)
+        fields = _SHARED_INPUT_FIELDS | ({"calendar_dates"} if "calendar_dates" in inputs[0] else set())
+        if any(inputs[1][key] != inputs[0][key] for key in fields):
+            raise ModelBundleContractError("V1 pair training input differs")
+        return identities
+
+
+def _validate_metadata_identity(metadata: Mapping[str, object], strategy: Strategy) -> None:
+    expected: Mapping[str, object] = {
+        "profile_id": "v1",
+        "strategy_head": strategy.value,
+        "model_id": "learned_rank",
+        "score_scale": LEARNED_RANK_SCORE_SCALE,
+        "feature_ids": list(LEARNED_RANK_FEATURE_IDS),
+        "algorithm": "lightgbm_lambdarank_ridge",
+    }
+    if metadata["schema_version"] not in {"learned_rank_head_metadata", "learned_rank_final_head_metadata"} or any(
+        type(metadata[key]) is not type(value) or metadata[key] != value for key, value in expected.items()
+    ):
+        raise ModelBundleContractError("V1 model identity is invalid")
+    if any(not IsSha256Text(metadata[key]) for key in (
+        "pair_content_hash", "head_content_hash", "model_hash", "contract_hash",
+    )):
+        raise ModelBundleIntegrityError("V1 publication hash is invalid")
+
+
+def _metadata_publication_identity(metadata: Mapping[str, object], strategy: Strategy) -> ModelPublicationIdentity:
+    training = _object(metadata["training_input"])
+    final = metadata["schema_version"] == "learned_rank_final_head_metadata"
+    fields = _SHARED_INPUT_FIELDS | _HEAD_INPUT_FIELDS | ({"calendar_dates", "final_fit"} if final else set())
+    RequireExactKeys(training, set(fields), "learned_rank_training_input")
+    ValidateTrainingInputIdentity(training)
+    split = _split(training["split"])
+    cutoff = date.fromisoformat(_text(training, "source_cutoff"))
+    if split.label_cutoff >= cutoff or split.maturity_sessions != (1 if strategy is Strategy.TOMORROW else 5):
+        raise ModelBundleContractError("V1 publication dates are invalid")
+    contract = _text(metadata, "contract_hash")
+    if final:
+        plan = _final_fit_plan(training["final_fit"])
+        if (
+            plan.source_cutoff != cutoff or plan.maturity_sessions != split.maturity_sessions
+            or plan.fit_dates[-1] != split.label_cutoff
+        ):
+            raise ModelBundleContractError("V1 publication final-fit dates differ")
+        metadata_hash = ContentHash((contract, split, plan))
+        label_cutoff = plan.fit_dates[-1]
+    else:
+        metadata_hash = ContentHash((contract, split))
+        label_cutoff = split.label_cutoff
+    return ModelPublicationIdentity(
+        "v1",
+        strategy,
+        _text(metadata, "head_content_hash"),
+        metadata_hash,
+        label_cutoff,
+        _text(training, "training_input_hash"),
+        _text(metadata, "pair_content_hash"),
+    )
+
+
 def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
     if not profile_root.exists() and not profile_root.is_symlink():
         raise FileNotFoundError(profile_root)
@@ -349,6 +462,7 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
         model, metadata = (_object(json.loads(path.read_text(encoding="utf-8"))) for path in paths)
         _verify_document(model, _MODEL_DOCUMENT_FIELDS, "V1 model")
         _verify_document(metadata, _METADATA_DOCUMENT_FIELDS, "V1 metadata")
+        _validate_metadata_identity(metadata, strategy)
         expected: Mapping[str, object] = {
             "profile_id": "v1",
             "strategy_head": strategy.value,
@@ -369,14 +483,6 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
         documents.append((model, metadata))
     first = documents[0][1]
     final_fit = first["schema_version"] == "learned_rank_final_head_metadata"
-    expected_metadata: Mapping[str, object] = {
-        "model_id": "learned_rank",
-        "score_scale": LEARNED_RANK_SCORE_SCALE,
-        "feature_ids": list(LEARNED_RANK_FEATURE_IDS),
-        "algorithm": "lightgbm_lambdarank_ridge",
-    }
-    if any(type(first[key]) is not type(value) or first[key] != value for key, value in expected_metadata.items()):
-        raise ModelBundleContractError("V1 model identity is invalid")
     if any(metadata[key] != first[key] for _, metadata in documents[1:] for key in _SHARED_METADATA_FIELDS):
         raise ModelBundleContractError("V1 pair metadata differs")
     expected_report: Mapping[str, object] = {
@@ -643,17 +749,7 @@ def _date_vector(raw: object) -> tuple[date, ...]:
 
 def _final_head(raw: object, raw_plan: object, report: Mapping[str, object]) -> LearnedRankFinalHead:
     head, diagnostic = _head(raw), _head(report["diagnostic_head"])
-    plan_values = _object(raw_plan)
-    RequireExactKeys(
-        plan_values, {"source_cutoff", "maturity_sessions", "fit_dates", "content_hash"}, "learned_rank_final_fit_plan",
-    )
-    plan = FinalFitDatePlan(
-        date.fromisoformat(_text(plan_values, "source_cutoff")),
-        _integer(plan_values, "maturity_sessions"),
-        _date_vector(plan_values["fit_dates"]),
-    )
-    if plan.content_hash != _text(plan_values, "content_hash"):
-        raise ModelBundleIntegrityError("V1 final-fit plan hash differs")
+    plan = _final_fit_plan(raw_plan)
     if (
         report["evaluation_scope"] != "independent_pre_refit_model"
         or report["calibration_transfer"] is not True
@@ -687,10 +783,26 @@ def _final_head(raw: object, raw_plan: object, report: Mapping[str, object]) -> 
     )
 
 
+def _final_fit_plan(raw_plan: object) -> FinalFitDatePlan:
+    plan_values = _object(raw_plan)
+    RequireExactKeys(
+        plan_values, {"source_cutoff", "maturity_sessions", "fit_dates", "content_hash"}, "learned_rank_final_fit_plan",
+    )
+    plan = FinalFitDatePlan(
+        date.fromisoformat(_text(plan_values, "source_cutoff")),
+        _integer(plan_values, "maturity_sessions"),
+        _date_vector(plan_values["fit_dates"]),
+    )
+    if plan.content_hash != _text(plan_values, "content_hash"):
+        raise ModelBundleIntegrityError("V1 final-fit plan hash differs")
+    return plan
+
+
 __all__ = [
     "LearnedRankPredictor",
     "LoadV1ScoringProfile",
     "PublishLearnedRankPair",
     "ReadLearnedRankPair",
+    "ReadV1PublicationIdentities",
     "RecoverLearnedRankPublication",
 ]

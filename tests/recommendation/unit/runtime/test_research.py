@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -107,6 +108,30 @@ def test_latest_disclosed_report_loss_is_point_in_time_and_requires_both_profit_
     assert DeriveLatestDisclosedReportLoss(ResearchObservation(financial=known_loss_with_missing_peer), NOW) == 1.0
 
 
+@pytest.mark.parametrize("age", (550, 551, 900))
+def test_financial_scoring_uses_original_disclosure_age_and_keeps_latest_loss_independent(age):
+    report = FinancialReport(
+        date(2022, 12, 31), NOW - timedelta(days=age), 1, 5, 20, 10, 10, 10, -3, 2,
+    )
+    observation = ResearchObservation(
+        financial=report, financial_history=(report,), snapshot_at=NOW, loaded_at=NOW,
+        source_errors=("financial_scoring:report_stale",) if age > 550 else (),
+        corporate_risk_facts=(CorporateRiskFact(
+            CorporateRiskCategory.FINANCIAL_FRAUD, NOW - timedelta(days=900), "fraud", "issuer_disclosure", persistent=True,
+        ),),
+    )
+    features = DeriveLongResearchFeatures(
+        observation, LongResearchInputs(20, 80, 70, 80), _long_policy(), _feature_component_weights(), observed_at=NOW,
+    )
+    for field in ("value_score", "growth_score", "quality_score", "financial_deterioration"):
+        assert (features[field] is not None) is (age <= 550)
+    assert DeriveLatestDisclosedReportLoss(observation, NOW) == 1.0
+    positive = replace(report, parent_net_profit=3)
+    assert DeriveLatestDisclosedReportLoss(replace(observation, financial_history=(positive,), financial=positive), NOW) == 0.0
+    assert ResearchComponentsFromObservation(observation, NOW).financial == ("stale" if age > 550 else "known_clear")
+    assert DeriveCorporateRiskFeatures(observation.corporate_risk_facts, NOW, window_complete=True)["financial_fraud_history"] == 1
+
+
 def test_long_research_features_use_point_in_time_financial_and_event_inputs() -> None:
     observation = ResearchObservation(
         financial=FinancialReport(
@@ -177,7 +202,7 @@ def test_long_research_composite_scores_consume_explicit_weight_policy() -> None
         announcements_available=True,
     )
     inputs = LongResearchInputs(20.0, 80.0, 60.0, 100.0)
-    baseline = DeriveLongResearchFeatures(observation, inputs, _long_policy(), _feature_component_weights())
+    baseline = DeriveLongResearchFeatures(observation, inputs, _long_policy(), _feature_component_weights(), observed_at=NOW)
     changed = DeriveLongResearchFeatures(
         observation,
         inputs,
@@ -187,6 +212,7 @@ def test_long_research_composite_scores_consume_explicit_weight_policy() -> None
             industry_policy_score={"industry_strength": 0.75, "evidence_score": 0.25},
             risk_protection_score={"low_volatility_score": 0.25, "low_drawdown_score": 0.75},
         ),
+        observed_at=NOW,
     )
 
     assert baseline["industry_policy_score"] == 68.0
@@ -226,7 +252,7 @@ def test_long_value_score_uses_configured_quarter_annualizers(
     features = _derive_long_research_features(
         ResearchObservation(
             financial=FinancialReport(
-                report_date=date(2026, report_month, 1),
+                report_date=date(2025, report_month, 1),
                 published_at=NOW,
                 basic_eps=1.0,
             )
@@ -470,6 +496,7 @@ def _derive_long_research_features(
         ),
         policy,
         _feature_component_weights(),
+        observed_at=NOW,
     )
 
 

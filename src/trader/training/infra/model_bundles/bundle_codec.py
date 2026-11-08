@@ -21,6 +21,7 @@ from trader.infra.serialization.fields import (
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
+from trader.training.domain.model_publication import ModelPublicationIdentity
 from trader.training.infra.model_bundles.contracts import TrainedAlgorithm, TrainedProfileContract
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT, FinalFitDatePlan
 from trader.download.domain.baostock_daily import BaoStockCalendar
@@ -264,10 +265,7 @@ def DecodeHeadBundle(
         legacy_refit_schema, recent_schema,
     }
     final_schema = recent_schema if is_recent else legacy_refit_schema
-    metadata_fields = _METADATA_FIELDS | {"training_configuration"} if profile.algorithm == "tcn" else _METADATA_FIELDS
-    if is_final:
-        metadata_fields = metadata_fields | {"final_fit"}
-    metadata, metadata_hash = _hashed_object(metadata_document, metadata_fields, "metadata")
+    metadata, metadata_hash = _metadata_payload(metadata_document, profile)
     contract = profile.head_for_strategy(strategy)
     feature_ids = tuple(_string_list(metadata, "feature_ids"))
     feature_units = tuple(_string_list(metadata, "feature_units"))
@@ -388,6 +386,65 @@ def DecodeHeadBundle(
         diagnostic_plan,
         price_snapshot_hash=report.price_snapshot_hash,
     )
+
+
+def DecodeHeadPublicationIdentity(
+    metadata_document: object, strategy: Strategy, profile: TrainedProfileContract
+) -> ModelPublicationIdentity:
+    """Observe hash-bound metadata; this does not validate or load model bytes."""
+    metadata, metadata_hash = _metadata_payload(metadata_document, profile)
+    schema = _text(metadata, "schema_version")
+    if schema not in {
+        f"{profile.profile_id}_head_metadata",
+        f"{profile.profile_id}_head_refit_metadata",
+        f"{profile.profile_id}_head_recent_refit_metadata",
+    }:
+        raise ModelBundleContractError("trained strategy-head metadata schema is invalid")
+    contract = profile.head_for_strategy(strategy)
+    evaluation_contract = (
+        RECENT_PREDICTION_EVALUATION_CONTRACT
+        if schema == f"{profile.profile_id}_head_recent_refit_metadata"
+        else PREDICTION_EVALUATION_CONTRACT
+    )
+    training_input = _decode_group_document(
+        metadata["training_input"], strategy, profile, report=False, evaluation_contract=evaluation_contract,
+    )
+    report = _decode_group_document(
+        metadata["validation_report"], strategy, profile, report=True, evaluation_contract=evaluation_contract,
+    )
+    if (
+        _text(metadata, "profile_id") != profile.profile_id
+        or _text(metadata, "strategy_head") != strategy.value
+        or _text(metadata, "model_id") != contract.model_id
+        or _text(metadata, "algorithm") != profile.algorithm
+        or tuple(_string_list(metadata, "feature_ids")) != contract.feature_manifest.names
+        or tuple(_string_list(metadata, "feature_units")) != contract.feature_manifest.units
+        or _exposure_contract(metadata) != TRAINED_HEAD_EXPOSURE_CONTRACT
+        or report.training_input_document_hash != training_input.content_hash
+        or _identity_tuple(report) != _identity_tuple(training_input)
+    ):
+        raise ModelBundleContractError("trained strategy-head publication metadata is invalid")
+    _require_sha256(metadata, "model_hash")
+    return ModelPublicationIdentity(
+        profile.profile_id,
+        strategy,
+        _text(metadata, "model_hash"),
+        metadata_hash,
+        report.label_cutoff,
+        report.training_input_hash,
+        report.training_run_hash,
+    )
+
+
+def _metadata_payload(
+    document: object, profile: TrainedProfileContract
+) -> tuple[dict[str, object], str]:
+    fields = _METADATA_FIELDS | {"training_configuration"} if profile.algorithm == "tcn" else _METADATA_FIELDS
+    if isinstance(document, dict) and document.get("schema_version") in {
+        f"{profile.profile_id}_head_refit_metadata", f"{profile.profile_id}_head_recent_refit_metadata",
+    }:
+        fields = fields | {"final_fit"}
+    return _hashed_object(document, fields, "metadata")
 
 
 def _decode_final_fit(
@@ -892,5 +949,6 @@ __all__ = [
     "TrainedTcnModelSnapshot",
     "TrainedLightGBMModelSnapshot",
     "DecodeHeadBundle",
+    "DecodeHeadPublicationIdentity",
     "LoadHeadBundle",
 ]

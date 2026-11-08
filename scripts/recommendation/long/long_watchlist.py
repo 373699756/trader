@@ -119,6 +119,7 @@ def audit_code(
     observed_at: datetime,
     company_policy: CompanyScoringPolicy,
     preload_settings: CompanyPreloadSettings,
+    financial_max_age_days: int,
     exclusions: dict[str, tuple[str, ...]],
     evidence_database: Path,
     open_dates: tuple[date, ...], sqlite_policy: SqliteIoPolicy,
@@ -132,6 +133,7 @@ def audit_code(
         monotonic=time.monotonic,
         company_policy=company_policy,
         preload_settings=preload_settings,
+        financial_max_age_days=financial_max_age_days,
     )
     reader.initialize((code,), cancelled=lambda: False)
     observation = reader.load((code,), observed_at, include_structured=True).get(code)
@@ -191,6 +193,7 @@ def Main() -> int:
                     observed_at=observed_at,
                     company_policy=strategy.company_scoring,
                     preload_settings=settings.pipeline.company_preload,
+                    financial_max_age_days=strategy.long_research.financial_max_age_days,
                     exclusions=exclusions,
                     evidence_database=args.company_evidence_database,
                     open_dates=open_dates, sqlite_policy=sqlite_policy,

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.training.profiles.v3.profile import _documents, _hash, _publish_profile, _recent_documents
+from tests.helpers.training.history_training_due import HistoryTrainingExpectationFixture
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.infra.scoring import profile_factory
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
@@ -205,7 +206,8 @@ def test_model_publication_state_is_fixed_until_restart_without_constructing_new
     loaded = LoadScoringProfile("v3", training_root=tmp_path)
     now = datetime(2026, 10, 20, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
     projection = PublishedTrainingState(
-        tmp_path / "history", tmp_path, loaded.publications, owned_profile="v3", wall_clock=lambda: now, sqlite_policy=SqlitePolicyFixture()
+        tmp_path / "history", tmp_path, loaded.publications, owned_profile="v3", wall_clock=lambda: now,
+        load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture()
     )
     projection.initialize()
     before = projection.status()
@@ -224,14 +226,16 @@ def test_model_publication_state_is_fixed_until_restart_without_constructing_new
         scope.setattr(profile_factory, "BuildTrainedScoringProfile", lambda *args: pytest.fail("no hot model loading"))
         projection.initialize()
     assert projection.status() == before
+    projection.observe_publication(lambda: False)
     current = tuple(head for head in projection.status() if head.owned)
-    assert len(current) == 2 and not any(head.restart_required for head in current)
+    assert len(current) == 2 and all(head.restart_required for head in current)
     assert tuple(head.loaded for head in current) == loaded.publications
-    assert tuple(head.disk for head in current) == loaded.publications
     updated = LoadScoringProfile("v3", training_root=tmp_path)
     assert updated.publications != loaded.publications
+    assert tuple(head.disk for head in current) == updated.publications
     restarted = PublishedTrainingState(
-        tmp_path / "history", tmp_path, updated.publications, owned_profile="v3", wall_clock=lambda: now, sqlite_policy=SqlitePolicyFixture()
+        tmp_path / "history", tmp_path, updated.publications, owned_profile="v3", wall_clock=lambda: now,
+        load_expectation=HistoryTrainingExpectationFixture, sqlite_policy=SqlitePolicyFixture()
     )
     restarted.initialize()
     assert tuple(head.disk for head in restarted.status() if head.owned) == updated.publications

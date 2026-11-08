@@ -14,6 +14,12 @@ class PriceAdjustment(str, Enum):
     QFQ = "qfq"
 
 
+class HistorySessionKind(str, Enum):
+    TRADING = "trading"
+    SUSPENDED = "suspended"
+    ESTIMATED = "estimated"
+
+
 class HistoryAdjustmentError(ValueError):
     """A qfq-only feature boundary received raw historical prices."""
 
@@ -34,10 +40,13 @@ class DailyBar:
     _: KW_ONLY
     adjustment: PriceAdjustment
     source: str
+    session_kind: HistorySessionKind = HistorySessionKind.TRADING
 
     def __post_init__(self) -> None:
         if not isinstance(self.adjustment, PriceAdjustment):
             raise TypeError("daily bar adjustment must be a PriceAdjustment")
+        if not isinstance(self.session_kind, HistorySessionKind):
+            raise TypeError("daily bar session kind must be a HistorySessionKind")
         if not self.trade_date:
             raise ValueError("daily bar trade_date is required")
         if not self.source.strip():
@@ -294,12 +303,30 @@ def _nonnegative_average(values: tuple[float, ...], required: int) -> float | No
 
 
 def _amihud_average(bars: list[DailyBar]) -> float | None:
-    values = tuple(
-        abs(bar.pct_change / 100.0) / max(bar.amount / 1_000_000.0, 1e-9)
-        for bar in bars
-        if math.isfinite(bar.pct_change) and math.isfinite(bar.amount) and bar.amount > 0.0
-    )
-    return sum(values) / len(values) if len(bars) == 20 and values else None
+    if len(bars) != 20:
+        return None
+    values: list[float] = []
+    for bar in bars:
+        if (
+            bar.session_kind is HistorySessionKind.ESTIMATED
+            or not math.isfinite(bar.pct_change)
+            or not math.isfinite(bar.amount)
+            or bar.amount < 0.0
+        ):
+            return None
+        if bar.amount == 0.0:
+            if bar.session_kind is not HistorySessionKind.SUSPENDED or bar.pct_change != 0.0:
+                return None
+            values.append(0.0)
+            continue
+        if bar.session_kind is HistorySessionKind.SUSPENDED:
+            return None
+        value = abs(bar.pct_change / 100.0) / max(bar.amount / 1_000_000.0, 1e-9)
+        if not math.isfinite(value):
+            return None
+        values.append(value)
+    average = sum(values) / 20.0
+    return average if math.isfinite(average) else None
 
 
 def MedianAmount(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
@@ -321,6 +348,7 @@ __all__ = [
     "HistoryAdjustmentError",
     "HistoryContext",
     "PriceAdjustment",
+    "HistorySessionKind",
     "AverageTrueRangePct",
     "BuildHistoryContext",
     "MaximumDrawdownPct",

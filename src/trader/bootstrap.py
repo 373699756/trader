@@ -173,8 +173,10 @@ from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.domain.training_reminder import TrainingReminderStatus
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.history.history_training_due import PublishedTrainingState
+from trader.training.infra.history.history_training_expectation import HistoryTrainingExpectationReader
 from trader.training.infra.history.training_reminder_status import ReadTrainingReminderStatus
-from trader.training.infra.training_settings import LoadRuntimeTrainingSettings, ProfileTrainingSettings
+from trader.training.infra.training_settings import LoadProfileTrainingSettings, LoadRuntimeTrainingSettings, ProfileTrainingSettings
+from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 from trader.web import CreateApp
 
 if TYPE_CHECKING:
@@ -487,7 +489,6 @@ def ExecuteSelectedTraining(
 ) -> int:
     """Compose offline training resources, also used by isolated diagnostics."""
     from trader.training.entrypoints.commands import ConfigureTrainingResources
-    from trader.training.infra.resource_settings import LoadTrainingResourceSettings
     from trader.training.infra.cpu_admission import AvailableTrainingCpus, TrainingCpuBudget
 
     scoring_profiles = ParseProfileSelection(",".join(scoring_profiles))
@@ -504,23 +505,21 @@ def ExecuteSelectedTraining(
         ConfigureDisk(runtime, additional_paths=tuple(path for path in (history_root, training_root) if path))
     memory_budget = TrainingMemoryBudget(FittingMemoryCapacity(resources.memory))
     sqlite_policy = BuildSqlitePolicy(runtime)
+    industry_reader = (partial(ReadIndustrySnapshot, runtime.data_paths.reference, sqlite_policy=sqlite_policy)
+                       if industry_snapshot is None else lambda _as_of: industry_snapshot)
     return RunSelectedTraining(
-        runtime,
-        scoring_profiles,
+        runtime, scoring_profiles,
         executor=BoundedExecutor(
             worker_count=len(scoring_profiles), queue_capacity=0, thread_name_prefix="profile-training"
         ),
-        memory_admission=memory_budget,
-        cpu_budget=cpu_budget,
-        fanout_settings=resources.fanout,
-        sample_settings=resources.samples,
+        memory_admission=memory_budget, cpu_budget=cpu_budget,
+        fanout_settings=resources.fanout, sample_settings=resources.samples,
         paths=ResolveTrainingLocations(runtime.data_paths, history_root, training_root), sqlite_policy=sqlite_policy,
-        prepare_training=partial(
-            SelectedTrainingAdapter, sqlite_policy=sqlite_policy,
-            load_industry_snapshot=(partial(ReadIndustrySnapshot, runtime.data_paths.reference, sqlite_policy=sqlite_policy)
-                                    if industry_snapshot is None else lambda _as_of: industry_snapshot),
-            clock=ShanghaiClock(_utc_now).now,
-        ),
+        prepare_training=partial(SelectedTrainingAdapter, sqlite_policy=sqlite_policy,
+                                 load_industry_snapshot=industry_reader, clock=ShanghaiClock(_utc_now).now),
+        load_expectation=HistoryTrainingExpectationReader(
+            industry_reader, partial(LoadProfileTrainingSettings, runtime.project_root), lambda: cpu_budget.profile_threads,
+        ).read,
         memory_capacity_bytes=memory_budget.capacity_bytes, started_at=started_at, terminal_columns=terminal_columns,
     )
 
@@ -926,19 +925,18 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     reviewer = DeepSeekReviewer.from_context(context, persistence.budget, review_client, review_cache)
     policy = policy_settings.BuildRecommendationPolicy(context.strategy)
     model_publications = PublishedTrainingState(
-        paths.history,
-        paths.models,
-        loaded_profile.publications if loaded_profile else (),
-        owned_profile=profile_id,
-        wall_clock=ShanghaiClock(now).now, sqlite_policy=sqlite_policy,
+        paths.history, paths.models, loaded_profile.publications if loaded_profile else (),
+        owned_profile=profile_id, wall_clock=ShanghaiClock(now).now, sqlite_policy=sqlite_policy,
+        load_expectation=HistoryTrainingExpectationReader(
+            partial(ReadIndustrySnapshot, paths.reference, sqlite_policy=sqlite_policy),
+            partial(LoadProfileTrainingSettings, settings.project_root),
+            lambda: LoadTrainingResourceSettings(settings.project_root, settings.disk_medium or "unknown").cpu.profile_threads,
+        ).read,
     )
     model_scoring = profile_factory.BuildProfileScoring(
-        profile_id,
-        loaded_profile,
-        history_sessions=training_settings.history_sessions,
-        model_failure=model_failure,
-        cost_policy=cost_policy,
-        maintenance=model_publications.status if profile_id != "v1" else None,
+        profile_id, loaded_profile,
+        history_sessions=training_settings.history_sessions, model_failure=model_failure, cost_policy=cost_policy,
+        maintenance=model_publications.status,
     )
     candidate_filtering = CandidateFilteringService(policy, model_scoring)
     local_scoring = LocalScoringService(model_scoring, RankingSelectionService(), RiskControlService())
@@ -1031,7 +1029,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             model_version=ContentHash(loaded_profile.publications) if loaded_profile else model_failure,
             config_version=effective_config_version,
         )
-        if not cancelled() and profile_id != "v1":
+        if not cancelled():
             model_publications.initialize()
 
     input_preloader = (
@@ -1041,6 +1039,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
     if shared_inputs:
         input_preloader.register(market_data.history, initialize_published_inputs)
+    for observe in (references.observe_publication, market_data.history.observe_publication,
+                    market_data.research.observe_publication, model_publications.observe_publication):
+        input_preloader.register_publication_observer(observe)
     supervisor = runtime_supervisor.RuntimeSupervisor(
         scheduler,
         runtime_supervisor.RuntimeSupervisorConfig(
@@ -1339,13 +1340,12 @@ def _build_market_data(
                 paths.company, raw_path=paths.company_collection, event_policy=strategy.company_scoring.events,
                 sqlite_policy=sqlite_policy,
             ),
-            wall_clock=now,
-            open_dates=calendar.open_dates,
-            monotonic=time.monotonic,
+            wall_clock=now, open_dates=calendar.open_dates, monotonic=time.monotonic,
             reserve_bytes=partial(market_cache.reserve_resident, "security_master_calendar", "company"),
             source_versions=references.versions,
             config_version=settings.config_version,
             company_policy=strategy.company_scoring,
+            financial_max_age_days=strategy.long_research.financial_max_age_days,
             preload_settings=settings.pipeline.company_preload,
         )
         intraday_loader = IntradayLoader(

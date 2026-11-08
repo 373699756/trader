@@ -7,7 +7,7 @@ from datetime import date
 import math
 
 from trader.download.domain.published_history import PublishedHistoryWindow
-from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.infra.market_data.history.history import DailyBar, HistorySessionKind, PriceAdjustment
 from trader.recommendation.domain.market.history_alignment import (
     AlignedMarketSession,
     AlignMarketSession,
@@ -90,6 +90,7 @@ def BuildAlignedHistoryBars(
                 raw.turnover if raw else None,
                 adjustment=PriceAdjustment.QFQ,
                 source="published_history",
+                session_kind=HistorySessionKind(point.kind),
             )
         )
         if point.kind == "estimated":

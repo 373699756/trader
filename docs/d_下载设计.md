@@ -331,6 +331,8 @@ company先ST过滤，再查合格股票的财务、质押、解禁、公告目�
 
 数据库：`data/company/company_facts.sqlite3`。表：`company_facts`。下表逐项解释该表的24个物理列；下载、正文和OCR的任务进度位于另一份采集库，不混在这24列里。采集参数来自 `config/download.json`，字段如何用于过滤、评分和风险由 `config/filter.json`、`config/scoring.json`、`config/risk.json` 的消费者决定。
 
+`company_latest_financial`按证券保存最新已披露财报，列为`code/report_date/disclosed_at`及`eps/bps/revenue_growth_pct/profit_growth_pct/core_profit_growth_pct/roe_pct/parent_profit/core_profit`，外键随公司事实同事务更新；`company_facts`原财务列仍保留最近完整报表。`CompanyFacts.latest_financial`是必需的明确可空值，与完整报表分别读写并进入发布摘要；最新缺其它指标时，仍将同报告期归母／扣非利润交给亏损门，不拼接旧期数值。缺该关联表的旧正式库明确拒绝，不自动补表或清空。实际更换仅限该正式投影库，须先核查并保全窗口外持续风险、证据与凭证，再按另获授权的具体范围处理；采集库、原公告／PDF／文本、价格历史、模型、冻结及预算不因此删除，本批没有执行活动库切换。
+
 | 字段 | 中文意思/单位 | 来源 | 荐股用途与更新规则 |
 | --- | --- | --- | --- |
 | `code` | 证券代码 | 官方身份关联 | 关联事实，不按名称关联 |

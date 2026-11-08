@@ -28,10 +28,16 @@ class HeadTrainingStatus:
     failure: str | None = None
     loaded: ModelPublicationIdentity | None = None
     owned: bool = False
+    publication_observation_failure: str | None = None
 
     @property
     def restart_required(self) -> bool:
-        return self.owned and self.loaded != self.disk and self.failure != "publication_busy"
+        return (
+            self.owned
+            and self.loaded != self.disk
+            and (self.failure != "publication_busy" or self.disk is not None)
+            and not (self.disk is None and self.publication_observation_failure is not None)
+        )
 
 
 __all__ = ["ModelPublicationIdentity", "HeadTrainingStatus"]

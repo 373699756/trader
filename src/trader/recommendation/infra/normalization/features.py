@@ -331,6 +331,7 @@ class FeatureBuilder:
                     ),
                     self._long_research_policy,
                     self._feature_component_weights,
+                    observed_at=observed_at,
                 )
             )
             values["latest_disclosed_report_loss"] = DeriveLatestDisclosedReportLoss(observation, observed_at)

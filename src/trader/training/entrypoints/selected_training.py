@@ -40,6 +40,8 @@ from trader.training.application.training_diagnostics import BuildTrainingOperat
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
+from trader.training.infra.history.history_training_expectation import HistoryTrainingExpectation
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -60,6 +62,7 @@ def RunSelectedTraining(
     sample_settings: TrainingSampleSettings,
     paths: TrainingLocations, sqlite_policy: SqliteIoPolicy,
     prepare_training: Callable[[SelectedTrainingRequest], SelectedTrainingPort[SelectedProfileResult]],
+    load_expectation: Callable[[TrainedProfileContract, datetime], HistoryTrainingExpectation],
     memory_capacity_bytes: int | None = None,
     started_at: float | None = None,
     terminal_columns: int | None = None,
@@ -77,6 +80,7 @@ def RunSelectedTraining(
             sample_settings=sample_settings,
             sqlite_policy=sqlite_policy,
             prepare_training=prepare_training,
+            load_expectation=load_expectation,
             memory_capacity_bytes=memory_capacity_bytes,
             started_at=started_at,
             terminal_columns=terminal_columns,
@@ -92,6 +96,7 @@ def _run_selected_training(
     cancelled: ManualCancellationScope, *, cpu_budget: TrainingCpuBudget, fanout_settings: TrainingFanoutSettings,
     sample_settings: TrainingSampleSettings, sqlite_policy: SqliteIoPolicy,
     prepare_training: Callable[[SelectedTrainingRequest], SelectedTrainingPort[SelectedProfileResult]],
+    load_expectation: Callable[[TrainedProfileContract, datetime], HistoryTrainingExpectation],
     memory_capacity_bytes: int | None = None,
     started_at: float | None = None,
     terminal_columns: int | None = None,
@@ -195,6 +200,7 @@ def _run_selected_training(
                             paths.history,
                             paths.models,
                             datetime.now(ZoneInfo("Asia/Shanghai")),
+                            load_expectation=load_expectation,
                             selected_profile=contract, sqlite_policy=sqlite_policy,
                         )
                         payload["maintenance"] = [ProjectHeadTrainingStatus(head) for head in maintenance]

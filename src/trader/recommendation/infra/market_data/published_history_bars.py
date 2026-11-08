@@ -3,7 +3,7 @@
 from typing import cast
 
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
-from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.infra.market_data.history.history import DailyBar, HistorySessionKind, PriceAdjustment
 from trader.recommendation.infra.market_data.outcome_history import PairOutcomeHistory
 from trader.recommendation.domain.outcomes.models import OutcomeBar
 
@@ -41,4 +41,11 @@ def ProjectPublishedDailyBar(cell: PublishedHistoryCell, adjustment: PriceAdjust
         turnover_rate=raw.turnover,
         adjustment=adjustment,
         source="baostock",
+        session_kind=(
+            HistorySessionKind.SUSPENDED
+            if cell.status == "supplier_marked_suspended"
+            else HistorySessionKind.TRADING
+            if cell.status == "complete"
+            else HistorySessionKind.ESTIMATED
+        ),
     )

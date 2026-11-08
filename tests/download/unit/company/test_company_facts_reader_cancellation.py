@@ -27,6 +27,7 @@ def reader(tmp_path):
         review_reasons=(), pending_document_count=0, announcement_coverage_start=None,
         announcement_coverage_end=None, announcement_state=CompanyDataState.UNAVAILABLE,
         checked_at=_AT, published_at=_AT,
+        latest_financial=None,
     )
     writer.publish((fact,), {}, None, _AT)
     return SQLiteCompanyEvidenceReaderFixture(path)

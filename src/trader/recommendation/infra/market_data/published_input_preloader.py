@@ -1,7 +1,8 @@
-"""Cancellable, one-time preload of the process's published input snapshots."""
+"""One owned worker for fixed startup inputs and publication-identity observations."""
 
 from __future__ import annotations
 
+import math
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -11,14 +12,17 @@ from trader.recommendation.infra.market_data.published_history_cache import Publ
 
 
 class PublishedInputPreloader:
-    """Load fixed startup inputs in one owned thread, then finish without polling."""
+    """Keep startup inputs fixed while observing explicitly registered publications."""
 
     def __init__(
         self,
         history: PublishedHistoryCache,
         *,
         initialize: Callable[[Callable[[], bool]], None],
+        observation_interval_seconds: float = 30.0,
     ) -> None:
+        if not math.isfinite(observation_interval_seconds) or observation_interval_seconds <= 0.0:
+            raise ValueError("publication observation interval must be positive")
         self._profiles: list[tuple[PublishedHistoryCache, Callable[[Callable[[], bool]], None]]] = [
             (history, initialize)
         ]
@@ -26,12 +30,21 @@ class PublishedInputPreloader:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._started = False
+        self._observers: list[Callable[[Callable[[], bool]], None]] = []
+        self._observation_interval = observation_interval_seconds
 
     def register(self, history: PublishedHistoryCache, initialize: Callable[[Callable[[], bool]], None]) -> None:
         with self._lock:
             if self._started:
                 raise RuntimeError("published input preload registration is closed")
             self._profiles.append((history, initialize))
+
+    def register_publication_observer(self, observer: Callable[[Callable[[], bool]], None]) -> None:
+        with self._lock:
+            if self._started:
+                raise RuntimeError("published input observer registration is closed")
+            if observer not in self._observers:
+                self._observers.append(observer)
 
     def start(self) -> bool:
         with self._lock:
@@ -68,6 +81,11 @@ class PublishedInputPreloader:
                 initialize(self._cancel.is_set)
             except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
                 history.record_maintenance("failed", type(exc).__name__, stage="startup_preload")
+        while self._observers and not self._cancel.wait(self._observation_interval):
+            for observe in self._observers:
+                if self._cancel.is_set():
+                    return
+                observe(self._cancel.is_set)
 
 
 __all__ = ["PublishedInputPreloader"]

@@ -429,11 +429,14 @@ def QualifiedPopulationFeatures(source: FilteredCandidateInputs) -> tuple[Featur
     return tuple(item.features for item in source.population.evaluations.values() if _business_ready(item))
 
 
-def PreselectionReplayFeature(feature: FeatureSnapshot) -> FeatureSnapshot:
-    """Remove post-selection evidence from the market population view."""
+def PreselectionReplayFeature(feature: FeatureSnapshot, *, hard_filter: HardFilterPolicy) -> FeatureSnapshot:
+    """Retain frozen qualification inputs while removing post-selection scoring evidence."""
     return replace(
         feature,
-        values={name: feature.values.get(name) for name in dict.fromkeys(_PRESELECTION_VALUE_FIELDS)},
+        values={
+            name: feature.values.get(name)
+            for name in dict.fromkeys((*_PRESELECTION_VALUE_FIELDS, *hard_filter.feature_input_fields))
+        },
         normalization=feature.normalization,
         evidence=(),
         external_risk_facts=(),
@@ -462,7 +465,9 @@ def FilterCandidateInputs(
                 if request.population_max_age_seconds is not None else request.policy.max_age_seconds
             ),
         )
-        projected = tuple(PreselectionReplayFeature(feature) for feature in source.features)
+        projected = tuple(
+            PreselectionReplayFeature(feature, hard_filter=source.policy.hard_filter) for feature in source.features
+        )
         if request.features != projected:
             raise ValueError("frozen population references do not match the preselection projection")
         population_basis = QuoteFreshnessBasis.RECEIPT

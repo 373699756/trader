@@ -16,6 +16,7 @@ from trader.infra.market_data.history.history import (
 )
 from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.recommendation.domain.market.models import MarketQuote
+from trader.recommendation.domain.market.price_basis import HistoryPriceAnchor
 from trader.recommendation.domain.risk.downside import DeriveEntrySetup
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 
@@ -102,6 +103,101 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
         history_price_bases={quote.code: _history_price_basis(11.6, 11.6)},
     )[0]
     assert uncached.values == feature.values
+
+
+@pytest.mark.parametrize("with_summary", [False, True])
+@pytest.mark.parametrize("price_scale", [1.0, 2.0])
+def test_same_day_publication_keeps_all_completed_history_factors(
+    with_summary: bool, price_scale: float
+) -> None:
+    settings = LoadStrategySettings(ROOT / "config/strategy.json")
+    builder = FeatureBuilder(
+        settings.news_signal,
+        settings.tomorrow_tail_signal,
+        settings.market_regime,
+        settings.long_research,
+        settings.feature_component_weights,
+    )
+    market_day = NOW.date()
+    day = market_day - timedelta(days=1)
+    dates: list[date] = []
+    while len(dates) < 61:
+        if day.weekday() < 5:
+            dates.append(day)
+        day -= timedelta(days=1)
+    prior = tuple(
+        DailyBar(
+            day.isoformat(),
+            10.0 / price_scale,
+            10.0 / price_scale,
+            (11.0 if index == 41 else 10.0) / price_scale,
+            10.0 / price_scale,
+            10_000_000.0,
+            100_000_000.0,
+            0.0,
+            2.0,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index, day in enumerate(reversed(dates))
+    )
+    current = DailyBar(
+        market_day.isoformat(),
+        10.1 / price_scale,
+        10.5 / price_scale,
+        10.8 / price_scale,
+        10.0 / price_scale,
+        20_000_000.0,
+        208_000_000.0,
+        5.0,
+        4.0,
+        adjustment=PriceAdjustment.QFQ,
+        source="fixture",
+    )
+    after_close = NOW.replace(hour=16, minute=0)
+    quote = MarketQuote(
+        code="600001",
+        name="测试股份",
+        price=10.5,
+        previous_close=10.0,
+        open_price=10.1,
+        high=10.8,
+        low=10.0,
+        pct_change=5.0,
+        change_5m=None,
+        speed=None,
+        volume_ratio=2.0,
+        turnover_rate=4.0,
+        amount=208_000_000.0,
+        volume=20_000_000.0,
+        amplitude=8.0,
+        market_cap=100_000_000_000.0,
+        industry="工业",
+        source="fixture",
+        source_time=after_close.replace(hour=15),
+        received_time=after_close,
+        data_version="fixture-close",
+    )
+    features = []
+    for bars in (prior, (*prior, current)):
+        summaries = {quote.code: BuildHistoryContext(bars)} if with_summary else {}
+        basis = _history_price_basis(10.0, 10.0 / price_scale)
+        if bars[-1].trade_date == market_day.isoformat():
+            basis = replace(basis, anchors=(*basis.anchors, HistoryPriceAnchor(market_day, 10.5, 10.5 / price_scale)))
+        features.append(builder.build(
+            (quote,),
+            {quote.code: bars[-20:] if with_summary else bars},
+            after_close,
+            history_summaries=summaries,
+            history_price_bases={quote.code: basis},
+        )[0])
+
+    assert features[1].values == features[0].values
+    assert features[1].values["ma20_60_position"] == 100.0
+    assert features[1].values["prior_high_20d"] == 11.0
+    assert features[1].values["breakout_20d"] == pytest.approx((10.5 / 11.0 - 0.9) * 1000.0)
+    assert features[1].values["qfq_average_amount_20d"] == 100_000_000.0
+    assert features[1].model_history_quality == features[0].model_history_quality
 
 
 @pytest.mark.parametrize("volume", [1_000.0, None, -1.0, float("nan"), float("inf")])

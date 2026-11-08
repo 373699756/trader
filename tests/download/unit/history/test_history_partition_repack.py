@@ -41,6 +41,7 @@ from trader.infra.serialization.canonical import ContentHash
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.history.history_training_due import EvaluateHistoryTrainingDue, HistoryTrainingDueQuery
+from trader.training.domain.training_input_identity import BuildTrainingInputHash
 from trader.training.infra.history.repack_training_evidence import (
     ReadTomorrowTrainingMemoryEvidence,
     VerifyHistoryRepackTraining,
@@ -356,10 +357,11 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
     built = coordinator.build()
     coordinator.activate()
     contract_hash = "9" * 64
+    industry = CurrentIndustrySnapshotFixture(("600001",), observed_at=NOW)
     bundle = PublishedHeadBundle(
         tmp_path / "data/training/models/tomorrow-v3/model.json",
         Strategy.TOMORROW,
-        "f" * 64,
+        BuildTrainingInputHash(original.content_hash, industry.content_hash),
         original.source_identity_hash,
         original.label_cutoff,
         contract_hash,
@@ -379,6 +381,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
             NOW,
             V3_TRAINING_PROFILE,
             expected_training_contract_hash=contract_hash,
+            industry_snapshot=industry,
         ), sqlite_policy=SqlitePolicyFixture()
     )
 

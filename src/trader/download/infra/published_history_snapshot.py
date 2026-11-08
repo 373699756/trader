@@ -65,6 +65,11 @@ class SQLitePublishedHistorySnapshot:
             self._cached = _CatalogSnapshot(history, reference_path, stamp, False)
         return history
 
+    def publication_identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str | None:
+        return HistoryControlIndex(
+            self._root / "catalog.sqlite3", sqlite_policy=self._sqlite_policy
+        ).publication_identity(cancel_requested=cancel_requested)
+
     def manifest(self) -> PublishedHistoryManifest | None:
         if not (self._root / "catalog.sqlite3").is_file():
             return None

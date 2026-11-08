@@ -47,6 +47,15 @@ class HardFilterPolicy:
             raise ValueError("structured risk thresholds must be finite and non-negative")
         object.__setattr__(self, "structured_risk_thresholds", MappingProxyType(thresholds))
 
+    @property
+    def feature_input_fields(self) -> tuple[str, ...]:
+        """Scalar inputs required to re-evaluate this policy against a frozen quote."""
+        return (
+            "amount_median_20d",
+            "corporate_risk_window_unavailable",
+            *self.structured_risk_thresholds,
+        )
+
 
 @dataclass(frozen=True)
 class FilterRule:

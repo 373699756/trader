@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from types import MappingProxyType
+from typing import Protocol
 
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.infra.cache_contracts import CanonicalJsonBytes
@@ -23,13 +24,18 @@ class ReferencePublicationStatus:
     disk_identity: str | None
     restart_required: bool
     failure: str | None
+    publication_observation_failure: str | None = None
+
+
+class ReferenceIdentityReadPort(Protocol):
+    def __call__(self, *, cancel_requested: Callable[[], bool] | None = None) -> str | None: ...
 
 
 class PublishedReferences:
     def __init__(
         self,
         read: Callable[[], PreparedReference | None],
-        read_identity: Callable[[], str | None],
+        read_identity: ReferenceIdentityReadPort,
         read_industries: Callable[[datetime], tuple[SourceObservation, ...]],
         *,
         max_age_seconds: float,
@@ -48,6 +54,7 @@ class PublishedReferences:
         self._industry_source_time: datetime | None = None
         self._disk_identity: str | None = None
         self._failure: str | None = "reference_not_loaded"
+        self._publication_observation_failure: str | None = None
         self._initialized = False
 
     def initialize(self) -> None:
@@ -123,7 +130,28 @@ class PublishedReferences:
     def status(self) -> ReferencePublicationStatus:
         with self._lock:
             loaded = self._reference.identity if self._reference else None
-            return ReferencePublicationStatus(loaded, self._disk_identity, loaded != self._disk_identity, self._failure)
+            return ReferencePublicationStatus(
+                loaded,
+                self._disk_identity,
+                loaded != self._disk_identity,
+                self._failure,
+                self._publication_observation_failure,
+            )
+
+    def observe_publication(self, cancelled: Callable[[], bool]) -> None:
+        if cancelled():
+            return
+        try:
+            identity = self._read_identity(cancel_requested=cancelled)
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            if not cancelled():
+                with self._lock:
+                    self._publication_observation_failure = f"reference_observation:{type(exc).__name__}"
+            return
+        if not cancelled():
+            with self._lock:
+                self._disk_identity = identity
+                self._publication_observation_failure = None if identity is not None else "reference_publication_unavailable"
 
     def model_industries(self, codes: Sequence[str]) -> Mapping[str, ModelIndustryReference]:
         with self._lock:
@@ -223,4 +251,4 @@ def _industry(row: SourceObservation) -> ModelIndustryReference:
     )
 
 
-__all__ = ["PublishedReferences", "ReferencePublicationStatus"]
+__all__ = ["PublishedReferences", "ReferencePublicationStatus", "ReferenceIdentityReadPort"]

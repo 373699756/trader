@@ -11,6 +11,7 @@ import pytest
 from scripts.core.reporting import ReadJsonReports
 from tests.helpers.shared.configuration import RuntimeSettingsFixture, SqlitePolicyFixture
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
+from tests.helpers.training.history_training_due import HistoryTrainingExpectationFixture
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture, TrainingSampleSettingsFixture
 from trader.infra import signal_cancellation
 from trader.infra.shutdown import ShutdownDeadline
@@ -81,6 +82,7 @@ def test_selected_profiles_share_one_layout_and_report_brief_date_gaps_with_comp
             fanout_settings=resources.fanout, sample_settings=TrainingSampleSettingsFixture(),
             paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
             sqlite_policy=SqlitePolicyFixture(), terminal_columns=terminal_columns,
+            load_expectation=HistoryTrainingExpectationFixture,
             prepare_training=lambda request: SelectedTrainingAdapter(
                 request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _at: _CURRENT_INDUSTRY,
                 clock=lambda: _CURRENT_INDUSTRY.observed_at,
@@ -193,6 +195,7 @@ def test_final_result_follows_shutdown_and_preserves_training_outcome(tmp_path, 
             cpu_budget=TrainingCpuBudget(2, settings=resources.cpu), fanout_settings=resources.fanout,
             sample_settings=TrainingSampleSettingsFixture(), paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
             sqlite_policy=SqlitePolicyFixture(),
+            load_expectation=HistoryTrainingExpectationFixture,
             prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),
         )
         reports = ReadJsonReports("".join(before_shutdown) + capsys.readouterr().out)
@@ -272,6 +275,7 @@ def test_returned_run_keeps_training_status_when_progress_cleanup_fails(tmp_path
             cpu_budget=TrainingCpuBudget(2, settings=resources.cpu), fanout_settings=resources.fanout,
             sample_settings=TrainingSampleSettingsFixture(), paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
             sqlite_policy=SqlitePolicyFixture(),
+            load_expectation=HistoryTrainingExpectationFixture,
             prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),
         )
         reports = ReadJsonReports(capsys.readouterr().out)

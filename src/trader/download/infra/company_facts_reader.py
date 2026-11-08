@@ -112,6 +112,32 @@ class SQLiteCompanyEvidenceReader:
                 raise InterruptedError("company_field_read_cancelled") from exc
             raise RuntimeError("company_fields_unreadable") from exc
 
+    def publication_identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str:
+        """Observe the committed identity without verifying or loading the fact payload."""
+        if cancel_requested is not None and cancel_requested():
+            raise InterruptedError("company_observation_cancelled")
+        if not self.path.exists():
+            return ""
+        try:
+            with SqliteSession(
+                self.path,
+                SqliteConnectionOptions(read_only=True),
+                cancel_requested=cancel_requested,
+                sqlite_policy=self._sqlite_policy,
+            ) as connection:
+                identity = ReadCompanyPublicationIdentity(connection)
+                if cancel_requested is not None and cancel_requested():
+                    raise InterruptedError("company_observation_cancelled")
+                if identity is None:
+                    return ""
+                if identity.extraction_hash != self._extraction_hash:
+                    raise ValueError("company_publication_identity_mismatch")
+                return identity.content_hash.hex()
+        except sqlite3.Error as exc:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_observation_cancelled") from exc
+            raise RuntimeError("company_publication_unreadable") from exc
+
     def publication_version(self) -> str:
         if not self.path.exists():
             return ""

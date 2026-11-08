@@ -24,6 +24,7 @@ from trader.download.domain.company_events import (
     CompanyRiskType,
 )
 from trader.download.domain.company_facts import CompanyFacts
+from trader.download.domain.company_evidence import CompanyFinancial
 from trader.infra.settings.models import CompanyPreloadSettings
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
@@ -34,6 +35,7 @@ from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
     FinancialReport,
+    FinancialReportIsFresh,
     ResearchObservation,
 )
 from trader.recommendation.domain.scoring.company import BuildCompanyScoringContext, CompanyScoringCalendar, CompanyScoringPolicy
@@ -115,6 +117,8 @@ def _snapshot_sqlite_failure_detail(exc: BaseException) -> str | None:
 class CompanyEvidenceReadPort(Protocol):
     def publication_version(self) -> str: ...
 
+    def publication_identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str: ...
+
     def visit(
         self,
         codes: Sequence[str],
@@ -142,6 +146,7 @@ class PublishedCompanyResearch:
         monotonic: Callable[[], float],
         company_policy: CompanyScoringPolicy,
         preload_settings: CompanyPreloadSettings,
+        financial_max_age_days: int,
         **options: Unpack[_CompanyInputOptions],
     ) -> None:
         self._reader = reader
@@ -152,6 +157,9 @@ class PublishedCompanyResearch:
         self._source_versions = options.get("source_versions")
         self._company_policy = company_policy
         self._preload_settings = preload_settings
+        if type(financial_max_age_days) is not int or financial_max_age_days < 1:
+            raise ValueError("financial_max_age_days_invalid")
+        self._financial_max_age_days = financial_max_age_days
         self._config_version = options.get("config_version", "company")
         self._initialization_lock = threading.Lock()
         self._lock = threading.RLock()
@@ -159,6 +167,7 @@ class PublishedCompanyResearch:
         self._last_error = "company_not_loaded"
         self._publication_version = ""
         self._disk_version = ""
+        self._publication_observation_failure: str | None = None
         self._initialized = False
 
     def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyDocumentReference, ...]:
@@ -221,7 +230,10 @@ class PublishedCompanyResearch:
             if cancelled() or self._monotonic() >= deadline:
                 raise InterruptedError("company_preload_stopped")
             if snapshot.published_at <= observed_at:
-                rows[snapshot.code] = _observation(snapshot, observed_at, before, calendar, self._company_policy)
+                rows[snapshot.code] = _observation(
+                    snapshot, observed_at, before, calendar, self._company_policy,
+                    financial_max_age_days=self._financial_max_age_days,
+                )
 
         _observe_snapshot_read(
             "visit",
@@ -296,7 +308,7 @@ class PublishedCompanyResearch:
             if original is not None and original.snapshot_at is not None and original.snapshot_at > now:
                 original = None
             item = (
-                _qualified(original, now, required, self._company_policy.events.unlock_days)
+                _qualified(original, now, required, self._company_policy.events.unlock_days, self._financial_max_age_days)
                 if original is not None
                 else None
             )
@@ -319,6 +331,21 @@ class PublishedCompanyResearch:
             codes, include_structured=include_structured, action_restrictions=action_restrictions, as_of=observed_at
         )
 
+    def observe_publication(self, cancelled: Callable[[], bool]) -> None:
+        if cancelled():
+            return
+        try:
+            identity = self._reader.publication_identity(cancel_requested=cancelled)
+        except (OSError, RuntimeError, ValueError, TypeError, sqlite3.Error) as exc:
+            if not cancelled():
+                with self._lock:
+                    self._publication_observation_failure = f"company_observation:{type(exc).__name__}"
+            return
+        if not cancelled():
+            with self._lock:
+                self._disk_version = identity
+                self._publication_observation_failure = None if identity else "company_publication_unavailable"
+
     def status(self) -> ResearchLoaderStatus:
         now = ShanghaiNow(self._wall_clock())
         required = self._required_coverage(now)
@@ -327,8 +354,9 @@ class PublishedCompanyResearch:
             last_error = self._last_error
             publication_version = self._publication_version
             disk_version = self._disk_version
+            observation_failure = self._publication_observation_failure
         rows = tuple(
-            _qualified(item, now, required, self._company_policy.events.unlock_days)
+            _qualified(item, now, required, self._company_policy.events.unlock_days, self._financial_max_age_days)
             for item in (epoch.observations.values() if epoch is not None else ())
         )
         coverages = tuple(ResearchComponentCoverage(item) for item in rows)
@@ -362,6 +390,7 @@ class PublishedCompanyResearch:
             loaded_identity=publication_version,
             disk_identity=disk_version,
             restart_required=publication_version != disk_version,
+            publication_observation_failure=observation_failure,
         )
 
 
@@ -427,9 +456,19 @@ def _action_ready(item: ResearchObservation) -> bool:
     )
 
 
+def _qualified_financial(item: ResearchObservation, now: datetime, maximum_age_days: int) -> ResearchObservation:
+    if item.financial is None or FinancialReportIsFresh(item.financial, now, maximum_age_days=maximum_age_days):
+        return item
+    return replace(
+        item, financial_history_complete=False,
+        source_errors=tuple(sorted({*item.source_errors, "financial_scoring:report_stale"})),
+    )
+
+
 def _qualified(
-    item: ResearchObservation, now: datetime, required: date | None, unlock_days: int
+    item: ResearchObservation, now: datetime, required: date | None, unlock_days: int, financial_max_age_days: int,
 ) -> ResearchObservation:
+    item = _qualified_financial(item, now, financial_max_age_days)
     item = _qualified_unlock(item, now, unlock_days)
     fresh = (
         required is not None
@@ -487,26 +526,24 @@ def _qualified_unlock(item: ResearchObservation, now: datetime, days: int) -> Re
     )
 
 
-def _observation(
-    snapshot: CompanyFacts, now: datetime, publication: str, calendar: CompanyScoringCalendar, policy: CompanyScoringPolicy
-) -> ResearchObservation:
-    financial = snapshot.financial
-    report = (
-        FinancialReport(
-            financial.report_date,
-            ShanghaiNow(financial.published_at),
-            financial.basic_eps,
-            financial.book_value_per_share,
-            financial.revenue_growth_pct,
-            financial.net_profit_growth_pct,
-            financial.core_profit_growth_pct,
-            financial.roe_pct,
-            financial.parent_net_profit,
-            financial.core_net_profit,
-        )
-        if financial is not None and financial.published_at <= now and financial.report_date <= now.date()
-        else None
+def _financial_report(financial: CompanyFinancial | None, now: datetime) -> FinancialReport | None:
+    if financial is None or financial.published_at > now or financial.report_date > now.date():
+        return None
+    return FinancialReport(
+        financial.report_date, ShanghaiNow(financial.published_at), financial.basic_eps,
+        financial.book_value_per_share, financial.revenue_growth_pct, financial.net_profit_growth_pct,
+        financial.core_profit_growth_pct, financial.roe_pct, financial.parent_net_profit, financial.core_net_profit,
     )
+
+
+def _observation(
+    snapshot: CompanyFacts, now: datetime, publication: str, calendar: CompanyScoringCalendar, policy: CompanyScoringPolicy,
+    *, financial_max_age_days: int,
+) -> ResearchObservation:
+    report = _financial_report(snapshot.financial, now)
+    latest = _financial_report(snapshot.latest_financial, now)
+    history = tuple(item for position, item in enumerate((report, latest)) if item is not None and (not position or item != report))
+    fresh = FinancialReportIsFresh(report, now, maximum_age_days=financial_max_age_days)
     categories = {
         CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION: CorporateRiskCategory.MAJOR_SHAREHOLDER_REDUCTION,
         CompanyRiskType.FINANCIAL_FRAUD: CorporateRiskCategory.FINANCIAL_FRAUD,
@@ -545,7 +582,10 @@ def _observation(
         if event.last_disclosed_at <= now
     )
     errors = tuple(
-        sorted({f"{item.scope}:{item.reason_code}" for item in snapshot.review_reasons if item.scope != "positive"})
+        sorted({
+            *(f"{item.scope}:{item.reason_code}" for item in snapshot.review_reasons if item.scope != "positive"),
+            *(("financial_scoring:report_stale",) if report is not None and not fresh else ()),
+        })
     )
     observation = ResearchObservation(
         company_context=BuildCompanyScoringContext(snapshot, calendar, policy),
@@ -555,8 +595,8 @@ def _observation(
         queried_on=snapshot.checked_at.date(),
         pledge_checked_on=snapshot.pledge.day if snapshot.pledge else None,
         financial=report,
-        financial_history=(report,) if report else (),
-        financial_history_complete=report is not None and snapshot.financial_state is CompanyDataState.COMPLETE,
+        financial_history=history,
+        financial_history_complete=report is not None and fresh and snapshot.financial_state is CompanyDataState.COMPLETE,
         announcements_available=snapshot.announcement_state is CompanyDataState.COMPLETE,
         pledge_ratio_pct=snapshot.pledge.ratio_pct
         if snapshot.pledge is not None

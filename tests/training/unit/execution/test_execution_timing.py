@@ -4,6 +4,7 @@ from tests.helpers.training.training_resources import TrainingSampleSettingsFixt
 
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
+from tests.helpers.training.history_training_due import HistoryTrainingExpectationFixture
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
@@ -559,6 +560,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
         cpu_budget=cpu_budget,
         paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples"),
         sqlite_policy=SqlitePolicyFixture(),
+        load_expectation=HistoryTrainingExpectationFixture,
         prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
         sample_settings=TrainingSampleSettingsFixture(),

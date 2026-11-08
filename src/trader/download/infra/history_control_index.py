@@ -379,6 +379,35 @@ class HistoryControlIndex:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryControlError("history source identity read failed") from exc
 
+    def publication_identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str | None:
+        """Observe only the committed publication pointer, without loading its inputs."""
+        if cancel_requested is not None and cancel_requested():
+            raise InterruptedError("history_observation_cancelled")
+        if not self._path.is_file():
+            return None
+        try:
+            with SqliteSession(
+                self._path,
+                SqliteConnectionOptions(read_only=True),
+                cancel_requested=cancel_requested,
+                sqlite_policy=self._sqlite_policy,
+            ) as connection:
+                self._validate_metadata(connection)
+                row = connection.run(
+                    "SELECT snapshot_hash,sync_sequence FROM published_snapshot WHERE singleton=1"
+                ).fetchone()
+                if cancel_requested is not None and cancel_requested():
+                    raise InterruptedError("history_observation_cancelled")
+                if row is None:
+                    return None
+                if type(row[1]) is not int or row[1] < 1:
+                    raise HistoryControlError("history publication pointer is invalid")
+                return DecodeHash(row[0])
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("history_observation_cancelled") from exc
+            raise HistoryControlError("history publication pointer read failed") from exc
+
     def load_published_state(
         self, *, sequence: int | None = None, references: dict[str, PreparedReference] | None = None
     ) -> HistoryPublishedControlState | None:

@@ -16,8 +16,11 @@ from pathlib import Path
 
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.recommendation.domain.publication.models import Strategy
+from trader.training.domain.model_publication import ModelPublicationIdentity
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, TrainedHeadModelBundle
-from trader.training.infra.model_bundles.bundle_snapshot import InspectPublishedHeadBundle, LoadedPublishedHeadBundle
+from trader.training.infra.model_bundles.bundle_snapshot import (
+    InspectPublishedHeadBundle, LoadedPublishedHeadBundle, ReadPublishedHeadIdentity,
+)
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
 _LOGGER = logging.getLogger(__name__)
@@ -34,13 +37,17 @@ class ProfileWorkspace:
 
 
 @contextmanager
-def ProfilePublicationLock(profile_root: Path, timeout_seconds: float = 2.0) -> Iterator[None]:
+def ProfilePublicationLock(
+    profile_root: Path, timeout_seconds: float = 2.0, *, cancel_requested: Callable[[], bool] | None = None
+) -> Iterator[None]:
     """Bound a profile reader or publisher's wait on the shared directory lock."""
     if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
         raise ValueError("profile publication timeout must be finite and nonnegative")
     lock = ProcessLock(profile_root.with_name(f".{profile_root.name}.publication.lock"), label="model publication")
     deadline = time.monotonic() + timeout_seconds
     while True:
+        if cancel_requested is not None and cancel_requested():
+            raise InterruptedError("model_publication_observation_cancelled")
         try:
             lock.acquire()
             break
@@ -183,6 +190,42 @@ def InspectPublishedProfileBundles(
         return _inspect_profile_directory(profile_root, profile)
 
 
+def ReadPublishedProfileIdentities(
+    profile_root: Path,
+    profile: TrainedProfileContract,
+    *,
+    cancel_requested: Callable[[], bool],
+    timeout_seconds: float = 1.0,
+) -> tuple[ModelPublicationIdentity, ...]:
+    """Observe a pair's declared metadata identity without reading model payloads."""
+    if cancel_requested():
+        raise InterruptedError("model_publication_observation_cancelled")
+    if not math.isfinite(timeout_seconds) or not 0.0 <= timeout_seconds <= 1.0:
+        raise ValueError("model publication observation timeout is invalid")
+    if not profile_root.parent.exists():
+        raise FileNotFoundError(profile_root)
+    with ProfilePublicationLock(profile_root, timeout_seconds, cancel_requested=cancel_requested):
+        if not profile_root.exists() and not profile_root.is_symlink():
+            raise FileNotFoundError(profile_root)
+        if profile_root.is_symlink() or not profile_root.is_dir():
+            raise ValueError("trained profile directory is invalid")
+        identities = tuple(
+            ReadPublishedHeadIdentity(
+                profile_root / contract.directory_name,
+                contract.strategy,
+                profile,
+                cancel_requested=cancel_requested,
+            )
+            for contract in profile.heads
+        )
+        if (
+            len({item.training_history_hash for item in identities}) != 1
+            or len({item.training_run_hash for item in identities}) != 1
+        ):
+            raise ModelBundleContractError("trained profile publication metadata identity is inconsistent")
+        return identities
+
+
 def _inspect_profile_directory(
     profile_root: Path, profile: TrainedProfileContract
 ) -> tuple[LoadedPublishedHeadBundle, ...]:
@@ -264,6 +307,7 @@ def _fsync_directory(path: Path) -> None:
 __all__ = [
     "ClearProfileStaging",
     "InspectPublishedProfileBundles",
+    "ReadPublishedProfileIdentities",
     "InspectProfileWorkspace",
     "ProfilePublicationBusyError",
     "ProfilePublicationLock",

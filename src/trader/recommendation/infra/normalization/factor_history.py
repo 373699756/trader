@@ -42,22 +42,23 @@ def BuildFactorHistory(
     bars: tuple[DailyBar, ...], context: HistoryContext | None, observation_date: str
 ) -> FactorHistory:
     """Project only consumed scalars; published contexts avoid historical scans."""
-    history = context.profile if context is not None else SummarizeHistoryMetrics(bars)
     completed = tuple(bar for bar in bars if bar.trade_date < observation_date)
-    if context is not None and context.latest_trade_date >= observation_date and context.previous_profile is not None:
-        setup = context.previous_profile
+    if context is not None and context.latest_trade_date < observation_date:
+        history = context.profile
+    elif context is not None and context.latest_trade_date == observation_date and context.previous_profile is not None:
+        history = context.previous_profile
     else:
-        setup = SummarizeHistoryMetrics(completed) if len(completed) != len(bars) else history
+        history = SummarizeHistoryMetrics(completed)
     return FactorHistory(
-        ma5=setup.moving_average_5d,
-        ma10=setup.moving_average_10d,
-        ma20=setup.moving_average_20d,
+        ma5=history.moving_average_5d,
+        ma10=history.moving_average_10d,
+        ma20=history.moving_average_20d,
         ma60=history.moving_average_60d,
-        ma20_slope_pct=setup.ma20_slope_pct,
-        atr20_pct=setup.atr20_pct,
-        average_volume_5d=setup.average_volume_5d,
-        prior_high_20d=setup.high_20d,
-        breakout_high=max(bar.high for bar in bars[-20:]) if len(bars) >= 20 else None,
+        ma20_slope_pct=history.ma20_slope_pct,
+        atr20_pct=history.atr20_pct,
+        average_volume_5d=history.average_volume_5d,
+        prior_high_20d=history.high_20d,
+        breakout_high=history.high_20d,
         volatility_20d=history.volatility_20d,
         max_drawdown_20d=history.max_drawdown_20d,
         median_amount_20d=history.median_amount_20d,

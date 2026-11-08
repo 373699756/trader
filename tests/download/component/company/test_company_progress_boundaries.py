@@ -182,6 +182,7 @@ def test_stock_verification_projects_real_component_states_and_dates():
         "600001", financial, CompanyDataState.PARTIAL, CompanyRatio("600001", NOW.date(), 2),
         CompanyDataState.COMPLETE, (), NOW, NOW.date() + timedelta(days=180), CompanyDataState.COMPLETE,
         (), (), (), 0, NOW.date() - timedelta(days=365), NOW.date(), CompanyDataState.UNAVAILABLE, NOW, NOW,
+        latest_financial=financial,
     )
     ReportCompanyVerification(events.append, facts, 1, 1, 2, 1, False)
     event = events[0]

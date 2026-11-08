@@ -223,6 +223,17 @@ def test_startup_input_preloader_never_downloads_and_keeps_web_readable(
     hour,
     minute,
 ) -> None:
+    from trader.training.infra.history.history_training_due import PublishedTrainingState
+
+    ready = threading.Event()
+    initialize = PublishedTrainingState.initialize
+
+    def initialized(state):
+        initialize(state)
+        ready.set()
+
+    monkeypatch.setattr(PublishedTrainingState, "initialize", initialized)
+
     def unexpected_download(*_args, **_kwargs):
         pytest.fail("server startup must not construct a supplier or download")
 
@@ -240,8 +251,8 @@ def test_startup_input_preloader_never_downloads_and_keeps_web_readable(
     assert preloader.start() is True
     try:
         assert preloader._thread is not None
-        preloader._thread.join(2)
-        assert not preloader._thread.is_alive()
+        assert ready.wait(2)
+        assert preloader._thread.is_alive()
         client = system.app.test_client()
         assert client.get("/").status_code == 200
         with monkeypatch.context() as scope:

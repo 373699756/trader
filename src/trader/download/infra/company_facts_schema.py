@@ -27,6 +27,12 @@ COMPANY_FACTS_SCHEMA = SqliteSchema(
           CHECK((report_date IS NULL)=(disclosed_at IS NULL)),
           CHECK((pledge_pct IS NULL)=(pledge_date IS NULL))
         ) WITHOUT ROWID""",
+        """CREATE TABLE company_latest_financial (
+          code TEXT PRIMARY KEY REFERENCES company_facts(code) ON DELETE CASCADE,
+          report_date INTEGER NOT NULL, disclosed_at INTEGER NOT NULL,
+          eps REAL, bps REAL, revenue_growth_pct REAL, profit_growth_pct REAL,
+          core_profit_growth_pct REAL, roe_pct REAL, parent_profit REAL, core_profit REAL
+        ) WITHOUT ROWID""",
         """CREATE TABLE company_risk_event (
           id INTEGER PRIMARY KEY, code TEXT NOT NULL REFERENCES company_facts(code) ON DELETE CASCADE,
           event_key TEXT NOT NULL CHECK(length(event_key) BETWEEN 1 AND 240),

@@ -157,7 +157,7 @@ def test_reference_database_lock_is_not_reported_as_incompatible(tmp_path, monke
     path.touch()
     index = SQLiteReferenceIndex(path, sqlite_policy=SqlitePolicyFixture())
 
-    def locked(*, write):
+    def locked(*, write, cancel_requested=None):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(index, "_open", locked)
