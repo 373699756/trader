@@ -263,7 +263,9 @@ flowchart TD
     F --> P[各档独立评价与双头发布]
 ```
 
-现有 `application/selected_training.py` 按注入的`TrainingFanoutSettings`分发不可变批次；当前配置为每批256行、每档队列容量2，来源见[第6.2节](#62-作业资源配置与仍待核对的常量)。`infra/selected_training.py`固定SQLite快照并在扫描前判断复用。全部复用时零价格扫描；共享扫描与日历对齐已存在，四档样本/特征仍各自构建。
+上图概括扫描与分发，完整准入顺序还包括：按第3.1节固定价格发布与当前行业映射，再逐档检查复用；不能复用的档位按第3.3节先核日期元数据上界，只有可能满足者进入共享扫描。样本生成后再核两头真实分区及最终拟合日期，完整通过后才开始拟合。日期上界不是样本事实，也不把一档阻塞扩散给其它档位。
+
+现有 `application/selected_training.py` 按注入的`TrainingFanoutSettings`分发不可变批次；当前配置为每批256行、每档队列容量2，来源见[第6.2节](#62-作业资源配置与仍待核对的常量)。`infra/selected_training.py`固定SQLite快照及同份当前行业映射，并在扫描前判断复用。全部复用时零价格扫描；共享扫描与日历对齐已存在，四档样本/特征仍各自构建。
 
 慢消费者会背压公共扫描。先量出是哪档计算、写入、资源等待造成背压，再比较“先算公共基础量”“调整批次”“隔离慢消费者”等候选。不能为了取消背压引入无限队列或四份完整历史。
 
@@ -490,7 +492,7 @@ C后台可在原内部worker命令追加`--scheduling-candidate fixed|long_task_
 
 特征公式、历史端点、单位、列顺序和缺失掩码由同一合同维护，训练、在线和回放不能各写一份近似版本。到期判断看成熟标签和真实语义修订；文档提交、纯物理压实和无变化重跑不能伪装成新标签或已重新拟合。
 
-当前已有同档双头行业共享读取、4096行批读、较大矩阵临时映射、V5重叠序列块和统计小表；下一步核对是否实际命中及退出释放。V1/V5模型、样本和决策身份独立，不借别档补工件。
+当前已有同档双头行业共享读取、4096行批读、较大矩阵临时映射、V5重叠序列块和统计小表；实际命中、数值一致性及退出释放须按各自消费者验证，完整负载性能沿第9章取证。V1/V5模型、样本和决策身份独立，不借别档补工件。
 
 每档先写候选双头和报告，再检查完整工件组、输入/配置/特征身份和工程资格，通过才切换。取消、单头失败、校准拒绝或落盘失败均保留上一有效模型；复用不刷新拟合日期，不把复用标成新训练。
 
@@ -648,7 +650,7 @@ V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON
 
 ## 8. 质量和收益的边界
 
-工程可读、预测诊断合格、收益验证通过、人工允许生产是四种结论。训练报告不能把Rank IC或拟合成功写成赚钱证明。样本外研究、成本、风险及一次终端留出统一按c第15章及待迁入的现行收益合同。
+工程可读、预测诊断合格、收益验证通过、人工允许生产是四种结论。训练报告不能把Rank IC或拟合成功写成赚钱证明。样本外研究、成本、风险及一次终端留出统一按c第15章，独立收益门和统计口径见c第15.5节。
 
 研究/回溯的字段和存储字典由其实际owner核对：训练拥有样本与工件，推荐拥有决策及结果评价，不为了文档分篇搬动业务owner。历史研究身份、参数和留出记录不能改写成新候选通过。
 
@@ -705,7 +707,7 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 | `training/jobs/training_alignment.py` | 隔离历史全训练/复用/工件加载；也含只读V1 model-inputs；训练模式写外部模型/样本 | `tools.py`、`jobs/training_performance.py`及对应测试；保留功能，按输入与整作业检查分组，不能误删model-inputs |
 | `training/jobs/training_performance.py` | 生成串并行/隔离checkout子进程命令，比较总耗时、身份、复用；无网络，子进程写隔离输出 | 公共入口及alignment的复用检查、`test_training_performance.py`；保留编排与唯一比较实现，不能删除仍被alignment调用的函数 |
 | `training/jobs/benchmark_process.py` | 监督单负载的期限/输出/剩余空间，按出生身份取消受管进程树；日志只新建，停止范围不含其它作业 | performance后台与`test_training_benchmark_process.py`；内部复用，无第二公开入口，运行保护不签性能通过 |
-| `training/samples/training_coverage.py` | 格式2样本统计、标签覆盖，只读；不重训 | 公共入口、`test_training_coverage.py`；保留，不将T+1观察投影当完整D25结果 |
+| `training/samples/training_coverage.py` | 当前具名列样本统计、标签覆盖，只读；不重训 | 公共入口、`test_training_coverage.py`；保留，不将T+1观察投影当完整D25结果 |
 | `training/resources/training_resources.py` | 合成64×64矩阵，CPU预约/原生限制/取消归还；不读历史、不训练 | 公共入口、`test_training_resources.py`；保留资源冒烟，不作为真实四档并行基线 |
 | `training/resources/training_process_measurement.py`、`training/jobs/training_source_guard.py`（325新增/扩展） | 内部资源采样及已发布历史只读守卫；无独立入口，源SQLite只读、提醒不持久化，退出恢复函数/采样线程 | training_alignment及其定向测试；沿338的当前scripts/training目录交付，保留显式模式、空间口径和守卫标记 |
 | `training/samples/training_samples.py` | 五轮样本布局/SQLite–Parquet读取对照，外部checkout及新目录；生成合成库/报告 | 公共入口、`test_training_samples.py`；保留显式实验，不接生产Parquet |

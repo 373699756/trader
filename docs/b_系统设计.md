@@ -2,7 +2,7 @@
 
 本篇说明三条业务如何隔开、公共设施如何复用、数据库怎样读写、配置和页面怎样组织。评分字段归 c，下载库和来源归 d，训练样本和工件归 e。本篇不重复维护它们的业务字典。
 
-这是目标设计和核对计划。已有能力不能因为换了文档就算重新完成；候选参数也不能直接当作生产设置。
+本篇分别说明现行实现、目标约束与待实测候选；实施状态及证据以[g_施工进度](g_施工进度.md)为准。已有能力不能因为换了文档就算重新完成；候选参数也不能直接当作生产设置。
 
 ## 1. 三条业务的输入、输出和边界
 
@@ -16,6 +16,8 @@
 荐股和三个下载模块都先读取全部股票的代码、名称和ST状态，排除ST后，才为通过者加载或采集其他个股资料。荐股从本地已发布资料读取ST状态，缺失时由用户手动执行下载；两者使用相同的ST判定规则，不互相调用业务实现。被排除、通过、状态不明分别计数；状态不明不能默认通过。
 
 `train`只调用`bootstrap.ExecuteSelectedTraining`，读取已经发布的本地资料；缺资料时提示用户手动执行`./run.sh sync history`，不代为下载。原自动组合函数`ExecuteDownloadTrain`删除，`run.sh train`继续转发同一个CLI入口。训练的线程数和进程优先级也由组合根准备。
+
+正常训练由组合根一次加载下载owner的最新有效`CurrentIndustrySnapshot`，四档双头按这份映射处理全部价格历史；正常history不再准备历史行业。训练输入及复用同时绑定价格和行业语义，刷新时间不冒充语义变化，缺失／过期／损坏明确拒绝。日期预检、样本事实及模型工件合同归[e第1、3、7章](e_训练设计.md#1-输入固定双头独立)，独立点时收益研究仍须另具历史证据。
 
 ## 2. 模块与依赖
 
@@ -138,14 +140,14 @@ flowchart TD
 
 ### 5.1 跨业务供数与消费者核对
 
-本节连接下载物理来源、不可变端口和荐股/训练消费者；当前下载表列、索引、codec及download.json字段以[d第8章](d_下载设计.md#8-当前数据库与字段字典)、[第9章](d_下载设计.md#9-downloadjson-配置字典)为唯一字典。核对基线为本轮已推送的`2f0a8710`；阶段288的`758cb500`及318的`138a0de8`只作旧字典交付来源，不把旧schema编号或表列计数套给当前定义。字段说明齐全不代表活动库内容或真实业务覆盖已验收。
+本节连接下载物理来源、不可变端口和荐股/训练消费者；当前下载表列、索引、codec及download.json字段以[d第8章](d_下载设计.md#8-当前数据库与字段字典)、[第9章](d_下载设计.md#9-downloadjson-配置字典)为唯一字典。下载物理字典的原核对基线为`2f0a8710`，当前行业训练交接按358的`75e1fffd`及后续两批补齐；阶段288的`758cb500`及318的`138a0de8`只作旧字典交付来源，不把旧schema编号或表列计数套给当前定义。字段说明齐全不代表活动库内容或真实业务覆盖已验收。
 
 | 数据或资源 | 唯一来源、类型与消费者 | 边界及证据归属 |
 | --- | --- | --- |
 | 证券/ST/日历 | reference的company_st.sqlite3 → PreparedReference/HistoryStEvidence → 发布参考；A的PublishedReferences/StaticMarketCache与B的PrepareReference使用明确资格，训练按发布总体/日历读取 | ST/unknown先筛，原检查日与本次观察时点分开；d2.3、c2/16.2；A340、B323（bdd65998）的功能证据不等于实际整链采用 |
 | 历史发布/年度价格 | catalog与prices_<year>.sqlite3 → ReadPublishedHistoryUseCase、HistoryTrainingRow/Point；A共享预载、C共享历史fanout | 固定snapshot/revision/sequence，取消与只读名单在解码前生效；不另建子集manifest；d3/8、e3.1及3.4 |
 | 独立短窗 | daily_window.sqlite3 → 同一历史只读端口的短窗adapter → A启动历史投影 | 原始/前复权配对、成员和发布凭据独立；不借完整历史断点，不在运行期补历史；d4/6.1 |
-| 行业 | industry.sqlite3 → CurrentIndustryCache/PublishedReferences → A展示行业与模型行业、C历史行业路由 | 官方证据保留来源/摘要/披露及生效区间、分类与映射；当前展示不能倒填历史行业；d2.5、c7及e3.1 |
+| 行业 | industry.sqlite3 → CurrentIndustryCache → A的PublishedReferences展示／模型路由；组合根另冻结CurrentIndustrySnapshot → C四档全历史分组 | 当前映射、缺口、收到／刷新期限及原件凭据各保留含义；最新映射用于正常训练，不冒充历史当时分类。历史点时研究另验，旧发布不回写；d2.5、c7及e3.1 |
 | 公司正式事实 | company_facts.sqlite3 → CompanyEvidenceReadPort/CompanyFacts → PublishedCompanyResearch内存投影 → A过滤/评分/风险 | 采集库、文件/PDF/OCR不是正式评分输入；未知不填无风险，披露日与本地published_at不同；d5.4/5.9/5.10、c6/16.4 |
 | 模型/样本 | C的封存samples.sqlite3/complete.json及双头model.json → 严格profile加载 → A模型排序/净效用/动作门 | V1/V5独立排序，V2/V3仍local_score；数值重放、质量、收益与实际采用分别取证；e3.4–3.6/7.1、c7–12 |
 | 实时报价/分钟 | A行情adapter → 不可变批次 → 特征/横截面/四档决策 → 只读快照/HTTP/SSE | 固定同轮输入，正常轮不访问业务数据库；Long独立、旧结果保留，不能拿启动查询替代运行轮观测；c1/4/13、b8 |
@@ -575,7 +577,7 @@ flowchart TD
 
 ## 9. 工具脚本全面重整：按业务和功能划分，只留一个接口
 
-范围是 `scripts/` 下全部工具、内部模块、重复功能和调用它们的Makefile、文档及测试。对每项功能明确保留、合并或删除；检查、生成、迁移与重排都从 `scripts/tools.py` 按参数选择，内部模块不再提供独立命令或兼容转发。
+阶段338已完成 `scripts/` 唯一公开入口、业务归组、调用者切换及旧路径删除。本章保留现行结构和后续扩展约束，原文件清单只作来源对照；后续功能及性能／平台欠项查g原记录，不重复执行整套迁移。检查、生成及显式维护都从 `scripts/tools.py` 按参数选择，内部模块不再提供独立命令或兼容转发。
 
 ### 9.1 先清点现有脚本和调用者
 
