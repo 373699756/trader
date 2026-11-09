@@ -23,12 +23,15 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_control_rows import ReadControlRecord
 from trader.download.infra.history_prices import HistoryPricePartition
+from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.history_sync_failure import HistoryFailureDetail
 from trader.infra.serialization.canonical_codec import CanonicalDigest
-from trader.infra.sqlite_codec import DecodeDate, DecodeHash
+from trader.infra.sqlite_codec import DecodeDate, DecodeHash, EncodeDate
 from trader.infra.sqlite_connection import (
     CheckSqliteIntegrity,
+    SqliteConnection,
     SqliteConnectionOptions,
     SqliteSession,
     SqliteTransaction,
@@ -36,7 +39,7 @@ from trader.infra.sqlite_connection import (
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import SqliteFileStamp, SqlitePublicationError, VerifySqliteFile
 from trader.download.infra.price_columns import PRICE_COLUMNS, DecodePriceValues, PriceValues
-from trader.download.domain.history_control import HistoryCalendarIdentity, HistorySecurityBoard, HistorySecurityIdentity, HistorySnapshot, HistorySnapshotPartition, HistoryUniverseIdentity
+from trader.download.domain.history_control import HistoryCalendarIdentity, HistorySnapshot, HistorySnapshotPartition, HistoryUniverseIdentity
 from scripts.core.paths import PROJECT_ROOT, ExternalPath
 
 from scripts.core.reporting import emit_report
@@ -366,8 +369,6 @@ def LoadPriceAuditReference(
     publication: str | None,
     budget: PriceAuditBudget,
     policy: SqliteIoPolicy,
-    *,
-    clear_only: bool = False,
 ) -> tuple[tuple[PriceAuditSecurity, ...], tuple[int, ...]]:
     """Read published local listing/calendar facts with the same SQL deadline."""
     with budget.connection(path, policy) as connection:
@@ -383,8 +384,7 @@ def LoadPriceAuditReference(
             "SELECT s.code,s.listed_date,s.delisted_date FROM reference_member m "
             "JOIN security s ON s.code=m.code AND s.security_id=m.security_id "
             "JOIN security_st_evidence st ON st.code=m.code AND st.st_id=m.st_id "
-            "WHERE m.publication_id=?" + (" AND st.st_status='clear'" if clear_only else "") +
-            " ORDER BY s.code LIMIT ?", (publication, _MAX_AUDIT_STOCKS + 1),
+            "WHERE m.publication_id=? ORDER BY s.code LIMIT ?", (publication, _MAX_AUDIT_STOCKS + 1),
         ).fetchall()
         if not rows or len(rows) > _MAX_AUDIT_STOCKS:
             raise ValueError("price_audit_reference_universe_invalid")
@@ -436,7 +436,6 @@ def _history_plan(root: Path, budget: PriceAuditBudget, policy: SqliteIoPolicy) 
     reference_path = (root / str(row[5])).resolve()
     price_paths = tuple(root / str(relative) for relative in sorted({item[2] for item in references}))
     metadata_sources += CapturePriceAuditSources((reference_path, *price_paths), budget)
-    securities, _ = LoadPriceAuditReference(reference_path, str(row[4]), budget, policy, clear_only=True)
     _, bound_calendar = LoadPriceAuditReference(reference_path, str(row[3]), budget, policy)
     dates = tuple(day for day in bound_calendar if int(row[6]) <= day <= int(row[7]))
     if len(dates) != int(row[8]):
@@ -448,19 +447,22 @@ def _history_plan(root: Path, budget: PriceAuditBudget, policy: SqliteIoPolicy) 
     declared_months = frozenset((int(item[0]), int(item[1])) for item in references)
     if expected_months != declared_months:
         raise ValueError("price_audit_history_partition_calendar_mismatch")
-    # Security names/boards participate in the official universe digest.
+    # Decode the recorded publication through its owner; current ST eligibility
+    # must not replace the immutable population selected by this snapshot.
     budget.phase = "universe_identity_validation"
-    with budget.connection(reference_path, policy) as connection:
-        typed = tuple(HistorySecurityIdentity(
-            str(item[0]), str(item[1]), cast(HistorySecurityBoard, item[2]), DecodeDate(item[3]), DecodeDate(item[4]) if item[4] is not None else None,
-        ) for item in connection.execute(
-            "SELECT s.code,s.name,s.board,s.listed_date,s.delisted_date FROM reference_member m "
-            "JOIN security s ON s.code=m.code AND s.security_id=m.security_id "
-            "JOIN security_st_evidence st ON st.code=m.code AND st.st_id=m.st_id "
-            "WHERE m.publication_id=? AND st.st_status='clear' ORDER BY s.code", (row[4],),
-        ))
-    if HistoryUniverseIdentity(typed, str(row[12]).lower()).content_hash != str(row[11]).lower():
+    budget.check()
+    with budget.connection(catalog, policy) as connection:
+        recorded = ReadControlRecord(
+            SqliteConnection(connection, policy), "universe", str(row[11]).lower(),
+            SQLiteReferenceIndex(reference_path, sqlite_policy=policy),
+        )
+    budget.check()
+    if not isinstance(recorded, HistoryUniverseIdentity) or recorded.source_identity_hash != str(row[12]).lower():
         raise ValueError("history_universe_identity_mismatch")
+    typed = recorded.securities
+    securities = tuple(PriceAuditSecurity(
+        item.code, EncodeDate(item.listed_on), EncodeDate(item.delisted_on) if item.delisted_on is not None else None,
+    ) for item in typed)
     units: list[PriceAuditUnit] = []
     files: list[tuple[Path, bool]] = [(catalog, True), (reference_path, False)]
     for relative, group in groupby(sorted(references, key=lambda item: item[2]), key=lambda item: item[2]):

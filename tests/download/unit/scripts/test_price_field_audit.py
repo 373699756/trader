@@ -114,6 +114,27 @@ def test_history_full_scan_counts_actual_rows_and_legal_qfq_nulls_without_writes
     assert before == tuple((path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).digest()) for path in sources)
 
 
+def test_history_field_audit_keeps_unknown_st_members_from_the_formal_publication(tmp_path):
+    root = tmp_path / "history"
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class Supplier(FakeSupplier):
+        def load_context(self, as_of, sessions):
+            context = super().load_context(as_of, sessions)
+            return replace(context, st_evidence=tuple(
+                replace(item, status="unknown") if item.code == "600002" else item for item in context.st_evidence
+            ))
+
+    configuration = HistorySyncConfigurationFixture(
+        root, sessions=3, reread_sessions=2, minimum_free_bytes=0, reference_root=root.parent / "reference",
+    )
+    assert RunHistoryFixture(configuration, Supplier(days), clock=lambda: NOW).state == "completed"
+    fields = _history_report(root)
+    assert fields["complete"] is True and fields["actual_selected_rows"] == 6
+    assert {row["code"] for row in fields["units"][0]["stock_date_coverage"]} == {"600001", "600002"}
+    assert fields["unexplained_days"] == 0 and fields["invalid_values"] == 0
+
+
 @pytest.mark.parametrize("source", ("catalog", "reference"))
 def test_history_commit_between_metadata_and_sha_cannot_borrow_new_file_proof(tmp_path, monkeypatch, source):
     root = tmp_path / "history"
