@@ -17,6 +17,8 @@ from trader.training.application.h1_point_in_time_completion import H1ResearchCo
 from trader.training.domain.evaluation.h1_point_in_time import H1CapabilityAuditReport
 from trader.training.domain.evaluation.historical_industry_facts import HistoricalIndustryDatasetReport
 from trader.training.domain.evaluation.terminal_holdout import TerminalHoldoutParentState
+from trader.training.infra.research.registration_codec import DecodeCandidateRegistration
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.training.infra.research.cross_strategy_conclusion_reports import CrossStrategyConclusionReportIndex
 from trader.training.infra.research.d25_terminal_holdout_reports import D25TerminalHoldoutReportIndex
 from trader.training.infra.research.h1_point_in_time_capability import H1CapabilityEvidenceIndex
@@ -74,7 +76,7 @@ class TerminalHoldoutParentsReader:
         for strategy in ("tomorrow", "d25"):
             item = RequireMapping(raw, strategy)
             RequireExactKeys(
-                item, {"candidate_status", "parent_hash", "candidate_hash", "failure_reasons", "date_split"},
+                item, {"candidate_status", "parent_hash", "candidate_hash", "failure_reasons", "date_split", "profile_id", "registration"},
                 "terminal_parent",
             )
             status = Text(item, "candidate_status")
@@ -96,9 +98,20 @@ class TerminalHoldoutParentsReader:
             )
             if status in {"historical_candidate_ready", "historical_daily_close_proxy_validated"} and split is None:
                 raise ValueError("ready terminal parent requires its sealed date split")
+            profile = item["profile_id"]
+            if profile is not None and profile not in SCORING_PROFILE_IDS:
+                raise ValueError("terminal_parent_profile_invalid")
+            registration = None if item["registration"] is None else DecodeCandidateRegistration(RequireMapping(item, "registration"))
+            if status in {"historical_candidate_ready", "historical_daily_close_proxy_validated"} and (
+                profile is None or registration is None or registration.profile_id != profile or registration.strategy != strategy
+            ):
+                raise ValueError("ready terminal parent requires its profile registration")
             states.append(TerminalHoldoutParentState(
                 status, parent_hash, candidate_hash, tuple(reasons), date_split=split,
+                profile_id=profile, registration=registration,
             ))
+        if states[0].profile_id != states[1].profile_id:
+            raise ValueError("terminal_strategy_profile_pair_mismatch")
         return states[0], states[1]
 
 

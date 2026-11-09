@@ -29,6 +29,8 @@ class CrossStrategyConclusion:
         reports = (self.tomorrow, self.d25)
         if tuple(report.strategy for report in reports) != ("tomorrow", "d25"):
             raise ValueError("cross-strategy conclusion requires reports in fixed strategy order")
+        if self.tomorrow.profile_id != self.d25.profile_id:
+            raise ValueError("cross-strategy conclusion cannot mix scoring profiles")
         expected = tuple((report.strategy, report.content_hash) for report in reports)
         if self.report_hashes != expected:
             raise ValueError("cross-strategy conclusion must bind each report hash")

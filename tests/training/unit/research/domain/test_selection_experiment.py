@@ -4,14 +4,18 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
+from tests.helpers.training.research.registrations import CandidateRegistrationFixture
 
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDateSplit
 from trader.training.domain.evaluation.selection_experiment import (
     EvaluatePairedSelectionExperiment,
     PairedSelectionRow,
     PairedSelectionSpecification,
+    SelectionEvidenceTarget,
+    SelectionStrategy,
     SelectionTargetEvidence,
 )
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 
 def _split() -> PointInTimeDateSplit:
@@ -26,41 +30,44 @@ def _split() -> PointInTimeDateSplit:
     )
 
 
-def _specification(strategy: str = "tomorrow") -> PairedSelectionSpecification:
+def _specification(strategy: SelectionStrategy = "tomorrow", *, profile_id: ScoringProfileId = "v2") -> PairedSelectionSpecification:
     return PairedSelectionSpecification(
-        strategy=strategy,  # type: ignore[arg-type]
+        strategy=strategy,
         dataset_hash="a" * 64,
         dataset_manifest_hash="f" * 64,
         candidate_recall_hash="b" * 64,
-        industry_model_id="industry_ridge",
-        industry_model_hash="c" * 64,
+        profile_model_id="industry_ridge",
+        profile_model_hash="c" * 64,
         pooled_ridge_model_id="pooled_ridge",
         pooled_ridge_model_hash="d" * 64,
         pooled_lightgbm_model_id="pooled_lightgbm",
         pooled_lightgbm_model_hash="e" * 64,
         research_dates=(date(2026, 1, 5),),
         predefined_exit_identity="close_at_first_target_or_t5",
-        profile_id="v2",
+        profile_id=profile_id,
         date_split=_split(),
         partition="confirmation",
         configuration_hash="2" * 64,
         cost_reference_hash="3" * 64,
         bootstrap_master_seed=20261022,
+        registration=CandidateRegistrationFixture(profile_id, strategy=strategy),
+        production_action_threshold=78 if strategy == "tomorrow" else 76,
     )
 
 
-def _target(target: str, value: float) -> SelectionTargetEvidence:
+def _target(target: SelectionEvidenceTarget, value: float) -> SelectionTargetEvidence:
     return SelectionTargetEvidence(
-        target=target,  # type: ignore[arg-type]
-        industry_prediction_pre_cost=value,
+        target=target,
+        profile_prediction_pre_cost=value,
         pooled_ridge_prediction_pre_cost=value + 0.001,
         pooled_lightgbm_prediction_pre_cost=value + 0.002,
         actual_pre_cost_excess_return=value,
         exit_untradable=False,
+        control_prediction_pre_cost=value,
     )
 
 
-def _rows(strategy: str = "tomorrow") -> tuple[PairedSelectionRow, ...]:
+def _rows(strategy: SelectionStrategy = "tomorrow") -> tuple[PairedSelectionRow, ...]:
     rows: list[PairedSelectionRow] = []
     for index in range(9):
         evidence = (
@@ -91,21 +98,104 @@ def _rows(strategy: str = "tomorrow") -> tuple[PairedSelectionRow, ...]:
                 mae_atr20=-0.2,
                 target_evidence=evidence,
                 point_in_time_parity=True,
+                profile_ranking_score=float(100 - index),
+                control_ranking_score=float(100 - index),
             )
         )
     return tuple(rows)
+
+
+@pytest.mark.parametrize("profile_id", ["v1", "v2", "v3", "v5"])
+@pytest.mark.parametrize("strategy", ["tomorrow", "d25"])
+def test_production_control_and_chain_use_the_profile_ranking_and_local_gates_without_refilling(profile_id: ScoringProfileId, strategy: SelectionStrategy) -> None:
+    rows = tuple(
+        replace(
+            row, rule_score=float(95 - index) if index < 8 else 10.0,
+            profile_ranking_score=float(90 + index), control_ranking_score=float(100 - (index + 3) % 9),
+            capacity_sufficient=index != 0, risk_eligible=index != 7, action_eligible=index != 4,
+        )
+        for index, row in enumerate(_rows(strategy))
+    )
+    report = EvaluatePairedSelectionExperiment(_specification(strategy, profile_id=profile_id), rows)
+    target = "tomorrow" if strategy == "tomorrow" else "mean_t2_t5"
+    control = next(result for result in report.results if result.variant.arm == "production_control" and result.variant.target == target)
+    production = next(result for result in report.results if result.variant.arm == "production_chain" and result.variant.target == target)
+    if profile_id in {"v1", "v5"}:
+        assert control.days[0].fixed_codes == ("600006", "600007", "600008", "600000", "600001", "600002")
+        assert control.days[0].selected_codes == ("600006", "600001", "600002")
+        assert production.days[0].fixed_codes == ("600008", "600007", "600006", "600005", "600004", "600003")
+        assert production.days[0].selected_codes == ("600006", "600005", "600003")
+    else:
+        for result in (control, production):
+            assert result.days[0].fixed_codes == tuple(f"600{index:03d}" for index in range(6))
+            assert result.days[0].selected_codes == ("600001", "600002", "600003", "600005")
+            assert "600006" not in result.days[0].selected_codes
+    ablation = next(result for result in report.results if result.variant.arm == "rule_only" and result.variant.target == target and result.variant.selection_mode == "fixed_score_top6")
+    assert ablation.days[0].fixed_codes == tuple(f"600{index:03d}" for index in range(6))
+    assert "600008" not in control.days[0].selected_codes and "600008" not in production.days[0].selected_codes
+
+
+@pytest.mark.parametrize("profile_id", ["v1", "v2", "v3", "v5"])
+@pytest.mark.parametrize("strategy", ["tomorrow", "d25"])
+@pytest.mark.parametrize("below_threshold,selected", [(0.005, True), (0.006, False)])
+def test_every_production_profile_uses_half_up_local_action_threshold(profile_id: ScoringProfileId, strategy: SelectionStrategy, below_threshold: float, selected: bool) -> None:
+    specification = _specification(strategy, profile_id=profile_id)
+    threshold = specification.production_action_threshold
+    rows = tuple(
+        replace(
+            row, rule_score=threshold - (below_threshold if index == 0 else 1),
+            profile_ranking_score=float(100 - index), control_ranking_score=float(100 - index), capacity_sufficient=True,
+        )
+        for index, row in enumerate(_rows(strategy))
+    )
+    report = EvaluatePairedSelectionExperiment(specification, rows)
+    for result in report.results:
+        if result.variant.arm in {"production_control", "production_chain"}:
+            assert len(result.days[0].fixed_codes) == 6
+            assert result.days[0].selected_codes == (("600000",) if selected else ())
+
+
+@pytest.mark.parametrize("profile_id", ["v1", "v2", "v3", "v5"])
+@pytest.mark.parametrize("strategy", ["tomorrow", "d25"])
+def test_preregistered_ablation_arms_keep_their_original_ranking_semantics(
+    profile_id: ScoringProfileId, strategy: SelectionStrategy,
+) -> None:
+    rows = tuple(
+        replace(
+            row, capacity_sufficient=True,
+            target_evidence=tuple(replace(
+                target, profile_prediction_pre_cost=0.02 + index / 1000,
+                pooled_ridge_prediction_pre_cost=0.03 + index / 1000,
+                pooled_lightgbm_prediction_pre_cost=0.04 - index / 1000,
+            ) for target in row.target_evidence),
+        )
+        for index, row in enumerate(_rows(strategy))
+    )
+    report = EvaluatePairedSelectionExperiment(_specification(strategy, profile_id=profile_id), rows)
+    for result in report.results:
+        if result.variant.arm in {"rule_only", "rule_model_gate"}:
+            assert result.days[0].fixed_codes == tuple(f"600{index:03d}" for index in range(6))
+        elif result.variant.arm == "profile_model_utility" or (
+            result.variant.arm == "pooled_model_utility" and result.variant.pooled_model_family == "ridge"
+        ):
+            assert result.days[0].fixed_codes == tuple(f"600{index:03d}" for index in range(8, 2, -1))
+        elif result.variant.arm == "pooled_model_utility":
+            assert result.variant.pooled_model_family == "lightgbm"
+            assert result.days[0].fixed_codes == tuple(f"600{index:03d}" for index in range(6))
 
 
 def test_tomorrow_experiment_runs_four_arms_two_pooled_families_and_two_selection_modes() -> None:
     report = EvaluatePairedSelectionExperiment(_specification(), _rows())
 
     assert report.status == "historical_experiment_completed"
-    assert len(report.results) == 10
+    assert len(report.results) == 12
     assert {item.variant.arm for item in report.results} == {
         "rule_only",
         "rule_model_gate",
-        "industry_model_utility",
+        "profile_model_utility",
         "pooled_model_utility",
+        "production_control",
+        "production_chain",
     }
     fixed = next(
         item
@@ -155,7 +245,7 @@ def test_board_limit_applies_before_fixing_seats_without_an_industry_limit() -> 
 def test_d25_experiment_compares_only_preregistered_realizable_targets() -> None:
     report = EvaluatePairedSelectionExperiment(_specification("d25"), _rows("d25"))
 
-    assert len(report.results) == 40
+    assert len(report.results) == 48
     assert {item.variant.target for item in report.results} == {
         "mean_t2_t5",
         "fixed_t5",
@@ -195,6 +285,8 @@ def test_experiment_rejects_incomplete_point_in_time_rows() -> None:
         mae_atr20=row.mae_atr20,
         target_evidence=row.target_evidence,
         point_in_time_parity=False,
+        profile_ranking_score=row.profile_ranking_score,
+        control_ranking_score=row.control_ranking_score,
     )
 
     with pytest.raises(ValueError, match="point-in-time"):
@@ -254,7 +346,7 @@ def test_research_identity_rejects_old_grid_partition_and_seals_cost_reference()
 
 
 @pytest.mark.parametrize("strategy,threshold", [("tomorrow", -1.5), ("d25", -2.5)])
-def test_severe_loss_labels_use_mae_atr_multiples_instead_of_return_percent(strategy, threshold) -> None:
+def test_severe_loss_labels_use_mae_atr_multiples_instead_of_return_percent(strategy: SelectionStrategy, threshold: float) -> None:
     rows = _rows(strategy)
     with pytest.raises(ValueError, match="MAE/ATR20"):
         EvaluatePairedSelectionExperiment(_specification(strategy), (replace(rows[0], mae_atr20=threshold), *rows[1:]))

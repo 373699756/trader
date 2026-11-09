@@ -13,7 +13,8 @@ from typing import Literal
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
 from trader.recommendation.domain.market.factors import RoundScore
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
+from trader.training.domain.evaluation.research_registration import CandidateResearchRegistration, ResearchNotReadyError
 from trader.training.domain.evaluation.baseline import PopulationSpearman
 from trader.training.domain.evaluation.constrained_oracle import (
     ConstrainedOracle,
@@ -23,19 +24,20 @@ from trader.training.domain.evaluation.constrained_oracle import (
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDateSplit
 
 SelectionStrategy = Literal["tomorrow", "d25"]
-SelectionArm = Literal["rule_only", "rule_model_gate", "industry_model_utility", "pooled_model_utility"]
+SelectionArm = Literal["production_control", "production_chain", "rule_only", "rule_model_gate", "profile_model_utility", "pooled_model_utility"]
 SelectionMode = Literal["fixed_score_top6", "model_gate_then_fixed_top6"]
 PooledModelFamily = Literal["ridge", "lightgbm"]
 SelectionTarget = Literal["tomorrow", "mean_t2_t5", "fixed_t5", "predefined_exit", "multi_horizon"]
 SelectionEvidenceTarget = Literal["t1", "t2", "t3", "t4", "t5", "predefined_exit"]
 SelectionExperimentStatus = Literal["historical_data_insufficient", "historical_experiment_completed"]
 
-SELECTION_ARMS: tuple[SelectionArm, ...] = (
+SELECTION_ABLATION_ARMS: tuple[SelectionArm, ...] = (
     "rule_only",
     "rule_model_gate",
-    "industry_model_utility",
+    "profile_model_utility",
     "pooled_model_utility",
 )
+SELECTION_ARMS: tuple[SelectionArm, ...] = ("production_control", "production_chain", *SELECTION_ABLATION_ARMS)
 SELECTION_MODES: tuple[SelectionMode, ...] = ("fixed_score_top6", "model_gate_then_fixed_top6")
 SELECTION_RESEARCH_IDENTITY = "eleven_layer_full_population"
 D25_SELECTION_TARGETS: tuple[SelectionTarget, ...] = (
@@ -57,18 +59,20 @@ class SelectionTargetEvidence:
     """Predictions and matured outcome for one preregistered realizable target."""
 
     target: SelectionEvidenceTarget
-    industry_prediction_pre_cost: float
+    profile_prediction_pre_cost: float
     pooled_ridge_prediction_pre_cost: float
     pooled_lightgbm_prediction_pre_cost: float
     actual_pre_cost_excess_return: float
     exit_untradable: bool
+    control_prediction_pre_cost: float = field(kw_only=True)
 
     def __post_init__(self) -> None:
         values = (
-            self.industry_prediction_pre_cost,
+            self.profile_prediction_pre_cost,
             self.pooled_ridge_prediction_pre_cost,
             self.pooled_lightgbm_prediction_pre_cost,
             self.actual_pre_cost_excess_return,
+            self.control_prediction_pre_cost,
         )
         if self.target not in {"t1", "t2", "t3", "t4", "t5", "predefined_exit"}:
             raise ValueError("selection target evidence target is invalid")
@@ -95,6 +99,8 @@ class PairedSelectionRow:
     mae_atr20: float
     target_evidence: tuple[SelectionTargetEvidence, ...]
     point_in_time_parity: bool
+    profile_ranking_score: float = field(kw_only=True)
+    control_ranking_score: float = field(kw_only=True)
 
     def __post_init__(self) -> None:
         evidence = tuple(self.target_evidence)
@@ -115,6 +121,8 @@ class PairedSelectionRow:
             raise ValueError("paired selection cost, capacity or MAE is invalid")
         if not 0.0 <= self.rule_score <= 100.0:
             raise ValueError("paired selection rule score must be the risk-adjusted local score")
+        if any(not math.isfinite(value) or not 0.0 <= value <= 100.0 for value in (self.profile_ranking_score, self.control_ranking_score)):
+            raise ValueError("paired selection model percentiles must be finite scores")
         targets = tuple(item.target for item in evidence)
         if len(set(targets)) != len(targets):
             raise ValueError("paired selection target evidence must be unique")
@@ -129,8 +137,8 @@ class PairedSelectionSpecification:
     dataset_hash: str
     dataset_manifest_hash: str
     candidate_recall_hash: str
-    industry_model_id: str
-    industry_model_hash: str
+    profile_model_id: str
+    profile_model_hash: str
     pooled_ridge_model_id: str
     pooled_ridge_model_hash: str
     pooled_lightgbm_model_id: str
@@ -143,6 +151,8 @@ class PairedSelectionSpecification:
     configuration_hash: str
     cost_reference_hash: str
     bootstrap_master_seed: int
+    registration: CandidateResearchRegistration | None = field(kw_only=True)
+    production_action_threshold: float = field(kw_only=True)
     pooled_exposures: tuple[str, ...] = ("market", "board", "industry", "log_average_amount_20d")
     selection_modes: tuple[SelectionMode, ...] = SELECTION_MODES
     cost_bps: tuple[int, int, int] = SELECTION_COST_BPS
@@ -164,21 +174,30 @@ class PairedSelectionSpecification:
             self.dataset_hash,
             self.dataset_manifest_hash,
             self.candidate_recall_hash,
-            self.industry_model_hash,
+            self.profile_model_hash,
             self.pooled_ridge_model_hash,
             self.pooled_lightgbm_model_hash,
             self.configuration_hash,
             self.cost_reference_hash,
         )
-        model_ids = (self.industry_model_id, self.pooled_ridge_model_id, self.pooled_lightgbm_model_id)
+        model_ids = (self.profile_model_id, self.pooled_ridge_model_id, self.pooled_lightgbm_model_id)
         if self.strategy not in {"tomorrow", "d25"} or any(_HASH.fullmatch(value) is None for value in hashes):
             raise ValueError("paired selection specification identity is invalid")
         if any(_MODEL_ID.fullmatch(value) is None for value in model_ids) or not dates:
             raise ValueError("paired selection model identity or date set is invalid")
         if len(set(model_ids)) != len(model_ids) or len(set(hashes[3:6])) != 3:
             raise ValueError("paired selection models must have distinct identities")
-        if self.profile_id not in {"v2", "v3"} or self.partition not in {"calibration", "confirmation"}:
+        if self.profile_id not in SCORING_PROFILE_IDS or self.partition not in {"calibration", "confirmation"}:
             raise ValueError("selection research requires a profile and a development or confirmation partition")
+        if self.registration is not None:
+            if self.registration.profile_id != self.profile_id or self.registration.strategy != self.strategy:
+                raise ValueError("selection registration profile/strategy mismatch")
+            utility = next(item for item in self.registration.candidate_components if item.role == "utility")
+            if utility.model_hash != self.profile_model_hash:
+                raise ValueError("selection registration model mismatch")
+        if not math.isfinite(self.production_action_threshold) or not 0 <= self.production_action_threshold <= 100:
+            raise ValueError("selection production action threshold invalid")
+        object.__setattr__(self, "production_action_threshold", float(self.production_action_threshold))
         partition_dates = (
             self.date_split.calibration_dates if self.partition == "calibration" else self.date_split.confirmation_dates
         )
@@ -214,10 +233,18 @@ class SelectionExperimentVariant:
     selection_mode: SelectionMode
     target: SelectionTarget
     pooled_model_family: PooledModelFamily | None
+    profile_id: ScoringProfileId = field(kw_only=True)
+    local_action_threshold: float = field(kw_only=True)
 
     def __post_init__(self) -> None:
         if self.arm not in SELECTION_ARMS:
             raise ValueError("selection experiment arm is invalid")
+        if self.profile_id not in SCORING_PROFILE_IDS:
+            raise ValueError("selection experiment profile is invalid")
+        if not math.isfinite(self.local_action_threshold) or not 0 <= self.local_action_threshold <= 100:
+            raise ValueError("selection action threshold invalid")
+        if self.arm in {"production_control", "production_chain"} and self.selection_mode != "model_gate_then_fixed_top6":
+            raise ValueError("production selection requires its original preselection model gate")
         if self.selection_mode not in SELECTION_MODES:
             raise ValueError("selection experiment mode is invalid")
         if (self.arm == "pooled_model_utility") != (self.pooled_model_family is not None):
@@ -354,6 +381,7 @@ class PairedSelectionExperimentReport:
     status: SelectionExperimentStatus
     results: tuple[SelectionExperimentResult, ...]
     failure_reasons: tuple[str, ...]
+    profile_id: ScoringProfileId = field(kw_only=True)
     research_identity: str = SELECTION_RESEARCH_IDENTITY
     terminal_holdout_opened: bool = False
     production_authority: bool = False
@@ -395,7 +423,9 @@ class PairedSelectionExperimentReport:
             for item in self.results
         )
         expected_targets = set(D25_SELECTION_TARGETS if self.strategy == "d25" else ("tomorrow",))
-        expected_count = len(SELECTION_MODES) * len(expected_targets) * 5
+        expected_count = (len(SELECTION_MODES) * 5 + 2) * len(expected_targets)
+        if self.profile_id not in SCORING_PROFILE_IDS or any(item.variant.profile_id != self.profile_id for item in self.results):
+            raise ValueError("selection report profile mismatch")
         if self.research_identity != SELECTION_RESEARCH_IDENTITY:
             raise ValueError("selection report cannot relabel historical research")
         if self.schema_version != "full_population_selection_experiment_report":
@@ -423,6 +453,7 @@ def InsufficientPairedSelectionExperimentReport(
         "historical_data_insufficient",
         (),
         reasons,
+        profile_id=specification.profile_id,
     )
 
 
@@ -434,22 +465,25 @@ def EvaluatePairedSelectionExperiment(
     ordered = tuple(sorted(rows, key=lambda item: (item.trade_date, item.board, item.code)))
     _validate_rows(specification, ordered)
     targets: tuple[SelectionTarget, ...] = D25_SELECTION_TARGETS if specification.strategy == "d25" else ("tomorrow",)
-    results_by_key: dict[tuple[SelectionMode, SelectionTarget], SelectionExperimentMetrics] = {}
     results: list[SelectionExperimentResult] = []
-    for mode in specification.selection_modes:
-        for target in targets:
-            for arm in SELECTION_ARMS:
+    if specification.registration is None:
+        raise ResearchNotReadyError("research_candidate_registration_missing")
+    for target in targets:
+        control_variant = SelectionExperimentVariant("production_control", "model_gate_then_fixed_top6", target, None, profile_id=specification.profile_id, local_action_threshold=specification.production_action_threshold)
+        control, control_days = _evaluate_variant(specification, ordered, control_variant)
+        results.append(SelectionExperimentResult(control_variant, control, control_days))
+        production = SelectionExperimentVariant("production_chain", "model_gate_then_fixed_top6", target, None, profile_id=specification.profile_id, local_action_threshold=specification.production_action_threshold)
+        metrics, days = _evaluate_variant(specification, ordered, production)
+        results.append(SelectionExperimentResult(production, _with_control_increment(metrics, control), days))
+        for mode in specification.selection_modes:
+            for arm in SELECTION_ABLATION_ARMS:
                 families: tuple[PooledModelFamily | None, ...] = (
                     ("ridge", "lightgbm") if arm == "pooled_model_utility" else (None,)
                 )
                 for family in families:
-                    variant = SelectionExperimentVariant(arm, mode, target, family)
+                    variant = SelectionExperimentVariant(arm, mode, target, family, profile_id=specification.profile_id, local_action_threshold=specification.production_action_threshold)
                     metrics, days = _evaluate_variant(specification, ordered, variant)
-                    control_key = (mode, target)
-                    if arm == "rule_only":
-                        results_by_key[control_key] = metrics
-                    else:
-                        metrics = _with_control_increment(metrics, results_by_key[control_key])
+                    metrics = _with_control_increment(metrics, control)
                     results.append(SelectionExperimentResult(variant, metrics, days))
     return PairedSelectionExperimentReport(
         specification.content_hash,
@@ -460,6 +494,7 @@ def EvaluatePairedSelectionExperiment(
         "historical_experiment_completed",
         tuple(results),
         (),
+        profile_id=specification.profile_id,
     )
 
 
@@ -571,6 +606,8 @@ def _constrained_top_k(
 
 
 def _passes_gates(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> bool:
+    if variant.arm in {"production_control", "production_chain"} and RoundScore(row.rule_score) < variant.local_action_threshold:
+        return False
     if not (row.risk_eligible and row.action_eligible and row.capacity_sufficient):
         return False
     return _passes_model_gate(row, variant)
@@ -581,6 +618,10 @@ def _passes_model_gate(row: PairedSelectionRow, variant: SelectionExperimentVari
 
 
 def _ranking_value(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> float:
+    if variant.arm in {"production_control", "production_chain"}:
+        if variant.profile_id in {"v1", "v5"}:
+            return RoundScore(row.control_ranking_score if variant.arm == "production_control" else row.profile_ranking_score)
+        return RoundScore(row.rule_score)
     if variant.arm in {"rule_only", "rule_model_gate"}:
         return RoundScore(row.rule_score)
     return _model_utility(row, variant)
@@ -609,8 +650,10 @@ def _target_predictions(row: PairedSelectionRow, variant: SelectionExperimentVar
 def _selected_prediction_values(
     evidence: Mapping[SelectionEvidenceTarget, SelectionTargetEvidence], variant: SelectionExperimentVariant
 ) -> dict[SelectionEvidenceTarget, float]:
-    if variant.arm in {"rule_model_gate", "industry_model_utility"}:
-        return {target: item.industry_prediction_pre_cost for target, item in evidence.items()}
+    if variant.arm == "production_control":
+        return {target: item.control_prediction_pre_cost for target, item in evidence.items()}
+    if variant.arm in {"production_chain", "rule_model_gate", "profile_model_utility"}:
+        return {target: item.profile_prediction_pre_cost for target, item in evidence.items()}
     if variant.pooled_model_family == "ridge":
         return {target: item.pooled_ridge_prediction_pre_cost for target, item in evidence.items()}
     return {target: item.pooled_lightgbm_prediction_pre_cost for target, item in evidence.items()}

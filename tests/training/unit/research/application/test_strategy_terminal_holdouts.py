@@ -3,16 +3,14 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusionService
-from trader.training.application.d25_terminal_holdout import D25TerminalHoldoutService, D25TerminalRow
-from trader.training.application.tomorrow_point_in_time_holdout import (
-    TomorrowPointInTimeHoldoutService,
-    TomorrowPointInTimeRow,
-)
+from trader.training.application.d25_terminal_holdout import D25TerminalHoldoutService
+from trader.training.application.tomorrow_point_in_time_holdout import TomorrowPointInTimeHoldoutService
+from trader.training.domain.evaluation.terminal_holdout import TerminalHoldoutParentState, TerminalHoldoutRow
 
 
-def _rows(row_type):
+def _rows(*, d25: bool = False) -> tuple[TerminalHoldoutRow, ...]:
     return tuple(
-        row_type(
+        TerminalHoldoutRow(
             trade_date=date(2025, 1, 1) + timedelta(days=index),
             code="600001",
             board="main",
@@ -21,6 +19,7 @@ def _rows(row_type):
             volatility_state="low",
             liquidity_state="high",
             predicted_net_excess_return=0.01,
+            ranking_score=80.0, local_score=80.0,
             actual_net_excess_returns=(0.01, 0.007, 0.002),
             baseline_net_excess_returns=(0.0, -0.003, -0.008),
             selected=True,
@@ -34,16 +33,17 @@ def _rows(row_type):
             capacity=1_000_000.0,
             baseline_capacity=1_000_000.0,
             point_in_time_parity=True,
-            horizon_net_excess_returns=(0.01, 0.01, 0.01, 0.01) if row_type is D25TerminalRow else (),
-            baseline_horizon_net_excess_returns=(0.0, 0.0, 0.0, 0.0) if row_type is D25TerminalRow else (),
+            horizon_net_excess_returns=(0.01, 0.01, 0.01, 0.01) if d25 else (),
+            baseline_horizon_net_excess_returns=(0.0, 0.0, 0.0, 0.0) if d25 else (),
         )
         for index in range(200)
     )
 
 
 def test_strategy_adapters_bind_their_fixed_anchor_and_identity() -> None:
-    tomorrow = TomorrowPointInTimeHoldoutService(_rows(TomorrowPointInTimeRow)).execute()
-    d25 = D25TerminalHoldoutService(_rows(D25TerminalRow)).execute()
+    parent = TerminalHoldoutParentState(profile_id="v2")
+    tomorrow = TomorrowPointInTimeHoldoutService(_rows(), parent).execute()
+    d25 = D25TerminalHoldoutService(_rows(d25=True), parent).execute()
 
     assert tomorrow.anchor == "15:00_unadjusted_point_in_time"
     assert d25.anchor == "15:00_unadjusted_point_in_time"

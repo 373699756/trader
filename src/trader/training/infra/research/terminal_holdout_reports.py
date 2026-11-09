@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
 from trader.infra.serialization.fields import IsTextSequence
 from trader.infra.serialization.sealing import PublishImmutable
@@ -69,6 +70,8 @@ class TerminalHoldoutReportIndex:
 def DecodeTerminalHoldoutReport(raw: dict[str, object]) -> TerminalHoldoutReport:
     expected = {
         "strategy",
+        "profile_id",
+        "evidence_hash",
         "research_identity",
         "parent_hash",
         "candidate_hash",
@@ -93,8 +96,13 @@ def DecodeTerminalHoldoutReport(raw: dict[str, object]) -> TerminalHoldoutReport
         raise TypeError("terminal holdout dates are invalid")
     if not IsTextSequence(reasons_raw):
         raise TypeError("terminal holdout failure reasons are invalid")
+    profile = raw["profile_id"]
+    if profile is not None and (not isinstance(profile, str) or profile not in SCORING_PROFILE_IDS):
+        raise ValueError("terminal holdout profile is invalid")
     return TerminalHoldoutReport(
         strategy=raw["strategy"],  # type: ignore[arg-type]
+        profile_id=profile,
+        evidence_hash=None if raw["evidence_hash"] is None else _string(raw["evidence_hash"]),
         research_identity=_string(raw["research_identity"]),
         parent_hash=_string(raw["parent_hash"]),
         candidate_hash=_string(raw["candidate_hash"]),
@@ -113,6 +121,8 @@ def EncodeTerminalHoldoutReport(report: TerminalHoldoutReport) -> dict[str, obje
     metrics = report.metrics
     return {
         "strategy": report.strategy,
+        "profile_id": report.profile_id,
+        "evidence_hash": report.evidence_hash,
         "research_identity": report.research_identity,
         "parent_hash": report.parent_hash,
         "candidate_hash": report.candidate_hash,

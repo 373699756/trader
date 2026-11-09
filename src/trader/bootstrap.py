@@ -746,36 +746,34 @@ def ExecuteQfqDownload(
     return shutdown.finish(result)
 
 
-def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Path, sqlite_policy: SqliteIoPolicy) -> ResearchEvidenceResult:
+def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Path, sqlite_policy: SqliteIoPolicy, cancel_requested: Callable[[], bool]) -> ResearchEvidenceResult:
     """Lazily assemble one offline research use case; never build the server runtime."""
     from trader.training.application import research_commands
     from trader.training.infra.research_settings import LoadResearchPlan
-    from trader.training.infra.research.command_evidence import (
-        CapabilityEvidencePublisher,
-        HistoricalIndustryEvidenceReader,
-        TerminalConclusionPublisher,
-        TerminalHoldoutParentsReader,
-    )
+    from trader.training.infra.research import command_evidence
 
     if isinstance(command, research_commands.SelectionCommand):
         from trader.training.application.selection_execution import ExecuteSelectionResearch
         from trader.training.infra.research.selection_evidence import SelectionEvidenceReader
 
-        return ExecuteSelectionResearch(SelectionEvidenceReader(command.evidence_dir), LoadResearchPlan(config_dir))
+        return ExecuteSelectionResearch(SelectionEvidenceReader(command.evidence_dir), LoadResearchPlan(config_dir), evaluation_at=ShanghaiClock(_utc_now).now())
     if isinstance(command, research_commands.IndustryAuditCommand):
         from trader.training.application.historical_industry_audit import AuditHistoricalIndustry
 
-        return AuditHistoricalIndustry(HistoricalIndustryEvidenceReader(command.history_root, sqlite_policy=sqlite_policy)).execute(
+        return AuditHistoricalIndustry(command_evidence.HistoricalIndustryEvidenceReader(command.history_root, sqlite_policy=sqlite_policy)).execute(
             required_sample_codes=command.required_sample_codes, tushare_access_points=command.tushare_access_points
         )
     if isinstance(command, research_commands.HoldoutCommand):
         from trader.training.application.terminal_holdout_execution import ExecuteTerminalHoldout
         from trader.training.infra.research.terminal_holdout_inputs import TerminalHoldoutInputFiles
+        from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
 
         return ExecuteTerminalHoldout(
-            TerminalHoldoutParentsReader(command.parent_artifact_dir, command.parent_artifact_dir / "terminal_opened.json"),
-            TerminalHoldoutInputFiles(command.evidence_dir, command.parent_artifact_dir / "terminal_opened.json"),
-            TerminalConclusionPublisher(command.output_dir), LoadResearchPlan(config_dir),
+            command_evidence.TerminalHoldoutParentsReader(command.parent_artifact_dir, command.parent_artifact_dir / "terminal_opened.json"),
+            TerminalHoldoutInputFiles(command.evidence_dir, command.parent_artifact_dir / "terminal_opened.json", cancel_requested=cancel_requested),
+            command_evidence.TerminalConclusionPublisher(command.output_dir), LoadResearchPlan(config_dir),
+            TrainingMemoryBudget(FittingMemoryCapacity(LoadTrainingResourceSettings(config_dir.parent, "unknown").memory)),
+            now=ShanghaiClock(_utc_now).now, monotonic=time.monotonic, cancel_requested=cancel_requested,
         ).execute()
 
     from trader.download.infra.history_source_capability import FreeHistorySourceCapability
@@ -794,7 +792,7 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Pat
             return CompleteCapabilityEvidence(
                 probe,
                 SQLiteH1PointInTimeSnapshot(command.runtime_dir, sqlite_policy=sqlite_policy),
-                CapabilityEvidencePublisher(command.artifact_dir),
+                command_evidence.CapabilityEvidencePublisher(command.artifact_dir),
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
         if isinstance(command, research_commands.QualificationCommand):
             from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
@@ -802,7 +800,7 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Pat
 
             return QualifyPointInTimeData(
                 partial(InspectHistorySnapshot, command.history_root, verify_partitions=True, sqlite_policy=sqlite_policy),
-                HistoricalIndustryEvidenceReader(command.history_root, sqlite_policy=sqlite_policy),
+                command_evidence.HistoricalIndustryEvidenceReader(command.history_root, sqlite_policy=sqlite_policy),
                 probe,
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
     raise TypeError("unsupported research evidence command")

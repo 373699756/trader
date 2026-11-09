@@ -25,6 +25,8 @@ from trader.training.domain.evaluation.selection_experiment import (
     SelectionStrategy,
     SelectionTargetEvidence,
 )
+from trader.training.infra.research.registration_codec import DecodeCandidateRegistration
+from trader.infra.regular_file import OpenRegularFileLines, ReadRegularFile
 
 _SPLIT_KEYS = (
     "training_dates",
@@ -48,10 +50,7 @@ class SelectionEvidenceReader:
         self._rows_hash: str | None = None
 
     def load_plan(self) -> tuple[PairedSelectionSpecification, SelectionExperimentPrerequisite]:
-        with (self._root / "plan.json").open("rb") as handle:
-            encoded = handle.read(512 * 1024 * 1024 + 1)
-        if len(encoded) > 512 * 1024 * 1024:
-            raise ValueError("selection plan exceeds its size limit")
+        encoded = ReadRegularFile(self._root / "plan.json", maximum_bytes=512 * 1024 * 1024)
         raw = _object(json.loads(encoded))
         RequireExactKeys(raw, {"specification", "prerequisite", "rows_sha256"}, "selection_plan")
         rows_hash = Text(raw, "rows_sha256")
@@ -69,12 +68,8 @@ class SelectionEvidenceReader:
             raise ValueError("selection rows cannot be read before the sealed prerequisite")
         digest = hashlib.sha256()
         rows: list[PairedSelectionRow] = []
-        size = 0
-        with (self._root / "rows.jsonl").open("rb") as handle:
-            while encoded := handle.readline(16_385):
-                size += len(encoded)
-                if len(encoded) > 16_384 or size > 4 * 1024**3 or len(rows) >= 2_000_000:
-                    raise ValueError("selection evidence exceeds its bounded row or size limit")
+        with OpenRegularFileLines(self._root / "rows.jsonl", maximum_bytes=4 * 1024**3, maximum_line_bytes=16_384, maximum_lines=2_000_000) as lines:
+            for encoded in lines:
                 digest.update(encoded)
                 rows.append(_row(_object(json.loads(encoded))))
         if digest.hexdigest() != self._rows_hash:
@@ -90,8 +85,8 @@ def _specification(raw: Mapping[str, object]) -> PairedSelectionSpecification:
             "dataset_hash",
             "dataset_manifest_hash",
             "candidate_recall_hash",
-            "industry_model_id",
-            "industry_model_hash",
+            "profile_model_id",
+            "profile_model_hash",
             "pooled_ridge_model_id",
             "pooled_ridge_model_hash",
             "pooled_lightgbm_model_id",
@@ -104,6 +99,8 @@ def _specification(raw: Mapping[str, object]) -> PairedSelectionSpecification:
             "configuration_hash",
             "cost_reference_hash",
             "bootstrap_master_seed",
+            "registration",
+            "production_action_threshold",
         },
         "selection_specification",
     )
@@ -114,8 +111,8 @@ def _specification(raw: Mapping[str, object]) -> PairedSelectionSpecification:
         dataset_hash=Text(raw, "dataset_hash"),
         dataset_manifest_hash=Text(raw, "dataset_manifest_hash"),
         candidate_recall_hash=Text(raw, "candidate_recall_hash"),
-        industry_model_id=Text(raw, "industry_model_id"),
-        industry_model_hash=Text(raw, "industry_model_hash"),
+        profile_model_id=Text(raw, "profile_model_id"),
+        profile_model_hash=Text(raw, "profile_model_hash"),
         pooled_ridge_model_id=Text(raw, "pooled_ridge_model_id"),
         pooled_ridge_model_hash=Text(raw, "pooled_ridge_model_hash"),
         pooled_lightgbm_model_id=Text(raw, "pooled_lightgbm_model_id"),
@@ -136,6 +133,8 @@ def _specification(raw: Mapping[str, object]) -> PairedSelectionSpecification:
         configuration_hash=Text(raw, "configuration_hash"),
         cost_reference_hash=Text(raw, "cost_reference_hash"),
         bootstrap_master_seed=Integer(raw, "bootstrap_master_seed", minimum=1),
+        registration=None if raw["registration"] is None else DecodeCandidateRegistration(RequireMapping(raw, "registration")),
+        production_action_threshold=Number(raw, "production_action_threshold"),
     )
 
 
@@ -202,6 +201,8 @@ def _row(raw: Mapping[str, object]) -> PairedSelectionRow:
             "mae_atr20",
             "target_evidence",
             "point_in_time_parity",
+            "profile_ranking_score",
+            "control_ranking_score",
         },
         "selection_row",
     )
@@ -212,22 +213,24 @@ def _row(raw: Mapping[str, object]) -> PairedSelectionRow:
             item,
             {
                 "target",
-                "industry_prediction_pre_cost",
+                "profile_prediction_pre_cost",
                 "pooled_ridge_prediction_pre_cost",
                 "pooled_lightgbm_prediction_pre_cost",
                 "actual_pre_cost_excess_return",
                 "exit_untradable",
+                "control_prediction_pre_cost",
             },
             "selection_target",
         )
         targets.append(
             SelectionTargetEvidence(
                 cast(SelectionEvidenceTarget, Text(item, "target")),
-                Number(item, "industry_prediction_pre_cost"),
+                Number(item, "profile_prediction_pre_cost"),
                 Number(item, "pooled_ridge_prediction_pre_cost"),
                 Number(item, "pooled_lightgbm_prediction_pre_cost"),
                 Number(item, "actual_pre_cost_excess_return"),
                 Boolean(item, "exit_untradable"),
+                control_prediction_pre_cost=Number(item, "control_prediction_pre_cost"),
             )
         )
     return PairedSelectionRow(
@@ -246,6 +249,8 @@ def _row(raw: Mapping[str, object]) -> PairedSelectionRow:
         mae_atr20=Number(raw, "mae_atr20"),
         target_evidence=tuple(targets),
         point_in_time_parity=Boolean(raw, "point_in_time_parity"),
+        profile_ranking_score=Number(raw, "profile_ranking_score"),
+        control_ranking_score=Number(raw, "control_ranking_score"),
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,7 @@ from trader.training.application.cross_strategy_conclusion import CrossStrategyC
 from trader.training.domain.evaluation.terminal_holdout import (
     EvaluateTerminalHoldout,
     TerminalHoldoutEvaluation,
+    TerminalHoldoutReport,
     TerminalHoldoutRow,
 )
 from trader.training.infra.research.cross_strategy_conclusion_reports import CrossStrategyConclusionReportIndex
@@ -19,7 +21,7 @@ from trader.training.infra.research.terminal_holdout_reports import (
 )
 
 
-def _report():
+def _report() -> TerminalHoldoutReport:
     rows = tuple(
         TerminalHoldoutRow(
             trade_date=date(2025, 1, 1) + timedelta(days=day),
@@ -30,6 +32,7 @@ def _report():
             volatility_state=("low", "high")[day % 2],
             liquidity_state=("high", "low")[day % 2],
             predicted_net_excess_return=0.01 + stock / 10000,
+            ranking_score=50.0 + stock, local_score=50.0 + stock,
             actual_net_excess_returns=(0.01, 0.007, 0.002),
             baseline_net_excess_returns=(0.0, -0.003, -0.008),
             selected=stock in {(day + offset) % 20 for offset in range(6)},
@@ -50,6 +53,7 @@ def _report():
     return EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
+            profile_id="v2",
             research_identity="score_tomorrow_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
@@ -58,7 +62,7 @@ def _report():
     )
 
 
-def test_terminal_holdout_artifact_evidence_is_idempotent_and_detects_tampering(tmp_path) -> None:
+def test_terminal_holdout_artifact_evidence_is_idempotent_and_detects_tampering(tmp_path: Path) -> None:
     report = _report()
     evidence = TerminalHoldoutReportIndex(tmp_path, strategy="tomorrow")
 
@@ -71,7 +75,7 @@ def test_terminal_holdout_artifact_evidence_is_idempotent_and_detects_tampering(
         evidence.verify()
 
 
-def test_terminal_holdout_artifact_evidence_rejects_different_content(tmp_path) -> None:
+def test_terminal_holdout_artifact_evidence_rejects_different_content(tmp_path: Path) -> None:
     report = _report()
     evidence = TerminalHoldoutReportIndex(tmp_path, strategy="tomorrow")
     evidence.write(report)
@@ -81,7 +85,29 @@ def test_terminal_holdout_artifact_evidence_rejects_different_content(tmp_path) 
         evidence.write(conflicting)
 
 
-def test_terminal_holdout_artifact_evidence_rejects_strategy_and_schema_mismatch(tmp_path) -> None:
+def test_an_opened_or_validated_terminal_report_cannot_omit_its_profile() -> None:
+    report = _report()
+    with pytest.raises(ValueError, match="profile"):
+        replace(report, profile_id=None)
+    with pytest.raises(ValueError, match="profile"):
+        replace(
+            report, profile_id=None, terminal_holdout_opened=False, terminal_trade_dates=(),
+            status="historical_validated", failure_reasons=(),
+        )
+
+
+def test_an_unopened_insufficient_report_can_preserve_an_unknown_profile(tmp_path: Path) -> None:
+    report = EvaluateTerminalHoldout(TerminalHoldoutEvaluation(
+        "tomorrow", "score_tomorrow_historical_candidate", "a" * 64, "b" * 64, (),
+        profile_id=None, parent_status="historical_data_insufficient", parent_failure_reasons=("missing_profile_registration",),
+    ))
+    assert report.profile_id is None and not report.terminal_holdout_opened
+    assert report.status == "historical_data_insufficient"
+    evidence = TerminalHoldoutReportIndex(tmp_path, strategy="tomorrow")
+    assert evidence.write(report).content_hash == evidence.verify().content_hash == report.content_hash
+
+
+def test_terminal_holdout_artifact_evidence_rejects_strategy_and_schema_mismatch(tmp_path: Path) -> None:
     report = _report()
     evidence = TerminalHoldoutReportIndex(tmp_path, strategy="d25")
     with pytest.raises(TerminalHoldoutReportConflictError, match="strategy mismatch"):
@@ -96,11 +122,12 @@ def test_terminal_holdout_artifact_evidence_rejects_strategy_and_schema_mismatch
         evidence.verify()
 
 
-def test_cross_strategy_conclusion_artifact_evidence_round_trips_and_detects_conflicts(tmp_path) -> None:
+def test_cross_strategy_conclusion_artifact_evidence_round_trips_and_detects_conflicts(tmp_path: Path) -> None:
     tomorrow = _report()
     d25 = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="d25",
+            profile_id="v2",
             research_identity="score_d25_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,

@@ -122,6 +122,11 @@ class PairedSelectionExperimentBuilder:
                 specification,
                 (*prerequisite.failure_reasons, "selection_experiment_prerequisite_unavailable"),
             )
+        registration = specification.registration
+        if registration is None:
+            return InsufficientPairedSelectionExperimentReport(specification, ("research_candidate_registration_missing",))
+        if registration.qualification_hash != prerequisite.qualification_hash or registration.population_hash != prerequisite.dataset_manifest_hash:
+            return InsufficientPairedSelectionExperimentReport(specification, ("research_registration_qualification_mismatch",))
         if tuple(sorted({item.trade_date for item in prerequisite.population_rows})) != specification.research_dates:
             return InsufficientPairedSelectionExperimentReport(
                 specification,

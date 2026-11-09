@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from tests.helpers.training.research.registrations import CandidateRegistrationFixture
 
 from trader.training.application.selection_experiment import (
     PairedSelectionExperimentBuilder,
@@ -21,8 +22,8 @@ def _specification() -> PairedSelectionSpecification:
         dataset_hash="a" * 64,
         dataset_manifest_hash="f" * 64,
         candidate_recall_hash="b" * 64,
-        industry_model_id="industry_ridge",
-        industry_model_hash="c" * 64,
+        profile_model_id="industry_ridge",
+        profile_model_hash="c" * 64,
         pooled_ridge_model_id="pooled_ridge",
         pooled_ridge_model_hash="d" * 64,
         pooled_lightgbm_model_id="pooled_lightgbm",
@@ -34,6 +35,7 @@ def _specification() -> PairedSelectionSpecification:
         configuration_hash="2" * 64,
         cost_reference_hash="3" * 64,
         bootstrap_master_seed=20261022,
+        registration=CandidateRegistrationFixture(qualification_hash="4" * 64), production_action_threshold=78,
         date_split=PointInTimeDateSplit(
             (date(2025, 1, 2),),
             (date(2025, 2, 3),),
@@ -80,8 +82,9 @@ def _row(parent_row_hash: str = "1" * 64) -> PairedSelectionRow:
         execution_capacity=1_000_000.0,
         severe_loss=False,
         mae_atr20=-0.2,
-        target_evidence=(SelectionTargetEvidence("t1", 0.01, 0.011, 0.012, 0.013, False),),
+        target_evidence=(SelectionTargetEvidence("t1", 0.01, 0.011, 0.012, 0.013, False, control_prediction_pre_cost=0.01),),
         point_in_time_parity=True,
+        profile_ranking_score=80.0, control_ranking_score=80.0,
     )
 
 

@@ -49,6 +49,8 @@ def _seal_h1_research_parent(root):
             "candidate_hash": completion.daily_close_selection.content_hash,
             "failure_reasons": list(status.failure_reasons or ("historical_data_insufficient",)),
             "date_split": None,
+            "profile_id": None,
+            "registration": None,
         }
         for status in capability.strategies
     }
@@ -70,7 +72,10 @@ def test_point_in_time_script_seals_two_parent_insufficient_reports_and_conclusi
     assert payload["production_authority"] is False
     assert all(item["terminal_holdout_opened"] is False for item in payload["strategies"])
     assert all(item["status"] == "historical_data_insufficient" for item in payload["strategies"])
+    assert all(item["profile_id"] is None for item in payload["strategies"])
     assert all(item["failure_reasons"] for item in payload["strategies"])
+    assert not (tmp_path / "terminal-inputs").exists()
+    assert not (parent / "terminal_opened.json").exists()
     assert (output / "tomorrow" / "report.json").is_file()
     assert (output / "d25" / "report.json").is_file()
     assert (output / "cross_strategy" / "report.json").is_file()

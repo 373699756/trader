@@ -9,6 +9,7 @@ import json
 import math
 from datetime import date
 from pathlib import Path
+from collections.abc import Callable
 
 from trader.infra.http_contracts import HttpError, HttpTimeout
 
@@ -134,7 +135,7 @@ def _timeout(value: float) -> float:
     return value
 
 
-def RunResearchEvidence(args: argparse.Namespace, *, project_root: Path, config_dir: Path, sqlite_policy: SqliteIoPolicy) -> int:
+def RunResearchEvidence(args: argparse.Namespace, *, project_root: Path, config_dir: Path, sqlite_policy: SqliteIoPolicy, cancel_requested: Callable[[], bool]) -> int:
 
     from trader.bootstrap import ExecuteResearchEvidence
     from trader.training.entrypoints.research_evidence_projection import ProjectEvidenceResult
@@ -148,7 +149,7 @@ def RunResearchEvidence(args: argparse.Namespace, *, project_root: Path, config_
             raise ValueError("--include-details requires an external --output path")
         command = ParseEvidenceCommand(args, project_root=project_root)
         _validate_output_separation(command, output)
-        report = ExecuteResearchEvidence(command, config_dir=config_dir, sqlite_policy=sqlite_policy)
+        report = ExecuteResearchEvidence(command, config_dir=config_dir, sqlite_policy=sqlite_policy, cancel_requested=cancel_requested)
         payload, exit_code = ProjectEvidenceResult(report, include_details=include_details)
         if args.command == "research-selection" and output is not None:
             from trader.training.infra.research.selection_reports import PublishSelectionReport
@@ -158,10 +159,11 @@ def RunResearchEvidence(args: argparse.Namespace, *, project_root: Path, config_
             _write(payload, output)
         return exit_code
     except (OSError, RuntimeError, TypeError, ValueError, HttpError) as exc:
+        from trader.training.application.terminal_holdout_execution import ResearchCancelledError
         schema, status = COMMAND_SCHEMAS[args.command]
         payload = {
             "schema_version": schema,
-            "status": status,
+            "status": "cancelled" if isinstance(exc, ResearchCancelledError) else status,
             "error_code": _error_code(exc, args.command),
             "production_authority": False,
         }
@@ -169,7 +171,7 @@ def RunResearchEvidence(args: argparse.Namespace, *, project_root: Path, config_
             payload["training_authority"] = False
         # Never retry a failed report write against the same destination.
         _write(payload, None)
-        return 2
+        return 130 if isinstance(exc, ResearchCancelledError) else 2
 
 
 def _validate_output_separation(command: ResearchEvidenceCommand, summary: Path | None) -> None:
@@ -202,8 +204,13 @@ def _write(payload: dict[str, object], output: Path | None) -> None:
 
 
 def _error_code(exc: BaseException, command: str) -> str:
-    from trader.training.application.terminal_holdout_execution import TerminalHoldoutAlreadyOpenedError
+    from trader.training.application.terminal_holdout_execution import ResearchCancelledError, TerminalHoldoutAlreadyOpenedError
+    from trader.training.domain.evaluation.research_registration import ResearchNotReadyError
 
+    if isinstance(exc, ResearchCancelledError):
+        return "research_cancelled"
+    if isinstance(exc, ResearchNotReadyError):
+        return str(exc)
     if isinstance(exc, TerminalHoldoutAlreadyOpenedError):
         return "terminal_holdout_already_opened"
     if isinstance(exc, HttpTimeout):

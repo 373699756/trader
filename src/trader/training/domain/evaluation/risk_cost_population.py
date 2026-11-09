@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Literal
 
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDatasetReport, PointInTimeDatasetRow
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
@@ -35,7 +35,7 @@ class RiskCostResearchIdentity:
         hashes = (self.dataset_report_hash, self.dataset_manifest_hash, self.partition_hash, self.model_artifact_hash)
         if any(_HASH.fullmatch(item) is None for item in hashes):
             raise ValueError("risk-cost research identity hashes are invalid")
-        if self.partition not in {"calibration", "confirmation"} or self.profile_id not in {"v2", "v3"}:
+        if self.partition not in {"calibration", "confirmation"} or self.profile_id not in SCORING_PROFILE_IDS:
             raise ValueError("risk-cost research partition/profile is invalid")
         dates = tuple(self.dates)
         if not dates or dates != tuple(sorted(set(dates))) or _ID.fullmatch(self.model_id) is None:

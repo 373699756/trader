@@ -233,7 +233,7 @@ class TomorrowHistoricalSpec:
     bootstrap_master_seed: int = 20260830
     bootstrap_alpha: float = 0.05
     severe_loss_mae_atr20: float = -1.5
-    maximum_turnover_increase: float = 0.05
+    maximum_turnover_increase: float = 0.0
     maximum_stock_positive_fraction: float = 0.10
     maximum_top_five_positive_fraction: float = 0.30
     top_k: int = 6
@@ -286,7 +286,7 @@ class TomorrowHistoricalSpec:
             or self.bootstrap_master_seed != 20260830
             or self.bootstrap_alpha != 0.05
             or self.severe_loss_mae_atr20 != -1.5
-            or self.maximum_turnover_increase != 0.05
+            or self.maximum_turnover_increase != 0.0
             or self.maximum_stock_positive_fraction != 0.10
             or self.maximum_top_five_positive_fraction != 0.30
             or self.top_k != 6

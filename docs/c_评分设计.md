@@ -518,8 +518,8 @@ D25机会标签、固定六槽贡献、入选均值和真实资金收益分别�
 | --- | --- | --- |
 | `terminal_holdout_sessions` | `200`，整数且≥200，不接受bool | 选择计划的未开留出分区及终端输入元数据都须达到该值；纯评价的200日安全下限保留 |
 | `embargo_sessions.tomorrow/d25` | 均为`5`，整数且≥5，不接受bool | 按策略校验选择计划两个分区边界的隔离日数，证据不足拒绝读取收益 |
-| `fit_date_candidates[].dates` | V2为`[750,1000,1250]`、V3为`[500,750,1000]`；按profile具名，日期数为递增、去重正整数 | 选择计划训练日期数必须属于对应档位候选；只验已封存输入，不自动启动网格或生产训练 |
-| `ablation_arms` | 固定顺序`rule_only/rule_model_gate/industry_model_utility/pooled_model_utility` | 与完整总体四臂合同一致，并参与实际执行所核配置摘要 |
+| `fit_date_candidates[].dates` | V1为`[]`，尚未登记；V2为`[750,1000,1250]`、V3为`[500,750,1000]`、V5为`[61,120,250]`；递增、去重正整数且每档至多三个 | 按四档精确分派并核实际训练日期数；V1须独立合法登记后才可研究，不借用别档窗口，不启动生产训练 |
+| `ablation_arms` | 固定顺序`rule_only/rule_model_gate/profile_model_utility/pooled_model_utility` | 独立四臂之外另有固定`production_control/production_chain`，共同参与研究计划摘要 |
 | `deepseek_comparison_arms` | 固定`local_only/structured_facts_veto` | 参与不可变计划身份，不启动DeepSeek请求；增量研究仍按本章暂缓 |
 
 `research-status`公开计划摘要和实际设置；选择证据的`configuration_hash/cost_reference_hash`须匹配该计划。成本20/50/100bp由`config/cost.json`经`training/infra/research_settings.py::LoadEvaluationCostScenarios`解析并注入；在线成本仍由荐股持有。统计区块、重复数、Holm与置信区间不在`research.json`中，仍遵守各研究身份的纯计算合同。
@@ -527,11 +527,13 @@ D25机会标签、固定六槽贡献、入选均值和真实资金收益分别�
 实现核对如下，均只说明已有能力及适用研究身份，不签真实收益通过：
 
 - `domain/evaluation/historical_candidate_confirmation.py`的`CandidateConfirmationPlan`默认10000次、Holm alpha 0.05，按策略默认5/10日区块且拒绝D25小于10日；同时核20/50bp绝对收益与配对增量的正下界。该计划允许显式传入其它合法alpha和重复数，执行时仍须与预登记及上述门核对，不能仅以“对象可构造”签合同一致。
-- `domain/evaluation/selection_experiment.py`固定完整总体研究的5/10日区块、10000次、六席及每板最多4，但当前只接受V2/V3的校准/确认分区；`selection_statistics.py`在20/50bp上按预登记族做Holm 0.05。共用`paired_statistics.py::PairedMovingBlockStatistics`以2.5%和97.5%分位构成95%区间。它们不是四档八头自动执行与统一验收入口；召回归因报告的计数也不等于上述95%置信下界已取得。
-- `domain/evaluation/terminal_holdout.py`已有200日、正收益/配对增量及bootstrap下界、排序、严重亏损、回撤、容量等门；但换手仍允许相对旧对照增加至`0.05`，与本节“不得劣化”不同，不能据该旧门直接签新要求通过。`selection_experiment.py`按策略核MAE/ATR20的−1.5/−2.5标签；终端评价消费已提供的风险标签，不能据其运行反推原始点时风险证据完整。
-- `application/terminal_holdout_execution.py`先核父候选资格，再核计划、两策略父摘要、候选摘要及交易日预算；合法行由`TerminalHoldoutInputFiles`解码为不可变类型。`research-terminal-holdout`显式指定彼此分离的`--parent-artifact-dir/--evidence-dir/--output-dir`；父目录只接受当前`terminal_parents.json`，不再把H1资料能力状态冒充候选就绪。证据目录的`plan.json`绑定计划与两头行文件摘要、日期和行数，收益位于`tomorrow.jsonl/d25.jsonl`。开启记录`terminal_opened.json`追加在固定父目录，独占发布及同步完成后才读收益；换输出或收益目录不能再次开启，同一父目录内失败也不撤销记录。报告仍可按原内容幂等发布，不能重算留出。仅具备当前元数据不代表真实点时证据合格；本批不读取真实留出、不改配置或旧报告。
+- `domain/evaluation/selection_experiment.py`按档位及策略消费独立模型身份和候选登记，固定5/10日区块、10000次、六席及每板最多4。生产臂分别复现V1/V5独立百分位排序和V2/V3本地分排序，动作门始终比较`local_score`，门前固定六席且不补位；独立消融不冒充生产臂。`selection_statistics.py`以固定`production_control`配对，在20/50bp上执行预登记22项／88项Holm 0.05，保留95%区间。贯通输入不代表真实收益门通过。
+- `domain/evaluation/terminal_holdout.py`核200日、正收益／配对增量及bootstrap下界、排序、严重亏损、回撤和容量；换手按原始指标严格比较`candidate_turnover <= baseline_turnover`，不加0.05或epsilon。Rank IC、NDCG@6和分位差使用独立`ranking_score`，收益预测保持独立诊断；V2/V3排序分必须等于已按ROUND_HALF_UP保留两位的`local_score`。`selection_experiment.py`按策略核MAE/ATR20的−1.5/−2.5标签；终端消费已提供标签，不能反推原始点时风险证据完整。
+- `application/terminal_holdout_execution.py`先核父资格、四档双策略身份、候选登记、总体／模型／成本／日期及状态元数据，再pin普通收益FD并预约保守工作集；预约有取消和单调期限，不足时不读收益、不建开启记录。`research-terminal-holdout`显式指定分离的父／证据／输出目录；当前父文件须带研究登记，`plan.json`须带档位、登记摘要及状态合同，收益为两头JSONL。固定父目录的`terminal_opened.json`独占写入并fsync后才读收益；换目录不能重开，读取／评价／发布失败均不撤销资格，资源在所有分支释放。报告按原内容幂等发布，不重算留出，也不修改旧报告／开启记录。
 
 当前父投影必须显式包含完整`date_split`，就绪父不接受null；训练、早停、校准、确认、两段隔离及终端日期须通过原日期合同，隔离和日数另核当前配置。收益元数据日期必须精确等于父计划的未见终端日期，不能以任意200日替代。元数据和JSONL统一经普通文件描述符及长度／行数边界读取，特殊文件及链接拒绝；这些输入校验和一次开启仍须由真实合格研究资料取证，fixture不代表收益门通过。
+
+候选登记在读取评价收益前固定档位／策略、独立模型组件及训练／特征身份、候选族与预算、参数、停止条件、总体、对照、资格和来源回执；V5保持60步和当前10轮，V1排序器与收益门分别登记。市场／波动／流动性状态按交易日登记一次，合同具备指标、窗口、单位、阈值、边界归属、生成实现、登记时点及来源回执；每日连续指标须在D日15:00前可见，同日所有股票状态必须一致。状态样本量按唯一交易日计数，保留每状态至少40日的门，不按股票行数放大证据。只有布尔值、摘要或标签不能代替这些证据。
 
 ### 15.6 前瞻观察与生产切换
 

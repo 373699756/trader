@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol
+from datetime import datetime
 
 from trader.training.application.selection_experiment import (
     PairedSelectionExperimentBuilder,
@@ -30,9 +31,11 @@ class SelectionResearchPlanPort(SelectionExperimentEvidencePort, Protocol):
     def load_plan(self) -> tuple[PairedSelectionSpecification, SelectionExperimentPrerequisite]: ...
 
 
-def ExecuteSelectionResearch(evidence: SelectionResearchPlanPort, plan: ResearchExecutionPlan) -> SelectionResearchExecution:
+def ExecuteSelectionResearch(evidence: SelectionResearchPlanPort, plan: ResearchExecutionPlan, *, evaluation_at: datetime) -> SelectionResearchExecution:
     specification, prerequisite = evidence.load_plan()
     plan.validate_selection(specification)
+    if specification.registration is not None:
+        specification.registration.validate_before_read(evaluation_at)
     report = PairedSelectionExperimentBuilder(evidence).build(specification, prerequisite)
     return SelectionResearchExecution(
         specification, prerequisite.content_hash, report, EvaluateSelectionStatistics(specification, report)

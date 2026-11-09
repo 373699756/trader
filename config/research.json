@@ -5,13 +5,15 @@
     "d25": 5
   },
   "fit_date_candidates": [
+    {"profile": "v1", "dates": []},
     {"profile": "v2", "dates": [750, 1000, 1250]},
-    {"profile": "v3", "dates": [500, 750, 1000]}
+    {"profile": "v3", "dates": [500, 750, 1000]},
+    {"profile": "v5", "dates": [61, 120, 250]}
   ],
   "ablation_arms": [
     "rule_only",
     "rule_model_gate",
-    "industry_model_utility",
+    "profile_model_utility",
     "pooled_model_utility"
   ],
   "deepseek_comparison_arms": [

@@ -27,7 +27,7 @@ def _passing_metrics() -> TomorrowHistoricalGateMetrics:
         bootstrap_lower_bound_20bp=0.0001,
         baseline_severe_loss_rate=0.04,
         candidate_severe_loss_rate=0.04,
-        turnover_increase=0.01,
+        turnover_increase=0.0,
         mean_rank_ic=0.02,
         top_bottom_quintile_spread=0.001,
         maximum_stock_positive_fraction=0.08,

@@ -233,6 +233,8 @@ def ProjectHoldout(conclusion: CrossStrategyConclusion) -> dict[str, object]:
 def _report_projection(report: TerminalHoldoutReport) -> dict[str, object]:
     return {
         "strategy": report.strategy,
+        "profile_id": report.profile_id,
+        "evidence_hash": report.evidence_hash,
         "status": report.status,
         "research_identity": report.research_identity,
         "parent_hash": report.parent_hash,

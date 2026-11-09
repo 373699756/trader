@@ -249,7 +249,9 @@ def _run_training_command(
             parser.error(f"{args.command} does not accept --profile")
         from trader.training.entrypoints.research_evidence import RunResearchEvidence
 
-        return RunResearchEvidence(args, project_root=runtime.project_root, config_dir=runtime.config_path.parent, sqlite_policy=sqlite_policy)
+        with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
+            return RunResearchEvidence(args, project_root=runtime.project_root, config_dir=runtime.config_path.parent,
+                                       sqlite_policy=sqlite_policy, cancel_requested=cancelled.is_set)
     from trader.training.entrypoints.commands import ResearchCommandOptions, RunResearchCommand
 
     return RunResearchCommand(

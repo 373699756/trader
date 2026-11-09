@@ -37,15 +37,14 @@ def EvaluateSelectionStatistics(
     results: list[tuple[str, int, PreregisteredBootstrapResult]] = []
     for result in report.results:
         variant = result.variant
-        if variant.arm == "rule_only":
+        if variant.arm == "production_control":
             continue
         control = next(
             item
             for item in report.results
             if (
-                item.variant.arm == "rule_only"
+                item.variant.arm == "production_control"
                 and item.variant.target == variant.target
-                and item.variant.selection_mode == variant.selection_mode
             )
         )
         for index, cost_bps in enumerate((20, 50)):
@@ -80,8 +79,9 @@ def _variant_id(result: SelectionExperimentResult, cost_bps: int) -> str:
     variant = result.variant
     return "_".join(
         (
+            variant.profile_id,
             variant.arm,
-            variant.pooled_model_family or "industry",
+            variant.pooled_model_family or "profile",
             variant.selection_mode,
             variant.target,
             f"{cost_bps}bp",

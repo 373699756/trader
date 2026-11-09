@@ -10,8 +10,11 @@ from datetime import date
 from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.recommendation.domain.market.factors import RoundScore
 from trader.training.domain.evaluation.baseline import PopulationSpearman
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDateSplit
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
+from trader.training.domain.evaluation.research_registration import CandidateResearchRegistration
 from trader.training.domain.evaluation.paired_statistics import (
     PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
@@ -61,13 +64,15 @@ class TerminalHoldoutRow:
     capacity: float
     baseline_capacity: float
     point_in_time_parity: bool
+    ranking_score: float = field(kw_only=True)
+    local_score: float = field(kw_only=True)
     horizon_net_excess_returns: tuple[float, ...] = ()
     baseline_horizon_net_excess_returns: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit():
             raise ValueError("terminal holdout code must contain six digits")
-        if self.board not in _BOARDS or not self.industry.strip():
+        if self.board not in _BOARDS or not self.industry.strip() or len(self.industry) > 256:
             raise ValueError("terminal holdout identity is invalid")
         if not self.market_state or not self.volatility_state or not self.liquidity_state:
             raise ValueError("terminal holdout state labels are required")
@@ -88,6 +93,9 @@ class TerminalHoldoutRow:
         )
         if any(not math.isfinite(value) for value in values):
             raise ValueError("terminal holdout numeric values must be finite")
+        for score in (self.ranking_score, self.local_score):
+            if not math.isfinite(score) or not 0.0 <= score <= 100.0 or score != RoundScore(score):
+                raise ValueError("terminal holdout scores must be rounded to two decimals within [0,100]")
         if self.mae_atr20 > 0.0 or self.baseline_mae_atr20 > 0.0:
             raise ValueError("terminal holdout MAE values must be non-positive")
         if self.capacity < 0.0 or self.baseline_capacity < 0.0:
@@ -211,6 +219,8 @@ class TerminalHoldoutReport:
     metrics: TerminalHoldoutMetrics
     failure_reasons: tuple[str, ...]
     terminal_trade_dates: tuple[date, ...]
+    profile_id: ScoringProfileId | None = None
+    evidence_hash: str | None = None
     production_authority: bool = False
     schema_version: str = "historical_terminal_holdout_unified_metrics"
     content_hash: str = field(init=False)
@@ -226,6 +236,12 @@ class TerminalHoldoutReport:
             raise ValueError("terminal holdout status is invalid")
         if self.production_authority:
             raise ValueError("terminal holdout cannot authorize production")
+        if self.profile_id is not None and self.profile_id not in SCORING_PROFILE_IDS:
+            raise ValueError("terminal holdout profile identity is invalid")
+        if (self.terminal_holdout_opened or self.status == "historical_validated") and self.profile_id is None:
+            raise ValueError("terminal holdout opened report requires a profile")
+        if self.evidence_hash is not None and _SHA256.fullmatch(self.evidence_hash) is None:
+            raise ValueError("terminal holdout evidence identity is invalid")
         reasons = tuple(sorted(set(self.failure_reasons)))
         if self.status == "historical_validated" and reasons:
             raise ValueError("validated terminal holdout cannot contain failure reasons")
@@ -250,6 +266,7 @@ class TerminalHoldoutEvaluation:
     anchor: str | None = None
     bootstrap_block_days: int | None = None
     terminal_holdout_already_opened: bool = False
+    profile_id: ScoringProfileId | None = None
 
 
 @dataclass(frozen=True)
@@ -260,6 +277,8 @@ class TerminalHoldoutParentState:
     failure_reasons: tuple[str, ...] = ()
     already_opened: bool = False
     date_split: PointInTimeDateSplit | None = None
+    profile_id: ScoringProfileId | None = None
+    registration: CandidateResearchRegistration | None = None
 
     @property
     def ready(self) -> bool:
@@ -286,11 +305,15 @@ def EvaluateTerminalHoldout(evaluation: TerminalHoldoutEvaluation) -> TerminalHo
             parent_result,
             evaluation.parent_failure_reasons or (evaluation.parent_status,),
         )
+    if evaluation.profile_id not in SCORING_PROFILE_IDS:
+        raise ValueError("terminal holdout ready evaluation requires a profile")
     ordered = tuple(sorted(evaluation.rows, key=lambda item: (item.trade_date, item.code)))
     if len({(item.trade_date, item.code) for item in ordered}) != len(ordered):
         raise ValueError("terminal holdout rows must be unique by date and code")
     if any(not item.point_in_time_parity for item in ordered):
         raise ValueError("terminal holdout point-in-time parity is incomplete")
+    if evaluation.profile_id in {"v2", "v3"} and any(item.ranking_score != item.local_score for item in ordered):
+        raise ValueError("terminal local-score profile ranking mismatch")
     if evaluation.strategy == "d25" and any(
         len(item.horizon_net_excess_returns) != 4 or len(item.baseline_horizon_net_excess_returns) != 4
         for item in ordered
@@ -328,6 +351,7 @@ def EvaluateTerminalHoldout(evaluation: TerminalHoldoutEvaluation) -> TerminalHo
         metrics,
         failures,
         dates,
+        profile_id=evaluation.profile_id,
     )
 
 
@@ -347,6 +371,7 @@ def _closed_report(
         _empty_metrics(),
         reasons,
         (),
+        profile_id=evaluation.profile_id,
     )
 
 
@@ -412,7 +437,7 @@ def _accumulate_terminal_rank(
     accumulator: _TerminalMetricAccumulator,
     day_rows: tuple[TerminalHoldoutRow, ...],
 ) -> None:
-    pairs = tuple((row.predicted_net_excess_return, row.actual_net_excess_returns[0]) for row in day_rows)
+    pairs = tuple((row.ranking_score, row.actual_net_excess_returns[0]) for row in day_rows)
     value = PopulationSpearman(pairs)
     ndcg = _ndcg_at_6(day_rows)
     if ndcg is not None:
@@ -420,7 +445,7 @@ def _accumulate_terminal_rank(
     if value is None:
         return
     accumulator.rank_ics.append(value)
-    ordered = sorted(day_rows, key=lambda row: (-row.predicted_net_excess_return, row.code))
+    ordered = sorted(day_rows, key=lambda row: (-row.ranking_score, row.code))
     split = max(1, len(ordered) // 5)
     accumulator.spreads.append(
         _mean(tuple(row.actual_net_excess_returns[0] for row in ordered[:split]))
@@ -434,9 +459,15 @@ def _accumulate_terminal_states(
 ) -> None:
     for board in {row.board for row in day_rows}:
         accumulator.state_counts[f"board:{board}"] += 1
-    accumulator.state_counts[f"market:{day_rows[0].market_state}"] += 1
-    accumulator.state_counts[f"volatility:{day_rows[0].volatility_state}"] += 1
-    accumulator.state_counts[f"liquidity:{day_rows[0].liquidity_state}"] += 1
+    states = {(row.market_state, row.volatility_state, row.liquidity_state) for row in day_rows}
+    if len(states) != 1:
+        raise ValueError("terminal_daily_state_mixed")
+    market, volatility, liquidity = next(iter(states))
+    if market not in {"up", "down", "sideways"} or volatility not in {"low", "high"} or liquidity not in {"low", "high"}:
+        raise ValueError("terminal_daily_state_invalid")
+    accumulator.state_counts[f"market:{market}"] += 1
+    accumulator.state_counts[f"volatility:{volatility}"] += 1
+    accumulator.state_counts[f"liquidity:{liquidity}"] += 1
 
 
 def _accumulate_terminal_horizon(
@@ -575,7 +606,7 @@ def _six_slot_returns(values: tuple[tuple[float, float, float], ...]) -> tuple[f
 def _ndcg_at_6(rows: tuple[TerminalHoldoutRow, ...]) -> float | None:
     actual = {row.code: row.actual_net_excess_returns[0] for row in rows}
     shift = min(0.0, min(actual.values()))
-    ranked = sorted(rows, key=lambda row: (-row.predicted_net_excess_return, row.code))[:6]
+    ranked = sorted(rows, key=lambda row: (-row.ranking_score, row.code))[:6]
     ideal = sorted(rows, key=lambda row: (-actual[row.code], row.code))[:6]
 
     def discounted(values: list[TerminalHoldoutRow]) -> float:
@@ -665,7 +696,7 @@ def _risk_gate_failures(metrics: TerminalHoldoutMetrics) -> tuple[str, ...]:
         or metrics.severe_loss_rate > metrics.baseline_severe_loss_rate
     ):
         failures.append("severe_loss_rate_worse")
-    if metrics.turnover - metrics.baseline_turnover > 0.05:
+    if metrics.turnover > metrics.baseline_turnover:
         failures.append("turnover_increase_above_5_percent")
     if metrics.maximum_drawdown > metrics.baseline_maximum_drawdown:
         failures.append("maximum_drawdown_worse")

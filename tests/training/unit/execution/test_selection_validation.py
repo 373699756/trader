@@ -4,7 +4,10 @@ from tests.helpers.shared.configuration import SqlitePolicyFixture
 
 import hashlib
 import json
-from datetime import date, timedelta
+import shutil
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+from tests.helpers.training.research.registrations import CandidateRegistrationFixture, RegistrationPayloadFixture
 from pathlib import Path
 
 import pytest
@@ -17,25 +20,34 @@ from trader.training.entrypoints.selection_projection import ProjectSelectionVal
 from trader.training.infra.research.selection_evidence import SelectionEvidenceReader
 from trader.training.infra.research_settings import LoadResearchPlan
 from trader.training.infra.research.selection_reports import PublishSelectionReport
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.training.domain.evaluation.research_registration import ResearchStrategy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _execute(evidence, plan):
+    return ExecuteSelectionResearch(evidence, plan, evaluation_at=datetime(2026, 11, 8, tzinfo=ZoneInfo("Asia/Shanghai")))
 
 
 def _dates(start: str, count: int) -> list[str]:
     return [(date.fromisoformat(start) + timedelta(days=index)).isoformat() for index in range(count)]
 
 
-def _evidence(root: Path, *, days: int = 1, strategy: str = "tomorrow") -> dict:
+def _evidence(
+    root: Path, *, days: int = 1, strategy: ResearchStrategy = "tomorrow", profile_id: ScoringProfileId = "v2",
+    fit_dates: int = 1000, config_dir: Path = PROJECT_ROOT / "config",
+) -> dict:
     root.mkdir()
     dates = _dates("2025-06-02", days)
     spec = {
         "strategy": strategy,
-        "profile_id": "v2",
+        "profile_id": profile_id,
         "dataset_hash": "a" * 64,
         "dataset_manifest_hash": "b" * 64,
         "candidate_recall_hash": "c" * 64,
-        "industry_model_id": "industry_ridge",
-        "industry_model_hash": "d" * 64,
+        "profile_model_id": {"v1": "lambdarank_ridge", "v2": "lightgbm", "v3": "ridge", "v5": "tcn"}[profile_id],
+        "profile_model_hash": "d" * 64,
         "pooled_ridge_model_id": "pooled_ridge",
         "pooled_ridge_model_hash": "e" * 64,
         "pooled_lightgbm_model_id": "pooled_lightgbm",
@@ -43,11 +55,15 @@ def _evidence(root: Path, *, days: int = 1, strategy: str = "tomorrow") -> dict:
         "research_dates": dates,
         "predefined_exit_identity": "first_target_or_t5",
         "partition": "confirmation",
-        "configuration_hash": LoadResearchPlan(PROJECT_ROOT / "config").configuration_hash,
-        "cost_reference_hash": LoadResearchPlan(PROJECT_ROOT / "config").cost_reference_hash,
+        "configuration_hash": LoadResearchPlan(config_dir).configuration_hash,
+        "cost_reference_hash": LoadResearchPlan(config_dir).cost_reference_hash,
         "bootstrap_master_seed": 20261022,
+        "production_action_threshold": 78 if strategy == "tomorrow" else 76,
+        "registration": RegistrationPayloadFixture(CandidateRegistrationFixture(
+            profile_id=profile_id, strategy=strategy, model_hash="d" * 64, population_hash="b" * 64, fit_dates=fit_dates,
+        )),
         "date_split": {
-            "training_dates": _dates("2020-01-02", 1000),
+            "training_dates": _dates("2020-01-02", fit_dates),
             "early_stopping_dates": ["2025-02-03"],
             "calibration_dates": ["2025-03-03"],
             "development_confirmation_embargo_dates": _dates("2025-04-01", 5),
@@ -77,10 +93,13 @@ def _evidence(root: Path, *, days: int = 1, strategy: str = "tomorrow") -> dict:
                     "severe_loss": False,
                     "mae_atr20": -0.2,
                     "point_in_time_parity": True,
+                    "profile_ranking_score": 90 - index,
+                    "control_ranking_score": 90 - index,
                     "target_evidence": [
                         {
                             "target": target,
-                            "industry_prediction_pre_cost": 0.02,
+                            "profile_prediction_pre_cost": 0.02,
+                            "control_prediction_pre_cost": 0.02,
                             "pooled_ridge_prediction_pre_cost": 0.021,
                             "pooled_lightgbm_prediction_pre_cost": 0.022,
                             "actual_pre_cost_excess_return": 0.02 + position / 1000,
@@ -114,6 +133,106 @@ def _evidence(root: Path, *, days: int = 1, strategy: str = "tomorrow") -> dict:
     plan["prerequisite"]["specification_hash"] = specification.content_hash
     (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     return plan
+
+
+@pytest.mark.parametrize("strategy", ["tomorrow", "d25"])
+@pytest.mark.parametrize("profile_id,fit_dates", [("v1", 750), ("v2", 1000), ("v3", 1000), ("v5", 61), ("v5", 120), ("v5", 250)])
+def test_registered_profile_strategy_runs_the_real_bootstrap_and_cli_report(tmp_path, monkeypatch, profile_id, fit_dates, strategy):
+    config_dir = tmp_path / "project/config"
+    shutil.copytree(PROJECT_ROOT / "config", config_dir)
+    if profile_id == "v1":
+        path = config_dir / "research.json"
+        configuration = json.loads(path.read_text())
+        next(item for item in configuration["fit_date_candidates"] if item["profile"] == "v1")["dates"] = [750]
+        path.write_text(json.dumps(configuration))
+    root = tmp_path / "evidence"
+    _evidence(root, strategy=strategy, profile_id=profile_id, fit_dates=fit_dates, config_dir=config_dir)
+    monkeypatch.setattr(bootstrap, "OpenExternalHttp", lambda: pytest.fail("offline study must not open HTTP"))
+    monkeypatch.setattr(bootstrap, "BuildSystem", lambda *_a, **_kw: pytest.fail("must not build a server"))
+    execution = bootstrap.ExecuteResearchEvidence(
+        SelectionCommand(root), config_dir=config_dir, sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False,
+    )
+    expected = ProjectSelectionValidation(execution)
+    assert execution.report.status == "historical_experiment_completed"
+    assert execution.specification.profile_id == execution.report.profile_id == profile_id
+    assert execution.specification.strategy == execution.report.strategy == strategy
+    assert len(execution.report.results) == (12 if strategy == "tomorrow" else 48)
+    assert all(result.metrics.population_rows == 9 for result in execution.report.results)
+    assert all(result.metrics.selected_rows > 0 for result in execution.report.results)
+    assert all(result.variant.profile_id == profile_id for result in execution.report.results)
+    assert len(execution.inference) == (22 if strategy == "tomorrow" else 88)
+    assert all("production_control" not in item.variant_id for item in execution.inference)
+    contract = expected["selection_contract"]
+    assert contract["score"] == (
+        "model_percentile_round_half_up_2dp" if profile_id in {"v1", "v5"} else "risk_adjusted_local_score_round_half_up_2dp"
+    )
+    assert contract["action_score"] == "risk_adjusted_local_score_round_half_up_2dp"
+    assert not contract["action_refill"] and not contract["veto_refill"]
+    output = tmp_path / "validation.json"
+    assert Main([
+        "--config", str(config_dir / "runtime.json"), "research-selection", "--evidence-dir", str(root), "--output", str(output),
+    ]) == 0
+    assert json.loads(output.read_text()) == expected
+    assert not expected["production_authority"] and not expected["terminal_holdout_opened"]
+
+
+@pytest.mark.parametrize(
+    "conflict", ["profile", "components", "candidate_family", "fit_dates", "dates", "cost", "missing_v1", "registration", "qualification", "population", "future_registration"],
+)
+def test_invalid_preregistered_metadata_is_rejected_before_any_outcome_read(tmp_path, monkeypatch, conflict):
+    root = tmp_path / "evidence"
+    plan = _evidence(root, profile_id="v1" if conflict == "missing_v1" else "v2")
+    spec, prerequisite = plan["specification"], plan["prerequisite"]
+    if conflict == "profile":
+        spec["profile_id"] = "v3"
+    elif conflict == "components":
+        spec["registration"]["candidate_components"][0]["family"] = "ridge"
+    elif conflict == "candidate_family":
+        spec["registration"]["registered_candidate_ids"] = ["other_candidate"]
+    elif conflict == "fit_dates":
+        spec["registration"]["parameters"][0]["value"] = 500
+    elif conflict == "dates":
+        spec["date_split"]["training_dates"].pop()
+    elif conflict == "cost":
+        spec["cost_reference_hash"] = "8" * 64
+    elif conflict == "registration":
+        spec["registration"] = None
+    elif conflict == "qualification":
+        prerequisite["qualification_hash"] = "4" * 64
+    elif conflict == "population":
+        spec["registration"]["population_hash"] = "8" * 64
+    elif conflict == "future_registration":
+        spec["registration"]["registered_at"] = "2030-01-01T00:00:00+08:00"
+    path = root / "plan.json"
+    path.write_text(json.dumps(plan))
+    if conflict not in {"profile", "components", "candidate_family"}:
+        specification, _prerequisite = SelectionEvidenceReader(root).load_plan()
+        prerequisite["specification_hash"] = specification.content_hash
+        path.write_text(json.dumps(plan))
+    reads = []
+
+    def unexpected_read(*_args, **_kwargs):
+        reads.append(True)
+        pytest.fail("metadata rejection must precede every outcome read")
+
+    monkeypatch.setattr("trader.training.infra.research.selection_evidence.OpenRegularFileLines", unexpected_read)
+    (root / "rows.jsonl").unlink()
+    if conflict in {"qualification", "population"}:
+        execution = _execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+        assert execution.report.status == "historical_data_insufficient"
+        assert execution.report.failure_reasons == ("research_registration_qualification_mismatch",)
+        assert execution.report.results == () and execution.inference == ()
+    else:
+        reason = {
+            "profile": "profile/strategy mismatch", "components": "research_profile_components_mismatch",
+            "candidate_family": "research_registration_budget_or_time_invalid", "fit_dates": "configured research plan",
+            "dates": "configured research plan", "cost": "configured research plan",
+            "missing_v1": "research_candidates_unregistered", "registration": "research_candidate_registration_missing",
+            "future_registration": "research_registration_not_sealed_before_read",
+        }[conflict]
+        with pytest.raises(ValueError, match=reason):
+            _execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+    assert reads == []
 
 
 def test_full_population_cli_is_offline_and_separates_six_slots_selected_mean_and_inference(tmp_path, monkeypatch):
@@ -164,7 +283,7 @@ def test_prerequisite_failure_reads_no_outcomes_even_if_the_row_file_is_missing(
     )
     (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     (root / "rows.jsonl").unlink()
-    execution = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+    execution = _execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
     assert execution.report.status == "historical_data_insufficient"
     assert "minute_events_not_qualified" in execution.report.failure_reasons
     assert execution.inference == ()
@@ -195,21 +314,19 @@ def test_input_conflicts_never_produce_new_target_results(tmp_path, case):
     (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     if case == "old_capacity":
         with pytest.raises(ValueError, match="unknown keys"):
-            ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+            _execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
     else:
         if case == "profile":
             (root / "rows.jsonl").unlink()
-            execution = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
-            assert execution.report.status == "historical_data_insufficient"
-            assert execution.report.failure_reasons == ("selection_experiment_parent_mismatch",)
-            assert execution.report.results == ()
+            with pytest.raises(ValueError, match="profile/strategy mismatch"):
+                _execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
             return
         if case == "cost_reference":
             (root / "rows.jsonl").unlink()
             with pytest.raises(ValueError, match="configured research plan"):
-                ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+                _execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
             return
-        execution = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+        execution = _execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
         assert execution.report.status == "historical_data_insufficient"
         assert execution.report.results == ()
 
@@ -217,7 +334,7 @@ def test_input_conflicts_never_produce_new_target_results(tmp_path, case):
 def test_report_replay_is_idempotent_and_conflicting_content_does_not_overwrite(tmp_path):
     root = tmp_path / "evidence"
     _evidence(root)
-    payload = ProjectSelectionValidation(bootstrap.ExecuteResearchEvidence(SelectionCommand(root), config_dir=PROJECT_ROOT / "config", sqlite_policy=SqlitePolicyFixture()))
+    payload = ProjectSelectionValidation(bootstrap.ExecuteResearchEvidence(SelectionCommand(root), config_dir=PROJECT_ROOT / "config", sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False))
     path = tmp_path / "validation.json"
     PublishSelectionReport(path, payload)
     original = path.read_bytes()
@@ -230,13 +347,13 @@ def test_report_replay_is_idempotent_and_conflicting_content_does_not_overwrite(
 def test_preregistered_bootstrap_and_complete_holm_family_are_deterministic(tmp_path):
     root = tmp_path / "evidence"
     _evidence(root, days=5)
-    first = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
-    second = ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+    first = _execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
+    second = _execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config"))
     assert first == second
-    assert len(first.inference) == 16
+    assert len(first.inference) == 22
     assert all(item.statistics.valid and item.statistics.repetitions == 10_000 for item in first.inference)
     assert {item.cost_bps for item in first.inference} == {20, 50}
-    assert {item.holm.family_rank for item in first.inference} == set(range(1, 17))
+    assert {item.holm.family_rank for item in first.inference} == set(range(1, 23))
     assert all(item.statistics.confidence_lower > 0 for item in first.inference)
 
 
@@ -263,7 +380,7 @@ def test_cli_rejects_input_output_overlap_without_writing_evidence(tmp_path, cap
 def test_d25_reports_four_costed_horizons_and_a_distinct_ten_day_bootstrap(tmp_path):
     root = tmp_path / "evidence"
     _evidence(root, strategy="d25")
-    report = ProjectSelectionValidation(ExecuteSelectionResearch(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config")))
+    report = ProjectSelectionValidation(_execute(SelectionEvidenceReader(root), LoadResearchPlan(PROJECT_ROOT / "config")))
     assert report["statistics_plan"]["block_days"] == 10
     assert report["selection_contract"]["production_target"] == "mean_t2_t5"
     aggregate = next(result for result in report["results"] if result["target"] == "mean_t2_t5")

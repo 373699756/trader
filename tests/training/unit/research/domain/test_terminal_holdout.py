@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 from trader.training.domain.evaluation.terminal_holdout import (
     EvaluateTerminalHoldout,
@@ -29,6 +30,7 @@ def _rows(count: int = 200, *, positive: bool = True) -> tuple[TerminalHoldoutRo
                     volatility_state=("low", "high")[index % 2],
                     liquidity_state=("high", "low")[index % 2],
                     predicted_net_excess_return=actual,
+                    ranking_score=50.0 + stock, local_score=50.0 + stock,
                     actual_net_excess_returns=(actual, actual - 0.003, actual - 0.008),
                     baseline_net_excess_returns=(0.0, -0.003, -0.008),
                     selected=selected,
@@ -51,6 +53,7 @@ def test_terminal_holdout_validates_positive_candidate_against_local_baseline() 
     report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
+            profile_id="v2",
             research_identity="score_tomorrow_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
@@ -65,10 +68,38 @@ def test_terminal_holdout_validates_positive_candidate_against_local_baseline() 
     assert len(report.content_hash) == 64
 
 
+@pytest.mark.parametrize("profile", ["v1", "v5"])
+def test_model_ranking_metrics_use_final_percentile_instead_of_utility(profile: ScoringProfileId) -> None:
+    rows = tuple(replace(row, predicted_net_excess_return=-row.predicted_net_excess_return) for row in _rows())
+    report = EvaluateTerminalHoldout(TerminalHoldoutEvaluation(
+        "tomorrow", "score_tomorrow_historical_candidate", "a" * 64, "b" * 64, rows, profile_id=profile,
+    ))
+    assert report.metrics.rank_ic == pytest.approx(1.0)
+    assert report.metrics.ndcg_at_6 == pytest.approx(1.0)
+    assert report.metrics.top_bottom_quintile_spread is not None
+    assert report.metrics.top_bottom_quintile_spread > 0
+
+
+@pytest.mark.parametrize("profile", ["v2", "v3"])
+def test_local_score_profiles_reject_an_independent_ranking_score(profile: ScoringProfileId) -> None:
+    rows = tuple(replace(row, ranking_score=99.0) for row in _rows())
+    with pytest.raises(ValueError, match="local-score profile ranking mismatch"):
+        EvaluateTerminalHoldout(TerminalHoldoutEvaluation(
+            "tomorrow", "score_tomorrow_historical_candidate", "a" * 64, "b" * 64, rows, profile_id=profile,
+        ))
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), -0.01, 100.01, 12.345])
+def test_terminal_scores_require_current_rounded_finite_range(score: float) -> None:
+    with pytest.raises(ValueError, match="scores must be rounded"):
+        replace(_rows(1)[0], ranking_score=score)
+
+
 def test_terminal_holdout_does_not_open_when_parent_is_rejected() -> None:
     report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
+            profile_id=None,
             research_identity="score_tomorrow_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
@@ -79,8 +110,17 @@ def test_terminal_holdout_does_not_open_when_parent_is_rejected() -> None:
     )
 
     assert report.status == "historical_rejected"
+    assert report.profile_id is None
     assert report.terminal_holdout_opened is False
     assert report.failure_reasons == ("candidate_rejected",)
+
+
+def test_a_ready_terminal_evaluation_cannot_run_without_a_scoring_profile() -> None:
+    with pytest.raises(ValueError, match="profile"):
+        EvaluateTerminalHoldout(TerminalHoldoutEvaluation(
+            "tomorrow", "score_tomorrow_historical_candidate", "a" * 64, "b" * 64,
+            _rows(), profile_id=None,
+        ))
 
 
 def test_terminal_holdout_requires_point_in_time_parity() -> None:
@@ -90,6 +130,7 @@ def test_terminal_holdout_requires_point_in_time_parity() -> None:
         EvaluateTerminalHoldout(
             TerminalHoldoutEvaluation(
                 strategy="tomorrow",
+                profile_id="v2",
                 research_identity="score_tomorrow_historical_candidate",
                 parent_hash="a" * 64,
                 candidate_hash="b" * 64,
@@ -103,6 +144,7 @@ def test_terminal_holdout_reports_data_insufficient_when_a_preregistered_state_i
     report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
+            profile_id="v2",
             research_identity="score_tomorrow_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
@@ -118,6 +160,7 @@ def test_terminal_holdout_reports_unified_top6_risk_execution_and_capacity_metri
     report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
+            profile_id="v2",
             research_identity="score_tomorrow_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
@@ -141,6 +184,7 @@ def test_terminal_holdout_rejects_worse_mae_exit_tradability_and_capacity() -> N
     report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
+            profile_id="v2",
             research_identity="score_tomorrow_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,
@@ -158,6 +202,7 @@ def test_terminal_holdout_rejects_a_second_terminal_open() -> None:
     report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
+            profile_id="v2",
             research_identity="score_tomorrow_historical_candidate",
             parent_hash="a" * 64,
             candidate_hash="b" * 64,

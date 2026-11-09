@@ -34,6 +34,7 @@ class D25TerminalHoldoutService:
                 candidate_hash=self._parent.candidate_hash,
                 rows=self._rows,
                 parent_status=self._parent.candidate_status,
+                profile_id=self._parent.profile_id,
                 parent_failure_reasons=self._parent.failure_reasons,
                 anchor="15:00_unadjusted_point_in_time",
                 bootstrap_block_days=10,
