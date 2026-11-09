@@ -15,7 +15,7 @@ from pathlib import Path
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_revision import HistoryRevision
-from trader.download.domain.prepared_reference import PreparedReference
+from trader.download.domain.prepared_reference import PreparedReference, RecordedHistoryPopulations
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.sqlite_codec import DecodeDate, EncodeDate, EncodeHash
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
@@ -25,6 +25,7 @@ class HistoryReferenceIndex:
     def __init__(self, reference: HistoryReferenceSnapshot) -> None:
         self.reference = reference
         self._eligible = frozenset(reference.eligible_codes)
+        self._verified = frozenset(item.code for item in reference.st_evidence if item.status == "clear")
         grouped: dict[str, list[BaoStockIndustryInterval]] = defaultdict(list)
         for item in reference.industry_intervals:
             grouped[item.code].append(item)
@@ -35,7 +36,7 @@ class HistoryReferenceIndex:
         industry = self.industry_on(revision.code, revision.trade_date)
         return replace(
             revision,
-            is_st=False if revision.code in self._eligible else None,
+            is_st=False if revision.code in self._eligible and revision.code in self._verified else None,
             industry=industry.industry if industry is not None else None,
             industry_classification=industry.classification if industry is not None else None,
         )
@@ -115,7 +116,9 @@ def WriteHistoryReference(
     if (
         published is None
         or published.st_evidence != reference.st_evidence
-        or tuple(item.code for item in published.eligible_universe) != reference.eligible_codes
+        or reference.eligible_codes not in tuple(
+            tuple(item.code for item in population) for population in RecordedHistoryPopulations(published)
+        )
     ):
         raise ValueError("history_reference_publication_conflict")
     if references is None:
@@ -175,6 +178,7 @@ def _read(
     index: SQLiteReferenceIndex,
     references: dict[str, PreparedReference] | None = None,
 ) -> HistoryReferenceSnapshot:
+    """Decode the recorded cohort using its immutable digest, independent of today's download policy."""
     row = connection.run(
         "SELECT publication_id FROM reference_binding WHERE reference_hash=?", (EncodeHash(digest),)
     ).fetchone()
@@ -201,14 +205,18 @@ def _read(
             (EncodeHash(digest),),
         )
     )
-    reference = HistoryReferenceSnapshot(
-        tuple(item.code for item in published.eligible_universe),
-        intervals,
-        published.st_evidence,
+    # A recorded cohort is immutable. Its digest determines whether it contains
+    # only verified securities or also the explicitly permitted unknowns.
+    populations = tuple(tuple(item.code for item in population) for population in RecordedHistoryPopulations(published))
+    industry_codes = frozenset(item.code for item in intervals)
+    matches = tuple(
+        reference
+        for codes in populations if codes and industry_codes.issubset(codes)
+        if (reference := HistoryReferenceSnapshot(codes, intervals, published.st_evidence)).content_hash == digest
     )
-    if reference.content_hash != digest:
+    if len(matches) != 1:
         raise ValueError("history_reference_hash_conflict")
-    return reference
+    return matches[0]
 
 
 def ReadBoundHistoryReference(

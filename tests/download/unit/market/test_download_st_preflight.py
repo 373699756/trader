@@ -111,7 +111,7 @@ def _seed_st(path):
 
 
 @pytest.mark.parametrize("existing_cache", (False, True))
-def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, monkeypatch, st_sources, existing_cache, capsys):
+def test_risk_commands_refresh_st_then_download_clear_and_unknown_codes(tmp_path, monkeypatch, st_sources, existing_cache, capsys):
     calls, sessions = st_sources
     settings = replace(
         LoadRuntimeSettings(_ROOT / "config/runtime.json"),
@@ -135,9 +135,9 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
         assert request.configuration.source_timeout_seconds == 8.0
         assert set(calls) == expected_queries
         assert all(session.closed for session in sessions)
-        assert codes == ("600001", "600005", "600007")
+        assert codes == ("600001", "600004", "600005", "600007")
         events.append("business_download")
-        return CompanyEvidenceSyncResult(observed_at, len(codes), 3, 0, 0, 0, 0, (), 0.0)
+        return CompanyEvidenceSyncResult(observed_at, len(codes), 4, 0, 0, 0, 0, (), 0.0)
 
     monkeypatch.setattr(bootstrap, "_sync_company_evidence", download)
     stream = StringIO()
@@ -146,7 +146,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
         lambda **kwargs: CompanyEvidenceProgress(stream, **kwargs),
     )
     result = bootstrap.ExecuteSync(Path("unused"), "company")
-    assert result.tasks[0].company.requested_codes == 3
+    assert result.tasks[0].company.requested_codes == 4
     assert events == ["business_download"]
     assert set(calls) == expected_queries
     assert {item.code for item in SQLiteReferenceIndex(evidence_path, sqlite_policy=SqlitePolicyFixture()).read_st() if item.status == "ever_st"} == {
@@ -174,7 +174,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(
             return BaoStockCalendar(_DAYS)
 
         def fetch_window(self, security, dates, **_options):
-            assert security.code in {"600001", "600005", "600007"}
+            assert security.code in {"600001", "600004", "600005", "600007"}
             downloaded.append(security.code)
             return _window(security.code, dates)
 
@@ -210,7 +210,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(
             shutdown_timeout_seconds=2.0,
             now=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
         )
-        assert result.completed_codes == 3
+        assert result.completed_codes == 4
         assert not result.needs_retry
     else:
         paths = DataPaths(tmp_path / "data")
@@ -221,9 +221,9 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(
         monkeypatch.setattr(bootstrap, "ExecuteQfqDownload", partial(bootstrap.ExecuteQfqDownload, now=lambda: NOW))
         result = bootstrap.ExecuteSync(Path("unused"), "market")
         assert result.exit_code == 0, result
-        assert result.tasks[0].market.completed_codes == 3
+        assert result.tasks[0].market.completed_codes == 4
         cache = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=SqlitePolicyFixture())
-        assert cache.codes() == frozenset({"600001", "600005", "600007"})
+        assert cache.codes() == frozenset({"600001", "600004", "600005", "600007"})
         window = cache.read_code("600001")
         assert len(window.cells) == LoadQfqWindowConfiguration(_ROOT).v2_sessions
         assert all(cell.qfq is not None for cell in window.cells)
@@ -233,7 +233,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(
         assert [output.index(stage) for stage in stages] == sorted(output.index(stage) for stage in stages)
         assert "参考·ST资格" in output
         assert "开始更新 raw/qfq 短窗口" in output
-    assert set(downloaded) == {"600001", "600005", "600007"}
+    assert set(downloaded) == {"600001", "600004", "600005", "600007"}
     assert all(session.closed for session in sessions)
 
 

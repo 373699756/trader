@@ -54,12 +54,18 @@ def ReportStPreparation(
 
 
 def _st_failure_message(failure: HistoryStCheckFailure) -> ProgressMessage:
+    if failure.reason == "history_st_name_history_empty":
+        return ProgressMessage(tuple(ProgressField(value, ProgressLevel.WARNING) for value in (
+            "来源 新浪", f"股票 {failure.code} {ShortProgressText(failure.name, 20)}",
+            "原因 曾用名历史为空", "结果 待核unknown，继续下载", "后续 下次ST核验重查",
+        )), task=ProgressTask("参考", "ST待核", "ST待核"), state="等待", finished=True,
+           immediate=True, heartbeat=False)
     return ProgressMessage(tuple(ProgressField(value, ProgressLevel.WARNING) for value in (
         "来源 新浪", f"股票 {failure.code} {ShortProgressText(failure.name, 20)}",
         f"原因码 {failure.reason}", f"诊断 {failure.diagnostic}",
         f"尝试 {failure.attempts}/{failure.maximum_attempts}",
         f"核验累计 {failure.elapsed_seconds:.3f}秒", f"单次超时上限 {failure.timeout_seconds:.3f}秒",
-        "结果 待核，保守排除unknown", "后续 本股不进入本轮同步，下次ST核验重查",
+        "结果 待核unknown，继续下载", "后续 不阻断本轮同步，下次ST核验重查",
     )), task=ProgressTask("参考", "ST核验失败", "ST核验失败"), state="失败", finished=True,
        stock_failure_code=failure.code, immediate=True, heartbeat=False)
 
@@ -70,8 +76,8 @@ def _st_progress_message(observation: HistoryStCheckProgress) -> ProgressMessage
     source = "本地缓存（原来源 新浪）" if observation.cache_only else "新浪"
     fields = [f"已核验 {observation.processed}/{observation.total}股", f"已保存 {observation.persisted}/{observation.total}股"]
     if summary is not None:
-        fields.extend((f"通过 {summary.clear}股", f"曾ST排除 {summary.ever_st}股", f"待核排除 {summary.unknown}股",
-                       "结果 核验结束，存在待核排除" if warning else "结果 核验结束"))
+        fields.extend((f"已核实非ST {summary.clear}股", f"当前或曾ST排除 {summary.ever_st}股", f"待核继续下载 {summary.unknown}股",
+                       "结果 核验结束，待核股票继续下载" if warning else "结果 核验结束"))
     else:
         fields.append("结果 核验中")
     fields.append(f"来源 {source}")

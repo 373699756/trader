@@ -186,9 +186,9 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.st_summary is not None:
         st_summary = progress.st_summary
         return (
-            f"合格 {ProgressNumber(st_summary.clear)}",
-            f"曾ST排除 {ProgressNumber(st_summary.ever_st)}",
-            f"未知排除 {ProgressNumber(st_summary.unknown)}",
+            f"已核实非ST {ProgressNumber(st_summary.clear)}",
+            f"当前或曾ST排除 {ProgressNumber(st_summary.ever_st)}",
+            f"待核继续下载 {ProgressNumber(st_summary.unknown)}",
         )
     return _reuse_summary_parts(progress)
 

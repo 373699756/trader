@@ -14,7 +14,7 @@ from trader.download.domain.history_control import (
     HistorySyncState,
     HistoryUniverseIdentity,
 )
-from trader.download.domain.prepared_reference import PreparedReference
+from trader.download.domain.prepared_reference import PreparedReference, RecordedHistoryPopulations
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, DecodeTime, EncodeDate, EncodeHash, EncodeTime
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSchema
@@ -152,14 +152,18 @@ def ReadControlRecord(
     elif kind == "universe":
         source_hash = DecodeHash(row[1])
         reference = _reference(index, row[3], references)
-        securities = tuple(
-            HistorySecurityIdentity(item.code, item.name, item.board, item.listed_on, item.delisted_on)
-            for item in reference.eligible_universe
-        )
-        if len(securities) != row[2]:
-            raise ValueError("history_universe_binding_invalid")
-        value = HistoryUniverseIdentity(securities, source_hash)
         digest = DecodeHash(row[0])
+        candidates = tuple(
+            HistoryUniverseIdentity(tuple(
+                HistorySecurityIdentity(item.code, item.name, item.board, item.listed_on, item.delisted_on)
+                for item in population
+            ), source_hash)
+            for population in RecordedHistoryPopulations(reference)
+        )
+        matches = tuple(item for item in candidates if item.content_hash == digest)
+        if len(matches) != 1 or len(matches[0].securities) != row[2]:
+            raise ValueError("history_universe_binding_invalid")
+        value = matches[0]
     elif kind == "checkpoint":
         value = HistorySyncCheckpoint(
             row[2],
@@ -233,15 +237,16 @@ def WriteControlRecord(
         )
     elif isinstance(value, HistoryUniverseIdentity):
         reference = _reference(index, publication_id, references)
-        expected = tuple(
-            HistorySecurityIdentity(item.code, item.name, item.board, item.listed_on, item.delisted_on)
-            for item in reference.eligible_universe
+        populations = tuple(
+            tuple(HistorySecurityIdentity(item.code, item.name, item.board, item.listed_on, item.delisted_on)
+                  for item in population)
+            for population in RecordedHistoryPopulations(reference)
         )
-        if value.securities != expected:
+        if value.securities not in populations:
             raise ValueError("history_universe_binding_invalid")
         connection.run(
             "INSERT INTO universe_version VALUES(?,?,?,?)",
-            (digest, EncodeHash(value.source_identity_hash), len(expected), publication_id),
+            (digest, EncodeHash(value.source_identity_hash), len(value.securities), publication_id),
         )
     elif isinstance(value, HistorySyncCheckpoint):
         connection.run(

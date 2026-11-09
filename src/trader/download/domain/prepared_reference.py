@@ -12,7 +12,7 @@ from trader.infra.serialization.canonical_codec import CanonicalDigest
 def SelectEligibleSecurities(
     universe: tuple[BaoStockSecurity, ...], st_evidence: tuple[HistoryStEvidence, ...]
 ) -> tuple[BaoStockSecurity, ...]:
-    """Validate the complete ST cut and select securities before other preparation."""
+    """Select download securities, excluding known ST while retaining unknown evidence."""
     codes = tuple(item.code for item in universe)
     if (
         not codes
@@ -24,7 +24,7 @@ def SelectEligibleSecurities(
     return tuple(
         security
         for security, evidence in zip(universe, st_evidence, strict=True)
-        if evidence.status == "clear" and not IsStSecurityName(security.name)
+        if evidence.status != "ever_st" and not IsStSecurityName(security.name)
     )
 
 
@@ -74,7 +74,18 @@ class PreparedReference:
         return BaoStockCalendar(dates[-sessions:])
 
 
+def RecordedHistoryPopulations(reference: PreparedReference) -> tuple[tuple[BaoStockSecurity, ...], ...]:
+    """Return the distinct nonempty ST cohorts whose original identities may be recorded."""
+    downloaded = reference.eligible_universe
+    verified_codes = frozenset(item.code for item in reference.st_evidence if item.status == "clear")
+    verified = tuple(item for item in downloaded if item.code in verified_codes)
+    if verified == downloaded or not verified:
+        return (downloaded,) if downloaded else ()
+    return verified, downloaded
+
+
 __all__ = [
     "PreparedReference",
+    "RecordedHistoryPopulations",
     "SelectEligibleSecurities",
 ]

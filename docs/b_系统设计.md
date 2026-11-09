@@ -13,7 +13,7 @@
 | recommendation | 本地服务启动 | 已发布资料、模型、实时行情 | 不可变推荐批次和只读状态 | 不补历史、不训练、不日更新 |
 | http_api、web | 浏览器请求和事件订阅 | recommendation/application 只读用例 | JSON 白名单和桌面展示 | 不抓取、评分、访问业务数据库或写业务状态 |
 
-荐股和三个下载模块都先读取全部股票的代码、名称和ST状态，排除ST后，才为通过者加载或采集其他个股资料。荐股从本地已发布资料读取ST状态，缺失时由用户手动执行下载；两者使用相同的ST判定规则，不互相调用业务实现。被排除、通过、状态不明分别计数；状态不明不能默认通过。
+荐股和三个下载模块都先读取全部股票的代码、名称和ST状态，排除当前ST及已有曾ST记录后，才加载或采集其他个股资料。下载按用户最新要求允许unknown继续采集，保留待核标记和后续核验，不将其改写为clear。荐股从本地已发布资料读取ST状态，状态不明仍待核，缺失时由用户手动执行下载；允许下载不代表荐股已核实资格通过。两者不互相调用业务实现，被排除、已核实、待核分别计数。
 
 `train`只调用`bootstrap.ExecuteSelectedTraining`，读取已经发布的本地资料；缺资料时提示用户手动执行`./run.sh sync history`，不代为下载。原自动组合函数`ExecuteDownloadTrain`删除，`run.sh train`继续转发同一个CLI入口。训练的线程数和进程优先级也由组合根准备。
 
@@ -159,7 +159,7 @@ flowchart TD
 
 | 数据或资源 | 唯一来源、类型与消费者 | 边界及证据归属 |
 | --- | --- | --- |
-| 证券/ST/日历 | reference的company_st.sqlite3 → PreparedReference/HistoryStEvidence → 发布参考；A的PublishedReferences/StaticMarketCache与B的PrepareReference使用明确资格，训练按发布总体/日历读取 | ST/unknown先筛，原检查日与本次观察时点分开；d2.3、c2/16.2；A340、B323（bdd65998）的功能证据不等于实际整链采用 |
+| 证券/ST/日历 | reference的company_st.sqlite3 → PreparedReference/HistoryStEvidence → 发布参考；A的PublishedReferences/StaticMarketCache与B的PrepareReference使用各自资格，训练按发布总体/日历读取 | 下载排除当前／曾ST、unknown继续采集；荐股unknown仍待核。原检查日与本次观察时点分开；d2.3、c2/16.2；A340、B323（bdd65998）的功能证据不等于实际整链采用 |
 | 历史发布/年度价格 | catalog与prices_<year>.sqlite3 → ReadPublishedHistoryUseCase、HistoryTrainingRow/Point；A共享预载、C共享历史fanout | 固定snapshot/revision/sequence，取消与只读名单在解码前生效；不另建子集manifest；d3/8、e3.1及3.4 |
 | 独立短窗 | daily_window.sqlite3 → 同一历史只读端口的短窗adapter → A启动历史投影 | 原始/前复权配对、成员和发布凭据独立；不借完整历史断点，不在运行期补历史；d4/6.1 |
 | 行业 | industry.sqlite3 → CurrentIndustryCache → A的PublishedReferences展示／模型路由；组合根另冻结CurrentIndustrySnapshot → C四档全历史分组 | 当前映射、缺口、收到／刷新期限及原件凭据各保留含义；最新映射用于正常训练，不冒充历史当时分类。历史点时研究另验，旧发布不回写；d2.5、c7及e3.1 |
