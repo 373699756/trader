@@ -25,6 +25,7 @@ class HistoryReferenceIndex:
     def __init__(self, reference: HistoryReferenceSnapshot) -> None:
         self.reference = reference
         self._eligible = frozenset(reference.eligible_codes)
+        self._verified = frozenset(item.code for item in reference.st_evidence if item.status == "clear")
         grouped: dict[str, list[BaoStockIndustryInterval]] = defaultdict(list)
         for item in reference.industry_intervals:
             grouped[item.code].append(item)
@@ -35,7 +36,7 @@ class HistoryReferenceIndex:
         industry = self.industry_on(revision.code, revision.trade_date)
         return replace(
             revision,
-            is_st=False if revision.code in self._eligible else None,
+            is_st=False if revision.code in self._eligible and revision.code in self._verified else None,
             industry=industry.industry if industry is not None else None,
             industry_classification=industry.classification if industry is not None else None,
         )

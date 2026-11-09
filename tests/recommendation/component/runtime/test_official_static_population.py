@@ -163,6 +163,7 @@ def test_reference_st_revision_is_adopted_only_on_restart_before_history_reads(t
             replace(first.st_evidence[1], status="unknown"),
         ),
     )
+    assert tuple(item.code for item in revised.eligible_universe) == ("600001",)
     state = {"reference": first}
     reference = _reader(state)
     reference.initialize()
@@ -183,6 +184,7 @@ def test_reference_st_revision_is_adopted_only_on_restart_before_history_reads(t
     )
     batch = service.fetch_market_feature_batch(NOW)
     assert batch.features == () and history.calls == []
+    assert restarted.historical_st_eligibility().status == "unavailable"
     assert batch.static_stages[-1].rejected_count == 1
     assert batch.static_stages[-1].pending_count == 1
 

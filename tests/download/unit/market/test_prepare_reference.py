@@ -64,7 +64,7 @@ class _Industry:
 
 
 @pytest.mark.parametrize("target", ("all", "history", "market", "company"))
-@pytest.mark.parametrize("population", ("ever_st", "unknown", "current_st"))
+@pytest.mark.parametrize("population", ("ever_st", "current_st"))
 def test_no_eligible_stock_stops_before_calendar_industry_publication_and_downloads(tmp_path, target, population):
     index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     previous = PreparedFixture(_NOW - timedelta(days=1))
@@ -131,7 +131,7 @@ def test_mixed_population_uses_one_st_cut_and_keeps_original_supplier_check_date
 
     def industry(at, eligible, open_dates):
         calls.append("industry")
-        assert tuple(item.code for item in eligible) == ("600001", "600005")
+        assert tuple(item.code for item in eligible) == ("600001", "600003", "600005")
         assert open_dates == dates
         return (_Industry(),)
 
@@ -141,7 +141,7 @@ def test_mixed_population_uses_one_st_cut_and_keeps_original_supplier_check_date
 
     def record(reference):
         received.append(reference)
-        assert tuple(item.code for item in reference.eligible_universe) == ("600001", "600005")
+        assert tuple(item.code for item in reference.eligible_universe) == ("600001", "600003", "600005")
 
     def history(reference):
         record(reference)
@@ -158,14 +158,14 @@ def test_mixed_population_uses_one_st_cut_and_keeps_original_supplier_check_date
 
     def market(reference):
         record(reference)
-        return QfqUpdateResult(_NOW.date(), 2)
+        return QfqUpdateResult(_NOW.date(), 3)
 
     def company(reference):
         record(reference)
         return CompanyEvidenceSyncResult(
             _NOW,
-            2,
-            2,
+            3,
+            3,
             0,
             0,
             0,
@@ -202,6 +202,25 @@ def test_mixed_population_uses_one_st_cut_and_keeps_original_supplier_check_date
     )
     assert reference == expected
     assert original == tuple(reversed(source))
+
+
+def test_unknown_only_population_still_prepares_download_reference_without_changing_evidence():
+    previous = PreparedFixture(_NOW)
+    evidence = (replace(previous.st_evidence[0], status="unknown"),)
+    calls = []
+
+    def industry(_at, population, _dates):
+        assert population == previous.official_universe
+        calls.append("industry")
+        return ()
+
+    reference = PrepareReference(previous.official_universe, _NOW, ReferencePreparationDependencies(
+        lambda *_args: evidence, lambda: previous.open_dates, industry,
+        lambda reference, original: calls.append((reference.st_evidence, original)), lambda: False, _SOURCES,
+    ))
+    assert reference.eligible_universe == previous.official_universe
+    assert reference.st_evidence == evidence
+    assert calls == ["industry", (evidence, evidence)]
 
 
 @pytest.mark.parametrize("invalid", ("missing", "duplicate", "foreign"))

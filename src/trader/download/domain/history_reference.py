@@ -44,7 +44,7 @@ class HistoryReferenceSnapshot:
             or any(len(code) != 6 or not code.isdigit() for code in codes)
             or len({item.code for item in evidence}) != len(evidence)
             or any(item.code not in codes for item in intervals)
-            or any(item.code in codes and item.status != "clear" for item in evidence)
+            or any(item.code in codes and item.status == "ever_st" for item in evidence)
             or not set(codes).issubset(item.code for item in evidence)
         ):
             raise ValueError("history reference eligibility is invalid")

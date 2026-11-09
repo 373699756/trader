@@ -273,7 +273,7 @@ def test_st_checkpoints_report_progress_before_completion(capsys) -> None:
     output = _compact_log(capsys.readouterr().err).splitlines()
     assert "处理中" in output[0] and "2/4" in output[0]
     assert "完成" in output[1] and "4/4" in output[1]
-    assert "合格 3 | 曾ST排除 1 | 未知排除 0" in output[1]
+    assert "已核实非ST 3 | 当前或曾ST排除 1 | 待核继续下载 0" in output[1]
 
 
 def test_supplier_preparation_waiting_and_retry_are_reported(capsys) -> None:

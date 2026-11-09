@@ -81,7 +81,7 @@ def test_st_name_rule_normalizes_current_and_historical_evidence(name, expected)
     assert IsStSecurityName(name) is expected
 
 
-def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(tmp_path):
+def test_st_filter_downloads_unknown_without_claiming_verified_non_st(tmp_path):
     from tests.helpers.download.history.history_supplier_router import _at, _prepared
 
     dates = (date(2026, 9, 8), date(2026, 9, 9))
@@ -96,7 +96,7 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
 
     class RecordingPrices(Prices):
         def load_history_context(self, as_of, sessions, universe, *, calendar):
-            assert tuple(item.code for item in universe) == ("600001",)
+            assert tuple(item.code for item in universe) == ("600001", "600003")
             return super().load_history_context(as_of, sessions, universe, calendar=calendar)
 
     config = HistorySyncConfiguration(
@@ -111,7 +111,11 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
     assert result.state == "completed"
     assert baseline.calls == []
     published = HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_published_state()
-    assert tuple(item.code for item in published.universe.securities) == ("600001",)
+    assert tuple(item.code for item in published.universe.securities) == ("600001", "600003")
+    reader = HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    rows = reader.read_day(dates[-1], published.snapshot)
+    assert {row.code: row.is_st for row in rows} == {"600001": False, "600003": None}
+    assert reference.st_evidence[-1].status == "unknown"
 
 
 def test_unknown_tencent_date_breaks_training_window_and_is_refetched(tmp_path):
