@@ -74,7 +74,18 @@ class PreparedReference:
         return BaoStockCalendar(dates[-sessions:])
 
 
+def RecordedHistoryPopulations(reference: PreparedReference) -> tuple[tuple[BaoStockSecurity, ...], ...]:
+    """Return the distinct nonempty ST cohorts whose original identities may be recorded."""
+    downloaded = reference.eligible_universe
+    verified_codes = frozenset(item.code for item in reference.st_evidence if item.status == "clear")
+    verified = tuple(item for item in downloaded if item.code in verified_codes)
+    if verified == downloaded or not verified:
+        return (downloaded,) if downloaded else ()
+    return verified, downloaded
+
+
 __all__ = [
     "PreparedReference",
+    "RecordedHistoryPopulations",
     "SelectEligibleSecurities",
 ]

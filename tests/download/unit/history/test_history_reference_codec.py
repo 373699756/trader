@@ -118,6 +118,106 @@ def test_st_filter_downloads_unknown_without_claiming_verified_non_st(tmp_path):
     assert reference.st_evidence[-1].status == "unknown"
 
 
+@pytest.mark.parametrize("initial_state", ("pending", "published"))
+def test_expanded_unknown_population_reuses_prices_and_resumes_only_new_stock(tmp_path, monkeypatch, initial_state):
+    import trader.download.domain.prepared_reference as prepared_module
+    from tests.helpers.download.history.history_supplier_router import _at, _prepared
+
+    dates = tuple(date(2026, 9, day) for day in (7, 8, 9, 10, 11, 14))
+    reference = _prepared(_current_universe("600001", "600002", "600003"), dates)
+    reference = replace(reference, st_evidence=tuple(
+        replace(item, status=status)
+        for item, status in zip(reference.st_evidence, ("clear", "unknown", "ever_st"), strict=True)
+    ))
+    config = HistorySyncConfiguration(
+        tmp_path / "history", sessions=6, reread_sessions=2, minimum_free_bytes=0,
+        reference_root=tmp_path / "reference",
+    )
+    requests = []
+
+    class RecordingPrices(Prices):
+        def fetch_window(self, security, requested, **kwargs):
+            requests.append((security.code, requested))
+            return super().fetch_window(security, requested, **kwargs)
+
+    select_download = prepared_module.SelectEligibleSecurities
+
+    def select_verified(universe, evidence):
+        verified = {item.code for item in evidence if item.status == "clear"}
+        return tuple(item for item in select_download(universe, evidence) if item.code in verified)
+
+    cancelled = False
+
+    class Progress:
+        def publish(self, event):
+            nonlocal cancelled
+            if initial_state == "pending" and event.stage == "tencent_history" and event.current_item == "600001" and event.state == "completed":
+                cancelled = True
+
+    with monkeypatch.context() as previous_policy:
+        previous_policy.setattr(prepared_module, "SelectEligibleSecurities", select_verified)
+        first = RunHistoryFixture(
+            config, HistorySupplierRouter(Baseline(dates), RecordingPrices(), reference),
+            clock=lambda: _at(dates[-1]), progress=Progress(), cancel_requested=lambda: cancelled,
+        )
+    assert first.state == ("cancelled" if initial_state == "pending" else "completed"), first.reason
+    control = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    recorded = control.load_state()
+    assert tuple(len(item.securities) for item in recorded.universes) == (1,)
+    copied = HistoryControlIndex(
+        tmp_path / "identity-copy" / "catalog.sqlite3",
+        reference_path=config.reference_root / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture(),
+    )
+    copied.initialize()
+    recorded_reference = ReadHistoryReference(
+        config.history_root / "catalog.sqlite3", recorded.sources[0].supplier_contract[12:76],
+        sqlite_policy=SqlitePolicyFixture(),
+    )
+    copied.save_inputs((recorded.sources[0], recorded.calendars[0], recorded.universes[0]), recorded_reference, reference.identity)
+    assert copied.load_state().universes == recorded.universes
+    original_snapshot = control.load_published_state()
+    prices_path = config.history_root / "prices_2026.sqlite3"
+    with SqliteSession(prices_path) as connection:
+        original_rows = tuple(tuple(row) for row in connection.run(
+            "SELECT * FROM daily_price_revision WHERE code='600001' ORDER BY trade_date,revision_id"
+        ))
+    assert len(original_rows) == len(dates)
+
+    requests.clear()
+    resumed = RunHistoryFixture(
+        config, HistorySupplierRouter(Baseline(dates), RecordingPrices(), reference),
+        clock=lambda: _at(dates[-1]),
+    )
+    assert resumed.state == "completed", resumed.reason
+    assert requests == [("600002", dates)]
+    published = control.load_published_state()
+    assert tuple(item.code for item in published.universe.securities) == ("600001", "600002")
+    with SqliteSession(prices_path) as connection:
+        assert tuple(tuple(row) for row in connection.run(
+            "SELECT * FROM daily_price_revision WHERE code='600001' ORDER BY trade_date,revision_id"
+        )) == original_rows
+    if original_snapshot is not None:
+        reader = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture())
+        assert {row.code for row in reader.read_day(dates[-1], original_snapshot.snapshot)} == {"600001"}
+    requests.clear()
+    current = RunHistoryFixture(
+        config, HistorySupplierRouter(Baseline(dates), RecordingPrices(), reference),
+        clock=lambda: _at(dates[-1]),
+    )
+    assert current.state == "already_current" and requests == []
+    next_day = date(2026, 9, 15)
+    extended = (*dates, next_day)
+    advanced = replace(
+        _prepared(reference.official_universe, extended),
+        st_evidence=tuple(replace(item, checked_on=next_day) for item in reference.st_evidence),
+    )
+    updated = RunHistoryFixture(
+        config, HistorySupplierRouter(Baseline(extended), RecordingPrices(), advanced), clock=lambda: _at(next_day),
+    )
+    assert updated.state == "completed", updated.reason
+    assert sorted(requests) == [(code, (*dates[-2:], next_day)) for code in ("600001", "600002")]
+
+
 def test_unknown_tencent_date_breaks_training_window_and_is_refetched(tmp_path):
     dates = tuple(date(2026, 7, 1) + timedelta(days=i) for i in range(125))
     gap = dates[61]
