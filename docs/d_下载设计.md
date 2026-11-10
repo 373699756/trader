@@ -88,7 +88,7 @@ company失败沿既有诊断owner生成完整证据块，统一终端呈现：�
 | `open_dates` | 递增无重复的`date`元组，1–20000日，覆盖观察日 | 已发布同日有效日历或日历来源 | ST通过后准备；history/market按截止日和窗口裁剪 |
 | `industry_version` | `str`或`None` | 当前行业参考的`data_version`；行业准备按既有异常策略不可用时为None | `PrepareReference`取得；参考身份与发布器使用，不伪造行业可用 |
 | `identity` | 构造时计算的摘要字符串，不接受外部赋值 | 证券内容摘要、ST代码/检查日/状态、观察日、日历及行业版本的确定性组合 | 参考版本固定；history控制索引及各下载消费者绑定 |
-| `eligible_universe` | 派生的不可变证券元组，可以为空，不是第二份持久人口 | `SelectEligibleSecurities`验证名单与证据对应，再选clear且当前名称无ST者 | `SyncData`防御性检查；history路由、market供应商与company请求共同消费 |
+| `eligible_universe` | 派生的不可变证券元组，可以为空，不是第二份持久人口 | `SelectEligibleSecurities`验证名单与证据对应，排除ever_st及当前名称含ST者，clear与unknown均可进入下载，unknown保留待核 | `SyncData`防御性检查；history路由、market供应商与company请求共同消费；荐股另按clear证据核实资格 |
 
 下表解释 `HistoryStEvidence` 的输入字段。数据库对应 `security_st_evidence` 的`code/checked_date/st_status`；`st_id/content_hash`为持久化身份，不能拿当前读取时间重写其原供应商检查日期。
 
@@ -1028,7 +1028,7 @@ history.download_batch_size仅发现解析／校验，company.document_queue_lim
 
 ## 10. 交付与验收入口
 
-company的交付合同按第5.9–5.12节：字段取得、证据及数据库读回正确性先于扩大下载和吞吐量结论。不得先让用户再下载几万篇、事后才检查提取器是否支持字段。施工顺序、owner及状态只维护在[g第7.4节](g_施工进度.md#74-第三轮先交付公告结构化字段再扩大下载和优化耗时)，本篇不另存实施计划。history/market正常路径无瓶颈证据则保留，整体检查与异常状态的正确性核对单独完成。
+company的交付合同按第5.9–5.12节：字段取得、证据及数据库读回正确性先于扩大下载和吞吐量结论。不得先让用户再下载几万篇、事后才检查提取器是否支持字段。施工顺序、owner及状态只维护在[g第4.3节](g_施工进度.md#43-任务b字段正式链与真实核验332292)，本篇不另存实施计划。history/market正常路径无瓶颈证据则保留，整体检查与异常状态的正确性核对单独完成。
 
 正文错误分类、`--fill`修复、旧结果保护、续传和失败原件保护是最小关键回归；真实全量完整性、吞吐及完成时间还需实测。本篇没有把历史代码交付升级成当前全量验收。
 

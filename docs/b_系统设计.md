@@ -481,8 +481,8 @@ flowchart TD
 | `terminal_holdout_sessions` | 一次终端留出交易日数 | `200` | 整数 |
 | `embargo_sessions.tomorrow` | tomorrow研究分区隔离交易日数 | `5` | 整数 |
 | `embargo_sessions.d25` | d25研究分区隔离交易日数 | `5` | 整数 |
-| `fit_date_candidates` | 按profile、dates[]声明候选拟合日期跨度；不是生产训练设置 | `[{"profile":"v2","dates":[750,1000,1250]},{"profile":"v3","dates":[500,750,1000]}]` | 有序数组 |
-| `ablation_arms` | 离线消融方案集合 | `["rule_only","rule_model_gate","industry_model_utility","pooled_model_utility"]` | 有序数组 |
+| `fit_date_candidates` | 按profile、dates[]声明候选拟合日期跨度；V1空数组表示未登记候选，不是生产训练设置 | `[{"profile":"v1","dates":[]},{"profile":"v2","dates":[750,1000,1250]},{"profile":"v3","dates":[500,750,1000]},{"profile":"v5","dates":[61,120,250]}]` | 有序数组 |
+| `ablation_arms` | 离线消融方案集合 | `["rule_only","rule_model_gate","profile_model_utility","pooled_model_utility"]` | 有序数组 |
 | `deepseek_comparison_arms` | 复核对照方案集合 | `["local_only","structured_facts_veto"]` | 有序数组 |
 
 ### 7.4 cache.json：数据集、容量和预算
