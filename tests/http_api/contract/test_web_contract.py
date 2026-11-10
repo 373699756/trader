@@ -31,6 +31,20 @@ from tests.helpers.shared.web_contract import (
 )
 
 
+def test_status_exposes_actual_fetch_inflight_count_without_private_source_fields():
+    _, queries, stream = _app()
+    app = CreateApp(services=UnifiedWebServices(queries, stream, lambda: {
+        "market_data": {"sources": {"tencent_long": {
+            "physical_fetch_inflight_count": 1, "planned_count": 12, "private_path": "must-not-leak",
+        }}},
+    }))
+    response = app.test_client().get("/api/status")
+    assert response.get_json()["market_data"]["sources"]["tencent_long"] == {
+        "physical_fetch_inflight_count": 1, "planned_count": 12,
+    }
+    assert "must-not-leak" not in response.get_data(as_text=True)
+
+
 def test_unified_freeze_routes_validate_strategy_date_and_etag() -> None:
     app, _, _ = _app()
     client = app.test_client()
@@ -274,6 +288,7 @@ def test_v1_lane_keeps_rank_scale_and_execution_identity_in_get_and_sse(producti
                 "tomorrow": {
                     "score_scale": "learned_rank_percentile_0_100",
                     "production_authority": production_authority,
+                    "prediction_inflight_count": 2,
                     "private_internal": "must-not-leak",
                 }
             },
@@ -305,7 +320,10 @@ def test_v1_lane_keeps_rank_scale_and_execution_identity_in_get_and_sse(producti
     assert "scores" not in long["items"][0]
     status_response = client.get("/api/status?profile=v1")
     head = status_response.get_json()["scoring_profile"]["heads"]["tomorrow"]
-    assert head == {"score_scale": "learned_rank_percentile_0_100", "production_authority": production_authority}
+    assert head == {
+        "score_scale": "learned_rank_percentile_0_100", "production_authority": production_authority,
+        "prediction_inflight_count": 2,
+    }
     assert "must-not-leak" not in status_response.get_data(as_text=True)
     page = client.get("/").get_data(as_text=True)
     assert 'data-profile="v1"' in page

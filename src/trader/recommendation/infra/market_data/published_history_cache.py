@@ -118,6 +118,7 @@ class PublishedHistoryCache:
     ) -> None:
         self._history = history
         self._outcome_history = outcome_history
+        self._outcome_cancelled = threading.Event()
         self._monotonic = monotonic
         self._open_dates = open_dates
         self._reserve_bytes = reserve_bytes
@@ -606,6 +607,7 @@ class PublishedHistoryCache:
         observed_at: datetime,
     ) -> Mapping[str, tuple[OutcomeBar, ...]]:
         del observed_at
+        self._check_outcome_read()
         try:
             manifest = self._outcome_manifest
             if manifest is None or self._outcome_history is None:
@@ -614,11 +616,22 @@ class PublishedHistoryCache:
                 manifest,
                 tuple(dict.fromkeys(codes)),
                 sessions=self._lookback_sessions,
+                check=self._check_outcome_read,
             )
         except (RuntimeError, ValueError) as exc:
+            if self._outcome_cancelled.is_set():
+                raise InterruptedError("outcome_history_read_cancelled") from exc
             self._record_error(type(exc).__name__)
             return {}
+        self._check_outcome_read()
         return {window.code: paired for window in windows if (paired := OutcomeBars(window.cells))}
+
+    def cancel_outcome_reads(self) -> None:
+        self._outcome_cancelled.set()
+
+    def _check_outcome_read(self) -> None:
+        if self._outcome_cancelled.is_set():
+            raise InterruptedError("outcome_history_read_cancelled")
 
     def project_history_window(
         self,

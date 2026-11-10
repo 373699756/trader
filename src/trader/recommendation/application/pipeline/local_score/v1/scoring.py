@@ -6,6 +6,7 @@ import math
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import cast
 
 from trader.recommendation.application.ports.loaded_profile import (
@@ -52,6 +53,7 @@ class LearnedRankScoringService:
         self._monotonic = monotonic
         self._request_count = 0
         self._predictor_batch_count = 0
+        self._prediction_inflight_count = 0
         self._candidate_count = 0
         self._lock = threading.RLock()
         self._status_lock = threading.Lock()
@@ -138,9 +140,15 @@ class LearnedRankScoringService:
         if inputs:
             self._predictor_batch_count += 1
         started = self._monotonic()
+        if inputs:
+            with self._status_lock:
+                self._prediction_inflight_count += 1
         try:
             predictions = self._predictor.predict(inputs) if inputs else ()
         finally:
+            if inputs:
+                with self._status_lock:
+                    self._prediction_inflight_count -= 1
             self._prediction_ms = max(0.0, (self._monotonic() - started) * 1000.0) if inputs else 0.0
             self._cumulative_prediction_ms += self._prediction_ms
         if deadline is not None and self._monotonic() >= deadline:
@@ -207,7 +215,7 @@ class LearnedRankScoringService:
 
     def status(self) -> ScoringHeadRuntimeStatus:
         with self._status_lock:
-            return self._status_snapshot
+            return replace(self._status_snapshot, prediction_inflight_count=self._prediction_inflight_count)
 
     def _status_locked(self) -> ScoringHeadRuntimeStatus:
         evidence = self._head.evidence

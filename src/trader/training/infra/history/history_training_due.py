@@ -459,20 +459,26 @@ class PublishedTrainingState:
             for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
 
-    def initialize(self) -> None:
+    def initialize(self, cancel_requested: Callable[[], bool] | None = None) -> None:
+        cancelled = cancel_requested if cancel_requested is not None else lambda: False
+        if cancelled():
+            return
         with self._initialization_lock:
-            if self._initialized:
+            if self._initialized or cancelled():
                 return
-            self._initialized = True
-            self._initialize()
+            self._initialize(cancelled)
+            if not cancelled():
+                self._initialized = True
 
     def refresh(self) -> None:
         """Refresh outside status reads and scoring; keep startup-loaded model identities."""
         with self._initialization_lock:
-            self._initialize()
+            self._initialize(lambda: False)
             self._initialized = True
 
-    def _initialize(self) -> None:
+    def _initialize(self, cancelled: Callable[[], bool]) -> None:
+        if cancelled():
+            return
         control = HistoryControlIndex(self._history_root / "catalog.sqlite3", sqlite_policy=self._sqlite_policy)
         try:
             history = control.load_published_state()
@@ -481,12 +487,18 @@ class PublishedTrainingState:
         observed_at = self._clock()
         results: list[HeadTrainingStatus] = []
         for profile in self._profiles():
+            if cancelled():
+                return
             heads, failure = _inspect_profile(self._training_root, profile)
+            if cancelled():
+                return
             try:
                 expectation = self._load_expectation(profile, observed_at)
             except (OSError, RuntimeError, TypeError, ValueError, ImportError):
                 expectation = None
             for strategy in (Strategy.TOMORROW, Strategy.D25):
+                if cancelled():
+                    return
                 bundle = next((item for item in heads if item.strategy is strategy), None)
                 due = None
                 if history is not None and failure != "publication_busy" and expectation is not None:
@@ -505,6 +517,8 @@ class PublishedTrainingState:
                     )
                     industry = expectation.industry_snapshot.project(tuple(item.code for item in history.universe.securities))
                     baseline_industry_hash = _baseline_industry_hash(query, history, bundle, control)
+                    if cancelled():
+                        return
                     identity = _due_identity(
                         query,
                         BuildTrainingInputHash(history.snapshot.content_hash, industry.content_hash),
@@ -512,6 +526,8 @@ class PublishedTrainingState:
                         invalid=failure not in (None, "missing"),
                         baseline_industry_hash=baseline_industry_hash,
                     )
+                    if cancelled():
+                        return
                     try:
                         due = TrainingMaintenanceIndex(self._maintenance_path, sqlite_policy=self._sqlite_policy).read_due_state(
                             identity, latest=True
@@ -549,7 +565,7 @@ class PublishedTrainingState:
                     )
                 )
         if self._owned_profile == "v1":
-            identities, failure = self._v1_publications(lambda: False)
+            identities, failure = self._v1_publications(cancelled)
             results.extend(
                 HeadTrainingStatus(
                     "v1",
@@ -563,8 +579,9 @@ class PublishedTrainingState:
                 )
                 for strategy in (Strategy.TOMORROW, Strategy.D25)
             )
-        with self._lock:
-            self._status = tuple(results)
+        if not cancelled():
+            with self._lock:
+                self._status = tuple(results)
 
     def _profiles(self) -> tuple[TrainedProfileContract, ...]:
         return (

@@ -43,6 +43,7 @@ class MarketSourceHealthStatus:
     p95_latency_ms: float | None
     last_error: str
     data_age_seconds: float | None
+    physical_fetch_inflight_count: int = 0
 
 
 @dataclass(frozen=True)

@@ -316,6 +316,7 @@ class ScoringHeadRuntimeStatus:
     score_scale: str = WEIGHTED_EVIDENCE_SCORE_SCALE
     production_authority: bool = True
     training_label_cutoff: date | None = None
+    prediction_inflight_count: int = 0
 
 
 @dataclass(frozen=True)

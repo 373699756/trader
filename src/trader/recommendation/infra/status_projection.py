@@ -273,6 +273,7 @@ def _scoring_head_payload(status: ScoringHeadRuntimeStatus) -> dict[str, object]
         "model_id": status.model_id,
         "model_hash": status.model_hash,
         "scoring_version": status.scoring_version,
+        "prediction_inflight_count": status.prediction_inflight_count,
         "activation_basis": status.activation_basis,
         "historical_status": status.historical_status,
         "historical_failure_reasons": list(status.historical_failure_reasons),

@@ -491,6 +491,7 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         safe_sources: dict[str, object] = {}
         source_fields = (
             "planned_count",
+            "physical_fetch_inflight_count",
             "success_count",
             "error_count",
             "timeout_count",
@@ -672,6 +673,7 @@ def _scoring_head(raw: Mapping[object, object]) -> dict[str, object]:
             "model_id",
             "model_hash",
             "scoring_version",
+            "prediction_inflight_count",
             "activation_basis",
             "historical_status",
             "monitoring_mode",

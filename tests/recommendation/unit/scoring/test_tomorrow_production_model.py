@@ -942,7 +942,9 @@ def test_model_status_reads_last_complete_head_snapshots_while_prediction_is_blo
         record_property("status_probe_wait_seconds", time.perf_counter() - started)
         record_property("status_ready_during_prediction", responsive)
         assert responsive, "read-only status waited behind the blocked predictor"
-        assert observations == [before]
+        assert observations[0].heads[strategy].prediction_inflight_count == 1
+        assert replace(observations[0].heads[strategy], prediction_inflight_count=0) == before.heads[strategy]
+        assert observations[0].heads[other_strategy] == before.heads[other_strategy]
     finally:
         release.set()
         scoring.join(5)
@@ -951,6 +953,7 @@ def test_model_status_reads_last_complete_head_snapshots_while_prediction_is_blo
         assert not scoring.is_alive() and not reader.is_alive()
     assert before is not None
     assert router.status().heads[other_strategy] == before.heads[other_strategy]
+    assert router.status().heads[strategy].prediction_inflight_count == 0
     if outcome == "success":
         assert not errors and len(results) == 1
         completed = service.computation_status()

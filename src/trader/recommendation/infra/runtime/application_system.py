@@ -114,7 +114,12 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
 
     def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
         shared = deadline or ShutdownDeadline.start(self.settings.pipeline.shutdown_timeout_seconds)
+        self.request_stop(deadline=shared)
         return StopApplicationResources(self._application_resources(), deadline=shared)
+
+    def request_stop(self, *, deadline: ShutdownDeadline) -> None:
+        self.market_data.history.cancel_outcome_reads()
+        self.input_preloader.stop(wait=False, deadline=deadline)
 
 
 __all__ = ["ApplicationSystem", "RuntimeWorkerResources"]

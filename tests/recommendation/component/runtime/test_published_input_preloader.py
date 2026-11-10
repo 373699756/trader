@@ -69,7 +69,7 @@ def test_all_profile_inputs_precede_slow_startup_maintenance():
         history.initialize(cancelled=cancelled)
         calls.append(label)
 
-    def maintain():
+    def maintain(_cancelled):
         maintenance_started.set()
         assert release.wait(5)
 
@@ -93,11 +93,14 @@ def test_startup_maintenance_failure_keeps_successful_fixed_inputs(caplog):
     finished = threading.Event()
     preloader = PublishedInputPreloader(history, initialize=lambda cancelled: history.initialize(cancelled=cancelled))
 
-    def fail():
+    def fail(_cancelled):
         raise ValueError("private maintenance payload")
 
+    def finish(_cancelled):
+        finished.set()
+
     preloader.register_startup_observer(fail)
-    preloader.register_startup_observer(finished.set)
+    preloader.register_startup_observer(finish)
     preloader.start()
     try:
         assert finished.wait(2)
@@ -108,7 +111,50 @@ def test_startup_maintenance_failure_keeps_successful_fixed_inputs(caplog):
     finally:
         assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
     with pytest.raises(RuntimeError, match="registration is closed"):
-        preloader.register_startup_observer(finished.set)
+        preloader.register_startup_observer(finish)
+
+
+def test_startup_maintenance_receives_stop_before_preloader_waits():
+    history = _cache(HistoryInput(61, 1, ("600001",)))
+    entered, finished = threading.Event(), threading.Event()
+
+    def maintain(cancelled):
+        entered.set()
+        while not cancelled():
+            finished.wait(0.01)
+        finished.set()
+
+    preloader = PublishedInputPreloader(history, initialize=lambda cancelled: history.initialize(cancelled=cancelled))
+    preloader.register_startup_observer(maintain)
+    preloader.start()
+    try:
+        assert entered.wait(2)
+        assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(1)).completed
+        assert finished.is_set()
+        assert history.status().maintenance_state == "ready"
+    finally:
+        assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
+
+
+def test_outcome_read_cancellation_reaches_the_publication_reader(monkeypatch):
+    source = HistoryInput(61, 1, ("600001",))
+    history = _cache(source, outcomes=source)
+    history.initialize(cancelled=lambda: False)
+    checks = []
+
+    def read_windows(manifest, codes, *, sessions, check):
+        checks.append(check)
+        history.cancel_outcome_reads()
+        check()
+        pytest.fail("cancelled outcome read continued")
+
+    monkeypatch.setattr(source, "read_windows", read_windows)
+    with pytest.raises(InterruptedError, match="outcome_history_read_cancelled"):
+        history.read_outcome_bars(("600001",), NOW)
+    assert len(checks) == 1
+    with pytest.raises(InterruptedError):
+        history.read_outcome_bars(("600001",), NOW)
+    assert len(checks) == 1
 
 
 def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_pending_io(monkeypatch):

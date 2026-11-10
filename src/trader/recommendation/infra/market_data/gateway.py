@@ -968,6 +968,7 @@ class MarketDataGateway:
                         error_count=state.error_count,
                         timeout_count=state.timeout_count,
                         physical_failure_count=state.physical_failure_count,
+                        physical_fetch_inflight_count=state.physical_fetch_inflight_count,
                         circuit_skipped_count=state.circuit_skipped_count,
                         superseded_count=state.superseded_count,
                         recovery_probe_count=state.recovery_probe_count,
@@ -1011,7 +1012,13 @@ class MarketDataGateway:
         self._probe_recovering_source(source)
         started = self._monotonic()
         try:
-            quotes = tuple(fetcher())
+            with self._state_lock:
+                self._states[source].physical_fetch_inflight_count += 1
+            try:
+                quotes = tuple(fetcher())
+            finally:
+                with self._state_lock:
+                    self._states[source].physical_fetch_inflight_count -= 1
         except MarketDataNoDataError as exc:
             _require_current_round(cancellation.is_set if cancellation is not None else None)
             self.record_local_latency("external_source", ElapsedMilliseconds(started, self._monotonic()))

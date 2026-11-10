@@ -1,9 +1,43 @@
 from datetime import datetime, timedelta
+import threading
 
 import pytest
 
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.application.runtime.trading_session import StaleSessionError, TradingSession
+
+
+def test_status_remains_readable_while_a_publication_holds_the_session_guard():
+    now = datetime(2026, 10, 14, 15, 0, tzinfo=SHANGHAI)
+    session = TradingSession(lambda: now, lambda: 100.0)
+    lease = session.capture()
+    before = session.status()
+    entered, release, read = threading.Event(), threading.Event(), threading.Event()
+    observations = []
+
+    def publish():
+        with lease.guard():
+            entered.set()
+            assert release.wait(5)
+
+    def observe():
+        observations.append(session.status())
+        read.set()
+
+    writer = threading.Thread(target=publish)
+    reader = threading.Thread(target=observe)
+    writer.start()
+    try:
+        assert entered.wait(2)
+        reader.start()
+        assert read.wait(1), "status waited behind publication I/O"
+        assert observations == [before]
+    finally:
+        release.set()
+        writer.join(5)
+        if reader.ident is not None:
+            reader.join(5)
+        assert not writer.is_alive() and not reader.is_alive()
 
 
 @pytest.mark.parametrize(

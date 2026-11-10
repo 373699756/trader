@@ -436,6 +436,38 @@ def test_selected_published_stream_cancellation_closes_open_connections(tmp_path
             connection.run("SELECT 1")
 
 
+@pytest.mark.parametrize("mode", ("window", "stream"))
+def test_published_read_cancellation_reaches_the_full_file_checksum(tmp_path, monkeypatch, mode):
+    from trader.infra import sqlite_publication
+
+    root = tmp_path / "history"
+    day = date(2026, 1, 5)
+    snapshot = _build_snapshot(root, (_revision("600001", day),))
+    reader = HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture())
+    cancelled = [False]
+    digest = sqlite_publication._digest
+    target = root / snapshot.partitions[0].relative_path
+
+    def check():
+        if cancelled[0]:
+            raise RuntimeError("history_checksum_cancelled")
+
+    def interrupt(path, size, received_check):
+        if path == target:
+            assert received_check is check
+            cancelled[0] = True
+        return digest(path, size, received_check)
+
+    monkeypatch.setattr(sqlite_publication, "_digest", interrupt)
+    with pytest.raises(RuntimeError, match="history_checksum_cancelled"):
+        if mode == "window":
+            reader.read_published_code_window("600001", (day,), snapshot, check=check)
+        else:
+            tuple(reader.iter_published_range_by_code(day, day, snapshot, codes=frozenset({"600001"}), check=check))
+    monkeypatch.setattr(sqlite_publication, "_digest", digest)
+    assert len(reader.read_published_code_window("600001", (day,), snapshot)) == 1
+
+
 def test_published_read_skips_payload_revalidation_but_explicit_audit_rejects_corruption(tmp_path):
     root = tmp_path / "history"
     dates = tuple(date(2025, 1, 1) + timedelta(days=offset) for offset in range(300))

@@ -308,6 +308,7 @@ class ProductionModelScoringService:
         self._predictor_batch_count = 0
         self._stage_metrics: dict[str, tuple[int, float, float]] = {}
         self._computation_status = ModelComputationStatus()
+        self._prediction_inflight_count = 0
 
     @property
     def model_version(self) -> str:
@@ -327,6 +328,9 @@ class ProductionModelScoringService:
 
     def status(self) -> ScoringHeadRuntimeStatus:
         evidence = self._evidence
+        with self._status_lock:
+            computation = self._computation_status
+            prediction_inflight_count = self._prediction_inflight_count
         return ScoringHeadRuntimeStatus(
             is_enabled=True,
             profile_id=self._predictor.profile_id,
@@ -339,7 +343,8 @@ class ProductionModelScoringService:
             monitoring_mode=evidence.monitoring_mode,
             automatic_model_update=evidence.automatic_model_update,
             loss_probability_status=evidence.loss_probability_status,
-            computation=self.computation_status(),
+            computation=computation,
+            prediction_inflight_count=prediction_inflight_count,
             training_anchor=evidence.training_anchor,
             runtime_anchor=evidence.runtime_anchor,
             point_in_time_parity=evidence.point_in_time_parity,
@@ -542,7 +547,13 @@ class ProductionModelScoringService:
                 for start in range(0, len(industry_inputs), _PREDICTION_BATCH_SIZE):
                     deadline.require_time("before_batch_prediction")
                     batch_inputs = tuple(industry_inputs[start : start + _PREDICTION_BATCH_SIZE])
-                    batch_predictions = self._predictor.predict(batch_inputs)
+                    with self._status_lock:
+                        self._prediction_inflight_count += 1
+                    try:
+                        batch_predictions = self._predictor.predict(batch_inputs)
+                    finally:
+                        with self._status_lock:
+                            self._prediction_inflight_count -= 1
                     with prediction_count_lock:
                         self._predictor_batch_count += 1
                     deadline.require_time("completed_after_batch_prediction_deadline")

@@ -34,7 +34,7 @@ class PublishedInputPreloader:
         self._thread: threading.Thread | None = None
         self._started = False
         self._observers: list[Callable[[Callable[[], bool]], None]] = []
-        self._startup_observers: list[Callable[[], None]] = []
+        self._startup_observers: list[Callable[[Callable[[], bool]], None]] = []
         self._observation_interval = observation_interval_seconds
 
     def register(self, history: PublishedHistoryCache, initialize: Callable[[Callable[[], bool]], None]) -> None:
@@ -50,7 +50,7 @@ class PublishedInputPreloader:
             if observer not in self._observers:
                 self._observers.append(observer)
 
-    def register_startup_observer(self, observer: Callable[[], None]) -> None:
+    def register_startup_observer(self, observer: Callable[[Callable[[], bool]], None]) -> None:
         with self._lock:
             if self._started:
                 raise RuntimeError("published input startup observer registration is closed")
@@ -98,7 +98,7 @@ class PublishedInputPreloader:
             if self._cancel.is_set():
                 return
             try:
-                observe_startup()
+                observe_startup(self._cancel.is_set)
             except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
                 _LOGGER.error("启动维护观察失败: category=%s", type(exc).__name__)
         while self._observers and not self._cancel.wait(self._observation_interval):

@@ -342,7 +342,7 @@ class HistorySnapshotReader:
             reference = self._reference(snapshot, year, month)
             if check is not None:
                 check()
-            partition = self._published_partition(reference)
+            partition = self._published_partition(reference, check=check)
             rows.extend(
                 row
                 for row in partition.iter_published_cells(
@@ -380,7 +380,7 @@ class HistorySnapshotReader:
                 if check is not None:
                     check()
                 reference = annual[-1]
-                partition = self._published_partition(reference)
+                partition = self._published_partition(reference, check=check)
                 first, last = annual[0], annual[-1]
                 lower = max(start, date(first.calendar_year, first.calendar_month, 1))
                 upper = min(
@@ -596,9 +596,11 @@ class HistorySnapshotReader:
             )
             return partition
 
-    def _published_partition(self, reference: HistorySnapshotPartition) -> HistoryPricePartition:
+    def _published_partition(
+        self, reference: HistorySnapshotPartition, *, check: Callable[[], None] | None = None,
+    ) -> HistoryPricePartition:
         """Use the same file-level boundary for published streaming consumers."""
-        return self._verified_partition(reference)
+        return self._partition_with_trust(reference, None, check=check)
 
 
 def _training_codes(codes: Collection[str]) -> frozenset[str]:

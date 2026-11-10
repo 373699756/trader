@@ -9,13 +9,13 @@ from pathlib import Path
 import pytest
 
 from trader.entrypoints import server
-from trader.infra.linux_process import ParseLinuxTaskStat, ReadLinuxProcessIdentity
+from trader.infra.linux_process import ParseLinuxTaskStat, ReadLinuxProcessIdentity, ReadLinuxProcessGroupMembers
 from trader.infra.shutdown import RecordShutdownEvent, ShutdownDeadline, ShutdownReport, ShutdownStep
 
 
-def _stat(pid: int = 7412, *, birth: int = 1234) -> bytes:
+def _stat(pid: int = 7412, *, birth: int = 1234, group: int = 7412, state: bytes = b"S") -> bytes:
     fields = [b"0"] * 20
-    fields[0] = b"S"
+    fields[0], fields[2] = state, str(group).encode()
     fields[7], fields[9], fields[11], fields[12], fields[19] = (b"101", b"7", b"70", b"30", str(birth).encode())
     return str(pid).encode() + b" (worker ) (with spaces)) " + b" ".join(fields)
 
@@ -24,8 +24,19 @@ def test_shared_stat_parser_preserves_parentheses_and_counter_coordinates():
     value = ParseLinuxTaskStat(_stat())
     assert (value.native_id, value.birth_ticks, value.comm) == (7412, 1234, "worker ) (with spaces)")
     assert (value.minor_page_faults, value.major_page_faults, value.user_cpu_ticks, value.system_cpu_ticks) == (101, 7, 70, 30)
+    assert value.process_group_id == 7412
     with pytest.raises(ValueError, match="linux_process_stat_invalid"):
         ParseLinuxTaskStat(b"malformed")
+
+
+def test_owned_group_observation_excludes_zombies_and_unrelated_processes(tmp_path):
+    for pid, group, state in ((7412, 7412, b"Z"), (7413, 7412, b"S"), (7414, 7000, b"S")):
+        folder = tmp_path / str(pid)
+        folder.mkdir()
+        (folder / "stat").write_bytes(_stat(pid, group=group, state=state))
+    assert tuple(member.native_id for member in ReadLinuxProcessGroupMembers(7412, proc_root=tmp_path)) == (7413,)
+    with pytest.raises(ValueError):
+        ReadLinuxProcessGroupMembers(0, proc_root=tmp_path)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux proc identity required")

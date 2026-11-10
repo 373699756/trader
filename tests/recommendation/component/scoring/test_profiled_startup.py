@@ -16,6 +16,28 @@ from trader.recommendation.infra.runtime.profiled_application import ProfiledApp
 from trader.recommendation.infra.scoring.profile_factory import ScoringModelsMissingError
 
 
+def test_every_profile_receives_cancellation_before_the_first_wait(tmp_path):
+    requested, stopped = [], []
+
+    class Profile:
+        def __init__(self, profile_id):
+            self.profile_id = profile_id
+
+        def request_stop(self, *, deadline):
+            requested.append(self.profile_id)
+
+        def stop(self, *, deadline):
+            assert requested == ["v2", "v3", "v5"]
+            stopped.append(self.profile_id)
+            return ShutdownReport.from_steps(deadline, (ShutdownStep("closed", True, False),))
+
+    system = ProfiledApplicationSystem(
+        LoadRuntimeSettings(_config(tmp_path)), None, tuple(Profile(profile) for profile in ("v2", "v3", "v5")),
+    )
+    assert system.stop(deadline=ShutdownDeadline.start(2)).completed
+    assert stopped == ["v5", "v3", "v2"]
+
+
 @pytest.mark.parametrize("profiles", (("v2",), ("v3", "v5"), ("v1", "v2", "v3", "v5")))
 def test_all_publication_sequences_are_ready_before_first_profile_tick(tmp_path, monkeypatch, profiles):
     now = datetime(2026, 11, 2, 10, 0, tzinfo=SHANGHAI)
@@ -85,6 +107,9 @@ def test_profile_startup_failure_reaps_prepared_profiles_with_one_deadline(tmp_p
             events.append(f"start:{self.profile_id}")
             return self.profile_id != "v3"
 
+        def request_stop(self, *, deadline):
+            pass
+
         def stop(self, *, deadline):
             events.append(f"stop:{self.profile_id}")
             deadlines.append(deadline)
@@ -114,6 +139,9 @@ def test_profile_stop_failure_keeps_shared_owner_last_and_uses_original_deadline
     class Profile:
         def __init__(self, profile_id):
             self.profile_id = profile_id
+
+        def request_stop(self, *, deadline):
+            pass
 
         def stop(self, *, deadline):
             events.append((self.profile_id, deadline, deadline.remaining_seconds()))
@@ -146,6 +174,9 @@ def test_profile_rollback_failure_does_not_skip_first_profile_or_replace_origina
         def initialize(self):
             if self.profile_id == "v3":
                 raise original
+
+        def request_stop(self, *, deadline):
+            pass
 
         def stop(self, *, deadline):
             events.append((self.profile_id, deadline))
@@ -181,6 +212,9 @@ def test_profile_rollback_reuses_deadline_from_incomplete_resource_cleanup(tmp_p
         def start(self):
             clock[0] = 0.75
             raise original
+
+        def request_stop(self, *, deadline):
+            pass
 
         def stop(self, *, deadline):
             received.append(deadline)

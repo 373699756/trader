@@ -47,6 +47,8 @@ class TradingSession:
         self._now = now
         self._monotonic = monotonic
         self._lock = threading.RLock()
+        self._status_lock = threading.Lock()
+        self._status = TradingSessionStatus(0, None, "startup")
         self._wall: datetime | None = None
         self._elapsed: float | None = None
         self._generation = 0
@@ -63,6 +65,8 @@ class TradingSession:
                 self._reason = reason
                 self._versions = ()
             self._wall, self._elapsed = at, elapsed
+            with self._status_lock:
+                self._status = TradingSessionStatus(self._generation, at.date(), self._reason)
             return SessionLease(self._generation, at.date(), self)
 
     def _discontinuity(self, at: datetime, elapsed: float) -> str:
@@ -89,10 +93,8 @@ class TradingSession:
             yield
 
     def status(self) -> TradingSessionStatus:
-        with self._lock:
-            return TradingSessionStatus(
-                self._generation, self._wall.date() if self._wall is not None else None, self._reason
-            )
+        with self._status_lock:
+            return self._status
 
     def remember(self, version: str) -> None:
         with self._lock:

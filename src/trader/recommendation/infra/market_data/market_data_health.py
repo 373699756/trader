@@ -463,6 +463,7 @@ def _market_source_payload(status: MarketSourceHealthStatus) -> dict[str, JsonIn
         "error_count": status.error_count,
         "timeout_count": status.timeout_count,
         "physical_failure_count": status.physical_failure_count,
+        "physical_fetch_inflight_count": status.physical_fetch_inflight_count,
         "circuit_skipped_count": status.circuit_skipped_count,
         "superseded_count": status.superseded_count,
         "recovery_probe_count": status.recovery_probe_count,

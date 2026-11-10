@@ -105,7 +105,17 @@ isolated比较可读取明确指定的旧checkout；只在隔离演练内处理�
 
 Web health支持可重复的`--strategy tomorrow|d25`，连续空结果阈值`--consecutive-zero-threshold`须在样本数以内，默认min(3,样本数)。浏览器动作另支持`--strategy`与带时区ISO时间`--simulated-start`；Long admission的`--strategy`表示策略JSON路径，`--workers`范围1至8。这些参数只属于各自选中的动作，不能跨动作隐式生效。
 
-`recommendation/web/shutdown`在前台观测显式`--pid`、`--birth-ticks`及已有普通文件`--shutdown-log`，默认只读；只有显式`--send-sigterm`才通过pidfd向该身份发送一次SIGTERM。每次启动都须重新核对当前boot及进程出生身份，不能跨重启复用旧参数。等待默认40秒、最多60秒，30秒退出门不变；超时只结束观测，不强杀目标。报告区分发送、Python处理器、业务返回和pidfd退出观测时间，缺失或冲突不签完整时轴；pidfd就绪不是精确内核退出时间，也不提供目标退出码，`runtime_shutdown_acceptance`保持false。当前解释器或内核缺少pidfd能力时明确报告unsupported，不自动换解释器或退回PID信号。
+`recommendation/web/shutdown`在前台观测显式`--pid`、`--birth-ticks`及已有普通文件`--shutdown-log`，默认只读；只有显式`--send-sigterm`才通过pidfd向该身份发送一次SIGTERM。每次启动都须重新核对当前boot及进程出生身份，不能跨重启复用旧参数。等待默认40秒、最多60秒，30秒退出门不变；外部PID模式超时只结束观测，不强杀目标。报告区分发送、Python处理器、业务返回和pidfd退出观测时间，缺失或冲突不签完整时轴；pidfd就绪不是精确内核退出时间。外部PID模式仍无法取得非子进程退出码，`runtime_shutdown_acceptance`保持false。当前解释器或内核缺少pidfd能力时明确报告unsupported，不自动换解释器或退回PID信号。
+
+显式`--launch-run --runtime-config <配置> --send-sigterm`改为启动并拥有一个真实`run.sh`子进程，不接收外部PID参数。必须使用独立runtime、训练维护及推荐／研究输出，解析后与活动输出冲突或位于仓库内时明确拒绝，日志为仓库外新文件，不覆盖已有日志；既有服务端口占用时在启动前拒绝。组合根仍由原run.sh入口创建，工具把解析后的host／port显式传给子进程。`--trigger acquisition`等到物理报价请求未结束，`model`读取实际预测器调用区间的`prediction_inflight_count`，`publication`等到真实发布操作未结束；`serving`只证明服务就绪后的退出，不签繁忙专项。`--profiles v5`可限制自有实例的档位，默认仍为四档；启用V5时模型观察只轮询其状态，避免跨档轮询错过短暂的预测区间，不改变生产调度。启动／触发等待默认600秒、最多900秒，独立于不变的30秒退出门。
+
+自有模式复用原ProcessFamily的非回收waitid取得实际退出码（正常SIGTERM为143），在清理进程组前检查存活成员，并逐个复核启动前已有正式冻结记录的完整规范化字节摘要。完整时轴≤30秒、正常退出语义、资源完整且未forced、无存活成员、既有记录不变，且实际捕获采集、模型或发布在途时，才签`runtime_shutdown_acceptance=true`。观察失败或超时仍失败，随后只回收本动作创建的进程族；清理后的进程消失不能倒签通过。`--trigger frozen`等待本次全部启用档位两头均正式就绪，随后复核八头持久记录及既有摘要，单列`freeze_recovery_acceptance`，不当作繁忙退出。模型、价格和公司资料沿正式只读reader；新输出不允许覆盖原正式资料，不启动下载或训练。
+
+采集触发只读取来源的`physical_fetch_inflight_count`，由原gateway在实际fetcher调用前后维护，异常与取消也归零。计划数包含缓存／合并路径，不能相减后充当物理请求证据。
+
+```bash
+.venv/bin/python3 scripts/tools.py --business recommendation --module web --action shutdown --report /tmp/shutdown-acquisition.json -- --launch-run --runtime-config /var/tmp/isolated-run/config/runtime.json --shutdown-log /var/tmp/isolated-run/shutdown.log --trigger acquisition --send-sigterm
+```
 
 ```bash
 .venv/bin/python3 scripts/tools.py --business recommendation --module web --action shutdown -- --help
@@ -273,7 +283,7 @@ assets/consistency只读核对，assets/generate显式重建打包JS资源；公
 | `recommendation/web/commands.py` | Build only the selected recommendation/web invocation. | 业务参数/类型/命令；所选动作持有副作用 | `recommendation/unit/scripts/test_tools_recommendation_options.py`、`core/cli.py及tests/helpers/shared/tool_cli.py按catalog动态选择` |
 | `recommendation/web/company_ledger_browser.py` | Render the production score column and drawer in isolated desktop Chrome. | 显式只读Web/浏览器；临时资源受限 | `recommendation/web/commands.py`、`core/catalog.py`、`recommendation/unit/scripts/test_company_ledger_tool.py` |
 | `recommendation/web/options.py` | Immutable inputs owned by the recommendation/web diagnostic adapter. | 业务参数/类型/命令；所选动作持有副作用 | `recommendation/web/cli.py`、`recommendation/web/commands.py`、`helpers/shared/tool_cli.py` |
-| `recommendation/web/shutdown.py` | Observe signal, handler, business return and pidfd exit for one explicit process identity. | 默认只读；显式send-sigterm才发一次信号，不强杀目标 | `core/catalog.py`、`recommendation/unit/scripts/test_shutdown_observation.py` |
+| `recommendation/web/shutdown.py`、`shutdown_runtime.py` | Observe an explicit process or an explicitly owned real run, including exit status and pre-cleanup members. | 默认只读；自有模式仅回收自己创建的进程族 | `core/catalog.py`、`recommendation/unit/scripts/test_shutdown_observation.py`、`test_owned_shutdown_runtime.py` |
 | `recommendation/web/web_health.py` | Sample live 统一 Web APIs and detect recommendation-funnel state anomalies. | 显式只读Web/浏览器；临时资源受限 | `recommendation/web/commands.py`、`core/catalog.py`、`recommendation/unit/scripts/test_tools_recommendation_options.py`、`recommendation/unit/scripts/test_web_health.py` |
 | `recommendation/web/web_health_contract.py` | Typed parsing boundary for sanitized 统一 Web-health samples. | 显式只读Web/浏览器；临时资源受限 | `recommendation/web/web_health.py` |
 | `tools.py` | Repository tools: select exactly one business/module/action. | 仅选择；执行边界由所选动作负责 | `training/samples/training_samples.py`、`training/jobs/training_performance.py`、`engineering/quality/cli.py`、`download/history/download_performance.py`、`infra/database/database_baseline.py`、`infra/database/database_layout_comparison.py`、`core/cli.py`、`core/catalog.py`、`system/contract/test_current_product_contract.py`、`tooling/unit/scripts/test_diagnose_runtime.py`、`tooling/unit/scripts/test_check_entrypoint.py`、`download/unit/scripts/test_training_samples.py`、`Makefile`、`README.md`、`run.sh`、`run.ps1` |

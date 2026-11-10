@@ -44,6 +44,30 @@ from trader.recommendation.domain.market.models import Board
 from trader.recommendation.infra.normalization.merge import MergeMarketObservations, ObservationFromQuote
 
 
+@pytest.mark.parametrize("failure", (None, ValueError, KeyboardInterrupt))
+def test_physical_fetch_inflight_counts_only_the_fetcher_and_resets_on_every_exit(failure):
+    gateway = MarketDataGateway(
+        StaticMarketClient((_quote(),)), StaticMarketClient((_quote(),)), StaticTencentClient(()),
+        minimum_market_rows=1, circuit_breaker_failures=3, circuit_breaker_seconds=60,
+    )
+    gateway.record_planned("tencent_market")
+    assert gateway.health().sources["tencent_market"].physical_fetch_inflight_count == 0
+
+    def fetch():
+        assert gateway.health().sources["tencent_market"].physical_fetch_inflight_count == 1
+        if failure is not None:
+            raise failure("fixture")
+        return (_quote(),)
+
+    if failure is None:
+        gateway.fetch_physical("tencent_market", fetch, 1)
+    else:
+        expected = KeyboardInterrupt if failure is KeyboardInterrupt else gateway_module.MarketDataFailedError
+        with pytest.raises(expected):
+            gateway.fetch_physical("tencent_market", fetch, 1)
+    assert gateway.health().sources["tencent_market"].physical_fetch_inflight_count == 0
+
+
 def test_gateway_falls_back_and_tracks_health() -> None:
     quote = _quote()
     gateway = MarketDataGateway(

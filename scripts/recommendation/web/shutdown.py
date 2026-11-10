@@ -17,13 +17,18 @@ from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
+
+if TYPE_CHECKING:
+    from trader.infra.process_family import ProcessFamily
 
 from scripts.core.contracts import CheckStatus, ToolOutcome
 from trader.infra.linux_process import (
     LinuxProcessCapabilityError, LinuxProcessIdentity,
     OpenLinuxProcessDescriptor, ReadLinuxProcessIdentity, SignalLinuxProcessDescriptor,
 )
+from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
 _LOG_LIMIT = 1024 * 1024
 _SHUTDOWN_LIMIT_SECONDS = 30.0
@@ -77,8 +82,13 @@ class ShutdownObservationError(ValueError):
 
 def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--pid", required=True, type=int, help="exact target PID; never a process name or group")
-    parser.add_argument("--birth-ticks", required=True, type=int, help="expected /proc PID stat birth identity")
+    parser.add_argument("--pid", type=int, help="exact target PID; never a process name or group")
+    parser.add_argument("--birth-ticks", type=int, help="expected /proc PID stat birth identity")
+    parser.add_argument("--launch-run", action="store_true", help="explicitly own a new run.sh child and verify its real exit status")
+    parser.add_argument("--runtime-config", type=Path, help="explicit configuration for the owned run.sh child")
+    parser.add_argument("--profiles", type=ParseProfileSelection, default=SCORING_PROFILE_IDS, help="owned run profiles; defaults to all four")
+    parser.add_argument("--trigger", choices=("serving", "acquisition", "model", "publication", "frozen"), default="acquisition")
+    parser.add_argument("--startup-seconds", type=float, default=600, help="bounded readiness/trigger wait, at most 900 seconds")
     parser.add_argument("--shutdown-log", required=True, type=Path, help="existing regular stderr/log file containing this server's shutdown events")
     parser.add_argument("--observation-seconds", type=float, default=40.0, help="bounded pidfd observation, at most 60 seconds; does not change the 30-second gate")
     parser.add_argument("--send-sigterm", action="store_true", help="explicitly send one SIGTERM to this identity; default only observes and never signals or force-kills it")
@@ -90,7 +100,19 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
         raise ValueError("unsupported shutdown observation action")
     parser = BuildParser()
     args = parser.parse_args(arguments)
-    if args.pid <= 0 or args.birth_ticks < 0:
+    if args.launch_run:
+        if args.pid is not None or args.birth_ticks is not None or not args.send_sigterm or args.runtime_config is None:
+            parser.error("--launch-run requires --runtime-config and --send-sigterm, without external PID options")
+        from scripts.recommendation.web.shutdown_runtime import OwnedShutdownOptions, ObserveOwnedRuntimeShutdown
+
+        return ObserveOwnedRuntimeShutdown(OwnedShutdownOptions(
+            args.runtime_config.resolve(), args.shutdown_log.resolve(), args.trigger,
+            args.startup_seconds, args.observation_seconds,
+            profiles=args.profiles,
+        ))
+    if args.runtime_config is not None:
+        parser.error("--runtime-config requires --launch-run")
+    if args.pid is None or args.birth_ticks is None or args.pid <= 0 or args.birth_ticks < 0:
         parser.error("--pid must be positive and --birth-ticks nonnegative")
     if not math.isfinite(args.observation_seconds) or not 0 < args.observation_seconds <= 60:
         parser.error("--observation-seconds must be within (0, 60]")
@@ -124,12 +146,16 @@ def _failure(
     })
 
 
-def ObserveShutdown(options: ShutdownObservationOptions) -> ToolOutcome:
+def ObserveShutdown(
+    options: ShutdownObservationOptions, *, owned_process: ProcessFamily | None = None,
+) -> ToolOutcome:
     """Observe a pinned pidfd; own descriptors only, never take ownership of the target."""
     if sys.platform != "linux":
         raise ShutdownObservationError("shutdown_observation_linux_required")
     if options.pid == os.getpid():
         raise ShutdownObservationError("shutdown_observation_self_target_rejected")
+    if owned_process is not None and owned_process.pid != options.pid:
+        raise ShutdownObservationError("shutdown_observation_owned_child_identity_mismatch")
     identity = ReadLinuxProcessIdentity(options.pid)
     if identity is None or identity.birth_ticks != options.birth_ticks:
         raise ShutdownObservationError("shutdown_observation_target_identity_unavailable")
@@ -171,7 +197,10 @@ def ObserveShutdown(options: ShutdownObservationOptions) -> ToolOutcome:
             wait_finished = time.monotonic()
         observed = _read_events(log, offset, identity, started)
         times = _Times(started, send_started, send_finished, wait_started, wait_finished, exited)
-        return _outcome(options, identity, times, observed, cancelled=cancelled)
+        return _outcome(
+            options, identity, times, observed, cancelled=cancelled,
+            target_exit_code=owned_process.poll() if owned_process is not None and exited is not None else None,
+        )
 
 
 def _number(value: object) -> float | None:
@@ -253,6 +282,7 @@ def _difference(end: float | None, start: float | None) -> float | None:
 def _outcome(
     options: ShutdownObservationOptions, identity: LinuxProcessIdentity,
     times: _Times, observed: _LogObservation, *, cancelled: bool,
+    target_exit_code: int | None = None,
 ) -> ToolOutcome:
     elapsed = _difference(times.exit_observed, times.signal_send_started)
     within = None if elapsed is None else elapsed <= _SHUTDOWN_LIMIT_SECONDS
@@ -277,13 +307,16 @@ def _outcome(
         findings.append("shutdown_observation_exit_over_30_seconds")
     if observed.resource_completed is False or observed.resource_forced is True:
         findings.append("shutdown_observation_resource_cleanup_not_completed")
+    wrong_exit = target_exit_code is not None and target_exit_code != 128 + signal.SIGTERM
+    if wrong_exit:
+        findings.append("shutdown_observation_unexpected_exit_code")
     status: CheckStatus = "passed"
     if cancelled:
         status = "cancelled"
     elif times.exit_observed is None:
         status = "timed_out"
         findings.append("shutdown_observation_exit_not_observed")
-    elif observed.conflicting or time_conflict or within is False or observed.resource_completed is False or observed.resource_forced is True:
+    elif observed.conflicting or time_conflict or within is False or observed.resource_completed is False or observed.resource_forced is True or wrong_exit:
         status = "failed"
     elif findings or not ordered or observed.resource_completed is None or observed.resource_forced is None:
         status = "degraded"
@@ -297,7 +330,8 @@ def _outcome(
         "within_shutdown_limit": within,
         "timeline_complete": bool(ordered and options.send_sigterm and not observed.conflicting and not observed.truncated),
         "runtime_shutdown_acceptance": False,
-        "target_exit_code": None,
+        "target_exit_code": target_exit_code,
+        "process_shutdown_acceptance": status == "passed" and target_exit_code == 128 + signal.SIGTERM,
         "resource_report_completed": observed.resource_completed,
         "resource_report_forced": observed.resource_forced,
         "timeline": {

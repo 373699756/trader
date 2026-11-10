@@ -22,6 +22,8 @@ class ProfileRuntime(Protocol):
 
     def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownReport: ...
 
+    def request_stop(self, *, deadline: ShutdownDeadline) -> None: ...
+
 
 ApplicationT = TypeVar("ApplicationT")
 
@@ -60,6 +62,9 @@ class ProfiledApplicationSystem(Generic[ApplicationT]):
     def _stop_profiles(self, systems: tuple[ProfileRuntime, ...], deadline: ShutdownDeadline) -> ShutdownReport:
         steps: list[ShutdownStep] = []
         forced = False
+        for system in systems:
+            with CollectShutdownFailures(deadline, steps, f"profile:{system.profile_id}:request_stop"):
+                system.request_stop(deadline=deadline)
         for system in reversed(systems):
             with CollectShutdownFailures(deadline, steps, f"profile:{system.profile_id}"):
                 report = system.stop(deadline=deadline)

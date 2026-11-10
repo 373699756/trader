@@ -39,6 +39,7 @@ class MarketCircuitState:
     planned_count: int = 0
     timeout_count: int = 0
     physical_failure_count: int = 0
+    physical_fetch_inflight_count: int = 0
     circuit_skipped_count: int = 0
     superseded_count: int = 0
     recovery_probe_count: int = 0

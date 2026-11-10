@@ -342,3 +342,32 @@ def test_model_observation_updates_restart_hint_and_preserves_loaded_identity_on
     assert all(item.restart_required and item.publication_observation_failure for item in heads)
     state.observe_publication(lambda: True)
     assert tuple(item for item in state.status() if item.profile_id == "v3") == heads
+
+
+def test_startup_maintenance_cancels_between_profiles_without_publishing_partial_status(tmp_path, monkeypatch):
+    from trader.training.infra.history import history_training_due
+
+    cancelled = [False]
+    inspected = []
+
+    class Control:
+        def load_published_state(self):
+            return None
+
+    def inspect(root, profile):
+        inspected.append(profile.profile_id)
+        cancelled[0] = True
+        return (), None
+
+    monkeypatch.setattr(history_training_due, "HistoryControlIndex", lambda *a, **k: Control())
+    monkeypatch.setattr(history_training_due, "_inspect_profile", inspect)
+    state = PublishedTrainingState(
+        tmp_path / "history", tmp_path / "models", (), maintenance_path=tmp_path / "maintenance.sqlite3",
+        owned_profile="v5", load_expectation=lambda *args: pytest.fail("maintenance continued after cancel"),
+        wall_clock=lambda: datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy=SqlitePolicyFixture(),
+    )
+    before = state.status()
+    state.initialize(lambda: cancelled[0])
+    assert inspected == ["v2"] and state.status() == before
+    state.initialize(lambda: True)
+    assert inspected == ["v2"]

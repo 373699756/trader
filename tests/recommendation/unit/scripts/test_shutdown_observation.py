@@ -19,6 +19,7 @@ from scripts.core.process import RunBoundedCommand
 from scripts.core.paths import PROJECT_ROOT
 from scripts.recommendation.web.shutdown import ObserveShutdown, Run, ShutdownObservationError, ShutdownObservationOptions
 from trader.infra.linux_process import LinuxProcessIdentity, ReadLinuxProcessIdentity
+from trader.infra.process_family import ProcessFamily
 
 
 _CHILD = """
@@ -115,6 +116,32 @@ def test_explicit_sigterm_binds_send_handler_return_and_pidfd_exit(tmp_path, pid
     assert timeline["business_return_ready_monotonic"] <= timeline["pidfd_exit_observed_monotonic"]
     assert summary["durations"]["business_return_to_exit_observed_seconds"] > 0
     assert str(log) not in json.dumps(outcome)
+
+
+def test_owned_family_supplies_real_exit_status_without_signing_a_fixture_as_runtime(tmp_path):
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        pytest.skip("current interpreter lacks pidfd")
+    log = tmp_path / "owned-family.log"
+    with log.open("wb") as output:
+        family = ProcessFamily((sys.executable, "-c", _CHILD), stdout=output, stderr=subprocess.STDOUT)
+        try:
+            deadline = time.monotonic() + 8
+            while "ready" not in log.read_text():
+                assert family.poll() is None and time.monotonic() < deadline
+                time.sleep(0.01)
+            identity = ReadLinuxProcessIdentity(family.pid)
+            assert identity is not None
+            result = ObserveShutdown(
+                ShutdownObservationOptions(family.pid, identity.birth_ticks, log, 3, True), owned_process=family,
+            )
+            assert result.payload["status"] == "passed"
+            summary = result.payload["summary"]
+            assert summary["target_exit_code"] == 143
+            assert summary["process_shutdown_acceptance"] is True
+            assert summary["runtime_shutdown_acceptance"] is False
+        finally:
+            family.close()
+            family.close_streams()
 
 
 @pytest.mark.parametrize("send", (False, True))
@@ -350,6 +377,20 @@ def test_observed_exit_over_the_unchanged_gate_never_passes():
     assert result.payload["summary"]["runtime_shutdown_acceptance"] is False
 
 
+@pytest.mark.parametrize("exit_code", [0, 2, -15, 143])
+def test_owned_child_exit_semantics_are_required_even_when_cleanup_is_fast(exit_code):
+    from scripts.recommendation.web.shutdown import _LogObservation, _Times, _outcome
+
+    identity = LinuxProcessIdentity(7412, 1234, "d50dbb32-ac67-4d74-99a9-7ad7db37c791")
+    result = _outcome(
+        ShutdownObservationOptions(identity.pid, identity.birth_ticks, Path("unused"), 40, True), identity,
+        _Times(1, 2, 2.01, 2.02, 5, 5), _LogObservation(3, 4, True, False, matched_records=1),
+        cancelled=False, target_exit_code=exit_code,
+    )
+    assert result.payload["summary"]["process_shutdown_acceptance"] is (exit_code == 143)
+    assert result.payload["status"] == ("passed" if exit_code == 143 else "failed")
+
+
 def test_handler_before_this_signal_cannot_pass_as_a_complete_timeline():
     from scripts.recommendation.web.shutdown import _LogObservation, _Times, _outcome
     identity = LinuxProcessIdentity(7412, 1234, "d50dbb32-ac67-4d74-99a9-7ad7db37c791")
@@ -377,7 +418,9 @@ identity = ReadLinuxProcessIdentity(target.pid)
 ObserveShutdown(ShutdownObservationOptions(target.pid, identity.birth_ticks, Path(sys.argv[2]), 30))
 """
     with pytest.raises(subprocess.TimeoutExpired):
-        RunBoundedCommand((pidfd_python, "-c", code, str(marker), str(log)), timeout=1, environment=_environment())
+        # Includes a cold interpreter and imports before the marker exists.
+        # Keep the child's 30-second wait longer than this separate fixture budget.
+        RunBoundedCommand((pidfd_python, "-c", code, str(marker), str(log)), timeout=5, environment=_environment())
     pids = json.loads(marker.read_text())
     deadline = time.monotonic() + 3
     while any(ReadLinuxProcessIdentity(pid) is not None for pid in pids.values()):
