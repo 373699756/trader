@@ -45,6 +45,37 @@
   const streamDependencyMissing = !window.TraderDashboardStream;
   const patchToPaintSamples = [];
   const els = {};
+  const historyViewer = window.crypto?.randomUUID?.() || `history-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let historyWatchPending = false;
+  let historyWatchSequence = 0;
+
+  function updateHistoryWatch() {
+    const months = new Map();
+    if (state.strategy !== "long" && document.visibilityState !== "hidden") {
+      if (els.dateCalendar && !els.dateCalendar.hidden) {
+        months.set(`${state.calendarYear}-${state.calendarMonth}`, { year: state.calendarYear, month: state.calendarMonth });
+      }
+      const selected = monthFromDate(state.date);
+      if (selected) months.set(`${selected.year}-${selected.month}`, selected);
+    }
+    const sequence = ++historyWatchSequence;
+    if (historyWatchPending) return;
+    historyWatchPending = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8000);
+    const url = `/api/freezes/history/watches/${encodeURIComponent(historyViewer)}`;
+    fetch(url, months.size ? {
+      method: "PUT", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ months: [...months.values()] }),
+    } : { method: "DELETE", signal: controller.signal, keepalive: true }).then((response) => {
+      if (!response.ok && months.size) throw new Error("历史行情登记失败");
+    }).catch(() => {
+      if (state.date) stateRenderer.setNotice("历史行情预取暂不可用，稍后自动重试", "warn");
+    }).finally(() => {
+      historyWatchPending = false;
+      window.clearTimeout(timeout);
+      if (sequence !== historyWatchSequence) updateHistoryWatch();
+    });
+  }
   const diagnostics = {
     webSnapshotRetentionMs: CACHE_MAX_AGE_MS,
     recommendationRequests: 0,
@@ -181,6 +212,11 @@
     });
 
     initializeStrategy();
+    document.addEventListener("visibilitychange", updateHistoryWatch);
+    window.addEventListener("pagehide", () => {
+      fetch(`/api/freezes/history/watches/${encodeURIComponent(historyViewer)}`, { method: "DELETE", keepalive: true }).catch(() => {});
+    });
+    window.setInterval(updateHistoryWatch, 30000);
     prefetchStrategies();
     connectStream();
     window.setInterval(loadStatus, 15000);
@@ -239,6 +275,7 @@
     const selectionId = ++state.selectionSequence;
     state.requestSequence += 1;
     state.strategy = nextStrategy;
+    updateHistoryWatch();
     state.payload = null;
     state.projectionVersion = "";
     if (nextStrategy !== "long") {
@@ -338,6 +375,7 @@
     }
     renderCalendar();
     els.dateCalendar.hidden = false;
+    updateHistoryWatch();
     els.datePickerButton.setAttribute("aria-expanded", "true");
     if (state.calendarDatesAvailability === "unknown") refreshCalendarDates();
   }
@@ -345,6 +383,7 @@
   function closeDateCalendar(restoreFocus) {
     if (!els.dateCalendar || els.dateCalendar.hidden) return;
     els.dateCalendar.hidden = true;
+    updateHistoryWatch();
     els.datePickerButton.setAttribute("aria-expanded", "false");
     if (restoreFocus) els.datePickerButton.focus();
   }
@@ -370,6 +409,7 @@
     if (year < 1 || year > 9999) return;
     state.calendarYear = year;
     state.calendarMonth = month;
+    updateHistoryWatch();
     state.calendarDates = [];
     state.calendarDatesAvailability = "loading";
     renderCalendar();
@@ -464,6 +504,7 @@
     state.calendarDatesAvailability = "unknown";
     els.datePickerButton.disabled = state.strategy === "long";
     updateDatePickerButton();
+    if (els.dateControl) updateHistoryWatch();
     loadRecommendations("date");
   }
 

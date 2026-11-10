@@ -1,0 +1,7 @@
+{
+  "interval_seconds": 60,
+  "max_age_seconds": 120,
+  "timeout_seconds": 10,
+  "lease_seconds": 120,
+  "maximum_viewers": 32
+}

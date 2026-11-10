@@ -77,6 +77,7 @@ vm.runInNewContext(source.replace(suffix, `
     selectCurrentDate, toggleDateCalendar, updateDatePickerButton,
     configureDateTest(elements, load) {
       Object.assign(els, elements);
+      updateHistoryWatch = () => {};
       loadRecommendations = load;
       renderCalendar = () => {};
     },

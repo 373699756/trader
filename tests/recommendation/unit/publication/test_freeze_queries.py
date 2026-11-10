@@ -157,7 +157,7 @@ def test_queries_read_only_formal_history_and_long_has_no_history() -> None:
     assert queries.dates(Strategy.LONG) == ()
 
 
-def test_history_uses_only_newer_today_cached_quote_and_updates_projection() -> None:
+def test_history_reads_dedicated_quotes_and_marks_retained_sources() -> None:
     record = CommittedFreezeRecord(
         _freeze(trade_date=date(2026, 8, 8)),
         datetime(2026, 8, 8, 11, 20, tzinfo=SHANGHAI),
@@ -166,6 +166,12 @@ def test_history_uses_only_newer_today_cached_quote_and_updates_projection() -> 
 
     class CachedQuotes:
         quote: MarketQuote | None = None
+
+        def diagnostic(self) -> tuple[str, int, int]:
+            return "", 1, int(self.quote is not None)
+
+        def quote_status(self, quote: MarketQuote, now: datetime) -> str:
+            return "live" if quote.source_time.astimezone(SHANGHAI).date() == now.date() else "retained"
 
         def cached_quotes(self, codes: tuple[str, ...]) -> dict[str, MarketQuote]:
             assert codes == ("600000",)
@@ -216,9 +222,10 @@ def test_history_uses_only_newer_today_cached_quote_and_updates_projection() -> 
         source_time=datetime(2026, 8, 10, 14, 30, tzinfo=SHANGHAI),
     )
     stale = queries.history(Strategy.TOMORROW, record.trade_date)
-    assert stale.items[0].price is None
-    assert stale.items[0].anchor_to_now_pct is None
-    assert stale.etag == before.etag
+    assert stale.items[0].price == 11.0
+    assert stale.items[0].quote_status == "retained"
+    assert stale.items[0].anchor_to_now_pct == pytest.approx((11.0 / 10.25 - 1) * 100)
+    assert stale.etag != before.etag
 
 
 def test_current_overlay_replaces_every_quote_field_without_changing_freeze_identity() -> None:

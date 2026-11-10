@@ -9,6 +9,7 @@ from types import MappingProxyType
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
+from trader.recommendation.application.history_quotes import HistoryQuotes
 
 StatusProvider = Callable[[], dict[str, object]]
 
@@ -40,6 +41,7 @@ class ProfiledWebServices:
     default_profile: str
     config: WebApiConfig = WebApiConfig()
     long_profile: str = "v2"
+    history_quotes: HistoryQuotes | None = None
 
     def __post_init__(self) -> None:
         profiles = dict(self.profiles)

@@ -32,6 +32,7 @@
 - 活动产品代码只能位于 `src/trader`。目标顶层业务只有 `download/`、`training/`、`recommendation/`；`http_api/` 和 `web/` 是推荐业务的只读交付边界；顶层 `infra/` 只保留跨业务技术 primitive。
 - 三个业务内部依赖方向固定为 `entrypoints/infra -> application -> domain`。`domain` 不读取配置、时钟、网络、文件或数据库；`application` 不导入本业务 `infra`、Flask 或其它业务实现。
 - `http_api/` 与 `web/` 只能调用 `recommendation/application/` 的只读用例，不得抓行情、训练、评分、调用 DeepSeek、访问业务数据库或写运行状态。
+- 用户已明确授权历史月行情的窄例外：`PUT/DELETE /api/freezes/history/watches/<viewer>`仅登记／释放短期月份查看需求；HTTP线程不读业务库或抓行情。独立后台读取正式冻结席位并采集，历史GET仍只读；与Long分池、分接口、分任务。
 - `bootstrap.py` 是唯一组合根；`trader-cli` 与 `trader-server` 只调用它。禁止第二组合根、全局服务定位器和适配器隐藏创建外部客户端、连接池或线程池。
 - `CreateApp()` 必须无线程、无网络、无数据库和无文件写入副作用。
 - 业务间只传递有真实类型的不可变对象。内部状态不得用 `dict`、`Any`、反射或空对象 fallback 代替；JSON 只存在于配置/供应商解析、持久化 codec、schema 事件和 HTTP/可观测性投影边界。

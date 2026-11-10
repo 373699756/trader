@@ -85,14 +85,10 @@ def Main(argv: list[str] | None = None) -> int:
     except ProcessLockError as exc:
         raise SystemExit(_running_service_message(exc, settings)) from None
     with lock:
-        from trader.bootstrap import BuildProfiledSystem, BuildSystem, PrepareRuntimeDisk
+        from trader.bootstrap import BuildProfiledSystem, PrepareRuntimeDisk
 
         PrepareRuntimeDisk(settings, choose=True, report=False)
-        system = (
-            BuildProfiledSystem(config_path, profiles=profiles)
-            if len(profiles) > 1
-            else BuildSystem(config_path, scoring_profile=profiles[0])
-        )
+        system = BuildProfiledSystem(config_path, profiles=profiles)
         return _run_system(
             system,
             timeout_seconds=system.settings.pipeline.shutdown_timeout_seconds,

@@ -445,14 +445,19 @@
     const anchorChange = pct(item.anchor_daily_return_pct);
     const todayChange = pct(item.pct_change);
     const anchorToNow = pct(item.anchor_to_now_pct);
+    const loading = item.quote_status === "missing" ? "行情加载中" : "-";
+    const quoteTitle = escapeHtml(`${item.quote_status === "retained" ? "保留行情 · " : ""}${item.source_time ? formatDateTime(item.source_time) : "等待后台预取行情"}`);
+    const sourceDay = item.source_time ? String(item.source_time).slice(0, 10) : "";
+    const quoteNote = item.quote_status === "retained" || sourceDay && sourceDay !== window.TraderSelection.shanghaiDate()
+      ? `<span class="stock-code">${item.quote_status === "retained" ? "保留行情 · " : "最近交易日 · "}${escapeHtml(sourceDay)}</span>` : "";
     return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}</td>
       <td>${stock(item)}</td>
       <td>${number(item.anchor_price, 2)}</td>
       <td class="${anchorChange.className}">${anchorChange.text}</td>
-      <td class="${todayChange.className}">${todayChange.text}</td>
-      <td class="${anchorToNow.className}">${anchorToNow.text}</td>
+      <td class="${todayChange.className}" title="${quoteTitle}">${hasValue(item.pct_change) ? todayChange.text : loading}${quoteNote}</td>
+      <td class="${anchorToNow.className}" title="${quoteTitle}">${hasValue(item.anchor_to_now_pct) ? anchorToNow.text : loading}</td>
     </tr>`;
   }
 

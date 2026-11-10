@@ -6,6 +6,10 @@
 
 ## 1. 待完成任务
 
+阶段368／历史冻结月行情：completed（实现与隔离验证）。新增独立HistoryQuotes月份需求、工作线程、去重行情池和供应商接口，Web通过PUT/DELETE短期登记打开月及所选历史月，30秒续期、120秒失效；后台读取所有启用档位双策略的当月正式席位，交易时段60秒采集、休市有效快照保留／缺失补取，月名单最多60秒重新核对。历史查询切换专用行情池并展示加载、保留行情和来源日期；Long、当前荐股与正式冻结原件不改。唯一组合根注册启动／取消／等待，server单档位也走统一档位入口；原bootstrap持久化构造职责原子迁至publication_persistence，唯一调用方同步切换、旧函数删除，源码仍≤1500行。新增独立严格配置history_quotes.json，AGENTS及b同步用户授权的登记接口窄例外。
+验证：历史/Web定向pytest45项（含JS状态合同）、profiled启动及server退出回归60项通过；受影响Ruff及11个源码文件mypy通过，完整diff Review及git diff --check通过。历史查询的旧CachedQuoteReader、market_feature_service.cached_quotes及候选缓存仅供历史使用的candidate_entries已删除，相关测试切至专用行情端口并覆盖retained来源。隔离Chrome慢供应商fixture中PUT先返回202，后台等待时仍能翻月和切换策略；截图仅在仓库外，不是性能基线。测试未触碰活动冻结库，未启动真实下载／训练。
+未完成项／验收边界：本阶段实现无剩余；未重启或发布活动服务，真实盘中供应商60秒刷新及真实多月负载未实测，不替代4.2／4.5既有窗口与性能欠项。
+
 只列当前剩余范围，不机械复制历史in_progress。唯一owner和关闭条件在第4章。本批证据根为仓库外`/var/tmp/trader-ledger-audit-20261110-01df0b82/`。
 
 | 优先级／原阶段 | 本次核验结论 | 剩余任务 |

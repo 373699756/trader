@@ -101,6 +101,8 @@ from trader.infra.disk_types import DiskMedium
 from trader.infra.workers import BoundedExecutor, InjectedExecutor, WorkerScope
 from trader.infra.shutdown import ShutdownBudget
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
+from trader.recommendation.application.history_quotes import HistoryQuotes
+from trader.recommendation.infra.settings.history_quotes import LoadHistoryQuoteSettings
 from trader.recommendation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
 from trader.recommendation.application.pipeline.data_source import source_router
@@ -134,10 +136,8 @@ from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFIL
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.infra import policy_settings
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
-from trader.recommendation.infra.deepseek.budget_file import BudgetStateFile
 from trader.recommendation.infra.deepseek.cache import BuildSharedReviewCacheIdentity, ReviewCache
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
-from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.market_data import market_feature_service
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
@@ -160,8 +160,8 @@ from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 from trader.recommendation.infra.persistence.freeze_trace_index import ResearchTraceLimits, SQLiteFreezeTraceIndex
 from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
-from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
 from trader.recommendation.infra.runtime import composition_inputs
+from trader.recommendation.infra.runtime.publication_persistence import BuildPublicationPersistence
 from trader.recommendation.infra.runtime.application_system import ApplicationSystem, RuntimeWorkerResources
 from trader.recommendation.infra.runtime.initialization import FixedCacheTtl as _fixed_cache_ttl
 from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
@@ -868,7 +868,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             True, references.initialize, calendar.open_dates, ShanghaiClock(now).now, lambda: uuid4().hex
         )
     )
-    persistence = _build_persistence(
+    persistence = BuildPublicationPersistence(
         context, shared_inputs.budget if shared_inputs else None, budget_path=budget_path, sqlite_policy=sqlite_policy
     )
     profile_id = strategy.scoring_profile
@@ -1152,12 +1152,29 @@ def BuildProfiledSystem(
         if profile != default_profile:
             systems.append(build_secondary(scoring_profile=profile, runtime_scope=profile))
     web_profiles = {system.profile_id: system.web_services for system in systems}
+    history_settings = LoadHistoryQuoteSettings(settings.project_root / "config/history_quotes.json")
+    history_client = TencentClient(session_factory=OpenExternalHttp, timeout_seconds=history_settings.timeout_seconds,
+                                   worker_pool=None)
+    history_quotes = HistoryQuotes(
+        tuple(system.records for system in systems),
+        lambda codes, now, deadline, cancelled: history_client.fetch_quotes(
+            codes, now, deadline=deadline, cancel_event=cancelled,
+        ),
+        ShanghaiClock(_utc_now).now,
+        ChinaTradingCalendar(primary.market_data.references.reference, now=_utc_now).open_dates,
+        policy_settings.BuildCadencePolicy(settings.pipeline).sessions,
+        history_settings,
+    )
+    for system in systems:
+        system.freeze_queries.bind_history_quotes(history_quotes)
+    systems[0] = replace(primary, history_runtimes=(history_quotes,))
     app = CreateApp(
         services=ProfiledWebServices(
             profiles={profile: web_profiles[profile] for profile in profiles},
             default_profile=default_profile,
             long_profile=default_profile,
             config=primary.web_services.config,
+            history_quotes=history_quotes,
         )
     )
     return ProfiledApplicationSystem(settings, app, tuple(systems))
@@ -1399,32 +1416,6 @@ def _build_market_data(
     )
 
 
-def _build_persistence(
-    context: composition_inputs.RuntimeBuildContext,
-    shared_budget: DeepSeekBudgetLedger | None = None,
-    *,
-    budget_path: Path,
-    sqlite_policy: SqliteIoPolicy,
-) -> composition_inputs.RuntimePersistenceContext:
-    settings = context.settings
-    profile_root = settings.data_paths.recommendation(context.strategy.scoring_profile)
-    records = SQLiteFreezeRecords(
-        profile_root / "freeze.sqlite3", cache=context.workers.market_cache, wall_clock=context.now, sqlite_policy=sqlite_policy
-    )
-    outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records, sqlite_policy=sqlite_policy)
-    budget = shared_budget or DeepSeekBudgetLedger(
-        BudgetStateFile(budget_path, ProcessLock(settings.data_paths.root / ".deepseek.lock", label="DeepSeek")),
-        daily_hard_limit=settings.deepseek.daily_hard_limit,
-        strategy_limits=settings.deepseek.strategy_limits,
-        stage_targets=settings.deepseek.stage_targets,
-        stage_limits=settings.deepseek.stage_limits,
-        health_policy=DeepSeekHealthPolicy.from_settings(settings.deepseek.adaptive),
-        enabled=settings.deepseek.enabled,
-    )
-    sequence = PublicationSequence(profile_root / "publication_state.sqlite3", sqlite_policy=sqlite_policy)
-    return composition_inputs.RuntimePersistenceContext(sequence, records, budget, outcomes)
-
-
 def _build_publication(
     context: composition_inputs.RuntimeBuildContext,
     dependencies: composition_inputs.RuntimePublicationDependencies,
@@ -1444,7 +1435,7 @@ def _build_publication(
     )
     clock = ShanghaiClock(context.now)
     query_sources = read_only_queries.FreezeQuerySources(
-        market_data, dependencies.outcomes, market_data.references, market_data.research
+        None, dependencies.outcomes, market_data.references, market_data.research
     )
     freeze_queries = read_only_queries.UnifiedFreezeQueries(
         tomorrow_freezes, freeze_drafts, records, clock, query_sources

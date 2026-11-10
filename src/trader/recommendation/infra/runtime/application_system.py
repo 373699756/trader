@@ -16,6 +16,7 @@ from trader.recommendation.application.pipeline.freeze_publish.event_stream impo
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.runtime.resource_orchestration import (
+    AuxiliaryRuntimeResource,
     ApplicationResources,
     StartApplicationResources,
     StopApplicationResources,
@@ -84,6 +85,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     review_cache: ReviewCache
     run_scope: RecommendationRunScope
     owns_shared_resources: bool = True
+    history_runtimes: tuple[AuxiliaryRuntimeResource, ...] = ()
 
     @property
     def profile_id(self) -> ScoringProfileId:
@@ -98,7 +100,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
             self.market_quote_pool,
             self.minute_pool,
             (*((self.workers.http_executor,) if self.owns_shared_resources else ()),
-             self.long_runtime, *((self.eligibility, self.input_preloader) if self.owns_shared_resources else ())),
+             self.long_runtime, *self.history_runtimes, *((self.eligibility, self.input_preloader) if self.owns_shared_resources else ())),
             self.market_cache,
             self.budget,
             self.owns_shared_resources,
@@ -118,6 +120,8 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
         return StopApplicationResources(self._application_resources(), deadline=shared)
 
     def request_stop(self, *, deadline: ShutdownDeadline) -> None:
+        for runtime in self.history_runtimes:
+            runtime.stop(wait=False, deadline=deadline)
         self.market_data.history.cancel_outcome_reads()
         self.input_preloader.stop(wait=False, deadline=deadline)
 

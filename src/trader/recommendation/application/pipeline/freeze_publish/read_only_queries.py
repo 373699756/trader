@@ -61,8 +61,12 @@ class FreezeHistoryReader(Protocol):
     ) -> tuple[date, ...]: ...
 
 
-class CachedQuoteReader(Protocol):
+class HistoryQuoteReader(Protocol):
     def cached_quotes(self, codes: Sequence[str]) -> Mapping[str, MarketQuote]: ...
+
+    def diagnostic(self) -> tuple[str, int, int]: ...
+
+    def quote_status(self, quote: MarketQuote, now: datetime) -> str: ...
 
 
 class _IndustryClassificationReader(Protocol):
@@ -89,7 +93,7 @@ class CompanyDocumentLinkReader(Protocol):
 
 @dataclass(frozen=True)
 class FreezeQuerySources:
-    cached_quotes: CachedQuoteReader | None = None
+    history_quotes: HistoryQuoteReader | None = None
     outcome_summaries: OutcomeSummaryReader | None = None
     industry_classifications: _IndustryClassificationReader | None = None
     company_documents: CompanyDocumentLinkReader | None = None
@@ -210,10 +214,14 @@ class UnifiedFreezeQueries:
         self._drafts = drafts
         self._history = history
         self._clock = clock
-        self._cached_quotes = sources.cached_quotes if sources is not None else None
+        self._history_quotes = sources.history_quotes if sources is not None else None
         self._outcome_summaries = sources.outcome_summaries if sources is not None else None
         self._industry_classifications = sources.industry_classifications if sources is not None else None
         self._company_documents = sources.company_documents if sources is not None else None
+
+    def bind_history_quotes(self, quotes: HistoryQuoteReader) -> None:
+        """Composition-only binding before serving requests."""
+        self._history_quotes = quotes
 
     def company_documents(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyDocumentReference, ...]:
         if len(code) != 6 or not code.isascii() or not code.isdigit() or not 1 <= len(evidence_ids) <= 32:
@@ -292,7 +300,7 @@ class UnifiedFreezeQueries:
         selected = tuple(item for item in freeze.items if item.selected)
         top = VisibleScoredSeats(freeze)
         codes = tuple(sorted({item.code for item in (*selected, *top)}))
-        cached = self._cached_quotes.cached_quotes(codes) if self._cached_quotes is not None else {}
+        cached = self._history_quotes.cached_quotes(codes) if self._history_quotes is not None else {}
         anchors = {item.code: item.quote for item in (*selected, *top)}
         quotes: dict[str, FreezeQuote] = {}
         for code, quote in cached.items():
@@ -307,7 +315,6 @@ class UnifiedFreezeQueries:
                 or not math.isfinite(price)
                 or price <= 0
                 or source_time <= anchor.source_time
-                or source_time.date() != now.date()
                 or source_time > now
             ):
                 continue
@@ -323,6 +330,14 @@ class UnifiedFreezeQueries:
                 quote.data_version,
             )
         view = _scored_view(freeze, now, _ScoredViewInput("history", quotes, None, record))
+        if self._history_quotes is not None:
+            error, _, _ = self._history_quotes.diagnostic()
+            reasons = (*view.degraded_reasons, *([f"history_quotes:{error}"] if error else []))
+            owner = self._history_quotes
+            items = tuple(replace(item, quote_status=owner.quote_status(cached[item.code], now))
+                          if item.code in quotes else item for item in view.items)
+            view = replace(view, degraded_reasons=reasons, items=items,
+                           etag=f"{view.etag}:history:{error}:{','.join(item.quote_status for item in items)}")
         if self._outcome_summaries is None:
             return view
         try:
@@ -682,7 +697,7 @@ def _classified_etag(base: str, classified_industries: Mapping[str, str]) -> str
 
 
 __all__ = [
-    "CachedQuoteReader",
+    "HistoryQuoteReader",
     "FreezeQuerySources",
     "FreezeDraftView",
     "FreezeHistoryReader",

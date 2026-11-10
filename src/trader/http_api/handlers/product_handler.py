@@ -21,6 +21,7 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
+from trader.recommendation.application.history_quotes import HistoryQuoteMonth
 
 RouteResponse = Response | tuple[Response, int]
 _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
@@ -47,6 +48,8 @@ def RegisterRoutes(app: Flask, services: WebServices | None) -> None:
 
 def _create_product_blueprint(services: WebServices | None) -> Blueprint:
     blueprint = Blueprint("product", __name__)
+    blueprint.add_url_rule("/api/freezes/history/watches/<viewer>", "history_watch",
+                           partial(_history_watch, services), methods=["PUT", "DELETE"])
     blueprint.add_url_rule("/", "root", partial(_root, services))
     blueprint.add_url_rule("/api/freezes/current", "freeze_current_batch", partial(_current_batch, services))
     blueprint.add_url_rule(
@@ -94,6 +97,38 @@ def _root(services: WebServices | None) -> str:
         default_scoring_profile=default_profile,
         long_scoring_profile=long_profile,
     )
+
+
+def _history_watch(services: WebServices | None, viewer: str) -> RouteResponse:
+    owner = services.history_quotes if isinstance(services, ProfiledWebServices) else None
+    if owner is None:
+        return _not_ready()
+    if not viewer.isascii() or not viewer.replace("-", "").isalnum() or len(viewer) > 64:
+        return _error("invalid_viewer", "invalid history viewer", 400)
+    if request.method == "DELETE":
+        owner.release(viewer)
+        return jsonify({"released": True})
+    body = request.get_json(silent=True)
+    if (not isinstance(body, dict) or set(body) != {"months"} or not isinstance(body["months"], list)
+            or not 1 <= len(body["months"]) <= 2):
+        return _error("invalid_months", "months required", 400)
+    months = []
+    for item in body["months"]:
+        if (not isinstance(item, dict) or set(item) != {"year", "month"}
+                or type(item["year"]) is not int or type(item["month"]) is not int):
+            return _error("invalid_months", "integer year and month required", 400)
+        try:
+            months.append(HistoryQuoteMonth(item["year"], item["month"]))
+        except ValueError:
+            return _error("invalid_months", "invalid calendar month", 400)
+    try:
+        owner.watch(viewer, tuple(months))
+    except ValueError:
+        return _error("invalid_months", "one or two months required", 400)
+    except OverflowError:
+        return _error("history_watch_limit", "history viewer capacity reached", 429)
+    error, viewers, quotes = owner.diagnostic()
+    return jsonify({"accepted": True, "error": error, "viewers": viewers, "quotes": quotes}), 202
 
 
 def _current_batch(services: WebServices | None) -> RouteResponse:

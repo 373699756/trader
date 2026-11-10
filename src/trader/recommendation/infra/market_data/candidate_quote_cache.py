@@ -362,11 +362,6 @@ class QuoteCache:
                 out_of_order_count=self._out_of_order_count,
             )
 
-    def candidate_entries(self) -> Mapping[str, MarketQuote]:
-        with self._lock:
-            return dict(self._candidate_quotes)
-
-
 def _restricted_quote(quote: MarketQuote, restrictions: set[str]) -> MarketQuote:
     reasons = tuple(sorted({
         *(reason for reason in quote.execution_restrictions if reason not in _AUXILIARY_ACTION_RESTRICTIONS),
