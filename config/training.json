@@ -123,7 +123,7 @@
         "hidden_channels": 8,
         "compute_dtype": "float32",
         "early_stopping_relative_delta": 0.005,
-        "compute_threads": 1
+        "compute_threads": 2
       }
     }
   ]

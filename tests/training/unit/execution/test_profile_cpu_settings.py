@@ -42,7 +42,7 @@ def test_profile_requests_follow_selected_medium_and_defaults_stay_unchanged(tmp
     with pytest.raises(ValueError, match="require_v1_v2_v3"):
         budget.profile_threads.for_profile("v5")
     fitting = next(profile for profile in document["profiles"] if profile["profile"] == "v5")["tcn"]
-    assert fitting["compute_threads"] == 1
+    assert fitting["compute_threads"] == 2
     assert fitting["epochs"] == 10
 
 
