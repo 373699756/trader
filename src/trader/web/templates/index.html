@@ -89,12 +89,13 @@
           </div>
         </div>
         {% endif %}
-        <div class="date-control">
+        <div id="dateControl" class="date-control">
           <span>推荐日期</span>
+          <button id="dateTodayButton" class="date-today-button" type="button" aria-pressed="true" title="返回当前推荐视图">今天</button>
+          <span id="datePickerLabel" class="date-selection-label" aria-live="polite" hidden></span>
           <div id="datePicker" class="date-picker">
-            <button id="datePickerButton" class="date-picker-button" type="button" aria-label="选择推荐日期" aria-haspopup="dialog" aria-expanded="false" aria-controls="dateCalendar">
-              <span id="datePickerLabel">当前</span>
-              <span class="date-picker-caret" aria-hidden="true">▾</span>
+            <button id="datePickerButton" class="date-picker-button" type="button" title="查看历史推荐" aria-label="查看历史推荐" aria-haspopup="dialog" aria-expanded="false" aria-controls="dateCalendar">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 11h18M8 15h2M14 15h2"/></svg>
             </button>
             <section id="dateCalendar" class="date-calendar" role="dialog" aria-labelledby="dateCalendarTitle" hidden>
               <header class="date-calendar-header">
@@ -109,7 +110,6 @@
               <div id="dateCalendarGrid" class="date-calendar-grid" role="grid" aria-labelledby="dateCalendarTitle"></div>
               <p id="dateCalendarStatus" class="date-calendar-status" aria-live="polite">红色日期有冻结记录</p>
               <footer class="date-calendar-footer">
-                <button id="dateCalendarCurrent" class="date-calendar-current" type="button">当前</button>
                 <button id="dateCalendarClose" class="date-calendar-close" type="button">关闭</button>
               </footer>
             </section>

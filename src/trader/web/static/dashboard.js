@@ -7,8 +7,8 @@
     strategy: "tomorrow",
     view: "current",
     date: "",
-    calendarYear: new Date().getFullYear(),
-    calendarMonth: new Date().getMonth() + 1,
+    calendarYear: Number(window.TraderSelection.shanghaiDate().slice(0, 4)),
+    calendarMonth: Number(window.TraderSelection.shanghaiDate().slice(5, 7)),
     calendarDates: [],
     calendarDatesAvailability: "unknown",
     calendarRequestSequence: 0,
@@ -119,8 +119,8 @@
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "quoteFreshness", "streamStatus",
       "summaryBand", "budgetPanel", "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta",
-      "refreshButton", "datePicker", "datePickerButton", "datePickerLabel", "dateCalendar", "dateCalendarTitle",
-      "dateCalendarPrevious", "dateCalendarNext", "dateCalendarGrid", "dateCalendarStatus", "dateCalendarCurrent", "dateCalendarClose",
+      "refreshButton", "dateControl", "dateTodayButton", "datePicker", "datePickerButton", "datePickerLabel", "dateCalendar", "dateCalendarTitle",
+      "dateCalendarPrevious", "dateCalendarNext", "dateCalendarGrid", "dateCalendarStatus", "dateCalendarClose",
       "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelMeta",
       "inputQualityStrategy", "inputQualityScoreTime", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody", "outcomeSummary", "sixSeatStatus", "sixSeatMeta",
@@ -154,7 +154,7 @@
     els.dateCalendarPrevious.addEventListener("click", () => changeCalendarMonth(-1));
     els.dateCalendarNext.addEventListener("click", () => changeCalendarMonth(1));
     els.dateCalendarGrid.addEventListener("click", selectCalendarDate);
-    els.dateCalendarCurrent.addEventListener("click", selectCurrentDate);
+    els.dateTodayButton.addEventListener("click", selectCurrentDate);
     els.dateCalendarClose.addEventListener("click", () => closeDateCalendar(true));
     document.addEventListener("click", (event) => {
       if (!els.datePicker.contains(event.target)) closeDateCalendar(false);
@@ -249,6 +249,7 @@
     errorDrawer.close(false);
     statusView.setObservationTriggerAvailability(els, nextStrategy);
     els.datePickerButton.disabled = true;
+    els.dateControl.hidden = nextStrategy === "long";
     els.strategyDescription.textContent = selection.descriptions[nextStrategy];
     stateRenderer.setLongControls(nextStrategy === "long");
     document.querySelectorAll(".strategy-tab").forEach((button) => {
@@ -260,9 +261,10 @@
     const provisionalDate = selection.resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, null);
     state.date = provisionalDate.date;
     state.selectedDateAvailability = provisionalDate.availability;
-    const selectedMonth = monthFromDate(provisionalDate.date);
-    state.calendarYear = selectedMonth ? selectedMonth.year : new Date().getFullYear();
-    state.calendarMonth = selectedMonth ? selectedMonth.month : new Date().getMonth() + 1;
+    const selectedMonth = monthFromDate(provisionalDate.date || selection.shanghaiDate());
+    state.calendarYear = selectedMonth.year;
+    state.calendarMonth = selectedMonth.month;
+    updateDatePickerButton();
     state.calendarDatesAvailability = "loading";
     renderCalendar();
     if ((previousStrategy === "long") !== (nextStrategy === "long")) streamController.connect();
@@ -326,6 +328,15 @@
       closeDateCalendar(false);
       return;
     }
+    const selectedMonth = monthFromDate(state.date || selection.shanghaiDate());
+    if (state.calendarYear !== selectedMonth.year || state.calendarMonth !== selectedMonth.month) {
+      state.calendarRequestSequence += 1;
+      state.calendarYear = selectedMonth.year;
+      state.calendarMonth = selectedMonth.month;
+      state.calendarDates = [];
+      state.calendarDatesAvailability = "unknown";
+    }
+    renderCalendar();
     els.dateCalendar.hidden = false;
     els.datePickerButton.setAttribute("aria-expanded", "true");
     if (state.calendarDatesAvailability === "unknown") refreshCalendarDates();
@@ -382,6 +393,7 @@
     els.dateCalendarNext.disabled = year === 9999 && month === 12;
     els.dateCalendarGrid.replaceChildren();
     const dates = state.calendarDatesAvailability === "available" ? state.calendarDates : [];
+    const today = selection.shanghaiDate();
     for (const cell of selection.calendarCells(year, month, dates, state.date)) {
       if (!cell.date) {
         const empty = document.createElement("span");
@@ -394,6 +406,10 @@
       button.className = "date-calendar-day";
       if (cell.hasFreeze) button.classList.add("has-freeze");
       if (cell.selected) button.classList.add("is-selected");
+      if (cell.date === today) {
+        button.classList.add("is-today");
+        button.setAttribute("aria-current", "date");
+      }
       button.dataset.tradeDate = cell.date;
       button.textContent = cell.day;
       button.disabled = !cell.hasFreeze || state.calendarDatesAvailability !== "available";
@@ -416,8 +432,10 @@
 
   function updateDatePickerButton() {
     if (!els.datePickerLabel) return;
-    els.datePickerLabel.textContent = state.date || "当前";
-    els.datePickerButton.setAttribute("aria-label", state.date ? `选择推荐日期，${state.date}` : "选择推荐日期，当前");
+    els.datePickerLabel.textContent = state.date;
+    els.datePickerLabel.hidden = !state.date;
+    els.dateTodayButton.setAttribute("aria-pressed", String(!state.date));
+    els.datePickerButton.setAttribute("aria-label", state.date ? `查看历史推荐，已选${state.date}` : "查看历史推荐");
   }
 
   function selectCalendarDate(event) {
@@ -431,21 +449,21 @@
   }
 
   function selectCurrentDate() {
+    closeDateCalendar(false);
+    els.dateTodayButton.focus();
+    if (!state.date) return;
     state.date = "";
     state.selectedDateAvailability = "available";
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth() + 1;
-    const changedMonth = state.calendarYear !== year || state.calendarMonth !== month;
+    // Cancel pending strategy/date-directory work before it can restore a historical date.
+    state.selectionSequence += 1;
+    state.calendarRequestSequence += 1;
+    const { year, month } = monthFromDate(selection.shanghaiDate());
     state.calendarYear = year;
     state.calendarMonth = month;
-    if (changedMonth) {
-      state.calendarDates = [];
-      state.calendarDatesAvailability = "unknown";
-    }
+    state.calendarDates = [];
+    state.calendarDatesAvailability = "unknown";
+    els.datePickerButton.disabled = state.strategy === "long";
     updateDatePickerButton();
-    closeDateCalendar(true);
-    if (changedMonth) refreshCalendarDates();
     loadRecommendations("date");
   }
 

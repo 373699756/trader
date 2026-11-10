@@ -436,12 +436,15 @@ tr:focus-visible {
   position: relative;
 }
 
-.date-picker-button {
+.date-control[hidden] { display: none; }
+.date-selection-label { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.date-picker-button,
+.date-today-button {
   display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 142px;
+  justify-content: center;
+  min-width: 36px;
   height: 36px;
   padding: 0 11px;
   border: 1px solid var(--line);
@@ -454,18 +457,17 @@ tr:focus-visible {
 }
 
 .date-picker-button:hover,
-.date-picker-button[aria-expanded="true"] {
+.date-picker-button[aria-expanded="true"],
+.date-today-button:hover,
+.date-today-button[aria-pressed="true"] {
   border-color: var(--blue);
 }
 
 .date-picker-button:focus-visible,
+.date-today-button:focus-visible,
 .date-calendar button:focus-visible {
   outline: 2px solid var(--blue);
   outline-offset: 2px;
-}
-
-.date-picker-caret {
-  color: var(--muted);
 }
 
 .date-calendar {
@@ -494,7 +496,6 @@ tr:focus-visible {
 .date-calendar-header { margin-bottom: 10px; }
 .date-calendar-header h2 { margin: 0; font-size: 14px; }
 .date-calendar-nav,
-.date-calendar-current,
 .date-calendar-close {
   min-width: 32px;
   min-height: 30px;
@@ -548,6 +549,7 @@ tr:focus-visible {
 
 .date-calendar-day.has-freeze:hover { background: rgb(181 54 54 / 34%); }
 .date-calendar-day.is-selected { box-shadow: inset 0 0 0 2px var(--blue); }
+.date-calendar-day.is-today { text-decoration: underline; text-underline-offset: 4px; }
 
 .date-calendar-status {
   min-height: 18px;
@@ -557,8 +559,7 @@ tr:focus-visible {
   text-align: center;
 }
 
-.date-calendar-footer { gap: 8px; }
-.date-calendar-current { margin-right: auto; padding: 0 10px; }
+.date-calendar-footer { gap: 8px; justify-content: flex-end; }
 .date-calendar-close { padding: 0 10px; color: var(--muted); }
 
 .profile-control {

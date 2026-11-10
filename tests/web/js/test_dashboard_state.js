@@ -74,6 +74,12 @@ vm.runInNewContext(source.replace(suffix, `
   window.TraderDashboardTest = Object.freeze({
     normalizeFreezePayload, configuredScoringProfile, state,
     applyRecommendationBatch, requestRecommendations,
+    selectCurrentDate, toggleDateCalendar, updateDatePickerButton,
+    configureDateTest(elements, load) {
+      Object.assign(els, elements);
+      loadRecommendations = load;
+      renderCalendar = () => {};
+    },
     configureBatchTest(paint, resync) {
       renderPayload = paint;
       requestRecommendationResync = resync;
@@ -87,6 +93,7 @@ const missingPatchSandbox = {
   document: { addEventListener() {}, createElement() { return {}; } },
   window: { addEventListener() {} },
 };
+missingPatchSandbox.window.TraderSelection = sandbox.window.TraderSelection;
 vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), missingPatchSandbox, { filename: formattersPath });
 vm.runInNewContext(source, missingPatchSandbox, { filename: dashboardPath });
 assert.deepStrictEqual(
@@ -2457,7 +2464,49 @@ async function verifyAtomicBatchCache() {
   assert.strictEqual(ui.payloads, completeCache, "malformed HTTP batch must not replace any cache");
 }
 
-verifyAtomicBatchCache().then(() => console.log("dashboard state contract passed")).catch((error) => {
+function verifyTodayNavigation() {
+  const dashboard = sandbox.window.TraderDashboardTest;
+  const ui = dashboard.state;
+  const calls = [];
+  const elements = {
+    dateCalendar: { hidden: false },
+    datePickerButton: { disabled: true, setAttribute() {}, focus() { calls.push("calendar-focus"); } },
+    dateTodayButton: { setAttribute(name, value) { this[name] = value; }, focus() { calls.push("today-focus"); } },
+    datePickerLabel: {},
+  };
+  dashboard.configureDateTest(elements, (reason) => calls.push(reason));
+  ui.date = "2025-02-03";
+  ui.strategy = "d25";
+  ui.profile = "v5";
+  ui.selectedDateAvailability = "missing";
+  ui.calendarDatesAvailability = "loading";
+  const oldSelection = ui.selectionSequence;
+  const oldCalendar = ui.calendarRequestSequence;
+  dashboard.selectCurrentDate();
+  assert.strictEqual(ui.date, "");
+  assert.strictEqual(ui.strategy, "d25");
+  assert.strictEqual(ui.profile, "v5");
+  assert.strictEqual(ui.selectedDateAvailability, "available");
+  assert(ui.selectionSequence > oldSelection, "pending strategy history must be invalidated");
+  assert(ui.calendarRequestSequence > oldCalendar, "pending month response must be invalidated");
+  assert.strictEqual(elements.dateCalendar.hidden, true);
+  assert.strictEqual(elements.datePickerLabel.hidden, true);
+  assert.strictEqual(elements.dateTodayButton["aria-pressed"], "true");
+  assert.strictEqual(elements.datePickerButton.disabled, false);
+  assert.deepStrictEqual(calls, ["today-focus", "date"]);
+  dashboard.selectCurrentDate();
+  assert.strictEqual(calls.filter((call) => call === "date").length, 1);
+  const today = sandbox.window.TraderSelection.shanghaiDate();
+  assert.strictEqual(ui.calendarYear, Number(today.slice(0, 4)));
+  assert.strictEqual(ui.calendarMonth, Number(today.slice(5, 7)));
+  assert.strictEqual(sandbox.window.TraderSelection.shanghaiDate(new Date("2026-11-10T16:01:00Z")), "2026-11-11");
+  assert.strictEqual(sandbox.window.TraderSelection.shanghaiDate(new Date("2026-12-31T16:01:00Z")), "2027-01-01");
+}
+
+verifyAtomicBatchCache().then(() => {
+  verifyTodayNavigation();
+  console.log("dashboard state contract passed");
+}).catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

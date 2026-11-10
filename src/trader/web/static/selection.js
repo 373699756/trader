@@ -42,6 +42,14 @@
     });
   }
 
+  function shanghaiDate(now = new Date()) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(now);
+    const value = (type) => parts.find((part) => part.type === type).value;
+    return `${value("year")}-${value("month")}-${value("day")}`;
+  }
+
   function visibleRecommendations(payload) {
     const items = payload && payload.status === "not_ready" && payload.draft && Array.isArray(payload.draft.items)
       ? payload.draft.items
@@ -137,6 +145,7 @@
   }
 
   window.TraderSelection = Object.freeze({
+    shanghaiDate,
     calendarCells,
     currentViewMatches,
     detailItem,
