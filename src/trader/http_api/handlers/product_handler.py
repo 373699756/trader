@@ -155,6 +155,13 @@ def _dates(services: WebServices | None, strategy_name: str) -> RouteResponse:
     strategy = _strategy(strategy_name)
     if strategy is None:
         return _error("invalid_strategy", "strategy must be tomorrow, d25 or long", 400)
+    raw_year = request.args.get("year", "")
+    raw_month = request.args.get("month", "")
+    if bool(raw_year) != bool(raw_month):
+        return _error("invalid_month", "year and month must be supplied together", 400)
+    selected_month = _strict_month(raw_year, raw_month) if raw_year else None
+    if raw_year and selected_month is None:
+        return _error("invalid_month", "year and month must use YYYY and 1–12", 400)
     invalid_profile = _invalid_profile_response(services)
     if invalid_profile is not None:
         return invalid_profile
@@ -162,14 +169,21 @@ def _dates(services: WebServices | None, strategy_name: str) -> RouteResponse:
     if selected is None:
         return _not_ready()
     profile_id, lane = selected
-    return jsonify(
+    dates = lane.queries.dates(
+        strategy,
+        year=selected_month[0] if selected_month is not None else None,
+        month=selected_month[1] if selected_month is not None else None,
+    )
+    response = jsonify(
         {
             "schema_version": "freeze_dates",
             "strategy": strategy.value,
             "scoring_profile": profile_id,
-            "dates": [value.isoformat() for value in lane.queries.dates(strategy)],
+            "dates": [value.isoformat() for value in dates],
         }
     )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _company_documents(services: WebServices | None, code: str) -> RouteResponse:
@@ -907,6 +921,18 @@ def _strict_date(raw: str) -> date | None:
     except ValueError:
         return None
     return parsed if parsed.isoformat() == raw else None
+
+
+def _strict_month(raw_year: str, raw_month: str) -> tuple[int, int] | None:
+    if len(raw_year) != 4 or not raw_year.isascii() or not raw_year.isdigit():
+        return None
+    if not raw_month.isascii() or not raw_month.isdigit() or len(raw_month) not in (1, 2):
+        return None
+    year = int(raw_year)
+    month = int(raw_month)
+    if year < 1 or not 1 <= month <= 12:
+        return None
+    return year, month
 
 
 def _cursor(raw: str | None) -> int | None:

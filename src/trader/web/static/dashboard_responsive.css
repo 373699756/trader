@@ -121,9 +121,11 @@
     justify-content: space-between;
   }
 
-  .date-control select {
+  .date-picker {
     flex: 1 1 auto;
   }
+
+  .date-picker-button { width: 100%; }
 
   .summary-band,
   .summary-band.is-three-column {

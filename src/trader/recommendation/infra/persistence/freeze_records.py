@@ -7,6 +7,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 import hashlib
 import sqlite3
 import threading
+from calendar import monthrange
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -172,25 +173,49 @@ class SQLiteFreezeRecords:
                 self._cache.put(identity, record, data_version=record.version, source_time=record.committed_at)
             return record
 
-    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
-        if not 1 <= limit <= 366:
+    def list_dates(
+        self,
+        strategy: Strategy,
+        *,
+        limit: int = 31,
+        year: int | None = None,
+        month: int | None = None,
+    ) -> tuple[date, ...]:
+        if (year is None) != (month is None):
+            raise ValueError("freeze date month requires both year and month")
+        month_start: date | None = None
+        month_end: date | None = None
+        if year is not None and month is not None:
+            month_start = date(year, month, 1)
+            month_end = date(year, month, monthrange(year, month)[1])
+        elif not 1 <= limit <= 366:
             raise ValueError("freeze date limit must be between 1 and 366")
-        identity = self._cache_identity("published_date_index", strategy, "dates")
+        date_key = f"{year:04d}-{month:02d}" if year is not None and month is not None else "dates"
+        identity = self._cache_identity("published_date_index", strategy, date_key)
         with self._lock:
             cached = self._cache.get(identity) if self._cache is not None else None
             if cached is not None and isinstance(cached.value, _FreezeDates) and cached.state == "fresh":
-                return cached.value.dates[:limit]
+                return cached.value.dates if month_start is not None else cached.value.dates[:limit]
             if not self._database.exists():
                 return ()
             with self._connect() as connection:
-                rows = connection.run(
-                    "SELECT trade_date FROM freeze_record WHERE strategy=? AND status='committed' ORDER BY trade_date DESC LIMIT ?",
-                    (strategy.value, 366 if self._cache is not None else limit),
-                ).fetchall()
+                if month_start is not None and month_end is not None:
+                    rows = connection.run(
+                        "SELECT trade_date FROM freeze_record "
+                        "WHERE strategy=? AND status='committed' AND trade_date>=? AND trade_date<=? "
+                        "ORDER BY trade_date DESC",
+                        (strategy.value, EncodeDate(month_start), EncodeDate(month_end)),
+                    ).fetchall()
+                else:
+                    rows = connection.run(
+                        "SELECT trade_date FROM freeze_record WHERE strategy=? AND status='committed' "
+                        "ORDER BY trade_date DESC LIMIT ?",
+                        (strategy.value, 366 if self._cache is not None else limit),
+                    ).fetchall()
             dates = tuple(DecodeDate(row["trade_date"]) for row in rows)
             if self._cache is not None:
                 self._cache.put(identity, _FreezeDates(dates), data_version="freeze_dates", source_time=self._wall_clock())
-            return dates[:limit]
+            return dates if month_start is not None else dates[:limit]
 
     def _cache_identity(self, dataset: str, strategy: Strategy, trade_date: str) -> CacheIdentity:
         return CacheIdentity(

@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from dataclasses import replace
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from pathlib import Path
 
@@ -162,6 +162,31 @@ def test_formal_record_dates_are_bounded_and_newest_first(tmp_path: Path) -> Non
     assert records.list_dates(Strategy.D25) == ()
     with pytest.raises(ValueError, match="between 1 and 366"):
         records.list_dates(Strategy.TOMORROW, limit=0)
+
+
+def test_formal_record_dates_can_be_read_for_any_calendar_month(tmp_path: Path) -> None:
+    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", cache=_read_cache(), sqlite_policy=SqlitePolicyFixture())
+    records.initialize()
+    january = date(2025, 1, 15)
+    recent_dates = tuple(date(2026, 7, day) for day in range(1, 32)) + tuple(
+        date(2026, 8, day) for day in range(1, 5)
+    )
+    for sequence, trade_date in enumerate((january, *recent_dates), start=1):
+        frozen = freeze(sequence=sequence)
+        quote = frozen.items[0].quote
+        assert quote is not None
+        observed_at = datetime.combine(trade_date, datetime.min.time(), tzinfo=NOW.tzinfo)
+        item = replace(frozen.items[0], quote=replace(quote, source_time=observed_at))
+        records.commit(CommittedFreezeRecord(
+            replace(frozen, trade_date=trade_date, observed_at=observed_at, items=(item,)),
+            observed_at,
+            "scheduled",
+        ))
+
+    assert january not in records.list_dates(Strategy.TOMORROW, limit=31)
+    assert records.list_dates(Strategy.TOMORROW, year=2025, month=1) == (january,)
+    assert records.list_dates(Strategy.TOMORROW, year=2026, month=7) == tuple(reversed(recent_dates[:31]))
+    assert records.list_dates(Strategy.TOMORROW, year=2025, month=2) == ()
 
 
 def test_same_strategy_date_hash_conflict_is_rejected(tmp_path: Path) -> None:

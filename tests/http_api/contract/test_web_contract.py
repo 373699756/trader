@@ -55,6 +55,9 @@ def test_unified_freeze_routes_validate_strategy_date_and_etag() -> None:
         headers={"If-None-Match": current.headers["ETag"]},
     )
     dates = client.get("/api/freezes/tomorrow/dates")
+    month_dates = client.get("/api/freezes/tomorrow/dates?year=2026&month=8")
+    invalid_month = client.get("/api/freezes/tomorrow/dates?year=2026&month=13")
+    partial_month = client.get("/api/freezes/tomorrow/dates?year=2026")
     invalid_strategy = client.get("/api/freezes/weekly/current")
     invalid_date = client.get("/api/freezes/tomorrow/history?date=2026-8-8")
 
@@ -85,6 +88,11 @@ def test_unified_freeze_routes_validate_strategy_date_and_etag() -> None:
     }
     assert cached.status_code == 304
     assert dates.get_json()["dates"] == ["2026-08-08"]
+    assert month_dates.get_json()["dates"] == ["2026-08-08"]
+    assert month_dates.headers["Cache-Control"] == "no-store"
+    assert invalid_month.status_code == 400
+    assert invalid_month.get_json()["error"]["code"] == "invalid_month"
+    assert partial_month.status_code == 400
     assert invalid_strategy.status_code == 400
     assert invalid_strategy.get_json()["error"]["code"] == "invalid_strategy"
     assert invalid_date.status_code == 400

@@ -7,6 +7,11 @@
     strategy: "tomorrow",
     view: "current",
     date: "",
+    calendarYear: new Date().getFullYear(),
+    calendarMonth: new Date().getMonth() + 1,
+    calendarDates: [],
+    calendarDatesAvailability: "unknown",
+    calendarRequestSequence: 0,
     payload: null,
     payloads: new Map(),
     etags: new Map(),
@@ -114,7 +119,9 @@
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "quoteFreshness", "streamStatus",
       "summaryBand", "budgetPanel", "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta",
-      "refreshButton", "dateSelect", "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelMeta",
+      "refreshButton", "datePicker", "datePickerButton", "datePickerLabel", "dateCalendar", "dateCalendarTitle",
+      "dateCalendarPrevious", "dateCalendarNext", "dateCalendarGrid", "dateCalendarStatus", "dateCalendarCurrent", "dateCalendarClose",
+      "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelMeta",
       "inputQualityStrategy", "inputQualityScoreTime", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody", "outcomeSummary", "sixSeatStatus", "sixSeatMeta",
       "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
@@ -143,10 +150,14 @@
       state.longGroup = button.dataset.group;
       if (state.payload) renderPayload(state.payload);
     });
-    els.dateSelect.addEventListener("change", () => {
-      state.date = els.dateSelect.value;
-      state.selectedDateAvailability = "available";
-      loadRecommendations("date");
+    els.datePickerButton.addEventListener("click", toggleDateCalendar);
+    els.dateCalendarPrevious.addEventListener("click", () => changeCalendarMonth(-1));
+    els.dateCalendarNext.addEventListener("click", () => changeCalendarMonth(1));
+    els.dateCalendarGrid.addEventListener("click", selectCalendarDate);
+    els.dateCalendarCurrent.addEventListener("click", selectCurrentDate);
+    els.dateCalendarClose.addEventListener("click", () => closeDateCalendar(true));
+    document.addEventListener("click", (event) => {
+      if (!els.datePicker.contains(event.target)) closeDateCalendar(false);
     });
     els.refreshButton.addEventListener("click", () => loadRecommendations("manual"));
     [els.tableBody].forEach((body) => {
@@ -164,6 +175,7 @@
     });
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
+      closeDateCalendar(true);
       closeDrawer();
       errorDrawer.close(true);
     });
@@ -221,6 +233,7 @@
   async function selectStrategy(strategy) {
     const nextStrategy = strategy || "tomorrow";
     if (!selection.descriptions[nextStrategy] || state.strategy === nextStrategy && state.payload) return;
+    closeDateCalendar(false);
     const previousStrategy = state.strategy;
     const selectedDate = state.date;
     const selectionId = ++state.selectionSequence;
@@ -235,7 +248,7 @@
     closeDrawer();
     errorDrawer.close(false);
     statusView.setObservationTriggerAvailability(els, nextStrategy);
-    els.dateSelect.disabled = true;
+    els.datePickerButton.disabled = true;
     els.strategyDescription.textContent = selection.descriptions[nextStrategy];
     stateRenderer.setLongControls(nextStrategy === "long");
     document.querySelectorAll(".strategy-tab").forEach((button) => {
@@ -247,15 +260,22 @@
     const provisionalDate = selection.resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, null);
     state.date = provisionalDate.date;
     state.selectedDateAvailability = provisionalDate.availability;
-    selection.renderDateOptions(els.dateSelect, nextStrategy, [], provisionalDate.date, provisionalDate.availability);
-    els.dateSelect.disabled = true;
+    const selectedMonth = monthFromDate(provisionalDate.date);
+    state.calendarYear = selectedMonth ? selectedMonth.year : new Date().getFullYear();
+    state.calendarMonth = selectedMonth ? selectedMonth.month : new Date().getMonth() + 1;
+    state.calendarDatesAvailability = "loading";
+    renderCalendar();
     if ((previousStrategy === "long") !== (nextStrategy === "long")) streamController.connect();
-    const dates = await loadDates(nextStrategy, selectionId);
+    const dates = await loadDates(nextStrategy, selectionId, state.calendarYear, state.calendarMonth);
     if (selectionId !== state.selectionSequence) return;
+    state.calendarDates = dates || [];
+    state.calendarDatesAvailability = dates === null ? "unknown" : "available";
     const resolved = selection.resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, dates);
     state.date = resolved.date;
     state.selectedDateAvailability = resolved.availability;
-    selection.renderDateOptions(els.dateSelect, state.strategy, dates, resolved.date, resolved.availability);
+    renderCalendar();
+    updateDatePickerButton();
+    els.datePickerButton.disabled = state.strategy === "long";
     if (resolved.availability === "missing") {
       stateRenderer.renderMissingHistoricalDate(nextStrategy, resolved.date);
       return;
@@ -266,19 +286,167 @@
     await loadRecommendations("strategy");
   }
 
-  async function loadDates(strategy, selectionId) {
+  async function loadDates(strategy, selectionId, year, month) {
     if (strategy === "long") return [];
+    const requestId = ++state.calendarRequestSequence;
     try {
       const query = freezeProfileQuery(strategy);
-      const response = await fetch(`/api/freezes/${encodeURIComponent(strategy)}/dates${query ? `?${query}` : ""}`, { cache: "no-store" });
+      const params = new URLSearchParams({ year: String(year), month: String(month).padStart(2, "0") });
+      if (query) {
+        const profile = new URLSearchParams(query).get("profile");
+        if (profile) params.set("profile", profile);
+      }
+      const response = await fetch(`/api/freezes/${encodeURIComponent(strategy)}/dates?${params.toString()}`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error("历史日期接口请求失败");
-      if (selectionId !== state.selectionSequence || strategy !== state.strategy) return [];
-      return Array.from(new Set((payload.dates || []).filter((value) => typeof value === "string")));
+      if (selectionId !== state.selectionSequence || requestId !== state.calendarRequestSequence || strategy !== state.strategy) return null;
+      const profile = deliveryProfile(strategy);
+      if (payload.schema_version !== "freeze_dates" || payload.strategy !== strategy
+        || profile && payload.scoring_profile !== profile || !Array.isArray(payload.dates)) {
+        throw new Error("历史日期接口返回格式无效");
+      }
+      const monthPrefix = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-`;
+      return Array.from(new Set(payload.dates.filter((value) => typeof value === "string" && value.startsWith(monthPrefix))));
     } catch (_error) {
-      if (strategy === state.strategy) stateRenderer.setNotice("历史日期暂不可用，正在直接读取所选日期", "warn");
+      if (selectionId === state.selectionSequence && strategy === state.strategy) {
+        stateRenderer.setNotice("历史日期暂不可用，正在直接读取所选日期", "warn");
+      }
       return null;
     }
+  }
+
+  function monthFromDate(value) {
+    const match = typeof value === "string" && /^(\d{4})-(\d{2})-\d{2}$/.exec(value);
+    if (!match) return null;
+    return { year: Number(match[1]), month: Number(match[2]) };
+  }
+
+  function toggleDateCalendar() {
+    if (!els.dateCalendar.hidden) {
+      closeDateCalendar(false);
+      return;
+    }
+    els.dateCalendar.hidden = false;
+    els.datePickerButton.setAttribute("aria-expanded", "true");
+    if (state.calendarDatesAvailability === "unknown") refreshCalendarDates();
+  }
+
+  function closeDateCalendar(restoreFocus) {
+    if (!els.dateCalendar || els.dateCalendar.hidden) return;
+    els.dateCalendar.hidden = true;
+    els.datePickerButton.setAttribute("aria-expanded", "false");
+    if (restoreFocus) els.datePickerButton.focus();
+  }
+
+  async function refreshCalendarDates() {
+    const selectionId = state.selectionSequence;
+    state.calendarDatesAvailability = "loading";
+    renderCalendar();
+    const request = loadDates(state.strategy, selectionId, state.calendarYear, state.calendarMonth);
+    const requestId = state.calendarRequestSequence;
+    const dates = await request;
+    if (selectionId !== state.selectionSequence || requestId !== state.calendarRequestSequence) return;
+    state.calendarDates = dates || [];
+    state.calendarDatesAvailability = dates === null ? "unknown" : "available";
+    renderCalendar();
+  }
+
+  async function changeCalendarMonth(delta) {
+    let year = state.calendarYear;
+    let month = state.calendarMonth + delta;
+    if (month < 1) { year -= 1; month = 12; }
+    if (month > 12) { year += 1; month = 1; }
+    if (year < 1 || year > 9999) return;
+    state.calendarYear = year;
+    state.calendarMonth = month;
+    state.calendarDates = [];
+    state.calendarDatesAvailability = "loading";
+    renderCalendar();
+    const selectionId = state.selectionSequence;
+    const request = loadDates(state.strategy, selectionId, year, month);
+    const requestId = state.calendarRequestSequence;
+    const dates = await request;
+    if (selectionId !== state.selectionSequence || requestId !== state.calendarRequestSequence
+      || year !== state.calendarYear || month !== state.calendarMonth) return;
+    state.calendarDates = dates || [];
+    state.calendarDatesAvailability = dates === null ? "unknown" : "available";
+    renderCalendar();
+  }
+
+  function renderCalendar() {
+    if (!els.dateCalendarGrid) return;
+    const year = state.calendarYear;
+    const month = state.calendarMonth;
+    els.dateCalendarTitle.textContent = `${year}年${String(month).padStart(2, "0")}月`;
+    els.dateCalendarPrevious.disabled = year === 1 && month === 1;
+    els.dateCalendarNext.disabled = year === 9999 && month === 12;
+    els.dateCalendarGrid.replaceChildren();
+    const dates = state.calendarDatesAvailability === "available" ? state.calendarDates : [];
+    for (const cell of selection.calendarCells(year, month, dates, state.date)) {
+      if (!cell.date) {
+        const empty = document.createElement("span");
+        empty.setAttribute("aria-hidden", "true");
+        els.dateCalendarGrid.append(empty);
+        continue;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "date-calendar-day";
+      if (cell.hasFreeze) button.classList.add("has-freeze");
+      if (cell.selected) button.classList.add("is-selected");
+      button.dataset.tradeDate = cell.date;
+      button.textContent = cell.day;
+      button.disabled = !cell.hasFreeze || state.calendarDatesAvailability !== "available";
+      button.setAttribute("aria-label", cell.hasFreeze ? `${cell.date}，有冻结记录` : `${cell.date}，无冻结记录`);
+      button.setAttribute("aria-pressed", String(cell.selected));
+      els.dateCalendarGrid.append(button);
+    }
+    if (state.strategy === "long") {
+      els.dateCalendarStatus.textContent = "长期策略没有冻结历史";
+    } else if (state.calendarDatesAvailability === "loading") {
+      els.dateCalendarStatus.textContent = "正在读取本月冻结日期…";
+    } else if (state.calendarDatesAvailability === "unknown") {
+      els.dateCalendarStatus.textContent = "日期暂不可用；关闭后重新打开可重试";
+    } else if (!state.calendarDates.length) {
+      els.dateCalendarStatus.textContent = "本月没有冻结记录";
+    } else {
+      els.dateCalendarStatus.textContent = "红色日期有冻结记录，点击日期查看当天记录";
+    }
+  }
+
+  function updateDatePickerButton() {
+    if (!els.datePickerLabel) return;
+    els.datePickerLabel.textContent = state.date || "当前";
+    els.datePickerButton.setAttribute("aria-label", state.date ? `选择推荐日期，${state.date}` : "选择推荐日期，当前");
+  }
+
+  function selectCalendarDate(event) {
+    const button = event.target.closest("button[data-trade-date]");
+    if (!button || button.disabled || !els.dateCalendarGrid.contains(button)) return;
+    state.date = button.dataset.tradeDate;
+    state.selectedDateAvailability = "available";
+    updateDatePickerButton();
+    closeDateCalendar(true);
+    loadRecommendations("date");
+  }
+
+  function selectCurrentDate() {
+    state.date = "";
+    state.selectedDateAvailability = "available";
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1;
+    const changedMonth = state.calendarYear !== year || state.calendarMonth !== month;
+    state.calendarYear = year;
+    state.calendarMonth = month;
+    if (changedMonth) {
+      state.calendarDates = [];
+      state.calendarDatesAvailability = "unknown";
+    }
+    updateDatePickerButton();
+    closeDateCalendar(true);
+    if (changedMonth) refreshCalendarDates();
+    loadRecommendations("date");
   }
 
   async function loadRecommendations(reason) {
@@ -316,7 +484,6 @@
       if (requestId !== state.requestSequence) return;
       if (selectedDate) {
         state.selectedDateAvailability = "available";
-        selection.markDateAvailability(els.dateSelect, selectedDate, "available");
       }
       if (state.payload !== payload) {
         const previous = state.payload;
@@ -347,7 +514,6 @@
       }
       if (selectedDate && selection.isSnapshotNotFound(error)) {
         state.selectedDateAvailability = "missing";
-        selection.markDateAvailability(els.dateSelect, selectedDate, "missing");
         stateRenderer.renderMissingHistoricalDate(strategy, selectedDate);
         return;
       }

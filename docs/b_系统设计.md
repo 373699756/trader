@@ -568,6 +568,8 @@ flowchart TD
 
 默认打开 Tomorrow，刷新保留用户已选档位、策略和日期。分数旁解释“排序分”和“本地动作分”；六席可能含关注和回避，不能标成六只推荐。Long 显示固定名单及自加入锚点涨跌幅，独立刷新。
 
+Tomorrow／D25 的日期按钮打开按月日历；所选评分档位和策略下有正式冻结记录的日期标红，点击日期只读显示该日记录。日历只标记数据库中实际存在的正式日期，不补造历史；月份切换按年月读取，不受最近31条日期目录限制。当前按钮返回实时视图，Long 不提供冻结日期。
+
 Long报价按第3章的时段合同判断有效年龄：午休扣除休市交集，同日有效收盘报价沿用至24:00；真实来源时间及诊断墙钟年龄不变。有效年龄超过scheduler配置上限时以retained展示，保留价格及source_time，并报告long_quotes_stale/long_quotes_partial；收到响应不会刷新来源年龄。年龄在本次刷新完成时按最终展示报价计算：请求失败或缺价后沿用的报价也须检查，被拒绝的较旧响应不能给较新的保留报价误加超龄标记。非交易日预览仍按PreviewContext核验前一交易日最后收盘报价，不把合法的历史预览当成实时超龄。
 
 本地评分沿同一资格和算术owner分别计量candidate_preparation_and_qualification、board_reference_build、candidate_policy_and_ranking及local_component_scoring，统一放入LOCAL_SCORE阶段的operation_durations。板内参考构建只使用完整合格总体，后续策略投影及排名使用与它绑定的不可变资格输入；计量不进入正式冻结身份，也不表示新增缓存或优化已启用。
@@ -584,11 +586,13 @@ Long报价按第3章的时段合同判断有效年龄：午休扣除休市交集
 | `/api/freezes/current` | 全部启用档位双策略批次 | 在同一锁内捕获不可变引用，再投影 |
 | `/api/freezes/<strategy>/current` | 单个只读视图 | 不拼接成新批次 |
 | `/api/freezes/<strategy>/history?date=YYYY-MM-DD` | 精确日期正式历史 | 通过只读用例，HTTP 不直接读库 |
-| `/api/freezes/<strategy>/dates` | 正式日期目录 | Long 无历史，日期为空 |
+| `/api/freezes/<strategy>/dates?year=YYYY&month=MM` | 指定年月的正式日期目录；不传年月时仍返回最近日期 | HTTP只读查询；年月必须同时提供；Long 无历史，日期为空 |
 | `/api/status` | 内存状态和诊断摘要 | 不读库、文件或网络 |
 | `/api/events` | 有界 SSE 事件 | 短线整批事件、Long 独立事件 |
 
 `profile` 只允许一个已启动的 v1/v2/v3/v5，`strategy` 只允许 tomorrow/d25/long。内部模型与完整供应商载荷不得直接序列化，adapter 用公开白名单。
+
+日期目录的`year`与`month`必须成对且取值有效；月查询只返回该评分档位、策略和自然月下已提交的冻结日期。普通无年月调用保留最近31条结果供现有调用方使用，Web日历使用月查询遍历更早历史；日期缺席表示当前冻结库没有对应记录，不会触发补算或写入。
 
 `/api/status`的`market_data.sources.company_evidence.last_error_code`只公开有限的预载状态和已知读取异常类别；未知原因归`company_snapshot_unavailable`，无错误为null，不公开原始错误文本。planned_count/error_count统计已采用资料，预载完全失败时也可能同时为0，须结合错误码、loaded_identity及覆盖判断，不能仅据0错误签加载成功。
 

@@ -2003,27 +2003,25 @@ assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.resolveStrategyDate("tomorrow", "tomorrow", "2026-07-22", null))),
   { date: "2026-07-22", availability: "unknown" },
 );
-const dateSelect = {
-  disabled: false,
-  options: [],
-  value: "",
-  append(option) { this.options.push(option); },
-  set innerHTML(value) {
-    assert.strictEqual(value, "");
-    this.options.length = 0;
-  },
-};
-state.renderDateOptions(dateSelect, "tomorrow", ["2026-07-21"], "2026-07-22", "missing");
+const julyCells = state.calendarCells(2026, 7, ["2026-07-21", "2026-07-22"], "2026-07-22");
+assert.strictEqual(julyCells.length, 35);
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(dateSelect.options)),
+  JSON.parse(JSON.stringify(julyCells.slice(0, 4))),
   [
-    { value: "", textContent: "当前" },
-    { value: "2026-07-22", textContent: "2026-07-22（无数据）" },
-    { value: "2026-07-21", textContent: "2026-07-21" },
+    { date: "", day: "", hasFreeze: false, selected: false },
+    { date: "", day: "", hasFreeze: false, selected: false },
+    { date: "", day: "", hasFreeze: false, selected: false },
+    { date: "2026-07-01", day: "1", hasFreeze: false, selected: false },
   ],
 );
-assert.strictEqual(dateSelect.value, "2026-07-22");
-assert.strictEqual(dateSelect.disabled, false);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(julyCells.slice(23, 25))),
+  [
+    { date: "2026-07-21", day: "21", hasFreeze: true, selected: false },
+    { date: "2026-07-22", day: "22", hasFreeze: true, selected: true },
+  ],
+);
+assert.strictEqual(state.calendarCells(2024, 2, ["2024-02-29"], "").length, 35);
 const mixedItems = [
   { code: "600001", action: "executable" },
   { code: "600002", action: "observe" },

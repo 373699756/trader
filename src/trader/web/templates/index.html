@@ -89,12 +89,32 @@
           </div>
         </div>
         {% endif %}
-        <label class="date-control">
+        <div class="date-control">
           <span>推荐日期</span>
-          <select id="dateSelect" aria-label="推荐日期">
-            <option value="">当前</option>
-          </select>
-        </label>
+          <div id="datePicker" class="date-picker">
+            <button id="datePickerButton" class="date-picker-button" type="button" aria-label="选择推荐日期" aria-haspopup="dialog" aria-expanded="false" aria-controls="dateCalendar">
+              <span id="datePickerLabel">当前</span>
+              <span class="date-picker-caret" aria-hidden="true">▾</span>
+            </button>
+            <section id="dateCalendar" class="date-calendar" role="dialog" aria-labelledby="dateCalendarTitle" hidden>
+              <header class="date-calendar-header">
+                <button id="dateCalendarPrevious" class="date-calendar-nav" type="button" aria-label="上一个月">‹</button>
+                <h2 id="dateCalendarTitle">冻结日期</h2>
+                <button id="dateCalendarNext" class="date-calendar-nav" type="button" aria-label="下一个月">›</button>
+              </header>
+              <div class="date-calendar-weekdays" role="row">
+                <span role="columnheader">日</span><span role="columnheader">一</span><span role="columnheader">二</span>
+                <span role="columnheader">三</span><span role="columnheader">四</span><span role="columnheader">五</span><span role="columnheader">六</span>
+              </div>
+              <div id="dateCalendarGrid" class="date-calendar-grid" role="grid" aria-labelledby="dateCalendarTitle"></div>
+              <p id="dateCalendarStatus" class="date-calendar-status" aria-live="polite">红色日期有冻结记录</p>
+              <footer class="date-calendar-footer">
+                <button id="dateCalendarCurrent" class="date-calendar-current" type="button">当前</button>
+                <button id="dateCalendarClose" class="date-calendar-close" type="button">关闭</button>
+              </footer>
+            </section>
+          </div>
+        </div>
       </section>
 
       <section id="recommendation-layout" class="recommendation-layout" aria-label="推荐列表">

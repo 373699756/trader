@@ -36,7 +36,14 @@ class FreezeRecordPort(Protocol):
 
     def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None: ...
 
-    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]: ...
+    def list_dates(
+        self,
+        strategy: Strategy,
+        *,
+        limit: int = 31,
+        year: int | None = None,
+        month: int | None = None,
+    ) -> tuple[date, ...]: ...
 
     def recover(self) -> FreezeRecordRecoverySummary: ...
 

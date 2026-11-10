@@ -51,7 +51,14 @@ FREEZE_VIEW_SCHEMA_VERSION = "freeze_view"
 class FreezeHistoryReader(Protocol):
     def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None: ...
 
-    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]: ...
+    def list_dates(
+        self,
+        strategy: Strategy,
+        *,
+        limit: int = 31,
+        year: int | None = None,
+        month: int | None = None,
+    ) -> tuple[date, ...]: ...
 
 
 class CachedQuoteReader(Protocol):
@@ -338,11 +345,20 @@ class UnifiedFreezeQueries:
         ).hexdigest()[:16]
         return replace(view, etag=f"{view.etag}+outcomes:{digest}")
 
-    def dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
+    def dates(
+        self,
+        strategy: Strategy,
+        *,
+        limit: int = 31,
+        year: int | None = None,
+        month: int | None = None,
+    ) -> tuple[date, ...]:
         if strategy is Strategy.LONG:
             return ()
+        if (year is None) != (month is None):
+            raise ValueError("freeze date month requires both year and month")
         try:
-            return self._history.list_dates(strategy, limit=limit)
+            return self._history.list_dates(strategy, limit=limit, year=year, month=month)
         except (FreezeRecordError, OSError):
             return ()
 

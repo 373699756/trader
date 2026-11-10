@@ -37,6 +37,9 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
 
     assert "?rev=" not in page
     assert 'id="long-panel-title">卡脖子行业<' in page
+    assert 'id="datePickerButton"' in page
+    assert 'id="dateCalendarGrid"' in page
+    assert 'id="dateSelect"' not in page
     assert 'data-scope="future_growth"' in page
     assert 'data-scope="low_price_potential"' in page
     assert page.count("summary-item") == 4

@@ -26,9 +26,19 @@ class _FreezeRecords:
             return self.record
         return None
 
-    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
+    def list_dates(
+        self,
+        strategy: Strategy,
+        *,
+        limit: int = 31,
+        year: int | None = None,
+        month: int | None = None,
+    ) -> tuple[date, ...]:
         if self.record is not None and self.record.strategy is strategy:
-            return (self.record.trade_date,)[:limit]
+            trade_date = self.record.trade_date
+            if year is not None and month is not None and (trade_date.year != year or trade_date.month != month):
+                return ()
+            return (trade_date,)[:limit]
         return ()
 
 

@@ -28,11 +28,14 @@ class _Freezes:
     def __init__(self, record: CommittedFreezeRecord | None = None) -> None:
         self.record = record
 
-    def list_dates(self, strategy, *, limit=31):
+    def list_dates(self, strategy, *, limit=31, year=None, month=None):
         assert limit == 31
         if self.record is None or strategy is not self.record.strategy:
             return ()
-        return (self.record.trade_date,)
+        trade_date = self.record.trade_date
+        if year is not None and month is not None and (trade_date.year != year or trade_date.month != month):
+            return ()
+        return (trade_date,)
 
     def load(self, strategy, trade_date):
         if self.record is not None and strategy is self.record.strategy and trade_date == self.record.trade_date:

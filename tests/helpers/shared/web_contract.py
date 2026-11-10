@@ -37,8 +37,19 @@ class _FreezeRecords:
     def load(self, strategy: Strategy, trade_date: date):
         return None
 
-    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
-        return (date(2026, 8, 8),) if strategy is Strategy.TOMORROW else ()
+    def list_dates(
+        self,
+        strategy: Strategy,
+        *,
+        limit: int = 31,
+        year: int | None = None,
+        month: int | None = None,
+    ) -> tuple[date, ...]:
+        del limit
+        values = (date(2026, 8, 8),) if strategy is Strategy.TOMORROW else ()
+        if year is None or month is None:
+            return values
+        return tuple(value for value in values if value.year == year and value.month == month)
 
 
 def _app():

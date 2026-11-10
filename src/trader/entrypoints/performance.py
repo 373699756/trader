@@ -1056,8 +1056,15 @@ class _EmptyHistory:
         del strategy, trade_date
         return None
 
-    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
-        del strategy, limit
+    def list_dates(
+        self,
+        strategy: Strategy,
+        *,
+        limit: int = 31,
+        year: int | None = None,
+        month: int | None = None,
+    ) -> tuple[date, ...]:
+        del strategy, limit, year, month
         return ()
 
 

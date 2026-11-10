@@ -43,7 +43,14 @@ def test_preview_current_survives_close_and_next_day_without_history_reads(hours
         def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
             pytest.fail("preview current must not read formal history")
 
-        def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
+        def list_dates(
+            self,
+            strategy: Strategy,
+            *,
+            limit: int = 31,
+            year: int | None = None,
+            month: int | None = None,
+        ) -> tuple[date, ...]:
             pytest.fail("preview current must not read history dates")
 
     queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), History(), Clock())

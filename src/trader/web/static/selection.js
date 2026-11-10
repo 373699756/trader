@@ -24,27 +24,22 @@
     };
   }
 
-  function renderDateOptions(select, strategy, availableDates, selectedDate, availability) {
-    select.innerHTML = "";
-    appendOption(select, "", "当前");
-    if (selectedDate && availability !== "available") {
-      appendOption(
-        select,
-        selectedDate,
-        availability === "missing" ? `${selectedDate}（无数据）` : selectedDate,
-      );
-    }
-    for (const value of availableDates || []) {
-      if (value !== selectedDate || availability === "available") appendOption(select, value, value);
-    }
-    select.value = selectedDate;
-    select.disabled = strategy === "long";
-  }
-
-  function markDateAvailability(select, selectedDate, availability) {
-    const option = Array.from(select.options).find((candidate) => candidate.value === selectedDate);
-    if (!option) return;
-    option.textContent = availability === "missing" ? `${selectedDate}（无数据）` : selectedDate;
+  function calendarCells(year, month, availableDates, selectedDate) {
+    const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+    const dayCount = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const cellCount = Math.ceil((firstWeekday + dayCount) / 7) * 7;
+    const datesWithFreezes = new Set(availableDates || []);
+    return Array.from({ length: cellCount }, (_unused, index) => {
+      const day = index - firstWeekday + 1;
+      if (day < 1 || day > dayCount) return { date: "", day: "", hasFreeze: false, selected: false };
+      const date = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      return {
+        date,
+        day: String(day),
+        hasFreeze: datesWithFreezes.has(date),
+        selected: date === selectedDate,
+      };
+    });
   }
 
   function visibleRecommendations(payload) {
@@ -141,24 +136,16 @@
     return ({ tomorrow: "明天", d25: "D25", long: "长期" })[strategy] || strategy;
   }
 
-  function appendOption(select, value, text) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = text;
-    select.append(option);
-  }
-
   window.TraderSelection = Object.freeze({
+    calendarCells,
     currentViewMatches,
     detailItem,
     descriptions,
     isSnapshotNotFound,
-    markDateAvailability,
     observationRecommendations,
     observationDisplayState,
     observationEmptyMessage,
     recommendationSummary,
-    renderDateOptions,
     resolveStrategyDate,
     strategyLabel,
     visibleRecommendations,
