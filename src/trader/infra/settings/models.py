@@ -93,7 +93,16 @@ class ExecutionSettings:
 
 
 @dataclass(frozen=True)
+class MarketSessionSettings:
+    morning_open: int
+    morning_close: int
+    afternoon_open: int
+    afternoon_close: int
+
+
+@dataclass(frozen=True)
 class PipelineSettings:
+    market_sessions: MarketSessionSettings
     event_queue_size: int
     priority_queue_size: int
     executors: ExecutionSettings

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import math
+import logging
 import sqlite3
 import threading
 from collections.abc import Callable
 
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class PublishedInputPreloader:
@@ -31,6 +34,7 @@ class PublishedInputPreloader:
         self._thread: threading.Thread | None = None
         self._started = False
         self._observers: list[Callable[[Callable[[], bool]], None]] = []
+        self._startup_observers: list[Callable[[], None]] = []
         self._observation_interval = observation_interval_seconds
 
     def register(self, history: PublishedHistoryCache, initialize: Callable[[Callable[[], bool]], None]) -> None:
@@ -45,6 +49,13 @@ class PublishedInputPreloader:
                 raise RuntimeError("published input observer registration is closed")
             if observer not in self._observers:
                 self._observers.append(observer)
+
+    def register_startup_observer(self, observer: Callable[[], None]) -> None:
+        with self._lock:
+            if self._started:
+                raise RuntimeError("published input startup observer registration is closed")
+            if observer not in self._startup_observers:
+                self._startup_observers.append(observer)
 
     def start(self) -> bool:
         with self._lock:
@@ -81,6 +92,15 @@ class PublishedInputPreloader:
                 initialize(self._cancel.is_set)
             except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
                 history.record_maintenance("failed", type(exc).__name__, stage="startup_preload")
+        # Every profile's fixed scoring input precedes slow maintenance. These
+        # observations must not close a successfully initialized input gate.
+        for observe_startup in self._startup_observers:
+            if self._cancel.is_set():
+                return
+            try:
+                observe_startup()
+            except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                _LOGGER.error("启动维护观察失败: category=%s", type(exc).__name__)
         while self._observers and not self._cancel.wait(self._observation_interval):
             for observe in self._observers:
                 if self._cancel.is_set():

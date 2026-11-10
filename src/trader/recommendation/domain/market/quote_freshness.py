@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -12,10 +13,46 @@ if TYPE_CHECKING:
     from trader.recommendation.domain.publication.preview import PreviewContext
 
 
+@dataclass(frozen=True)
+class QuoteSessionTimes:
+    morning_open: int
+    morning_close: int
+    afternoon_open: int
+    afternoon_close: int
+
+    def __post_init__(self) -> None:
+        values = (self.morning_open, self.morning_close, self.afternoon_open, self.afternoon_close)
+        if any(type(value) is not int for value in values) or not (
+            0 <= self.morning_open < self.morning_close < self.afternoon_open < self.afternoon_close <= 15 * 60
+        ):
+            raise ValueError("quote sessions must be ordered and end no later than the formal freeze")
+
+
+DEFAULT_QUOTE_SESSION_TIMES = QuoteSessionTimes(570, 690, 780, 900)
+
+
+def QuoteSnapshotTime(
+    observed_at: datetime, *, sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
+) -> datetime | None:
+    """Return the fixed same-day quote anchor outside continuous trading."""
+    if observed_at.utcoffset() is None:
+        raise ValueError("quote snapshot time requires a timezone-aware timestamp")
+    observed = observed_at.astimezone(_SHANGHAI)
+    current = observed.hour * 60 + observed.minute
+    if current >= 900:
+        return _at_minute(observed, 900)
+    if sessions.morning_close <= current < sessions.afternoon_open:
+        return _at_minute(observed, sessions.morning_close)
+    if current >= sessions.afternoon_close:
+        return _at_minute(observed, sessions.afternoon_close)
+    return None
+
+
 def QuoteFreshnessAgeSeconds(
-    source_time: datetime, observed_at: datetime, *, preview_context: PreviewContext | None = None
+    source_time: datetime, observed_at: datetime, *, preview_context: PreviewContext | None = None,
+    sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
 ) -> float:
-    """Keep same-day closing quotes eligible through the end of that business day."""
+    """Exclude the lunch break from age and retain same-day closing quotes."""
     if source_time.utcoffset() is None or observed_at.utcoffset() is None:
         raise ValueError("quote freshness requires timezone-aware timestamps")
     if preview_context is not None:
@@ -24,9 +61,17 @@ def QuoteFreshnessAgeSeconds(
     observed = observed_at.astimezone(_SHANGHAI)
     if source > observed or source.date() != observed.date():
         return float("inf")
-    if source.date() == observed.date() and source.time() >= time(15, 0):
+    closing_minute = 900 if observed.hour >= 15 else sessions.afternoon_close
+    if source.hour * 60 + source.minute >= closing_minute:
         return 0.0
-    return (observed - source).total_seconds()
+    lunch_start = _at_minute(observed, sessions.morning_close)
+    lunch_end = _at_minute(observed, sessions.afternoon_open)
+    lunch_seconds = max(0.0, (min(observed, lunch_end) - max(source, lunch_start)).total_seconds())
+    return (observed - source).total_seconds() - lunch_seconds
 
 
-__all__ = ["QuoteFreshnessAgeSeconds"]
+def _at_minute(observed: datetime, minute: int) -> datetime:
+    return observed.replace(hour=minute // 60, minute=minute % 60, second=0, microsecond=0)
+
+
+__all__ = ["QuoteFreshnessAgeSeconds", "QuoteSnapshotTime", "QuoteSessionTimes", "DEFAULT_QUOTE_SESSION_TIMES"]

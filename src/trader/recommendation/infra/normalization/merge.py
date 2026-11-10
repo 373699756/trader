@@ -17,7 +17,9 @@ from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )
-from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
+from trader.recommendation.domain.market.quote_freshness import (
+    DEFAULT_QUOTE_SESSION_TIMES, QuoteFreshnessAgeSeconds, QuoteSessionTimes,
+)
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.normalization.columnar_merge import (
     ColumnarMergeError,
@@ -38,6 +40,7 @@ class MergeObservationLimits:
     targeted_codes: Sequence[str] = ()
     max_age_seconds: float | None = None
     preview_context: PreviewContext | None = None
+    quote_sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES
 
 
 _DEFAULT_MERGE_LIMITS = MergeObservationLimits()
@@ -86,6 +89,7 @@ def MergeMarketObservations(
         observed_at=observed_at,
         max_age_seconds=limits.max_age_seconds,
         preview_context=limits.preview_context,
+        quote_sessions=limits.quote_sessions,
     )
     degraded.update(consistency_reasons)
     if not valid:
@@ -438,6 +442,7 @@ def _validate_observation_consistency(
     observed_at: datetime,
     max_age_seconds: float | None,
     preview_context: PreviewContext | None = None,
+    quote_sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
 ) -> tuple[list[SourceObservation], set[str]]:
     if max_age_seconds is not None and max_age_seconds < 0:
         raise ValueError("max_age_seconds must be non-negative")
@@ -482,7 +487,9 @@ def _validate_observation_consistency(
         for item in items:
             # Closing eligibility is limited to the same Shanghai business day;
             # a newly received previous-day quote must not become today's close.
-            age = QuoteFreshnessAgeSeconds(item.source_time, observed_at, preview_context=preview_context)
+            age = QuoteFreshnessAgeSeconds(
+                item.source_time, observed_at, preview_context=preview_context, sessions=quote_sessions,
+            )
             # Realtime quote deadlines must not evict durable security-reference
             # observations. Reference validity is owned by the reference loader.
             if (

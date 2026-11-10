@@ -121,7 +121,7 @@ from trader.recommendation.application.pipeline.score_merge.score_fusion import 
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.runtime import supervisor as runtime_supervisor
-from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
+from trader.recommendation.application.runtime.cadence import CadencePlanner, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
 from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
@@ -832,7 +832,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     effective_config_version = f"{settings.config_version}+{strategy.strategy_version}+cost_{cost_version}"
     now = _utc_now
     latency = LatencyWaterfall()
-    cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
+    cadence_policy = policy_settings.BuildCadencePolicy(settings.pipeline)
     cadence_planner = CadencePlanner(cadence_policy, started_at=ShanghaiClock(now).now())
     workers = _build_worker_context(settings, latency, shared_inputs.workers if shared_inputs else None)
     context = composition_inputs.RuntimeBuildContext(
@@ -921,9 +921,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
     review_client = DeepSeekHttpClient(post=HttpRequestScope(OpenExternalHttp).post)
     reviewer = DeepSeekReviewer.from_context(context, persistence.budget, review_client, review_cache)
-    policy = policy_settings.BuildRecommendationPolicy(context.strategy)
+    policy = policy_settings.BuildRecommendationPolicy(context.strategy, quote_sessions=context.cadence_policy.sessions)
     model_publications = PublishedTrainingState(
-        paths.history, paths.models, loaded_profile.publications if loaded_profile else (),
+        paths.history, paths.models, loaded_profile.publications if loaded_profile else (), metadata_cache=workers.market_cache,
         maintenance_path=paths.training_maintenance, owned_profile=profile_id, wall_clock=ShanghaiClock(now).now, sqlite_policy=sqlite_policy,
         load_expectation=HistoryTrainingExpectationReader(
             partial(ReadIndustrySnapshot, paths.reference, sqlite_policy=sqlite_policy),
@@ -1027,8 +1027,6 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             model_version=ContentHash(loaded_profile.publications) if loaded_profile else model_failure,
             config_version=effective_config_version,
         )
-        if not cancelled():
-            model_publications.initialize()
 
     input_preloader = (
         shared_inputs.input_preloader
@@ -1037,6 +1035,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
     if shared_inputs:
         input_preloader.register(market_data.history, initialize_published_inputs)
+    input_preloader.register_startup_observer(model_publications.initialize)
     for observe in (references.observe_publication, market_data.history.observe_publication,
                     market_data.research.observe_publication, model_publications.observe_publication):
         input_preloader.register_publication_observer(observe)
@@ -1320,7 +1319,7 @@ def _build_market_data(
             source_contracts=settings.market_data.source_contracts,
             config_version=settings.config_version,
             schema_version="market_snapshot",
-            wall_clock=now,
+            wall_clock=now, quote_sessions=context.cadence_policy.sessions,
             latency=context.latency,
             listing_open_dates=calendar.open_dates,
         )
@@ -1394,6 +1393,7 @@ def _build_market_data(
                 monotonic=time.monotonic,
                 historical_st_eligibility=references.historical_st_eligibility,
                 blacklist_codes=frozenset(strategy.hard_filters.blacklist_codes),
+                quote_sessions=context.cadence_policy.sessions,
             ),
         )
     )
@@ -1484,6 +1484,7 @@ def _build_publication(
                 context.owns_shared_runtime,
                 next_sequence=dependencies.next_sequence,
                 quote_max_age_seconds=settings.pipeline.long_quote_max_age_seconds,
+                quote_sessions=context.cadence_policy.sessions,
             ),
             config_version=context.effective_config_version,
             watchlist_version=context.watchlist.watchlist_version,

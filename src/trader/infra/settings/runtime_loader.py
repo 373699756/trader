@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from trader.infra.settings.models import (
     DeepSeekSettings,
     HistoryPreloadSettings,
     MarketDataSettings,
+    MarketSessionSettings,
     PipelineSettings,
     CompanyPreloadSettings,
     RuntimeSettings,
@@ -131,6 +133,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         "server",
     )
     pipeline_keys = {
+        "market_sessions",
         "event_queue_size",
         "priority_queue_size",
         "executors",
@@ -238,6 +241,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
             allow_insecure_non_loopback=_boolean(server_raw, "allow_insecure_non_loopback"),
         ),
         pipeline=PipelineSettings(
+            market_sessions=_parse_market_sessions(_mapping(pipeline_raw, "market_sessions")),
             event_queue_size=_integer(pipeline_raw, "event_queue_size", minimum=1),
             priority_queue_size=_integer(pipeline_raw, "priority_queue_size", minimum=1),
             executors=ParseExecutionSettings(_mapping(pipeline_raw, "executors")),
@@ -327,6 +331,22 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     )
     _validate_runtime_settings(settings)
     return settings
+
+
+def _parse_market_sessions(raw: Mapping[str, object]) -> MarketSessionSettings:
+    keys = ("morning_open", "morning_close", "afternoon_open", "afternoon_close")
+    _require_exact_keys(raw, set(keys), "pipeline.market_sessions")
+    minutes: list[int] = []
+    for key in keys:
+        value = _text(raw, key)
+        if re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value) is None:
+            raise ConfigurationError(f"pipeline.market_sessions.{key} must use HH:MM")
+        hour, minute = value.split(":")
+        minutes.append(int(hour) * 60 + int(minute))
+    morning_open, morning_close, afternoon_open, afternoon_close = minutes
+    if not 0 <= morning_open < morning_close < afternoon_open < afternoon_close <= 900:
+        raise ConfigurationError("pipeline.market_sessions must be ordered and end no later than 15:00")
+    return MarketSessionSettings(morning_open, morning_close, afternoon_open, afternoon_close)
 
 
 def _load_deepseek_api_key(project_root: Path) -> str:

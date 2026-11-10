@@ -7,6 +7,8 @@ from datetime import date, datetime, time
 from enum import Enum
 from zoneinfo import ZoneInfo
 
+from trader.recommendation.domain.market.quote_freshness import DEFAULT_QUOTE_SESSION_TIMES, QuoteSessionTimes
+
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 FREEZE_TIME = time(15, 0)
 
@@ -24,10 +26,7 @@ class SchedulePoint(str, Enum):
 
 # Extra wakeups serve independent minute/industry collection, not recommendation phases.
 _PHASE_BOUNDARIES = (
-    time(9, 15),
-    time(9, 30),
     time(11, 20),
-    time(13, 0),
     time(14, 20),
     time(14, 48),
     FREEZE_TIME,
@@ -49,17 +48,21 @@ def ShanghaiNow(value: datetime) -> datetime:
     return value.astimezone(SHANGHAI)
 
 
-def PhaseAt(value: datetime, *, is_trading_day: bool) -> MarketPhase:
+def PhaseAt(
+    value: datetime, *, is_trading_day: bool, sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
+) -> MarketPhase:
     if not is_trading_day:
         return MarketPhase.CLOSED
     current = ShanghaiNow(value).time().replace(tzinfo=None)
     if current >= FREEZE_TIME:
         return MarketPhase.AFTER_CLOSE
-    return MarketPhase.BEFORE_CLOSE if current >= time(9, 15) else MarketPhase.CLOSED
+    return MarketPhase.BEFORE_CLOSE if current.hour * 60 + current.minute >= sessions.morning_open else MarketPhase.CLOSED
 
 
-def FreezeAt(value: datetime, *, is_trading_day: bool) -> ScheduleFreeze:
-    phase = PhaseAt(value, is_trading_day=is_trading_day)
+def FreezeAt(
+    value: datetime, *, is_trading_day: bool, sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
+) -> ScheduleFreeze:
+    phase = PhaseAt(value, is_trading_day=is_trading_day, sessions=sessions)
     is_before_close = phase is MarketPhase.BEFORE_CLOSE
     return ScheduleFreeze(
         phase=phase,
@@ -101,7 +104,9 @@ def SchedulePointAt(value: datetime, *, is_trading_day: bool) -> SchedulePoint |
     return SchedulePoint.AFTERNOON_FREEZE if current.replace(microsecond=0) == FREEZE_TIME else None
 
 
-def SecondsUntilNextScheduleBoundary(value: datetime, *, maximum_seconds: float) -> float:
+def SecondsUntilNextScheduleBoundary(
+    value: datetime, *, maximum_seconds: float, sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
+) -> float:
     local = ShanghaiNow(value)
     upcoming = (
         local.replace(
@@ -110,7 +115,12 @@ def SecondsUntilNextScheduleBoundary(value: datetime, *, maximum_seconds: float)
             second=boundary.second,
             microsecond=0,
         )
-        for boundary in _PHASE_BOUNDARIES
+        for boundary in (
+            *_PHASE_BOUNDARIES,
+            *(time(minute // 60, minute % 60) for minute in (
+                sessions.morning_open, sessions.morning_close, sessions.afternoon_open, sessions.afternoon_close,
+            )),
+        )
     )
     delays = tuple((boundary - local).total_seconds() for boundary in upcoming if boundary > local)
     if not delays:

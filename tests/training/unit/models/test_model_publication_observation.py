@@ -1,6 +1,7 @@
 """Publication observation reads declared metadata identities, never model payloads."""
 
 import json
+import os
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -10,7 +11,8 @@ import pytest
 from tests.helpers.training.configuration import V1TrainingSettingsFixture
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from tests.helpers.training.profiles.v3.profile import _publish_profile
-from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.shared.configuration import RuntimeSettingsFixture, SqlitePolicyFixture
+from trader.infra.cache import BoundedLruCache
 from tests.helpers.training.history_training_due import HistoryTrainingExpectationFixture
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.infra.regular_file import ReadRegularFile
@@ -61,6 +63,91 @@ def test_standard_observation_matches_loaded_identity_without_reading_model_payl
     )
     assert actual == expected
     assert reads == [tmp_path / "v3/tomorrow/metadata.json", tmp_path / "v3/d25/metadata.json"]
+
+
+@pytest.mark.parametrize("change", ["rewrite", "replace", "symlink", "extra_file", "cancel"])
+def test_cached_publication_metadata_reuses_validation_and_rejects_changed_files(tmp_path, monkeypatch, change):
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
+    cache = BoundedLruCache[object](RuntimeSettingsFixture().market_data.cache_policy)
+    reads = []
+    observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
+
+    def read_metadata(path, *, maximum_bytes):
+        reads.append(path)
+        return ReadRegularFile(path, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(bundle_snapshot, "ReadRegularFile", read_metadata)
+
+    def observe(cancelled=lambda: False):
+        return ReadPublishedProfileIdentities(
+            tmp_path / "v3", V3_TRAINING_PROFILE, cancel_requested=cancelled,
+            metadata_cache=cache, observed_at=observed_at,
+        )
+
+    expected = observe()
+    assert observe() == expected
+    assert len(reads) == 2
+    path = tmp_path / "v3/tomorrow/metadata.json"
+    if change == "cancel":
+        with pytest.raises(InterruptedError):
+            observe(lambda: True)
+        assert len(reads) == 2
+        return
+    if change == "extra_file":
+        (path.parent / "unexpected.json").write_text("{}", encoding="utf-8")
+    elif change == "symlink":
+        target = tmp_path / "saved.json"
+        path.rename(target)
+        path.symlink_to(target)
+    else:
+        previous = path.stat()
+        document = path.read_text(encoding="utf-8")
+        # Same size and restored mtime still change ctime or inode.
+        corrupt = document.replace('"v3"', '"xx"', 1)
+        assert corrupt != document and len(corrupt) == len(document)
+        if change == "replace":
+            replacement = path.with_name("replacement.json")
+            replacement.write_text(corrupt, encoding="utf-8")
+            replacement.replace(path)
+        else:
+            path.write_text(corrupt, encoding="utf-8")
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    with pytest.raises(ValueError):
+        observe()
+    cache.stop()
+
+
+def test_metadata_mutation_during_validation_is_not_cached(tmp_path, monkeypatch):
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
+    cache = BoundedLruCache[object](RuntimeSettingsFixture().market_data.cache_policy)
+    original = bundle_snapshot.DecodeHeadPublicationIdentity
+
+    def mutate(document, strategy, profile):
+        result = original(document, strategy, profile)
+        path = tmp_path / "v3" / strategy.value / "metadata.json"
+        path.write_text("{}", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(bundle_snapshot, "DecodeHeadPublicationIdentity", mutate)
+    with pytest.raises(ModelBundleContractError, match="changed while"):
+        ReadPublishedProfileIdentities(
+            tmp_path / "v3", V3_TRAINING_PROFILE, cancel_requested=lambda: False,
+            metadata_cache=cache, observed_at=datetime.now(ZoneInfo("Asia/Shanghai")),
+        )
+    assert cache.status().datasets.get("model_publication_metadata", {})["published_models"].entries == 0
+    cache.stop()
+
+
+def test_cached_metadata_still_rejects_a_different_requested_head(tmp_path):
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
+    cache = BoundedLruCache[object](RuntimeSettingsFixture().market_data.cache_policy)
+    options = {"metadata_cache": cache, "observed_at": datetime.now(ZoneInfo("Asia/Shanghai")),
+               "cancel_requested": lambda: False}
+    path = tmp_path / "v3/tomorrow"
+    bundle_snapshot.ReadPublishedHeadIdentity(path, Strategy.TOMORROW, V3_TRAINING_PROFILE, **options)
+    with pytest.raises(ModelBundleContractError):
+        bundle_snapshot.ReadPublishedHeadIdentity(path, Strategy.D25, V3_TRAINING_PROFILE, **options)
+    cache.stop()
 
 
 @pytest.mark.parametrize("resign", [False, True])

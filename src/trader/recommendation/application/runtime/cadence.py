@@ -18,6 +18,7 @@ from trader.recommendation.application.runtime.schedule import (
     ShanghaiNow,
 )
 from trader.recommendation.application.runtime.trading_session import SessionLease
+from trader.recommendation.domain.market.quote_freshness import DEFAULT_QUOTE_SESSION_TIMES, QuoteSessionTimes
 
 
 class CadenceBand(str, Enum):
@@ -119,6 +120,7 @@ _CADENCE_TASKS = (*PERIODIC_TASKS, PipelineTask.SCORE)
 @dataclass(frozen=True)
 class CadencePolicy:
     intervals: Mapping[PipelineTask, Mapping[CadenceBand, float]]
+    sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES
 
     def __post_init__(self) -> None:
         if set(self.intervals) != set(_CADENCE_TASKS):
@@ -135,7 +137,9 @@ class CadencePolicy:
         object.__setattr__(self, "intervals", MappingProxyType(normalized))
 
     @classmethod
-    def from_seconds(cls, raw: Mapping[str, Mapping[str, float]]) -> CadencePolicy:
+    def from_seconds(
+        cls, raw: Mapping[str, Mapping[str, float]], *, sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
+    ) -> CadencePolicy:
         try:
             intervals = {
                 PipelineTask(task): {CadenceBand(band): float(seconds) for band, seconds in values.items()}
@@ -143,7 +147,7 @@ class CadencePolicy:
             }
         except ValueError as exc:
             raise ValueError("cadence policy contains an unknown task or phase band") from exc
-        return cls(intervals)
+        return cls(intervals, sessions)
 
     def interval(self, task: PipelineTask, band: CadenceBand) -> float | None:
         return self.intervals.get(task, {}).get(band)
@@ -177,6 +181,7 @@ class CadencePlannerStatus:
     next_due: Mapping[tuple[str, CadenceBand, PipelineTask], datetime]
     schedule_points: Mapping[SchedulePointKey, SchedulePointState]
     fired_points: tuple[tuple[str, SchedulePoint], ...]
+    sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -197,6 +202,10 @@ class CadencePlanner:
         self._started_at = ShanghaiNow(started_at) if started_at is not None else None
         self._point_states: dict[SchedulePointKey, SchedulePointState] = {}
 
+    @property
+    def sessions(self) -> QuoteSessionTimes:
+        return self._policy.sessions
+
     def plan(self, at: datetime, *, is_trading_day: bool) -> CadenceBatch:
         with self._lock:
             return self._plan_locked(at, is_trading_day=is_trading_day)
@@ -208,7 +217,7 @@ class CadencePlanner:
         is_trading_day: bool,
     ) -> ScheduledPipelineTask | None:
         local = ShanghaiNow(at)
-        freeze = FreezeAt(local, is_trading_day=is_trading_day)
+        freeze = FreezeAt(local, is_trading_day=is_trading_day, sessions=self.sessions)
         if not freeze.should_score:
             return None
         phase = freeze.phase
@@ -229,6 +238,7 @@ class CadencePlanner:
     def status(self) -> CadencePlannerStatus:
         with self._lock:
             return CadencePlannerStatus(
+                sessions=self.sessions,
                 started_at=self._started_at,
                 intervals=self._policy.intervals,
                 next_due=self._next_due,
@@ -388,7 +398,7 @@ class CadencePlanner:
         if not is_trading_day:
             return None
         local = ShanghaiNow(at)
-        band = _task_band(task, local, PhaseAt(local, is_trading_day=True))
+        band = _task_band(task, local, PhaseAt(local, is_trading_day=True, sessions=self.sessions))
         return self._policy.interval(task, band) if band is not None else None
 
     def has_unfinished_afternoon_freeze(self, trade_date: str) -> bool:
@@ -400,11 +410,11 @@ class CadencePlanner:
         if self._started_at is None:
             self._started_at = local
         trade_date = local.date().isoformat()
-        phase = PhaseAt(local, is_trading_day=is_trading_day)
+        phase = PhaseAt(local, is_trading_day=is_trading_day, sessions=self.sessions)
         band = ResolveCadenceBand(phase)
         self._discard_old_state(trade_date, band)
         if not is_trading_day or band is CadenceBand.CLOSED:
-            return CadenceBatch((), SecondsUntilNextScheduleBoundary(local, maximum_seconds=30.0))
+            return CadenceBatch((), SecondsUntilNextScheduleBoundary(local, maximum_seconds=30.0, sessions=self.sessions))
 
         self._synchronize_schedule_points(local)
         tasks: list[ScheduledPipelineTask] = []
@@ -434,7 +444,7 @@ class CadencePlanner:
             and state.next_retry_at > local
         )
         maximum = min((*next_delays, *retry_delays), default=30.0)
-        delay = SecondsUntilNextScheduleBoundary(local, maximum_seconds=maximum)
+        delay = SecondsUntilNextScheduleBoundary(local, maximum_seconds=maximum, sessions=self.sessions)
         return CadenceBatch(tuple(tasks), delay)
 
     def _synchronize_schedule_points(self, local: datetime) -> None:
@@ -527,7 +537,7 @@ class CadencePlanner:
         if key not in self._pending_scores or due is None or local < due:
             return
         self._pending_scores.discard(key)
-        if not FreezeAt(local, is_trading_day=True).should_score:
+        if not FreezeAt(local, is_trading_day=True, sessions=self.sessions).should_score:
             return
         tasks.append(ScheduledPipelineTask(PipelineTask.SCORE, local, phase))
         interval = self._policy.interval(PipelineTask.SCORE, key[1])

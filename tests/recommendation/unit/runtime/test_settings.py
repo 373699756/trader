@@ -26,7 +26,10 @@ from trader.recommendation.domain.scoring.scoring import (
     ScoreBoardStrategy,
 )
 from trader.recommendation.domain.market.feature_schema import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
-from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
+from trader.recommendation.infra.policy_settings import BuildCadencePolicy, BuildRecommendationPolicy
+from trader.recommendation.application.runtime.cadence import CadencePlanner
+from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds, QuoteSnapshotTime
+from trader.recommendation.application.runtime.schedule import PhaseAt, MarketPhase
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 RUNTIME_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
@@ -148,6 +151,7 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.market_data.tushare.token_file == PROJECT_ROOT / ".token_key"
     assert set(runtime.market_data.cache_policy.datasets) == {
         "full_market_quotes",
+        "model_publication_metadata",
         "candidate_quotes",
         "intraday_minutes",
         "security_master_calendar",
@@ -176,6 +180,7 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.market_data.cache_policy.datasets["candidate_quotes"].capacity == 12000
     assert {name: policy.persisted for name, policy in runtime.market_data.cache_policy.datasets.items()} == {
         "full_market_quotes": False,
+        "model_publication_metadata": False,
         "candidate_quotes": False,
         "intraday_minutes": False,
         "security_master_calendar": False,
@@ -486,6 +491,54 @@ def test_runtime_rejects_removed_freeze_execution_mode(tmp_path) -> None:
 
     with pytest.raises(ConfigurationError, match="unknown keys"):
         LoadRuntimeSettings(changed_path)
+
+
+def test_market_sessions_are_required_and_drive_the_same_business_policy(tmp_path):
+    baseline = LoadRuntimeSettings(RUNTIME_CONFIG)
+    raw = _runtime_document()
+    raw["pipeline"]["market_sessions"] = {
+        "morning_open": "10:00", "morning_close": "12:10",
+        "afternoon_open": "13:30", "afternoon_close": "14:45",
+    }
+    changed = LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+    observed = datetime.fromisoformat("2026-11-10T13:20:00+08:00")
+    policy = BuildCadencePolicy(changed.pipeline)
+    planner = CadencePlanner(policy, started_at=observed)
+    assert changed.config_version != baseline.config_version
+    assert planner.sessions is policy.sessions
+    assert policy.sessions.morning_open == 600 and policy.sessions.afternoon_close == 885
+    assert PhaseAt(observed.replace(hour=9), is_trading_day=True, sessions=policy.sessions) is MarketPhase.CLOSED
+    source = observed.replace(hour=12, minute=10)
+    assert QuoteSnapshotTime(observed, sessions=policy.sessions) == source
+    assert QuoteFreshnessAgeSeconds(source, observed, sessions=policy.sessions) == 0
+    assert QuoteFreshnessAgeSeconds(source, observed) > 30
+    assert not planner.plan(observed.replace(hour=9), is_trading_day=True).tasks
+    assert planner.status().sessions == policy.sessions
+
+
+@pytest.mark.parametrize("field,value", [
+    ("morning_open", "9:30"), ("morning_open", True), ("morning_open", "24:00"),
+    ("morning_close", "11:30:00"), ("morning_close", "13:00"),
+    ("afternoon_open", "11:30"), ("afternoon_close", "15:01"),
+])
+def test_market_sessions_reject_malformed_overlapping_or_late_times(tmp_path, field, value):
+    raw = _runtime_document()
+    raw["pipeline"]["market_sessions"][field] = value
+    with pytest.raises(ConfigurationError):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
+
+
+@pytest.mark.parametrize("change", ("missing", "missing_field", "unknown_field"))
+def test_market_sessions_do_not_use_implicit_defaults_or_ignore_keys(tmp_path, change):
+    raw = _runtime_document()
+    if change == "missing":
+        del raw["pipeline"]["market_sessions"]
+    elif change == "missing_field":
+        del raw["pipeline"]["market_sessions"]["morning_open"]
+    else:
+        raw["pipeline"]["market_sessions"]["unknown"] = "09:30"
+    with pytest.raises(ConfigurationError):
+        LoadRuntimeSettings(_write_runtime_config(tmp_path, raw))
 
 
 def test_long_quote_maximum_age_loads_explicit_scheduler_value(tmp_path):

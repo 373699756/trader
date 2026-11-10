@@ -25,6 +25,7 @@ from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES
 
 _START = datetime(2026, 11, 6, 13, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 _PROFILES = ("v1", "v2", "v3", "v5")
+_SESSIONS = {"morning_open": 570, "morning_close": 690, "afternoon_open": 780, "afternoon_close": 900}
 
 
 def _pipeline():
@@ -92,6 +93,7 @@ class _Fixture:
         self.runtime_changed = runtime_changed
         self.stream_request = None
         self.polls = 0
+        self.sessions = dict(_SESSIONS)
 
     def fetch(self, url, timeout):
         self.requests.append((url, self.elapsed, timeout))
@@ -104,7 +106,7 @@ class _Fixture:
             "runtime_version": "changed-runtime" if self.runtime_changed and self.polls > 1 else "fixture-runtime",
             "available_profiles": list(_PROFILES), "phase": "before_close",
             "events": {"sequence": self.initial_cursor + self.current_sequence},
-            "scheduler": {"recommendation_round": {
+            "scheduler": {"cadence": {"market_sessions": self.sessions}, "recommendation_round": {
                 "sequence": self.current_sequence, "outcome": "published", "elapsed_ms": 1200,
             }},
         }
@@ -252,6 +254,18 @@ def test_age_at_decision_and_at_api_delivery_are_separate():
     assert head["api_delivery_source_age_max_seconds"] == 47
 
 
+def test_configured_sessions_apply_to_decision_age_without_relaxing_real_delivery_age():
+    event, atomic = _batch(1, elapsed=45, source_age=60)
+    fixture = _Fixture([(45, event, atomic, 11, "batch")])
+    fixture.sessions["afternoon_open"] = 810
+    report = fixture.run()
+    assert report["configuration"]["market_sessions"]["afternoon_open"] == 810
+    assert report["summary"]["decision_source_age_qualified_rounds"] == 1
+    assert report["summary"]["delivery_source_age_qualified_rounds"] == 0
+    assert report["rounds"][0]["heads"][0]["decision_source_age_max_seconds"] == 0
+    assert report["status"] == "failed"
+
+
 def test_http_timeout_remains_a_bounded_failed_observation():
     event, atomic = _batch(1)
     fixture = _Fixture([(15, event, atomic, 11, "batch")], fetch_error="request_timeout")
@@ -387,7 +401,8 @@ def test_real_http_stream_deadline_returns_partial_round_evidence_through_native
                 body = json.dumps({
                     "runtime_version": "fixture-runtime", "available_profiles": list(_PROFILES),
                     "phase": "before_close", "events": {"sequence": 10},
-                    "scheduler": {"recommendation_round": {"sequence": 0, "outcome": "running"}},
+                    "scheduler": {"cadence": {"market_sessions": _SESSIONS},
+                                  "recommendation_round": {"sequence": 0, "outcome": "running"}},
                 }).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -516,7 +531,8 @@ def test_real_requests_batch_poll_and_exit_keep_bound_evidence(outcome, record_p
                 payload = {
                     "runtime_version": "fixture-runtime", "available_profiles": list(_PROFILES),
                     "phase": "before_close", "events": {"sequence": 11 if offset[0] else 10},
-                    "scheduler": {"recommendation_round": {"sequence": 1, "outcome": "published", "elapsed_ms": 1250}},
+                    "scheduler": {"cadence": {"market_sessions": _SESSIONS},
+                                  "recommendation_round": {"sequence": 1, "outcome": "published", "elapsed_ms": 1250}},
                 }
             body = json.dumps(payload).encode()
             self.send_response(200)

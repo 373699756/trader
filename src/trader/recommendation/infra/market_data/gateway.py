@@ -36,6 +36,9 @@ from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
 )
+from trader.recommendation.domain.market.quote_freshness import (
+    DEFAULT_QUOTE_SESSION_TIMES, QuoteFreshnessAgeSeconds, QuoteSessionTimes, QuoteSnapshotTime,
+)
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.gateway_health import (
     MarketGatewayHealthStatus,
@@ -91,6 +94,7 @@ class _GatewayRequiredOptions(TypedDict):
 
 
 class _GatewayOptionalOptions(TypedDict, total=False):
+    quote_sessions: QuoteSessionTimes
     worker_pool: BoundedExecutor | None
     source_lanes: SourceLaneScheduler | None
     cache: BoundedCache[object] | None
@@ -134,6 +138,7 @@ class MarketDataGateway:
         **options: Unpack[_GatewayOptions],
     ) -> None:
         self._versions = InputVersionClock()
+        self._quote_sessions = options.get("quote_sessions", DEFAULT_QUOTE_SESSION_TIMES)
         self._tencent_market = tencent_market
         self._sina = sina
         self._tencent = tencent
@@ -250,7 +255,9 @@ class MarketDataGateway:
                     cancelled=cancelled,
                     max_observation_age_seconds=300.0 if observed_at is not None else None,
                 ),
-                key=(ShanghaiNow(requested_at).date(), PhaseAt(ShanghaiNow(requested_at), is_trading_day=True), force),
+                key=(ShanghaiNow(requested_at).date(), PhaseAt(
+                    ShanghaiNow(requested_at), is_trading_day=True, sessions=self._quote_sessions,
+                ), force),
                 timeout=max(0.0, (deadline - self._wall_clock()).total_seconds()) if deadline is not None else None,
             )
             if deadline is not None and self._wall_clock() >= deadline:
@@ -276,6 +283,9 @@ class MarketDataGateway:
         max_observation_age_seconds: float | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> Sequence[MarketQuote]:
+        cached = self._fixed_session_quotes(None, observed_at, force=force, cancelled=cancelled)
+        if cached is not None:
+            return cached
         results = self._sources.fetch_market_sources(
             observed_at, force=force or self._preview_context is not None, deadline=deadline, cancelled=cancelled,
         )
@@ -327,7 +337,8 @@ class MarketDataGateway:
             merge_epoch=self._versions.advance("market"),
             previous=previous,
             limits=MergeObservationLimits(
-                max_age_seconds=max_observation_age_seconds, preview_context=self._preview_context
+                max_age_seconds=max_observation_age_seconds, preview_context=self._preview_context,
+                quote_sessions=self._quote_sessions,
             ),
         )
         self.record_local_latency("merge", ElapsedMilliseconds(merge_started, self._monotonic()))
@@ -494,6 +505,14 @@ class MarketDataGateway:
         requested_at = request.requested_at
         deadline = request.deadline
         isolated = request.isolated
+        cached = self._fixed_session_quotes(
+            codes, requested_at, force=request.force,
+            preview_context=request.preview_context, cancelled=request.cancelled,
+        )
+        if cached is not None:
+            if deadline is not None and self._wall_clock() >= deadline:
+                return self._retain_targeted_quotes(codes, "tencent:late", request.cancelled, isolated=isolated)
+            return cached
         physical_source = "tencent_long" if isolated else "tencent"
         normalized_codes = tuple(sorted(set(codes)))
         requested_codes = frozenset(normalized_codes)
@@ -528,6 +547,7 @@ class MarketDataGateway:
             targeted_codes=codes,
             max_age_seconds=request.max_observation_age_seconds,
             preview_context=request.preview_context if isolated else self._preview_context,
+            quote_sessions=self._quote_sessions,
         )
         merge_started = self._monotonic()
         snapshot = MergeMarketObservations(
@@ -562,6 +582,56 @@ class MarketDataGateway:
             return self._commit_candidate_snapshot_locked(
                 observations, snapshot, completed_at, codes, refreshed_codes, isolated=isolated,
             )
+
+    def _fixed_session_quotes(
+        self,
+        codes: Sequence[str] | None,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        preview_context: PreviewContext | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> tuple[MarketQuote, ...] | None:
+        _require_current_round(cancelled)
+        observed_at = ShanghaiNow(observed_at)
+        context = preview_context or self._preview_context
+        if context is not None and force:
+            return None
+        if context is None and observed_at.hour * 60 + observed_at.minute < self._quote_sessions.morning_open:
+            return ()
+        anchor = context.market_as_of if context is not None else QuoteSnapshotTime(
+            observed_at, sessions=self._quote_sessions,
+        )
+        if anchor is None:
+            return None
+        close_snapshot = context is not None or anchor.hour * 60 + anchor.minute >= self._quote_sessions.afternoon_close
+        # The canonical quote index remains the sole owner. Fixed-session
+        # reuse keeps the supplier's source/receipt/version identity intact.
+        with self._state_lock:
+            if codes is None and not any(
+                (source_time := self._states[source].last_source_time) is not None
+                and QuoteFreshnessAgeSeconds(
+                    source_time, observed_at, preview_context=context,
+                    sessions=self._quote_sessions,
+                ) <= 30.0
+                for source in ("tencent_market", "sina")
+            ):
+                return None
+            selected = tuple(self._latest_by_code) if codes is None else tuple(dict.fromkeys(codes))
+            quotes = tuple(self._latest_by_code[code] for code in selected if code in self._latest_by_code)
+        valid = tuple(
+            quote for quote in quotes
+            if quote.price is not None and math.isfinite(quote.price) and quote.price > 0.0
+            and (not close_snapshot or quote.source_time >= anchor)
+            and QuoteFreshnessAgeSeconds(
+                quote.source_time, observed_at, preview_context=context, sessions=self._quote_sessions,
+            ) <= 30.0
+            and "market_data_degraded" not in quote.execution_restrictions
+        )
+        _require_current_round(cancelled)
+        if codes is None:
+            return valid if len(valid) >= self._minimum_market_rows else None
+        return valid if valid and len(valid) == len(selected) else None
 
     def _target_quote_observations(
         self,

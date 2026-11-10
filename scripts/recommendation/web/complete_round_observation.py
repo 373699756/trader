@@ -18,7 +18,7 @@ from scripts.recommendation.web.web_health_contract import WebPipelineStageSnaps
 from trader.infra.http_contracts import HttpCancelled, HttpError, HttpRequest, HttpTimeout, HttpTransport
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES
-from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
+from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds, QuoteSessionTimes
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -183,9 +183,12 @@ def _batch_heads(payload: Mapping[str, object], *, event: bool) -> tuple[tuple[_
     return tuple(heads)
 
 
-def _age_max(source_times: tuple[datetime, ...], observed_at: datetime, *, decision: bool) -> float | None:
+def _age_max(
+    source_times: tuple[datetime, ...], observed_at: datetime, *, decision: bool, sessions: QuoteSessionTimes,
+) -> float | None:
     values = tuple(
-        QuoteFreshnessAgeSeconds(source, observed_at) if decision else (observed_at - source).total_seconds()
+        QuoteFreshnessAgeSeconds(source, observed_at, sessions=sessions)
+        if decision else (observed_at - source).total_seconds()
         for source in source_times
     )
     return max(values) if values and all(math.isfinite(value) and value >= 0 for value in values) else None
@@ -193,6 +196,7 @@ def _age_max(source_times: tuple[datetime, ...], observed_at: datetime, *, decis
 
 def _head_evidence(
     identity: _HeadIdentity, payload: Mapping[str, object], event_received_at: datetime, api_received_at: datetime,
+    sessions: QuoteSessionTimes,
 ) -> _HeadEvidence:
     sample = parse_web_sample(1, api_received_at.isoformat(), status_payload=None, freeze_payloads={identity.strategy: payload})
     projection = sample.freezes[identity.strategy]
@@ -205,9 +209,9 @@ def _head_evidence(
     sources = tuple(item[2] for item in identity.items)
     return _HeadEvidence(
         identity, api_received_at,
-        _age_max(sources, identity.observed_at, decision=True),
-        _age_max(sources, event_received_at, decision=False),
-        _age_max(sources, api_received_at, decision=False),
+        _age_max(sources, identity.observed_at, decision=True, sessions=sessions),
+        _age_max(sources, event_received_at, decision=False, sessions=sessions),
+        _age_max(sources, api_received_at, decision=False, sessions=sessions),
         6, projection.coverage.evaluated_count, pipeline.committed_audit.stages,
     )
 
@@ -237,6 +241,7 @@ class _Observation:
         self.started = monotonic()
         self.deadline = self.started + observation_seconds
         self.runtime_version = ""
+        self.sessions: QuoteSessionTimes | None = None
         self.generation: int | None = None
         self.initial_cursor = self.last_cursor = 0
         self.last_poll = -math.inf
@@ -293,6 +298,17 @@ class _Observation:
         if cursor < self.initial_cursor:
             self.stop("runtime_event_sequence_regressed")
         scheduler = _mapping(payload.get("scheduler"), "scheduler_status_missing")
+        cadence = _mapping(scheduler.get("cadence"), "cadence_status_missing")
+        schedule = _mapping(cadence.get("market_sessions"), "market_sessions_missing")
+        sessions = QuoteSessionTimes(
+            _integer(schedule.get("morning_open"), "market_sessions_invalid"),
+            _integer(schedule.get("morning_close"), "market_sessions_invalid"),
+            _integer(schedule.get("afternoon_open"), "market_sessions_invalid"),
+            _integer(schedule.get("afternoon_close"), "market_sessions_invalid"),
+        )
+        if self.sessions is not None and self.sessions != sessions:
+            self.stop("runtime_market_sessions_changed")
+        self.sessions = sessions
         current = _mapping(scheduler.get("recommendation_round"), "round_status_missing")
         current_sequence = current.get("sequence")
         current_outcome = current.get("outcome")
@@ -420,8 +436,11 @@ class _Observation:
                 self.break_streak()
                 self.pending = None
                 return
+            if self.sessions is None:
+                self.stop("market_sessions_missing")
             evidence = tuple(
-                _head_evidence(identity, raw, pending.event_received_at, received_at) for identity, raw in actual
+                _head_evidence(identity, raw, pending.event_received_at, received_at, self.sessions)
+                for identity, raw in actual
             )
         except ValueError:
             self.break_streak()
@@ -494,6 +513,12 @@ class _Observation:
                 "status_profile": self.profile, "quote_age_limit_seconds": _AGE_LIMIT_SECONDS,
                 "required_age_scope": "decision_and_api_delivery", "maximum_round_records": _MAX_ROUND_RECORDS,
                 "maximum_stream_bytes": _MAX_STREAM_BYTES,
+                "market_sessions": {
+                    "morning_open": self.sessions.morning_open,
+                    "morning_close": self.sessions.morning_close,
+                    "afternoon_open": self.sessions.afternoon_open,
+                    "afternoon_close": self.sessions.afternoon_close,
+                } if self.sessions is not None else None,
             },
             "runtime_identity": {
                 "runtime_version": self.runtime_version, "session_generation": self.generation,

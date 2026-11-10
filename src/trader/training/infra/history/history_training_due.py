@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.cache_contracts import BoundedCache
 
 import calendar as month_calendar
 import threading
@@ -426,8 +427,10 @@ class PublishedTrainingState:
         owned_profile: ScoringProfileId,
         load_expectation: Callable[[TrainedProfileContract, datetime], HistoryTrainingExpectation],
         wall_clock: Callable[[], datetime], sqlite_policy: SqliteIoPolicy,
+        metadata_cache: BoundedCache[object] | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
+        self._metadata_cache = metadata_cache
         self._history_root = history_root
         self._training_root = training_root
         self._maintenance_path = maintenance_path
@@ -593,6 +596,7 @@ class PublishedTrainingState:
                         self._training_root / profile.output_directory,
                         profile,
                         cancel_requested=cancelled,
+                        metadata_cache=self._metadata_cache, observed_at=self._clock(),
                     )
                     failure = None
                 except (OSError, RuntimeError, TypeError, ValueError) as exc:

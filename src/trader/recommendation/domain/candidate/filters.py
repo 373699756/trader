@@ -13,7 +13,9 @@ from trader.recommendation.domain.market.models import (
     Board,
     FeatureSnapshot,
 )
-from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
+from trader.recommendation.domain.market.quote_freshness import (
+    DEFAULT_QUOTE_SESSION_TIMES, QuoteFreshnessAgeSeconds, QuoteSessionTimes,
+)
 from trader.recommendation.domain.publication.models import FilterAudit
 
 
@@ -39,6 +41,7 @@ class QuoteFreshnessBasis(str, Enum):
 class HardFilterPolicy:
     blacklist_codes: frozenset[str]
     structured_risk_thresholds: Mapping[str, float]
+    quote_sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "blacklist_codes", frozenset(self.blacklist_codes))
@@ -240,13 +243,16 @@ class _DefaultFilterRules:
             # on arrival. It never changes the observation or its source time.
             evaluation_age = QuoteFreshnessAgeSeconds(
                 quote.source_time, now, preview_context=snapshot.preview_context,
+                sessions=self.policy.quote_sessions,
             )
             if math.isfinite(evaluation_age):
                 now = min(now, quote.received_time)
         if quote.source_time > now:
             return _make_audit(snapshot, "future_quote", "<= evaluation time", quote.source_time.isoformat())
         if (
-            QuoteFreshnessAgeSeconds(quote.source_time, now, preview_context=snapshot.preview_context)
+            QuoteFreshnessAgeSeconds(
+                quote.source_time, now, preview_context=snapshot.preview_context, sessions=self.policy.quote_sessions,
+            )
             > self.max_age_seconds
         ):
             return _make_audit(

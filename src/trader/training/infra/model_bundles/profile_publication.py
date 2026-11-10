@@ -12,9 +12,11 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 from trader.infra.process_lock import ProcessLock, ProcessLockError
+from trader.infra.cache_contracts import BoundedCache
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.model_publication import ModelPublicationIdentity
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, TrainedHeadModelBundle
@@ -203,6 +205,8 @@ def ReadPublishedProfileIdentities(
     *,
     cancel_requested: Callable[[], bool],
     timeout_seconds: float = 1.0,
+    metadata_cache: BoundedCache[object] | None = None,
+    observed_at: datetime | None = None,
 ) -> tuple[ModelPublicationIdentity, ...]:
     """Observe a pair's declared metadata identity without reading model payloads."""
     if cancel_requested():
@@ -222,6 +226,7 @@ def ReadPublishedProfileIdentities(
                 contract.strategy,
                 profile,
                 cancel_requested=cancel_requested,
+                metadata_cache=metadata_cache, observed_at=observed_at,
             )
             for contract in profile.heads
         )

@@ -537,6 +537,8 @@ V2/V3/V5到期判断与真实拟合共用`BuildTrainingContractHash`，组合根
 
 模型路径固定为 `data/training/models/<profile>/{tomorrow,d25}/{model.json,metadata.json}`。V2/V3/V5由 `engine.py`准备、`PublishProfileBundles`切换；V1由 `PublishLearnedRankPair`切换。每档双头共用本次作业身份但保持独立模型和目标；单头候选不能单独替换正式目录。读取路径分别为 `LoadHeadBundle/InspectPublishedProfileBundles` 与 `ReadLearnedRankPair`，推荐在启动时通过 `profile_factory.LoadScoringProfile`采用。
 
+推荐后台观察V2/V3/V5发布身份时，共用组合根注入的`model_publication_metadata`有界内存缓存（容量和有效期见`cache.json`）。首次及文件变化后仍完整校验metadata；命中必须保持同一档位合同、设备／inode／大小／mtime／ctime，并在原发布锁内复核目录、固定文件和取消状态。缓存只保存不可变身份与合同，不保存模型载荷，不持久化；观察失败不替换已加载预测器，也不把metadata身份观察当作模型完整性验收。所有档位固定历史输入先完成预载，再进行训练到期维护，避免维护阻塞后续档位首次评分。
+
 V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要求由 `model_bundles/bundle_codec.py`校验；除表内明确说明外均必需。
 
 | 字段 | 类型/中文含义 | 来源和消费者 |

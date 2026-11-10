@@ -318,6 +318,7 @@ class SchedulerRuntime:
                 else FreezeAt(
                     observed_at,
                     is_trading_day=is_trading_day,
+                    sessions=self._dependencies.cadence.sessions,
                 ).phase
             )
         round_tasks = tuple(task for task in batch.tasks if task.task in {*_DATA_LANES, PipelineTask.SCORE})
@@ -517,7 +518,9 @@ class SchedulerRuntime:
             now = ShanghaiNow(self._dependencies.clock.now())
             if now.date() != scheduled.scheduled_at.date() or now.time() >= wall_time(15, 0):
                 return
-            freeze = FreezeAt(scheduled.scheduled_at, is_trading_day=True)
+            freeze = FreezeAt(
+                scheduled.scheduled_at, is_trading_day=True, sessions=self._dependencies.cadence.sessions,
+            )
             strategies = self._due_strategies(freeze, None, scheduled.scheduled_at)
             if not {Strategy.TOMORROW, Strategy.D25}.issubset(strategies):
                 return

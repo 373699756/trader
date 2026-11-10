@@ -1,5 +1,11 @@
 {
   "pipeline": {
+    "market_sessions": {
+      "morning_open": "09:30",
+      "morning_close": "11:30",
+      "afternoon_open": "13:00",
+      "afternoon_close": "15:00"
+    },
     "event_queue_size": 512,
     "priority_queue_size": 64,
     "executors": {

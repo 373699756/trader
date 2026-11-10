@@ -17,6 +17,9 @@ from trader.recommendation.application.runtime.latest_wins import LatestWinsStat
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
+from trader.recommendation.domain.market.quote_freshness import (
+    DEFAULT_QUOTE_SESSION_TIMES, QuoteFreshnessAgeSeconds, QuoteSessionTimes,
+)
 from trader.recommendation.domain.publication.freeze_identity import LongProjection, LongProjectionItem
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.recommendation.domain.publication.models import Strategy
@@ -32,6 +35,7 @@ class LongRuntimeDependencies:
     now: Callable[[], datetime]
     publish_projection: Callable[[LongProjection], object] = lambda _projection: None
     enabled: bool = True
+    quote_sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,7 @@ class LongRuntime:
         if not math.isfinite(dependencies.quote_max_age_seconds) or dependencies.quote_max_age_seconds <= 0.0:
             raise ValueError("long quote maximum age must be finite and positive")
         self._items = _validate_items(items)
+        self._quote_sessions = dependencies.quote_sessions
         self._groups = _group_ownership(self._items, groups)
         self._codes = tuple(item.code for item in self._items)
         self._quotes = dependencies.quotes
@@ -196,7 +201,9 @@ class LongRuntime:
             )
             if any(
                 request.preview_context is None and item.source_time is not None
-                and (completed_at - item.source_time).total_seconds() > self._quote_max_age_seconds
+                and QuoteFreshnessAgeSeconds(
+                    item.source_time, completed_at, sessions=self._quote_sessions,
+                ) > self._quote_max_age_seconds
                 for item in items
             ):
                 degraded_reasons.append("long_quotes_stale")
@@ -265,7 +272,9 @@ class LongRuntime:
             quote_status: Literal["live", "retained", "missing"] = (
                 "retained"
                 if quote is not None and preview_context is None
-                and quote.age_seconds(observed_at) > self._quote_max_age_seconds
+                and QuoteFreshnessAgeSeconds(
+                    quote.source_time, observed_at, sessions=self._quote_sessions,
+                ) > self._quote_max_age_seconds
                 else "live"
             )
             if quote is None:

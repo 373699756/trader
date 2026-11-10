@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import tempfile
 import json
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from itertools import islice
 from pathlib import Path
 
 from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.regular_file import ReadRegularFile
+from trader.infra.cache_contracts import BoundedCache, CacheIdentity, RequestKey
 from trader.training.domain.model_publication import ModelPublicationIdentity
 from trader.training.infra.model_bundles.bundle_codec import (
-    DecodeHeadPublicationIdentity, LoadHeadBundle, TrainedHeadModelBundle,
+    DecodeHeadPublicationIdentity, LoadHeadBundle, TrainedHeadModelBundle, ModelBundleContractError,
 )
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
@@ -38,6 +40,12 @@ class PublishedHeadBundle:
 @dataclass(frozen=True)
 class LoadedPublishedHeadBundle(PublishedHeadBundle):
     model: TrainedHeadModelBundle
+
+
+@dataclass(frozen=True)
+class _ValidatedMetadataIdentity:
+    contract: TrainedProfileContract
+    identity: ModelPublicationIdentity
 
 
 def MakeBundleStagingDirectory(profile_root: Path) -> Path:
@@ -89,6 +97,8 @@ def ReadPublishedHeadIdentity(
     profile: TrainedProfileContract,
     *,
     cancel_requested: Callable[[], bool],
+    metadata_cache: BoundedCache[object] | None = None,
+    observed_at: datetime | None = None,
 ) -> ModelPublicationIdentity:
     """Read only bounded publication metadata inside a caller-owned profile lock."""
     if cancel_requested():
@@ -105,10 +115,46 @@ def ReadPublishedHeadIdentity(
     model_path = head_root / "model.json"
     if model_path.is_symlink() or not model_path.is_file():
         raise ValueError("trained head fixed file is invalid")
-    document = json.loads(ReadRegularFile(head_root / "metadata.json", maximum_bytes=8 * 1024 * 1024))
+    metadata_path = head_root / "metadata.json"
+    fingerprint = _metadata_fingerprint(metadata_path)
+    cache_identity = None
+    if metadata_cache is not None:
+        if observed_at is None or observed_at.utcoffset() is None:
+            raise ValueError("metadata cache requires an aware observation time")
+        cache_identity = CacheIdentity(
+            "model_publication_metadata", "published_models", str(metadata_path.absolute()),
+            RequestKey({"fingerprint": fingerprint, "strategy": strategy.value}), observed_at.date().isoformat(), "all_day",
+            profile.algorithm, profile.profile_id, "head_metadata",
+        )
+        cached = metadata_cache.get(cache_identity)
+        if cached is not None and cached.state == "fresh" and isinstance(cached.value, _ValidatedMetadataIdentity):
+            if cached.value.contract == profile:
+                if cancel_requested():
+                    raise InterruptedError("model_publication_observation_cancelled")
+                if _metadata_fingerprint(metadata_path) != fingerprint:
+                    raise ModelBundleContractError("publication metadata changed while being observed")
+                return cached.value.identity
+    document = json.loads(ReadRegularFile(metadata_path, maximum_bytes=8 * 1024 * 1024))
     if cancel_requested():
         raise InterruptedError("model_publication_observation_cancelled")
-    return DecodeHeadPublicationIdentity(document, strategy, profile)
+    identity = DecodeHeadPublicationIdentity(document, strategy, profile)
+    if _metadata_fingerprint(metadata_path) != fingerprint:
+        raise ModelBundleContractError("publication metadata changed while being observed")
+    if cancel_requested():
+        raise InterruptedError("model_publication_observation_cancelled")
+    if metadata_cache is not None and cache_identity is not None and observed_at is not None:
+        metadata_cache.put(
+            cache_identity, _ValidatedMetadataIdentity(profile, identity),
+            data_version=identity.metadata_hash, source_time=observed_at,
+        )
+    return identity
+
+
+def _metadata_fingerprint(path: Path) -> tuple[int, ...]:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 8 * 1024 * 1024:
+        raise ValueError("regular_file metadata must be bounded and regular")
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
 __all__ = [

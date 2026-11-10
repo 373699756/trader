@@ -11,6 +11,7 @@ from datetime import datetime
 from functools import partial
 
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
+from trader.recommendation.domain.market.quote_freshness import DEFAULT_QUOTE_SESSION_TIMES, QuoteSessionTimes
 from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import (
     BuildDynamicMarketSnapshot,
 )
@@ -64,12 +65,14 @@ class StaticMarketPipeline:
         monotonic: Callable[[], float],
         historical_st_eligibility: Callable[[], HistoricalStEligibilitySnapshot] | None = None,
         blacklist_codes: frozenset[str] = frozenset(),
+        quote_sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
     ) -> None:
         self.eligibility = eligibility
         self._monotonic = monotonic
         self._historical_st_eligibility = historical_st_eligibility
         self.cache = cache
         self._blacklist_codes = blacklist_codes
+        self._quote_sessions = quote_sessions
         self._snapshot: StaticEligibilitySnapshot | None = None
         self._initialization_lock = threading.Lock()
         self._versions = InputVersionClock()
@@ -259,6 +262,7 @@ class StaticMarketPipeline:
             ),
             latency_ms=latency_ms,
             exclusions=tuple(exclusions),
+            quote_sessions=self._quote_sessions,
         )
 
 

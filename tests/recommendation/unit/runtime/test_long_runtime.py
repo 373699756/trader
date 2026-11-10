@@ -26,6 +26,7 @@ from trader.recommendation.domain.publication.long_groups import LongGroupDefini
 from trader.recommendation.domain.publication.models import Strategy
 
 from trader.recommendation.domain.publication.preview import PreviewContext
+from trader.recommendation.domain.market.quote_freshness import QuoteSessionTimes
 
 from tests.helpers.recommendation.runtime.long_runtime import (
     NOW,
@@ -33,6 +34,26 @@ from tests.helpers.recommendation.runtime.long_runtime import (
     _Quotes,
     _runtime,
 )
+
+
+def test_long_uses_configured_lunch_window_and_keeps_actual_source_time(application_feature_factory):
+    observed = NOW.replace(hour=13, minute=20)
+    source = observed.replace(hour=12, minute=10)
+    feature = application_feature_factory("600001", observed)
+    feature = replace(feature, quote=replace(feature.quote, source_time=source))
+    runtime, index = _runtime(
+        _Quotes([(feature,)]), completed_at=observed, quote_sessions=QuoteSessionTimes(600, 730, 810, 885),
+    )
+    runtime.start()
+    try:
+        assert runtime.offer_refresh(LongRefreshRequest(observed, "before_close"))
+        assert runtime.wait_idle(2)
+        current = index.snapshot(Strategy.LONG).current
+        assert current.items[0].source_time == source
+        assert current.items[0].quote_status == "live"
+        assert "long_quotes_stale" not in runtime.status().degraded_reasons
+    finally:
+        assert runtime.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
 
 
 @pytest.mark.parametrize("age_seconds, stale", ((29.999, False), (30.0, False), (30.001, True)))

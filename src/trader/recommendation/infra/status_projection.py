@@ -313,6 +313,12 @@ def _scoring_head_payload(status: ScoringHeadRuntimeStatus) -> dict[str, object]
 
 def _cadence_payload(status: CadencePlannerStatus) -> dict[str, object]:
     return {
+        "market_sessions": {
+            "morning_open": status.sessions.morning_open,
+            "morning_close": status.sessions.morning_close,
+            "afternoon_open": status.sessions.afternoon_open,
+            "afternoon_close": status.sessions.afternoon_close,
+        },
         "started_at": status.started_at.isoformat() if status.started_at is not None else None,
         "intervals": {
             task.value: {band.value: seconds for band, seconds in values.items()}

@@ -20,7 +20,9 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFreeze, IssuerEligibilityReason
-from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds
+from trader.recommendation.domain.market.quote_freshness import (
+    DEFAULT_QUOTE_SESSION_TIMES, QuoteFreshnessAgeSeconds, QuoteSessionTimes,
+)
 from trader.recommendation.domain.market.static import StaticIssuer
 
 
@@ -32,6 +34,7 @@ def BuildDynamicMarketSnapshot(
     data_version: str,
     latency_ms: int,
     exclusions: tuple[IssuerEligibilityFreeze, ...] = (),
+    quote_sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
 ) -> PipelineStageOutput[FeatureSnapshot]:
     RequirePreviousStage(source, PipelineStage.DYNAMIC_MARKET)
     requested = {item.code for item in source.records}
@@ -61,26 +64,32 @@ def BuildDynamicMarketSnapshot(
         rejected_count=len(rejected),
         pending_count=pending,
         reasons=reasons,
-        source_health=DynamicSourceHealth(loaded, as_of),
+        source_health=DynamicSourceHealth(loaded, as_of, sessions=quote_sessions),
         latency_ms=latency_ms,
         output_batch_id=f"{source.snapshot.output_batch_id}:dynamic_market:{data_version}:{as_of:%Y%m%dT%H%M%S%f}",
     )
 
 
-def DynamicSourceHealth(features: tuple[FeatureSnapshot, ...], as_of: datetime) -> SourceHealth:
+def DynamicSourceHealth(
+    features: tuple[FeatureSnapshot, ...], as_of: datetime, *, sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
+) -> SourceHealth:
     """Observe accepted quote sources and their real ages; never invent a success."""
     sources = {feature.quote.source for feature in features if feature.quote.source}
     invalid = {
         feature.quote.source
         for feature in features
         if feature.quote.source
-        and QuoteFreshnessAgeSeconds(feature.quote.source_time, as_of, preview_context=feature.preview_context) > 30.0
+        and QuoteFreshnessAgeSeconds(
+            feature.quote.source_time, as_of, preview_context=feature.preview_context, sessions=sessions,
+        ) > 30.0
     }
     healthy = {
         feature.quote.source
         for feature in features
         if feature.quote.source
-        and QuoteFreshnessAgeSeconds(feature.quote.source_time, as_of, preview_context=feature.preview_context) <= 30.0
+        and QuoteFreshnessAgeSeconds(
+            feature.quote.source_time, as_of, preview_context=feature.preview_context, sessions=sessions,
+        ) <= 30.0
     } - invalid
     state = (
         SourceHealthState.READY

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from trader.infra.settings.models import PipelineSettings
+from trader.recommendation.application.runtime.cadence import CadencePolicy
 from trader.recommendation.infra.settings.models import LongWatchlist, StrategySettings
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
 from trader.recommendation.domain.candidate.filters import HardFilterPolicy
 from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.market.quote_freshness import DEFAULT_QUOTE_SESSION_TIMES, QuoteSessionTimes
 from trader.recommendation.domain.publication.long_groups import (
     LongGroupDefinition,
     LongGroupSectionDefinition,
@@ -16,7 +19,19 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import FusionPolicy
 
 
-def BuildRecommendationPolicy(settings: StrategySettings) -> RecommendationPolicy:
+def BuildCadencePolicy(settings: PipelineSettings) -> CadencePolicy:
+    sessions = settings.market_sessions
+    return CadencePolicy.from_seconds(
+        settings.cadence_seconds,
+        sessions=QuoteSessionTimes(
+            sessions.morning_open, sessions.morning_close, sessions.afternoon_open, sessions.afternoon_close,
+        ),
+    )
+
+
+def BuildRecommendationPolicy(
+    settings: StrategySettings, *, quote_sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
+) -> RecommendationPolicy:
     return RecommendationPolicy(
         strategy_version=settings.strategy_version,
         company_scoring=settings.company_scoring,
@@ -66,6 +81,7 @@ def BuildRecommendationPolicy(settings: StrategySettings) -> RecommendationPolic
             for rule in settings.risk_rules
         },
         hard_filter=HardFilterPolicy(
+            quote_sessions=quote_sessions,
             blacklist_codes=frozenset(settings.hard_filters.blacklist_codes),
             structured_risk_thresholds=settings.hard_filters.structured_risk_thresholds,
         ),
@@ -96,6 +112,7 @@ def BuildLongGroupDefinitions(watchlist: LongWatchlist) -> tuple[LongGroupDefini
 
 
 __all__ = [
+    "BuildCadencePolicy",
     "BuildLongGroupDefinitions",
     "BuildLongItemDefinitions",
     "BuildRecommendationPolicy",

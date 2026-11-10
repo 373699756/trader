@@ -59,6 +59,58 @@ def test_preloader_finishes_after_one_read_and_new_process_adopts_changed_identi
         assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
 
 
+def test_all_profile_inputs_precede_slow_startup_maintenance():
+    first = _cache(HistoryInput(61, 1, ("600001",)))
+    second = _cache(HistoryInput(61, 1, ("600002",)))
+    maintenance_started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def initialize(history, label, cancelled):
+        history.initialize(cancelled=cancelled)
+        calls.append(label)
+
+    def maintain():
+        maintenance_started.set()
+        assert release.wait(5)
+
+    preloader = PublishedInputPreloader(first, initialize=lambda cancelled: initialize(first, "first", cancelled))
+    preloader.register_startup_observer(maintain)
+    preloader.register(second, lambda cancelled: initialize(second, "second", cancelled))
+    preloader.start()
+    try:
+        assert maintenance_started.wait(2)
+        assert calls == ["first", "second"]
+        assert first.status().maintenance_state == second.status().maintenance_state == "ready"
+        report = preloader.stop(wait=True, deadline=ShutdownDeadline.start(0.01))
+        assert not report.completed and report.timed_out
+    finally:
+        release.set()
+        assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
+
+
+def test_startup_maintenance_failure_keeps_successful_fixed_inputs(caplog):
+    history = _cache(HistoryInput(61, 1, ("600001",)))
+    finished = threading.Event()
+    preloader = PublishedInputPreloader(history, initialize=lambda cancelled: history.initialize(cancelled=cancelled))
+
+    def fail():
+        raise ValueError("private maintenance payload")
+
+    preloader.register_startup_observer(fail)
+    preloader.register_startup_observer(finished.set)
+    preloader.start()
+    try:
+        assert finished.wait(2)
+        assert history.status().maintenance_state == "ready"
+        assert history.cached(("600001",))
+        assert "category=ValueError" in caplog.text
+        assert "private maintenance payload" not in caplog.text
+    finally:
+        assert preloader.stop(wait=True, deadline=ShutdownDeadline.start(2)).completed
+    with pytest.raises(RuntimeError, match="registration is closed"):
+        preloader.register_startup_observer(finished.set)
+
+
 def test_first_preload_is_nonblocking_for_readers_and_shutdown_reports_pending_io(monkeypatch):
     source = HistoryInput(61, 1, ("600001",))
     history = _cache(source)

@@ -22,7 +22,7 @@ def _policy():
 
 @pytest.mark.parametrize(
     "clock",
-    ["09:15:00", "10:00:00", "11:20:00", "12:15:00", "13:00:00", "14:46:00", "14:48:00", "14:59:20", "14:59:50"],
+    ["09:30:00", "10:00:00", "11:20:00", "12:15:00", "13:00:00", "14:46:00", "14:48:00", "14:59:20", "14:59:50"],
 )
 def test_uniform_ten_second_market_and_scoring_cycle(clock):
     at = datetime.fromisoformat("2026-07-16T" + clock).replace(tzinfo=SHANGHAI)
@@ -63,7 +63,7 @@ def test_input_changes_across_former_time_bands_keep_one_pending_score(boundary)
 @pytest.mark.parametrize(
     "clock,minute,industry",
     [
-        ("09:20:00", None, 120),
+        ("09:20:00", None, None),
         ("10:00:00", None, 60),
         ("12:15:00", None, None),
         ("13:00:00", 10, 60),

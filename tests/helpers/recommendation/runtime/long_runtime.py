@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from trader.recommendation.domain.market.quote_freshness import DEFAULT_QUOTE_SESSION_TIMES, QuoteSessionTimes
 from datetime import datetime
 from itertools import count
 from zoneinfo import ZoneInfo
@@ -34,12 +36,14 @@ def _runtime(
     completed_at: datetime = NOW,
     enabled: bool = True,
     quote_max_age_seconds: float = 30.0,
+    quote_sessions: QuoteSessionTimes = DEFAULT_QUOTE_SESSION_TIMES,
 ) -> tuple[LongRuntime, UnifiedFreezeIndex]:
     index = UnifiedFreezeIndex()
     runtime = LongRuntime(
         LongRuntimeDependencies(
             next_sequence=count(1).__next__,
             quote_max_age_seconds=quote_max_age_seconds,
+            quote_sessions=quote_sessions,
             quotes=quotes,
             index=index,
             now=lambda: completed_at,

@@ -78,7 +78,9 @@ def PrepareNativeQualityBatch(
         input_batch_id=native_input.input_version,
         as_of=native_input.evaluated_at,
         input_count=len(native_input.requested_codes),
-        source_health=DynamicSourceHealth(native_input.candidate_features, native_input.evaluated_at),
+        source_health=DynamicSourceHealth(
+            native_input.candidate_features, native_input.evaluated_at, sessions=hard_filter.quote_sessions,
+        ),
         latency_ms=0,
     )
     quality = MeasuredOutput(
@@ -430,7 +432,10 @@ def AssessCandidateInputStage(
         for code, count in sorted(pending.items())
     )
     health = (
-        DynamicSourceHealth(tuple(item.features for item in source.records if item.features is not None), as_of)
+        DynamicSourceHealth(
+            tuple(item.features for item in source.records if item.features is not None), as_of,
+            sessions=hard_filter.quote_sessions,
+        )
         if source.records
         else source.snapshot.source_health
     )

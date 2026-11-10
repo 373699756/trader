@@ -1,6 +1,16 @@
 {
   "cache_policy": {
     "datasets": {
+      "model_publication_metadata": {
+        "refresh_ttl_seconds": 86400,
+        "action_max_age_seconds": 86400,
+        "cadence_task": null,
+        "action_max_age_multiplier": null,
+        "negative_ttl_seconds": 10,
+        "capacity": 16,
+        "group": "observation",
+        "persisted": false
+      },
       "full_market_quotes": {
         "refresh_ttl_seconds": null,
         "action_max_age_seconds": null,

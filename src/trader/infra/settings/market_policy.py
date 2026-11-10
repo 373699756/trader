@@ -26,6 +26,7 @@ from trader.infra.settings.parser import (
 _CACHE_DATASETS = frozenset(
     {
         "full_market_quotes",
+        "model_publication_metadata",
         "candidate_quotes",
         "intraday_minutes",
         "security_master_calendar",
