@@ -1034,6 +1034,15 @@ assert.strictEqual(runtimeRows.includes("活动中"), true);
 const normalHealth = state.healthView({ health: { level: "normal", issue_count: 0 }, recent_errors: [] }, []);
 assert.strictEqual(normalHealth.badge, "正常 · 无最近错误");
 assert.strictEqual(normalHealth.primary, null);
+const referenceFailure = state.healthView({
+  recent_errors: [{ code: "refresh:static_reference_degraded", stage: "refresh", count: 4 }],
+  degraded_reasons: ["refresh:static_reference_degraded"],
+}, []);
+assert.strictEqual(referenceFailure.level, "degraded");
+assert.strictEqual(referenceFailure.issues.length, 1);
+assert.strictEqual(referenceFailure.issues[0].count, 4);
+assert.strictEqual(referenceFailure.primary.message, "官方证券参考已过期或不可用，请更新参考资料后重启服务");
+assert(state.runtimeErrorRows(referenceFailure.issues).includes("refresh:static_reference_degraded"));
 const companyFailure = state.healthView({
   health: { level: "degraded", issue_count: 1 },
   degraded_reasons: ["company_snapshot:sqlite_schema_unsupported"],

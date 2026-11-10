@@ -192,6 +192,9 @@ class MarketFeatureService:
             observed_at, refresh_failed=self.references.status().failure is not None
         )
         self.quotes.gateway.record_local_latency("static_eligibility", self._elapsed_ms(static_started))
+        if static_stages[0].source_health.state is SourceHealthState.DEGRADED:
+            # Expired qualification must not replace the last market cut with an empty one.
+            raise MarketDataUnavailableError("static_reference_degraded")
         if cached is not None:
             quotes = original_quotes
             started = self._monotonic()

@@ -41,6 +41,9 @@ from trader.recommendation.infra.market_data.company_eligibility import CompanyE
 
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
+from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs, RoundInputs
+
 from trader.recommendation.infra.market_data.trading_calendar import (
     ChinaTradingCalendar,
     TradingCalendarUnavailableError,
@@ -117,9 +120,45 @@ def test_loaded_population_and_age_do_not_depend_on_later_disk_access():
     service.references.initialize()
     assert service.references.static_reference().reference is original.reference
     assert service.references.status().failure is None
-    stale = service.fetch_market_feature_batch(NOW + timedelta(days=1))
-    assert stale.static_stages[0].source_health.state is SourceHealthState.DEGRADED
-    assert stale.static_stages[0].source_health.age_seconds == 86400
+    expired_at = NOW + timedelta(days=1)
+    with pytest.raises(MarketDataUnavailableError, match="static_reference_degraded"):
+        service.fetch_market_feature_batch(expired_at)
+    _, _, stages, _ = service._static_pipeline.observe(expired_at)
+    assert stages[0].source_health.state is SourceHealthState.DEGRADED
+    assert stages[0].source_health.age_seconds == 86400
+
+
+@pytest.mark.parametrize("force", (False, True))
+@pytest.mark.parametrize("shared_round", (False, True))
+def test_expired_reference_preserves_market_cut_without_new_source_requests(monkeypatch, force, shared_round):
+    _, gateway, history, service = _fixture()
+    first = service.fetch_market_feature_batch(NOW)
+    published = service.quotes.market_features()
+    assert published
+    history_calls = tuple(history.calls)
+
+    def no_source_request(*args, **kwargs):
+        pytest.fail("expired static qualification dispatched a quote request")
+
+    monkeypatch.setattr(gateway, "fetch_market", no_source_request)
+    monkeypatch.setattr(gateway, "fetch_candidates", no_source_request)
+    inputs = RoundInputs(("v2",), lambda: 120.0)
+    expired_at = NOW + timedelta(days=1)
+
+    with pytest.raises(MarketDataUnavailableError, match="^static_reference_degraded$"):
+        service.fetch_market_feature_batch(
+            expired_at,
+            force=force,
+            deadline=expired_at + timedelta(seconds=120),
+            round_inputs=ProfileRoundInputs("v2", inputs) if shared_round else None,
+        )
+
+    assert service.quotes.market_features() is published
+    assert service.quotes.market_features() == first.features
+    assert service.cached_quotes(("600001",))["600001"] == first.features[0].quote
+    assert tuple(history.calls) == history_calls
+    assert service.refresh_candidate_quotes(("600001",), expired_at) == ()
+    assert not inputs.cancelled()
 
 
 def test_non_st_risk_fact_is_deferred_to_second_level_filter(tmp_path):

@@ -15,6 +15,7 @@
   const ERROR_LABELS = {
     "refresh:source_unavailable": "行情刷新暂时不可用",
     "refresh:refresh_unavailable": "行情刷新暂时不可用",
+    "refresh:static_reference_degraded": "官方证券参考已过期或不可用，请更新参考资料后重启服务",
     "freeze:freeze_unavailable": "策略结果暂时无法构建",
     "review:review_unavailable": "模型复核暂时不可用",
     "review:review_identity_mismatch": "模型复核身份不一致",

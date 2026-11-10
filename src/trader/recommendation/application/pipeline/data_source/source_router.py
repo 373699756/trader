@@ -292,9 +292,9 @@ class MarketInputCoordinator(DataRefreshPort):
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             reason = _failure_code(exc)
             with self._lock:
-                history_failure = reason.startswith(("history_", "sqlite_publication_"))
-                repeated = history_failure and reason == self._last_preload_failure
-                self._last_preload_failure = reason if history_failure else None
+                preload_failure = reason.startswith(("history_", "sqlite_publication_", "static_reference_"))
+                repeated = preload_failure and reason == self._last_preload_failure
+                self._last_preload_failure = reason if preload_failure else None
             frames = traceback.extract_tb(exc.__traceback__, limit=-1)
             if frames and not repeated:
                 _LOGGER.warning(

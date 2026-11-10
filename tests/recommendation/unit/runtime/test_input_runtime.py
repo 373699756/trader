@@ -114,8 +114,9 @@ def test_loading_local_history_is_pending_without_a_refresh_failure(application_
 
 @pytest.mark.parametrize("reason", (
     "history_preload_deadline", "history_control_invalid", "sqlite_publication_checksum_mismatch",
+    "static_reference_degraded",
 ))
-def test_terminal_history_failure_logs_once_until_recovery(application_feature_factory, caplog, reason) -> None:
+def test_terminal_preload_failure_logs_once_until_recovery(application_feature_factory, caplog, reason) -> None:
     class FailedMarket(_Market):
         failed = True
 
