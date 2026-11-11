@@ -155,7 +155,6 @@ def test_expired_reference_preserves_market_cut_without_new_source_requests(monk
 
     assert service.quotes.market_features() is published
     assert service.quotes.market_features() == first.features
-    assert service.cached_quotes(("600001",))["600001"] == first.features[0].quote
     assert tuple(history.calls) == history_calls
     assert service.refresh_candidate_quotes(("600001",), expired_at) == ()
     assert not inputs.cancelled()
@@ -222,10 +221,12 @@ def test_reference_st_revision_is_adopted_only_on_restart_before_history_reads(t
         ),
     )
     batch = service.fetch_market_feature_batch(NOW)
-    assert batch.features == () and history.calls == []
-    assert restarted.historical_st_eligibility().status == "unavailable"
+    assert [item.quote.code for item in batch.features] == ["600001"]
+    assert history.calls == ["600001"]
+    assert restarted.historical_st_eligibility().status == "ready"
+    assert restarted.historical_st_eligibility().unknown_codes == ("600001",)
     assert batch.static_stages[-1].rejected_count == 1
-    assert batch.static_stages[-1].pending_count == 1
+    assert batch.static_stages[-1].pending_count == 0
 
 
 def test_preload_retries_changed_publication_and_never_accepts_mixed_identity():

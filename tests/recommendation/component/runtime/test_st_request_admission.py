@@ -47,26 +47,26 @@ def test_industry_projection_only_constructs_qualified_issuers_from_a_public_bat
     reference = _mixed_reference()
     # These rows deliberately have no fields: excluded stock content must never
     # reach the per-stock industry decoder.
-    rejected = tuple(replace(_industry(code), fields={}) for code in ("600001", "600002"))
+    rejected = replace(_industry("600001"), fields={})
     reader = PublishedReferences(
         lambda: reference, lambda: reference.identity,
-        lambda _: (_industry("300001"), *rejected), max_age_seconds=86400,
+        lambda _: (_industry("300001"), rejected, _industry("600002")), max_age_seconds=86400,
     )
     reader.initialize()
     assert reader.status().failure is None
-    assert tuple(reader.model_industries(("300001", "600001", "600002"))) == ("300001",)
-    assert reader.historical_st_eligibility().eligible_codes == ("300001",)
+    assert tuple(reader.model_industries(("300001", "600001", "600002"))) == ("300001", "600002")
+    assert reader.historical_st_eligibility().eligible_codes == ("300001", "600002")
+    assert reader.historical_st_eligibility().unknown_codes == ("600002",)
 
 
-@pytest.mark.parametrize("status", ("ever_st", "unknown"))
-def test_empty_st_admission_never_reads_the_industry_batch(status):
+def test_empty_st_admission_never_reads_the_industry_batch():
     reference = _mixed_reference()
     reference = replace(reference, st_evidence=tuple(
-        replace(item, status=status) for item in reference.st_evidence
+        replace(item, status="ever_st") for item in reference.st_evidence
     ))
 
     def forbidden(_):
-        raise AssertionError("industry read before a nonempty clear population")
+        raise AssertionError("industry read before a nonempty admitted population")
 
     reader = PublishedReferences(lambda: reference, lambda: reference.identity, forbidden, max_age_seconds=86400)
     reader.initialize()
@@ -75,7 +75,7 @@ def test_empty_st_admission_never_reads_the_industry_batch(status):
 
 
 @pytest.mark.parametrize("operation", ("refresh_candidate_quotes", "refresh_topk_quotes", "fetch_candidate_features"))
-def test_directed_requests_never_include_st_or_unknown_reference_issuers(monkeypatch, operation):
+def test_directed_requests_admit_unknown_and_exclude_confirmed_st(monkeypatch, operation):
     reference = _mixed_reference()
     _, gateway, history, service = _fixture(
         quotes=(_quote("300001"), _quote("600001"), _quote("600002")),
@@ -90,14 +90,17 @@ def test_directed_requests_never_include_st_or_unknown_reference_issuers(monkeyp
     monkeypatch.setattr(gateway, "fetch_candidates", fetch)
     monkeypatch.setattr(gateway, "fetch_topk_quotes", fetch, raising=False)
     result = getattr(service, operation)(("300001", "600001", "600002"), NOW)
-    assert requested == [("300001",)]
-    assert [feature.quote.code for feature in result] == ["300001"]
-    assert set(history.calls) == (set() if operation == "refresh_topk_quotes" else {"300001"})
+    assert requested == [("300001", "600002")]
+    assert [feature.quote.code for feature in result] == ["300001", "600002"]
+    assert set(history.calls) == (set() if operation == "refresh_topk_quotes" else {"300001", "600002"})
 
 
 @pytest.mark.parametrize("marker", ({"is_st": True}, {"name": "*ST新名称"}, {"name": "退市名称"}))
-def test_new_st_quote_prevents_history_research_and_minute_work(monkeypatch, marker):
-    _, gateway, history, service = _fixture()
+@pytest.mark.parametrize("history_status", ("clear", "unknown"))
+def test_new_st_quote_prevents_history_research_and_minute_work(monkeypatch, marker, history_status):
+    reference = PreparedFixture(NOW, _population())
+    reference = replace(reference, st_evidence=tuple(replace(item, status=history_status) for item in reference.st_evidence))
+    _, gateway, history, service = _fixture(published_references=_reader({"reference": reference}))
     gateway._quotes = (replace(_quote(), **marker),)
     operations = []
     monkeypatch.setattr(service.research, "load", lambda codes, *args, **kwargs: operations.append(("company", tuple(codes))) or {})
@@ -180,7 +183,7 @@ def test_unavailable_st_reference_never_falls_back_to_the_official_population():
 def test_empty_admission_does_not_start_a_full_market_request(monkeypatch):
     reference = _mixed_reference()
     reference = replace(reference, st_evidence=tuple(
-        replace(item, status="unknown") for item in reference.st_evidence
+        replace(item, status="ever_st") for item in reference.st_evidence
     ))
     _, gateway, history, service = _fixture(published_references=_reader({"reference": reference}))
 
@@ -244,10 +247,10 @@ def test_company_startup_uses_the_static_cut_before_any_history_initialization(m
 
     monkeypatch.setattr(cache, "initialize", observe)
     service.initialize_published_inputs(lambda: False, model_version="fixture", config_version="fixture")
-    assert history_admission == [frozenset({"300001"})]
-    assert company_requests == [("300001",)]
-    assert source.decoded == ["300001"]
-    assert set(cache.entries()) == {"300001"}
+    assert history_admission == [frozenset({"300001", "600002"})]
+    assert company_requests == [("300001", "600002")]
+    assert source.decoded == ["300001", "600002"]
+    assert set(cache.entries()) == {"300001", "600002"}
 
 
 @pytest.mark.parametrize("all_unknown", (False, True))
@@ -262,7 +265,7 @@ def test_four_profile_startup_passes_one_static_selection_and_never_reads_exclud
     reference = _mixed_reference()
     if all_unknown:
         reference = replace(reference, st_evidence=tuple(replace(item, status="unknown") for item in reference.st_evidence))
-    selected = frozenset() if all_unknown else frozenset({"300001"})
+    selected = frozenset({"300001", "600001", "600002"}) if all_unknown else frozenset({"300001", "600002"})
 
     class History(HistoryInput):
         scans = 0
@@ -292,8 +295,39 @@ def test_four_profile_startup_passes_one_static_selection_and_never_reads_exclud
         service.initialize_published_inputs(lambda: False, model_version="fixture", config_version="fixture")
         assert set(history.entries()) == selected
         assert history.loaded_identity == source.current.snapshot_hash
-    assert source.scans == source.closed == owner.scan_count == (0 if all_unknown else 1)
+    assert source.scans == source.closed == owner.scan_count == 1
     assert source.reads == []
+
+
+def test_unknown_only_population_is_admitted_without_rewriting_evidence():
+    reference = _mixed_reference()
+    reference = replace(reference, st_evidence=tuple(replace(item, status="unknown") for item in reference.st_evidence))
+    reader = _reader({"reference": reference})
+    _, _, history, service = _fixture(
+        quotes=tuple(_quote(code) for code in ("300001", "600001", "600002")),
+        published_references=reader,
+    )
+    batch = service.fetch_market_feature_batch(NOW)
+    static = batch.static_stages[-1]
+    assert (static.input_count, static.output_count, static.rejected_count, static.pending_count) == (3, 3, 0, 0)
+    assert [(item.code, item.count) for item in static.reasons] == [("historical_st_unverified", 3)]
+    assert {item.quote.code for item in batch.features} == {"300001", "600001", "600002"}
+    assert set(history.calls) == {"300001", "600001", "600002"}
+    assert all(item.status == "unknown" for item in reader.reference().st_evidence)
+    assert reader.historical_st_eligibility().unknown_codes == ("300001", "600001", "600002")
+
+
+@pytest.mark.parametrize("marker", ({"name": "*ST新名称"}, {"name": "退市名称"}))
+def test_unknown_history_does_not_override_current_st_or_delisting_name(marker):
+    reference = _mixed_reference()
+    reference = replace(
+        reference,
+        official_universe=tuple(replace(item, **marker) if item.code == "600002" else item for item in reference.official_universe),
+    )
+    reader = _reader({"reference": reference})
+    reader.initialize()
+    assert reader.historical_st_eligibility().eligible_codes == ("300001",)
+    assert reader.historical_st_eligibility().unknown_codes == ()
 
 
 def test_cancelled_startup_does_not_load_references(monkeypatch):

@@ -23,6 +23,7 @@ def FilterPermanentEligibility(
     as_of: datetime,
     latency_ms: int,
     company_exclusions: Mapping[str, str] | None = None,
+    unknown_st_codes: frozenset[str] = frozenset(),
 ) -> PipelineStageOutput[StaticIssuer]:
     RequirePreviousStage(source, PipelineStage.STATIC_FILTER)
     by_code = {item.code: item for item in freezes}
@@ -48,6 +49,11 @@ def FilterPermanentEligibility(
     pending_reasons = (
         (StageReasonAggregate("data_pending", "data pending", pending, Severity.WARNING),) if pending else ()
     )
+    unknown_count = sum(record.code in unknown_st_codes for record in accepted)
+    admitted_reasons = (
+        (StageReasonAggregate("historical_st_unverified", "historical ST unverified; admitted", unknown_count, Severity.INFO),)
+        if unknown_count else ()
+    )
     return StageOutput(
         PipelineStage.STATIC_FILTER,
         accepted,
@@ -56,7 +62,7 @@ def FilterPermanentEligibility(
         input_count=len(source.records),
         rejected_count=sum(rejected.values()),
         pending_count=pending,
-        reasons=(*business_reasons, *pending_reasons),
+        reasons=(*business_reasons, *pending_reasons, *admitted_reasons),
         business_reasons=business_reasons,
         source_health=source.snapshot.source_health,
         latency_ms=latency_ms,

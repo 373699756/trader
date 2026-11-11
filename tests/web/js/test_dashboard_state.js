@@ -542,6 +542,7 @@ const stageSnapshots = stageKeys.map((stage, index) => ({
   operation_durations: index === 0 ? [{ operation: "cache_reuse", duration_ms: 135 }]
     : index === 1 ? [{ operation: "startup_reuse", duration_ms: null }] : [],
 }));
+stageSnapshots[1].reasons = [{ code: "historical_st_unverified", count: 3307, severity: "info" }];
 const pipelineFixture = {
   current_stage: "action_publish", elapsed_ms: 2000, stage_snapshots: stageSnapshots,
   stages: stageSnapshots.map((stage) => ({ ...stage, key: stage.stage, state: "completed",
@@ -567,7 +568,8 @@ const renderPublished = (receipts, extra = {}) => state.renderSummary(
 renderPublished([matchingReceipt, { ...matchingReceipt, operation: "checkpoint_consume", content_hash: "old-hash" }]);
 assert.strictEqual((canonicalObservationElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length, 11);
 for (const value of ["135 ms", "1.25 s", "0 ms", "未测量", "未入选 364", "固定评分前六",
-  "本轮缓存复用 135 ms", "沿用启动结果", "本轮未重新执行", "文件或数据库读写失败（1次）"]) {
+  "本轮缓存复用 135 ms", "沿用启动结果", "本轮未重新执行", "文件或数据库读写失败（1次）",
+  "资格与过滤说明：历史 ST 未核实，已放行（3307只）"]) {
   assert(canonicalObservationElements.observationStageList.innerHTML.includes(value), value);
 }
 assert(canonicalObservationElements.funnelStages.textContent.includes("本轮至决策 2.00 s"));

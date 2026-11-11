@@ -187,7 +187,8 @@ class StaticMarketPipeline:
         )
         company_exclusions = {code: "blacklisted" for code in eligible_codes if code in inputs.blacklist_codes}
         filtered = FilterPermanentEligibility(
-            source, freezes, as_of=observed_at, latency_ms=0, company_exclusions=company_exclusions
+            source, freezes, as_of=observed_at, latency_ms=0, company_exclusions=company_exclusions,
+            unknown_st_codes=frozenset(historical_st.unknown_codes) if historical_st is not None else frozenset(),
         )
         filtered = self._measured_stage(filtered, started)
         batch = IssuerEligibilityBatch(

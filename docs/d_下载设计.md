@@ -26,7 +26,7 @@
 
 曾用名缺失值由`download/domain/security_eligibility.py::IsMissingNameHistory`统一判定，生产解析和只读来源对照共用。HTML解码及Unicode归一化后的空串、纯空白／标签、`&nbsp;`／`&#160;`等空白实体及既有占位符均不证明从未ST；生产记录`unknown`及`history_st_name_history_empty`，解析类缺证据不在同一次检查内退避重试，后续同步仍按既有规则重新核验。当前名称含ST者继续直接排除，不请求无必要的历史；真实非空历史按原规则判定。已有同日clear缓存不由代码修复自动改写，本批不补签活动资格或切换来源。
 
-参考准备用例 `PrepareReference` 在获取日历、行业前，先检查股票名单与ST证据一一对应，并复用 `PreparedReference.eligible_universe` 的同一下载选择规则：证据不是ever_st且当前名称不含ST者通过，包含unknown；即使全部待核也继续准备。没有下载对象时以 `sync_population_empty` 拒绝准备，不获取日历或行业、不发布新的完整参考版本，三类下载均不启动；已有正式参考及ST证据不因该拒绝而删除。ST检查后或日历准备后收到取消，也停止后续准备。完整参考仍保存全部名单和各股ST证据，原供应商检查日期通过原发布端口保留；历史行的unknown ST投影仍为未知，荐股另按clear证据核实资格。
+参考准备用例 `PrepareReference` 在获取日历、行业前，先检查股票名单与ST证据一一对应，并复用 `PreparedReference.eligible_universe` 的同一下载选择规则：证据不是ever_st且当前名称不含ST者通过，包含unknown；即使全部待核也继续准备。没有下载对象时以 `sync_population_empty` 拒绝准备，不获取日历或行业、不发布新的完整参考版本，三类下载均不启动；已有正式参考及ST证据不因该拒绝而删除。ST检查后或日历准备后收到取消，也停止后续准备。完整参考仍保存全部名单和各股ST证据，原供应商检查日期通过原发布端口保留；历史行的unknown ST投影仍为未知，荐股同样放行unknown并保留未核实标记。
 
 前置进度按实际调用显示 `sync market`、`sync history`、`sync company` 或 `sync`，不把公共ST和日历准备误标成公司同步。ST核对结束后仍须准备日历、当前行业并发布参考；行业准备和参考发布分别显示开始及结果，行业缺失或失败明确提示继续同步。`sync market`进入价格更新前显示“开始更新 raw/qfq 短窗口”，随后沿用逐股qfq进度。
 
@@ -65,7 +65,7 @@ company失败沿既有诊断owner生成完整证据块，统一终端呈现：�
 | 资料 | 当前来源 | 关键字段 | 荐股/训练用途 | 更新条件 |
 | --- | --- | --- | --- | --- |
 | 全部股票的代码和名称 | 沪深交易所列表 | code/name | 找到每只股票并关联ST状态；通过筛选后才准备其他资料 | 名单或名称变更后手动更新 |
-| ST证据 | 新浪公司资料页中的证券简称更名历史 | st_status/checked_date/st_id | 所有下载业务和荐股其他处理前的第一道资格门 | 下载unknown继续采集并保留待核；荐股未知仍待核 |
+| ST证据 | 新浪公司资料页中的证券简称更名历史 | st_status/checked_date/st_id | 所有下载业务和荐股其他处理前的第一道资格门 | 下载与荐股unknown均放行并保留未核实身份，不改写为clear |
 | 其他证券资料 | 已通过ST者的正式证券参考 | board/listed_date/delisted_date | 第2/4层其他资格、训练总体和上市边界 | ST过滤后准备 |
 | 交易日历 | 当前腾讯指数日历合同 | trade_date/calendar_id | 历史完整性分母、标签成熟、上市交易日龄 | 目标日推进时准备 |
 | 行业 | 巨潮中上协分类目录／逐股变更；中上协历次半年度全表仅供显式历史审计 | 当前标准、大类身份、原生层级、最新标识、原件／回执摘要及真实收到时间；审计另保留公告披露日期 | 当前第5/6层及模型路由；训练固定本轮最新有效映射用于全部历史日期 | 当前原件七日复用，新增股补采；正常history不准备历史行业区间 |
@@ -88,7 +88,7 @@ company失败沿既有诊断owner生成完整证据块，统一终端呈现：�
 | `open_dates` | 递增无重复的`date`元组，1–20000日，覆盖观察日 | 已发布同日有效日历或日历来源 | ST通过后准备；history/market按截止日和窗口裁剪 |
 | `industry_version` | `str`或`None` | 当前行业参考的`data_version`；行业准备按既有异常策略不可用时为None | `PrepareReference`取得；参考身份与发布器使用，不伪造行业可用 |
 | `identity` | 构造时计算的摘要字符串，不接受外部赋值 | 证券内容摘要、ST代码/检查日/状态、观察日、日历及行业版本的确定性组合 | 参考版本固定；history控制索引及各下载消费者绑定 |
-| `eligible_universe` | 派生的不可变证券元组，可以为空，不是第二份持久人口 | `SelectEligibleSecurities`验证名单与证据对应，排除ever_st及当前名称含ST者，clear与unknown均可进入下载，unknown保留待核 | `SyncData`防御性检查；history路由、market供应商与company请求共同消费；荐股另按clear证据核实资格 |
+| `eligible_universe` | 派生的不可变证券元组，可以为空，不是第二份持久人口 | `SelectEligibleSecurities`验证名单与证据对应，排除ever_st及当前名称含ST者，clear与unknown均可进入下载，unknown保留待核 | `SyncData`防御性检查；history路由、market供应商与company请求共同消费；荐股同样放行unknown，另排除当前退市标记 |
 
 下表解释 `HistoryStEvidence` 的输入字段。数据库对应 `security_st_evidence` 的`code/checked_date/st_status`；`st_id/content_hash`为持久化身份，不能拿当前读取时间重写其原供应商检查日期。
 

@@ -158,6 +158,7 @@
     data_pending: "数据待补充", refresh_pending: "行情待刷新", quality_pending: "评分输入待补充",
     quality_invalid: "评分输入无效", history_projection_loading: "正在加载本地历史数据",
     historical_st: "历史记录存在特别处理风险", historical_audited_loss: "历史规则：曾有正式年度亏损",
+    historical_st_unverified: "历史 ST 未核实，已放行",
     latest_disclosed_report_loss: "最新一份正式财报亏损",
     historical_delisting_warning: "历史记录存在退市预警", confirmed_financial_fraud: "已确认财务造假",
     confirmed_major_illegal: "已确认重大违法", confirmed_fund_occupation: "已确认资金占用",

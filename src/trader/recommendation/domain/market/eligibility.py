@@ -55,14 +55,16 @@ def IsPermanentExclusionReason(reason: IssuerEligibilityReason) -> bool:
 
 @dataclass(frozen=True)
 class HistoricalStEligibilitySnapshot:
-    """Fixed published reference population used as the online ST qualification gate."""
+    """Admit published clear and unknown issuers without changing their ST evidence."""
 
     status: Literal["ready", "unavailable"]
     source_identity: str | None
     eligible_codes: tuple[str, ...] = ()
+    unknown_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         codes = tuple(self.eligible_codes)
+        unknown = tuple(self.unknown_codes)
         ready = self.status == "ready"
         if (
             self.status not in {"ready", "unavailable"}
@@ -70,6 +72,8 @@ class HistoricalStEligibilitySnapshot:
             or ready != bool(codes)
             or codes != tuple(sorted(set(codes)))
             or any(_CODE.fullmatch(code) is None for code in codes)
+            or unknown != tuple(sorted(set(unknown)))
+            or not set(unknown).issubset(codes)
             or (
                 self.source_identity is not None
                 and (
@@ -80,14 +84,17 @@ class HistoricalStEligibilitySnapshot:
         ):
             raise ValueError("historical ST eligibility snapshot is invalid")
         object.__setattr__(self, "eligible_codes", codes)
+        object.__setattr__(self, "unknown_codes", unknown)
 
     @classmethod
     def unavailable(cls) -> HistoricalStEligibilitySnapshot:
         return cls("unavailable", None)
 
     @classmethod
-    def ready(cls, source_identity: str, eligible_codes: tuple[str, ...]) -> HistoricalStEligibilitySnapshot:
-        return cls("ready", source_identity, eligible_codes)
+    def ready(
+        cls, source_identity: str, eligible_codes: tuple[str, ...], *, unknown_codes: tuple[str, ...] = ()
+    ) -> HistoricalStEligibilitySnapshot:
+        return cls("ready", source_identity, eligible_codes, unknown_codes)
 
     def eligible(self, code: str) -> bool:
         position = bisect_left(self.eligible_codes, code)

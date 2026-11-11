@@ -73,7 +73,7 @@ class PublishedReferences:
                 if reference is None:
                     self._failure = "reference_unavailable"
                     return
-                eligible_codes = frozenset(_verified_st_codes(reference))
+                eligible_codes = frozenset(_admitted_st_codes(reference))
                 static = StaticMarketReference(
                     tuple(
                         StaticIssuer(
@@ -122,10 +122,14 @@ class PublishedReferences:
 
     def historical_st_eligibility(self) -> HistoricalStEligibilitySnapshot:
         reference = self.reference()
-        codes = _verified_st_codes(reference) if reference else ()
+        codes = _admitted_st_codes(reference) if reference else ()
         if reference is None or not codes:
             return HistoricalStEligibilitySnapshot.unavailable()
-        return HistoricalStEligibilitySnapshot.ready(reference.identity, codes)
+        admitted = frozenset(codes)
+        unknown_codes = tuple(
+            item.code for item in reference.st_evidence if item.status == "unknown" and item.code in admitted
+        )
+        return HistoricalStEligibilitySnapshot.ready(reference.identity, codes, unknown_codes=unknown_codes)
 
     def status(self) -> ReferencePublicationStatus:
         with self._lock:
@@ -230,9 +234,10 @@ class PublishedReferences:
         return len(self._industries)
 
 
-def _verified_st_codes(reference: PreparedReference) -> tuple[str, ...]:
-    verified = frozenset(item.code for item in reference.st_evidence if item.status == "clear")
-    return tuple(item.code for item in reference.eligible_universe if item.code in verified)
+def _admitted_st_codes(reference: PreparedReference) -> tuple[str, ...]:
+    return tuple(
+        item.code for item in reference.eligible_universe if "ST" not in item.name.upper() and "退" not in item.name
+    )
 
 
 def _industry(row: SourceObservation) -> ModelIndustryReference:
