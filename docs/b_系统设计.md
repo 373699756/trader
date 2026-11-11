@@ -507,7 +507,7 @@ flowchart TD
 | `full_market_quotes` | `null` | `null` | `"full_market"` | `3` | `10` | `12000` | `"observation"` | `false` |
 | `candidate_quotes` | `null` | `null` | `"candidate_quotes"` | `3` | `3` | `12000` | `"observation"` | `false` |
 | `intraday_minutes` | `45` | `90` | `null` | `null` | `45` | `12000` | `"observation"` | `false` |
-| `security_master_calendar` | `86400` | `86400` | `null` | `null` | `300` | `12000` | `"observation"` | `false` |
+| `security_master_calendar` | `259200` | `259200` | `null` | `null` | `300` | `12000` | `"observation"` | `false` |
 | `quote_factor_inputs` | `86400` | `86400` | `null` | `null` | `60` | `12000` | `"feature_batches"` | `false` |
 | `market_cross_section` | `86400` | `86400` | `null` | `null` | `60` | `4` | `"feature_batches"` | `false` |
 | `board_cross_section` | `86400` | `86400` | `null` | `null` | `60` | `24` | `"feature_batches"` | `false` |

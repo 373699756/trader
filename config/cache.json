@@ -42,8 +42,8 @@
         "persisted": false
       },
       "security_master_calendar": {
-        "refresh_ttl_seconds": 86400,
-        "action_max_age_seconds": 86400,
+        "refresh_ttl_seconds": 259200,
+        "action_max_age_seconds": 259200,
         "cadence_task": null,
         "action_max_age_multiplier": null,
         "negative_ttl_seconds": 300,
