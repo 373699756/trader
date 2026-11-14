@@ -62,5 +62,5 @@ def test_shell_launcher_rejects_removed_repair_scope_before_environment_setup(tm
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "用法：./run.sh sync history|market|company [fill]\n"
+    assert completed.stderr == "用法：./run.sh sync [history|market|company [fill]]\n"
     assert not missing_venv.exists()

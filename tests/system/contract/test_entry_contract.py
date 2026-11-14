@@ -196,6 +196,7 @@ def test_run_script_help_lists_two_commands_per_download_or_training_kind(tmp_pa
     assert "./run.sh v1,v2,v3                同时启动所列档位，Web按钮互斥切换" in completed.stdout
     commands = completed.stdout.split("下载与训练:\n", 1)[1].split("\n\n", 1)[0]
     assert [line.strip().split("  ", 1)[0] for line in commands.splitlines()] == [
+        "./run.sh sync",
         "./run.sh sync history", "./run.sh sync history fill",
         "./run.sh sync market", "./run.sh sync market fill",
         "./run.sh sync company", "./run.sh sync company fill",
@@ -240,7 +241,7 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
         ("train", "--diagnostics", "report.json"),
         ("train", "v1", "v5"),
         ("train", "v1,v1"),
-        ("sync",),
+        ("sync", "fill"),
         ("sync", "all"),
         ("sync", "history", "--json"),
         ("sync", "market", "fill", "extra"),
@@ -425,9 +426,11 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
     assert completed.stdout == f"cli:--config {config} train{suffix}\n"
 
 
-@pytest.mark.parametrize("target", ("history", "market", "company"))
-@pytest.mark.parametrize("fill_args", ((), ("fill",)))
-def test_run_script_forwards_retained_sync_commands(tmp_path: Path, target: str, fill_args: tuple[str, ...]) -> None:
+@pytest.mark.parametrize("arguments", (
+    (), ("history",), ("history", "fill"), ("market",), ("market", "fill"),
+    ("company",), ("company", "fill"),
+))
+def test_run_script_forwards_retained_sync_commands(tmp_path: Path, arguments: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
     _write_fake_entrypoint(venv_bin / "python3", f'exec "{sys.executable}" "$@"')
@@ -435,15 +438,18 @@ def test_run_script_forwards_retained_sync_commands(tmp_path: Path, target: str,
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "sync", target, *fill_args),
+        ("bash", str(ROOT / "run.sh"), "sync", *arguments),
         cwd=ROOT,
         env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
         text=True, capture_output=True, timeout=10, check=False,
     )
 
     assert completed.returncode == 0, completed.stderr
-    suffix = " fill" if fill_args else ""
-    assert completed.stdout == f"cli:--config {config} sync {target}{suffix}\n"
+    suffix = " " + " ".join(arguments) if arguments else ""
+    assert completed.stdout == f"cli:--config {config} sync{suffix}\n"
+    if not arguments:
+        parsed = BuildParser().parse_args(["sync"])
+        assert parsed.target == "all" and parsed.operation is None
     assert not config.exists()
 
 

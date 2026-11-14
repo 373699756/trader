@@ -17,6 +17,7 @@ usage() {
     "  ./run.sh -h                      查看本帮助" \
     "" \
     "下载与训练:" \
+    "  ./run.sh sync                    依次更新参考、历史、行情窗口和公司资料" \
     "  ./run.sh sync history            更新历史，自动续传" \
     "  ./run.sh sync history fill       补齐历史缺口" \
     "  ./run.sh sync market             更新行情窗口" \
@@ -51,10 +52,10 @@ case "${1:-}" in
 esac
 
 if [[ "$MODE" == "sync" ]]; then
-  if (($# < 1 || $# > 2)) \
-    || [[ "$1" != "history" && "$1" != "market" && "$1" != "company" ]] \
+  if (($# > 2)) \
+    || { (($# > 0)) && [[ "$1" != "history" && "$1" != "market" && "$1" != "company" ]]; } \
     || { (($# == 2)) && [[ "$2" != "fill" ]]; }; then
-    printf '%s\n' '用法：./run.sh sync history|market|company [fill]' >&2
+    printf '%s\n' '用法：./run.sh sync [history|market|company [fill]]' >&2
     exit 2
   fi
 else

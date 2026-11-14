@@ -17,7 +17,7 @@
 
 `train`只调用`bootstrap.ExecuteSelectedTraining`，读取已经发布的本地资料；缺资料时提示用户手动执行`./run.sh sync history`，不代为下载。原自动组合函数`ExecuteDownloadTrain`删除，`run.sh train`继续转发同一个CLI入口。训练的线程数和进程优先级也由组合根准备。
 
-`run.sh`下载仅接受`sync history|market|company [fill]`，训练仅接受`train [档位列表]`；不指定下载类型、训练JSON／诊断文件参数及定向补采参数均在环境准备前拒绝。补缺使用位置参数`fill`，Shell、PowerShell及独立CLI均拒绝旧`--fill`写法。帮助与参数入口采用同一范围；独立`trader-cli`和隔离诊断工具仍按各自合同提供结构化报告与定向补采。
+`run.sh sync`先准备公共参考，再依次更新history、market和company；`sync history|market|company [fill]`用于单项更新或补缺。训练仅接受`train [档位列表]`；训练JSON／诊断文件参数及定向补采参数均在环境准备前拒绝。补缺使用位置参数`fill`且须指定下载类型，Shell、PowerShell及独立CLI均拒绝旧`--fill`写法。帮助与参数入口采用同一范围；独立`trader-cli`和隔离诊断工具仍按各自合同提供结构化报告与定向补采。
 
 正常训练由组合根一次加载下载owner的最新有效`CurrentIndustrySnapshot`，四档双头按这份映射处理全部价格历史；正常history不再准备历史行业。训练输入及复用同时绑定价格和行业语义，刷新时间不冒充语义变化，缺失／过期／损坏明确拒绝。日期预检、样本事实及模型工件合同归[e第1、3、7章](e_训练设计.md#1-输入固定双头独立)，独立点时收益研究仍须另具历史证据。
 
