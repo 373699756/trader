@@ -8,8 +8,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import cast
 
-from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence, ExtractCompanyLinkCandidate
-from trader.download.domain.company_events import CompanyEventPolicy
+from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence
+from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_plan import BuildCompanyFieldResults
@@ -25,7 +25,8 @@ from trader.download.infra.company_field_result_rows import ReadCompanyFieldResu
 from trader.infra.sqlite_connection import SqliteConnection
 
 _PROOF_RULE = "field_source_lines:1"
-_SUPPORTED_FIELDS = frozenset({"actual_pct", "repurchase_purpose"})
+_RISK_FIELDS = frozenset({"start_date", "end_date", "planned_pct", "completion_disclosed_at"})
+_SUPPORTED_FIELDS = _RISK_FIELDS | {"actual_pct", "repurchase_purpose"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +63,7 @@ def PrepareCompanyFieldResults(
     results = list(baseline)
     for position, item in enumerate(results):
         existing = next((old for old in previous if old.event_id == item.event_id and old.field == item.field), None)
-        event = next((event for event in facts.positive_events if event.event_id == item.event_id), None)
+        event = next((event for event in _field_events(facts, item.field) if event.event_id == item.event_id), None)
         if (existing is not None and existing.state == "verified" and item.applicable
             and type(existing.value) is type(item.value) and existing.value == item.value
             and event is not None
@@ -76,14 +77,15 @@ def PrepareCompanyFieldResults(
     for item in tuple(results):
         if item.state == "verified" or not item.applicable or item.value is None or item.field not in _SUPPORTED_FIELDS:
             continue
-        event = next((event for event in facts.positive_events if event.event_id == item.event_id), None)
+        event = next((event for event in _field_events(facts, item.field) if event.event_id == item.event_id), None)
         if event is None:
             continue
         for evidence_id in reversed(event.evidence_ids):
             rows = collected.run(
                 "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
                 "WHERE c.code=? AND d.source_key=? AND d.kind='announcement' AND d.body_checked=1 "
-                "AND d.body_retained=1 AND d.published_at<=?",
+                "AND d.body_retained=1 AND d.published_at<=? "
+                "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
                 (facts.code, evidence_id, observed_at.isoformat()),
             ).fetchall()
             if len(rows) != 1:
@@ -133,21 +135,20 @@ def PrepareCompanyFieldResults(
                 row["source"], evidence_id, facts.code, row["record_hash"], hashlib.sha256(policy.encode()).digest(),
                 body_hash, observed_at, "field_attempted", policy,
             ))
-    candidates = tuple(
-        (candidate, linked.subject) for document in inputs
-        if (linked := ExtractCompanyLinkCandidate(document, observed_at, event_policy)) is not None
-        for candidate in ExtractCompanyFieldEvidence(document, observed_at, event_policy)
-    )
-    for candidate, subject in candidates:
+    candidates = tuple(candidate for document in inputs
+                       for candidate in ExtractCompanyFieldEvidence(document, observed_at, event_policy))
+    for candidate in candidates:
         if candidate.code != facts.code or len(candidate.evidence) != 1:
             continue
         proof = candidate.evidence[0]
         if (candidate.field, proof.rule_id) not in COMPANY_FIELD_RULES:
             raise ValueError("company_field_evidence_rule_mismatch")
-        events = tuple(event for event in facts.positive_events
+        events = tuple(event for event in _field_events(facts, candidate.field)
                        if proof.source_key in event.evidence_ids
-                       and subject is event.subject_type and proof.subject is event.subject_type
-                       and candidate.event_id == f"{proof.source_key}:{event.event_type.value}")
+                       and proof.subject is event.subject_type
+                       and candidate.event_id == f"{proof.source_key}:" + (
+                           event.risk_type.value if isinstance(event, CompanyRiskEvent) else event.event_type.value
+                       ))
         if len(events) != 1 or not _current_material(
             collected, facts, proof.source, proof.source_key, proof.record_hash, proof.body_hash, proof.published_at,
         ):
@@ -158,6 +159,10 @@ def PrepareCompanyFieldResults(
                 and type(item.value) is type(candidate.value) and item.value == candidate.value):
                 results[position] = replace(candidate, event_id=event.event_id)
     return CompanyFieldPublication(tuple(results), tuple(receipts))
+
+
+def _field_events(facts: CompanyFacts, field: str) -> Sequence[CompanyRiskEvent | CompanyPositiveEvent]:
+    return facts.risk_events if field in _RISK_FIELDS else facts.positive_events
 
 
 def _current_material(
@@ -173,7 +178,8 @@ def _current_material(
         return False
     rows = collected.run(
         "SELECT d.record_hash,d.body_hash,d.published_at FROM disclosures d "
-        "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE d.source=? AND d.source_key=? AND c.code=?",
+        "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE d.source=? AND d.source_key=? AND c.code=? "
+        "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
         (source, source_key, facts.code),
     ).fetchall()
     return len(rows) == 1 and tuple(rows[0]) == (record_hash, body_hash, published_at.isoformat())

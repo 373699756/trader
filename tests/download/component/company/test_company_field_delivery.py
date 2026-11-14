@@ -9,7 +9,7 @@ import pytest
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
-from trader.download.domain.company_events import CompanyPositiveStatus, CompanySubject
+from trader.download.domain.company_events import CompanyEventStatus, CompanyPositiveStatus, CompanySubject
 from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition
 from trader.download.infra import company_facts_index, company_field_publication
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -82,6 +82,82 @@ def _prepare(index, facts, documents):
             event_policy=fixtures.CompanyEventPolicy(),
             read_document=CompanyDocumentFilesFixture(index.path.parent / "text").read,
         )
+
+
+def test_reduction_fields_publish_with_risk_facts_and_reuse_without_reading_body(tmp_path):
+    index = fixtures._index(tmp_path)
+    document = _put(index, (
+        "本公司控股股东拟减持股份，占公司总股本的比例为2%。\n"
+        "减持期间为2026年10月28日至2026年11月28日。\n" + _DETAIL
+    ), identity="reduction-proof", title="控股股东减持计划公告")
+    index.publish(("600001",), _AT)
+    reader = _reader(index)
+    before = reader.read(("600001",))
+    risk, = before[0].risk_events
+    assert risk.status is CompanyEventStatus.ONGOING
+    fields = reader.read_fields(("600001",)).results
+    verified = {item.field for item in fields if item.state == "verified"}
+    assert verified == {"start_date", "end_date", "planned_pct"}
+    assert all(proof.source_key == document.disclosure.identity for item in fields for proof in item.evidence)
+    valid = _receipts(index, ordinary_only=True)
+
+    def unexpected_read(_digest):
+        raise AssertionError("unchanged field proofs must not read the full body again")
+
+    with SqliteSession(index.path, SqliteConnectionOptions(read_only=True)) as collected, SqliteSession(
+        index.facts_path, SqliteConnectionOptions(read_only=True),
+    ) as formal:
+        publication = PrepareCompanyFieldResults(
+            collected, formal, before[0], (), observed_at=_AT,
+            extraction_hash=ReadCompanyPublicationIdentity(formal).extraction_hash, event_policy=fixtures.CompanyEventPolicy(),
+            read_document=unexpected_read,
+        )
+    assert {item.field: item for item in publication.results} == {item.field: item for item in fields}
+    assert not publication.receipts
+    assert _receipts(index, ordinary_only=True) == valid
+    assert reader.read(("600001",)) == before
+
+
+def test_completion_proof_requires_unique_formally_linked_resolved_plan(tmp_path):
+    index = fixtures._index(tmp_path)
+    _put(index, "本公司控股股东拟减持股份，占公司总股本的比例为2%。本公告为正式预披露信息。" + _DETAIL,
+         identity="reduction-plan", title="控股股东减持计划公告")
+    index.publish(("600001",), _AT)
+    _put(index, "本公司控股股东根据公告reduction-plan，本次减持计划已实施完毕。本公告为正式结果披露。" + _DETAIL,
+         identity="reduction-end", title="控股股东减持计划实施完毕公告")
+    index.publish(("600001",), _AT)
+    fact, = _reader(index).read(("600001",))
+    risk, = fact.risk_events
+    assert risk.status is CompanyEventStatus.RESOLVED
+    conclusion, = (item for item in _reader(index).read_fields(("600001",)).results
+                   if item.field == "completion_disclosed_at")
+    assert conclusion.state == "verified" and conclusion.value == risk.resolved_at == _AT
+    assert conclusion.evidence[0].source_key == "reduction-end"
+    assert risk.expires_at == _AT + timedelta(days=90)
+
+
+def test_exact_local_recheck_removes_only_unsafe_holder_measurement_and_preserves_risk(tmp_path):
+    index = fixtures._index(tmp_path)
+    _put(index, "本公司持股5%以上股东甲拟减持股份。董事乙拟减持股份占公司总股本的0.2571%。" + _DETAIL,
+         identity="multiple-holders", title="持股5%以上股东、部分董事减持股份预披露公告")
+    index.publish(("600001",), _AT)
+    risk, = _reader(index).read(("600001",))[0].risk_events
+    assert risk.reduction_plan.planned_ratio_pct is None
+    valid = _receipts(index, ordinary_only=True)
+    # Represent an old single-input derivation that attributed the director's
+    # percentage to the qualifying holder; this is an isolated fixture only.
+    with SqliteSession(index.facts_path) as formal:
+        formal.run("UPDATE company_reduction_plan SET planned_pct=0.2571")
+    index.prepare_publication(("600001",), _AT)
+    index.publish(("600001",), _AT)
+    fact, = _reader(index).read(("600001",))
+    corrected, = fact.risk_events
+    assert (corrected.event_id, corrected.risk_level, corrected.status) == (risk.event_id, 4, CompanyEventStatus.ONGOING)
+    assert corrected.reduction_plan.planned_ratio_pct is None
+    assert corrected.expires_at is None and corrected.resolved_at is None
+    assert any(item.reason_code == "case_conclusion_ambiguous" for item in fact.review_reasons)
+    assert _receipts(index, ordinary_only=True) == valid
+    assert not index.pending_documents(("600001",), _AT, policies=fixtures._TEST_DOCUMENT_POLICIES)
 
 
 def _unproved_publication(tmp_path):

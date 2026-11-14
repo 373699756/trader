@@ -72,6 +72,58 @@ def test_field_audit_distinguishes_real_source_values_from_formal_corruption(tmp
     assert _audit(index)["field_audit"]["nonfinite_values"] == 1
 
 
+def test_latest_financial_source_nulls_are_separate_from_retained_complete_and_publication_loss(tmp_path):
+    from datetime import timedelta
+
+    from scripts.download.company.company_field_audit import ProjectCompanyFieldAudit
+
+    index = _published(tmp_path)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("INSERT INTO financials VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+            "600001", str(fixtures.NOW.date() - timedelta(days=90)), fixtures.NOW.isoformat(),
+            1, 2, 3, 4, 5, 6, 7, 8,
+        ))
+        connection.run("INSERT INTO financials VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+            "600001", str(fixtures.NOW.date()), fixtures.NOW.isoformat(),
+            None, 0, 3, 4, 5, 6, -7, 8,
+        ))
+    index.publish(("600001",), fixtures.NOW)
+    audit = _audit(index)["field_audit"]
+    sources = audit["financial_sources"]
+    assert sources["retained"]["incomplete_rows"] == 0
+    assert sources["latest"]["incomplete_rows"] == 1
+    assert sources["latest"]["missing_fields"] == {"eps": 1}
+    assert sources["latest"]["reasons"] == {"source_null": 1}
+    assert sources["latest"]["value_mismatch_rows"] == 0
+    assert "company_latest_financial_fields_missing" in audit["findings"]
+    assert ProjectCompanyFieldAudit(audit)["financial_sources"] == sources
+
+    with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE company_latest_financial SET bps=NULL")
+    lost = _audit(index)["field_audit"]
+    assert lost["financial_sources"]["latest"]["reasons"] == {"source_null": 1, "publication_missing": 1}
+    assert "company_field_integrity_failed" in lost["findings"]
+
+
+def test_financial_equal_values_with_different_disclosure_identity_are_unconfirmed(tmp_path):
+    from datetime import timedelta
+
+    index = _published(tmp_path)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("INSERT INTO financials VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+            "600001", str(fixtures.NOW.date()), fixtures.NOW.isoformat(), 1, 2, 3, 4, 5, 6, 7, 8,
+        ))
+    index.publish(("600001",), fixtures.NOW)
+    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
+        connection.run("UPDATE financials SET published_at=?", ((fixtures.NOW - timedelta(microseconds=1)).isoformat(),))
+    audit = _audit(index)["field_audit"]
+    latest = audit["financial_sources"]["latest"]
+    assert latest["source_identity_unconfirmed_rows"] == 1
+    assert latest["reasons"] == {"source_revision_changed": 8}
+    assert not latest["value_mismatch_rows"]
+    assert "company_financial_source_identity_unconfirmed" in audit["findings"]
+
+
 @pytest.mark.parametrize("change", ("delete", "record_hash", "extraction_hash", "new_member"))
 def test_released_body_requires_current_version_receipt_for_every_population_member(tmp_path, change):
     index = _published(tmp_path)

@@ -45,7 +45,8 @@ from trader.infra.sqlite_connection import SqliteConnection
 COMPANY_FIELD_RULES = (
     ("start_date", "explicit_reduction_start_date:2"),
     ("end_date", "explicit_reduction_end_date:2"),
-    ("planned_pct", "reduction_total_capital_ratio:2"),
+    ("planned_pct", "reduction_total_capital_ratio:3"),
+    ("completion_disclosed_at", "explicit_reduction_completion:1"),
     ("actual_pct", "implemented_total_capital_ratio:2"),
     ("repurchase_purpose", "explicit_repurchase_purpose:2"),
     ("contract_amount", "explicit_cny_contract_amount:3"),
@@ -579,7 +580,7 @@ def QueueCompanyReductionRechecks(
     event_policy: CompanyEventPolicy,
     read_document: Callable[[bytes], str],
 ) -> None:
-    """Recompile a receipted closure previously mistaken for an independent plan.
+    """Recompile a receipted unsafe single-input measurement or mistaken closure.
 
     Only its exact retained input can retire that single-evidence derivation.
     Existing linked plans and shared evidence remain untouched; the normal
@@ -632,9 +633,16 @@ def QueueCompanyReductionRechecks(
                     text, True,
                 )
                 parsed = ExtractCompanyEvents((document,), observed_at, event_policy, previous_risks=(event,))
-                if (any(item.event_id == event.event_id for item in parsed.risks)
-                    or not any(review.evidence_id == evidence_id and review.reason_code == "resolution_unlinked"
-                               for review in parsed.reviews)):
+                changed_measurements = any(
+                    item.event_id == event.event_id and item.reduction_plan != event.reduction_plan
+                    for item in parsed.risks
+                )
+                mistaken_closure = (
+                    not any(item.event_id == event.event_id for item in parsed.risks)
+                    and any(review.evidence_id == evidence_id and review.reason_code == "resolution_unlinked"
+                            for review in parsed.reviews)
+                )
+                if not changed_measurements and not mistaken_closure:
                     continue
                 collected.run(
                     "DELETE FROM document_link_candidates WHERE source=? AND source_key=? "

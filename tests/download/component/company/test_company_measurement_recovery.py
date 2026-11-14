@@ -68,15 +68,16 @@ def test_changed_plan_rule_reuses_local_text_once_and_preserves_ordinary_valid(t
     assert actual.reduction_plan.planned_end_date == before.reduction_plan.planned_end_date
     assert actual.expires_at.isoformat() == "2027-02-17T23:59:59.999999+08:00"
     field = next(result for result in reader.read_fields(item.codes).results if result.field == "planned_pct")
-    assert (field.value, field.state, field.evidence) == (ratio, "present_unverified", ())
+    assert (field.value, field.state) == (ratio, "verified")
+    assert len(field.evidence) == 1 and field.evidence[0].source_key == item.identity
     assert _valid_receipts(index) == ordinary
-    attempted = _attempt_receipts(index, "planned_pct", "reduction_total_capital_ratio:2")
+    attempted = _attempt_receipts(index, "planned_pct", "reduction_total_capital_ratio:3")
     assert len(attempted) == 1
 
     restarted = fixtures._index(tmp_path)
     restarted.prepare_publication(item.codes, NOW + timedelta(minutes=2))
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
-    assert _attempt_receipts(restarted, "planned_pct", "reduction_total_capital_ratio:2") == attempted
+    assert _attempt_receipts(restarted, "planned_pct", "reduction_total_capital_ratio:3") == attempted
     assert _valid_receipts(restarted) == ordinary
     assert SQLiteCompanyEvidenceReaderFixture(restarted.facts_path).read(item.codes)[0].risk_events[0] == actual
 

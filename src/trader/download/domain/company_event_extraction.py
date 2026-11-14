@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import re
-import hashlib
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from enum import Enum
-from typing import Literal
 
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.domain.company_events import (
@@ -30,7 +28,8 @@ from trader.download.domain.company_events import (
     RepurchasePurpose,
 )
 from trader.download.domain.company_evidence import CompanyDocument
-from trader.download.domain.company_field_results import CompanyFieldConclusion, CompanyFieldEvidence
+from trader.download.domain.company_field_results import CompanyFieldConclusion, CompanyFieldName, CompanyFieldUnit
+from trader.download.domain.company_field_source import BuildCompanyFieldEvidence
 
 _RISK_HINTS = (
     "立案",
@@ -155,6 +154,9 @@ def ExtractCompanyFieldEvidence(
     verified, _ = _verify_document(document, observed_at)
     if verified is None or any(marker in verified.title for marker in ("终止", "撤销", "取消")):
         return ()
+    if (CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION in _risk_categories(verified.title)
+        or CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION in _risk_closure(verified.title)):
+        return _reduction_field_evidence(verified)
     kind = _positive_type(verified.title)
     if kind not in (CompanyPositiveType.SHARE_REPURCHASE, CompanyPositiveType.SHAREHOLDER_INCREASE):
         return ()
@@ -169,7 +171,7 @@ def ExtractCompanyFieldEvidence(
         if ratio is not None:
             verb = "回购" if kind is CompanyPositiveType.SHARE_REPURCHASE else "增持"
             for match in _actual_ratio_matches(body, verb):
-                evidence = _field_statement_evidence(
+                evidence = BuildCompanyFieldEvidence(
                     document,
                     match[0],
                     "implemented_total_capital_ratio:2",
@@ -185,7 +187,7 @@ def ExtractCompanyFieldEvidence(
     if isinstance(event.measurements, RepurchaseMeasurements):
         purpose = event.measurements.purpose
         statement = _repurchase_purpose_statement(body, purpose)
-        evidence = _field_statement_evidence(
+        evidence = BuildCompanyFieldEvidence(
             document,
             statement,
             "explicit_repurchase_purpose:2",
@@ -200,54 +202,50 @@ def ExtractCompanyFieldEvidence(
     return tuple(results)
 
 
-def _field_statement_evidence(
-    document: CompanyDocument,
-    statement: str,
-    rule_id: str,
-    unit: Literal["percent", "text"],
-    subject: CompanySubject,
-) -> CompanyFieldEvidence | None:
-    if not statement:
-        return None
-    compact = "".join(document.text.split())
-    start = compact.find(statement)
-    if start < 0 or compact.find(statement, start + 1) >= 0:
-        return None
-    offset = first = last = 0
-    for index, character in enumerate(document.text):
-        if character.isspace():
-            continue
-        if offset == start:
-            first = index
-        offset += 1
-        if offset == start + len(statement):
-            last = index + 1
-            break
-    quote = document.text[first:last]
-    if len(quote) > 1000:
-        return None
-    line_offset = 0
-    start_line = end_line = 1
-    for number, line in enumerate(document.text.splitlines(keepends=True), 1):
-        if line_offset <= first < line_offset + len(line):
-            start_line = number
-        if line_offset <= last - 1 < line_offset + len(line):
-            end_line = number
-            break
-        line_offset += len(line)
-    item = document.disclosure
-    return CompanyFieldEvidence(
-        item.source,
-        item.identity,
-        item.digest,
-        hashlib.sha256(document.text.encode("utf-8")).digest(),
-        rule_id,
-        item.published_at,
-        start_line,
-        end_line,
-        quote,
-        unit,
-        subject,
+def _reduction_field_evidence(verified: _VerifiedDocument) -> tuple[CompanyFieldConclusion, ...]:
+    # An enum cannot distinguish multiple named holders or their individual plans.
+    if not _reduction_measurement_subject_is_unique(verified):
+        return ()
+    body = _subject_body(verified)
+    plan = _reduction_plan(body)
+    fields: list[tuple[CompanyFieldName, date | datetime | float, str, str, CompanyFieldUnit]] = []
+    if plan is not None:
+        for match in _reduction_period_matches(body):
+            if plan.planned_start_date is not None and plan.planned_end_date is not None:
+                fields.extend((
+                    ("start_date", plan.planned_start_date, match[0], "explicit_reduction_start_date:2", "date"),
+                    ("end_date", plan.planned_end_date, match[0], "explicit_reduction_end_date:2", "date"),
+                ))
+                break
+        ratio = _planned_reduction_match(body)
+        if plan.planned_ratio_pct is not None and ratio is not None:
+            fields.append(("planned_pct", plan.planned_ratio_pct, ratio[0], "reduction_total_capital_ratio:3", "percent"))
+    if _reduction_closure_is_unambiguous(verified):
+        statement = _reduction_closure_statement(body)
+        if statement is not None:
+            fields.append(("completion_disclosed_at", verified.document.disclosure.published_at,
+                           statement, "explicit_reduction_completion:1", "time"))
+    results: list[CompanyFieldConclusion] = []
+    item = verified.document.disclosure
+    for field, value, statement, rule, unit in fields:
+        evidence = BuildCompanyFieldEvidence(verified.document, statement, rule, unit, verified.subject)
+        if evidence is not None:
+            results.append(CompanyFieldConclusion(
+                item.codes[0], f"{item.identity}:major_shareholder_reduction", field, value, "verified", True,
+                "explicit_same_subject_reduction_field", (evidence,),
+            ))
+    return tuple(results)
+
+
+def _reduction_measurement_subject_is_unique(verified: _VerifiedDocument) -> bool:
+    # Regulation names describe permitted actors, rather than additional plans.
+    body = re.sub(r"《[^》]{0,160}》", "", verified.body)
+    return not (
+        verified.subject is CompanySubject.ISSUER
+        or any(marker in body for marker in ("分别", "各自", "一致行动人", "合计持有", "合计持股"))
+        or re.search(r"(?:董事(?!会)|高管|高级管理人员|其他股东)[^。；;]{0,80}(?:持有|减持|计划|拟)", body)
+        or re.search(r"(?:股东|实际控制人)[^。；;，,]{0,60}[、及与和][^。；;，,]{0,40}(?:持有|减持|计划|拟)", body)
+        or len({subject for marker, subject in _SUBJECT_MARKERS if marker in body}) != 1
     )
 
 
@@ -541,7 +539,10 @@ def _confirm_risks(
                 _review(document, observed_at, "risk", "conclusion_unverified", "标题与正式正文结论未形成一致证据")
             )
             continue
-        _append_risk(risks, replace(verified, body=body), category, policy)
+        ambiguous = category is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION and not _reduction_measurement_subject_is_unique(verified)
+        if ambiguous:
+            reviews.append(_review(document, observed_at, "risk", "case_conclusion_ambiguous", "多主体减持测量无法唯一绑定，保留已确认风险"))
+        _append_risk(risks, replace(verified, body=body), category, policy, reduction_measurements_ambiguous=ambiguous)
     # Ordinary reduction progress and general reminders do not invent new hard facts.
     if not categories and any(
         marker in verified.title
@@ -594,6 +595,8 @@ def _append_risk(
     verified: _VerifiedDocument,
     category: CompanyRiskType,
     policy: CompanyEventPolicy,
+    *,
+    reduction_measurements_ambiguous: bool = False,
 ) -> None:
     item = verified.document.disclosure
     body = verified.body
@@ -639,7 +642,14 @@ def _append_risk(
     )
     reduction_plan = previous.reduction_plan if previous else None
     if category is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION:
-        parsed_plan = _reduction_plan(body)
+        parsed_plan = None if reduction_measurements_ambiguous else _reduction_plan(body)
+        if (reduction_measurements_ambiguous and previous is not None
+            and previous.evidence_ids == (item.identity,)
+            and previous.first_disclosed_at == previous.last_disclosed_at == item.published_at
+            and previous.status is CompanyEventStatus.ONGOING):
+            # Correct only this input's own unsafe measurement derivation.
+            # Linked plans retain their independent earlier evidence and risk.
+            reduction_plan = None
         if parsed_plan is not None and reduction_plan is not None:
             reduction_plan = replace(
                 reduction_plan,
@@ -719,11 +729,15 @@ def _reduction_closure_is_unambiguous(verified: _VerifiedDocument) -> bool:
 
 
 def _reduction_closure_is_confirmed(body: str) -> bool:
+    return _reduction_closure_statement(body) is not None
+
+
+def _reduction_closure_statement(body: str) -> str | None:
     if re.search(
         r"尚未|未解除|未终止|未结案|未完成|未届满|尚不确定|部分完成|完成部分"
         r"|剩余[^。；;]{0,40}(?:继续|尚未|仍)|(?:仍在?|继续|正在)实施", body,
     ):
-        return False
+        return None
     conclusion = (
         r"(?:减持(?:股份)?(?:计划)?(?:已)?(?:实施)?(?:完成|完毕|期限(?:已)?届满)"
         r"|(?:提前)?终止减持(?:股份|计划)?)"
@@ -733,12 +747,30 @@ def _reduction_closure_is_confirmed(body: str) -> bool:
         if re.search(r"尚未|未|不|预计|拟|将|可能", clause):
             continue
         if re.search(conclusion, clause):
-            return True
-    return False
+            return clause
+    return None
 
 
 def _reduction_plan(body: str) -> ReductionPlan | None:
-    ratio = _planned_reduction_ratio(body)
+    match = _planned_reduction_match(body)
+    ratio = float(match[1]) if match is not None else None
+    periods: set[tuple[date, date]] = set()
+    for dates in _reduction_period_matches(body):
+        try:
+            start = date(*(int(dates[i]) for i in (1, 2, 3)))
+            end = date(*(int(dates[i]) for i in (4, 5, 6)))
+        except ValueError:
+            return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+        if start > end:
+            return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+        periods.add((start, end))
+    if len(periods) == 1:
+        start, end = next(iter(periods))
+        return ReductionPlan(start, end, ratio)
+    return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+
+
+def _reduction_period_matches(body: str) -> tuple[re.Match[str], ...]:
     interval = (
         r"(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?(?:至|到|~)"
         r"(20\d{2})[年/-](\d{1,2})[月/-](\d{1,2})日?"
@@ -750,24 +782,10 @@ def _reduction_plan(body: str) -> ReductionPlan | None:
         r"[一二三四五六七八九十百0-9]{1,4}个交易日后(?:的)?[一二三四五六七八九十0-9]{1,3}个月内)?"
         rf"[（(](?:即)?{interval}[）)]",
     )
-    periods: set[tuple[date, date]] = set()
-    for pattern in patterns:
-        for dates in re.finditer(pattern, body):
-            try:
-                start = date(*(int(dates[i]) for i in (1, 2, 3)))
-                end = date(*(int(dates[i]) for i in (4, 5, 6)))
-            except ValueError:
-                return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
-            if start > end:
-                return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
-            periods.add((start, end))
-    if len(periods) == 1:
-        start, end = next(iter(periods))
-        return ReductionPlan(start, end, ratio)
-    return ReductionPlan(planned_ratio_pct=ratio) if ratio is not None else None
+    return tuple(match for pattern in patterns for match in re.finditer(pattern, body))
 
 
-def _planned_reduction_ratio(body: str) -> float | None:
+def _planned_reduction_match(body: str) -> re.Match[str] | None:
     pattern = (
         r"(?:拟|计划)(?:通过[^。；;]{0,30}|以(?:集中竞价|大宗交易|协议转让)(?:交易)?(?:方式)?)?"
         r"减持(?:公司)?(?:股份)?[^。；;]{0,90}?"
@@ -776,7 +794,11 @@ def _planned_reduction_ratio(body: str) -> float | None:
         r"|(?:不超过|不高于)(?:本公司|公司)?(?:目前|当前|现有)?总股本(?:的?比例|的)?)"
         r"[：:]?([0-9]+(?:\.[0-9]+)?)[%％]"
     )
-    matches = tuple(re.finditer(pattern, body))
+    quantity = (
+        r"减持(?:股份)?数量[：:](?:不超过|不高于)[0-9,.，]+股[，,](?:即)?"
+        r"不超过(?:本公司|公司)(?:目前|当前|现有)?总股本的?([0-9]+(?:\.[0-9]+)?)[%％]"
+    )
+    matches = tuple(match for expression in (pattern, quantity) for match in re.finditer(expression, body))
     if len(matches) != 1 or any(marker in matches[0][0] for marker in ("已减持", "已实施", "持有", "流通股", "所持股份")):
         return None
     match = matches[0]
@@ -795,7 +817,7 @@ def _planned_reduction_ratio(body: str) -> float | None:
     if re.search(r"(?:未|不|尚未)$", prefix):
         return None
     ratio = float(match[1])
-    return ratio if 0 <= ratio <= 100 else None
+    return match if 0 <= ratio <= 100 else None
 
 
 def _planned_reduction_intent(text: str) -> bool:

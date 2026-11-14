@@ -8,7 +8,7 @@ import math
 import sqlite3
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -38,9 +38,9 @@ class _CountingDocuments(CompanyDocumentFiles):
 
     read_calls = 0
 
-    def read(self, digest: bytes) -> str:
+    def read(self, digest: bytes, *, check: Callable[[], None] | None = None) -> str:
         self.read_calls += 1
-        text = super().read(digest)
+        text = super().read(digest, check=check)
         if not isinstance(text, str):
             raise ValueError("company_field_replay_text_type_invalid")
         return text

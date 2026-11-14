@@ -2,12 +2,12 @@
 
 import hashlib
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence, ExtractCompanyLinkCandidate
+from trader.download.domain.company_event_extraction import ExtractCompanyEvents, ExtractCompanyFieldEvidence, ExtractCompanyLinkCandidate
 from trader.download.domain.company_events import CompanyEventPolicy, CompanySubject, RepurchasePurpose
 from trader.download.domain.company_evidence import CompanyDocument, Disclosure
 
@@ -163,3 +163,57 @@ def test_cancellation_and_unzoned_observation_cannot_certify_fields():
     assert ExtractCompanyFieldEvidence(document, _AT, _POLICY) == ()
     with pytest.raises(ValueError, match="company_field_evidence_time_invalid"):
         ExtractCompanyFieldEvidence(document, _AT.replace(tzinfo=None), _POLICY)
+
+
+def test_explicit_reduction_quantity_and_period_share_fact_parser_and_exact_source_spans():
+    # Public notice 1225602304, section 二（一）3/5, lines 36–42 in retained text.
+    # https://static.cninfo.com.cn/finalpage/2026-10-13/1225602304.PDF
+    text = (
+        "控股股东广东省广晟控股集团有限公司拟减持股份。\n"
+        "3.减持数量：不超过6,855,575股，即不超过公司目前总股本的\n0.60%。\n"
+        "5.减持期间：自减持计划披露之日起十五个交易日后的三个月内\n"
+        "（即2026年11月4日至2027年2月3日），根据相关规定禁止减持的期间除外。"
+    )
+    document = _document(text, "关于控股股东减持股份的预披露公告")
+    risk, = ExtractCompanyEvents((document,), _AT, _POLICY).risks
+    results = {item.field: item for item in ExtractCompanyFieldEvidence(document, _AT, _POLICY)}
+    assert results["planned_pct"].value == risk.reduction_plan.planned_ratio_pct == 0.6
+    assert results["start_date"].value == risk.reduction_plan.planned_start_date == date(2026, 11, 4)
+    assert results["end_date"].value == risk.reduction_plan.planned_end_date == date(2027, 2, 3)
+    assert results["planned_pct"].evidence[0].quote == "减持数量：不超过6,855,575股，即不超过公司目前总股本的\n0.60%"
+    assert (results["planned_pct"].evidence[0].start_line, results["planned_pct"].evidence[0].end_line) == (2, 3)
+    assert (results["end_date"].evidence[0].start_line, results["end_date"].evidence[0].end_line) == (4, 5)
+
+
+@pytest.mark.parametrize("body", (
+    "控股股东拟减持股份占公司总股本的2%。减持期间为十五个交易日后的三个月内。",
+    "控股股东拟减持股份占公司总股本的2%。减持期间为2026年11月31日至2027年2月3日。",
+    "控股股东拟减持股份占公司总股本的2%。减持期间为2027年2月3日至2026年11月4日。",
+    "控股股东拟减持股份占公司总股本的2%。减持期间为2026年11月4日至2027年2月3日。"
+    "另减持期间为2026年11月5日至2027年2月4日。",
+))
+def test_relative_invalid_reversed_or_conflicting_dates_are_never_certified(body):
+    results = ExtractCompanyFieldEvidence(_document(body, "控股股东减持计划公告"), _AT, _POLICY)
+    assert not any(item.field in {"start_date", "end_date"} for item in results)
+
+
+@pytest.mark.parametrize("body", (
+    "控股股东甲及乙拟减持股份占公司总股本的2%。",
+    "控股股东甲与一致行动人拟减持股份占公司总股本的2%。",
+    "持股5%以上股东甲拟减持股份。董事乙拟减持股份占公司总股本的0.2571%。",
+    "持股5%以上股东甲拟减持股份。其他股东乙拟减持股份占公司总股本的1%。",
+    "持股5%以上股东甲、乙分别持有股份，计划减持股份占公司总股本的2%。",
+))
+def test_multiple_holders_never_certify_a_single_holders_measurement(body):
+    assert ExtractCompanyFieldEvidence(_document(body, "控股股东、持股5%以上股东减持计划公告"), _AT, _POLICY) == ()
+
+
+def test_explicit_completion_proof_is_disclosure_time_and_cannot_itself_resolve_a_plan():
+    document = _document("控股股东本次减持计划已实施完毕。", "控股股东减持计划实施完毕公告")
+    result, = ExtractCompanyFieldEvidence(document, _AT, _POLICY)
+    assert result.field == "completion_disclosed_at" and result.value == _AT
+    assert result.evidence[0].unit == "time"
+    assert result.evidence[0].quote == "控股股东本次减持计划已实施完毕"
+    assert not ExtractCompanyEvents((document,), _AT, _POLICY).risks
+    uncertain = _document("控股股东本次减持计划尚未完成。", "控股股东减持计划完成公告")
+    assert ExtractCompanyFieldEvidence(uncertain, _AT, _POLICY) == ()

@@ -61,15 +61,15 @@ def test_legacy_reduction_repairs_only_its_missing_field_and_stays_complete_afte
     index.publish(item.codes, NOW)
     assert _facts(index).risk_events[0].reduction_plan.planned_ratio_pct == 2
     assert [tuple(row) for row in _state(index)] == [("planned_pct", "complete")]
-    assert tuple((tmp_path / "text").rglob("*.gz"))  # A repaired value still needs its field-level source proof.
+    assert not tuple((tmp_path / "text").rglob("*.gz"))  # All applicable fields now have published source proofs.
     with SqliteSession(index.facts_path) as formal:
-        assert formal.run("SELECT state FROM company_field_result WHERE field='planned_pct'").require_one()[0] == "present_unverified"
+        assert formal.run("SELECT state FROM company_field_result WHERE field='planned_pct'").require_one()[0] == "verified"
     with SqliteSession(index.facts_path) as formal:
         assert tuple(formal.run(
             "SELECT record_hash,extraction_hash,outcome FROM company_input_receipt WHERE outcome='valid'"
         ).require_one()) == original_receipt
         assert formal.run(
-            "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted'"
+            "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted' AND policy_id LIKE 'field:%'"
         ).require_one()[0] == 1
 
     for turn in range(1, 4):
@@ -111,7 +111,7 @@ def test_first_missing_measurement_is_checkpointed_and_retained_without_second_d
         receipts = tuple(tuple(row) for row in formal.run(
             "SELECT * FROM company_input_receipt WHERE outcome='field_attempted'"
         ))
-    assert len(receipts) == 1
+    assert len(receipts) == 3  # One missing-field attempt and two explicit date proofs.
     assert tuple((tmp_path / "text").rglob("*.gz"))
     for turn in range(1, 4):
         restarted = fixtures._index(tmp_path)
@@ -191,7 +191,7 @@ def test_first_field_receipt_recovers_task_lost_in_collection_rollback(tmp_path)
     assert _facts(index).risk_events[0].reduction_plan.planned_ratio_pct is None
     with SqliteSession(index.facts_path) as formal:
         assert formal.run(
-            "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted'"
+            "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted' AND policy_id LIKE 'field:%'"
         ).require_one()[0] == 1
     with SqliteSession(index.path) as collected, SqliteTransaction(collected):
         collected.run("DROP TRIGGER fail_first_collection_commit")
@@ -463,7 +463,7 @@ def test_attempt_on_material_removed_from_code_does_not_suppress_current_same_id
         )
         collected.run(
             "INSERT INTO company_field_repairs SELECT id,'600001',record_hash,?,'planned_pct',"
-            "'reduction_total_capital_ratio:2','attempted' FROM disclosures WHERE source='exchange_disclosure'",
+            "'reduction_total_capital_ratio:3','attempted' FROM disclosures WHERE source='exchange_disclosure'",
             (event.event_id,),
         )
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
@@ -472,7 +472,7 @@ def test_attempt_on_material_removed_from_code_does_not_suppress_current_same_id
         with SqliteTransaction(collected):
             collected.run(
                 "INSERT INTO company_field_repairs SELECT id,'600001',record_hash,?,'planned_pct',"
-                "'reduction_total_capital_ratio:2','attempted' FROM disclosures WHERE source=?",
+                "'reduction_total_capital_ratio:3','attempted' FROM disclosures WHERE source=?",
                 (event.event_id, item.source),
             )
         plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
@@ -494,7 +494,7 @@ def test_formal_field_receipt_recovers_collection_rollback_without_another_docum
     assert [tuple(row) for row in _state(index)] == [("planned_pct", "pending")]
     with SqliteSession(index.facts_path) as formal:
         assert formal.run(
-            "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted'"
+            "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted' AND policy_id LIKE 'field:%'"
         ).require_one()[0] == 1
     with SqliteSession(index.path) as collected, SqliteTransaction(collected):
         collected.run("DROP TRIGGER fail_after_formal_commit")
@@ -503,9 +503,9 @@ def test_formal_field_receipt_recovers_collection_rollback_without_another_docum
     restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
     assert [tuple(row) for row in _state(restarted)] == [("planned_pct", "complete")]
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
-    assert tuple((tmp_path / "text").rglob("*.gz"))  # Recovering a repair receipt does not certify source lines.
+    assert not tuple((tmp_path / "text").rglob("*.gz"))  # The same formal commit also published all source proofs.
     with SqliteSession(index.facts_path) as formal:
-        assert formal.run("SELECT state FROM company_field_result WHERE field='planned_pct'").require_one()[0] == "present_unverified"
+        assert formal.run("SELECT state FROM company_field_result WHERE field='planned_pct'").require_one()[0] == "verified"
 
 
 def test_document_selection_prefers_latest_date_but_local_only_can_recover_older_pdf(tmp_path):
@@ -583,7 +583,7 @@ def test_latest_value_retires_older_queued_repair_without_download_or_new_docume
         assert tuple(tuple(row) for row in formal.run(
             "SELECT * FROM company_input_receipt WHERE source_key=?", (item.identity,),
         )) == original
-        assert formal.run("SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted'").require_one()[0] == 0
+        assert formal.run("SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted' AND policy_id LIKE 'field:%'").require_one()[0] == 0
     with SqliteSession(index.path) as collected:
         assert collected.run(
             "SELECT COUNT(*) FROM document_extractions x JOIN disclosures d ON d.id=x.disclosure_id WHERE d.source_key=?",

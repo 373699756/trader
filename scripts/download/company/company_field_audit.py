@@ -18,7 +18,7 @@ from trader.download.domain.company_evidence import CompanyDocument, Disclosure
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
-from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES
+from trader.download.infra.company_facts_protocol import DecodeCompanyDate, EncodeCompanyTime, EVIDENCE_SOURCES
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
 from trader.download.infra.company_field_recovery import ReadRequiredCompanyMaterialDependencies
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
@@ -165,6 +165,54 @@ def InspectCompanyFieldMaterial(
     }
 
 
+def _financial_sources(formal: SqliteConnection, raw: SqliteConnection) -> dict[str, object]:
+    columns = ("eps", "bps", "revenue_growth_pct", "profit_growth_pct", "core_profit_growth_pct", "roe_pct", "parent_profit", "core_profit")
+    inputs = {(row["code"], row["report_date"]): row for row in raw.run("SELECT * FROM financials")}
+    result: dict[str, object] = {}
+    for name, table in (("retained", "company_facts"), ("latest", "company_latest_financial")):
+        rows = formal.run(f"SELECT code,report_date,disclosed_at,{','.join(columns)} FROM {table} WHERE report_date IS NOT NULL ORDER BY code").fetchall()
+        missing: Counter[str] = Counter()
+        reasons: Counter[str] = Counter()
+        items: list[dict[str, object]] = []
+        incomplete = mismatches = identity_changes = gap_rows = 0
+        for row in rows:
+            day = DecodeCompanyDate(row["report_date"])
+            source = inputs.get((row["code"], day.isoformat() if day is not None else ""))
+            same_identity = source is not None and EncodeCompanyTime(datetime.fromisoformat(source["published_at"])) == row["disclosed_at"]
+            identity_changes += not same_identity
+            gaps: list[dict[str, str]] = []
+            different = False
+            incomplete += any(row[field] is None for field in columns)
+            for field in columns:
+                if row[field] is None:
+                    missing[field] += 1
+                if source is None:
+                    reason = "source_record_missing"
+                elif not same_identity:
+                    reason = "source_revision_changed"
+                elif row[field] is None and source[field] is None:
+                    reason = "source_null"
+                elif row[field] is None:
+                    reason = "publication_missing"
+                elif row[field] != source[field]:
+                    reason = "value_mismatch"
+                else:
+                    continue
+                different |= reason in {"publication_missing", "value_mismatch"}
+                reasons[reason] += 1
+                gaps.append({"field": field, "reason": reason})
+            mismatches += different
+            gap_rows += bool(gaps)
+            if gaps and len(items) < 50:
+                items.append({"code": row["code"], "report_date": day.isoformat() if day else None,
+                              "disclosed_at": row["disclosed_at"], "fields": gaps})
+        result[name] = {"rows": len(rows), "incomplete_rows": incomplete, "missing_fields": dict(missing),
+                        "value_mismatch_rows": mismatches, "source_identity_unconfirmed_rows": identity_changes,
+                        "reasons": dict(reasons), "items": items,
+                        "items_truncated": gap_rows > len(items)}
+    return result
+
+
 def AuditCompanyFields(
     formal: SqliteConnection, raw_path: Path, *, raw: SqliteConnection, observed_at: datetime
 ) -> dict[str, object]:
@@ -194,13 +242,10 @@ def AuditCompanyFields(
             fields.append({"name": column[1], "populated": populated, "null": counts[0] - populated, "invalid_type": invalid, "nonfinite": nonfinite})
         field_count += len(columns)
         tables.append({"table": table[0], "rows": counts[0], "fields": fields})
-    finance_columns = ("eps", "bps", "revenue_growth_pct", "profit_growth_pct", "core_profit_growth_pct", "roe_pct", "parent_profit", "core_profit")
-    finance_match = " AND ".join(f"r.{name} IS f.{name}" for name in finance_columns)
-    finance = formal.run(
-        "SELECT COUNT(*),COALESCE(SUM(NOT EXISTS(SELECT 1 FROM collected.financials r "
-        "WHERE r.code=f.code AND r.report_date=date(f.report_date*86400,'unixepoch') AND "
-        + finance_match + ")),0) FROM main.company_facts f WHERE f.report_date IS NOT NULL"
-    ).require_one()
+    financial_sources = _financial_sources(formal, raw)
+    retained = financial_sources["retained"]
+    latest = financial_sources["latest"]
+    assert isinstance(retained, dict) and isinstance(latest, dict)
     pledge = formal.run(
         "SELECT COUNT(*),COALESCE(SUM(EXISTS(SELECT 1 FROM collected.ratios r WHERE r.component='pledge' "
         "AND r.code=f.code AND r.as_of_date=date(f.pledge_date*86400,'unixepoch') AND r.ratio_pct IS f.pledge_pct)),0),"
@@ -247,8 +292,12 @@ def AuditCompanyFields(
             "unique_records": union[0], "unique_source_ids": union[1],
         })
     findings = []
-    if any((invalid_types, nonfinite_values, finance[1], pledge[0] - pledge[1] - pledge[2], unlock[1], missing_evidence, risk_evidence, positive_evidence)):
+    if any((invalid_types, nonfinite_values, retained["value_mismatch_rows"], latest["value_mismatch_rows"], pledge[0] - pledge[1] - pledge[2], unlock[1], missing_evidence, risk_evidence, positive_evidence)):
         findings.append("company_field_integrity_failed")
+    if retained["source_identity_unconfirmed_rows"] or latest["source_identity_unconfirmed_rows"]:
+        findings.append("company_financial_source_identity_unconfirmed")
+    if latest["incomplete_rows"]:
+        findings.append("company_latest_financial_fields_missing")
     if any(applicable[1:]):
         findings.append("company_applicable_fields_missing")
     recovery = () if invalid_types or nonfinite_values else ReadCompanyFieldRecovery(
@@ -285,7 +334,7 @@ def AuditCompanyFields(
         "invalid_value_types": invalid_types,
         "nonfinite_values": nonfinite_values,
         "source_agreement": {
-            "financial_rows": finance[0], "financial_value_mismatches": finance[1],
+            "financial_rows": retained["rows"], "financial_value_mismatches": retained["value_mismatch_rows"],
             "pledge_rows": pledge[0], "pledge_explicit_source_matches": pledge[1],
             "pledge_zeros_from_complete_snapshot": pledge[2],
             "pledge_unmatched": pledge[0] - pledge[1] - pledge[2],
@@ -293,6 +342,7 @@ def AuditCompanyFields(
             "unlocated_evidence_refs": missing_evidence, "risk_events_without_evidence": risk_evidence,
             "positive_events_without_evidence": positive_evidence,
         },
+        "financial_sources": financial_sources,
         "applicable_missing": {"contract_events": applicable[0], "contract_amount_missing": applicable[1], "contract_revenue_missing": applicable[2], "contract_ratio_missing": applicable[3], "share_action_actual_pct_missing": applicable[4]},
         "partition_details": partitions,
         "recovery_plan": {
@@ -345,6 +395,19 @@ def ProjectCompanyFieldAudit(source: Mapping[str, object]) -> dict[str, object]:
     result = {key: source.get(key) for key in (
         "read_only", "table_count", "field_count", "invalid_value_types", "nonfinite_values", "interpretation",
     )}
+    financial_sources = source.get("financial_sources")
+    if isinstance(financial_sources, dict):
+        result["financial_sources"] = {
+            name: {key: group.get(key) for key in (
+                "rows", "incomplete_rows", "missing_fields", "value_mismatch_rows",
+                "source_identity_unconfirmed_rows", "reasons", "items_truncated",
+            )} | {"items": [
+                {key: item.get(key) for key in ("code", "report_date", "disclosed_at")}
+                | {"fields": [{key: field.get(key) for key in ("field", "reason")} for field in _rows(item.get("fields"), 8)]}
+                for item in _rows(group.get("items"), 50)
+            ]}
+            for name in ("retained", "latest") if isinstance(group := financial_sources.get(name), dict)
+        }
     for name, keys in (
         ("source_agreement", ("financial_rows", "financial_value_mismatches", "pledge_rows", "pledge_explicit_source_matches", "pledge_zeros_from_complete_snapshot", "pledge_unmatched", "unlock_rows", "unlock_value_mismatches", "unlocated_evidence_refs", "risk_events_without_evidence", "positive_events_without_evidence")),
         ("applicable_missing", ("contract_events", "contract_amount_missing", "contract_revenue_missing", "contract_ratio_missing", "share_action_actual_pct_missing")),
