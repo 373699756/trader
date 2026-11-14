@@ -15,7 +15,7 @@ usage() {
     "  ./run.sh                         同时启动全部档位 V1、V2、V3、V5" \
     "  ./run.sh v2                      只启动 V2" \
     "  ./run.sh v1,v2,v3                同时启动所列档位，Web按钮互斥切换" \
-    "  ./run.sh help                    查看本帮助" \
+    "  ./run.sh -h                      查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh sync                    依次更新参考、完整历史、行情窗口与公司资料" \
@@ -31,17 +31,7 @@ usage() {
     "  ./run.sh train --json            显式输出完整JSON结果" \
     "  ./run.sh train --diagnostics /tmp/train-diagnostic.json  保存完整诊断（拒绝覆盖）" \
     "" \
-    "档位以逗号分隔，可自由组合；省略时选择全部。V1已正式接入，V5保持工程Shadow并需可选CPU依赖。" \
-    "本地检测使用 scripts/tools.py --business recommendation --module pipeline --action snapshot。" \
-    "" \
-    "高级配置（一般无需设置）:" \
-    "  TRADER_CONFIG=/absolute/path/runtime.json" \
-    "  TRADER_HOST=127.0.0.1" \
-    "  TRADER_PORT=5000" \
-    "  DEEPSEEK_API_KEY=..." \
-    "  DEEPSEEK_API_KEY_FILE=/protected/path（默认读取项目根目录 .token_key）" \
-    "  TUSHARE_TOKEN_FILE=/protected/path（默认读取项目根目录 .token_key）" \
-    "  FORCE_INSTALL_DEPS=1"
+    "档位以逗号分隔，可自由组合；省略时选择全部。"
 }
 
 case "${1:-}" in
