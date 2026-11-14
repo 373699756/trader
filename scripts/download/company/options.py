@@ -26,6 +26,7 @@ class CompanyOptions:
     company_io_candidates_audit: bool = False
     company_material_keys: tuple[str, ...] = ()
     company_field_replay_keys: tuple[str, ...] = ()
+    company_recovered_text: Path | None = None
     company_audit_budget_seconds: float = 150.0
     company_ocr_audit: bool = False
     company_document_audit: bool = False

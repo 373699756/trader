@@ -34,6 +34,19 @@ def test_field_replay_public_mode_preserves_explicit_keys_and_requires_isolation
     assert command.argv[offset + 1:offset + 3] == ("first", "second")
 
 
+def test_recovered_text_requires_one_explicit_replay_key_and_preserves_file_argument(tmp_path):
+    supplied = str(tmp_path / "source.txt")
+    arguments = ["--company-recovered-text", supplied, "--company-replay-directory", str(tmp_path / "replay")]
+    with pytest.raises(ValueError, match="exactly one"):
+        ParseOptions(BuildParser("company-resume").parse_args(arguments))
+    with pytest.raises(ValueError, match="exactly one"):
+        ParseOptions(BuildParser("company-resume").parse_args(arguments + ["--company-field-replay-keys", "a", "b"]))
+    options = ParseOptions(BuildParser("company-resume").parse_args(arguments + ["--company-field-replay-keys", "a"]))
+    command, = BuildCommands(options)
+    position = command.argv.index("--recovered-text")
+    assert command.argv[position + 1] == supplied
+
+
 @pytest.mark.parametrize("keys", [("same", "same"), ("one two",), tuple(str(index) for index in range(7))])
 def test_field_replay_rejects_ambiguous_or_unbounded_key_requests(tmp_path, keys):
     with pytest.raises(ValueError, match="one to six distinct"):
@@ -139,4 +152,5 @@ def test_material_conclusions_are_bound_to_the_exact_current_source_version(tmp_
         index.path, index.facts_path, ("contract-income",), sqlite_policy=SqlitePolicyFixture(),
         observed_at=fixtures.NOW, event_policy=fixtures.CompanyEventPolicy(),
     )
-    assert bool(report["items"][0]["field_conclusions"]) is (guard == "current")
+    amounts = [item for item in report["items"][0]["field_conclusions"] if item["field"] == "contract_amount"]
+    assert bool(amounts) is (guard == "current")

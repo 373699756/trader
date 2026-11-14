@@ -92,7 +92,8 @@ from trader.download.infra.company_field_recovery import (
     CompanyFieldRepairReceipts,
     EnsureCompanyFieldRepairs,
     QueueCompanyFieldRepairs,
-    QueueCompanyRepurchaseRechecks,
+    QueueCompanyShareActionRechecks,
+    RecoverRequiredCompanyText,
     QueueCompanyReductionRechecks,
     PrioritizeCompanyRepurchaseInputs,
     RegisterCompanyFieldAttempts,
@@ -808,6 +809,18 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect(accepted_document=True) as connection, SqliteTransaction(connection, immediate=True):
             WriteDownloadFailure(connection, record, configuration)
 
+    def recover_required_text(self, source_key: str, text: str, observed_at: datetime) -> bool:
+        self._check_cancelled()
+        reserve = partial(self._raw_files.reserve, self._documents.root, analysis=True) if self._raw_files is not None else None
+        with self._connect() as collected, SqliteTransaction(collected, immediate=True), SqliteSession(
+            self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
+            cancel_requested=self._cancel_requested,
+        ) as formal:
+            return RecoverRequiredCompanyText(
+                collected, formal, source_key, text, observed_at, self._facts.extraction_hash,
+                self._documents, self._check_cancelled, reserve,
+            )
+
     def commit_document(self, item: Disclosure, extraction: CompanyDocumentExtraction, extracted_at: datetime) -> bool:
         # A result already accepted by the main thread is drained on cancellation.
         with self._connect(accepted_document=True) as connection:
@@ -1231,7 +1244,7 @@ class SQLiteCompanyEvidenceIndex:
             if parent is not None and parent.extraction_hash == self._facts.extraction_hash:
                 with self._connect() as connection, SqliteTransaction(connection, immediate=True):
                     QueueCompanyFieldRepairs(connection, formal, codes, observed_at, self.path.parent)
-                    QueueCompanyRepurchaseRechecks(
+                    QueueCompanyShareActionRechecks(
                         connection, formal, codes, observed_at, self._facts.extraction_hash,
                         self._event_policy, partial(self._documents.read, check=self._check_cancelled),
                     )

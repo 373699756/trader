@@ -19,7 +19,7 @@ from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadC
 
 from trader.download.infra.company_field_recovery import (
     CompanyFieldRepairReceipts,
-    QueueCompanyRepurchaseRechecks,
+    QueueCompanyShareActionRechecks,
     ReadCompanyFieldRecovery,
     RegisterCompanyFieldAttempts,
     RestoreCompanyFieldRepairs,
@@ -142,7 +142,7 @@ def test_first_contract_with_amount_but_missing_dependencies_retains_evidence_wi
         assert dict(rules)["revenue_report_date"] == "explicit_contract_revenue_year:1"
         assert all(rule == "required_field_evidence:1" for field, rule in rules if field != "revenue_report_date")
         assert formal.run(
-            "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted'"
+            "SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted' AND policy_id LIKE 'field:%'"
         ).require_one()[0] == len(states)
     assert tuple((tmp_path / "text").rglob("*.gz"))
     restarted = fixtures._index(tmp_path)
@@ -739,7 +739,7 @@ def test_repurchase_recheck_does_not_complete_from_old_nonnull_value_before_new_
     index, item = _legacy_repurchase_template(tmp_path)
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
         identity = ReadCompanyPublicationIdentity(formal).extraction_hash
-        QueueCompanyRepurchaseRechecks(
+        QueueCompanyShareActionRechecks(
             collected, formal, item.codes, NOW, identity, fixtures.CompanyEventPolicy(),
             CompanyDocumentFilesFixture(tmp_path / "text").read,
         )
@@ -777,7 +777,7 @@ def test_repurchase_recheck_does_not_request_missing_local_material(tmp_path):
         raise ValueError("fixture_missing_text")
 
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
-        QueueCompanyRepurchaseRechecks(
+        QueueCompanyShareActionRechecks(
             collected, formal, item.codes, NOW, ReadCompanyPublicationIdentity(formal).extraction_hash,
             fixtures.CompanyEventPolicy(), unavailable,
         )
@@ -796,7 +796,7 @@ def test_holder_table_recheck_keeps_unproven_or_measured_previous_events(tmp_pat
         with SqliteSession(index.facts_path) as formal, SqliteTransaction(formal):
             formal.run("DELETE FROM company_input_receipt WHERE outcome='valid'")
         with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
-            QueueCompanyRepurchaseRechecks(
+            QueueCompanyShareActionRechecks(
                 collected, formal, item.codes, NOW, ReadCompanyPublicationIdentity(formal).extraction_hash,
                 fixtures.CompanyEventPolicy(), CompanyDocumentFilesFixture(tmp_path / "text").read,
             )
@@ -840,7 +840,7 @@ def test_repurchase_recheck_keeps_same_source_multiple_events_unmodified(tmp_pat
         parent = ReadCompanyPublicationIdentity(formal)
     formal_index.publish((replace(facts, positive_events=(first, second)),), {item.identity: item.source}, parent, NOW)
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
-        QueueCompanyRepurchaseRechecks(
+        QueueCompanyShareActionRechecks(
             collected, formal, item.codes, NOW, ReadCompanyPublicationIdentity(formal).extraction_hash,
             fixtures.CompanyEventPolicy(), CompanyDocumentFilesFixture(tmp_path / "text").read,
         )
@@ -937,7 +937,7 @@ def test_same_body_planned_status_refreshes_formal_applicability_once_without_re
 
     if interrupted:
         with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
-            QueueCompanyRepurchaseRechecks(
+            QueueCompanyShareActionRechecks(
                 collected, formal, item.codes, NOW, writer.extraction_hash,
                 fixtures.CompanyEventPolicy(), CompanyDocumentFilesFixture(tmp_path / "text").read,
             )
@@ -956,7 +956,7 @@ def test_same_body_planned_status_refreshes_formal_applicability_once_without_re
         attempts = tuple(tuple(row) for row in formal.run(
             "SELECT * FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY policy_id"
         ))
-    assert any(row[-1].endswith(":actual_pct:implemented_total_capital_ratio:2") for row in attempts)
+    assert any(row[-1].endswith(":actual_pct:implemented_total_capital_ratio:3") for row in attempts)
     for minute in (1, 2):
         restarted = fixtures._index(tmp_path)
         restarted.prepare_publication(item.codes, NOW + timedelta(minutes=minute))
@@ -981,7 +981,7 @@ def test_status_only_holder_cache_refresh_keeps_an_already_current_formal_confir
                    {item.identity: item.source}, parent, NOW)
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
         before = ReadCompanyPublicationIdentity(formal)
-        QueueCompanyRepurchaseRechecks(
+        QueueCompanyShareActionRechecks(
             collected, formal, item.codes, NOW, writer.extraction_hash,
             fixtures.CompanyEventPolicy(), CompanyDocumentFilesFixture(tmp_path / "text").read,
         )
@@ -1025,7 +1025,7 @@ def test_status_only_holder_refresh_requires_exact_material_and_one_matching_eve
         before = collected.run("SELECT payload FROM document_link_candidates WHERE source_key=?", (item.identity,)).require_one()[0]
         valid = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal, SqliteTransaction(collected):
-        QueueCompanyRepurchaseRechecks(
+        QueueCompanyShareActionRechecks(
             collected, formal, item.codes, NOW, writer.extraction_hash,
             fixtures.CompanyEventPolicy(), CompanyDocumentFilesFixture(tmp_path / "text").read,
         )

@@ -160,6 +160,89 @@ def test_exact_local_recheck_removes_only_unsafe_holder_measurement_and_preserve
     assert not index.pending_documents(("600001",), _AT, policies=fixtures._TEST_DOCUMENT_POLICIES)
 
 
+def test_all_contract_source_fields_publish_and_second_publication_reuses_proofs(tmp_path):
+    index = fixtures._index(tmp_path)
+    _put(index, (
+        "本公司已签订正式合同，合同已生效。\n合同金额人民币2亿元（不含税）。\n"
+        "2025年度营业收入人民币10亿元（不含税）。\n2025年年度报告于2026年4月1日披露。" + _DETAIL
+    ), identity="contract-proof", title="关于签订重大合同的公告")
+    index.publish(("600001",), _AT)
+    fields = _reader(index).read_fields(("600001",)).results
+    assert len(fields) == 6 and all(item.state == "verified" for item in fields)
+    ratio, = (item for item in fields if item.field == "contract_revenue_pct")
+    assert ratio.value == 20 and len(ratio.evidence) == 3
+    identity = _identity(index)
+    index.prepare_publication(("600001",), _AT)
+    index.publish(("600001",), _AT)
+    assert _identity(index) == identity
+    assert _reader(index).read_fields(("600001",)).results == fields
+
+
+def test_increase_latest_same_body_recheck_publishes_measurement_without_new_valid_receipt(tmp_path):
+    index = fixtures._index(tmp_path)
+    text = "本公司控股股东累计已增持股份100万股，占公司总股本的0.3%。" + _DETAIL
+    _put(index, text,
+         identity="increase-proof", title="控股股东增持股份公告")
+    index.publish(("600001",), _AT)
+    before = _reader(index).read(("600001",))[0].positive_events[0]
+    # An isolated prior derivation had accepted the document without its ratio.
+    with SqliteSession(index.facts_path) as formal:
+        formal.run("UPDATE company_positive_event SET actual_pct=NULL,level=0")
+        formal.run("DELETE FROM company_field_evidence")
+        formal.run("UPDATE company_field_result SET state='verification_required',reason='measurement_missing'")
+        formal.run("DELETE FROM company_input_receipt WHERE outcome<>'valid'")
+    CompanyDocumentFilesFixture(tmp_path / "text").write(text)
+    with SqliteSession(index.path) as collected:
+        collected.run("UPDATE disclosures SET body_retained=1 WHERE source_key='increase-proof'")
+    valid = _receipts(index, ordinary_only=True)
+    index.prepare_publication(("600001",), _AT)
+    index.publish(("600001",), _AT)
+    actual = _reader(index).read(("600001",))[0].positive_events[0]
+    assert actual.event_id == before.event_id and actual.subject_type is before.subject_type
+    assert actual.measurements.actual_ratio_pct == 0.3
+    field, = _reader(index).read_fields(("600001",)).results
+    assert field.state == "verified" and field.value == 0.3
+    assert _receipts(index, ordinary_only=True) == valid
+
+
+@pytest.mark.parametrize("guard", ("source", "body", "subject", "rule"))
+def test_contract_derived_field_checks_every_input_proof_before_certification(tmp_path, monkeypatch, guard):
+    index = fixtures._index(tmp_path)
+    _put(index, (
+        "本公司已签订正式合同，合同已生效。合同金额人民币2亿元（不含税）。"
+        "2025年度营业收入人民币10亿元（不含税）。2025年年度报告于2026年4月1日披露。" + _DETAIL
+    ), identity="contract-proof-guard", title="关于签订重大合同的公告")
+    extract = company_field_publication.ExtractCompanyFieldEvidence
+
+    def changed(*args):
+        results = []
+        for item in extract(*args):
+            if item.field == "contract_revenue_pct":
+                first, second, third = item.evidence
+                if guard == "source":
+                    second = replace(second, source="exchange_disclosure")
+                elif guard == "body":
+                    second = replace(second, body_hash=b"x" * 32)
+                elif guard == "subject":
+                    second = replace(second, subject=CompanySubject.ACTUAL_CONTROLLER)
+                else:
+                    second = replace(second, rule_id="unregistered_contract_input")
+                item = replace(item, evidence=(first, second, third))
+            results.append(item)
+        return tuple(results)
+
+    monkeypatch.setattr(company_field_publication, "ExtractCompanyFieldEvidence", changed)
+    if guard == "rule":
+        before = _logical_state(index)
+        with pytest.raises(ValueError, match="company_field_evidence_rule_mismatch"):
+            index.publish(("600001",), _AT)
+        assert _logical_state(index) == before
+        return
+    index.publish(("600001",), _AT)
+    ratio, = (item for item in _reader(index).read_fields(("600001",)).results if item.field == "contract_revenue_pct")
+    assert ratio.value == 20 and ratio.state == "present_unverified" and not ratio.evidence
+
+
 def _unproved_publication(tmp_path):
     """A processed legacy input has ordinary valid, never an invented field proof."""
     index = fixtures._index(tmp_path)
@@ -423,7 +506,7 @@ def test_changed_rule_rejects_an_old_producer_without_committing_an_attempt_and_
     ordinary = _receipts(index, ordinary_only=True)
     monkeypatch.setattr(company_field_publication, "ExtractCompanyFieldEvidence", extract)
     rules = tuple(
-        (field, "implemented_total_capital_ratio:3" if field == "actual_pct" else rule)
+        (field, "fixture_revised_actual_ratio" if field == "actual_pct" else rule)
         for field, rule in company_field_publication.COMPANY_FIELD_RULES
     )
     monkeypatch.setattr(company_field_publication, "COMPANY_FIELD_RULES", rules)
@@ -435,7 +518,7 @@ def test_changed_rule_rejects_an_old_producer_without_committing_an_attempt_and_
     def upgraded(*args):
         return tuple(
             replace(result, evidence=tuple(
-                replace(proof, rule_id="implemented_total_capital_ratio:3") for proof in result.evidence
+                replace(proof, rule_id="fixture_revised_actual_ratio") for proof in result.evidence
             )) if result.field == "actual_pct" else result
             for result in extract(*args)
         )
@@ -444,7 +527,7 @@ def test_changed_rule_rejects_an_old_producer_without_committing_an_attempt_and_
     index.publish(document.disclosure.codes, _AT)
     readback = _reader(index).read_fields(document.disclosure.codes)
     actual = next(item for item in readback.results if item.field == "actual_pct")
-    assert actual.state == "verified" and actual.evidence[0].rule_id == "implemented_total_capital_ratio:3"
+    assert actual.state == "verified" and actual.evidence[0].rule_id == "fixture_revised_actual_ratio"
     assert set(old_receipts).issubset(_receipts(index))
     assert _receipts(index, ordinary_only=True) == ordinary
-    assert any("implemented_total_capital_ratio:3" in row[-1] for row in _receipts(index))
+    assert any("fixture_revised_actual_ratio" in row[-1] for row in _receipts(index))

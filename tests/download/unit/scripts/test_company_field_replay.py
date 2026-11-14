@@ -53,6 +53,8 @@ def _sources(root):
     extraction = fixtures._extraction(_TEXT)
     assert extraction.text == _TEXT
     assert index.commit_document(item, extraction, _AT)
+    with SqliteSession(raw, sqlite_policy=_IO) as collected:
+        collected.run("INSERT INTO company_population VALUES('600001')")
     # Both sources use the current structure; replay never upgrades a database.
     source = incoming / "company_facts.sqlite3"
     at = EncodeCompanyTime(_AT)
@@ -87,10 +89,11 @@ def _sources(root):
     return raw, source, policy
 
 
-def _run(raw, facts, directory, policy, *, keys=(_KEY,), protected_roots=()):
+def _run(raw, facts, directory, policy, *, keys=(_KEY,), protected_roots=(), recovered_text=None):
     return replay.AuditCompanyFieldReplay(
         raw, facts, keys, directory, observed_at=_AT, budget_seconds=30,
         sqlite_policy=_IO, event_policy=policy, protected_roots=protected_roots,
+        recovered_text=recovered_text,
     )
 
 
@@ -146,6 +149,44 @@ def test_missing_local_material_is_counted_and_never_downloaded(tmp_path, monkey
     assert report["network_requests"] == 0 and report["source_data_writes"] == 0
     assert report["field_states"] == {"present_unverified": 2}
     assert report["first_field_attempted"] == 0 and report["second_new_field_attempted"] == 0
+
+
+def test_explicit_same_hash_text_is_recovered_only_in_the_copy_then_normally_published(tmp_path, monkeypatch):
+    raw, facts, policy = _sources(tmp_path)
+    for path in (raw.parent / "text").glob("*/*.txt.gz"):
+        path.unlink()
+    supplied = tmp_path / "recovered.txt"
+    supplied.write_text(_TEXT, encoding="utf-8")
+    before = raw.read_bytes(), facts.read_bytes(), Path(f"{facts}.sha256").read_bytes()
+    monkeypatch.setattr(socket, "create_connection", _no_network)
+    report = _run(raw, facts, tmp_path / "replay", policy, recovered_text=supplied)
+    assert report["recovered_required_text"] is True
+    assert report["initial_missing_texts"] == 1 and report["missing_texts"] == 0
+    assert report["field_states"] == {"verified": 2}
+    assert report["original_valid_receipts_unchanged"] and report["second_fields_and_publication_unchanged"]
+    assert report["second_new_field_attempted"] == report["network_requests"] == report["source_data_writes"] == 0
+    assert (raw.read_bytes(), facts.read_bytes(), Path(f"{facts}.sha256").read_bytes()) == before
+    assert not tuple((raw.parent / "text").glob("*/*.txt.gz"))
+
+
+@pytest.mark.parametrize("guard", ("text", "receipt", "revision"))
+def test_recovered_text_requires_exact_current_hash_and_formal_receipt(tmp_path, guard):
+    raw, facts, policy = _sources(tmp_path)
+    for path in (raw.parent / "text").glob("*/*.txt.gz"):
+        path.unlink()
+    supplied = tmp_path / "recovered.txt"
+    supplied.write_text(_TEXT + ("different" if guard == "text" else ""), encoding="utf-8")
+    if guard == "receipt":
+        with SqliteSession(facts, sqlite_policy=_IO) as connection:
+            connection.run("DELETE FROM company_input_receipt")
+        PublishSqliteFile(facts, sqlite_policy=_IO)
+    if guard == "revision":
+        with SqliteSession(raw, sqlite_policy=_IO) as connection:
+            connection.run("UPDATE disclosures SET record_hash='new-directory-version'")
+    report = _run(raw, facts, tmp_path / "replay", policy, recovered_text=supplied)
+    assert report["status"] == "failed"
+    assert report["failure_code"] in {"company_material_recovery_identity_mismatch", "company_material_recovery_required_version_missing"}
+    assert report["network_requests"] == report["source_data_writes"] == 0
 
 
 def test_read_only_empty_wal_creation_remains_an_explicit_physical_change(tmp_path):

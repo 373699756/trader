@@ -107,6 +107,8 @@ isolated比较可读取明确指定的旧checkout；只在隔离演练内处理�
 
 已有原文的发布复查也走coverage，选择`--company-field-replay-keys <1至6个cninfo材料键> --company-replay-directory <新仓库外目录>`，与其它专用模式互斥。工具只接受当前结构及合法凭据，直接备份采集与正式库、核验并复制有界保留文本，再两次启动真实发布者及字段reader，不转换格式；报告分别核对备份代际、正文读取、字段尝试、原有效回执和发布身份。缺材料或来源文件变化明确降级，原始文件/WAL/凭据hash按实际比较，不以空WAL差异归一化为通过；不联网、不改源库、不签全市场质量或性能。
 
+对单个仍必需的缺失原文，可再显式指定`--company-recovered-text /external/recovered.txt`，只在隔离副本经当前目录版本、唯一证券、必要材料依赖、精确有效回执及原正文hash核验后接纳。采用现有文字owner、容量和取消边界，正常编译／正式发布负责后续字段结论；不接受另一版本或无关材料，也不新增下载／提取成功回执。报告区分`initial_missing_texts`与最终`missing_texts`，并单列`recovered_required_text`；第二轮来源变化、未解决缺项和实际正文读取仍按原规则降级。合同派生字段的金额、年度依据和披露时间分别保留有界证据，结构化线索未核实官方事件身份时不写成正式事实。
+
 公司sources的普通与字段模式均检查全市场来源，不按证券清单过滤；另以`--field-sources-only`选择字段观测，`--field-source-rows`限定样本，`--field-source-schema`和`--field-source-identities`仅在字段模式明确选择。`--annual-income-period`查询单个年末期间，必须配合单个`--codes`，不能与字段模式混用；其它模式拒绝codes。每种模式都消费所选`--runtime-config`并报告`runtime_configuration_sha256`，身份摘要不表示字段质量、覆盖或生产采用已合格。
 
 Web health支持可重复的`--strategy tomorrow|d25`，连续空结果阈值`--consecutive-zero-threshold`须在样本数以内，默认min(3,样本数)。浏览器动作另支持`--strategy`与带时区ISO时间`--simulated-start`；Long admission的`--strategy`表示策略JSON路径，`--workers`范围1至8。这些参数只属于各自选中的动作，不能跨动作隐式生效。

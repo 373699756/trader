@@ -737,10 +737,10 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
                 "original_valid_receipts_unchanged", "second_fields_and_publication_unchanged",
                 "second_zero_publication_text_reads", "source_input_unchanged", "fields_truncated", "deadline_exceeded",
                 "collection_source_files_unchanged", "facts_source_files_unchanged", "source_empty_wal_created",
-                "facts_backup_generation_stable",
+                "facts_backup_generation_stable", "recovered_required_text",
             )},
             **{name: _migration_count(source.get(name)) for name in (
-                "network_requests", "source_data_writes", "required_texts", "copied_texts", "missing_texts",
+                "network_requests", "source_data_writes", "required_texts", "copied_texts", "missing_texts", "initial_missing_texts",
                 "compressed_text_bytes", "expanded_text_bytes", "round_1_initialize_text_reads",
                 "round_1_publication_text_reads", "round_1_total_text_reads", "round_2_initialize_text_reads",
                 "round_2_publication_text_reads", "round_2_total_text_reads", "initial_field_attempted",

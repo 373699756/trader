@@ -39,6 +39,7 @@ def BuildParser(
         company_io_candidates_audit=False,
         company_material_keys=(),
         company_field_replay_keys=(),
+        company_recovered_text=None,
         company_audit_budget_seconds=None,
         company_ocr_audit=False,
         company_document_audit=False,
@@ -75,6 +76,7 @@ def BuildParser(
         modes.add_argument('--company-io-candidates-audit', action='store_true', help='paired isolated publication candidates; never enables production settings')
         modes.add_argument('--company-material-keys', nargs='+', help='read-only source excerpts for one to six distinct source keys; requires published facts')
         modes.add_argument('--company-field-replay-keys', nargs='+', help='replay one to six source keys through real field publication only in a new external copy; no network')
+        parser.add_argument('--company-recovered-text', type=Path, help='exact recovered text for one replay key; recovered only in the new isolated copy after receipt and hash checks')
         modes.add_argument('--company-ocr-audit', action='store_true', help='compare OCR on up to seven failed announcements without active writes')
         modes.add_argument('--company-document-audit', action='store_true', help='read-only failed PDF request comparison')
         modes.add_argument('--company-directory-audit', action='store_true', help='repair failed directories only in an external backup')
@@ -112,6 +114,10 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
                 source = original.expanduser().absolute()
                 if any(path.is_symlink() for path in (source, *source.parents)):
                     raise ValueError("field replay source cannot contain symbolic links")
+    if args.company_recovered_text is not None:
+        supplied = args.company_recovered_text.expanduser().absolute()
+        if any(path.is_symlink() for path in (supplied, *supplied.parents)):
+            raise ValueError("recovered text cannot contain symbolic links")
     options = CompanyOptions(
         action_identity=args.action_identity,
         command_timeout_seconds=args.command_timeout_seconds,
@@ -128,6 +134,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_io_candidates_audit=args.company_io_candidates_audit,
         company_material_keys=tuple(args.company_material_keys),
         company_field_replay_keys=tuple(args.company_field_replay_keys),
+        company_recovered_text=ExternalPath(args.company_recovered_text, "--company-recovered-text"),
         company_audit_budget_seconds=(
             args.command_timeout_seconds - 30.0
             if args.company_audit_budget_seconds is None
@@ -186,6 +193,8 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         or any(not key or len(key) > 240 or any(character.isspace() for character in key) for key in options.company_field_replay_keys)
     ):
         raise ValueError("--company-field-replay-keys requires one to six distinct source keys without whitespace")
+    if options.company_recovered_text is not None and len(options.company_field_replay_keys) != 1:
+        raise ValueError("--company-recovered-text requires exactly one --company-field-replay-keys source")
     if options.action_identity == "company-resume" and (
         not math.isfinite(options.company_audit_budget_seconds)
         or not 30 <= options.company_audit_budget_seconds <= 10800

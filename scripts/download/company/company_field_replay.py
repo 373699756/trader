@@ -298,8 +298,9 @@ def AuditCompanyFieldReplay(
     sqlite_policy: SqliteIoPolicy,
     event_policy: CompanyEventPolicy,
     protected_roots: Sequence[Path],
+    recovered_text: Path | None = None,
 ) -> dict[str, object]:
-    """Migrate a copy, publish local evidence twice and report observed reuse.
+    """Publish local evidence twice on a current-structure copy and report reuse.
 
     This diagnostic constructs no supplier or HTTP client and never writes the
     source databases. Its result authorizes neither production migration nor
@@ -312,6 +313,10 @@ def AuditCompanyFieldReplay(
         raise ValueError("company_field_replay_keys_invalid")
     if observed_at.utcoffset() is None:
         raise ValueError("company_field_replay_observation_requires_timezone")
+    if recovered_text is not None:
+        if len(source_keys) != 1 or not recovered_text.is_absolute():
+            raise ValueError("company_field_replay_recovered_text_invalid")
+        _reject_links(recovered_text)
     if isinstance(budget_seconds, bool) or not isinstance(budget_seconds, (int, float)) or not math.isfinite(budget_seconds) or not 0 < budget_seconds <= 10800:
         raise ValueError("company_field_replay_budget_invalid")
     deadline = time.monotonic() + budget_seconds
@@ -359,6 +364,15 @@ def AuditCompanyFieldReplay(
             )
             index.initialize()
             startup_reads = documents.read_calls
+            if round_number == 1 and recovered_text is not None:
+                _check_deadline(deadline)
+                with recovered_text.open("rb") as stream:
+                    payload = stream.read(configuration.extended_document_limits.max_text_characters * 4 + 1)
+                if len(payload) > configuration.extended_document_limits.max_text_characters * 4:
+                    raise ValueError("company_field_replay_recovered_text_oversized")
+                report["recovered_required_text"] = index.recover_required_text(
+                    source_keys[0], payload.decode("utf-8").strip(), observed_at,
+                )
             index.prepare_publication(codes, observed_at)
             index.publish(codes, observed_at)
             index.publish_file()
@@ -367,6 +381,15 @@ def AuditCompanyFieldReplay(
             report[f"round_{round_number}_total_text_reads"] = documents.read_calls
             states.append(_state(target_facts, reader, codes, sqlite_policy, deadline))
         first, second = states
+        if recovered_text is not None:
+            report["initial_missing_texts"] = missing
+            required = _text_hashes(target_raw, sqlite_policy, deadline)
+            missing = 0
+            for digest in required:
+                _check_deadline(deadline)
+                key = digest.hex()
+                missing += not (target_raw.parent / "text" / key[:2] / (key + ".txt.gz")).is_file()
+            report["missing_texts"] = missing
         original_valid = frozenset(baseline.valid_receipts)
         original_valid_unchanged = original_valid.issubset(first.valid_receipts) and original_valid.issubset(second.valid_receipts)
         fields_reused = first.fields == second.fields and first.publication == second.publication
@@ -401,7 +424,7 @@ def AuditCompanyFieldReplay(
         report["failure_category"] = type(error).__name__
         reason = str(error)
         report["failure_code"] = reason if (
-            reason.startswith("company_field_replay_") and len(reason) <= 110
+            reason.startswith(("company_field_replay_", "company_material_recovery_")) and len(reason) <= 110
             and all(character in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in reason)
         ) else type(error).__name__
         report["deadline_exceeded"] = time.monotonic() >= deadline

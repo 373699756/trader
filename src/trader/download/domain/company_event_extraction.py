@@ -8,6 +8,7 @@ from datetime import date, datetime, time, timedelta
 from enum import Enum
 
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
+from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES, ExtractCompanyContractFields
 from trader.download.domain.company_events import (
     CompanyEventPolicy,
     CompanyEventStatus,
@@ -109,6 +110,13 @@ class CompanyLinkCandidate:
     supersedes: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _ShareRatio:
+    value: float
+    statement: str
+    context: str
+
+
 def ExtractCompanyLinkCandidate(document: CompanyDocument, now: datetime, policy: CompanyEventPolicy) -> CompanyLinkCandidate | None:
     verified, _ = _verify_document(document, now)
     if verified is None:
@@ -158,6 +166,8 @@ def ExtractCompanyFieldEvidence(
         or CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION in _risk_closure(verified.title)):
         return _reduction_field_evidence(verified)
     kind = _positive_type(verified.title)
+    if kind is CompanyPositiveType.OPERATING_CONTRACT:
+        return _contract_field_evidence(verified)
     if kind not in (CompanyPositiveType.SHARE_REPURCHASE, CompanyPositiveType.SHAREHOLDER_INCREASE):
         return ()
     if ((kind is CompanyPositiveType.SHARE_REPURCHASE and verified.subject is not CompanySubject.ISSUER)
@@ -170,14 +180,21 @@ def ExtractCompanyFieldEvidence(
         ratio = event.measurements.actual_ratio_pct
         if ratio is not None:
             verb = "回购" if kind is CompanyPositiveType.SHARE_REPURCHASE else "增持"
-            for match in _actual_ratio_matches(body, verb):
+            matches = _same_subject_actual_ratio_matches(verified, verb)
+            for match in matches:
                 evidence = BuildCompanyFieldEvidence(
                     document,
-                    match[0],
-                    "implemented_total_capital_ratio:2",
+                    match.statement,
+                    "implemented_total_capital_ratio:3",
                     "percent",
                     verified.subject,
                 )
+                if evidence is None and match.context:
+                    occurrences = "".join(document.text.split()).count(match.statement)
+                    if occurrences > 1 and occurrences == sum(item.statement == match.statement for item in matches):
+                        evidence = BuildCompanyFieldEvidence(
+                            document, match.context, "implemented_total_capital_ratio:3", "percent", verified.subject,
+                        )
                 if evidence is not None:
                     results.append(CompanyFieldConclusion(
                         item.codes[0], event.event_id, "actual_pct", ratio, "verified", True,
@@ -199,6 +216,23 @@ def ExtractCompanyFieldEvidence(
                 item.codes[0], event.event_id, "repurchase_purpose", purpose.value, "verified", True,
                 "explicit_repurchase_purpose", (evidence,),
             ))
+    return tuple(results)
+
+
+def _contract_field_evidence(verified: _VerifiedDocument) -> tuple[CompanyFieldConclusion, ...]:
+    parsed = ExtractCompanyContractFields(_subject_body(verified), verified.document.disclosure.published_at)
+    results: list[CompanyFieldConclusion] = []
+    item = verified.document.disclosure
+    for field in parsed.fields:
+        rule = next(rule for name, rule in COMPANY_CONTRACT_FIELD_RULES if name == field.field)
+        proofs = tuple(BuildCompanyFieldEvidence(verified.document, text, rule, unit, verified.subject)
+                       for text, unit in field.statements)
+        if not proofs or any(proof is None for proof in proofs):
+            continue
+        results.append(CompanyFieldConclusion(
+            item.codes[0], f"{item.identity}:operating_contract", field.field, field.value, "verified", True,
+            "explicit_same_contract_source_fields", tuple(proof for proof in proofs if proof is not None),
+        ))
     return tuple(results)
 
 
@@ -990,8 +1024,10 @@ def _positive_event(
         CompanyPositiveStatus.COMPLETED if implemented and "完成" in title
         else CompanyPositiveStatus.IMPLEMENTING if implemented else CompanyPositiveStatus.PLANNED
     )
-    if not implemented and not isinstance(measurements, ContractMeasurements):
-        status = _share_action_status(verified, kind) or CompanyPositiveStatus.PLANNED
+    if not isinstance(measurements, ContractMeasurements):
+        action_status = _share_action_status(verified, kind)
+        if action_status is CompanyPositiveStatus.COMPLETED or not implemented:
+            status = action_status or CompanyPositiveStatus.PLANNED
     milestones = list(previous.level_milestones if previous else ())
     if ratio is not None and level:
         for threshold_level in range(1, level + 1):
@@ -1036,10 +1072,7 @@ def _share_action_status(
         + (r"|本计划已(?:经)?实施(?:完成|完毕|结束)" if f"{verb}计划" in verified.title else "")
     )
     implemented = False
-    body = "".join(
-        "".join(line.split()) for line in verified.document.text.splitlines()
-        if re.fullmatch(r"[—－-]\s*[0-9]{1,4}\s*[—－-]", line.strip()) is None
-    )
+    body = _share_action_body(verified)
     for sentence in re.split(r"[。；;！？!?\n]", body):
         if any(marker in sentence for marker in (
             "上一期", "上一轮", "上一次", "前次", "前一轮", "去年", "上一年度", "上年度", "往年",
@@ -1073,7 +1106,7 @@ def _share_action_status(
         for match in completion.finditer(sentence):
             prefix, suffix = sentence[:match.start()], sentence[match.end():]
             tail = re.sub(r"(?:本公司|公司)(?:目前|当前|现有)?总股本", "总股本", prefix[action_end:]) if action_end is not None else ""
-            tail = re.sub(r"(?:合计|累计)?(?:增持|回购)(金额|数量)", r"\1", tail)
+            tail = re.sub(r"(?:合计|累计)?(?:增持|回购)(?:总)?(金额|数量)", r"\1", tail)
             continuation = action_end is not None and action_end <= match.start() and prefix.endswith(("，", ",")) and not re.search(
                 r"公司|股东|控制人|控股|先生|女士|回购|增持|计划|称|表示|宣布|披露|报告|通知", tail,
             )
@@ -1089,6 +1122,32 @@ def _share_action_unconfirmed(prefix: str) -> bool:
         r"(?:尚未|尚待|未曾|没有|不会|未|不|拟|计划|预计|将|假如|假设|假定|如果|若|一旦|如|只要|仅当|是否|能否)"
         r"[^。；;，,]{0,40}$", prefix,
     ) is not None
+
+
+def _share_action_body(verified: _VerifiedDocument) -> str:
+    return "".join(
+        "".join(line.split()) for line in verified.document.text.splitlines()
+        if re.fullmatch(r"[—－-]\s*[0-9]{1,4}\s*[—－-]", line.strip()) is None
+    )
+
+
+def _same_subject_actual_ratio_matches(verified: _VerifiedDocument, verb: str) -> tuple[_ShareRatio, ...]:
+    scoped = _actual_ratio_matches(_subject_body(verified), verb)
+    if scoped:
+        return tuple(_ShareRatio(float(match[1]), match[0], "") for match in scoped)
+    aliases = _share_action_aliases(verified)
+    matches: list[_ShareRatio] = []
+    for sentence in re.split(r"[。；;！？!?\n]", _share_action_body(verified)):
+        if any(marker in sentence for marker in (
+            "上一期", "上一轮", "上一次", "前次", "前一轮", "去年", "上一年度", "上年度", "往年",
+            "历史回购", "历史增持", "子公司", "参股公司",
+        )):
+            continue
+        for match in _actual_ratio_matches(sentence, verb):
+            prefix = sentence[:match.start()]
+            if not _share_action_unconfirmed(prefix) and _share_action_actor(prefix, verified.subject, aliases):
+                matches.append(_ShareRatio(float(match[1]), match[0], sentence[:match.end()]))
+    return tuple(matches)
 
 
 def _share_action_aliases(verified: _VerifiedDocument) -> tuple[str, ...]:
@@ -1136,12 +1195,12 @@ def _positive_measurements(
     body = _subject_body(verified)
     measurements: CompanyMeasurements
     if kind is CompanyPositiveType.OPERATING_CONTRACT:
-        measurements = _contract(body, verified.document.disclosure.published_at)
+        measurements = ExtractCompanyContractFields(body, verified.document.disclosure.published_at).measurements
         ratio = measurements.amount_to_revenue_pct
         eligible = measurements.binding_confirmed and measurements.amount_basis == "comparable"
     else:
         verb = "回购" if kind is CompanyPositiveType.SHARE_REPURCHASE else "增持"
-        ratio = _actual_ratio(body, verb)
+        ratio = _actual_ratio(verified, verb)
         eligible = ratio is not None
         if kind is CompanyPositiveType.SHARE_REPURCHASE:
             purpose = _repurchase_purpose(body)
@@ -1178,8 +1237,8 @@ def _repurchase_purpose(body: str) -> RepurchasePurpose:
     return RepurchasePurpose.UNKNOWN
 
 
-def _actual_ratio(body: str, verb: str) -> float | None:
-    values = {float(match[1]) for match in _actual_ratio_matches(body, verb)}
+def _actual_ratio(verified: _VerifiedDocument, verb: str) -> float | None:
+    values = {match.value for match in _same_subject_actual_ratio_matches(verified, verb)}
     return next(iter(values)) if len(values) == 1 and all(0 <= value <= 100 for value in values) else None
 
 
@@ -1201,79 +1260,6 @@ def _actual_ratio_matches(body: str, verb: str) -> tuple[re.Match[str], ...]:
             r"(?:拟|计划|预计|将|尚待|尚未|未曾|未|不会|不)[^。；;，,]{0,30}$", body[max(0, match.start() - 40):match.start()]
         ))
     )
-
-
-def _contract(body: str, published: datetime) -> ContractMeasurements:
-    binding = any(
-        x in body for x in ("合同已生效", "合同自签署之日起生效", "已签订正式合同", "已签署正式合同")
-    ) and not any(x in body for x in ("框架协议", "意向协议", "中标候选", "尚未生效"))
-    binding = binding and re.search(r"(?:尚需|须经|需经)[^。；]{0,40}生效", body) is None
-    amount = _single_measurement(
-        r"(?:合同额|(?:合同|协议)(?:总)?金额)(?:[（(](?:不含税|含税)[）)])?(?:为|约为)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
-    )
-    revenue = _single_measurement(
-        r"(20[0-9]{2})年度(?:经审计的)?营业收入(?:为|合计)?[：:]?人民币([0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?)(亿|万)?元", body
-    )
-    disclosed = _annual_report_disclosure(body, int(revenue[1]), published) if revenue else None
-    comparable = (
-        amount is not None
-        and revenue is not None
-        and _net_measurement(body, amount)
-        and _net_measurement(body, revenue)
-        and disclosed is not None
-    )
-    contract_amount = float(amount[1].replace(",", "").replace("，", "")) * _amount_unit(amount[2]) if amount else None
-    annual_revenue = float(revenue[2].replace(",", "").replace("，", "")) * _amount_unit(revenue[3]) if revenue else None
-    reference_years = set(re.findall(r"(20[0-9]{2})(?:年度|年)(?:经审计的?)?营业收入", body))
-    reference_date = (
-        date(int(revenue[1]), 12, 31) if revenue else
-        date(int(next(iter(reference_years))), 12, 31) if len(reference_years) == 1 else None
-    )
-    ratio = (
-        100 * contract_amount / annual_revenue
-        if comparable and contract_amount is not None and annual_revenue and annual_revenue > 0
-        else None
-    )
-    return ContractMeasurements(
-        contract_amount,
-        annual_revenue,
-        reference_date,
-        disclosed,
-        ratio,
-        binding,
-        "comparable" if comparable else "unknown",
-    )
-
-
-def _single_measurement(pattern: str, body: str) -> re.Match[str] | None:
-    matches = tuple(re.finditer(pattern, body))
-    return matches[0] if len(matches) == 1 else None
-
-
-def _net_measurement(body: str, match: re.Match[str]) -> bool:
-    start = max(body.rfind(separator, 0, match.start()) for separator in ("；", "。", "，", ",")) + 1
-    ends = tuple(body.find(separator, match.end()) for separator in ("；", "。", "，", ","))
-    end = min((position for position in ends if position >= 0), default=len(body))
-    clause = body[start:end]
-    return "不含税" in clause and "含税" not in clause.replace("不含税", "")
-
-
-def _annual_report_disclosure(body: str, year: int, published: datetime) -> datetime | None:
-    match = _single_measurement(
-        rf"(?:{year}年?年度报告|该年度报告|上述年度报告)于(20\d{{2}})[年/-](\d{{1,2}})[月/-](\d{{1,2}})日?(?:披露|公告)",
-        body,
-    )
-    if match is None:
-        return None
-    try:
-        disclosed = datetime(int(match[1]), int(match[2]), int(match[3]), tzinfo=published.tzinfo)
-    except ValueError:
-        return None
-    return disclosed if date(year, 12, 31) < disclosed.date() and disclosed.date() < published.date() else None
-
-
-def _amount_unit(unit: str | None) -> int:
-    return 100_000_000 if unit == "亿" else 10_000 if unit == "万" else 1
 
 
 def _contract_actor(title: str, body: str) -> _ContractActor:

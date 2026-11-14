@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import cast
 
 from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence
+from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.domain.company_facts import CompanyFacts
@@ -26,7 +27,7 @@ from trader.infra.sqlite_connection import SqliteConnection
 
 _PROOF_RULE = "field_source_lines:1"
 _RISK_FIELDS = frozenset({"start_date", "end_date", "planned_pct", "completion_disclosed_at"})
-_SUPPORTED_FIELDS = _RISK_FIELDS | {"actual_pct", "repurchase_purpose"}
+_SUPPORTED_FIELDS = _RISK_FIELDS | {"actual_pct", "repurchase_purpose"} | {field for field, _ in COMPANY_CONTRACT_FIELD_RULES}
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,10 +139,10 @@ def PrepareCompanyFieldResults(
     candidates = tuple(candidate for document in inputs
                        for candidate in ExtractCompanyFieldEvidence(document, observed_at, event_policy))
     for candidate in candidates:
-        if candidate.code != facts.code or len(candidate.evidence) != 1:
+        if candidate.code != facts.code or not candidate.evidence:
             continue
         proof = candidate.evidence[0]
-        if (candidate.field, proof.rule_id) not in COMPANY_FIELD_RULES:
+        if any((candidate.field, part.rule_id) not in COMPANY_FIELD_RULES for part in candidate.evidence):
             raise ValueError("company_field_evidence_rule_mismatch")
         events = tuple(event for event in _field_events(facts, candidate.field)
                        if proof.source_key in event.evidence_ids
@@ -149,8 +150,11 @@ def PrepareCompanyFieldResults(
                        and candidate.event_id == f"{proof.source_key}:" + (
                            event.risk_type.value if isinstance(event, CompanyRiskEvent) else event.event_type.value
                        ))
-        if len(events) != 1 or not _current_material(
-            collected, facts, proof.source, proof.source_key, proof.record_hash, proof.body_hash, proof.published_at,
+        if len(events) != 1 or not all(
+            (part.source, part.source_key, part.record_hash, part.body_hash, part.published_at, part.subject)
+            == (proof.source, proof.source_key, proof.record_hash, proof.body_hash, proof.published_at, proof.subject)
+            and _current_material(collected, facts, part.source, part.source_key, part.record_hash, part.body_hash, part.published_at)
+            for part in candidate.evidence
         ):
             continue
         event = events[0]

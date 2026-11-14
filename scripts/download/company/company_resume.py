@@ -283,6 +283,7 @@ def Main() -> int:
     audit.add_argument("--audit-only", action="store_true")
     audit.add_argument("--database-only", action="store_true")
     audit.add_argument("--field-replay-keys", nargs="+")
+    parser.add_argument("--recovered-text", type=Path)
     audit.add_argument("--pagination-only", action="store_true")
     audit.add_argument("--pipeline-only", action="store_true")
     audit.add_argument("--pacing-only", action="store_true", help="Compare shared/per-host pacing with identical real PDFs and one complete directory sample in isolation.")
@@ -321,6 +322,8 @@ def Main() -> int:
         implementation.update((_ROOT / relative).read_bytes())
     if not 30 <= args.budget_seconds <= 10800:
         parser.error("budget within 30..10800 seconds required")
+    if args.recovered_text is not None and args.field_replay_keys is None:
+        parser.error("--recovered-text requires --field-replay-keys")
     if args.field_replay_keys is not None:
         if args.facts_database is None or args.directory is None:
             parser.error("--field-replay-keys requires --facts-database and a new external --directory")
@@ -331,6 +334,7 @@ def Main() -> int:
             observed_at=datetime.now(ZoneInfo("Asia/Shanghai")), budget_seconds=args.budget_seconds,
             sqlite_policy=sqlite_policy, event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
             protected_roots=(runtime.project_root, runtime.data_paths.root, runtime.runtime_dir),
+            recovered_text=args.recovered_text,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0

@@ -217,3 +217,29 @@ def test_explicit_completion_proof_is_disclosure_time_and_cannot_itself_resolve_
     assert not ExtractCompanyEvents((document,), _AT, _POLICY).risks
     uncertain = _document("控股股东本次减持计划尚未完成。", "控股股东减持计划完成公告")
     assert ExtractCompanyFieldEvidence(uncertain, _AT, _POLICY) == ()
+
+
+def test_declared_controller_alias_survives_issuer_introduction_and_proves_repeated_same_action():
+    # 1225665533, implementation result at lines 23–27 and 66–68; the
+    # issuer's introductory verb must not hide the named controller's trade.
+    statement = "王文志先生以集中竞价交易方式累计增持公司股份680,000股，占公司总股本的0.46%"
+    text = (
+        "公司实际控制人、董事长兼总经理王文志先生计划增持公司股份。\n"
+        "公司于2026年11月10日收到王文志先生出具的告知函，截至本公告披露日，" + statement
+        + "，增持总金额合计10,038,911元人民币，本次增持计划已实施完毕。\n"
+        "实施结果：截至本公告披露日，" + statement + "，增持总金额合计10,038,911元人民币。"
+    )
+    at = _AT + timedelta(days=5)
+    document = _document(text, "实际控制人增持计划实施结果公告")
+    document = replace(document, disclosure=replace(document.disclosure, published_at=at))
+    candidate = ExtractCompanyLinkCandidate(document, at, _POLICY)
+    assert candidate.positive.status.value == "completed"
+    assert candidate.positive.measurements.actual_ratio_pct == 0.46
+    field, = ExtractCompanyFieldEvidence(document, at, _POLICY)
+    assert field.value == 0.46 and field.state == "verified"
+    assert field.evidence[0].quote.startswith("公司于2026年11月10日收到")
+    assert field.evidence[0].start_line == field.evidence[0].end_line == 2
+
+    other = replace(document, text=text.replace("王文志先生以", "其他姓名女士以"))
+    assert ExtractCompanyLinkCandidate(other, at, _POLICY).positive.measurements.actual_ratio_pct is None
+    assert not ExtractCompanyFieldEvidence(other, at, _POLICY)

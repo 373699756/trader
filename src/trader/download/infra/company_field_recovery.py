@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime, timedelta
 from itertools import groupby
 from pathlib import Path
@@ -19,6 +20,7 @@ from trader.download.domain.company_event_extraction import (
     ExtractCompanyEvents, ExtractCompanyLinkCandidate, IsCompanyRepurchasePlaceholder, IsCompanyRepurchaseShareholderTable,
 )
 from trader.download.domain.company_facts import CompanyFacts
+from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES
 from trader.download.domain.company_field_plan import (
     BuildCompanyFieldGaps,
     CompanyFieldGap,
@@ -31,6 +33,7 @@ from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
+from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_facts_protocol import (
     DecodeCompanyLabel,
     EVIDENCE_SOURCES,
@@ -47,13 +50,12 @@ COMPANY_FIELD_RULES = (
     ("end_date", "explicit_reduction_end_date:2"),
     ("planned_pct", "reduction_total_capital_ratio:3"),
     ("completion_disclosed_at", "explicit_reduction_completion:1"),
-    ("actual_pct", "implemented_total_capital_ratio:2"),
+    ("actual_pct", "implemented_total_capital_ratio:3"),
     ("repurchase_purpose", "explicit_repurchase_purpose:2"),
-    ("contract_amount", "explicit_cny_contract_amount:3"),
-    ("revenue_report_date", "explicit_contract_revenue_year:1"),
-)
+) + COMPANY_CONTRACT_FIELD_RULES
 _REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence:1"
 _REPURCHASE_RECHECK_RULE = "same_body_repurchase_fields:1"
+_INCREASE_RECHECK_RULE = "same_body_increase_fields:1"
 _REPURCHASE_PLAN_RULE = "issuer_repurchase_plan:1"
 _FIELD_SOURCE_PROOF_REQUIRED = "field_source_proof_required"
 _MATERIAL_REVIEW_REASONS = frozenset({
@@ -304,6 +306,59 @@ def RestoreCompanyMaterialDependencies(collected: SqliteConnection, formal: Sqli
                         )
 
 
+def RecoverRequiredCompanyText(
+    collected: SqliteConnection,
+    formal: SqliteConnection,
+    source_key: str,
+    text: str,
+    observed_at: datetime,
+    extraction_hash: bytes,
+    documents: CompanyDocumentFiles,
+    check: Callable[[], None],
+    reserve: Callable[[int], AbstractContextManager[object]] | None,
+) -> bool:
+    """Recover only an explicitly supplied, exact, still-required original text.
+
+    This neither accepts a new extraction nor completes a field. The normal
+    compiler must inspect the material and publish any changed conclusions.
+    """
+    if observed_at.utcoffset() is None:
+        raise ValueError("company_material_recovery_time_invalid")
+    rows = collected.run(
+        "SELECT DISTINCT d.id,d.source,d.record_hash,m.body_hash,d.body_retained,c.code,d.published_at "
+        "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+        "JOIN company_population p ON p.code=c.code "
+        "JOIN company_material_dependencies m ON m.disclosure_id=d.id AND m.code=c.code "
+        "AND m.record_hash=d.record_hash AND (d.body_hash IS NULL OR m.body_hash=d.body_hash) AND m.extraction_hash=? "
+        "WHERE d.source_key=? AND d.kind='announcement' "
+        "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
+        (extraction_hash, source_key),
+    ).fetchall()
+    if len(rows) != 1:
+        raise ValueError("company_material_recovery_required_version_missing")
+    row = rows[0]
+    if (datetime.fromisoformat(row[6]) > observed_at
+        or hashlib.sha256(text.encode("utf-8")).digest() != row[3]
+        or not _has_valid_material_receipt(formal, row[1], source_key, row[5], row[2], row[3], extraction_hash)):
+        raise ValueError("company_material_recovery_identity_mismatch")
+    issuer_codes = ExtractCompanyAnnouncementNumbers(text).issuer_codes
+    if issuer_codes and row[5] not in issuer_codes:
+        raise ValueError("company_material_recovery_issuer_mismatch")
+    try:
+        documents.read(row[3], check=check)
+    except FileNotFoundError:
+        missing = True
+    else:
+        missing = False
+    if not missing and row[4]:
+        return False
+    with documents.prepare(text, check=check, reserve=reserve):
+        check()
+        collected.run("UPDATE disclosures SET body_retained=1,body_checked=1,body_hash=? WHERE id=?", (row[3], row[0]))
+        collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (row[5],))
+    return True
+
+
 def ReadRequiredCompanyMaterialDependencies(
     collected: SqliteConnection,
     extraction_hash: bytes,
@@ -473,7 +528,7 @@ def RegisterCompanyFieldAttempts(
                 )
 
 
-def QueueCompanyRepurchaseRechecks(
+def QueueCompanyShareActionRechecks(
     collected: SqliteConnection,
     formal: SqliteConnection,
     codes: Sequence[str],
@@ -495,17 +550,18 @@ def QueueCompanyRepurchaseRechecks(
         for fact in ReadCompanyFactRows(formal, codes[offset:offset + 128]):
             for event in fact.positive_events:
                 before = event.measurements
-                if not isinstance(before, RepurchaseMeasurements) or event.status is CompanyPositiveStatus.CANCELLED:
+                if not isinstance(before, (RepurchaseMeasurements, IncreaseMeasurements)) or event.status is CompanyPositiveStatus.CANCELLED:
                     continue
                 evidence_id = event.evidence_ids[-1]
-                if sum(isinstance(other.measurements, RepurchaseMeasurements) and evidence_id in other.evidence_ids
+                if sum(isinstance(other.measurements, (RepurchaseMeasurements, IncreaseMeasurements)) and evidence_id in other.evidence_ids
                        for other in fact.positive_events) != 1:
                     continue
                 rows = collected.run(
                     "SELECT d.id,d.source,d.source_key,d.record_hash,d.body_hash,d.title,d.published_at,d.url "
                     "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
                     "WHERE c.code=? AND d.source_key=? AND d.kind='announcement' "
-                    "AND d.body_checked=1 AND d.body_retained=1", (fact.code, evidence_id),
+                    "AND d.body_checked=1 AND d.body_retained=1 "
+                    "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1", (fact.code, evidence_id),
                 ).fetchall()
                 if len(rows) != 1:
                     continue
@@ -517,15 +573,16 @@ def QueueCompanyRepurchaseRechecks(
                     or not _has_valid_material_receipt(formal, row[1], evidence_id, fact.code,
                                                        row[3], body_hash, extraction_hash)):
                     continue
-                policies = tuple(_repair_policy(event.event_id, field, _REPURCHASE_RECHECK_RULE)
-                                 for field in ("actual_pct", "repurchase_purpose"))
+                rule = _REPURCHASE_RECHECK_RULE if isinstance(before, RepurchaseMeasurements) else _INCREASE_RECHECK_RULE
+                supported = ("actual_pct", "repurchase_purpose") if isinstance(before, RepurchaseMeasurements) else ("actual_pct",)
+                policies = tuple(_repair_policy(event.event_id, field, rule) for field in supported)
+                conditions = " OR ".join("(policy_id=? AND extraction_hash=?)" for _ in policies)
                 if formal.run(
                     "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
                     "AND record_hash=? AND body_hash=? AND outcome='field_attempted' "
-                    "AND ((policy_id=? AND extraction_hash=?) OR (policy_id=? AND extraction_hash=?))",
+                    f"AND ({conditions})",
                     (row[1], evidence_id, fact.code, row[3], body_hash,
-                     policies[0], hashlib.sha256(policies[0].encode()).digest(),
-                     policies[1], hashlib.sha256(policies[1].encode()).digest()),
+                     *(value for policy in policies for value in (policy, hashlib.sha256(policy.encode()).digest()))),
                 ).fetchone() is not None:
                     continue
                 try:
@@ -552,19 +609,21 @@ def QueueCompanyRepurchaseRechecks(
                         collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (fact.code,))
                     continue
                 candidate = ExtractCompanyLinkCandidate(document, observed_at, event_policy)
-                if candidate is None or candidate.positive is None or candidate.subject is not event.subject_type:
+                if (candidate is None or candidate.positive is None or candidate.subject is not event.subject_type
+                    or candidate.positive.event_type is not event.event_type):
                     continue
                 after = candidate.positive.measurements
-                if not isinstance(after, RepurchaseMeasurements):
+                if not isinstance(after, (RepurchaseMeasurements, IncreaseMeasurements)) or type(before) is not type(after):
                     continue
                 fields = tuple(field for field, needed in (
                     ("actual_pct", before.actual_ratio_pct is None and after.actual_ratio_pct is not None),
-                    ("repurchase_purpose", after.purpose is not RepurchasePurpose.UNKNOWN and before.purpose is not after.purpose),
+                    ("repurchase_purpose", isinstance(before, RepurchaseMeasurements) and isinstance(after, RepurchaseMeasurements)
+                     and after.purpose is not RepurchasePurpose.UNKNOWN and before.purpose is not after.purpose),
                 ) if needed)
                 for field in fields:
                     collected.run(
                         "INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
-                        (row[0], fact.code, row[3], event.event_id, field, _REPURCHASE_RECHECK_RULE),
+                        (row[0], fact.code, row[3], event.event_id, field, rule),
                     )
                 if fields:
                     collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], fact.code))
@@ -904,7 +963,7 @@ def CompleteCompanyFieldRepairs(
             "WHERE f.code=? AND f.state<>'complete'", (fact.code,),
         ).fetchall()
         for row in rows:
-            if row[3] == _REPURCHASE_RECHECK_RULE and not finish_attempts:
+            if row[3] in {_REPURCHASE_RECHECK_RULE, _INCREASE_RECHECK_RULE} and not finish_attempts:
                 # The old non-null value is precisely what this task must
                 # revalidate. Only its new formal field receipt can restore it.
                 continue
@@ -1125,7 +1184,7 @@ __all__ = [
     "EnsureCompanyFieldRepairs",
     "ReadCompanyFieldRecovery",
     "QueueCompanyFieldRepairs",
-    "QueueCompanyRepurchaseRechecks",
+    "QueueCompanyShareActionRechecks",
     "QueueCompanyReductionRechecks",
     "PrioritizeCompanyRepurchaseInputs",
     "RegisterCompanyFieldAttempts",
@@ -1136,4 +1195,5 @@ __all__ = [
     "RegisterCompanyMaterialDependencies",
     "RestoreCompanyMaterialDependencies",
     "ReadRequiredCompanyMaterialDependencies",
+    "RecoverRequiredCompanyText",
 ]

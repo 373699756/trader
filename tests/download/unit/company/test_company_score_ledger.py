@@ -807,6 +807,11 @@ def test_only_explicit_unique_subject_bindings_support_alias_execution_status(ti
     assert candidate is not None and candidate.positive is not None
     event = candidate.positive
     assert event.status is status
+    if "0.26%" in action:
+        assert event.measurements.actual_ratio_pct == 0.26
+        assert event.positive_level > 0 and event.not_eligible_reason is None
+        assert event.level_milestones[-1].measurement_value_pct == 0.26
+        return
     assert event.measurements.actual_ratio_pct is None
     assert event.positive_level == 0 and event.level_milestones == () and event.not_eligible_reason is not None
 
