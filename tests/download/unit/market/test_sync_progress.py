@@ -28,7 +28,7 @@ from trader.infra.settings.data_paths import DataPaths
 from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
 
 
-def test_commands_keep_their_own_fixed_columns_and_share_elapsed_time_and_cleaning(monkeypatch):
+def test_commands_share_compact_prefixes_elapsed_time_and_cleaning(monkeypatch):
     from trader.recommendation.domain.publication.models import Strategy
     from trader.training.application.tomorrow_training import TomorrowTrainingProgress
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
@@ -53,11 +53,8 @@ def test_commands_keep_their_own_fixed_columns_and_share_elapsed_time_and_cleani
     output.publish(TomorrowTrainingProgress("cross_section_conversion", "completed", 99999, 99999, 99999))
     training_lines = stream.getvalue().splitlines()
     for lines in (prepared.stderr.splitlines(), history_lines, training_lines):
-        positions = [
-            tuple(DisplayWidth(" | ".join(line.split(" | ")[:index])) + 1 for index in (1, 2, 3))
-            for line in lines
-        ]
-        assert len(lines) == 2 and positions[0] == positions[1]
+        assert len(lines) == 2
+        assert all(part == part.strip() for line in lines for part in line.split(" | ")[:3])
         assert all(line.startswith("00:00:00 | ") for line in lines)
     assert "准备环境 检查" in prepared.stderr
     assert "train·V5·明日·样本构建" in training_lines[0]

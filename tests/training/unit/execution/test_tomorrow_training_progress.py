@@ -163,7 +163,7 @@ def test_v5_eta_uses_only_current_epoch_and_resets_on_context_change(capsys, res
     assert ("本轮估算中" in text) is (reset != "phase")
 
 
-def test_training_columns_keep_display_positions_for_large_counts_and_long_industries(capsys) -> None:
+def test_training_prefixes_stay_compact_with_large_counts_and_long_industries(capsys) -> None:
     output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0, 5, 10), command_label="train·V5")
     output.publish(TomorrowTrainingProgress("history_conversion", "started", 0, 1))
     output.publish(TomorrowTrainingProgress(
@@ -178,7 +178,7 @@ def test_training_columns_keep_display_positions_for_large_counts_and_long_indus
     main_lines = [line for line in lines if " | " in line]
     separators = [[DisplayWidth(line[:match.start()]) for match in re.finditer(r"\|", line)] for line in main_lines]
     assert len(separators) == 3 and all(len(positions) == 3 for positions in separators)
-    assert separators[0] == separators[1] == separators[2]
+    assert all(part == part.strip() for line in main_lines for part in line.split(" | ")[:3])
     assert all(DisplayWidth(line) <= 180 for line in lines)
     assert "计算机通信和其他电子设备制造业" in "".join(line.strip() for line in lines)
     assert "…" not in "".join(lines) and "123456789" in "".join(lines)

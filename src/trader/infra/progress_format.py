@@ -74,11 +74,10 @@ def ProgressPrefix(
     *,
     stage_width: int = 52,
 ) -> tuple[str, str, str]:
+    """Bound stage labels without adding fixed-width padding to the prefix."""
     duration = ProgressDuration(stage_seconds)
     label = ShortProgressText(task, max(0, stage_width - DisplayWidth(duration) - 1))
-    fields = (ProgressDuration(total_seconds), f"{label} {duration}", CleanProgressText(state))
-    padded = tuple(PadProgressText(value, width) for value, width in zip(fields, (8, stage_width, 6), strict=True))
-    return padded[0], padded[1], padded[2]
+    return ProgressDuration(total_seconds), f"{label} {duration}", CleanProgressText(state)
 
 
 def _startup_progress() -> None:
