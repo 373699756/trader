@@ -338,13 +338,23 @@ def test_unmatched_repurchase_purpose_is_attempted_once_then_verified_without_re
     )
     with SqliteSession(index.facts_path) as formal:
         valid = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
+    before = _facts(index)
     index.prepare_publication(item.codes, NOW)
-    assert _facts(index).positive_events[0].measurements.purpose is RepurchasePurpose.UNKNOWN
+    after = _facts(index)
+    assert after.risk_events == before.risk_events
+    assert after.positive_events[0].measurements == before.positive_events[0].measurements
+    assert after.positive_events[0].status is before.positive_events[0].status
+    assert after.positive_events[0].evidence_ids == before.positive_events[0].evidence_ids
+    assert before.positive_events[0].measurements.purpose is RepurchasePurpose.UNKNOWN
     with SqliteSession(index.facts_path) as formal:
         attempts = tuple(tuple(row) for row in formal.run(
             "SELECT * FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY policy_id",
         ))
-    assert len(tuple(row for row in attempts if not row[-1].startswith("field_source_lines:"))) == 2
+    assert len(tuple(row for row in attempts if not row[-1].startswith("field_source_lines:")
+                     and ":same_body_" not in row[-1])) == 2
+    assert {row[-1].split(":")[2] for row in attempts if ":same_body_repurchase_fields:" in row[-1]} == {
+        "actual_pct", "repurchase_purpose",
+    }
     assert len(tuple(row for row in attempts if row[-1].startswith("field_source_lines:"))) == 1
     for _ in range(2):
         restarted = fixtures._index(tmp_path)
@@ -1030,7 +1040,16 @@ def test_status_only_holder_refresh_requires_exact_material_and_one_matching_eve
             fixtures.CompanyEventPolicy(), CompanyDocumentFilesFixture(tmp_path / "text").read,
         )
         assert collected.run("SELECT payload FROM document_link_candidates WHERE source_key=?", (item.identity,)).require_one()[0] == before
-        assert collected.run("SELECT 1 FROM company_dirty_codes WHERE code=?", (item.codes[0],)).fetchone() is None
+        # A mismatched cached subject cannot refresh the link. The independent
+        # formal event still matches the exact material and records its check.
+        dirty = collected.run("SELECT 1 FROM company_dirty_codes WHERE code=?", (item.codes[0],)).fetchone()
+        assert (dirty is not None) == (guard == "different_subject")
+        attempts = tuple(tuple(row) for row in collected.run(
+            "SELECT field,rule_id,state FROM company_field_repairs WHERE code=? AND rule_id LIKE 'same_body_%'",
+            (item.codes[0],),
+        ))
+        expected = (("actual_pct", "same_body_increase_fields:1", "pending"),) if guard == "different_subject" else ()
+        assert attempts == expected
         assert collected.run("SELECT 1 FROM document_publications WHERE code=?", (item.codes[0],)).fetchone() is not None
         assert tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == valid
 

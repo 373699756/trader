@@ -6,11 +6,12 @@ from datetime import timedelta
 import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.download.company.company_field_recovery import NOW, _facts, _legacy_reduction
+from tests.helpers.download.company.company_field_recovery import NOW, _facts, _legacy_reduction, _put
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
-from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
+from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, QueueCompanyShareActionRechecks
+from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
@@ -124,3 +125,192 @@ def test_changed_cny_amount_rule_recovers_local_text_once_without_inventing_basi
     assert _attempt_receipts(restarted, "contract_amount", "explicit_cny_contract_amount:3") == attempted
     assert _valid_receipts(restarted) == ordinary
     assert SQLiteCompanyEvidenceReaderFixture(restarted.facts_path).read(item.codes)[0].positive_events == (actual,)
+
+
+@pytest.mark.parametrize(("title", "body"), (
+    ("控股股东增持计划的法律意见书", "本公司控股股东计划增持公司股份，拟增持比例不低于公司总股本的1%。"),
+    ("关于回购股份方案的公告", "本公司拟回购公司股份，拟回购比例不低于公司总股本的1%。"),
+))
+def test_unchanged_planned_share_action_records_attempt_and_restarts_without_body_reads(tmp_path, monkeypatch, title, body):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("planned-check", title)
+    partition = DisclosurePartition("sse", NOW.date(), NOW.date())
+    index.commit_page(partition, DisclosurePage((item,), 1, False), NOW)
+    assert index.commit_document(item, fixtures._extraction(body + _DETAIL), NOW)
+    index.publish(item.codes, NOW)
+    before = _facts(index)
+    assert len(before.positive_events) == 1
+    assert before.positive_events[0].measurements.actual_ratio_pct is None
+    valid = _valid_receipts(index)
+    reads = []
+    read = index._documents.read
+
+    def observed(digest, *, check=None):
+        reads.append(digest)
+        return read(digest, check=check)
+
+    monkeypatch.setattr(index._documents, "read", observed)
+    index.prepare_publication(item.codes, NOW)
+    index.publish(item.codes, NOW, changed_only=True)
+    assert reads
+    assert _facts(index) == before
+    assert _valid_receipts(index) == valid
+    with SqliteSession(index.facts_path) as formal:
+        attempted = tuple(tuple(row) for row in formal.run(
+            "SELECT * FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY policy_id",
+        ))
+        publication = ReadCompanyPublicationIdentity(formal)
+    assert attempted
+    with SqliteSession(index.path) as collected:
+        assert collected.run("SELECT 1 FROM company_field_repairs WHERE state='pending'").fetchone() is None
+
+    restarted = fixtures._index(tmp_path)
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("unchanged checked share action must reuse its exact formal attempt")
+
+    monkeypatch.setattr(restarted._documents, "read", unexpected_read)
+    restarted.prepare_publication(item.codes, NOW)
+    restarted.publish(item.codes, NOW, changed_only=True)
+    assert _facts(restarted) == before
+    assert _valid_receipts(restarted) == valid
+    with SqliteSession(restarted.facts_path) as formal:
+        assert ReadCompanyPublicationIdentity(formal) == publication
+        assert tuple(tuple(row) for row in formal.run(
+            "SELECT * FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY policy_id",
+        )) == attempted
+
+
+@pytest.mark.parametrize("failure", ("missing", "hash", "cancelled"))
+def test_unverified_share_action_read_does_not_publish_a_negative_attempt(tmp_path, failure):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("planned-check", "控股股东增持计划的法律意见书")
+    body = "本公司控股股东计划增持公司股份，拟增持比例不低于公司总股本的1%。" + _DETAIL
+    partition = DisclosurePartition("sse", NOW.date(), NOW.date())
+    index.commit_page(partition, DisclosurePage((item,), 1, False), NOW)
+    assert index.commit_document(item, fixtures._extraction(body), NOW)
+    index.publish(item.codes, NOW)
+
+    def failed_read(digest):
+        if failure == "missing":
+            raise FileNotFoundError("fixture_missing")
+        if failure == "cancelled":
+            raise InterruptedError("fixture_cancelled")
+        return body + "错配"
+
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected), SqliteSession(index.facts_path) as formal:
+        if failure == "cancelled":
+            with pytest.raises(InterruptedError, match="fixture_cancelled"):
+                QueueCompanyShareActionRechecks(
+                    collected, formal, item.codes, NOW, index._facts.extraction_hash,
+                    fixtures.CompanyEventPolicy(), failed_read,
+                )
+        else:
+            QueueCompanyShareActionRechecks(
+                collected, formal, item.codes, NOW, index._facts.extraction_hash,
+                fixtures.CompanyEventPolicy(), failed_read,
+            )
+        assert collected.run("SELECT 1 FROM company_field_repairs WHERE rule_id LIKE 'same_body_%'").fetchone() is None
+
+
+@pytest.mark.parametrize("guard", ("body", "record", "rule", "payload"))
+def test_share_link_attempt_only_reuses_its_exact_material_and_candidate(tmp_path, guard):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("planned-check", "控股股东增持计划的法律意见书")
+    partition = DisclosurePartition("sse", NOW.date(), NOW.date())
+    index.commit_page(partition, DisclosurePage((item,), 1, False), NOW)
+    body = "本公司控股股东计划增持公司股份，拟增持比例不低于公司总股本的1%。" + _DETAIL
+    assert index.commit_document(item, fixtures._extraction(body), NOW)
+    index.publish(item.codes, NOW)
+    index.prepare_publication(item.codes, NOW)
+    with SqliteSession(index.facts_path) as formal:
+        assert formal.run(
+            "SELECT 1 FROM company_input_receipt WHERE policy_id LIKE '%:same_body_share_link:%'",
+        ).fetchone() is not None
+        if guard == "body":
+            formal.run("UPDATE company_input_receipt SET body_hash=? WHERE policy_id LIKE '%:same_body_share_link:%'", (b"x" * 32,))
+        elif guard == "record":
+            formal.run("UPDATE company_input_receipt SET record_hash='different' WHERE policy_id LIKE '%:same_body_share_link:%'")
+        elif guard == "rule":
+            formal.run("UPDATE company_input_receipt SET policy_id='different' WHERE policy_id LIKE '%:same_body_share_link:%'")
+    if guard == "payload":
+        with SqliteSession(index.path) as collected:
+            old = DecodeCompanyLink(collected.run("SELECT payload FROM document_link_candidates").require_one()[0])
+            changed = replace(old, positive=replace(old.positive, summary="待核实的旧摘要"))
+            collected.run("UPDATE document_link_candidates SET payload=?", (EncodeCompanyLink(changed),))
+    reads = []
+    read = index._documents.read
+
+    def observed(digest):
+        reads.append(digest)
+        return read(digest)
+
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected), SqliteSession(index.facts_path) as formal:
+        QueueCompanyShareActionRechecks(
+            collected, formal, item.codes, NOW, index._facts.extraction_hash,
+            fixtures.CompanyEventPolicy(), observed,
+        )
+    assert reads
+
+
+@pytest.mark.parametrize("committed", (False, True))
+def test_share_check_restart_uses_only_committed_attempt_after_publication_failure(tmp_path, monkeypatch, committed):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("planned-check", "控股股东增持计划的法律意见书")
+    partition = DisclosurePartition("sse", NOW.date(), NOW.date())
+    index.commit_page(partition, DisclosurePage((item,), 1, False), NOW)
+    body = "本公司控股股东计划增持公司股份，拟增持比例不低于公司总股本的1%。" + _DETAIL
+    assert index.commit_document(item, fixtures._extraction(body), NOW)
+    index.publish(item.codes, NOW)
+    valid = _valid_receipts(index)
+    publish = index._facts.publish
+
+    def fail_publication(*args, **kwargs):
+        if committed:
+            publish(*args, **kwargs)
+        raise RuntimeError("fixture_publication_interrupted")
+
+    monkeypatch.setattr(index._facts, "publish", fail_publication)
+    with pytest.raises(RuntimeError, match="fixture_publication_interrupted"):
+        index.prepare_publication(item.codes, NOW)
+    restarted = fixtures._index(tmp_path)
+    reads = []
+    read = restarted._documents.read
+
+    def observed(digest, *, check=None):
+        reads.append(digest)
+        return read(digest, check=check)
+
+    monkeypatch.setattr(restarted._documents, "read", observed)
+    restarted.prepare_publication(item.codes, NOW)
+    assert bool(reads) is not committed
+    assert _valid_receipts(restarted) == valid
+
+
+def test_interrupted_valued_share_link_waits_for_formal_attempt_before_retiring(tmp_path, monkeypatch):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("valued-check", "关于首次回购公司股份的公告")
+    _put(index, item, "本公司首次回购股份100万股，占公司总股本的1%。回购股份用于员工持股计划。" + _DETAIL)
+    index.publish(item.codes, NOW)
+    assert _facts(index).positive_events[0].measurements.actual_ratio_pct is not None
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected), SqliteSession(index.facts_path) as formal:
+        QueueCompanyShareActionRechecks(
+            collected, formal, item.codes, NOW, index._facts.extraction_hash,
+            fixtures.CompanyEventPolicy(), index._documents.read,
+        )
+        assert collected.run(
+            "SELECT 1 FROM company_field_repairs WHERE rule_id LIKE 'same_body_share_link:%' AND state='pending'",
+        ).fetchone() is not None
+    restarted = fixtures._index(tmp_path)
+    restarted.prepare_publication(item.codes, NOW)
+    with SqliteSession(index.facts_path) as formal:
+        assert formal.run(
+            "SELECT 1 FROM company_input_receipt WHERE policy_id LIKE '%:same_body_share_link:%' AND outcome='field_attempted'",
+        ).fetchone() is not None
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("a valued candidate also requires its committed link-check receipt")
+
+    restarted = fixtures._index(tmp_path)
+    monkeypatch.setattr(restarted._documents, "read", unexpected_read)
+    restarted.prepare_publication(item.codes, NOW)

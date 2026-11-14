@@ -425,13 +425,22 @@ def test_failed_same_body_proof_is_attempted_once_and_restart_does_not_queue_a_r
     assert actual.state == "present_unverified" and not actual.evidence
     original_receipts = _receipts(index)
     assert any(row[-1].startswith("field_source_lines:") for row in original_receipts)
+    checked_receipts = None
     for turn in (1, 2):
         restarted = fixtures._index(tmp_path)
         restarted.prepare_publication(document.disclosure.codes, _AT + timedelta(minutes=turn))
         assert restarted.pending_documents(
             document.disclosure.codes, _AT, policies=fixtures._TEST_DOCUMENT_POLICIES,
         ) == ()
-        assert _receipts(restarted) == original_receipts
+        receipts = _receipts(restarted)
+        assert set(original_receipts).issubset(receipts)
+        assert all(row[-2] == "field_attempted" and ":same_body_" in row[-1]
+                   for row in receipts if row not in original_receipts)
+        if checked_receipts is None:
+            checked_receipts = receipts
+        else:
+            assert receipts == checked_receipts
+        assert _reader(restarted).read_fields(document.disclosure.codes).results == snapshot.results
     assert calls == [document.disclosure.identity]
 
 

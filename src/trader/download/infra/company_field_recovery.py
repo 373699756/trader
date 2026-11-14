@@ -56,6 +56,7 @@ COMPANY_FIELD_RULES = (
 _REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence:1"
 _REPURCHASE_RECHECK_RULE = "same_body_repurchase_fields:1"
 _INCREASE_RECHECK_RULE = "same_body_increase_fields:1"
+_SHARE_LINK_RECHECK_RULE_PREFIX = "same_body_share_link:"
 _REPURCHASE_PLAN_RULE = "issuer_repurchase_plan:1"
 _FIELD_SOURCE_PROOF_REQUIRED = "field_source_proof_required"
 _MATERIAL_REVIEW_REASONS = frozenset({
@@ -600,14 +601,18 @@ def QueueCompanyShareActionRechecks(
                     ("repurchase_purpose", isinstance(before, RepurchaseMeasurements) and isinstance(after, RepurchaseMeasurements)
                      and after.purpose is not RepurchasePurpose.UNKNOWN and before.purpose is not after.purpose),
                 ) if needed)
-                for field in fields:
+                # A hash-verified unchanged derivation is still a completed
+                # attempt, including a planned event's inapplicable ratio.
+                # Publish its receipt with the facts rather than rereading it
+                # on every restart or declaring the missing value verified.
+                for field in fields or supported:
                     collected.run(
                         "INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
                         (row[0], fact.code, row[3], event.event_id, field, rule),
                     )
+                collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (fact.code,))
                 if fields:
                     collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], fact.code))
-                    collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (fact.code,))
 
 
 def QueueCompanyReductionRechecks(
@@ -805,6 +810,16 @@ def _refresh_repurchase_link_candidates(
                 or old.evidence_id != row[1] or old.published_at != published
                 or not _has_valid_material_receipt(formal, row[0], row[1], row[2], row[3], body_hash, extraction_hash)):
                 continue
+            # A formal-event attempt does not prove this cached candidate.
+            # Bind the link check to its exact payload and extraction policy.
+            rule = _SHARE_LINK_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + row[8].encode()).hexdigest()
+            policy = _repair_policy(old.positive.event_id, "actual_pct", rule)
+            if formal.run(
+                "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
+                "AND record_hash=? AND body_hash=? AND extraction_hash=? AND policy_id=? AND outcome='field_attempted'",
+                (row[0], row[1], row[2], row[3], body_hash, hashlib.sha256(policy.encode()).digest(), policy),
+            ).fetchone() is not None:
+                continue
             try:
                 text = read_document(body_hash)
             except InterruptedError:
@@ -827,9 +842,8 @@ def _refresh_repurchase_link_candidates(
                 and isinstance(current.positive.measurements, (RepurchaseMeasurements, IncreaseMeasurements))
                 and current.positive.measurements.actual_ratio_pct is None
             )
-            if isinstance(old.positive.measurements, IncreaseMeasurements) and not status_recheck:
+            if isinstance(old.positive.measurements, IncreaseMeasurements) and not status_recheck and current != old:
                 continue
-            replay_status = False
             if status_recheck:
                 matches = tuple(event for fact in ReadCompanyFactRows(formal, (row[2],)) for event in fact.positive_events
                                 if row[1] in event.evidence_ids)
@@ -852,16 +866,21 @@ def _refresh_repurchase_link_candidates(
                             "(SELECT id FROM disclosures WHERE source=? AND source_key=? AND record_hash=?)",
                             (row[2], row[0], row[1], row[3]),
                         )
-                        replay_status = True
             payload = EncodeCompanyLink(current)
+            rule = _SHARE_LINK_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + payload.encode()).hexdigest()
+            collected.run(
+                "INSERT OR IGNORE INTO company_field_repairs "
+                "SELECT id,?,record_hash,?,'actual_pct',?,'pending' FROM disclosures "
+                "WHERE source=? AND source_key=? AND record_hash=?",
+                (row[2], current.positive.event_id, rule, row[0], row[1], row[3]),
+            )
+            collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (row[2],))
             if payload != row[8]:
                 collected.run(
                     "UPDATE document_link_candidates SET payload=? WHERE source=? AND source_key=? "
                     "AND record_hash=? AND extraction_hash=? AND payload=?",
                     (payload, row[0], row[1], row[3], extraction_hash, row[8]),
                 )
-            if payload != row[8] or replay_status:
-                collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (row[2],))
 
 
 def PrioritizeCompanyRepurchaseInputs(
@@ -943,7 +962,8 @@ def CompleteCompanyFieldRepairs(
             "WHERE f.code=? AND f.state<>'complete'", (fact.code,),
         ).fetchall()
         for row in rows:
-            if row[3] in {_REPURCHASE_RECHECK_RULE, _INCREASE_RECHECK_RULE} and not finish_attempts:
+            if (row[3] in {_REPURCHASE_RECHECK_RULE, _INCREASE_RECHECK_RULE}
+                or row[3].startswith(_SHARE_LINK_RECHECK_RULE_PREFIX)) and not finish_attempts:
                 # The old non-null value is precisely what this task must
                 # revalidate. Only its new formal field receipt can restore it.
                 continue
@@ -952,6 +972,10 @@ def CompleteCompanyFieldRepairs(
                 continue
             missing = any(gap.event_id == row[4] and gap.field == row[2] for gap in gaps)
             if not available and not missing:
+                checked_share_action = (
+                    row[3] in {_REPURCHASE_RECHECK_RULE, _INCREASE_RECHECK_RULE}
+                    or row[3].startswith(_SHARE_LINK_RECHECK_RULE_PREFIX)
+                )
                 retired_reduction = (
                     row[4] == f"{row[7]}:{CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION.value}"
                     and row[2] in {"start_date", "end_date", "planned_pct"}
@@ -964,7 +988,7 @@ def CompleteCompanyFieldRepairs(
                                for event in fact.risk_events)
                     )
                 )
-                if not retired_reduction:
+                if not retired_reduction and not checked_share_action:
                     continue
                 policy = _repair_policy(row[4], row[2], row[3])
                 if formal.run(
@@ -973,8 +997,8 @@ def CompleteCompanyFieldRepairs(
                     (row[6], row[7], fact.code, row[1], hashlib.sha256(policy.encode()).digest(), policy, row[8]),
                 ).fetchone() is None:
                     continue
-                # Reclassifying the notice does not prove any old plan field.
-                # Its exact committed attempt merely retires the stale work.
+                # A checked inapplicable field or reclassified notice gains
+                # no value: the exact committed attempt only retires the work.
             connection.run(
                 "UPDATE company_field_repairs SET state=? WHERE disclosure_id=? AND code=? "
                 "AND record_hash=? AND field=? AND rule_id=? AND event_id=?",
