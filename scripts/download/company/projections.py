@@ -162,6 +162,19 @@ def ProjectCompanyResume(
                 "file_inventory_is_atomic",
             )
         }
+        failures = ProjectMapping(database.get("failure_objects"))
+        if failures:
+            projected_failures = {key: failures.get(key) for key in (
+                "available", "stable_read", "events", "unidentified_events", "population_stocks", "population_hash",
+                "publication_hash", "extraction_hash", "configuration_hash", "object_count", "states",
+            )}
+            objects = failures.get("objects")
+            projected_failures["objects"] = [
+                {key: row.get(key) for key in ("source_key", "record_hash", "events", "state")}
+                for row in (objects[:50] if isinstance(objects, list) else []) if isinstance(row, dict)
+            ]
+            projected_failures["truncated"] = isinstance(objects, list) and len(objects) > 50
+            projected_database["failure_objects"] = projected_failures
         tables = database.get("table_bytes")
         projected_database["table_bytes"] = [
             {"name": row.get("name"), "bytes": row.get("bytes")}

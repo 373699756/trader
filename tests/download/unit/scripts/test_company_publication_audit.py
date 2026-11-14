@@ -50,7 +50,7 @@ def test_published_projection_keeps_unknown_components_and_valid_released_receip
     assert "company_reviews_pending" in result["findings"]
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
     audit = result["field_audit"]
-    assert audit["table_count"] == 15 and audit["field_count"] == 126
+    assert audit["table_count"] == 16 and audit["field_count"] == 137
     assert audit["invalid_value_types"] == 0 and audit["source_agreement"]["unlocated_evidence_refs"] == 0
 
 
@@ -166,7 +166,7 @@ def test_disk_inventory_includes_history_beyond_summary_limit_without_touching_i
         index.record_failure(DownloadFailureRecord(
             "test-run", fixtures.NOW, DownloadFailureContext("company_document", code="600001", supplier="cninfo"),
             "FileNotFoundError", "FileNotFoundError:errno_2",
-            "FileNotFoundError:pathlib.py:_scandir:938 > stage=download;record=first;version=a",
+            "FileNotFoundError:pathlib.py:_scandir:938 > object_id=first > revision=a",
         ), configuration=configuration)
     before = (index.path.read_bytes(), index.facts_path.read_bytes(), invalid.read_bytes())
     result = AuditCompanyDatabase(
@@ -177,11 +177,129 @@ def test_disk_inventory_includes_history_beyond_summary_limit_without_touching_i
     assert inventory["retry_inventory"][0]["files"] == ["invalid.pdf"]
     assert inventory["retry_inventory"][0]["pdf_files"] == 1
     assert inventory["failure_receipts"][0]["outcome"] == "valid"
+    assert inventory["failure_objects"]["states"] == {"published": 1}
+    assert inventory["failure_objects"]["objects"][0]["events"] == 55
     assert not inventory["file_inventory_is_atomic"]
     report = BuildReport("company-resume", [DiagnosticResult("company_resume", 0, 1.0, result, None)])
     assert "not-a-valid-pdf-private-content" not in json.dumps(report)
     assert len(report["checks"][0]["summary"]["database"]["retry_inventory"]) == 1
+    assert report["checks"][0]["summary"]["database"]["failure_objects"]["states"] == {"published": 1}
     assert (index.path.read_bytes(), index.facts_path.read_bytes(), invalid.read_bytes()) == before
+
+
+@pytest.mark.parametrize("change,state", [
+    ("none", "published"), ("body_checked", "pending_processing"), ("missing_body", "pending_processing"),
+    ("body_hash", "pending_publication"), ("extraction_hash", "pending_publication"),
+    ("receipt_revision", "pending_publication"), ("receipt_code", "pending_publication"),
+    ("outcome", "pending_publication"), ("revision", "revision_changed"),
+    ("missing", "source_missing"), ("population", "outside_population"),
+])
+def test_failure_object_requires_exact_current_input_and_publication(tmp_path, change, state):
+    from scripts.download.company.company_failure_audit import AuditCompanyFailureObjects
+
+    index = _published(tmp_path)
+    with SqliteSession(index.path) as raw, SqliteTransaction(raw):
+        if change == "body_checked":
+            raw.run("UPDATE disclosures SET body_checked=0")
+        elif change == "missing_body":
+            raw.run("UPDATE disclosures SET body_hash=NULL")
+        elif change == "revision":
+            raw.run("UPDATE disclosures SET record_hash='changed'")
+        elif change == "missing":
+            raw.run("DELETE FROM disclosures")
+        elif change == "population":
+            raw.run("DELETE FROM company_population")
+    with SqliteSession(index.facts_path) as formal, SqliteTransaction(formal):
+        if change == "body_hash":
+            formal.run("UPDATE company_input_receipt SET body_hash=?", (b"b" * 32,))
+        elif change == "missing_body":
+            formal.run("UPDATE company_input_receipt SET body_hash=NULL")
+        elif change == "extraction_hash":
+            formal.run("UPDATE company_input_receipt SET extraction_hash=?", (b"b" * 32,))
+        elif change == "receipt_revision":
+            formal.run("UPDATE company_input_receipt SET record_hash='changed'")
+        elif change == "receipt_code":
+            formal.run("UPDATE company_input_receipt SET code='600002'")
+        elif change == "outcome":
+            formal.run("UPDATE company_input_receipt SET outcome='disclosure_document_ocr_timeout_exhausted'")
+    before = index.path.read_bytes(), index.facts_path.read_bytes()
+    events = [{"supplier": "cninfo", "diagnostic": "operation_kind=download > object_id=first > revision=a"}] * 2
+    report = AuditCompanyFailureObjects(
+        index.path, index.facts_path, events, sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False,
+    )
+    assert report["stable_read"] and report["object_count"] == 1 and report["states"] == {state: 1}
+    assert report["objects"][0]["events"] == 2
+    assert bool(report["receipts"]) is (state == "published")
+    assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("diagnostic", [
+    "stage=download;record=first;version=a", "object_id=first", "object_id=first > revision=a > revision=b",
+    "object_id=first > revision=a > object_id=second", "object_id=first > revision=a/b",
+])
+def test_failure_identity_rejects_retired_or_ambiguous_diagnostics(diagnostic):
+    from scripts.download.company.company_failure_audit import ParseCompanyFailureIdentity
+
+    assert ParseCompanyFailureIdentity(diagnostic) is None
+
+
+def test_failure_object_concurrent_change_cannot_be_reported_as_published(tmp_path, monkeypatch):
+    from scripts.download.company import company_failure_audit
+
+    index = _published(tmp_path)
+    read = company_failure_audit.ReadCompanyPublicationIdentity
+
+    def mutate(connection):
+        with SqliteSession(index.path) as writer, SqliteTransaction(writer):
+            writer.run("INSERT OR IGNORE INTO company_dirty_codes VALUES('600001')")
+        return read(connection)
+
+    monkeypatch.setattr(company_failure_audit, "ReadCompanyPublicationIdentity", mutate)
+    report = company_failure_audit.AuditCompanyFailureObjects(
+        index.path, index.facts_path, [{"supplier": "cninfo", "diagnostic": "object_id=first > revision=a"}],
+        sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False,
+    )
+    assert not report["stable_read"] and report["states"] == {"unconfirmed": 1}
+
+
+def test_shared_failure_object_requires_receipts_for_every_population_code(tmp_path):
+    from scripts.download.company.company_failure_audit import AuditCompanyFailureObjects
+
+    index = _published(tmp_path)
+    with SqliteSession(index.path) as raw, SqliteTransaction(raw):
+        raw.run("INSERT INTO company_population VALUES('600002')")
+        raw.run("INSERT INTO disclosure_codes SELECT '600002',id FROM disclosures WHERE source_key='first'")
+    report = AuditCompanyFailureObjects(
+        index.path, index.facts_path, [{"supplier": "cninfo", "diagnostic": "object_id=first > revision=a"}],
+        sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False,
+    )
+    assert report["states"] == {"pending_publication": 1} and len(report["receipts"]) == 1
+
+
+@pytest.mark.parametrize("column", ["content_hash", "extraction_hash"])
+def test_publication_change_between_audit_sections_invalidates_failure_recovery(tmp_path, monkeypatch, column):
+    from scripts.download.company import company_query_audit
+
+    index = _published(tmp_path)
+    index.record_failure(DownloadFailureRecord(
+        "fixture", fixtures.NOW, DownloadFailureContext("company_download", supplier="cninfo"), "timeout", "[]",
+        "object_id=first > revision=a",
+    ), configuration=DownloadFailureConfiguration(100, 50))
+    audit = company_query_audit.AuditCompanyFailureObjects
+
+    def change_after_snapshot(*args, **kwargs):
+        result = audit(*args, **kwargs)
+        with SqliteSession(index.facts_path) as writer, SqliteTransaction(writer):
+            writer.run(f"UPDATE company_publication SET {column}=?", (b"b" * 32,))
+        return result
+
+    monkeypatch.setattr(company_query_audit, "AuditCompanyFailureObjects", change_after_snapshot)
+    report = AuditCompanyDatabase(
+        index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=10, sqlite_policy=SqlitePolicyFixture(),
+    )
+    assert "company_failure_audit_concurrent_change" in report["findings"]
+    failures = report["summary"]["database"]["failure_objects"]
+    assert not failures["stable_read"] and failures["states"] == {"unconfirmed": 1}
 
 
 def test_audit_detects_concurrent_commit_instead_of_claiming_consistent_output(tmp_path, monkeypatch):

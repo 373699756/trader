@@ -311,6 +311,7 @@ def Main() -> int:
     implementation = hashlib.sha256()
     for relative in (
         "scripts/download/company/company_resume.py",
+        "scripts/download/company/company_failure_audit.py",
         "src/trader/download/application/company_evidence.py",
         "src/trader/download/infra/company_disclosure_source.py",
         "src/trader/download/infra/company_disclosure_queries.py",

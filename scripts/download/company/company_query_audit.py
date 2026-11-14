@@ -7,7 +7,7 @@ from scripts.core.paths import PROJECT_ROOT as TOOL_ROOT
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import json
-import re
+import hashlib
 import sqlite3
 import time
 from collections.abc import Callable, Mapping
@@ -18,6 +18,7 @@ from typing import Literal, cast
 from urllib.parse import parse_qs
 
 from scripts.download.company.company_publication_audit import AuditCompanyPublication
+from scripts.download.company.company_failure_audit import AuditCompanyFailureObjects, CompanyFailureAuditTimeout
 from scripts.download.company.company_risk_comparison import CompareCompanyRisks, ProjectCompanyRiskComparison
 from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
@@ -228,7 +229,7 @@ def AuditCompanyDatabase(
             facts_path=facts_path, sqlite_policy=sqlite_policy,
             risk_baseline=risk_baseline,
         )
-    except (sqlite3.OperationalError, _CompanyDatabaseAuditBudgetExceeded) as exc:
+    except (sqlite3.OperationalError, _CompanyDatabaseAuditBudgetExceeded, CompanyFailureAuditTimeout) as exc:
         # Python 3.10 has no sqlite_errorcode. The exact SQLite interruption
         # message alone is insufficient: our own deadline callback must cancel.
         if not deadline_cancelled or isinstance(exc, sqlite3.OperationalError) and str(exc) != "interrupted":
@@ -264,7 +265,11 @@ def _audit_company_database(
     failures: dict[str, int] = {}
     failure_classes: dict[str, int] = {}
     project_root = TOOL_ROOT
+    configuration_path = project_root / "config/download.json"
+    configuration_hash = hashlib.sha256(configuration_path.read_bytes()).hexdigest()
     configuration = LoadCompanySyncConfiguration(project_root)
+    if hashlib.sha256(configuration_path.read_bytes()).hexdigest() != configuration_hash:
+        raise ValueError("company_audit_configuration_changed")
     failure_configuration = LoadDownloadFailureConfiguration(project_root)
     raw = CompanyRawFiles(
         path.parent,
@@ -407,6 +412,7 @@ def _audit_company_database(
             ]
     formal: dict[str, object] = {"available": False}
     failure_receipts: list[dict[str, object]] = []
+    failure_objects: dict[str, object] = {"available": False}
     if facts_path is not None and facts_path.exists():
         with SqliteSession(
             facts_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5),
@@ -423,26 +429,29 @@ def _audit_company_database(
                     )
                 ],
             }
-            events = cast(list[dict[str, object]], failure_history["events"])
-            source_keys = sorted({
-                match[1] for event in events
-                if (match := re.search(r";record=([a-zA-Z0-9_-]+);version=", str(event["diagnostic"])))
-            })
-            for source_key in source_keys:
-                for receipt in connection.run(
-                    "SELECT source,source_key,code,record_hash,outcome,policy_id,published_at "
-                    "FROM company_input_receipt WHERE source='cninfo' AND source_key=?", (source_key,)
-                ):
-                    failure_receipts.append(dict(zip(
-                        ("source", "source_key", "code", "record_hash", "outcome", "policy", "published_at"),
-                        tuple(receipt), strict=True,
-                    )))
+        failure_objects = AuditCompanyFailureObjects(
+            path, facts_path, cast(list[dict[str, object]], failure_history["events"]),
+            sqlite_policy=sqlite_policy, cancel_requested=cancel_requested,
+        )
+        failure_receipts = cast(list[dict[str, object]], failure_objects.pop("receipts"))
+        failure_objects["configuration_hash"] = configuration_hash
     publication = AuditCompanyPublication(
         path, facts_path, now=now, deadline=deadline, sqlite_policy=sqlite_policy, cancel_requested=cancel_requested,
     )
     publication_findings = publication["findings"]
     if not isinstance(publication_findings, list):
         raise ValueError("company_publication_findings_invalid")
+    if failure_objects.get("available") and (
+        failure_objects.get("stable_read") is False
+        or failure_objects.get("publication_hash") != publication.get("publication_hash")
+        or failure_objects.get("extraction_hash") != publication.get("extraction_hash")
+    ):
+        failure_objects["stable_read"] = False
+        observed_objects = cast(list[dict[str, object]], failure_objects["objects"])
+        for failure_object in observed_objects:
+            failure_object["state"] = "unconfirmed"
+        failure_objects["states"] = {"unconfirmed": len(observed_objects)} if observed_objects else {}
+        publication_findings.append("company_failure_audit_concurrent_change")
     risk_comparison: dict[str, object] | None = None
     risk_findings: list[str] = []
     if risk_baseline is not None:
@@ -490,6 +499,7 @@ def _audit_company_database(
                 "retry_payload_hashes": retry_payload_hashes,
                 "failure_history": failure_history,
                 "failure_receipts": failure_receipts,
+                "failure_objects": failure_objects,
                 "retry_inventory": retry_inventory,
                 "file_inventory_is_atomic": False,
                 "ocr_diagnostics": ocr_diagnostics,

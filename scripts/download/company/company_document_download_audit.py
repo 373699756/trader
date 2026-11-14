@@ -8,12 +8,12 @@ import hashlib
 import subprocess
 import tempfile
 import time
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from trader.bootstrap import OpenExternalHttp
 from scripts.download.company.output_paths import RequireIsolatedReplay
+from scripts.download.company.company_failure_audit import ParseCompanyFailureIdentity
 from trader.download.application.company_failures import CompanyFailureCode
 from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentFailure, Disclosure
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
@@ -178,18 +178,17 @@ def _capacity_samples(connection: SqliteConnection) -> tuple[Disclosure, ...]:
     for row in connection.run(
         "SELECT diagnostic FROM download_failure WHERE reason='company_raw_capacity_exhausted' ORDER BY id DESC LIMIT 50"
     ):
-        key = re.search(r"(?:^| > )object_id=([0-9]{1,24})(?: >|$)", row[0])
-        revision = re.search(r"(?:^| > )revision=([a-f0-9]{64})(?: >|$)", row[0])
-        if key is None or revision is None or key[1] in selected:
+        identity = ParseCompanyFailureIdentity(row[0])
+        if identity is None or identity.source_key in selected:
             continue
         document = connection.run(
             "SELECT d.*,MIN(c.code) AS code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
             "JOIN company_population p ON p.code=c.code WHERE d.source='cninfo' AND d.source_key=? "
             "AND d.record_hash=? AND d.body_checked=0 GROUP BY d.id",
-            (key[1], revision[1]),
+            (identity.source_key, identity.record_hash),
         ).fetchone()
         if document is not None:
-            selected[key[1]] = DecodeCompanyDisclosure(document)
+            selected[identity.source_key] = DecodeCompanyDisclosure(document)
     return tuple(selected.values())
 
 
