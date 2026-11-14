@@ -82,7 +82,7 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
     )
     parser.add_argument("--runtime-config", type=Path, required=True)
     parser.add_argument("--measurement-output", type=Path, required=True, help="new external absolute measurement JSON file")
-    parser.add_argument("--fill", action="store_true", help="explicitly pass --fill to the existing company sync")
+    parser.add_argument("operation", nargs="?", choices=("fill",), help="explicitly select company gap filling")
     args = parser.parse_args(arguments)
     try:
         destination = ExternalPath(args.measurement_output, "--measurement-output")
@@ -96,7 +96,7 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
     code = 1
     try:
         with redirect_stdout(sys.stderr):
-            code = MeasureCompanySync(configuration, destination, fill_missing=args.fill)
+            code = MeasureCompanySync(configuration, destination, fill_missing=args.operation == "fill")
     except KeyboardInterrupt:
         code = 130
     except SystemExit as exc:

@@ -196,12 +196,12 @@ def test_run_script_help_lists_two_commands_per_download_or_training_kind(tmp_pa
     assert "./run.sh v1,v2,v3                同时启动所列档位，Web按钮互斥切换" in completed.stdout
     commands = completed.stdout.split("下载与训练:\n", 1)[1].split("\n\n", 1)[0]
     assert [line.strip().split("  ", 1)[0] for line in commands.splitlines()] == [
-        "./run.sh sync history", "./run.sh sync history --fill",
-        "./run.sh sync market", "./run.sh sync market --fill",
-        "./run.sh sync company", "./run.sh sync company --fill",
+        "./run.sh sync history", "./run.sh sync history fill",
+        "./run.sh sync market", "./run.sh sync market fill",
+        "./run.sh sync company", "./run.sh sync company fill",
         "./run.sh train", "./run.sh train v1,v5",
     ]
-    for removed in ("高级配置", "scripts/tools.py", "--repair-codes", "--json", "--diagnostics"):
+    for removed in ("高级配置", "scripts/tools.py", "--repair-codes", "--json", "--diagnostics", "--fill"):
         assert removed not in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
@@ -243,8 +243,11 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
         ("sync",),
         ("sync", "all"),
         ("sync", "history", "--json"),
-        ("sync", "market", "--fill", "extra"),
-        ("sync", "company", "--fill", "--fill"),
+        ("sync", "market", "fill", "extra"),
+        ("sync", "company", "fill", "fill"),
+        ("sync", "history", "--fill"),
+        ("sync", "market", "--fill"),
+        ("sync", "company", "--fill"),
         ("--profile", "v2", "train"),
     ),
 )
@@ -423,7 +426,7 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
 
 
 @pytest.mark.parametrize("target", ("history", "market", "company"))
-@pytest.mark.parametrize("fill_args", ((), ("--fill",)))
+@pytest.mark.parametrize("fill_args", ((), ("fill",)))
 def test_run_script_forwards_retained_sync_commands(tmp_path: Path, target: str, fill_args: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -439,7 +442,7 @@ def test_run_script_forwards_retained_sync_commands(tmp_path: Path, target: str,
     )
 
     assert completed.returncode == 0, completed.stderr
-    suffix = " --fill" if fill_args else ""
+    suffix = " fill" if fill_args else ""
     assert completed.stdout == f"cli:--config {config} sync {target}{suffix}\n"
     assert not config.exists()
 

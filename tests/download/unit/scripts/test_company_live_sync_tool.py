@@ -55,6 +55,17 @@ def test_help_does_not_import_the_measured_sync_or_product_configuration() -> No
     assert "WRITES CURRENT COMPANY DATA" in completed.stdout
 
 
+def test_retired_fill_option_is_rejected_before_measurement(tmp_path, monkeypatch) -> None:
+    from scripts.download.company import company_pipeline_audit
+
+    arguments, output = _arguments(tmp_path)
+    monkeypatch.setattr(company_pipeline_audit, "MeasureCompanySync", lambda *args, **kwargs: pytest.fail("measurement started"))
+    with pytest.raises(SystemExit) as caught:
+        live_sync.Run("company-live-sync", arguments + ["--fill"])
+    assert caught.value.code == 2
+    assert not output.exists()
+
+
 def test_success_uses_the_existing_measurement_and_redirects_product_stdout(tmp_path, monkeypatch, capsys) -> None:
     from scripts.download.company import company_pipeline_audit
 
@@ -68,7 +79,7 @@ def test_success_uses_the_existing_measurement_and_redirects_product_stdout(tmp_
         return 0
 
     monkeypatch.setattr(company_pipeline_audit, "MeasureCompanySync", measured)
-    outcome = live_sync.Run("company-live-sync", arguments + ["--fill"])
+    outcome = live_sync.Run("company-live-sync", arguments + ["fill"])
     assert outcome.exit_code == 0 and outcome.payload["status"] == "passed"
     assert outcome.payload["measurement_status"] == "passed"
     assert outcome.payload["field_correctness_verified"] is False

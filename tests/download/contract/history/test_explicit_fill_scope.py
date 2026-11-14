@@ -19,19 +19,19 @@ def test_cli_accepts_explicit_repair_selection_without_running_suppliers(monkeyp
     received = []
     monkeypatch.setattr(cli, "_run_sync", lambda args, progress: received.append(args) or 0)
 
-    assert cli.Main(["sync", target, "--fill", "--repair-codes", "300118", "002129"]) == 0
+    assert cli.Main(["sync", target, "fill", "--repair-codes", "300118", "002129"]) == 0
     assert received[0].target == target
-    assert received[0].fill
+    assert received[0].operation == "fill"
     assert received[0].repair_codes == ["300118", "002129"]
 
 
 @pytest.mark.parametrize("arguments", (
     ("history", "--repair-codes", "300118"),
-    ("company", "--fill", "--repair-codes", "300118"),
-    ("history", "--fill", "--repair-codes", "300118", "300118"),
-    ("history", "--fill", "--repair-codes", "３００１１８"),
-    ("history", "--fill", "--repair-codes", "bad"),
-    ("market", "--fill", "--repair-codes", "000001", "000002", "000003", "000004", "000005", "000006"),
+    ("company", "fill", "--repair-codes", "300118"),
+    ("history", "fill", "--repair-codes", "300118", "300118"),
+    ("history", "fill", "--repair-codes", "３００１１８"),
+    ("history", "fill", "--repair-codes", "bad"),
+    ("market", "fill", "--repair-codes", "000001", "000002", "000003", "000004", "000005", "000006"),
 ))
 def test_invalid_repair_scope_is_rejected_before_composition(monkeypatch, arguments):
     def forbidden(*args, **kwargs):
@@ -56,11 +56,11 @@ def test_domain_repair_selection_keeps_unscoped_sync_and_rejects_mutable_scope()
 def test_shell_launcher_rejects_removed_repair_scope_before_environment_setup(tmp_path, target):
     missing_venv = tmp_path / "missing-venv"
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "sync", target, "--fill", "--repair-codes", "300118"),
+        ("bash", str(ROOT / "run.sh"), "sync", target, "fill", "--repair-codes", "300118"),
         env={**os.environ, "VENV_DIR": str(missing_venv)},
         capture_output=True, text=True, timeout=10, check=False,
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "用法：./run.sh sync history|market|company [--fill]\n"
+    assert completed.stderr == "用法：./run.sh sync history|market|company [fill]\n"
     assert not missing_venv.exists()

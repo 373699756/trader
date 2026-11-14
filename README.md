@@ -39,11 +39,11 @@ Windows CMD执行run.bat。脚本按需创建.venv并安装项目，默认同进
 | --- | --- |
 | 查看帮助 | ./run.sh help |
 | 只维护完整历史，不自动训练 | ./run.sh sync history |
-| 补齐历史缺口 | ./run.sh sync history --fill |
+| 补齐历史缺口 | ./run.sh sync history fill |
 | 只更新在线日线 | ./run.sh sync market |
-| 补齐行情缺口 | ./run.sh sync market --fill |
+| 补齐行情缺口 | ./run.sh sync market fill |
 | 只更新公司资料 | ./run.sh sync company |
-| 补齐公司资料缺口 | ./run.sh sync company --fill |
+| 补齐公司资料缺口 | ./run.sh sync company fill |
 | 使用本地已发布历史训练全部档位 | ./run.sh train |
 | 只训练指定档位 | ./run.sh train v1,v5 |
 | 只启动V3 | ./run.sh v3 |

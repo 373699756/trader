@@ -155,7 +155,7 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
 
     monkeypatch.setattr(cli, "Main", main)
     assert company_pipeline_audit.MeasureCompanySync(configuration, report, fill_missing=True) == 0
-    assert arguments == [["--config", str(configuration), "sync", "company", "--fill"]]
+    assert arguments == [["--config", str(configuration), "sync", "company", "fill"]]
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["writes_current_company_data"] and not payload["isolated_sample"]
     assert payload["cli_exit_code"] == 0 and not payload["field_correctness_verified"]

@@ -27,21 +27,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 @pytest.mark.parametrize("target", ("history", "market", "company"))
 def test_fill_is_forwarded_by_shell_and_parser(tmp_path, target):
-    parsed = BuildParser().parse_args(["sync", target, "--fill"])
-    assert parsed.target == target and parsed.fill is True
-    assert BuildParser().parse_args(["sync", target]).fill is False
+    parsed = BuildParser().parse_args(["sync", target, "fill"])
+    assert parsed.target == target and parsed.operation == "fill"
+    assert BuildParser().parse_args(["sync", target]).operation is None
     binary = tmp_path / "bin"
     binary.mkdir()
     for name in ("python3", "trader-cli"):
         path = binary / name
         path.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8")
         path.chmod(0o755)
-    command = subprocess.run(["bash", str(PROJECT_ROOT / "run.sh"), "sync", target, "--fill"], env={**os.environ, "VENV_DIR": str(tmp_path)}, capture_output=True, text=True, timeout=10, check=False)
+    command = subprocess.run(["bash", str(PROJECT_ROOT / "run.sh"), "sync", target, "fill"], env={**os.environ, "VENV_DIR": str(tmp_path)}, capture_output=True, text=True, timeout=10, check=False)
     assert command.returncode == 0, command.stderr
-    assert command.stdout.splitlines()[-3:] == ["sync", target, "--fill"]
+    assert command.stdout.splitlines()[-3:] == ["sync", target, "fill"]
 
 
-@pytest.mark.parametrize("arguments", (["sync", "all", "--fill"], ["sync", "--fill"], ["sync", "company", "--fill", "baostock"]))
+@pytest.mark.parametrize("arguments", (
+    ["sync", "all", "fill"], ["sync", "fill"], ["sync", "company", "fill", "baostock"],
+    ["sync", "history", "--fill"], ["sync", "market", "--fill"], ["sync", "company", "--fill"],
+))
 def test_fill_rejects_incompatible_commands_before_configuration(arguments, monkeypatch):
     monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda *_: pytest.fail("configuration was touched"))
     with pytest.raises(SystemExit) as error:

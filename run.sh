@@ -18,11 +18,11 @@ usage() {
     "" \
     "下载与训练:" \
     "  ./run.sh sync history            更新历史，自动续传" \
-    "  ./run.sh sync history --fill     补齐历史缺口" \
+    "  ./run.sh sync history fill       补齐历史缺口" \
     "  ./run.sh sync market             更新行情窗口" \
-    "  ./run.sh sync market --fill      补齐行情缺口" \
+    "  ./run.sh sync market fill        补齐行情缺口" \
     "  ./run.sh sync company            更新公司资料" \
-    "  ./run.sh sync company --fill     补齐公司资料缺口" \
+    "  ./run.sh sync company fill       补齐公司资料缺口" \
     "  ./run.sh train                   使用本地历史训练全部档位" \
     "  ./run.sh train v1,v5             使用本地历史训练指定档位" \
     "" \
@@ -53,8 +53,8 @@ esac
 if [[ "$MODE" == "sync" ]]; then
   if (($# < 1 || $# > 2)) \
     || [[ "$1" != "history" && "$1" != "market" && "$1" != "company" ]] \
-    || { (($# == 2)) && [[ "$2" != "--fill" ]]; }; then
-    printf '%s\n' '用法：./run.sh sync history|market|company [--fill]' >&2
+    || { (($# == 2)) && [[ "$2" != "fill" ]]; }; then
+    printf '%s\n' '用法：./run.sh sync history|market|company [fill]' >&2
     exit 2
   fi
 else

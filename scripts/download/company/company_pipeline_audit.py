@@ -424,7 +424,7 @@ def MeasureCompanySync(runtime_config: Path, report_path: Path, *, fill_missing:
             stack.enter_context(database)
             arguments = ["--config", str(configuration), "sync", "company"]
             if fill_missing:
-                arguments.append("--fill")
+                arguments.append("fill")
             exit_code = cli.Main(arguments)
         return exit_code
     except BaseException as exc:
