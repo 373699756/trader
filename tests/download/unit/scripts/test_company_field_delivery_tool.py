@@ -1,6 +1,7 @@
 """Field delivery diagnostics keep explicit isolation and bounded public output."""
 
 import json
+from datetime import datetime
 
 import pytest
 
@@ -32,6 +33,32 @@ def test_field_replay_public_mode_preserves_explicit_keys_and_requires_isolation
     command, = BuildCommands(options)
     offset = command.argv.index("--field-replay-keys")
     assert command.argv[offset + 1:offset + 3] == ("first", "second")
+
+
+def test_frozen_field_replay_requires_its_mode_and_preserves_business_time(tmp_path):
+    parser = BuildParser("company-resume")
+    instant = "2026-11-13T12:56:36.590084+00:00"
+    with pytest.raises(ValueError, match="requires --company-field-replay-keys"):
+        ParseOptions(parser.parse_args(["--company-database-audit", "--company-replay-observed-at", instant]))
+    options = ParseOptions(parser.parse_args([
+        "--company-field-replay-keys", "first", "--company-replay-directory", str(tmp_path / "replay"),
+        "--company-replay-observed-at", instant,
+    ]))
+    assert options.company_replay_observed_at == datetime.fromisoformat(instant)
+    command, = BuildCommands(options)
+    position = command.argv.index("--replay-observed-at")
+    assert command.argv[position + 1] == "2026-11-13T20:56:36.590084+08:00"
+    current = ParseOptions(parser.parse_args([
+        "--company-field-replay-keys", "first", "--company-replay-directory", str(tmp_path / "current"),
+    ]))
+    assert current.company_replay_observed_at is None
+    assert "--replay-observed-at" not in BuildCommands(current)[0].argv
+
+
+@pytest.mark.parametrize("instant", ("2026-11-13", "2026-11-13T20:56:36", "invalid", "2999-01-01T00:00:00+08:00"))
+def test_frozen_field_replay_rejects_naive_invalid_or_future_observation(instant):
+    with pytest.raises(SystemExit):
+        BuildParser("company-resume").parse_args(["--company-replay-observed-at", instant])
 
 
 def test_recovered_text_requires_one_explicit_replay_key_and_preserves_file_argument(tmp_path):
@@ -80,6 +107,7 @@ def test_field_replay_projection_bounds_fields_and_keeps_physical_source_change_
              "state": "verified", "applicable": True, "evidence": [{"quote": "PRIVATE_RAW"}] * 20}
     payload = {
         "schema_version": "company-field-replay", "status": "degraded", "read_only_source": True,
+        "observed_at": "2026-11-13T20:56:36.590084+08:00",
         "isolated_copy": True, "production_authorized": False, "field_correctness_verified": False,
         "full_market_verified": False, "performance_verified": False, "network_requests": 0, "source_data_writes": 0,
         "source_empty_wal_created": True, "collection_source_files_unchanged": False,
@@ -90,6 +118,7 @@ def test_field_replay_projection_bounds_fields_and_keeps_physical_source_change_
     }
     report = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
     summary = report["checks"][0]["summary"]
+    assert summary["observed_at"] == payload["observed_at"]
     assert len(summary["field_items"]) == 100 and len(summary["field_items"][0]["evidence"]) == 4
     assert len(summary["codes"]) == len(summary["source_keys"]) == 6
     assert summary["field_states"] == {"verified": 2}

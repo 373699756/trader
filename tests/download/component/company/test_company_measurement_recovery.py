@@ -10,7 +10,7 @@ from tests.helpers.download.company.company_field_recovery import NOW, _facts, _
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
-from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, QueueCompanyShareActionRechecks
+from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, QueueCompanyShareActionRechecks, QueueCompanyReductionRechecks
 from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
@@ -314,3 +314,115 @@ def test_interrupted_valued_share_link_waits_for_formal_attempt_before_retiring(
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
     restarted.prepare_publication(item.codes, NOW)
+
+
+def _checked_share_notice(tmp_path, kind):
+    index = fixtures._index(tmp_path)
+    if kind == "reduction":
+        title = "控股股东减持计划公告"
+        body = "本公司控股股东拟减持股份，减持期间为2026年10月19日至2026年11月19日。"
+    else:
+        title = "关于以集中竞价交易方式回购公司股份方案的公告暨回购报告书"
+        body = "本次回购方案尚需提交审议，控股股东暂无增持计划。回购用途及实施主体以最终公告为准。"
+    item = fixtures._disclosure("checked-notice", title)
+    _put(index, item, body + _DETAIL)
+    index.publish(item.codes, NOW)
+    if kind == "subject":
+        assert not _facts(index).positive_events
+        assert any(review.scope == "positive" and review.reason_code == "subject_unverified"
+                   for review in _facts(index).review_reasons)
+    else:
+        assert _facts(index).risk_events[0].reduction_plan.planned_ratio_pct is None
+    return index, item
+
+
+@pytest.mark.parametrize("kind", ("reduction", "subject"))
+def test_unchanged_reduction_or_unknown_subject_preserves_facts_and_does_not_reread(tmp_path, monkeypatch, kind):
+    index, item = _checked_share_notice(tmp_path, kind)
+    before, valid = _facts(index), _valid_receipts(index)
+    index.prepare_publication(item.codes, NOW)
+    assert _facts(index) == before
+    assert _valid_receipts(index) == valid
+    with SqliteSession(index.path) as collected:
+        states = {tuple(row) for row in collected.run(
+            "SELECT field,state FROM company_field_repairs WHERE rule_id LIKE 'same_body_reduction:%' "
+            "OR rule_id LIKE 'same_body_repurchase_subject:%'",
+        )}
+    expected = {("start_date", "complete"), ("end_date", "complete"), ("planned_pct", "attempted")} if kind == "reduction" else {
+        ("repurchase_purpose", "attempted"),
+    }
+    assert states == expected
+    with SqliteSession(index.facts_path) as formal:
+        receipts = tuple(tuple(row) for row in formal.run(
+            "SELECT * FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY policy_id",
+        ))
+        assert any(":same_body_reduction:" in row[-1] if kind == "reduction"
+                   else ":same_body_repurchase_subject:" in row[-1] for row in receipts)
+        publication = ReadCompanyPublicationIdentity(formal)
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("a committed unchanged check must not read its material again")
+
+    restarted = fixtures._index(tmp_path)
+    monkeypatch.setattr(restarted._documents, "read", unexpected_read)
+    restarted.prepare_publication(item.codes, NOW)
+    assert _facts(restarted) == before
+    with SqliteSession(index.facts_path) as formal:
+        assert ReadCompanyPublicationIdentity(formal) == publication
+        assert tuple(tuple(row) for row in formal.run(
+            "SELECT * FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY policy_id",
+        )) == receipts
+
+
+@pytest.mark.parametrize("kind", ("reduction", "subject"))
+@pytest.mark.parametrize("committed", (False, True))
+def test_unchanged_share_notice_requires_formal_commit_across_restart(tmp_path, monkeypatch, kind, committed):
+    index, item = _checked_share_notice(tmp_path, kind)
+    before, valid = _facts(index), _valid_receipts(index)
+    publish = index._facts.publish
+
+    def interrupted(*args, **kwargs):
+        if committed:
+            publish(*args, **kwargs)
+        raise RuntimeError("fixture_interrupted")
+
+    monkeypatch.setattr(index._facts, "publish", interrupted)
+    with pytest.raises(RuntimeError, match="fixture_interrupted"):
+        index.prepare_publication(item.codes, NOW)
+    restarted = fixtures._index(tmp_path)
+    reads = []
+    read = restarted._documents.read
+
+    def observed(digest, *, check=None):
+        reads.append(digest)
+        return read(digest, check=check)
+
+    monkeypatch.setattr(restarted._documents, "read", observed)
+    restarted.prepare_publication(item.codes, NOW)
+    assert bool(reads) is not committed
+    assert _facts(restarted) == before and _valid_receipts(restarted) == valid
+
+
+@pytest.mark.parametrize("kind", ("reduction", "subject"))
+@pytest.mark.parametrize("failure", ("missing", "hash", "cancelled"))
+def test_failed_share_notice_recheck_does_not_record_an_attempt(tmp_path, kind, failure):
+    index, item = _checked_share_notice(tmp_path, kind)
+
+    def failed_read(digest):
+        if failure == "missing":
+            raise FileNotFoundError("fixture_missing")
+        if failure == "cancelled":
+            raise InterruptedError("fixture_cancelled")
+        return "mismatched material"
+
+    queue = QueueCompanyReductionRechecks if kind == "reduction" else QueueCompanyShareActionRechecks
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected), SqliteSession(index.facts_path) as formal:
+        if failure == "cancelled":
+            with pytest.raises(InterruptedError, match="fixture_cancelled"):
+                queue(collected, formal, item.codes, NOW, index._facts.extraction_hash, fixtures.CompanyEventPolicy(), failed_read)
+        else:
+            queue(collected, formal, item.codes, NOW, index._facts.extraction_hash, fixtures.CompanyEventPolicy(), failed_read)
+        assert collected.run(
+            "SELECT 1 FROM company_field_repairs WHERE rule_id LIKE 'same_body_reduction:%' "
+            "OR rule_id LIKE 'same_body_repurchase_subject:%'",
+        ).fetchone() is None

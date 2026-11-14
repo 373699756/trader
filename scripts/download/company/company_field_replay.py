@@ -340,6 +340,7 @@ def AuditCompanyFieldReplay(
     collection_path, facts_path, directory = _prepare_paths(collection_path, facts_path, directory, protected_roots)
     report: dict[str, object] = {
         "schema_version": "company-field-replay", "status": "failed", "read_only_source": True,
+        "observed_at": observed_at.isoformat(),
         "isolated_copy": True, "network_requests": 0, "source_data_writes": 0,
         "field_correctness_verified": False, "production_authorized": False,
         "full_market_verified": False, "performance_verified": False, "source_keys": source_keys,

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from scripts.download.company import company_field_replay as replay
+from scripts.download.company import company_resume
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceIndexFixture
 from tests.helpers.download.company_resources import SQLiteCompanyFactsIndexFixture
@@ -104,6 +105,41 @@ def _run(raw, facts, directory, policy, *, keys=(_KEY,), protected_roots=(), rec
 
 def _no_network(*_args, **_kwargs):
     raise AssertionError("local replay must not create a network connection")
+
+
+def test_worker_replays_at_explicit_snapshot_time_without_rewriting_source_coverage(tmp_path, monkeypatch, capsys):
+    raw, facts, policy = _sources(tmp_path)
+    monkeypatch.setattr(socket, "create_connection", _no_network)
+    monkeypatch.setattr("sys.argv", [
+        "company_resume", "--database", str(raw), "--facts-database", str(facts),
+        "--field-replay-keys", _KEY, "--directory", str(tmp_path / "historical"),
+        "--budget-seconds", "30", "--replay-observed-at", _AT.isoformat(),
+    ])
+    with SqliteSession(raw, SqliteConnectionOptions(read_only=True), sqlite_policy=_IO) as existing_reader:
+        existing_reader.run("SELECT COUNT(*) FROM disclosures").require_one()
+        assert company_resume.Main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "passed", report
+    assert report["observed_at"] == _AT.isoformat()
+    assert report["source_input_unchanged"] and report["second_zero_publication_text_reads"]
+    assert report["full_market_verified"] is False and report["production_authorized"] is False
+    incompatible = replay.AuditCompanyFieldReplay(
+        raw, facts, (_KEY,), tmp_path / "wrong-day", observed_at=_AT + timedelta(days=1),
+        budget_seconds=30, sqlite_policy=_IO, event_policy=policy, protected_roots=(),
+    )
+    assert incompatible["status"] == "failed"
+    assert incompatible["failure_code"] == "company_field_replay_listing_context_missing"
+
+
+def test_worker_rejects_observation_outside_field_replay_before_opening_database(tmp_path, monkeypatch):
+    raw = tmp_path / "absent.sqlite3"
+    monkeypatch.setattr("sys.argv", [
+        "company_resume", "--database", str(raw), "--database-only", "--budget-seconds", "30",
+        "--replay-observed-at", _AT.isoformat(),
+    ])
+    with pytest.raises(SystemExit):
+        company_resume.Main()
+    assert not raw.exists()
 
 
 def test_real_publication_proves_local_fields_and_second_restart_reuses_them(tmp_path, monkeypatch):

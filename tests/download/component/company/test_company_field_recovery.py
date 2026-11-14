@@ -113,16 +113,26 @@ def test_first_missing_measurement_is_checkpointed_and_retained_without_second_d
         ))
     assert len(receipts) == 3  # One missing-field attempt and two explicit date proofs.
     assert tuple((tmp_path / "text").rglob("*.gz"))
+    checked_receipts = None
     for turn in range(1, 4):
         restarted = fixtures._index(tmp_path)
         at = NOW + timedelta(minutes=turn)
         restarted.prepare_publication(item.codes, at)
         assert restarted.pending_documents(item.codes, at, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
-        assert [tuple(row) for row in _state(restarted)] == [("planned_pct", "attempted")]
+        assert [tuple(row) for row in _state(restarted)] == [
+            ("end_date", "complete"), ("planned_pct", "attempted"),
+            ("planned_pct", "attempted"), ("start_date", "complete"),
+        ]
         with SqliteSession(index.facts_path) as formal:
-            assert tuple(tuple(row) for row in formal.run(
+            current = tuple(tuple(row) for row in formal.run(
                 "SELECT * FROM company_input_receipt WHERE outcome='field_attempted'"
-            )) == receipts
+            ))
+        assert set(receipts).issubset(current)
+        assert all(":same_body_reduction:" in row[-1] for row in current if row not in receipts)
+        if checked_receipts is None:
+            checked_receipts = current
+        else:
+            assert current == checked_receipts
         assert tuple((tmp_path / "text").rglob("*.gz"))
 
 
@@ -197,7 +207,10 @@ def test_first_field_receipt_recovers_task_lost_in_collection_rollback(tmp_path)
         collected.run("DROP TRIGGER fail_first_collection_commit")
     restarted = fixtures._index(tmp_path)
     restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
-    assert [tuple(row) for row in _state(restarted)] == [("planned_pct", "attempted")]
+    assert [tuple(row) for row in _state(restarted)] == [
+        ("end_date", "complete"), ("planned_pct", "attempted"),
+        ("planned_pct", "attempted"), ("start_date", "complete"),
+    ]
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     assert tuple((tmp_path / "text").rglob("*.gz"))
 
@@ -286,8 +299,10 @@ def test_existing_reduction_date_rules_recover_old_generic_tasks_from_local_text
         rows = tuple(tuple(row) for row in collected.run(
             "SELECT field,rule_id,state FROM company_field_repairs WHERE field IN ('start_date','end_date')"
         ))
-        assert len(rows) == 4 and all(row[2] == "complete" for row in rows)
-        assert {(row[0], row[1]) for row in rows if row[1] != "required_field_evidence:1"} == {
+        assert len(rows) == 6 and all(row[2] == "complete" for row in rows)
+        assert {row[0] for row in rows if row[1].startswith("same_body_reduction:")} == {"start_date", "end_date"}
+        assert {(row[0], row[1]) for row in rows if row[1] != "required_field_evidence:1"
+                and not row[1].startswith("same_body_reduction:")} == {
             ("start_date", "explicit_reduction_start_date:2"), ("end_date", "explicit_reduction_end_date:2"),
         }
         assert tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == valid
@@ -511,7 +526,10 @@ def test_formal_field_receipt_recovers_collection_rollback_without_another_docum
 
     restarted = fixtures._index(tmp_path)
     restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
-    assert [tuple(row) for row in _state(restarted)] == [("planned_pct", "complete")]
+    assert [tuple(row) for row in _state(restarted)] == [
+        ("end_date", "complete"), ("planned_pct", "complete"),
+        ("planned_pct", "complete"), ("start_date", "complete"),
+    ]
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     assert not tuple((tmp_path / "text").rglob("*.gz"))  # The same formal commit also published all source proofs.
     with SqliteSession(index.facts_path) as formal:

@@ -57,6 +57,11 @@ _REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence:1"
 _REPURCHASE_RECHECK_RULE = "same_body_repurchase_fields:1"
 _INCREASE_RECHECK_RULE = "same_body_increase_fields:1"
 _SHARE_LINK_RECHECK_RULE_PREFIX = "same_body_share_link:"
+_REDUCTION_RECHECK_RULE_PREFIX = "same_body_reduction:"
+_REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX = "same_body_repurchase_subject:"
+_SAME_BODY_RECHECK_PREFIXES = (
+    _SHARE_LINK_RECHECK_RULE_PREFIX, _REDUCTION_RECHECK_RULE_PREFIX, _REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX,
+)
 _REPURCHASE_PLAN_RULE = "issuer_repurchase_plan:1"
 _FIELD_SOURCE_PROOF_REQUIRED = "field_source_proof_required"
 _MATERIAL_REVIEW_REASONS = frozenset({
@@ -615,6 +620,22 @@ def QueueCompanyShareActionRechecks(
                     collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], fact.code))
 
 
+def _has_recheck_attempt(
+    formal: SqliteConnection,
+    source: str,
+    evidence_id: str,
+    code: str,
+    record_hash: str,
+    body_hash: bytes,
+    policy: str,
+) -> bool:
+    return formal.run(
+        "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
+        "AND record_hash=? AND body_hash=? AND extraction_hash=? AND policy_id=? AND outcome='field_attempted'",
+        (source, evidence_id, code, record_hash, body_hash, hashlib.sha256(policy.encode()).digest(), policy),
+    ).fetchone() is not None
+
+
 def QueueCompanyReductionRechecks(
     collected: SqliteConnection,
     formal: SqliteConnection,
@@ -661,6 +682,17 @@ def QueueCompanyReductionRechecks(
                         formal, row[1], evidence_id, fact.code, row[2], body_hash, extraction_hash,
                     )):
                     continue
+                rule = _REDUCTION_RECHECK_RULE_PREFIX + extraction_hash.hex()
+                if _has_recheck_attempt(
+                    formal,
+                    row[1],
+                    evidence_id,
+                    fact.code,
+                    row[2],
+                    body_hash,
+                    _repair_policy(event.event_id, "planned_pct", rule),
+                ):
+                    continue
                 try:
                     text = read_document(body_hash)
                 except InterruptedError:
@@ -686,6 +718,10 @@ def QueueCompanyReductionRechecks(
                     and any(review.evidence_id == evidence_id and review.reason_code == "resolution_unlinked"
                             for review in parsed.reviews)
                 )
+                for field in ("start_date", "end_date", "planned_pct"):
+                    collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
+                                  (row[0], fact.code, row[2], event.event_id, field, rule))
+                collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (fact.code,))
                 if not changed_measurements and not mistaken_closure:
                     continue
                 collected.run(
@@ -744,6 +780,18 @@ def _queue_unverified_repurchase_inputs(
             if (not isinstance(body_hash, bytes) or len(body_hash) != 32 or published > observed_at
                 or not _has_valid_material_receipt(formal, row[1], evidence_id, code, row[2], body_hash, extraction_hash)):
                 continue
+            rule = _REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX + extraction_hash.hex()
+            event_id = f"{evidence_id}:{CompanyPositiveType.SHARE_REPURCHASE.value}"
+            if _has_recheck_attempt(
+                formal,
+                row[1],
+                evidence_id,
+                code,
+                row[2],
+                body_hash,
+                _repair_policy(event_id, "repurchase_purpose", rule),
+            ):
+                continue
             try:
                 text = read_document(body_hash)
             except InterruptedError:
@@ -751,6 +799,9 @@ def _queue_unverified_repurchase_inputs(
             except (OSError, ValueError, EOFError):
                 continue
             if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
+                continue
+            issuer_codes = ExtractCompanyAnnouncementNumbers(text).issuer_codes
+            if issuer_codes and code not in issuer_codes:
                 continue
             document = CompanyDocument(
                 Disclosure(row[1], evidence_id, (code,), row[4], published, row[6], row[2]), text, True,
@@ -764,17 +815,20 @@ def _queue_unverified_repurchase_inputs(
                     )
                     collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], code))
                     collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (code,))
-                continue
-            candidate = ExtractCompanyLinkCandidate(document, observed_at, event_policy)
-            if (candidate is None or candidate.positive is None or candidate.cancellation
-                or candidate.subject is not CompanySubject.ISSUER
-                or candidate.positive.event_type is not CompanyPositiveType.SHARE_REPURCHASE):
-                continue
-            collected.run("INSERT OR REPLACE INTO document_link_candidates VALUES(?,?,?,?,?)",
-                          (row[1], evidence_id, row[2], extraction_hash, EncodeCompanyLink(candidate)))
+            else:
+                candidate = ExtractCompanyLinkCandidate(document, observed_at, event_policy)
+                if (candidate is not None and candidate.positive is not None and not candidate.cancellation
+                    and candidate.subject is CompanySubject.ISSUER
+                    and candidate.positive.event_type is CompanyPositiveType.SHARE_REPURCHASE):
+                    collected.run("INSERT OR REPLACE INTO document_link_candidates VALUES(?,?,?,?,?)",
+                                  (row[1], evidence_id, row[2], extraction_hash, EncodeCompanyLink(candidate)))
+                    collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
+                                  (row[0], code, row[2], candidate.positive.event_id, "repurchase_purpose", _REPURCHASE_PLAN_RULE))
+                    collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], code))
+            # A material check can finish while its subject remains unknown.
+            # Only publish the attempt; never invent a positive event or value.
             collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
-                          (row[0], code, row[2], candidate.positive.event_id, "repurchase_purpose", _REPURCHASE_PLAN_RULE))
-            collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], code))
+                          (row[0], code, row[2], event_id, "repurchase_purpose", rule))
             collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (code,))
 
 
@@ -963,7 +1017,7 @@ def CompleteCompanyFieldRepairs(
         ).fetchall()
         for row in rows:
             if (row[3] in {_REPURCHASE_RECHECK_RULE, _INCREASE_RECHECK_RULE}
-                or row[3].startswith(_SHARE_LINK_RECHECK_RULE_PREFIX)) and not finish_attempts:
+                or row[3].startswith(_SAME_BODY_RECHECK_PREFIXES)) and not finish_attempts:
                 # The old non-null value is precisely what this task must
                 # revalidate. Only its new formal field receipt can restore it.
                 continue
@@ -972,9 +1026,9 @@ def CompleteCompanyFieldRepairs(
                 continue
             missing = any(gap.event_id == row[4] and gap.field == row[2] for gap in gaps)
             if not available and not missing:
-                checked_share_action = (
+                checked_same_body = (
                     row[3] in {_REPURCHASE_RECHECK_RULE, _INCREASE_RECHECK_RULE}
-                    or row[3].startswith(_SHARE_LINK_RECHECK_RULE_PREFIX)
+                    or row[3].startswith(_SAME_BODY_RECHECK_PREFIXES)
                 )
                 retired_reduction = (
                     row[4] == f"{row[7]}:{CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION.value}"
@@ -988,7 +1042,7 @@ def CompleteCompanyFieldRepairs(
                                for event in fact.risk_events)
                     )
                 )
-                if not retired_reduction and not checked_share_action:
+                if not retired_reduction and not checked_same_body:
                     continue
                 policy = _repair_policy(row[4], row[2], row[3])
                 if formal.run(

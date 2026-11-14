@@ -5,14 +5,26 @@ from __future__ import annotations
 import argparse
 import math
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from scripts.core.paths import PROJECT_ROOT, ExternalPath
 from scripts.download.company.options import CompanyOptions
 from scripts.download.company.company_structured_field_audit import CompanyFinancialRevisionRequest
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from scripts.download.market.market_factor_budget import MARKET_SOURCE_LOOP_LIMIT_SECONDS, MARKET_TASK_LIMIT_SECONDS
+
+
+def ParseCompanyReplayObservation(value: str) -> datetime:
+    """Require an explicit, nonfuture replay instant in business time."""
+    observed_at = datetime.fromisoformat(value)
+    if observed_at.utcoffset() is None:
+        raise ValueError("company replay observation requires an ISO timestamp with timezone")
+    observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai"))
+    if observed_at > datetime.now(ZoneInfo("Asia/Shanghai")):
+        raise ValueError("company replay observation cannot be in the future")
+    return observed_at
 
 
 def BuildParser(
@@ -39,6 +51,7 @@ def BuildParser(
         company_io_candidates_audit=False,
         company_material_keys=(),
         company_field_replay_keys=(),
+        company_replay_observed_at=None,
         company_recovered_text=None,
         company_audit_budget_seconds=None,
         company_ocr_audit=False,
@@ -76,6 +89,7 @@ def BuildParser(
         modes.add_argument('--company-io-candidates-audit', action='store_true', help='paired isolated publication candidates; never enables production settings')
         modes.add_argument('--company-material-keys', nargs='+', help='read-only source excerpts for one to six distinct source keys; requires published facts')
         modes.add_argument('--company-field-replay-keys', nargs='+', help='replay one to six source keys through real field publication only in a new external copy; no network')
+        parser.add_argument('--company-replay-observed-at', type=ParseCompanyReplayObservation, help='explicit ISO timestamp with timezone for a frozen field replay; defaults to current time and never changes source coverage')
         parser.add_argument('--company-recovered-text', type=Path, help='exact recovered text for one replay key; recovered only in the new isolated copy after receipt and hash checks')
         modes.add_argument('--company-ocr-audit', action='store_true', help='compare OCR on up to seven failed announcements without active writes')
         modes.add_argument('--company-document-audit', action='store_true', help='read-only failed PDF request comparison')
@@ -134,6 +148,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_io_candidates_audit=args.company_io_candidates_audit,
         company_material_keys=tuple(args.company_material_keys),
         company_field_replay_keys=tuple(args.company_field_replay_keys),
+        company_replay_observed_at=args.company_replay_observed_at,
         company_recovered_text=ExternalPath(args.company_recovered_text, "--company-recovered-text"),
         company_audit_budget_seconds=(
             args.command_timeout_seconds - 30.0
@@ -195,6 +210,8 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         raise ValueError("--company-field-replay-keys requires one to six distinct source keys without whitespace")
     if options.company_recovered_text is not None and len(options.company_field_replay_keys) != 1:
         raise ValueError("--company-recovered-text requires exactly one --company-field-replay-keys source")
+    if options.company_replay_observed_at is not None and not options.company_field_replay_keys:
+        raise ValueError("--company-replay-observed-at requires --company-field-replay-keys")
     if options.action_identity == "company-resume" and (
         not math.isfinite(options.company_audit_budget_seconds)
         or not 30 <= options.company_audit_budget_seconds <= 10800

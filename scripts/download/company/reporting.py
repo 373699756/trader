@@ -757,7 +757,7 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
                 "final_required_texts", "unselected_stocks",
             )},
             **{name: _text(source.get(name), 110) for name in (
-                "first_publication_hash", "second_publication_hash", "failure_category", "failure_code",
+                "first_publication_hash", "second_publication_hash", "failure_category", "failure_code", "observed_at",
             )},
             "source_input_comparison": "database_wal_receipt_sha256_exact",
             "codes": [code for code in (codes[:6] if isinstance(codes, (tuple, list)) else [])

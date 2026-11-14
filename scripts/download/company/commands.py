@@ -58,6 +58,7 @@ def BuildCommands(
                 *(("--io-candidates-only",) if options.company_io_candidates_audit else ()),
                 *(("--material-keys", *options.company_material_keys) if options.company_material_keys else ()),
                 *(("--field-replay-keys", *options.company_field_replay_keys) if options.company_field_replay_keys else ()),
+                *(("--replay-observed-at", options.company_replay_observed_at.isoformat()) if options.company_replay_observed_at is not None else ()),
                 *(("--recovered-text", str(options.company_recovered_text)) if options.company_recovered_text else ()),
                 *(("--ocr-only",) if options.company_ocr_audit else ()),
                 *(("--document-only",) if options.company_document_audit else ()),
