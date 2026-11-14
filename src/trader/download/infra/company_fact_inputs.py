@@ -24,6 +24,10 @@ from trader.download.domain.company_annual_income import CompanyAnnualIncome
 from trader.download.infra.company_annual_income_index import ReadCompanyAnnualIncome
 
 
+def DecodeCompanyFinancial(row: sqlite3.Row) -> CompanyFinancial:
+    return CompanyFinancial(row[0], date.fromisoformat(row[1]), datetime.fromisoformat(row[2]), *tuple(row)[3:])
+
+
 def DecodeCompanyDisclosure(row: sqlite3.Row) -> Disclosure:
     return Disclosure(
         row["source"],
@@ -144,10 +148,7 @@ def BuildCompanySnapshot(
     complete = CompanyCoverageComplete(ranges, start, end) and all(
         item.checked or not CompanyDocumentRiskRelevant(item.disclosure.title) for item in documents
     )
-    financials = tuple(
-        CompanyFinancial(row[0], date.fromisoformat(row[1]), datetime.fromisoformat(row[2]), *tuple(row)[3:])
-        for row in inputs.financials
-    )
+    financials = tuple(DecodeCompanyFinancial(row) for row in inputs.financials)
     pledge_rows = tuple(row for row in inputs.ratios if row["component"] == "pledge" and row["as_of_date"] <= end.isoformat())
     pledge_row = pledge_rows[-1] if pledge_rows else None
     pledge = CompanyRatio(pledge_row[0], date.fromisoformat(pledge_row[1]), pledge_row[2]) if pledge_row else None

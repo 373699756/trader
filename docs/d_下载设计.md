@@ -632,6 +632,8 @@ Tushare作为补充候选：[利润表](https://tushare.pro/document/2?doc_id=33
 
 合同主体核验进一步区分发行人保证语和实际签署方：泛化标题下的纯子公司合同不生成发行人合同；混合主体、身份不清或既有事件与当前正文不一致继续待核验，不能伪造取消或删除已冻结推荐历史。旧持久合同关联候选须按局部规则、来源/目录/正文/全局提取身份及候选摘要复核，不能绕过新版主体守卫。全局提取身份不因本次局部修复而重置；金额句式规则单独升级，只对缺失金额执行定向恢复，不重签旧valid为字段完整。同轮精确版本的完整正文已重新编译时，以领域核验结论为准；旧缓存的空字段被补齐不构成主体冲突。无原文缓存仅阻止新的关联，不为已有测量待核项额外制造永久主体阻断；完整正文证实旧主体错误时仍保持阻断。
 
+明确发行人“已正式签署／签订（相关）合同”与既有“已签署／签订正式合同”同作肯定签署事实；否定、条件、框架／意向或尚需审批生效继续不确认。签署事实与币种、税口径、年度收入及占比资格分别核验，签署已确认不能自行计算占比或增加奖励。合同候选局部凭据绑定签署／否定句式的内容摘要；原字段恢复owner仅对原valid精确匹配、单股单事件、末条依据及披露时点相同、保留正文核hash通过且新核实签署的旧事件登记正常重编译。沿原年度规则预核已有数值，不因补签署事实丢弃已知金额、营收或披露时点；缺合法依赖、冲突、取消或旧材料不改正式事实，也不发起下载。正式writer和采集确认仍沿原事务边界，旧valid不重签，全局提取身份不变。
+
 采集库的`company_material_dependencies`由原字段恢复owner维护，只记录真实review所需原始材料，不制造事件或字段值。依赖须绑定精确正式有效输入回执；未读输入、来源修订或新一轮提取身份本身不能解除旧依赖。旧必要版本的文字/PDF继续受管保留，新正文真正核实并发布后才能释放；已有材料缺失只报告缺口，不自动重下。容量与实际剩余磁盘约束保持，容量不足明确背压。
 
 本批新增关系均在`data/company/raw/company_collection.sqlite3`，不改变正式事实库版本或发布回执身份：
@@ -934,7 +936,7 @@ company整数协议由 `company_facts_protocol.py`唯一维护，不是自定义
 | document_announcement_numbers（WR）；company_announcement_links.py | disclosure_id INTEGER；record_hash/number/rule_id TEXT；body_hash H；role INTEGER；PK(disclosure_id,role,number)；均非空，disclosure FK→disclosures且级联 | WriteCompanyAnnouncementNumbers写，LinkCompanyAnnouncementNumbers按来源／证券／时间读取；role0为自有编号、1为引用，body_hash32字节 |
 | company_field_repairs（WR）；company_field_recovery.py | disclosure_id INTEGER；code/record_hash/event_id/field/rule_id/state TEXT；前六列联合PK；均非空，disclosure FK→disclosures且级联 | QueueCompanyFieldRepairs／RegisterCompanyFieldAttempts写，CompleteCompanyFieldRepairs／RestoreCompanyFieldRepairs及材料恢复消费；state=pending/attempted/complete，只表达字段恢复任务，不替代正式字段值 |
 | company_material_dependencies（WR）；同上 | disclosure_id INTEGER；code/record_hash/scope/reason_code TEXT；body_hash/extraction_hash H；七列联合PK；均非空，两hash32字节，disclosure FK→disclosures且级联；索引 company_material_dependency_codes(code,disclosure_id) | RegisterCompanyMaterialDependencies写；字段review及材料清理按精确原有效回执读取；无原文只报告缺口，不自动重下 |
-| document_contract_link_rules（WR）；company_contract_link_rules.py | source/source_key/code/record_hash/rule_id TEXT；body_hash/extraction_hash/payload_hash H；PK(source,source_key,code,record_hash,extraction_hash)；均非空，body/payload hash32字节 | WriteCompanyContractLinkRules写，ReadCompanyContractLinkRules／ReadCompanyPublicationLinks核当前候选及局部主体规则；不能绕过同案／主体守卫 |
+| document_contract_link_rules（WR）；company_contract_link_rules.py | source/source_key/code/record_hash/rule_id TEXT；body_hash/extraction_hash/payload_hash H；PK(source,source_key,code,record_hash,extraction_hash)；均非空，body/payload hash32字节 | WriteCompanyContractLinkRules写，ReadCompanyContractLinkRules／ReadCompanyPublicationLinks核当前候选及局部主体／签署规则；不能绕过同案／主体守卫 |
 | annual_income（WR）；company_annual_income_index.py | code/report_date/disclosed_at/updated_at/observed_at/currency/record_hash TEXT；operating_revenue REAL?；PK(code,report_date,disclosed_at,updated_at,record_hash) | WriteCompanyAnnualIncome写，PlanCompanyAnnualIncomeRequests／ReadCompanyAnnualIncome和合同编译消费；原披露／修订／收到时间分开，经营收入元，缺值不以营业总收入替代 |
 
 采集库还安装8.5的 download_failure。材料原件、压缩文字及OCR页是 `CompanyRawFiles`／`CompanyDocumentFiles` 管理的文件，不是遗漏在本表的SQLite列；容量、引用保护及清理前提见5.11–5.14。

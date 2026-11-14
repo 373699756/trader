@@ -8,12 +8,13 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.download.domain.company_event_extraction import CompanyLinkCandidate
+from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_BINDING_DIGEST
 from trader.download.domain.company_events import CompanyPositiveType
 from trader.download.domain.company_evidence import Disclosure
 from trader.download.infra.company_link_codec import EncodeCompanyLink
 from trader.infra.sqlite_connection import SqliteConnection
 
-_RULE = "contract_link_subject:1"
+_RULE = "contract_link_subject:1:" + COMPANY_CONTRACT_BINDING_DIGEST.hex()
 
 
 @dataclass(frozen=True, slots=True)

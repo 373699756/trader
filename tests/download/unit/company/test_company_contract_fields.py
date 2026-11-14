@@ -8,7 +8,7 @@ import pytest
 
 from trader.download.domain.company_contract_fields import ExtractCompanyContractFields
 from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence, ExtractCompanyLinkCandidate
-from trader.download.domain.company_events import CompanyEventPolicy
+from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveStatus
 from trader.download.domain.company_evidence import CompanyDocument, Disclosure
 
 
@@ -69,6 +69,36 @@ def test_real_explicit_amount_and_reference_year_do_not_certify_unstated_annual_
     assert fields["contract_amount"].value == 3_340_000
     assert fields["revenue_report_date"].value == date(2025, 12, 31)
     assert "annual_revenue" not in fields and "contract_revenue_pct" not in fields
+
+
+@pytest.mark.parametrize(("statement", "binding"), (
+    ("公司与业主方已正式签署相关合同", True),
+    ("本公司已正式签订合同", True),
+    ("本公司尚未正式签署相关合同", False),
+    ("本公司并非已正式签署相关合同", False),
+    ("本公司如果已正式签署相关合同", False),
+    ("本公司如已正式签署相关合同", False),
+    ("本公司根据相关规定现将具体情况公告如下：公司与业主方已正式签署相关合同", True),
+    ("本公司预计已正式签署相关合同", False),
+    ("本公司已正式签署相关合同，尚需审批后生效", False),
+    ("本公司已正式签署相关合同，该合同属于框架协议", False),
+))
+def test_formally_signed_contract_is_an_execution_fact_without_comparability(statement, binding):
+    text = ("本公司及董事会全体成员保证信息披露真实、准确、完整。" + statement
+            + "。合同额：人民币3340000.00元。本次合同签约价占公司2025年度经审计营业收入的1.35%。")
+    parsed = ExtractCompanyContractFields("".join(text.split()), _AT)
+    assert parsed.measurements.binding_confirmed is binding
+    candidate = ExtractCompanyLinkCandidate(_document(text), _AT, _POLICY)
+    if candidate is None:
+        assert not binding
+        return
+    assert candidate.positive.measurements.binding_confirmed is binding
+    assert candidate.positive.status is (CompanyPositiveStatus.IMPLEMENTING if binding else CompanyPositiveStatus.PLANNED)
+    assert candidate.positive.measurements.contract_amount_cny == 3340000
+    assert candidate.positive.measurements.reference_report_date == date(2025, 12, 31)
+    assert candidate.positive.measurements.amount_basis == "unknown"
+    assert candidate.positive.measurements.amount_to_revenue_pct is None
+    assert candidate.positive.positive_level == 0 and candidate.positive.level_milestones == ()
 
 
 @pytest.mark.parametrize("text", (

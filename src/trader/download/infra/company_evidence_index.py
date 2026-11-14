@@ -87,6 +87,7 @@ from trader.download.infra.company_field_recovery import (
     PrepareCompanyShareRecheckReceipts,
     QueueCompanyFieldRepairs,
     QueueCompanyShareActionRechecks,
+    QueueCompanyContractSigningRechecks,
     RecoverRequiredCompanyText,
     QueueCompanyReductionRechecks,
     PrioritizeCompanyRepurchaseInputs,
@@ -1133,11 +1134,14 @@ class SQLiteCompanyEvidenceIndex:
 
     def prepare_publication(self, codes: Sequence[str], observed_at: datetime) -> None:
         self._run_cutoff = observed_at
+        contract_codes: list[str] = []
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             connection.run("INSERT INTO company_sync_job VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET cutoff=excluded.cutoff",
                            (observed_at.isoformat(), observed_at.isoformat()))
             for offset in range(0, len(codes), 128):
-                MarkCompanyDirty(connection, PendingCompanyContractLinkCodes(connection, codes[offset:offset + 128], self._facts.extraction_hash))
+                pending = PendingCompanyContractLinkCodes(connection, codes[offset:offset + 128], self._facts.extraction_hash)
+                contract_codes.extend(pending)
+                MarkCompanyDirty(connection, pending)
         if self._raw_files is not None:
             RestoreCompanyDocumentTasks(
                 self._connect, self._raw_files, self.path.parent,
@@ -1182,6 +1186,10 @@ class SQLiteCompanyEvidenceIndex:
             parent = ReadCompanyPublicationIdentity(formal)
             if parent is not None and parent.extraction_hash == self._facts.extraction_hash:
                 with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+                    QueueCompanyContractSigningRechecks(
+                        connection, formal, contract_codes, observed_at, self._facts.extraction_hash,
+                        self._event_policy, partial(self._documents.read, check=self._check_cancelled),
+                    )
                     QueueCompanyFieldRepairs(connection, formal, codes, observed_at, self.path.parent)
                     QueueCompanyShareActionRechecks(
                         connection, formal, codes, observed_at, self._facts.extraction_hash,

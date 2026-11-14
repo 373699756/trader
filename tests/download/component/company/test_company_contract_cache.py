@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import timedelta
+import hashlib
 
 import pytest
 
@@ -11,7 +12,9 @@ from trader.download.domain.company_events import CompanyPositiveStatus, Company
 from trader.download.domain.company_evidence import CompanyListing, DisclosurePage, DisclosurePartition
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
+from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
+from trader.download.infra.company_publication_reads import PendingCompanyContractLinkCodes
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 _NOW = fixtures.NOW
@@ -239,3 +242,84 @@ def test_measurement_only_review_without_cache_material_does_not_create_permanen
     assert after.positive_events[0].positive_level == 3 and after.positive_events[0].not_eligible_reason is None
     assert not any(review.scope == "positive" for review in after.review_reasons)
     assert final_valid == valid
+
+
+@pytest.mark.parametrize("batch", (False, True), ids=("per-code", "batch"))
+@pytest.mark.parametrize("material_available", (False, True), ids=("missing-material", "retained-material"))
+@pytest.mark.parametrize("stored_revenue", (False, True), ids=("no-old-revenue", "old-revenue-unavailable"))
+def test_current_signing_rule_rechecks_exact_old_proof_without_rewriting_valid(tmp_path, monkeypatch, batch, material_available, stored_revenue):
+    index = _index(tmp_path, batch=batch)
+    item = fixtures._disclosure("signed-contract", "关于项目中标暨签署合同的自愿性信息披露公告")
+    body = ("本公司及董事会全体成员保证信息披露真实、准确、完整。\n"
+            "公司与业主方已正式签署相关合同。\n合同额：人民币3340000.00元。\n"
+            "本次合同签约价占公司2025年度经审计营业收入的1.35%。")
+    _put(index, item, body)
+    index.publish(item.codes, _NOW)
+    current, parent, valid = _formal_state(index, item.identity)
+    event, = current.positive_events
+    assert event.measurements.binding_confirmed and event.positive_level == 0
+    old_event = replace(event, status=CompanyPositiveStatus.PLANNED,
+                        measurements=replace(event.measurements, binding_confirmed=False,
+                                             reference_annual_revenue_cny=1000000.0 if stored_revenue else None,
+                                             reference_disclosed_at=_NOW - timedelta(days=100) if stored_revenue else None))
+    legacy = replace(current, positive_events=(old_event,))
+    with SqliteSession(index.facts_path) as formal:
+        fields = ReadCompanyFieldResults(formal, item.codes)
+    if stored_revenue:
+        fields = tuple(replace(field, value=1000000.0 if field.field == "annual_revenue" else _NOW - timedelta(days=100),
+                               state="present_unverified", reason="field_level_source_proof_missing")
+                       if field.field in {"annual_revenue", "revenue_disclosed_at"} else field for field in fields)
+    SQLiteCompanyFactsIndexFixture(index.facts_path).publish(
+        (legacy,), {item.identity: item.source}, parent, _NOW, field_results=fields,
+    )
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        candidate = DecodeCompanyLink(collected.run("SELECT payload FROM document_link_candidates").require_one()[0])
+        payload = EncodeCompanyLink(replace(candidate, positive=replace(
+            event, status=CompanyPositiveStatus.PLANNED, measurements=replace(event.measurements, binding_confirmed=False),
+        )))
+        collected.run("UPDATE document_link_candidates SET payload=?", (payload,))
+        collected.run("UPDATE document_contract_link_rules SET payload_hash=?,rule_id='contract_link_subject:1'",
+                      (hashlib.sha256(payload.encode()).digest(),))
+        if not material_available:
+            collected.run("UPDATE disclosures SET body_retained=0")
+    if not material_available:
+        CompanyDocumentFilesFixture(tmp_path / "text").release(frozenset())
+    before, old_publication, _valid = _formal_state(index, item.identity)
+    with SqliteSession(index.facts_path) as formal:
+        receipts = frozenset(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt"))
+    with SqliteSession(index.path) as collected:
+        assert PendingCompanyContractLinkCodes(collected, item.codes, index._facts.extraction_hash) == item.codes
+
+    index.prepare_publication(item.codes, _NOW)
+    index.publish(item.codes, _NOW, changed_only=True)
+
+    after, publication, next_valid = _formal_state(index, item.identity)
+    assert next_valid == valid and publication.extraction_hash == parent.extraction_hash
+    with SqliteSession(index.facts_path) as formal:
+        assert ReadCompanyFieldResults(formal, item.codes) == fields
+        next_receipts = frozenset(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt"))
+        assert receipts.issubset(next_receipts) and all(row[-2] == "field_attempted" for row in next_receipts - receipts)
+    restored, = after.positive_events
+    if material_available and not stored_revenue:
+        assert restored.status is CompanyPositiveStatus.IMPLEMENTING and restored.measurements.binding_confirmed
+        assert restored.measurements == event.measurements and restored.evidence_ids == old_event.evidence_ids
+        assert restored.first_disclosed_at == old_event.first_disclosed_at and restored.last_disclosed_at == old_event.last_disclosed_at
+        assert restored.positive_level == 0 and restored.level_milestones == ()
+        assert restored.measurements.amount_to_revenue_pct is None and restored.measurements.amount_basis == "unknown"
+        with SqliteSession(index.path) as collected:
+            assert PendingCompanyContractLinkCodes(collected, item.codes, index._facts.extraction_hash) == ()
+    else:
+        assert after == before
+        if material_available:
+            assert stored_revenue and next_receipts - receipts
+            assert all("annual_revenue" in row[-1] or "revenue_disclosed_at" in row[-1] for row in next_receipts - receipts)
+        else:
+            assert publication == old_publication
+
+    restarted = _index(tmp_path, batch=batch)
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("a committed signing rule or unavailable material must not be reread")
+    monkeypatch.setattr(restarted._documents, "read", unexpected_read)
+    restarted.prepare_publication(item.codes, _NOW)
+    restarted.publish(item.codes, _NOW, changed_only=True)
+    assert _formal_state(restarted, item.identity) == (after, publication, valid)

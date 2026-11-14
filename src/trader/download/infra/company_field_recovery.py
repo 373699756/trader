@@ -11,9 +11,10 @@ from dataclasses import dataclass, replace
 import hashlib
 
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
+from trader.download.domain.company_annual_income import ApplyCompanyAnnualIncome
 from trader.download.domain.company_events import (
     CompanyEventPolicy, CompanyEventStatus, CompanyPositiveEvent, CompanyPositiveStatus, CompanyPositiveType, CompanyReviewReason, CompanyRiskEvent, CompanyRiskType, CompanySubject, IncreaseMeasurements,
-    RepurchaseMeasurements, RepurchasePurpose,
+    RepurchaseMeasurements, RepurchasePurpose, ContractMeasurements,
 )
 from trader.download.domain.company_evidence import CompanyDocument, CompanyDocumentFailureRules, Disclosure
 from trader.download.domain.company_event_extraction import (
@@ -33,10 +34,12 @@ from trader.download.domain.company_field_plan import (
     PlanCompanyFieldRecovery,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_fact_inputs import DecodeCompanyFinancial, ReadCompanySnapshotRows
 from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_document_files import CompanyDocumentFiles
+from trader.download.infra.company_publication_reads import ReadCompanyPublicationLinks
 from trader.download.infra.company_facts_protocol import (
     DecodeCompanyLabel,
     EVIDENCE_SOURCES,
@@ -520,6 +523,74 @@ def RegisterCompanyFieldAttempts(
                     "INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
                     (row[5], gap.code, row[3], gap.event_id, gap.field, _field_attempt_rule(gap)),
                 )
+
+
+def QueueCompanyContractSigningRechecks(
+    collected: SqliteConnection,
+    formal: SqliteConnection,
+    codes: Sequence[str],
+    observed_at: datetime,
+    extraction_hash: bytes,
+    event_policy: CompanyEventPolicy,
+    read_document: Callable[[bytes], str],
+) -> None:
+    """Recompile only a retained latest contract whose signing fact was missed."""
+    for offset in range(0, len(codes), 128):
+        batch = codes[offset:offset + 128]
+        facts = {fact.code: fact for fact in ReadCompanyFactRows(formal, batch)}
+        inputs = ReadCompanySnapshotRows(collected, tuple(batch), observed_at, extraction_hash)
+        for links in ReadCompanyPublicationLinks(
+            collected, batch, extraction_hash, observed_at=observed_at,
+            event_policy=event_policy, read_document=read_document,
+        ):
+            fact = facts.get(links.code)
+            if fact is None:
+                continue
+            for refresh in links.refreshes:
+                binding, candidate = refresh.binding, refresh.candidate
+                if (candidate is None or candidate.positive is None or candidate.cancellation
+                    or not isinstance(candidate.positive.measurements, ContractMeasurements)
+                    or not candidate.positive.measurements.binding_confirmed
+                    or any(review.evidence_id == binding.source_key for review in links.reviews)):
+                    continue
+                events = tuple(event for event in fact.positive_events if binding.source_key in event.evidence_ids)
+                if len(events) != 1:
+                    continue
+                event = events[0]
+                before = event.measurements
+                recovered, = ApplyCompanyAnnualIncome(
+                    links.code,
+                    (replace(candidate.positive, first_disclosed_at=event.first_disclosed_at),),
+                    inputs[links.code].annual_incomes, observed_at,
+                    financials=tuple(DecodeCompanyFinancial(row) for row in inputs[links.code].financials),
+                )
+                after = recovered.measurements
+                if (event.event_type is not CompanyPositiveType.OPERATING_CONTRACT
+                    or event.status is CompanyPositiveStatus.CANCELLED or event.subject_type is not candidate.subject
+                    or event.evidence_ids[-1] != binding.source_key or event.last_disclosed_at != candidate.published_at
+                    or not isinstance(before, ContractMeasurements) or not isinstance(after, ContractMeasurements)
+                    or before.binding_confirmed or before.amount_basis == "comparable" and after.amount_basis != "comparable"
+                    or any(old is not None and old != new for old, new in (
+                        (before.contract_amount_cny, after.contract_amount_cny),
+                        (before.reference_annual_revenue_cny, after.reference_annual_revenue_cny),
+                        (before.reference_report_date, after.reference_report_date),
+                        (before.reference_disclosed_at, after.reference_disclosed_at),
+                        (before.amount_to_revenue_pct, after.amount_to_revenue_pct),
+                    )) or not _has_valid_material_receipt(
+                        formal, binding.source, binding.source_key, links.code,
+                        binding.record_hash, binding.body_hash, extraction_hash,
+                    )):
+                    continue
+                rows = collected.run(
+                    "SELECT d.id FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+                    "WHERE d.source=? AND d.source_key=? AND c.code=? AND d.record_hash=? AND d.body_hash=? "
+                    "AND d.kind='announcement' AND d.body_checked=1 AND d.body_retained=1 "
+                    "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
+                    (binding.source, binding.source_key, links.code, binding.record_hash, binding.body_hash),
+                ).fetchall()
+                if len(rows) == 1:
+                    collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?",
+                                  (rows[0][0], links.code))
 
 
 def QueueCompanyShareActionRechecks(
@@ -1338,6 +1409,7 @@ __all__ = [
     "ReadCompanyFieldRecovery",
     "QueueCompanyFieldRepairs",
     "QueueCompanyShareActionRechecks",
+    "QueueCompanyContractSigningRechecks",
     "QueueCompanyReductionRechecks",
     "PrioritizeCompanyRepurchaseInputs",
     "RegisterCompanyFieldAttempts",

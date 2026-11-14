@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -18,6 +19,14 @@ COMPANY_CONTRACT_FIELD_RULES = (
     ("contract_revenue_pct", "comparable_contract_revenue_ratio:1"),
     ("amount_basis", "explicit_comparable_contract_basis:1"),
 )
+_BINDING_PATTERN = r"合同已生效|合同自签署之日起生效|已签[订署]正式合同|已正式签[订署](?:相关)?合同"
+_BINDING_NEGATION = (
+    r"(?:尚未|并未|未曾|没有|不会|并非|不是|未|不|拟|计划|预计|将|如果|如(?!下)|若|一旦|是否|能否)[^。；;，,]{0,40}$"
+)
+_BINDING_BOUNDARY = r"[。；;！？!?]|公告如下[：:]|情况如下[：:]"
+COMPANY_CONTRACT_BINDING_DIGEST = hashlib.sha256(
+    (_BINDING_PATTERN + "\0" + _BINDING_NEGATION + "\0" + _BINDING_BOUNDARY).encode("utf-8"),
+).digest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +47,8 @@ def ExtractCompanyContractFields(body: str, published: datetime) -> CompanyContr
     if published.utcoffset() is None:
         raise ValueError("company_contract_fields_time_invalid")
     binding = any(
-        marker in body for marker in ("合同已生效", "合同自签署之日起生效", "已签订正式合同", "已签署正式合同")
+        re.search(_BINDING_NEGATION, re.split(_BINDING_BOUNDARY, body[:match.start()])[-1]) is None
+        for match in re.finditer(_BINDING_PATTERN, body)
     ) and not any(marker in body for marker in ("框架协议", "意向协议", "中标候选", "尚未生效"))
     binding = binding and re.search(r"(?:尚需|须经|需经)[^。；]{0,40}生效", body) is None
     amount = _single_measurement(
@@ -117,6 +127,7 @@ def _amount_unit(unit: str | None) -> int:
 
 
 __all__ = [
+    "COMPANY_CONTRACT_BINDING_DIGEST",
     "COMPANY_CONTRACT_FIELD_RULES",
     "CompanyContractField",
     "CompanyContractFields",
