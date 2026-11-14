@@ -411,6 +411,62 @@ def test_text_capacity_failure_drains_other_accepted_results_and_stops_dispatch(
     assert any(event.component == "risk_documents" and event.status == "deferred" for event in events)
 
 
+@pytest.mark.parametrize("ocr_handoff", [False, True])
+def test_download_capacity_failure_drains_queued_local_inputs_and_publishes_them(tmp_path, monkeypatch, ocr_handoff):
+    from trader.download.domain.company_evidence import CompanyDocumentFailure
+
+    index = fixtures._index(tmp_path)
+    index.prepare_publication(("600001",), NOW)
+    items = tuple(
+        fixtures._disclosure(str(number), "关于收到立案告知书的公告", when=NOW - timedelta(seconds=number))
+        for number in range(4)
+    )
+    index.commit_page(DisclosurePartition("sse", NOW.date(), NOW.date()), DisclosurePage(items, 4, False), NOW)
+    downloads, extracted = [], []
+
+    class Source(fixtures.Sources):
+        def document_ready(self, item):
+            return item.identity in {"2", "3"}
+
+        def download_document(self, item):
+            downloads.append(item.identity)
+            raise RuntimeError("company_raw_capacity_exhausted")
+
+        def extract_document(self, item, *, route="standard", page_progress=None):
+            if ocr_handoff and item.identity == "2" and route != "ocr":
+                raise CompanyDocumentFailure("disclosure_document_ocr_required")
+            extracted.append((item.identity, route))
+            return fixtures._extraction(_CASE)
+
+    def failure_first(futures, **kwargs):
+        ordered = tuple(futures)
+        first = next((future for future in ordered if isinstance(future.exception(), RuntimeError)
+                      and str(future.exception()) == "company_raw_capacity_exhausted"), ordered[0])
+        return {first}, set(ordered) - {first}
+
+    monkeypatch.setattr(company_documents, "wait", failure_first)
+    source = Source()
+    events = []
+    configuration = replace(fixtures._TEST_COMPANY_CONFIGURATION, text_workers=1, document_batch_size=4, publication_batch_size=1)
+    dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0, events.append)
+    state = _SyncState(CompanyOperations(events.append, lambda: 0.0, (), population=items[0].codes), 1)
+    run = CompanyDocumentRun(
+        dependencies, items[0].codes, state, _DocumentContext(NOW, 0.0, configuration),
+        publish=lambda: index.publish(items[0].codes, NOW),
+    )
+    run.run_batch()
+    assert downloads == ["0"] and {key for key, route in extracted} == {"2", "3"}
+    assert ("2", "ocr" if ocr_handoff else "standard") in extracted
+    assert run.capacity_blocked and run.completed == 2
+    assert state.failures == ("risk_documents:company_raw_capacity_exhausted",)
+    with SqliteSession(index.path) as raw, SqliteSession(index.facts_path) as formal:
+        assert [tuple(row) for row in raw.run("SELECT source_key,body_checked FROM disclosures ORDER BY source_key")] == [
+            ("0", 0), ("1", 0), ("2", 1), ("3", 1),
+        ]
+        assert formal.run("SELECT COUNT(*) FROM company_input_receipt WHERE outcome='valid'").require_one()[0] == 2
+        assert raw.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == 0
+
+
 @pytest.mark.parametrize("boundary", ["compressed", "decompressed"])
 def test_body_read_enforces_both_limits_and_preserves_oversized_material(tmp_path, boundary):
     files = CompanyDocumentFiles(tmp_path / "text", max_text_characters=1, reserve_bytes=1)

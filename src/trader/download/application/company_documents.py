@@ -137,11 +137,13 @@ class CompanyDocumentRun:
         last_publish = dependencies.monotonic()
         unpublished = 0
         capacity_failure: str | None = None
+        analysis_blocked = False
         while queue or text_queue or ocr_queue or pending_documents:
             if capacity_failure is not None:
                 queue.clear()
-                text_queue.clear()
-                ocr_queue.clear()
+                if analysis_blocked:
+                    text_queue.clear()
+                    ocr_queue.clear()
             urgent_publish = False
             stages: tuple[tuple[Literal["text", "ocr"], deque[CompanyDocumentTask], WorkerExecutor | None, int], ...] = (
                 ("ocr", ocr_queue, dependencies.ocr_executor, self.configuration.ocr_workers),
@@ -204,6 +206,7 @@ class CompanyDocumentRun:
                     elif str(exc) == "company_raw_capacity_exhausted":
                         self.state.operations.record_failure(exc)
                         capacity_failure = "company_raw_capacity_exhausted"
+                        analysis_blocked = analysis_blocked or completed_stage != "download"
                         queue.clear()
                         self.report(workload, completed_before, discovering=discovering,
                                     failure_document=task.disclosure, failure_stage=completed_stage,
@@ -230,6 +233,7 @@ class CompanyDocumentRun:
                             if str(exc) not in {"company_raw_capacity_exhausted", "company_temporary_space_exhausted"}:
                                 raise
                             capacity_failure = str(exc)
+                            analysis_blocked = True
                             self.state.operations.result(timing, "rejected", extraction=extraction)
                             self.state.operations.recover(exc, "source_deferred", capacity_failure)
                             self.report(workload, completed_before, discovering=discovering,

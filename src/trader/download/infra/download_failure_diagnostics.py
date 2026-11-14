@@ -16,6 +16,7 @@ from trader.download.domain.download_failure import (
     DownloadFailureRecord, DownloadValidationFailure,
 )
 from trader.download.domain.company_evidence import CompanyDocumentFailure
+from trader.download.infra.company_raw_files import CompanyRawCapacityError
 from trader.download.infra.history_sync_failure import HistoryFailureCauses, HistoryFailureDetail, HistoryRemoteFailureError
 from trader.infra.http_contracts import HttpCancelled, HttpStatusError
 from trader.infra.sqlite_connection import SqliteConnection
@@ -131,6 +132,15 @@ def _diagnostic(exc: BaseException, context: DownloadFailureContext) -> str:
         seen.add(id(current))
         if isinstance(current, DownloadValidationFailure):
             parts.append(f"validation field={current.field} expected={current.expected} actual={current.actual}")
+        if isinstance(current, CompanyRawCapacityError):
+            snapshot = current.snapshot
+            parts.append(
+                f"quota_limit={snapshot.limit} quota_kind={'analysis' if snapshot.analysis else 'download'} "
+                f"quota_used_bytes={snapshot.used_bytes} quota_held_bytes={snapshot.held_bytes} "
+                f"quota_analysis_held_bytes={snapshot.analysis_held_bytes} quota_requested_bytes={snapshot.requested_bytes} "
+                f"quota_capacity_bytes={snapshot.capacity_bytes} quota_analysis_reserve_bytes={snapshot.analysis_reserve_bytes} "
+                f"quota_free_bytes={snapshot.free_bytes} quota_free_reserve_bytes={snapshot.free_reserve_bytes}"
+            )
         if isinstance(current, CompanyDocumentFailure) and current.diagnostic is not None:
             diagnostic = current.diagnostic
             confidence = "未采集" if diagnostic.confidence is None else f"{diagnostic.confidence:.3f}"

@@ -2,7 +2,7 @@
 
 import pytest
 
-from trader.download.infra.company_raw_files import CompanyRawFiles
+from trader.download.infra.company_raw_files import CompanyRawFiles, CompanyRawCapacityError
 
 
 @pytest.mark.parametrize("candidate", [False, True])
@@ -127,3 +127,36 @@ def test_analysis_reservations_still_count_against_physical_free_space(tmp_path,
                 pytest.fail("analysis reservations must also protect physical free space")
         with raw.reserve(tmp_path / "documents" / "download", 99):
             assert raw.usage() == 0
+
+
+@pytest.mark.parametrize("candidate", [False, True])
+@pytest.mark.parametrize("limit,requested,analysis,free", [
+    ("total_capacity", 151, True, 10000), ("download_headroom", 101, False, 10000),
+    ("physical_space", 1, False, 251),
+])
+def test_capacity_failure_captures_the_rejected_admission_without_changing_files(tmp_path, monkeypatch, candidate, limit, requested, analysis, free):
+    import shutil
+    from dataclasses import FrozenInstanceError
+
+    disk = shutil.disk_usage(tmp_path)._replace(free=free)
+    monkeypatch.setattr("trader.download.infra.company_raw_files.shutil.disk_usage", lambda _path: disk)
+    raw = CompanyRawFiles(
+        tmp_path, capacity=1000, analysis_reserve=300, free_reserve=1,
+        maximum_document_bytes=1024, scan_reservations_once=candidate,
+    )
+    directory = tmp_path / "documents" / "retained"
+    directory.mkdir(parents=True)
+    original = directory / "input.pdf"
+    original.write_bytes(b"x" * 600)
+    with raw.reserve(tmp_path / "documents" / "ocr", 250, analysis=True):
+        with pytest.raises(CompanyRawCapacityError) as caught:
+            with raw.reserve(tmp_path / "documents" / "download", requested, analysis=analysis):
+                pytest.fail("the rejected admission must remain blocked")
+        snapshot = caught.value.snapshot
+        assert str(caught.value) == "company_raw_capacity_exhausted"
+        assert (snapshot.limit, snapshot.requested_bytes, snapshot.analysis) == (limit, requested, analysis)
+        assert (snapshot.used_bytes, snapshot.held_bytes, snapshot.analysis_held_bytes) == (600, 250, 250)
+        assert (snapshot.capacity_bytes, snapshot.analysis_reserve_bytes, snapshot.free_bytes, snapshot.free_reserve_bytes) == (1000, 300, free, 1)
+    assert snapshot.held_bytes == 250 and original.read_bytes() == b"x" * 600
+    with pytest.raises(FrozenInstanceError):
+        snapshot.held_bytes = 0

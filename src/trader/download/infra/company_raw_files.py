@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import RLock
+from typing import Literal
 
 from trader.download.domain.company_evidence import CompanyDocumentExtraction, CompanyDocumentOutputIdentity, CompanyOcrDiagnostic, Disclosure
 from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
@@ -25,6 +26,26 @@ class CompanyLocalDocument:
     path: Path
     payload_hash: bytes
     size: int
+
+
+@dataclass(frozen=True)
+class CompanyRawCapacitySnapshot:
+    used_bytes: int
+    held_bytes: int
+    analysis_held_bytes: int
+    requested_bytes: int
+    capacity_bytes: int
+    analysis_reserve_bytes: int
+    free_bytes: int
+    free_reserve_bytes: int
+    analysis: bool
+    limit: Literal["total_capacity", "download_headroom", "physical_space"]
+
+
+class CompanyRawCapacityError(RuntimeError):
+    def __init__(self, snapshot: CompanyRawCapacitySnapshot) -> None:
+        super().__init__("company_raw_capacity_exhausted")
+        self.snapshot = snapshot
 
 
 @dataclass(frozen=True)
@@ -160,12 +181,27 @@ class CompanyRawFiles:
             # Analysis reservations use their reserved headroom; charging them
             # against the reduced download ceiling would reserve that space twice.
             download_required = used + held - analysis_held + maximum
-            if (
-                used + held + maximum > self.capacity
-                or not analysis and download_required > self.capacity - self.analysis_reserve
-                or shutil.disk_usage(self.root).free - held - maximum < self.free_reserve
-            ):
-                raise RuntimeError("company_raw_capacity_exhausted")
+            free = shutil.disk_usage(self.root).free
+            limit: Literal["total_capacity", "download_headroom", "physical_space"] | None = None
+            if used + held + maximum > self.capacity:
+                limit = "total_capacity"
+            elif not analysis and download_required > self.capacity - self.analysis_reserve:
+                limit = "download_headroom"
+            elif free - held - maximum < self.free_reserve:
+                limit = "physical_space"
+            if limit is not None:
+                raise CompanyRawCapacityError(CompanyRawCapacitySnapshot(
+                    used_bytes=used,
+                    held_bytes=held,
+                    analysis_held_bytes=analysis_held,
+                    requested_bytes=maximum,
+                    capacity_bytes=self.capacity,
+                    analysis_reserve_bytes=self.analysis_reserve,
+                    free_bytes=free,
+                    free_reserve_bytes=self.free_reserve,
+                    analysis=analysis,
+                    limit=limit,
+                ))
             if not self._scan_reservations_once:
                 initial = self._size(directory)
             reservation = _Reservation(str(directory), maximum, initial, analysis)
@@ -312,4 +348,9 @@ def _digest_stream(stream: RegularFileStream, header: bytes = b"") -> bytes:
     return digest.digest()
 
 
-__all__ = ["CompanyLocalDocument", "CompanyRawFiles"]
+__all__ = [
+    "CompanyLocalDocument",
+    "CompanyRawCapacitySnapshot",
+    "CompanyRawCapacityError",
+    "CompanyRawFiles",
+]

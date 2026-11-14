@@ -54,6 +54,29 @@ def test_evidence_survives_restart_with_safe_cause_chain_and_distinct_run(tmp_pa
     assert SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture()).price_issues() == ()
 
 
+def test_company_capacity_evidence_preserves_quota_snapshot_and_document_identity(tmp_path):
+    from trader.download.infra.company_raw_files import CompanyRawFiles, CompanyRawCapacityError
+
+    raw = CompanyRawFiles(
+        tmp_path / "private-inputs", capacity=1000, analysis_reserve=300, free_reserve=1, maximum_document_bytes=1000,
+    )
+    recorder = _recorder(tmp_path / "diagnostics.sqlite3")
+    with raw.reserve(raw.root / "documents", 600):
+        try:
+            with raw.reserve(raw.root / "documents" / "next", 101):
+                pytest.fail("download quota must remain enforced")
+        except CompanyRawCapacityError as exc:
+            recorder(DownloadFailureContext("company_download", supplier="cninfo", object_id="123", revision="a" * 64), exc)
+    event, = _read(tmp_path / "diagnostics.sqlite3")["events"]
+    assert event["reason"] == "company_raw_capacity_exhausted"
+    diagnostic = event["diagnostic"]
+    for field in ("quota_limit=download_headroom", "quota_kind=download", "quota_used_bytes=0", "quota_held_bytes=600",
+                  "quota_analysis_held_bytes=0", "quota_requested_bytes=101", "quota_capacity_bytes=1000",
+                  "quota_analysis_reserve_bytes=300", "object_id=123", "revision=" + "a" * 64):
+        assert field in diagnostic
+    assert "private-inputs" not in diagnostic and str(tmp_path) not in diagnostic
+
+
 @pytest.mark.parametrize("symbol", ("sh600001", "sh000001"))
 def test_tencent_failed_attempt_is_durable_even_when_retry_succeeds(tmp_path, monkeypatch, symbol):
     path = tmp_path / "daily.sqlite3"
