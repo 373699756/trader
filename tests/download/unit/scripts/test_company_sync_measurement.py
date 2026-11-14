@@ -109,7 +109,7 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     monkeypatch.setattr(company_evidence_index, "CompileCompanyFacts", lambda *args: None)
     monkeypatch.setattr(SQLiteCompanyFactsIndex, "publish_file", lambda *args: None)
     monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "_release_files", lambda *args: None)
-    monkeypatch.setattr(CompanyRawFiles, "_reservation_usage", lambda *args: (0, 0, 0))
+    monkeypatch.setattr(CompanyRawFiles, "_reservation_usage", lambda *args: (0, 0, 0, 0))
     monkeypatch.setattr(CompanyDocumentFiles, "read", lambda *args: text)
     monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "commit_document", lambda *args: True)
     monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "document_stage", lambda *args: None)
@@ -139,7 +139,7 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
         facts.publish((), {}, None, _NOW)
         facts.publish_file()
         collection._release_files()
-        assert raw._reservation_usage(tmp_path) == (0, 0, 0)
+        assert raw._reservation_usage(tmp_path) == (0, 0, 0, 0)
         assert text_files.read(b"a" * 32) == text
         assert collection.commit_document(_disclosure(), extraction, _NOW)
         collection.document_stage(_disclosure(), "downloaded")

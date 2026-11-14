@@ -119,7 +119,7 @@ class CompanyRawFiles:
                 except FileNotFoundError:
                     continue  # Workers remove completed scratch files and directories.
 
-    def _reservation_usage(self, directory: Path) -> tuple[int, int, int]:
+    def _reservation_usage(self, directory: Path) -> tuple[int, int, int, int]:
         """Diagnostic candidate: one observation of owned trees and reservations, never a cache."""
         roots = tuple(self.root / name for name in ("documents", "text", "failed"))
         targets = tuple(dict.fromkeys((*[Path(item.key) for item in self._reservations], directory)))
@@ -134,21 +134,37 @@ class CompanyRawFiles:
         for target in targets:
             if not any(target.is_relative_to(root) for root in roots):
                 sizes[target] = sum(size for _path, size in self._file_sizes(target, single_stat=True))
-        held = sum(max(0, item.maximum - max(0, sizes[Path(item.key)] - item.initial)) for item in self._reservations)
-        return used, held, sizes[directory]
+        held = analysis_held = 0
+        for item in self._reservations:
+            remaining = max(0, item.maximum - max(0, sizes[Path(item.key)] - item.initial))
+            held += remaining
+            if item.analysis:
+                analysis_held += remaining
+        return used, held, sizes[directory], analysis_held
 
     @contextmanager
     def reserve(self, directory: Path, maximum: int, *, analysis: bool = False) -> Iterator[None]:
         with self._lock:
             self.root.mkdir(parents=True, exist_ok=True)
             if self._scan_reservations_once:
-                used, held, initial = self._reservation_usage(directory)
+                used, held, initial, analysis_held = self._reservation_usage(directory)
             else:
-                held = sum(max(0, r.maximum - max(0, self._size(Path(r.key)) - r.initial)) for r in self._reservations)
+                held = analysis_held = 0
+                for item in self._reservations:
+                    remaining = max(0, item.maximum - max(0, self._size(Path(item.key)) - item.initial))
+                    held += remaining
+                    if item.analysis:
+                        analysis_held += remaining
                 used = self.usage()
                 initial = 0
-            ceiling = self.capacity if analysis else self.capacity - self.analysis_reserve
-            if used + held + maximum > ceiling or shutil.disk_usage(self.root).free - held - maximum < self.free_reserve:
+            # Analysis reservations use their reserved headroom; charging them
+            # against the reduced download ceiling would reserve that space twice.
+            download_required = used + held - analysis_held + maximum
+            if (
+                used + held + maximum > self.capacity
+                or not analysis and download_required > self.capacity - self.analysis_reserve
+                or shutil.disk_usage(self.root).free - held - maximum < self.free_reserve
+            ):
                 raise RuntimeError("company_raw_capacity_exhausted")
             if not self._scan_reservations_once:
                 initial = self._size(directory)
