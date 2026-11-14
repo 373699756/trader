@@ -430,6 +430,15 @@ def test_local_material_inspection_verifies_text_and_compares_formal_contract_wi
     assert all(len(excerpt["text"]) <= 150 for excerpt in item["excerpts"])
     assert item["contracts"][0]["contract_amount"] == 200_000_000
     assert item["contracts"][0]["annual_revenue"] is None
+    assert item["reparsed_contract"]["binding_confirmed"]
+    assert item["reparsed_contract"]["contract_amount"] == 200_000_000
+    assert item["reparsed_contract"]["annual_revenue"] is None and item["reparsed_contract"]["published"] is False
+    pending = {field["field"]: field for field in item["unverified_fields"]}
+    assert set(pending) == {"annual_revenue", "revenue_disclosed_at", "contract_revenue_pct", "amount_basis"}
+    assert all(field["code"] == "600001" and field["state"] == "verification_required" for field in pending.values())
+    assert all(field["evidence"] == [] for field in pending.values())
+    assert all(field["code"] == "600001" for field in item["field_conclusions"])
+    assert not item["unverified_fields_truncated"]
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
 
 
@@ -441,6 +450,39 @@ def test_material_inspection_rejects_unbounded_or_duplicate_keys_before_io(tmp_p
         InspectCompanyFieldMaterial(tmp_path / "missing.sqlite3", tmp_path / "missing-facts.sqlite3", keys, sqlite_policy=SqlitePolicyFixture(),
                                     observed_at=fixtures.NOW, event_policy=fixtures.CompanyEventPolicy())
     assert not tuple(tmp_path.iterdir())
+
+
+def test_material_pending_fields_remain_visible_without_text_and_exclude_other_events(tmp_path, monkeypatch):
+    from scripts.download.company import company_field_audit
+    from tests.helpers.download.company.company_annual_income import _contract
+    from trader.download.domain.company_evidence import DisclosurePartition
+
+    index = fixtures._index(tmp_path)
+    _contract(index)
+    other = fixtures._disclosure("another-contract", "关于签订重大合同的公告")
+    index.commit_page(DisclosurePartition("sse", other.published_at.date(), other.published_at.date()),
+                      DisclosurePage((other,), 1, False), fixtures.NOW)
+    index.commit_document(other, fixtures._extraction(
+        "本公司已签订正式合同。合同金额人民币1亿元。相关年度收入和税收口径尚待核实。"
+    ), fixtures.NOW)
+    index.publish(other.codes, fixtures.NOW)
+    before = (index.path.read_bytes(), index.facts_path.read_bytes())
+    def missing_text(_self, _digest):
+        raise FileNotFoundError("isolated unavailable source")
+    monkeypatch.setattr(company_field_audit.CompanyDocumentFiles, "read", missing_text)
+
+    report = company_field_audit.InspectCompanyFieldMaterial(
+        index.path, index.facts_path, ("contract-income",), sqlite_policy=SqlitePolicyFixture(),
+        observed_at=fixtures.NOW, event_policy=fixtures.CompanyEventPolicy(),
+    )
+
+    item, = report["items"]
+    assert item["material_available"] is False and item["material_failure"] == "FileNotFoundError"
+    assert item["current_receipt"] and "reparsed_contract" not in item
+    assert len(item["unverified_fields"]) == 4
+    assert {field["event_id"] for field in item["unverified_fields"]} == {"contract-income:operating_contract"}
+    assert all(field["state"] == "verification_required" and field["evidence"] == [] for field in item["unverified_fields"])
+    assert not report["field_correctness_verified"] and (index.path.read_bytes(), index.facts_path.read_bytes()) == before
 
 
 def test_material_inspection_does_not_count_a_previous_extraction_receipt_as_current(tmp_path):

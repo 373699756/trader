@@ -524,14 +524,7 @@ def _material_details(source: Mapping[str, object], payload: dict[str, object]) 
         ]
         contracts = item.get("contracts")
         row["contracts"] = [
-            {
-                **{name: _text(contract.get(name)) for name in (
-                    "event_id", "subject", "status", "revenue_report_date", "amount_basis",
-                )},
-                "contract_amount": _number(contract.get("contract_amount")),
-                "annual_revenue": _number(contract.get("annual_revenue")),
-                "binding_confirmed": contract.get("binding_confirmed") is True,
-            }
+            _material_contract(contract)
             for contract in (contracts[:16] if isinstance(contracts, list) else [])
             if isinstance(contract, dict)
         ]
@@ -547,6 +540,14 @@ def _material_details(source: Mapping[str, object], payload: dict[str, object]) 
         conclusions = item.get("field_conclusions")
         row["field_conclusions"] = _field_conclusions(conclusions)
         row["field_conclusions_truncated"] = isinstance(conclusions, list) and len(conclusions) > 32
+        unverified = item.get("unverified_fields")
+        row["unverified_fields"] = _field_conclusions(unverified)
+        row["unverified_fields_truncated"] = item.get("unverified_fields_truncated") is True or (
+            isinstance(unverified, list) and len(unverified) > 32
+        )
+        contract = item.get("reparsed_contract")
+        if isinstance(contract, dict):
+            row["reparsed_contract"] = {**_material_contract(contract), "published": False}
         reparsed = item.get("reparsed_share_action")
         if isinstance(reparsed, dict):
             row["reparsed_share_action"] = {
@@ -566,6 +567,19 @@ def _material_details(source: Mapping[str, object], payload: dict[str, object]) 
         "missing_source_keys": [value[:240] for value in (missing[:6] if isinstance(missing, list) else []) if isinstance(value, str)],
         "items": projected,
         "items_truncated": isinstance(items, list) and len(items) > 32,
+    }
+
+
+def _material_contract(contract: Mapping[str, object]) -> dict[str, object]:
+    return {
+        **{name: _text(contract.get(name)) for name in (
+            "event_id", "subject", "status", "revenue_report_date", "revenue_disclosed_at", "amount_basis",
+        )},
+        **{name: _number(contract.get(name)) for name in (
+            "contract_amount", "annual_revenue", "contract_revenue_pct",
+        )},
+        "binding_confirmed": contract.get("binding_confirmed") is True,
+        "positive_level": SafeNonnegativeInt(contract.get("positive_level")),
     }
 
 

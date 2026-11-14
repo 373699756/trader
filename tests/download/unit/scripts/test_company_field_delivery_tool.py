@@ -98,6 +98,31 @@ def test_material_field_conclusions_bound_members_and_do_not_publish_full_source
     assert "PRIVATE_FULL_TEXT" not in json.dumps(report)
 
 
+def test_material_unverified_fields_and_contract_comparison_keep_bounds_and_publication_roles():
+    field = {"code": "600001", "event_id": "contract", "field": "annual_revenue", "state": "present_unverified",
+             "value": 123, "applicable": True, "reason": "field_level_source_proof_missing", "evidence": [],
+             "raw_body": "PRIVATE_FULL_TEXT"}
+    contract = {"event_id": "contract", "subject": "issuer", "status": "implementing", "binding_confirmed": True,
+                "amount_basis": "unknown", "contract_amount": 3340000, "annual_revenue": 123,
+                "revenue_disclosed_at": "2026-04-10T00:00:00+08:00", "contract_revenue_pct": None,
+                "positive_level": 0, "raw_body": "PRIVATE_FULL_TEXT", "published": True}
+    payload = {"schema_version": "company-field-material", "status": "observed", "read_only": True,
+               "stable_read": True, "items": [{"unverified_fields": [field] * 40,
+                                                "unverified_fields_truncated": True,
+                                                "contracts": [contract] * 20, "reparsed_contract": contract}]}
+    report = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
+    item = report["checks"][0]["summary"]["items"][0]
+    assert len(item["unverified_fields"]) == 32 and item["unverified_fields_truncated"]
+    assert item["unverified_fields"][0]["code"] == "600001"
+    assert item["unverified_fields"][0]["state"] == "present_unverified"
+    assert len(item["contracts"]) == 16 and item["contracts_truncated"]
+    assert item["contracts"][0]["revenue_disclosed_at"] == "2026-04-10T00:00:00+08:00"
+    assert item["contracts"][0]["contract_revenue_pct"] is None
+    assert item["reparsed_contract"]["binding_confirmed"] and item["reparsed_contract"]["published"] is False
+    assert not report["checks"][0]["summary"]["field_correctness_verified"]
+    assert "PRIVATE_FULL_TEXT" not in json.dumps(report)
+
+
 
 
 

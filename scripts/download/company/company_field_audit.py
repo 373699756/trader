@@ -12,7 +12,8 @@ from datetime import date, datetime
 from trader.infra.sqlite_connection import SqliteConnection
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
-from trader.download.domain.company_events import CompanyEventPolicy, ContractMeasurements, IncreaseMeasurements, RepurchaseMeasurements
+from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, ContractMeasurements, IncreaseMeasurements, RepurchaseMeasurements
+from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
 from trader.download.domain.company_evidence import CompanyDocument, Disclosure
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
@@ -107,6 +108,8 @@ def InspectCompanyFieldMaterial(
                                 "positive_level": positive.positive_level,
                                 "published": False,
                             }
+                        if positive is not None and isinstance(positive.measurements, ContractMeasurements):
+                            item["reparsed_contract"] = {**_contract_details(positive, positive.measurements), "published": False}
                 item["current_receipt"] = formal.run(
                     "SELECT 1 FROM company_input_receipt WHERE source='cninfo' AND source_key=? AND code=? "
                     "AND record_hash=? AND body_hash IS ? AND extraction_hash=? AND outcome='valid' LIMIT 1",
@@ -114,23 +117,18 @@ def InspectCompanyFieldMaterial(
                 ).fetchone() is not None
                 facts = ReadCompanyFactRows(formal, (row[6],))
                 conclusions = ReadCompanyFieldResults(formal, (row[6],))
-                item["field_conclusions"] = [{
-                    "event_id": result.event_id, "field": result.field, "state": result.state,
-                    "value": result.value.isoformat() if isinstance(result.value, date) else result.value,
-                    "applicable": result.applicable, "reason": result.reason,
-                    "evidence": [{
-                        "source": proof.source, "source_key": proof.source_key,
-                        "record_hash": proof.record_hash, "body_hash": proof.body_hash.hex(),
-                        "rule_id": proof.rule_id, "start_line": proof.start_line, "end_line": proof.end_line,
-                        "unit": proof.unit, "subject": proof.subject.value,
-                        "published_at": proof.published_at.isoformat(),
-                    } for proof in result.evidence[:4]],
-                } for result in conclusions if any(
+                item["field_conclusions"] = [_field_conclusion(result) for result in conclusions if any(
                     proof.source == "cninfo" and proof.source_key == row[0]
                     and proof.record_hash == row[3] and proof.body_hash == row[4]
                     and proof.published_at == datetime.fromisoformat(row[2])
                     for proof in result.evidence
                 )]
+                related = ({event.event_id for fact in facts for event in fact.risk_events if row[0] in event.evidence_ids}
+                           | {event.event_id for fact in facts for event in fact.positive_events if row[0] in event.evidence_ids})
+                unverified = tuple(result for result in conclusions if result.event_id in related and result.applicable
+                                   and result.state not in {"verified", "not_applicable"})
+                item["unverified_fields"] = [_field_conclusion(result) for result in unverified[:32]]
+                item["unverified_fields_truncated"] = len(unverified) > 32
                 item["share_actions"] = [
                     {
                         "event_id": event.event_id, "event_type": event.event_type.value,
@@ -143,15 +141,7 @@ def InspectCompanyFieldMaterial(
                     if row[0] in event.evidence_ids and isinstance(event.measurements, (RepurchaseMeasurements, IncreaseMeasurements))
                 ]
                 item["contracts"] = [
-                    {
-                        "event_id": event.event_id, "subject": event.subject_type.value, "status": event.status.value,
-                        "contract_amount": event.measurements.contract_amount_cny,
-                        "annual_revenue": event.measurements.reference_annual_revenue_cny,
-                        "revenue_report_date": event.measurements.reference_report_date.isoformat()
-                        if event.measurements.reference_report_date else None,
-                        "binding_confirmed": event.measurements.binding_confirmed,
-                        "amount_basis": event.measurements.amount_basis,
-                    }
+                    _contract_details(event, event.measurements)
                     for fact in facts for event in fact.positive_events
                     if row[0] in event.evidence_ids and isinstance(event.measurements, ContractMeasurements)
                 ]
@@ -162,6 +152,33 @@ def InspectCompanyFieldMaterial(
         "schema_version": "company-field-material", "read_only": True, "stable_read": stable,
         "status": "observed" if stable else "degraded", "field_correctness_verified": False,
         "missing_source_keys": sorted(set(source_keys) - found), "items": items,
+    }
+
+
+def _field_conclusion(result: CompanyFieldConclusion) -> dict[str, object]:
+    return {
+        "code": result.code, "event_id": result.event_id, "field": result.field, "state": result.state,
+        "value": result.value.isoformat() if isinstance(result.value, date) else result.value,
+        "applicable": result.applicable, "reason": result.reason,
+        "evidence": [{
+            "source": proof.source, "source_key": proof.source_key,
+            "record_hash": proof.record_hash, "body_hash": proof.body_hash.hex(),
+            "rule_id": proof.rule_id, "start_line": proof.start_line, "end_line": proof.end_line,
+            "unit": proof.unit, "subject": proof.subject.value, "published_at": proof.published_at.isoformat(),
+        } for proof in result.evidence[:4]],
+    }
+
+
+def _contract_details(event: CompanyPositiveEvent, measurements: ContractMeasurements) -> dict[str, object]:
+    return {
+        "event_id": event.event_id, "subject": event.subject_type.value, "status": event.status.value,
+        "contract_amount": measurements.contract_amount_cny,
+        "annual_revenue": measurements.reference_annual_revenue_cny,
+        "revenue_report_date": measurements.reference_report_date.isoformat() if measurements.reference_report_date else None,
+        "revenue_disclosed_at": measurements.reference_disclosed_at.isoformat() if measurements.reference_disclosed_at else None,
+        "contract_revenue_pct": measurements.amount_to_revenue_pct,
+        "binding_confirmed": measurements.binding_confirmed, "amount_basis": measurements.amount_basis,
+        "positive_level": event.positive_level,
     }
 
 
