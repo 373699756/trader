@@ -18,6 +18,8 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.infra.company_raw_files import CompanyRawFiles
+from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
+from trader.download.infra.terminal_progress import RenderProgress
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from tests.helpers.download.company_resources import SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex, CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceReaderFixture as SQLiteCompanyEvidenceReader
 
@@ -159,12 +161,25 @@ def test_structured_first_local_recovery_resumes_after_cancellation(tmp_path, ph
 def test_document_inventory_switches_progress_before_reading_after_announcement_failure(tmp_path):
     events = []
     inventories = []
+    clock = [0.0]
+    display = CompanyEvidenceProgress(report=lambda _: None, monotonic=lambda: clock[0])
+
+    def progress(event):
+        events.append(event)
+        display(event)
 
     class Index(SQLiteCompanyEvidenceIndex):
         def pending_documents(self, codes, observed_at, **kwargs):
-            if not inventories:
-                assert events[-1].component == "announcements" and events[-1].status == "deferred"
-            inventories.append(True)
+            event = events[-1]
+            assert event.component == "operation" and event.operation is not None
+            assert event.operation.kind == "inventory" and event.operation.state == "running"
+            assert event.operation.source == "local" and not event.failure
+            phase = next(item for item in reversed(events) if item.component != "operation")
+            assert phase.component == "risk_documents" and phase.status == "running" and not phase.failure
+            clock[0] += 5
+            snapshot = display.heartbeat_message()
+            assert snapshot is not None and "正在核对库存" in RenderProgress(snapshot)
+            inventories.append(len(events))
             return super().pending_documents(codes, observed_at, **kwargs)
 
     class Source(fixtures.Sources):
@@ -184,12 +199,14 @@ def test_document_inventory_switches_progress_before_reading_after_announcement_
             source,
             source,
             lambda: 0,
-            events.append,
+            progress,
         ),
         ("600001",),
         NOW,
     )
     assert inventories and result.needs_retry and result.published_codes == 1
+    deferred = next(i for i, event in enumerate(events) if event.component == "announcements" and event.status == "deferred")
+    assert any(position > deferred for position in inventories)
 
 
 def test_recent_day_planning_never_duplicates_a_completed_wider_owner(tmp_path):
@@ -454,7 +471,7 @@ def test_incomplete_retry_schema_is_rejected_without_migration(tmp_path):
             "record_hash TEXT NOT NULL,retry_policy_id TEXT NOT NULL,failure TEXT NOT NULL,attempted_at TEXT NOT NULL,"
             "retry_at TEXT NOT NULL,attempts INTEGER NOT NULL)"
         )
-    with pytest.raises(RuntimeError, match="company_evidence_persistence_unavailable"):
+    with pytest.raises(ValueError, match="company_evidence_database_contract_mismatch"):
         index.initialize()
     assert reader.read(("600001",)) == before
     with SqliteSession(index.path) as connection:

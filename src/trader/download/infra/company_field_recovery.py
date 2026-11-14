@@ -90,26 +90,6 @@ class CompanyMaterialDependency:
         )
 
 
-def EnsureCompanyFieldRepairs(connection: SqliteConnection) -> None:
-    connection.run(
-        "CREATE TABLE IF NOT EXISTS company_field_repairs("
-        "disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,"
-        "code TEXT NOT NULL,record_hash TEXT NOT NULL,event_id TEXT NOT NULL,field TEXT NOT NULL,rule_id TEXT NOT NULL,"
-        "state TEXT NOT NULL CHECK(state IN ('pending','attempted','complete')),"
-        "PRIMARY KEY(disclosure_id,code,record_hash,event_id,field,rule_id)) WITHOUT ROWID"
-    )
-    connection.run(
-        "CREATE TABLE IF NOT EXISTS company_material_dependencies("
-        "disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,"
-        "code TEXT NOT NULL,record_hash TEXT NOT NULL,body_hash BLOB NOT NULL CHECK(length(body_hash)=32),"
-        "extraction_hash BLOB NOT NULL CHECK(length(extraction_hash)=32),scope TEXT NOT NULL,reason_code TEXT NOT NULL,"
-        "PRIMARY KEY(disclosure_id,code,record_hash,body_hash,extraction_hash,scope,reason_code)) WITHOUT ROWID"
-    )
-    connection.run(
-        "CREATE INDEX IF NOT EXISTS company_material_dependency_codes ON company_material_dependencies(code,disclosure_id)"
-    )
-
-
 def RegisterCompanyMaterialDependencies(
     collected: SqliteConnection,
     formal: SqliteConnection,
@@ -1181,7 +1161,6 @@ def _field_gaps(fact: CompanyFacts, connection: SqliteConnection) -> tuple[Compa
 
 __all__ = [
     "COMPANY_FIELD_RULES",
-    "EnsureCompanyFieldRepairs",
     "ReadCompanyFieldRecovery",
     "QueueCompanyFieldRepairs",
     "QueueCompanyShareActionRechecks",

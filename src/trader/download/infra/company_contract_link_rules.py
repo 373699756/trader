@@ -33,23 +33,11 @@ class CompanyContractLinkRefresh:
     candidate: CompanyLinkCandidate | None
 
 
-def EnsureCompanyContractLinkRules(connection: SqliteConnection) -> None:
-    connection.run(
-        "CREATE TABLE IF NOT EXISTS document_contract_link_rules("
-        "source TEXT NOT NULL,source_key TEXT NOT NULL,code TEXT NOT NULL,record_hash TEXT NOT NULL,"
-        "body_hash BLOB NOT NULL CHECK(length(body_hash)=32),extraction_hash BLOB NOT NULL,"
-        "payload_hash BLOB NOT NULL CHECK(length(payload_hash)=32),rule_id TEXT NOT NULL,"
-        "PRIMARY KEY(source,source_key,code,record_hash,extraction_hash)) WITHOUT ROWID"
-    )
-
-
 def ReadCompanyContractLinkRules(
     connection: SqliteConnection, codes: Sequence[str], extraction_hash: bytes
 ) -> frozenset[CompanyContractLinkRule]:
-    """An older collection without this derived table has no current proofs."""
-    if not codes or connection.run(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='document_contract_link_rules'"
-    ).fetchone() is None:
+    """Read current version-bound proof from an admitted collection."""
+    if not codes:
         return frozenset()
     placeholders = ",".join("?" for _code in codes)
     return frozenset(CompanyContractLinkRule(*row) for row in connection.run(
@@ -71,7 +59,6 @@ def WriteCompanyContractLinkRules(
     The caller writes the accepted body and candidate first, in this same
     transaction. Rejected/late results cannot bless another version or code.
     """
-    EnsureCompanyContractLinkRules(connection)
     if candidate is None or candidate.positive is None or (
         candidate.positive.event_type is not CompanyPositiveType.OPERATING_CONTRACT
     ):
@@ -108,7 +95,6 @@ def ApplyCompanyContractLinkRefreshes(
     """Acknowledge local revalidation only while all current bindings still match."""
     if not refreshes:
         return
-    EnsureCompanyContractLinkRules(connection)
     for refresh in refreshes:
         binding = refresh.binding
         row = connection.run(
@@ -154,7 +140,6 @@ def ApplyCompanyContractLinkRefreshes(
 __all__ = [
     "CompanyContractLinkRule",
     "CompanyContractLinkRefresh",
-    "EnsureCompanyContractLinkRules",
     "ReadCompanyContractLinkRules",
     "WriteCompanyContractLinkRules",
     "ApplyCompanyContractLinkRefreshes",

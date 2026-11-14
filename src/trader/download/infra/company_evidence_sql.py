@@ -1,8 +1,9 @@
 """Fresh company evidence schema. No legacy database migration or recovery payloads."""
 
 from trader.infra.sqlite_connection import SqliteSchema
+from trader.download.infra.download_failure_diagnostics import FAILURE_DIAGNOSTICS_SQL
 
-SCHEMA = SqliteSchema(
+_BASE_SCHEMA = SqliteSchema(
     (
         "CREATE TABLE IF NOT EXISTS contract(schema_id TEXT PRIMARY KEY CHECK(schema_id='company_collection'))",
         "CREATE TABLE company_sync_job(singleton INTEGER PRIMARY KEY CHECK(singleton=1),initialized_at TEXT NOT NULL,cutoff TEXT NOT NULL)",
@@ -112,8 +113,8 @@ SCHEMA = SqliteSchema(
     ),
 )
 
-# Operational tables share the collection schema version; old formats are rejected.
-DOCUMENT_RETRY_SCHEMA = """
+# Operational tables belong to the same current structure; old formats are rejected.
+_DOCUMENT_RETRY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS document_retries (
   disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE,
   record_hash TEXT NOT NULL, retry_policy_id TEXT NOT NULL, failure TEXT NOT NULL, attempted_at TEXT NOT NULL,
@@ -125,7 +126,7 @@ CREATE TABLE IF NOT EXISTS document_retries (
 )
 """
 
-DOCUMENT_EXTRACTION_SCHEMA = """
+_DOCUMENT_EXTRACTION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS document_extractions (
   disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE,
   record_hash TEXT NOT NULL, payload_hash BLOB NOT NULL CHECK(length(payload_hash)=32),
@@ -134,7 +135,7 @@ CREATE TABLE IF NOT EXISTS document_extractions (
 )
 """
 
-DISCLOSURE_QUERY_SCHEMA = (
+_DISCLOSURE_QUERY_SCHEMA = (
     """CREATE TABLE IF NOT EXISTS disclosure_query_policy (
       singleton INTEGER PRIMARY KEY CHECK(singleton=1), query_policy_id TEXT NOT NULL
     )""",
@@ -161,4 +162,45 @@ DISCLOSURE_QUERY_SCHEMA = (
     "CREATE INDEX IF NOT EXISTS disclosure_query_source_rows ON disclosure_query_rows(source_key)",
 )
 
-__all__ = ["SCHEMA", "DOCUMENT_EXTRACTION_SCHEMA", "DOCUMENT_RETRY_SCHEMA", "DISCLOSURE_QUERY_SCHEMA"]
+CONTRACT_LINK_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS document_contract_link_rules("
+    "source TEXT NOT NULL,source_key TEXT NOT NULL,code TEXT NOT NULL,record_hash TEXT NOT NULL,"
+    "body_hash BLOB NOT NULL CHECK(length(body_hash)=32),extraction_hash BLOB NOT NULL,"
+    "payload_hash BLOB NOT NULL CHECK(length(payload_hash)=32),rule_id TEXT NOT NULL,"
+    "PRIMARY KEY(source,source_key,code,record_hash,extraction_hash)) WITHOUT ROWID"
+)
+
+SCHEMA = SqliteSchema((*_BASE_SCHEMA.statements, _DOCUMENT_RETRY_SCHEMA, _DOCUMENT_EXTRACTION_SCHEMA,
+    *_DISCLOSURE_QUERY_SCHEMA,
+    "CREATE TABLE IF NOT EXISTS document_announcement_numbers("
+    "disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,"
+    "record_hash TEXT NOT NULL,body_hash BLOB NOT NULL CHECK(length(body_hash)=32),"
+    "number TEXT NOT NULL,role INTEGER NOT NULL CHECK(role IN (0,1)),rule_id TEXT NOT NULL,"
+    "PRIMARY KEY(disclosure_id,role,number)) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS company_dirty_codes(code TEXT PRIMARY KEY) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS company_document_requirements(disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE)",
+    "CREATE TABLE IF NOT EXISTS company_document_exclusions("
+    "disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE,"
+    "reason TEXT NOT NULL CHECK(reason='subject_outside_scope'))",
+    "CREATE TABLE IF NOT EXISTS company_work_policy(singleton INTEGER PRIMARY KEY CHECK(singleton=1),work_policy_id TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS disclosure_query_contracts(market TEXT NOT NULL,start_date TEXT NOT NULL,end_date TEXT NOT NULL,scope TEXT NOT NULL,page_size INTEGER NOT NULL CHECK(page_size=30),filter_identity TEXT NOT NULL CHECK(filter_identity='all_announcements'),PRIMARY KEY(market,start_date,end_date,scope)) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS company_field_repairs("
+    "disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,"
+    "code TEXT NOT NULL,record_hash TEXT NOT NULL,event_id TEXT NOT NULL,field TEXT NOT NULL,rule_id TEXT NOT NULL,"
+    "state TEXT NOT NULL CHECK(state IN ('pending','attempted','complete')),"
+    "PRIMARY KEY(disclosure_id,code,record_hash,event_id,field,rule_id)) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS company_material_dependencies("
+    "disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,"
+    "code TEXT NOT NULL,record_hash TEXT NOT NULL,body_hash BLOB NOT NULL CHECK(length(body_hash)=32),"
+    "extraction_hash BLOB NOT NULL CHECK(length(extraction_hash)=32),scope TEXT NOT NULL,reason_code TEXT NOT NULL,"
+    "PRIMARY KEY(disclosure_id,code,record_hash,body_hash,extraction_hash,scope,reason_code)) WITHOUT ROWID",
+    "CREATE INDEX IF NOT EXISTS company_material_dependency_codes ON company_material_dependencies(code,disclosure_id)",
+    CONTRACT_LINK_SCHEMA,
+    "CREATE TABLE IF NOT EXISTS annual_income("
+    "code TEXT NOT NULL,report_date TEXT NOT NULL,disclosed_at TEXT NOT NULL,updated_at TEXT NOT NULL,"
+    "observed_at TEXT NOT NULL,currency TEXT NOT NULL,operating_revenue REAL,record_hash TEXT NOT NULL,"
+    "PRIMARY KEY(code,report_date,disclosed_at,updated_at,record_hash)) WITHOUT ROWID",
+    FAILURE_DIAGNOSTICS_SQL,
+))
+
+__all__ = ["SCHEMA", "CONTRACT_LINK_SCHEMA"]

@@ -304,6 +304,15 @@ def _execute_company(
         # batch was already published. Scheduling is not a file seal.
         _publish_batch(dependencies, population, observed_at, started, state)
     published = max(published, state.published)
+    if not CompanyCancelled(dependencies):
+        ReportCompanyProgress(dependencies, "finish", state, 1, completed=0)
+        try:
+            state.operations.call("finish", partial(index.finish, observed_at), component="finish", endpoint="sqlite:company_collection")
+        except InterruptedError:
+            if not CompanyCancelled(dependencies):
+                raise
+        if not CompanyCancelled(dependencies):
+            ReportCompanyProgress(dependencies, "finish", state, 0, completed=1, status="complete")
     document_workload: CompanyDocumentWorkload | None = None
     if not CompanyCancelled(dependencies):
         try:
@@ -316,11 +325,6 @@ def _execute_company(
         pending = None
         document_workload = None
     pending_documents = document_workload.due + document_workload.cooling if document_workload is not None else None
-    if not CompanyCancelled(dependencies):
-        ReportCompanyProgress(dependencies, "finish", state, 1, completed=0)
-        state.operations.call("finish", partial(index.finish, observed_at), component="finish", endpoint="sqlite:company_collection")
-        if not CompanyCancelled(dependencies):
-            ReportCompanyProgress(dependencies, "finish", state, 0, completed=1, status="complete")
     if pending_documents:
         state.failures += ("risk_documents:pending",)
     result_failures = tuple(sorted({failure for failure in state.failures if CompanyFailureRequiresRetry(failure)}))

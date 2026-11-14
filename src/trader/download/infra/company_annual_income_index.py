@@ -11,15 +11,6 @@ from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.infra.sqlite_connection import SqliteConnection
 
 
-def EnsureCompanyAnnualIncome(connection: SqliteConnection) -> None:
-    connection.run(
-        "CREATE TABLE IF NOT EXISTS annual_income("
-        "code TEXT NOT NULL,report_date TEXT NOT NULL,disclosed_at TEXT NOT NULL,updated_at TEXT NOT NULL,"
-        "observed_at TEXT NOT NULL,currency TEXT NOT NULL,operating_revenue REAL,record_hash TEXT NOT NULL,"
-        "PRIMARY KEY(code,report_date,disclosed_at,updated_at,record_hash)) WITHOUT ROWID"
-    )
-
-
 def ReadCompanyAnnualIncome(
     connection: SqliteConnection, codes: Sequence[str], observed_at: datetime
 ) -> tuple[CompanyAnnualIncome, ...]:
@@ -117,7 +108,6 @@ def WriteCompanyAnnualIncome(
 
 
 __all__ = [
-    "EnsureCompanyAnnualIncome",
     "PlanCompanyAnnualIncomeRequests",
     "ReadCompanyAnnualIncome",
     "WriteCompanyAnnualIncome",

@@ -1,6 +1,7 @@
 """Cancellation interrupts company I/O without discarding durable pages or publication."""
 
 from threading import Event
+from multiprocessing import get_context
 
 import pytest
 
@@ -13,6 +14,17 @@ from tests.helpers.download.company_resources import CompanyDocumentFilesFixture
 from tests.helpers.download.company_resources import EastmoneyCompanySourceFixture as EastmoneyCompanySource
 from trader.infra.http_contracts import HttpCancelled
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+
+
+def _resume_company_process(root, output):
+    try:
+        source = fixtures.Sources()
+        output.send(fixtures._sync_company_evidence(
+            CompanyEvidenceDependencies(fixtures._index(root), source, source, lambda: 0),
+            ("600001",), fixtures.NOW,
+        ))
+    finally:
+        output.close()
 
 
 def test_cancellation_before_initialization_does_not_create_database(tmp_path):
@@ -49,6 +61,54 @@ def test_cancelled_sync_before_initialization_reports_unknown_inventory_without_
     assert result.published_codes == 0 and source.calls == [] and not index.path.exists()
     assert events[-1].pending is events[-1].pending_documents is None
     assert events[-1].workload is None
+
+
+@pytest.mark.parametrize("interrupted", (False, True))
+def test_cancellation_during_finish_keeps_commits_and_leaves_final_inventory_unknown(tmp_path, monkeypatch, interrupted):
+    index = fixtures._index(tmp_path)
+    cancelled = Event()
+    events = []
+    original_finish = index.finish
+    original_inventory = index.document_workload
+
+    def finish(observed_at):
+        original_finish(observed_at)
+        cancelled.set()
+        if interrupted:
+            raise InterruptedError("company_sync_cancelled")
+
+    def inventory(*args, **kwargs):
+        assert not cancelled.is_set(), "final inventory must not reopen a cancelled writer"
+        return original_inventory(*args, **kwargs)
+
+    monkeypatch.setattr(index, "finish", finish)
+    monkeypatch.setattr(index, "document_workload", inventory)
+    source = fixtures.Sources()
+    result = fixtures._sync_company_evidence(
+        CompanyEvidenceDependencies(index, source, source, lambda: 0, progress=events.append,
+                                    cancel_requested=cancelled.is_set),
+        ("600001",), fixtures.NOW,
+    )
+    assert result.failures == ("task:cancelled",) and result.published_codes == 1
+    assert result.pending_partitions is result.pending_documents is None
+    assert result.ocr_documents is result.unextractable_documents is None
+    assert events[-1].failure == "task:cancelled" and events[-1].workload is None
+    context = get_context("spawn")
+    incoming, outgoing = context.Pipe(duplex=False)
+    process = context.Process(target=_resume_company_process, args=(tmp_path, outgoing))
+    process.start()
+    outgoing.close()
+    try:
+        assert incoming.poll(20), "new process did not finish the isolated company continuation"
+        resumed = incoming.recv()
+        process.join(timeout=10)
+        assert process.exitcode == 0
+    finally:
+        incoming.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=10)
+    assert not resumed.needs_retry and resumed.pending_documents == 0
 
 
 def test_cancelled_sync_keeps_pending_inventory_unknown_and_does_not_query_after_cancel(tmp_path, monkeypatch):

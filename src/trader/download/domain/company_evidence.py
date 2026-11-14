@@ -22,6 +22,10 @@ DocumentRepairMode = Literal["ocr", "limits"]
 DocumentRoute = Literal["standard", "ocr", "limits"]
 
 
+class CompanyDatabaseIncompatibleError(ValueError):
+    """Company download material has a structure that the current writer rejects."""
+
+
 @dataclass(frozen=True)
 class CompanyDocumentLimits:
     max_bytes: int
@@ -776,6 +780,19 @@ class CompanyEvidenceSyncResult:
             or self.pending_partitions or self.pending_documents
         )
 
+    @property
+    def retry_reason(self) -> str | None:
+        reasons = list(self.failures)
+        if any(value is None for value in (
+            self.pending_partitions, self.pending_documents, self.ocr_documents, self.unextractable_documents,
+        )):
+            reasons.append("inventory:not_checked")
+        if self.pending_partitions:
+            reasons.append("announcements:pending")
+        if self.pending_documents:
+            reasons.append("risk_documents:pending")
+        return ",".join(dict.fromkeys(reasons)) or None
+
 
 _OCR_FAILURES = frozenset(
     {
@@ -923,6 +940,7 @@ __all__ = [
     "DocumentRoute",
     "CompanyEvidenceInput",
     "CompanyEvidenceSyncResult",
+    "CompanyDatabaseIncompatibleError",
     "CompanyFinancial",
     "CompanyRatio",
     "Component",

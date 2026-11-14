@@ -229,6 +229,12 @@ def _report_sync_failure(result: SyncResult, progress: SyncProgress) -> None:
             "sync: 交易日历准备超时，AkShare/Sina 在30秒内未完成；本轮尚未进入下载，已有断点保留，请稍后重试。",
         )
     for task in result.tasks:
+        if task.task == "company" and task.reason == "CompanyDatabaseIncompatibleError":
+            _sync_error(progress,
+                "sync company: 公司下载数据库结构不兼容，本次未启动公司资料写入。"
+                "重下范围为下载目录 company/raw/company_collection.sqlite3 与 company/company_facts.sqlite3 "
+                "及其配套公司原件、正文资料；程序不会自动删除或迁移。",
+            )
         if task.task == "company" and task.reason == "ProcessLockError":
             _sync_error(progress,
                 "sync company: 公司同步锁正由另一个任务持有。若曾按 Ctrl+Z，请在原终端用 jobs 查看，"

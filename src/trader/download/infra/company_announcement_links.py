@@ -14,16 +14,6 @@ from trader.infra.sqlite_connection import SqliteConnection
 _RULE = "issuer_announcement_number:1"
 
 
-def EnsureCompanyAnnouncementLinks(connection: SqliteConnection) -> None:
-    connection.run(
-        "CREATE TABLE IF NOT EXISTS document_announcement_numbers("
-        "disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,"
-        "record_hash TEXT NOT NULL,body_hash BLOB NOT NULL CHECK(length(body_hash)=32),"
-        "number TEXT NOT NULL,role INTEGER NOT NULL CHECK(role IN (0,1)),rule_id TEXT NOT NULL,"
-        "PRIMARY KEY(disclosure_id,role,number)) WITHOUT ROWID"
-    )
-
-
 def WriteCompanyAnnouncementNumbers(
     connection: SqliteConnection,
     disclosure_id: int,
@@ -94,4 +84,4 @@ def LinkCompanyAnnouncementNumbers(
     return tuple(linked)
 
 
-__all__ = ["EnsureCompanyAnnouncementLinks", "LinkCompanyAnnouncementNumbers", "WriteCompanyAnnouncementNumbers"]
+__all__ = ["LinkCompanyAnnouncementNumbers", "WriteCompanyAnnouncementNumbers"]

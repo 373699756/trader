@@ -21,22 +21,7 @@ from trader.infra.sqlite_connection import SqliteConnection
 _COMPANY_WORK_POLICY = COMPANY_EXTRACTION_IDENTITY + ":applicable-subjects:1:repurchase-events:2"
 
 
-def EnsureCompanyPipelineQueries(connection: SqliteConnection) -> None:
-    connection.run("CREATE TABLE IF NOT EXISTS company_dirty_codes(code TEXT PRIMARY KEY) WITHOUT ROWID")
-    connection.run(
-        "CREATE TABLE IF NOT EXISTS company_document_requirements(disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE)"
-    )
-    connection.run(
-        "CREATE TABLE IF NOT EXISTS company_document_exclusions("
-        "disclosure_id INTEGER PRIMARY KEY REFERENCES disclosures(id) ON DELETE CASCADE,"
-        "reason TEXT NOT NULL CHECK(reason='subject_outside_scope'))"
-    )
-    connection.run(
-        "CREATE TABLE IF NOT EXISTS company_work_policy(singleton INTEGER PRIMARY KEY CHECK(singleton=1),work_policy_id TEXT NOT NULL)"
-    )
-    connection.run(
-        "CREATE TABLE IF NOT EXISTS disclosure_query_contracts(market TEXT NOT NULL,start_date TEXT NOT NULL,end_date TEXT NOT NULL,scope TEXT NOT NULL,page_size INTEGER NOT NULL CHECK(page_size=30),filter_identity TEXT NOT NULL CHECK(filter_identity='all_announcements'),PRIMARY KEY(market,start_date,end_date,scope)) WITHOUT ROWID"
-    )
+def PrepareCompanyPipelineQueries(connection: SqliteConnection) -> None:
     connection.run(
         "INSERT OR IGNORE INTO disclosure_query_contracts SELECT market,start_date,end_date,'',30,'all_announcements' FROM partitions"
     )
@@ -246,7 +231,7 @@ def CountCompanyUnpublishedBodies(connection: SqliteConnection, cutoff: datetime
 
 
 __all__ = [
-    "EnsureCompanyPipelineQueries",
+    "PrepareCompanyPipelineQueries",
     "CheckDisclosureQueryContract",
     "MarkCompanyDirty",
     "ReleaseCompletedCompanyQueryRows",

@@ -779,6 +779,7 @@ def test_unversioned_collection_rejects_writer_and_evidence_lookup_without_mutat
     before = path.read_bytes()
     facts_path = tmp_path / "company_facts.sqlite3"
     SQLiteCompanyFactsIndex(facts_path).initialize()
+    formal_before = facts_path.read_bytes()
     with pytest.raises(ValueError, match="contract_mismatch"):
         SQLiteCompanyEvidenceIndex(
             path, facts_path=facts_path, documents=CompanyDocumentFiles(tmp_path / "text")
@@ -787,6 +788,7 @@ def test_unversioned_collection_rejects_writer_and_evidence_lookup_without_mutat
         SQLiteCompanyEvidenceReader(facts_path, raw_path=path).document_links("600001", ("first",))
     assert str(error.value.__cause__) == "sqlite_schema_unsupported"
     assert path.read_bytes() == before
+    assert facts_path.read_bytes() == formal_before
 
 
 def test_previous_formal_version_is_rejected_without_reinterpreting_facts(tmp_path):

@@ -108,7 +108,8 @@ class SyncData:
         company = self.company(reference)
         stopped = self.cancelled() or "task:cancelled" in company.failures
         return SyncTaskResult(
-            task, "cancelled" if stopped else "pending" if company.needs_retry else "completed", company=company
+            task, "cancelled" if stopped else "pending" if company.needs_retry else "completed",
+            reason="task:cancelled" if stopped else company.retry_reason, company=company,
         )
 
 

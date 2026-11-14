@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.infra.company_announcement_links import (
-    EnsureCompanyAnnouncementLinks, LinkCompanyAnnouncementNumbers, WriteCompanyAnnouncementNumbers,
+    LinkCompanyAnnouncementNumbers, WriteCompanyAnnouncementNumbers,
 )
 from trader.download.domain.company_event_extraction import (
     CompanyDocumentNeedsReview, ExtractCompanyLinkCandidate, ResolveCompanyLinks,
@@ -54,7 +54,6 @@ from trader.download.domain.company_facts import CompanyFacts, CompileCompanyFac
 from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.infra.company_field_publication import PrepareCompanyFieldResults
 from trader.download.infra.company_disclosure_queries import (
-    ActivateDisclosureQueryPolicy,
     CommitDisclosureQueryPage,
     DeferDisclosurePartition,
     DisclosureQueryKey,
@@ -70,14 +69,9 @@ from trader.download.infra.company_link_codec import EncodeCompanyLink
 from trader.download.infra.company_supersession import PublishCompanySupersessions
 from trader.download.infra.company_coverage_progress import ReadCompanyCoverageProgress
 from trader.download.infra.company_publication_progress import ReportCompanyVerification
-from trader.download.infra.download_failure_diagnostics import FAILURE_DIAGNOSTICS_SQL, WriteDownloadFailure
+from trader.download.infra.download_failure_diagnostics import WriteDownloadFailure
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureRecord
-from trader.download.infra.company_evidence_sql import (
-    DISCLOSURE_QUERY_SCHEMA,
-    DOCUMENT_EXTRACTION_SCHEMA,
-    DOCUMENT_RETRY_SCHEMA,
-    SCHEMA,
-)
+from trader.download.infra.company_evidence_initialization import InitializeCompanyEvidence
 from trader.download.infra.company_fact_inputs import (
     BindCompanyEvidenceSource,
     BuildCompanySnapshot,
@@ -90,7 +84,6 @@ from trader.download.infra.company_document_recovery import RepairCompanyDocumen
 from trader.download.infra.company_field_recovery import (
     CompleteCompanyFieldRepairs,
     CompanyFieldRepairReceipts,
-    EnsureCompanyFieldRepairs,
     QueueCompanyFieldRepairs,
     QueueCompanyShareActionRechecks,
     RecoverRequiredCompanyText,
@@ -104,13 +97,12 @@ from trader.download.infra.company_field_recovery import (
 from trader.download.infra.company_material_cleanup import ReleaseCompanyMaterialFiles, ReleasePublishedCompanyMaterial
 from trader.download.infra.company_publication_reads import PendingCompanyContractLinkCodes, ReadCompanyPublicationLinks
 from trader.download.infra.company_contract_link_rules import (
-    ApplyCompanyContractLinkRefreshes, CompanyContractLinkRefresh, EnsureCompanyContractLinkRules,
+    ApplyCompanyContractLinkRefreshes, CompanyContractLinkRefresh,
     WriteCompanyContractLinkRules,
 )
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
 from trader.download.domain.company_annual_income import ApplyCompanyAnnualIncome, CompanyAnnualIncome, CompanyAnnualIncomeRequest
 from trader.download.infra.company_annual_income_index import (
-    EnsureCompanyAnnualIncome,
     PlanCompanyAnnualIncomeRequests,
     WriteCompanyAnnualIncome,
 )
@@ -118,7 +110,6 @@ from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES, Decod
 from trader.download.infra.company_pipeline_queries import (
     CheckDisclosureQueryContract,
     CountCompanyUnpublishedBodies,
-    EnsureCompanyPipelineQueries,
     IndexCompanyDocument,
     MarkCompanyDirty,
     MarkCompanyMarketDirty,
@@ -127,7 +118,6 @@ from trader.download.infra.company_pipeline_queries import (
     SelectCompanyDocuments,
 )
 from trader.infra.sqlite_connection import (
-    EnsureSqliteSchema,
     SqliteConnection,
     SqliteConnectionOptions,
     SqliteSession,
@@ -194,67 +184,15 @@ class SQLiteCompanyEvidenceIndex:
 
     def initialize(self) -> None:
         self._check_cancelled()
-        if self.path.exists() and not self.facts_path.exists():
-            raise ValueError("company_database_pair_incomplete")
-        if self.facts_path.exists() and not self.path.exists():
-            # Public reference preparation may have created an exclusions-only
-            # formal store before the first company collection.
-            with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
-                ReadCompanyPublicationIdentity(formal)
-                if formal.run("SELECT 1 FROM company_facts UNION ALL SELECT 1 FROM company_input_receipt LIMIT 1").fetchone():
-                    raise ValueError("company_database_pair_incomplete")
-        self._facts.initialize()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        InitializeCompanyEvidence(
+            self.path, self._facts, sqlite_policy=self._sqlite_policy, cancel_requested=self._cancel_requested,
+        )
         try:
-            if self.path.exists():
-                with SqliteSession(
-                    self.path, SqliteConnectionOptions(read_only=True), cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy
-                ) as connection:
-                    if connection.run("SELECT 1 FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' LIMIT 1").fetchone():
-                        self._validate_contract(connection)
-                        connection.run("SELECT payload_hash,ocr_diagnostic,ocr_policy_id,ocr_timeout_attempts FROM document_retries LIMIT 0")
-            with SqliteSession(
-                self.path,
-                SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True),
-                cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
-            ) as connection:
-                connection.run("PRAGMA auto_vacuum=INCREMENTAL")
-                EnsureSqliteSchema(
-                    connection,
-                    SCHEMA,
-                    allow_create=True,
-                    initialize=self._initialize_contract,
-                    validate=self._validate_contract,
-                )
-                with SqliteTransaction(connection, immediate=True):
-                    connection.run(DOCUMENT_RETRY_SCHEMA)
-                    connection.run(DOCUMENT_EXTRACTION_SCHEMA)
-                    EnsureCompanyAnnouncementLinks(connection)
-                    for statement in DISCLOSURE_QUERY_SCHEMA:
-                        connection.run(statement)
-                    ActivateDisclosureQueryPolicy(connection)
-                    EnsureCompanyPipelineQueries(connection)
-                    EnsureCompanyFieldRepairs(connection)
-                    EnsureCompanyContractLinkRules(connection)
-                    EnsureCompanyAnnualIncome(connection)
-                    connection.run(FAILURE_DIAGNOSTICS_SQL)
             self._repair_pending_files()
         except sqlite3.Error as exc:
             if str(exc) == "interrupted" and self._cancel_requested is not None and self._cancel_requested():
                 raise InterruptedError("company_sync_cancelled") from exc
             raise RuntimeError("company_evidence_persistence_unavailable") from exc
-
-    @staticmethod
-    def _initialize_contract(connection: SqliteConnection) -> None:
-        connection.run("INSERT INTO contract VALUES ('company_collection')")
-
-    @staticmethod
-    def _validate_contract(connection: SqliteConnection) -> None:
-        if connection.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name='contract'").fetchone() is None:
-            raise ValueError("company_evidence_database_contract_mismatch")
-        contract = connection.run("SELECT schema_id FROM contract").fetchall()
-        if [row[0] for row in contract] != ["company_collection"]:
-            raise ValueError("company_evidence_database_contract_mismatch")
 
     def _repair_pending_files(self) -> None:
         RepairCompanyDocumentFiles(self._connect, self._documents, self._check_cancelled)

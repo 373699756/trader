@@ -88,12 +88,18 @@ class CompanyDocumentRun:
         ), component="risk_documents", endpoint="sqlite:company_collection")
 
     def has_due(self) -> bool:
-        if CompanyCancelled(self.dependencies) or self.capacity_blocked or not self.workload().due:
+        if CompanyCancelled(self.dependencies) or self.capacity_blocked:
+            return False
+        workload = self.workload()
+        if not workload.due:
             return False
         if not self.stopped:
             return True
-        tasks = self.dependencies.index.pending_documents(self.population, self.now(), limit=1, policies=self.policies,
-                                                          excluded=tuple(self.failed_identities))
+        self.report(workload, self.completed)
+        tasks = self.state.operations.call("inventory", partial(
+            self.dependencies.index.pending_documents, self.population, self.now(), limit=1, policies=self.policies,
+            excluded=tuple(self.failed_identities),
+        ), component="risk_documents", endpoint="sqlite:company_collection")
         return bool(tasks and self.sources[0].document_ready(tasks[0].disclosure))
 
     def run_batch(self, *, discovering: bool = False, discover: Callable[[], int | None] | None = None, local_only: bool = False) -> None:
@@ -104,15 +110,16 @@ class CompanyDocumentRun:
         workload = self.workload()
         if CompanyCancelled(dependencies):
             return
+        self.report(workload, self.completed, discovering=discovering)
         queue = deque(
-            index.pending_documents(
+            self.state.operations.call("inventory", partial(index.pending_documents,
                 self.population,
                 self.now(),
                 limit=self.configuration.document_batch_size,
                 policies=self.policies,
                 excluded=tuple(self.failed_identities),
                 local_only=local_only,
-            )
+            ), component="risk_documents", endpoint="sqlite:company_collection")
         )
         self.batch_sources = tuple(sorted({task.disclosure.source for task in queue}))
         self.attempted_identities.clear()

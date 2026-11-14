@@ -255,7 +255,7 @@ def test_first_projection_before_cleanup_preserves_old_record_material_after_dir
     partition = DisclosurePartition("sse", revised.published_at.date(), revised.published_at.date())
     index.commit_page(partition, DisclosurePage((revised,), 1, False), NOW)
     with SqliteSession(index.path) as collected, SqliteTransaction(collected):
-        collected.run("DROP TABLE company_material_dependencies")
+        collected.run("DELETE FROM company_material_dependencies")
     restarted, _raw = _index(tmp_path)
     required = _dependencies(restarted)[0]
     assert required.record_hash == item.digest and required.body_hash == old_body

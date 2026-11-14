@@ -1,6 +1,7 @@
 """Legacy contract link payloads cannot bypass the current body subject guard."""
 
 import hashlib
+import sqlite3
 from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -18,6 +19,7 @@ from trader.download.infra.company_contract_link_rules import (
     WriteCompanyContractLinkRules,
 )
 from trader.download.infra.company_link_codec import EncodeCompanyLink
+from trader.download.infra.company_evidence_sql import CONTRACT_LINK_SCHEMA
 from trader.download.infra.company_publication_reads import PendingCompanyContractLinkCodes, ReadCompanyPublicationLinks
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
@@ -34,6 +36,7 @@ _SUBSIDIARY = (
 @pytest.fixture
 def connection():
     with SqliteSession(":memory:") as connection, SqliteTransaction(connection):
+        connection.run(CONTRACT_LINK_SCHEMA)
         connection.run(
             "CREATE TABLE disclosures(id INTEGER PRIMARY KEY,source TEXT,source_key TEXT,record_hash TEXT,"
             "body_hash BLOB,body_retained INTEGER,body_checked INTEGER,title TEXT,published_at TEXT,url TEXT)"
@@ -44,6 +47,15 @@ def connection():
             "PRIMARY KEY(source,source_key,record_hash,extraction_hash))"
         )
         yield connection
+
+
+def test_missing_proof_table_is_rejected_instead_of_being_recreated(connection):
+    connection.run("DROP TABLE document_contract_link_rules")
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        ReadCompanyContractLinkRules(connection, ("600001",), _EXTRACTION)
+    assert connection.run(
+        "SELECT 1 FROM sqlite_master WHERE name='document_contract_link_rules'"
+    ).fetchone() is None
 
 
 def _seed(connection, files, *, body=_ISSUER, codes=("600001",)):

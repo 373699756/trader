@@ -382,7 +382,7 @@ def test_batch_crossing_midnight_rechecks_clean_requested_stocks(tmp_path):
     assert index.publish(codes, NOW + timedelta(days=1), changed_only=True) == 2
 
 
-def test_legacy_cursor_backfill_and_unverified_page_size_never_reset_saved_page(tmp_path):
+def test_current_cursor_rebuilds_work_rows_without_resetting_saved_page_or_accepting_unverified_page_size(tmp_path):
     index = fixtures._index(tmp_path)
     partition = index.partitions(("sse",), NOW)[0]
     item = fixtures._disclosure()
@@ -394,7 +394,7 @@ def test_legacy_cursor_backfill_and_unverified_page_size_never_reset_saved_page(
             "company_work_policy",
             "disclosure_query_contracts",
         ):
-            connection.run(f"DROP TABLE {table}")
+            connection.run(f"DELETE FROM {table}")
     index.initialize()
     resumed = next(p for p in index.partitions(("sse",), NOW) if p.start == partition.start)
     assert resumed.page == 2

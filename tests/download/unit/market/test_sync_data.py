@@ -11,7 +11,7 @@ from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.prepare_reference import ReferenceDatabaseIncompatibleError
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTaskResult
 from trader.download.entrypoints.sync_progress import SyncProgress
-from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyEvidenceSyncResult
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.entrypoints.sync_projection import ProjectSyncResult
@@ -170,7 +170,69 @@ def test_typed_history_terminal_state_reaches_the_cli_without_downgrading_failur
     _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, exit_code)
 
 
-def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, exit_code):
+@pytest.mark.parametrize(("partitions", "documents", "ocr", "unextractable", "failures", "reason"), (
+    (0, 0, 0, 0, (), None),
+    (0, 0, 0, 1, (), None),  # Terminal extraction limits remain data-quality unknowns.
+    (2, 0, 0, 0, (), "announcements:pending"),
+    (0, 3, 1, 0, (), "risk_documents:pending"),
+    (2, 3, 1, 0, ("risk_documents:pending",), "risk_documents:pending,announcements:pending"),
+    (None, None, None, None, (), "inventory:not_checked"),
+    (0, 0, 0, 0, ("financial:timeout",), "financial:timeout"),
+    (0, 3, 0, 0, ("risk_documents:company_raw_capacity_exhausted",),
+     "risk_documents:company_raw_capacity_exhausted,risk_documents:pending"),
+    (None, None, None, None, ("task:cancelled",), "task:cancelled"),
+))
+def test_company_terminal_reason_reaches_projection_and_cli(
+    tmp_path, monkeypatch, capsys, partitions, documents, ocr, unextractable, failures, reason,
+):
+    company = CompanyEvidenceSyncResult(
+        _NOW, 1, 1, 0, 0, 0, partitions, failures, 0,
+        pending_documents=documents, ocr_documents=ocr, unextractable_documents=unextractable,
+    )
+    result = SyncData(
+        lambda: PreparedFixture(_NOW), lambda _: _history(), lambda _: QfqUpdateResult(_NOW.date(), 1),
+        lambda _: company, lambda: False,
+    ).execute("company")
+    cancelled = "task:cancelled" in failures
+    status = "cancelled" if cancelled else "pending" if reason else "completed"
+    assert result.tasks[0].status == status and result.tasks[0].reason == reason
+    assert ProjectSyncResult(result)["tasks"][0]["reason"] == reason
+    from tests.helpers.shared.configuration import RuntimeSettingsFixture
+    from trader.entrypoints import cli
+
+    runtime = RuntimeSettingsFixture()
+    monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _: runtime)
+    monkeypatch.setattr(cli, "_configuration_payload", lambda *_: {})
+    monkeypatch.setattr("trader.bootstrap.PrepareRuntimeDisk", lambda settings, **_: settings)
+    monkeypatch.setattr("trader.bootstrap.ExecuteSync", lambda *_, **__: result)
+    messages = []
+    progress = SyncProgress(messages.append, lambda: 0.0)
+    args = cli.BuildParser().parse_args(["--config", str(tmp_path / "runtime.json"), "sync", "company"])
+    assert cli._run_sync(args, progress) == (130 if cancelled else int(reason is not None))
+    terminal = messages[-1]
+    assert terminal.state == ("取消" if cancelled else "等待" if reason else "完成") and terminal.finished
+    fields = " | ".join(field.text for field in terminal.fields)
+    assert f"原因 {reason or '无'}" in fields
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == status and payload["tasks"][0]["reason"] == reason
+    assert payload["tasks"][0]["pending_counts_checked"] is (partitions is not None)
+    assert payload["tasks"][0]["unextractable_documents"] == unextractable
+
+
+def test_company_incompatible_database_is_a_failure_with_explicit_material_scope(tmp_path, monkeypatch, capsys):
+    def company(_):
+        raise CompanyDatabaseIncompatibleError("company_evidence_database_contract_mismatch")
+
+    result = SyncData(
+        lambda: PreparedFixture(_NOW), lambda _: _history(), lambda _: QfqUpdateResult(_NOW.date(), 1),
+        company, lambda: False,
+    ).execute("company")
+    assert result.tasks[0].reason == "CompanyDatabaseIncompatibleError"
+    _assert_cli_summary(tmp_path, monkeypatch, capsys, result, "failed", "失败", 1,
+                        diagnostic="company/raw/company_collection.sqlite3")
+
+
+def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, exit_code, diagnostic=None):
     from tests.helpers.shared.configuration import RuntimeSettingsFixture
     from trader.entrypoints import cli
 
@@ -184,6 +246,8 @@ def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, ex
     args = cli.BuildParser().parse_args(["--config", str(tmp_path / "runtime.json"), "sync", "history"])
 
     assert cli._run_sync(args, progress) == exit_code
+    if diagnostic is not None:
+        assert any(diagnostic in field.text for message in messages for field in message.fields)
     terminal = messages[-1]
     assert terminal.state == state and terminal.finished
     fields = " | ".join(field.text for field in terminal.fields)
