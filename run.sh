@@ -17,19 +17,15 @@ usage() {
     "  ./run.sh v1,v2,v3                同时启动所列档位，Web按钮互斥切换" \
     "  ./run.sh -h                      查看本帮助" \
     "" \
-    "离线研究（仅在明确执行研究任务时使用）:" \
-    "  ./run.sh sync                    依次更新参考、完整历史、行情窗口与公司资料" \
-    "  ./run.sh sync history            单独更新完整历史，自动续传" \
-    "  ./run.sh sync history --fill     补历史缺价、待核停牌及必要字段" \
-    "  ./run.sh sync market             单独更新行情窗口" \
-    "  ./run.sh sync market --fill      补行情窗口缺价、待核停牌及必要字段" \
-    "  ./run.sh sync history --fill --repair-codes 300118  定向补采，保留完整股票总体" \
-    "  ./run.sh sync company            单独更新公司资料" \
-    "  ./run.sh sync company --fill     补充历史缺口和待补正文，自动OCR/扩限，复用已完成资料" \
-    "  ./run.sh train                   使用本地已发布历史训练全部档位 V1、V2、V3、V5" \
-    "  ./run.sh train v1,v5             使用本地已发布历史，只训练所列档位" \
-    "  ./run.sh train --json            显式输出完整JSON结果" \
-    "  ./run.sh train --diagnostics /tmp/train-diagnostic.json  保存完整诊断（拒绝覆盖）" \
+    "下载与训练:" \
+    "  ./run.sh sync history            更新历史，自动续传" \
+    "  ./run.sh sync history --fill     补齐历史缺口" \
+    "  ./run.sh sync market             更新行情窗口" \
+    "  ./run.sh sync market --fill      补齐行情缺口" \
+    "  ./run.sh sync company            更新公司资料" \
+    "  ./run.sh sync company --fill     补齐公司资料缺口" \
+    "  ./run.sh train                   使用本地历史训练全部档位" \
+    "  ./run.sh train v1,v5             使用本地历史训练指定档位" \
     "" \
     "档位以逗号分隔，可自由组合；省略时选择全部。"
 }
