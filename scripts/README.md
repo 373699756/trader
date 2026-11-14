@@ -14,6 +14,8 @@
 
 公司资料重下后的旧风险对照沿同一`download/company/coverage`动作，显式组合`--company-database-audit --company-risk-baseline /external/baseline-risks.json`，并用`--company-collection-database`、`--company-evidence-database`选定采集库和正式库。基线只读，上限4MiB、10000条风险及50000条证据；比较原风险业务字段和来源证据集合，忽略自增ID，分别报告精确保留、缺失及变化待审。比较与原数据库审计共用总期限，公开报告只含身份、变更字段名和证据保全状态，不含案件正文或原字段值。缺失不等于解除，快照变化或无正式发布不能签稳定完成；该对照不证明供应商原值、其它附表或全市场资料正确。此参数不能与隔离回放目录组合，也不会启动同步或初始化数据库。
 
+公司正文错误复验仍用`download/company/coverage`：`--company-ocr-audit --company-replay-directory /external/new-ocr`覆盖低质量、超时及耗尽，优先复制hash一致的本地失败PDF，缺原件才下载。`--company-document-audit`不加目录仍只做请求对照；显式加`--company-replay-directory /external/new-documents`改为复验容量失败的未核验正文，核对最近50条记录的当前来源版本，至多2篇走正常下载、解析及必要OCR。容量复验须用隔离新目录，报告只含有限身份、字符数及状态，不改活动公司库；超过抽样上限、未提取正文或版本失配不能签完整恢复。两种模式互斥，预算通过`--company-audit-budget-seconds`和更大的`--command-timeout-seconds`显式限制。
+
 真实价格字段与逐股日期深扫沿既有`download/history/publication`和`download/history/qfq`，显式加`--price-field-audit`；不加时保留原快审语义。两者只读数据库，分别报告实际选中行数、core NULL／非法类型／非有限数值／价格范围／OHLC次序／负量额、合法qfq辅助空值及raw原始辅助字段缺失。历史严格按正式快照各月的实际sequence选择观察，年度观察只提取一次到最多320万身份的内存SQLite索引，再顺序读年度修订，不逐行查询磁盘观察索引。manifest行数单列，不当作实际扫描数量；不会反推原始前收或把缺失涨幅填0。逐股日期按已发布本地参考的上市区间和交易日历核对，确认非交易、来源推定及未解释缺日分列；推定不作为明确停牌豁免。原始供应商报文和逐条修订hash未重算的界限在报告中保留，不以文件SHA正确代替字段正确。
 
 ```bash

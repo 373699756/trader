@@ -1,15 +1,17 @@
-"""Compare OCR candidates on seven failed PDFs without changing the source database."""
+"""Compare OCR candidates on bounded failed PDFs, preferring verified local copies."""
 
 from __future__ import annotations
 
 from scripts.core.paths import PROJECT_ROOT as TOOL_ROOT
 
 import time
+import hashlib
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
 from trader.bootstrap import OpenExternalHttp
-from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentFailure
+from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentFailure, Disclosure
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
@@ -18,6 +20,36 @@ from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.atomic_files import AtomicWriteJson
+from trader.infra.regular_file import OpenRegularFile
+
+
+def _copy_local_pdf(
+    source_root: Path,
+    raw: CompanyRawFiles,
+    item: Disclosure,
+    expected_hash: bytes | None,
+    maximum_bytes: int,
+    check: Callable[[], None],
+) -> bool:
+    if expected_hash is None:
+        return False
+    key = raw.directory(item).name
+    for tree in ("failed", "documents"):
+        original = source_root / tree / key[:2] / key / (expected_hash.hex() + ".pdf")
+        if not original.exists():
+            continue
+        target = raw.directory(item) / "download.part"
+        with raw.reserve(target.parent, maximum_bytes):
+            digest = hashlib.sha256()
+            with OpenRegularFile(original, maximum_bytes=maximum_bytes, check=check) as incoming, target.open("xb") as outgoing:
+                while block := incoming.read(65536):
+                    digest.update(block)
+                    outgoing.write(block)
+            if digest.digest() != expected_hash:
+                raise ValueError("company_ocr_audit_local_hash_mismatch")
+            raw.complete(item, target, check=check)
+        return True
+    return False
 
 
 def AuditCompanyOcr(
@@ -28,7 +60,8 @@ def AuditCompanyOcr(
             "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,MIN(c.code) AS code,r.payload_hash "
             "FROM document_retries r JOIN disclosures d ON d.id=r.disclosure_id "
             "JOIN disclosure_codes c ON c.disclosure_id=d.id "
-            "WHERE r.failure='disclosure_document_ocr_low_quality' AND r.record_hash=d.record_hash "
+            "WHERE r.failure IN ('disclosure_document_ocr_low_quality','disclosure_document_ocr_timeout',"
+            "'disclosure_document_ocr_timeout_exhausted') AND r.record_hash=d.record_hash "
             "GROUP BY d.id ORDER BY r.attempted_at,d.id LIMIT 7"
         ).fetchall()
     if not rows:
@@ -46,6 +79,10 @@ def AuditCompanyOcr(
 
     def cancelled() -> bool:
         return time.monotonic() >= deadline
+
+    def check() -> None:
+        if cancelled():
+            raise TimeoutError("company_ocr_audit_deadline_exceeded")
 
     observations = []
     recovered = 0
@@ -66,7 +103,12 @@ def AuditCompanyOcr(
             observation: dict[str, object] = {"record": item.identity}
             runs = []
             try:
-                source.download_document(item)
+                copied = _copy_local_pdf(
+                    path.parent, raw, item, previous_hash, configuration.extended_document_limits.max_bytes, check,
+                )
+                observation["input_source"] = "local" if copied else "download"
+                if not copied:
+                    source.download_document(item)
                 local = raw.local(item)
                 if local is None:
                     raise ValueError("audit_pdf_missing")

@@ -1,4 +1,4 @@
-"""Compare bounded requests for recorded failed PDFs without parsing or active writes."""
+"""Compare failed-PDF requests or recover bounded documents in explicit isolation."""
 
 from __future__ import annotations
 
@@ -8,13 +8,23 @@ import hashlib
 import subprocess
 import tempfile
 import time
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from trader.bootstrap import OpenExternalHttp
+from scripts.download.company.output_paths import RequireIsolatedReplay
+from trader.download.application.company_failures import CompanyFailureCode
+from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentFailure, Disclosure
+from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
+from trader.download.infra.company_document_parser import DetectCompanyText
+from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
+from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.http_contracts import HttpAttempt, HttpError, HttpRequest
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 
@@ -28,8 +38,11 @@ class _DownloadVariant:
 
 
 def AuditCompanyDocumentDownloads(
-    path: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy
+    path: Path, *, budget_seconds: float, sqlite_policy: SqliteIoPolicy, directory: Path | None = None,
 ) -> dict[str, object]:
+    """An explicit directory selects capacity-failure recovery without active database writes."""
+    if directory is not None:
+        return _recover_capacity_documents(path, directory, budget_seconds, sqlite_policy)
     configuration = LoadCompanySyncConfiguration(TOOL_ROOT)
     deadline = time.monotonic() + budget_seconds
     with SqliteSession(path, SqliteConnectionOptions(read_only=True, timeout_seconds=3), sqlite_policy=sqlite_policy) as connection:
@@ -156,3 +169,112 @@ def AuditCompanyDocumentDownloads(
         }},
         "findings": [] if passed else ["company_document_download_incomplete"],
     }
+
+
+def _capacity_samples(connection: SqliteConnection) -> tuple[Disclosure, ...]:
+    if connection.run("SELECT 1 FROM sqlite_master WHERE name='download_failure'").fetchone() is None:
+        return ()
+    selected: dict[str, Disclosure] = {}
+    for row in connection.run(
+        "SELECT diagnostic FROM download_failure WHERE reason='company_raw_capacity_exhausted' ORDER BY id DESC LIMIT 50"
+    ):
+        key = re.search(r"(?:^| > )object_id=([0-9]{1,24})(?: >|$)", row[0])
+        revision = re.search(r"(?:^| > )revision=([a-f0-9]{64})(?: >|$)", row[0])
+        if key is None or revision is None or key[1] in selected:
+            continue
+        document = connection.run(
+            "SELECT d.*,MIN(c.code) AS code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+            "JOIN company_population p ON p.code=c.code WHERE d.source='cninfo' AND d.source_key=? "
+            "AND d.record_hash=? AND d.body_checked=0 GROUP BY d.id",
+            (key[1], revision[1]),
+        ).fetchone()
+        if document is not None:
+            selected[key[1]] = DecodeCompanyDisclosure(document)
+    return tuple(selected.values())
+
+
+def _recover_capacity_documents(
+    path: Path, directory: Path, budget_seconds: float, sqlite_policy: SqliteIoPolicy,
+) -> dict[str, object]:
+    RequireIsolatedReplay(directory, (TOOL_ROOT, path.parent))
+    if not directory.is_absolute() or any(item.is_symlink() for item in (directory, *directory.parents)):
+        raise ValueError("company_document_recovery_path_invalid")
+    if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
+        raise ValueError("company_document_recovery_new_directory_required")
+    deadline = time.monotonic() + budget_seconds
+    cancelled = lambda: time.monotonic() >= deadline
+    options = SqliteConnectionOptions(read_only=True, timeout_seconds=3)
+    with SqliteSession(path, options, sqlite_policy=sqlite_policy, cancel_requested=cancelled) as connection:
+        pending = _capacity_samples(connection)
+    samples = pending[:2]
+    directory.mkdir(parents=True, exist_ok=True)
+    configuration = LoadCompanySyncConfiguration(TOOL_ROOT)
+    capability = DetectCompanyOcr(configuration.document_ocr_languages)
+    text = DetectCompanyText()
+    policies = BuildCompanyDocumentPolicies(configuration, capability.identity, text_identity=text.identity)
+    raw = CompanyRawFiles(
+        directory / "inputs",
+        capacity=configuration.raw_capacity_bytes,
+        analysis_reserve=configuration.raw_analysis_reserve_bytes,
+        free_reserve=configuration.temporary_disk_reserve_bytes,
+        maximum_document_bytes=configuration.extended_document_limits.max_bytes,
+    )
+    engine = CompanyOcrEngine(
+        capability,
+        timeout_seconds=configuration.document_ocr_timeout_seconds,
+        page_timeout_seconds=configuration.document_ocr_page_timeout_seconds,
+        max_pages=configuration.document_ocr_max_pages,
+        dpi=configuration.document_ocr_dpi,
+        cancel_requested=cancelled,
+        retry_each_page=True,
+    )
+    observations: list[dict[str, object]] = []
+    if samples:
+        with OpenExternalHttp() as session:
+            source = CninfoMarketDisclosureSource(
+                session,
+                monotonic=time.monotonic,
+                sleeper=time.sleep,
+                timeout_seconds=configuration.source_timeout_seconds,
+                document_download_timeout_seconds=configuration.document_download_timeout_seconds,
+                document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
+                request_interval_seconds=configuration.request_interval_seconds,
+                document_limits=configuration.document_limits,
+                extended_document_limits=configuration.extended_document_limits,
+                document_policies=policies,
+                text_capability=text,
+                ocr_engine=engine,
+                cancel_requested=cancelled,
+                raw_files=raw,
+                text_reserve_bytes=configuration.text_task_reserve_bytes,
+                ocr_reserve_bytes=configuration.ocr_task_reserve_bytes,
+            )
+            for item in samples:
+                observation: dict[str, object] = {"record": item.identity, "variant": "isolated_recovery", "passed": False}
+                try:
+                    source.download_document(item)
+                    try:
+                        result = source.extract_document(item)
+                    except CompanyDocumentFailure as exc:
+                        if exc.reason != "disclosure_document_ocr_required":
+                            raise
+                        result = source.extract_document(item, route="ocr")
+                    observation.update(passed=True, text_extracted=True, characters=len(result.text),
+                                       payload_hash=result.payload_hash.hex())
+                except (OSError, RuntimeError, ValueError) as exc:
+                    observation["failure"] = CompanyFailureCode(exc)
+                observations.append(observation)
+                if cancelled():
+                    break
+    complete = bool(samples) and len(observations) == len(samples) and len(pending) <= len(samples)
+    passed = complete and all(row["passed"] for row in observations)
+    report: dict[str, object] = {
+        "schema_version": "company-resume", "status": "passed" if passed else "degraded",
+        "summary": {"document_download_audit": {
+            "read_only": True, "active_writes": False, "pending_records": len(pending), "sample_size": len(samples),
+            "complete": complete, "production_passed": passed, "observations": observations,
+        }},
+        "findings": [] if passed else ["company_document_recovery_incomplete"],
+    }
+    AtomicWriteJson(directory / "document-recovery.json", report)
+    return report

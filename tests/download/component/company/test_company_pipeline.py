@@ -93,6 +93,7 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
     run.configuration = fixtures._TEST_COMPANY_CONFIGURATION
     run.observed_at, run.started = NOW, 0.0
     run.circuit = CompanySourceCircuit()
+    run.stopped = False
     diagnostic = CompanyOcrDiagnostic("recognition", 2, 3, 91, 24.0, 3)
     failure = CompanyDocumentFailure("disclosure_document_ocr_timeout", payload_hash=b"a" * 32, diagnostic=diagnostic)
     run.failed(item, failure)
@@ -116,6 +117,25 @@ def test_ocr_timeout_retries_once_and_transport_failure_preserves_budget(tmp_pat
     changed = replace(policies, ocr="next-ocr-policy")
     assert index.document_workload(("600001",), NOW, changed).due == 1
     assert index.document_ocr_timeouts(item, changed.ocr) == 0
+
+
+def test_bounded_ocr_policy_reopens_exhausted_attempts_without_changing_success_identity(tmp_path):
+    from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentOutputIdentity
+
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    policies = BuildCompanyDocumentPolicies(fixtures._TEST_COMPANY_CONFIGURATION, "ocr-fixture")
+    old = replace(policies, ocr=policies.ocr.replace(
+        "retry_layout=resolution_rotate_layout_each_page_bounded_attempts", "retry_layout=orient_rotate_dpi_each_page",
+    ))
+    index.document_failure(item, old.ocr, "disclosure_document_ocr_timeout", NOW, NOW, b"a" * 32, ocr_policy=old.ocr)
+    index.document_failure(item, old.ocr, "disclosure_document_ocr_timeout_exhausted", NOW, NOW, b"a" * 32, ocr_policy=old.ocr)
+    assert not index.pending_documents(item.codes, NOW, limit=10, policies=old)
+    tasks = index.pending_documents(item.codes, NOW, limit=10, policies=policies)
+    assert len(tasks) == 1 and tasks[0].route == "ocr"
+    assert index.document_ocr_timeouts(item, policies.ocr) == 0
+    assert index.document_ocr_timeouts(item, old.ocr) == 2
+    assert CompanyDocumentOutputIdentity(policies.ocr) == CompanyDocumentOutputIdentity(old.ocr)
 
 
 @pytest.mark.parametrize("route,failure", [("ocr", "disclosure_document_no_text"), ("limits", "disclosure_document_page_limit")])

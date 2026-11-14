@@ -150,6 +150,11 @@ class CompanyOcrEngine:
                             saved = None
                     else:
                         saved = None
+                    if saved is not None and self._retry_each_page and (
+                        len("".join(saved.text.split())) < 80 or not saved.confidence_count
+                        or saved.confidence_sum / saved.confidence_count < _MIN_CONFIDENCE
+                    ):
+                        saved = None
                     if saved is not None:
                         texts.append(saved.text)
                         characters += len(saved.text) + 1
@@ -183,52 +188,60 @@ class CompanyOcrEngine:
                     text, confidence = self._recognize(image, page_deadline, payload_hash, 6)
                     page_characters = len("".join(text.split()))
                     quality = sum(confidence) / len(confidence) if confidence else 0.0
+                    retry_timeout: CompanyDocumentFailure | None = None
                     if (self._retry_each_page or not fallback_used) and (page_characters < 80 or quality < _MIN_CONFIDENCE):
                         fallback_used = True
                         mode = 1 if self._retry_each_page and self.capability.orientation_available else 3
-                        diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), page_characters, quality, mode)
-                        alternative, alternative_confidence = self._recognize(image, page_deadline, payload_hash, mode)
-                        alternative_characters = len("".join(alternative.split()))
-                        alternative_quality = (
-                            sum(alternative_confidence) / len(alternative_confidence) if alternative_confidence else 0.0
-                        )
-                        if (
-                            alternative_characters >= 80 and alternative_quality >= _MIN_CONFIDENCE
-                            or alternative_characters >= page_characters and alternative_quality >= quality
-                        ):
-                            text, confidence = alternative, alternative_confidence
-                        else:
-                            diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), page_characters, quality, 6)
-                        if self._retry_each_page and (len("".join(text.split())) < 80 or not confidence or sum(confidence) / len(confidence) < _MIN_CONFIDENCE):
-                            for angle, render_dpi in ((90, self._dpi), (270, self._dpi), (0, min(300, self._dpi * 2))):
-                                if angle == 0 and render_dpi == self._dpi:
-                                    continue
-                                rotated = root / "oriented.pdf"
-                                writer = PdfWriter()
-                                with pdf.open("rb") as stream:
-                                    reader = PdfReader(stream)
-                                    writer.add_page(reader.pages[page - 1])
-                                    writer.pages[0].rotate(angle)
-                                    with rotated.open("wb") as output:
-                                        writer.write(output)
-                                try:
+                        variants: tuple[tuple[int, int, int, int], ...] = ((0, self._dpi, mode, 1),)
+                        if self._retry_each_page:
+                            # Give small scanned text a resolution retry before
+                            # auto layout can consume the page's remaining time.
+                            variants = ((90, self._dpi, 6, 1), (270, self._dpi, 6, 1), (0, self._dpi, mode, 1))
+                            if self._dpi < 300:
+                                variants = ((0, min(300, self._dpi * 2), 6, 3), *variants)
+                        for position, (angle, render_dpi, attempt_mode, weight) in enumerate(variants):
+                            remaining_weight = sum(variant[3] for variant in variants[position:])
+                            attempt_deadline = self._retry_deadline(page_deadline, remaining_weight, weight)
+                            rotated = root / "oriented.pdf"
+                            try:
+                                if self._retry_each_page:
+                                    diagnostic = CompanyOcrDiagnostic("render", page, int(pages), page_characters, quality, attempt_mode)
+                                    writer = PdfWriter()
+                                    with pdf.open("rb") as stream:
+                                        reader = PdfReader(stream)
+                                        writer.add_page(reader.pages[page - 1])
+                                        writer.pages[0].rotate(angle)
+                                        with rotated.open("wb") as output:
+                                            writer.write(output)
                                     rendered = self._run(
                                         (self.capability.pdftoppm or "pdftoppm", "-png", "-singlefile",
                                          "-r", str(render_dpi), "-scale-to", str(min(_MAX_IMAGE_EDGE, math.ceil(edge * render_dpi / self._dpi))), str(rotated)),
-                                        page_deadline, payload_hash, "disclosure_document_ocr_unreadable",
+                                        attempt_deadline, payload_hash, "disclosure_document_ocr_unreadable",
                                         maximum_bytes=_MAX_RENDERED_BYTES - rendered_bytes,
                                     )
                                     rendered_bytes += len(rendered)
                                     image.write_bytes(rendered)
                                     del rendered
-                                    alternative, alternative_confidence = self._recognize(image, page_deadline, payload_hash, mode if angle == 0 else 6)
-                                    alternative_quality = sum(alternative_confidence) / len(alternative_confidence) if alternative_confidence else 0.0
-                                    if len("".join(alternative.split())) >= 80 and alternative_quality > (sum(confidence) / len(confidence) if confidence else 0.0):
-                                        text, confidence = alternative, alternative_confidence
-                                    if len("".join(alternative.split())) >= 80 and alternative_quality >= _MIN_CONFIDENCE:
-                                        break
-                                finally:
-                                    rotated.unlink(missing_ok=True)
+                                diagnostic = CompanyOcrDiagnostic("recognition", page, int(pages), page_characters, quality, attempt_mode)
+                                alternative, alternative_confidence = self._recognize(image, attempt_deadline, payload_hash, attempt_mode)
+                                alternative_characters = len("".join(alternative.split()))
+                                alternative_quality = sum(alternative_confidence) / len(alternative_confidence) if alternative_confidence else 0.0
+                                if (alternative_characters >= 80 and alternative_quality >= _MIN_CONFIDENCE
+                                    or alternative_characters >= page_characters and alternative_quality >= quality):
+                                    text, confidence = alternative, alternative_confidence
+                                if alternative_characters >= 80 and alternative_quality >= _MIN_CONFIDENCE:
+                                    break
+                            except CompanyDocumentFailure as exc:
+                                if (not self._retry_each_page or exc.reason != "disclosure_document_ocr_timeout"
+                                    or self._monotonic() >= page_deadline):
+                                    raise
+                                retry_timeout = exc
+                            finally:
+                                rotated.unlink(missing_ok=True)
+                    if retry_timeout is not None and (
+                        len("".join(text.split())) < 80 or not confidence or sum(confidence) / len(confidence) < _MIN_CONFIDENCE
+                    ):
+                        raise retry_timeout
                     image.unlink()
                     characters += len(text) + 1
                     if characters > _MAX_TEXT_CHARACTERS:
@@ -253,6 +266,12 @@ class CompanyOcrEngine:
             raise CompanyDocumentFailure("disclosure_document_ocr_unreadable", payload_hash=payload_hash, diagnostic=diagnostic) from exc
         except CompanyDocumentFailure as exc:
             raise CompanyDocumentFailure(exc.reason, payload_hash=payload_hash, diagnostic=diagnostic) from exc
+
+    def _retry_deadline(self, page_deadline: float, remaining_weight: int, weight: int) -> float:
+        if not self._retry_each_page:
+            return page_deadline
+        now = self._monotonic()
+        return min(page_deadline, now + max(0.0, page_deadline - now) * weight / remaining_weight)
 
     def _recognize(
         self, image: Path, deadline: float, payload_hash: bytes, mode: int

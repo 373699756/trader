@@ -128,7 +128,7 @@ def test_low_quality_page_uses_one_layout_retry_and_records_failure_metrics(monk
     payload = _pdf(2)
     text, quality = _extract(engine, payload, tmp_path)
     assert "recovered" in text and quality == (92 if retry_each_page else 51)
-    assert modes == ([6, 1, 6, 1] if retry_each_page else [6, 3, 6])
+    assert modes == ([6, 6, 6, 6, 1, 6, 6, 6, 6, 1] if retry_each_page else [6, 3, 6])
 
     monkeypatch.setattr(engine, "_recognize", lambda *args: ("short", [10.0]))
     assert _extract(engine, payload, tmp_path) == (text, quality)
@@ -166,7 +166,7 @@ def test_each_sideways_page_is_rotated_and_successful_pages_are_reused(monkeypat
     monkeypatch.setattr(engine, "_recognize", recognize)
     payload = _pdf(2)
     assert _extract(engine, payload, tmp_path)[1] == 90.0
-    expected_rotations = [90, 90] if recovery == "rotation" else [90, 270, 0, 90, 270, 0]
+    expected_rotations = [0, 90, 0, 90] if recovery == "rotation" else [0, 0]
     assert rotations == expected_rotations
     assert _extract(engine, payload, tmp_path)[1] == 90.0
     assert rotations == expected_rotations
@@ -189,6 +189,80 @@ def test_timeout_records_render_phase_and_page(monkeypatch, tmp_path):
         _extract(engine, b"pdf", tmp_path)
     assert caught.value.diagnostic.phase == "render"
     assert caught.value.diagnostic.page == caught.value.diagnostic.pages == 1
+
+
+@pytest.mark.parametrize("recovered", [True, False])
+def test_resolution_timeout_leaves_budget_for_rotated_pages(monkeypatch, tmp_path, recovered):
+    clock = [0.0]
+    attempts = []
+    engine = CompanyOcrEngine(
+        CompanyOcrCapability("fixture", "tesseract", "pdftoppm", "eng"),
+        timeout_seconds=120,
+        page_timeout_seconds=120,
+        max_pages=1,
+        dpi=150,
+        retry_each_page=True,
+        monotonic=lambda: clock[0],
+    )
+
+    def run(command, *args, **kwargs):
+        if command[0] == "pdfinfo":
+            return b"Pages: 1\nPage 1 size: 200 x 200 pts\n"
+        return b"rotated" if command[-1].endswith("oriented.pdf") else b"original"
+
+    def recognize(image, deadline, digest, mode):
+        attempts.append((mode, deadline))
+        if image.read_bytes() == b"original" and mode == 6:
+            return "weak " * 30, [10.0]
+        if len(attempts) == 2 or not recovered:
+            clock[0] = deadline
+            raise CompanyDocumentFailure("disclosure_document_ocr_timeout", payload_hash=digest)
+        return "verified " * 20, [90.0]
+
+    monkeypatch.setattr(engine, "_run", run)
+    monkeypatch.setattr(engine, "_recognize", recognize)
+    payload = _pdf()
+    if recovered:
+        assert _extract(engine, payload, tmp_path)[1] == 90.0
+        assert attempts == [(6, 120), (6, 60), (6, 80)]
+        assert _extract(engine, payload, tmp_path)[1] == 90.0
+        assert len(attempts) == 3, "completed page checkpoints must remain reusable"
+    else:
+        with pytest.raises(CompanyDocumentFailure, match="disclosure_document_ocr_timeout"):
+            _extract(engine, payload, tmp_path)
+        assert attempts == [(6, 120), (6, 60), (6, 80), (6, 100), (1, 120)]
+        assert not tuple(tmp_path.rglob("1.json")), "timed out pages must not be checkpointed as completed"
+    assert not tuple(tmp_path.rglob("page.png"))
+    assert not tuple(tmp_path.rglob("oriented.pdf"))
+
+
+def test_weak_checkpoint_is_retried_while_successful_result_remains_reusable(monkeypatch, tmp_path):
+    engine = CompanyOcrEngine(
+        CompanyOcrCapability("fixture", "tesseract", "pdftoppm", "eng"),
+        timeout_seconds=120, page_timeout_seconds=120, max_pages=1, dpi=150, retry_each_page=True,
+    )
+    calls = []
+    strong = [False]
+
+    def run(command, *args, **kwargs):
+        return b"Pages: 1\nPage 1 size: 200 x 200 pts\n" if command[0] == "pdfinfo" else b"image"
+
+    def recognize(*args):
+        calls.append(1)
+        return ("verified " * 20, [90.0]) if strong[0] else ("weak " * 20, [10.0])
+
+    monkeypatch.setattr(engine, "_run", run)
+    monkeypatch.setattr(engine, "_recognize", recognize)
+    payload = _pdf()
+    with pytest.raises(CompanyDocumentFailure, match="disclosure_document_ocr_low_quality"):
+        _extract(engine, payload, tmp_path)
+    assert tuple(tmp_path.rglob("1.json"))
+    strong[0] = True
+    before = len(calls)
+    assert _extract(engine, payload, tmp_path)[1] == 90.0
+    assert len(calls) == before + 1
+    assert _extract(engine, payload, tmp_path)[1] == 90.0
+    assert len(calls) == before + 1
 
 
 def test_page_limit_is_checked_before_renderer_starts(tmp_path):

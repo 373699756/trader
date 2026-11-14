@@ -112,3 +112,71 @@ def test_document_probe_routes_without_replay_directory_and_filters_report_field
         "company_resume", 0, 1, {"schema_version": "company-resume", "status": "passed", "summary": summary}, None,
     )])
     assert "secret" not in str(result) and "private" not in str(result)
+
+
+@pytest.mark.parametrize("mode,count", [("success", 2), ("parse_failure", 1), ("empty", 0), ("capped", 3), ("revised", 1)])
+def test_capacity_recovery_uses_isolated_pipeline_and_requires_extracted_text(tmp_path, monkeypatch, mode, count):
+    from contextlib import nullcontext
+
+    from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext, DownloadFailureRecord
+    from trader.download.domain.company_evidence import CompanyDocumentFailure
+
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    index = fixtures._index(source_root)
+    index.prepare_publication(("600001",), fixtures.NOW)
+    items = tuple(
+        replace(fixtures._disclosure(str(12300 + number)), digest=f"{number:064x}") for number in range(count)
+    )
+    if items:
+        partition = index.partitions(("sse",), fixtures.NOW)[0]
+        index.commit_page(partition, DisclosurePage(items, count, False), fixtures.NOW)
+    for item in items:
+        revision = "f" * 64 if mode == "revised" else item.digest
+        index.record_failure(DownloadFailureRecord(
+            "fixture", fixtures.NOW, DownloadFailureContext("company_download"), "company_raw_capacity_exhausted", "[]",
+            f"operation_kind=download > object_id={item.identity} > revision={revision}",
+        ), configuration=DownloadFailureConfiguration(100, 50))
+    downloaded = []
+
+    class Source:
+        def __init__(self, *args, raw_files, **kwargs):
+            assert not raw_files.root.is_relative_to(source_root)
+
+        def download_document(self, item):
+            downloaded.append(item.identity)
+
+        def extract_document(self, item, **kwargs):
+            if mode == "parse_failure":
+                raise CompanyDocumentFailure("disclosure_document_parse_timeout")
+            return fixtures._extraction("private extracted document" * 10)
+
+    monkeypatch.setattr(audit, "OpenExternalHttp", lambda **kwargs: nullcontext(None))
+    monkeypatch.setattr(audit, "CninfoMarketDisclosureSource", Source)
+    before = index.path.read_bytes()
+    directory = tmp_path / "recovery"
+    report = audit.AuditCompanyDocumentDownloads(
+        index.path, budget_seconds=30, sqlite_policy=SqlitePolicyFixture(), directory=directory,
+    )
+    summary = report["summary"]["document_download_audit"]
+    assert summary["production_passed"] is (mode == "success")
+    assert summary["read_only"] and not summary["active_writes"]
+    assert summary["sample_size"] == (0 if mode == "revised" else min(count, 2))
+    assert len(downloaded) == summary["sample_size"]
+    assert index.path.read_bytes() == before
+    assert (directory / "document-recovery.json").exists()
+    assert "private extracted document" not in str(report)
+    if mode == "parse_failure":
+        assert summary["observations"][0]["failure"] == "disclosure_document_parse_timeout"
+    if mode == "capped":
+        assert summary["pending_records"] == 3 and not summary["complete"]
+
+
+def test_capacity_recovery_rejects_output_overlapping_source_before_writes(tmp_path):
+    index = fixtures._index(tmp_path)
+    before = index.path.read_bytes()
+    with pytest.raises(ValueError, match="company_replay_overlaps"):
+        audit.AuditCompanyDocumentDownloads(
+            index.path, budget_seconds=30, sqlite_policy=SqlitePolicyFixture(), directory=tmp_path / "recovery",
+        )
+    assert index.path.read_bytes() == before

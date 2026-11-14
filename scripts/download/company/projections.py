@@ -31,6 +31,8 @@ def ProjectCompanyResume(
         encrypted = document_download.get("encrypted_observations")
         selected["document_download_audit"] = {
             "read_only": document_download.get("read_only"),
+            "active_writes": document_download.get("active_writes"),
+            "pending_records": document_download.get("pending_records"),
             "sample_size": document_download.get("sample_size"),
             "complete": document_download.get("complete"),
             "production_passed": document_download.get("production_passed"),
@@ -43,7 +45,8 @@ def ProjectCompanyResume(
             ],
             "observations": [
                 {key: row.get(key) for key in (
-                    "disclosure_id", "variant", "timeout_seconds", "io_timeout_seconds", "passed", "is_pdf", "payload_hash", "failure", "cause",
+                    "disclosure_id", "record", "variant", "timeout_seconds", "io_timeout_seconds", "passed", "is_pdf", "payload_hash", "failure", "cause",
+                    "text_extracted", "characters",
                 )} | {"attempts": [
                     {key: attempt.get(key) for key in (
                         "seconds", "response_bytes", "status_code", "failure", "phase",

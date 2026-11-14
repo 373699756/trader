@@ -335,7 +335,10 @@ def Main() -> int:
         return 0
     source_path = args.database.resolve(strict=True)
     if args.document_only:
-        report = AuditCompanyDocumentDownloads(source_path, budget_seconds=min(150.0, args.budget_seconds), sqlite_policy=sqlite_policy)
+        report = AuditCompanyDocumentDownloads(
+            source_path, budget_seconds=min(150.0, args.budget_seconds), sqlite_policy=sqlite_policy,
+            directory=args.directory,
+        )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args.material_keys is not None:

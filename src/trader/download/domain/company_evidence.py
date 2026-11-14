@@ -857,7 +857,7 @@ def BuildCompanyDocumentPolicies(
             f"{limits.max_bytes}:{limits.max_pages}:{limits.max_text_characters}"
         ),
         ocr=(
-            f"ocr_4:psm6_3:retry_layout=orient_rotate_dpi_each_page:retry2:edge4096:{ocr_identity}:timeout={configuration.document_ocr_timeout_seconds:g}:"
+            f"ocr_4:psm6_3:retry_layout=resolution_rotate_layout_each_page_bounded_attempts:retry2:edge4096:{ocr_identity}:timeout={configuration.document_ocr_timeout_seconds:g}:"
             f"page_timeout={configuration.document_ocr_page_timeout_seconds:g}:"
             f"{configuration.document_ocr_max_pages}:{configuration.document_ocr_dpi}:"
             f"{configuration.document_ocr_languages}"

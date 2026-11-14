@@ -408,6 +408,8 @@ flowchart TD
 
 需要测队列等待、背压、网络、文本、OCR、分析、事实编译、发布和检查成本，才能决定并发。PDF和OCR页的版本、策略身份必须匹配才复用；不支持Range时只重取对应文件，不重做所有成功资料。
 
+普通OCR不足时，逐页恢复先在现有上限内提高分辨率，再尝试两个旋转方向与自动版式；后备尝试共享本页剩余期限，不能各自重置整页或整文档期限。提高分辨率的尝试占较大份额，超时后只有本页仍有时间才继续其它尝试；全部尝试不足仍报告原超时或低质量，不降低字符／置信度门槛。已合格页复用，低质量页检查点不能让失败文档永远跳过重新识别。恢复策略身份变化只重开受影响失败的有界尝试，原有效结果身份及已发布事实不因此失效。
+
 “普通文字可读”只决定是否需要OCR。结构化步骤还要处理表格、跨页、表头单位、多主体、计划/实际、累计/本期、否定和更正；提取器不能因为全文有多个数字就丢弃整个字段，也不能跨主体或跨事项拼数。先在真实标注材料上选择能覆盖这些版式的提取方法；本规划不新增DeepSeek调用、评分公式或风险门。
 
 ### 5.6 中断和 --fill 如何恢复
@@ -1066,9 +1068,9 @@ company的交付合同按第5.9–5.12节：字段取得、证据及数据库读
 | `company_publication_audit.py`、`company_field_audit.py`：事实、凭证与来源一致性 | 经disk调用；两库固定读视图、预算；事实状态、回执、字段类型/非有限值、来源对照和findings | 本地只读，但会遍历正式表及关联来源；`company_query_audit.py`调用，统一入口直接导入字段报告投影，专项测试直接导入 | 保留company/publication与company/fields，复用同一读视图/字段实现；入口投影导入也须切换，不新增另一份字段审计 |
 | `company_query_audit.py:AuditCompanyQueries`：目录计数与过滤 | `--company-query-audit`；本地已保存查询、预算；真实巨潮查询对照 | 原库只读、联网；resume及专项测试调用 | 保留company/directory-query，不能与无网络disk合为一个隐式检查 |
 | `company_pagination_audit.py`：不同页大小的完整集合 | `--company-pagination-audit`；保存分区、预算；完整集合对照 | 联网，原库不写；resume及专项测试调用 | 保留company/pagination；与查询筛选审计分别保留结论，待相同输入成本证据后考虑共享来源读取 |
-| `company_document_download_audit.py`：失败PDF请求对照 | `--company-document-audit`；持久失败样本及预算；至多2篇下载对照、加密输入另列 | 联网、有临时文件/外部工具检查，不写活动库；resume及同名测试 | 保留company/document-download，不等于文本/OCR成功，也不代表最新财务资料已可用 |
+| `company_document_download_audit.py`：失败PDF请求对照／隔离容量恢复 | `--company-document-audit`；不加目录维持请求对照；显式加仓库外新目录时，从最近50条容量失败中核当前来源版本及未核正文，至多2篇走生产下载和文本／必要OCR | 联网、仅隔离文件写入，不写活动库；报告待办／抽样数、正文提取及失败，不以HTTP200代签恢复；resume及同名测试 | 超过抽样上限不签完整，不替代正式字段发布、活动库恢复或全市场可用性 |
 | `company_pipeline_audit.py`：同PDF串行/并行 | `--company-pipeline-audit`；采集样本、外部目录、预算；文档/载荷/事实签名和耗时 | 真实网络与PDF处理，写外部隔离索引/文件；resume及专项测试 | 保留company/pipeline-benchmark；最多12篇样本是局部候选对照，不能替本轮完整任务基线 |
-| `company_ocr_audit.py`：失败PDF OCR候选 | `--company-ocr-audit`；失败样本、外部目录、预算；OCR对比与证据文件 | 联网、OCR子进程及外部目录写入；resume及专项测试 | 保留company/ocr，资源与退出由公共执行合同约束，不自动混入普通正文检查 |
+| `company_ocr_audit.py`：失败PDF OCR候选 | `--company-ocr-audit`；低质量／超时／耗尽样本、外部目录、预算；OCR对比与证据文件 | 优先有界复制hash一致的本地原件，缺原件才联网；OCR子进程及外部目录写入，不改原件或活动库；resume及专项测试 | 保留company/ocr，资源与退出由公共执行合同约束，不自动混入普通正文检查 |
 | `company_resume.py`目录恢复分支 | `--company-directory-audit`及外部目录；原库备份、选定失败区间和预算 | 联网，只在仓库外副本恢复，生成恢复证据；resume专项测试 | 保留company/directory-recovery；与纯查询审计分开，不能删除有效恢复研究或对原库执行 |
 
 `company_ledger_browser.py`虽以company命名，实际生成示例评分账本并启动桌面Chrome，读取Web静态资源，由统一入口的`company-ledger`选择。它属于A的荐股/Web展示验收，B不移动或删除；不读取采集库存证明公司下载成功。`scripts/repack_history_partitions.py`是实际重排维护入口，不是另一个只读检测器，检查模式与维护去留由A按b第9章裁决，本轮不执行。

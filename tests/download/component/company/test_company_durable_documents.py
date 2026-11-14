@@ -206,7 +206,7 @@ def test_runtime_configuration_changes_preserve_successful_result(tmp_path):
     assert before.ocr != after.ocr  # Failed tasks receive a new deadline budget.
     from trader.download.domain.company_evidence import CompanyDocumentOutputIdentity
 
-    old = before.ocr.replace(":retry_layout=orient_rotate_dpi_each_page", "")
+    old = before.ocr.replace(":retry_layout=resolution_rotate_layout_each_page_bounded_attempts", "")
     assert CompanyDocumentOutputIdentity(before.ocr) == CompanyDocumentOutputIdentity(old)
     old_text = before.standard.replace(":retry_inputs=1", "")
     assert CompanyDocumentOutputIdentity(before.standard) == CompanyDocumentOutputIdentity(old_text)

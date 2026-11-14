@@ -84,6 +84,56 @@ def test_ocr_comparison_reuses_seven_identical_pdfs_without_writing_collection(t
     assert len(tuple((tmp_path / "probe").rglob("*.pdf"))) == 7
 
 
+@pytest.mark.parametrize("failure", ["disclosure_document_ocr_timeout", "disclosure_document_ocr_timeout_exhausted"])
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_ocr_timeout_probe_copies_local_failed_pdf_without_downloading(tmp_path, monkeypatch, failure, corrupt):
+    import hashlib
+
+    from tests.helpers.download.company.company_pipeline import _seed
+    from trader.download.infra.company_raw_files import CompanyRawFiles
+
+    index = fixtures._index(tmp_path)
+    item = _seed(index, 1)[0]
+    payload = b"%PDF-failed-original"
+    digest = hashlib.sha256(payload).digest()
+    index.document_failure(item, "old-policy", failure, fixtures.NOW, fixtures.NOW, digest)
+    raw = CompanyRawFiles(
+        index.path.parent, capacity=1024 * 1024, analysis_reserve=1024, free_reserve=1, maximum_document_bytes=1024,
+    )
+    directory = raw.directory(item)
+    directory.mkdir(parents=True, exist_ok=True)
+    original = directory / (digest.hex() + ".pdf")
+    original.write_bytes(payload + (b"corrupt" if corrupt else b""))
+
+    class Source:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def download_document(self, item):
+            pytest.fail("a retained local PDF must not be downloaded again")
+
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def extract(self, path, expected):
+            assert path.read_bytes() == payload and expected == digest
+            return "合格正文" * 30, 90.0
+
+    monkeypatch.setattr(company_ocr_audit, "OpenExternalHttp", lambda: nullcontext(None))
+    monkeypatch.setattr(company_ocr_audit, "CninfoMarketDisclosureSource", Source)
+    monkeypatch.setattr(company_ocr_audit, "CompanyOcrEngine", Engine)
+    before = index.path.read_bytes(), original.read_bytes()
+    report = company_ocr_audit.AuditCompanyOcr(index.path, tmp_path / "probe", budget_seconds=30, sqlite_policy=SqlitePolicyFixture())
+    result = report["summary"]["ocr_audit"]
+    assert result["sample_size"] == 1 and not result["active_writes"]
+    assert result["passed"] is not corrupt
+    assert result["recovered_documents"] == int(not corrupt)
+    assert (index.path.read_bytes(), original.read_bytes()) == before
+    if not corrupt:
+        assert result["samples"][0]["input_source"] == "local"
+
+
 def test_pagination_probe_rejects_ignored_larger_page_sizes_without_writes(tmp_path, monkeypatch):
     index = fixtures._index(tmp_path)
     partition = index.partitions(("sse",), fixtures.NOW)[0]
