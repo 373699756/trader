@@ -10,7 +10,7 @@ from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_field_recovery import NOW, _facts, _legacy_reduction, _legacy_repurchase, _put
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition
-from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
+from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate, COMPANY_REPURCHASE_MAINTENANCE_DIGEST
 from trader.download.domain.company_events import CompanyPositiveStatus, RepurchasePurpose
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.download.infra.company_field_recovery import CompanyFieldRepairReceipts, ReadCompanyFieldRecovery, QueueCompanyShareActionRechecks, QueueCompanyReductionRechecks, PrepareCompanyShareRecheckReceipts
@@ -552,6 +552,75 @@ def test_maintenance_purpose_rechecks_old_negative_links_and_proofs_once(tmp_pat
 
     def unexpected_read(*args, **kwargs):
         raise AssertionError("the corrected maintenance-purpose rule must reuse its exact committed result")
+
+    restarted = fixtures._index(tmp_path)
+    monkeypatch.setattr(restarted._documents, "read", unexpected_read)
+    restarted.prepare_publication(item.codes, NOW)
+    with SqliteSession(index.facts_path) as formal:
+        assert ReadCompanyPublicationIdentity(formal) == publication
+
+
+@pytest.mark.parametrize("ratio_known", (False, True))
+def test_first_repurchase_quantity_rechecks_old_attempts_and_publishes_exact_proof_once(tmp_path, monkeypatch, ratio_known):
+    body = ("根据《上市公司股份回购规则》等相关规定，现将首次回购具体情况公告如下：\n一、首次回购公司股份的基本情况\n"
+            "公司于2026年7月21日通过集中竞价交易方式首次回购公司股份数量为\n"
+            "20,000股，占公司目前总股本的比例为0.0066%。\n回购股份用于维护公司价值及股东权益。\n" + _DETAIL)
+    assert fixtures._extraction(body).text == body
+    index, item = _legacy_repurchase(tmp_path, body)
+    facts = _facts(index)
+    event, = facts.positive_events
+    event = replace(event, status=CompanyPositiveStatus.IMPLEMENTING if ratio_known else CompanyPositiveStatus.PLANNED,
+                    measurements=replace(event.measurements, actual_ratio_pct=0.0066 if ratio_known else None,
+                                         purpose=RepurchasePurpose.OTHER))
+    facts = replace(facts, positive_events=(event,))
+    candidate = ExtractCompanyLinkCandidate(CompanyDocument(item, body, True), NOW, fixtures.CompanyEventPolicy())
+    candidate = replace(candidate, positive=replace(candidate.positive, status=event.status, measurements=event.measurements))
+    payload = EncodeCompanyLink(candidate)
+    writer = index._facts
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        row = collected.run("SELECT id,record_hash,body_hash FROM disclosures WHERE source_key=?", (item.identity,)).require_one()
+        collected.run("INSERT OR REPLACE INTO document_link_candidates VALUES(?,?,?,?,?)",
+                      (item.source, item.identity, row[1], writer.extraction_hash, payload))
+        old_rule = "same_body_repurchase_fields:1:" + COMPANY_REPURCHASE_MAINTENANCE_DIGEST.hex()
+        old_link = "same_body_share_link:" + hashlib.sha256(
+            writer.extraction_hash + COMPANY_REPURCHASE_MAINTENANCE_DIGEST + payload.encode(),
+        ).hexdigest()
+        for field, rule in (("actual_pct", old_rule), ("repurchase_purpose", old_rule), ("actual_pct", old_link)):
+            collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
+                          (row[0], item.codes[0], row[1], event.event_id, field, rule))
+        attempted = CompanyFieldRepairReceipts(collected, item.codes, NOW)
+        collected.run("UPDATE company_field_repairs SET state='attempted'")
+    policy = f"field_source_lines:1:implemented_total_capital_ratio:3:{event.event_id}:actual_pct"
+    attempted += (CompanyInputReceipt(
+        item.source, item.identity, item.codes[0], item.digest, hashlib.sha256(policy.encode()).digest(),
+        row[2], NOW, "field_attempted", policy,
+    ),)
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+    writer.publish((facts,), {item.identity: item.source}, parent, NOW, receipts=attempted)
+    with SqliteSession(index.facts_path) as formal:
+        original = frozenset(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt"))
+
+    index.prepare_publication(item.codes, NOW)
+
+    restored, = _facts(index).positive_events
+    assert restored.event_id == event.event_id and restored.evidence_ids == event.evidence_ids
+    assert restored.status is CompanyPositiveStatus.IMPLEMENTING and restored.measurements.actual_ratio_pct == 0.0066
+    assert restored.measurements.purpose is RepurchasePurpose.OTHER and restored.positive_level == 0 and restored.level_milestones == ()
+    actual, = (result for result in SQLiteCompanyEvidenceReaderFixture(index.facts_path).read_fields(item.codes).results
+               if result.field == "actual_pct")
+    assert (actual.value, actual.state) == (0.0066, "verified")
+    proof, = actual.evidence
+    assert proof.source_key == item.identity and (proof.start_line, proof.end_line) == (3, 4)
+    assert proof.body_hash == row[2] and "数量为" in proof.quote and "0.0066%" in proof.quote
+    with SqliteSession(index.facts_path) as formal:
+        current = frozenset(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt"))
+        assert original.issubset(current) and all(row[-2] == "field_attempted" for row in current - original)
+        publication = ReadCompanyPublicationIdentity(formal)
+        assert publication.extraction_hash == parent.extraction_hash
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("the exact committed quantity-label result must be reused")
 
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)

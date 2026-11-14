@@ -8,9 +8,9 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import cast
 
-from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence, COMPANY_REPURCHASE_MAINTENANCE_DIGEST
+from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence, COMPANY_REPURCHASE_MAINTENANCE_DIGEST, COMPANY_REPURCHASE_ACTUAL_DIGEST
 from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES
-from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent
+from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent, RepurchaseMeasurements
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_plan import BuildCompanyFieldResults
@@ -95,7 +95,7 @@ def PrepareCompanyFieldResults(
             body_hash = row["body_hash"]
             if not isinstance(body_hash, bytes) or len(body_hash) != 32:
                 continue
-            policy = _field_policy(item.event_id, item.field)
+            policy = _field_policy(event, item.field)
             if formal.run(
                 "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
                 "AND record_hash=? AND body_hash=? AND extraction_hash=? AND policy_id=? AND outcome='field_attempted'",
@@ -189,9 +189,11 @@ def _current_material(
     return len(rows) == 1 and tuple(rows[0]) == (record_hash, body_hash, published_at.isoformat())
 
 
-def _field_policy(event_id: str, field: str) -> str:
+def _field_policy(event: CompanyPositiveEvent | CompanyRiskEvent, field: str) -> str:
     rule = next(rule for name, rule in COMPANY_FIELD_RULES if name == field)
-    policy = f"{_PROOF_RULE}:{rule}:{event_id}:{field}"
+    policy = f"{_PROOF_RULE}:{rule}:{event.event_id}:{field}"
+    if field == "actual_pct" and isinstance(event, CompanyPositiveEvent) and isinstance(event.measurements, RepurchaseMeasurements):
+        return policy + ":" + COMPANY_REPURCHASE_ACTUAL_DIGEST.hex()
     return policy + ":" + COMPANY_REPURCHASE_MAINTENANCE_DIGEST.hex() if field == "repurchase_purpose" else policy
 
 

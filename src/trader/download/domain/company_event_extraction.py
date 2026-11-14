@@ -82,6 +82,18 @@ _REPURCHASE_MAINTENANCE_NEGATION = (
 COMPANY_REPURCHASE_MAINTENANCE_DIGEST = hashlib.sha256(
     (_REPURCHASE_MAINTENANCE_PATTERN + "\0" + _REPURCHASE_MAINTENANCE_NEGATION).encode("utf-8"),
 ).digest()
+_REPURCHASE_ACTUAL_PATTERN = (
+    r"(?:累计(?:已)?|已|首次(?=回购(?:公司)?(?:股份)?"
+    r"(?:[0-9]|数量为(?!0+(?:\.0+)?(?:万|亿)?股)[0-9]|[，,]?占)))"
+)
+_REPURCHASE_ACTUAL_REJECTION = (
+    r"(?:子公司|参股公司|其他公司|上一期|上一轮|上一次|前次|前一轮|去年|上一年度|上年度|往年|历史回购)"
+    r"[^。；;，,]{0,80}$"
+)
+_REPURCHASE_ACTUAL_BOUNDARY = r"[。；;！？!?]|公告如下[：:]"
+COMPANY_REPURCHASE_ACTUAL_DIGEST = hashlib.sha256(
+    (_REPURCHASE_ACTUAL_PATTERN + "\0" + _REPURCHASE_ACTUAL_REJECTION + "\0" + _REPURCHASE_ACTUAL_BOUNDARY).encode("utf-8"),
+).digest()
 _REPURCHASE_OPTION = re.compile(
     r"([□☐√✓☑■☒])((?:用于)?减少注册资本|用于注销(?:并减少注册资本)?|"
     r"(?:用于)?员工持股计划(?:或股权激励(?:计划)?)?|(?:用于)?股权激励(?:计划)?|"
@@ -1263,7 +1275,7 @@ def _actual_ratio(verified: _VerifiedDocument, verb: str) -> float | None:
 
 
 def _actual_ratio_matches(body: str, verb: str) -> tuple[re.Match[str], ...]:
-    action = (r"(?:累计(?:已)?|已|首次(?=回购(?:公司)?(?:股份)?(?:[0-9]|[，,]?占)))"
+    action = (_REPURCHASE_ACTUAL_PATTERN
               if verb == "回购" else r"(?:累计(?:已)?|已)")
     pattern = (
         rf"{action}(?:实际|通过[^。；;]{{0,30}})?{verb}[^。；;]{{0,140}}?"
@@ -1275,11 +1287,17 @@ def _actual_ratio_matches(body: str, verb: str) -> tuple[re.Match[str], ...]:
         match
         for match in re.finditer(pattern, body)
         if not any(marker in match[0] for marker in ("拟", "计划", "预计", "将", "尚未", "未实施", "持有", "所持股份"))
+        and (verb != "回购" or not _repurchase_actual_unconfirmed(body[:match.start()]))
         and not re.search(r"(?:未|不|尚未)$", body[max(0, match.start() - 3) : match.start()])
         and not (match[0].startswith("首次") and re.search(
             r"(?:拟|计划|预计|将|尚待|尚未|未曾|未|不会|不)[^。；;，,]{0,30}$", body[max(0, match.start() - 40):match.start()]
         ))
     )
+
+
+def _repurchase_actual_unconfirmed(prefix: str) -> bool:
+    sentence = re.split(_REPURCHASE_ACTUAL_BOUNDARY, prefix)[-1]
+    return _share_action_unconfirmed(sentence) or re.search(_REPURCHASE_ACTUAL_REJECTION, sentence) is not None
 
 
 def _contract_actor(title: str, body: str) -> _ContractActor:
