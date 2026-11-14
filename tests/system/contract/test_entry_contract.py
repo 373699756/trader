@@ -177,10 +177,11 @@ def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
         assert internal_stage not in shell
 
 
-def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path: Path) -> None:
+@pytest.mark.parametrize("help_argument", ("help", "-h", "--help"))
+def test_run_script_help_lists_two_commands_per_download_or_training_kind(tmp_path: Path, help_argument: str) -> None:
     missing_venv = tmp_path / "missing-venv"
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "help"),
+        ("bash", str(ROOT / "run.sh"), help_argument),
         cwd=ROOT,
         env={**os.environ, "VENV_DIR": str(missing_venv)},
         text=True,
@@ -193,9 +194,15 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh                         同时启动全部档位 V1、V2、V3、V5" in completed.stdout
     assert "./run.sh v2                      只启动 V2" in completed.stdout
     assert "./run.sh v1,v2,v3                同时启动所列档位，Web按钮互斥切换" in completed.stdout
-    assert "scripts/tools.py --business recommendation --module pipeline --action snapshot" in completed.stdout
-    assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
-    assert "./run.sh train                   使用本地已发布历史训练全部档位 V1、V2、V3、V5" in completed.stdout
+    commands = completed.stdout.split("下载与训练:\n", 1)[1].split("\n\n", 1)[0]
+    assert [line.strip().split("  ", 1)[0] for line in commands.splitlines()] == [
+        "./run.sh sync history", "./run.sh sync history --fill",
+        "./run.sh sync market", "./run.sh sync market --fill",
+        "./run.sh sync company", "./run.sh sync company --fill",
+        "./run.sh train", "./run.sh train v1,v5",
+    ]
+    for removed in ("高级配置", "scripts/tools.py", "--repair-codes", "--json", "--diagnostics"):
+        assert removed not in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "档位以逗号分隔，可自由组合；省略时选择全部。" in completed.stdout
@@ -228,10 +235,20 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
     (
         ("train", "--sessions", "2000"),
         ("train", "--mode", "update"),
+        ("train", "--json"),
+        ("train", "v1", "--json"),
+        ("train", "--diagnostics", "report.json"),
+        ("train", "v1", "v5"),
+        ("train", "v1,v1"),
+        ("sync",),
+        ("sync", "all"),
+        ("sync", "history", "--json"),
+        ("sync", "market", "--fill", "extra"),
+        ("sync", "company", "--fill", "--fill"),
         ("--profile", "v2", "train"),
     ),
 )
-def test_run_script_rejects_download_arguments_before_environment_setup(
+def test_run_script_rejects_unsupported_arguments_before_environment_setup(
     arguments: tuple[str, ...], tmp_path: Path
 ) -> None:
     missing_venv = tmp_path / "must-not-exist"
@@ -247,7 +264,10 @@ def test_run_script_rejects_download_arguments_before_environment_setup(
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr.startswith("用法：./run.sh" if arguments[0] == "train" else "未知命令: --profile")
+    if arguments[0] == "--profile":
+        assert completed.stderr.startswith("未知命令: --profile")
+    else:
+        assert completed.stderr.startswith(("用法：./run.sh", "档位列表只能包含", "档位不能重复"))
     assert not missing_venv.exists()
 
 
@@ -372,9 +392,7 @@ def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
 
 
 @pytest.mark.parametrize("profile_args", (
-    (), ("v1",), ("v1,v5",), ("v2",), ("v2,v3",), ("--json",),
-    ("v1,v5", "--json", "--diagnostics", "/tmp/train-report.json"),
-    ("--diagnostics", "/tmp/train report.json", "v1"),
+    (), ("v1",), ("v1,v5",), ("v2",), ("v2,v3",), ("v1,v2,v3,v5",),
 ))
 def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, profile_args: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
@@ -402,6 +420,28 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
     assert completed.returncode == 0
     suffix = " " + " ".join(profile_args) if profile_args else ""
     assert completed.stdout == f"cli:--config {config} train{suffix}\n"
+
+
+@pytest.mark.parametrize("target", ("history", "market", "company"))
+@pytest.mark.parametrize("fill_args", ((), ("--fill",)))
+def test_run_script_forwards_retained_sync_commands(tmp_path: Path, target: str, fill_args: tuple[str, ...]) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python3", f'exec "{sys.executable}" "$@"')
+    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "sync", target, *fill_args),
+        cwd=ROOT,
+        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
+        text=True, capture_output=True, timeout=10, check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    suffix = " --fill" if fill_args else ""
+    assert completed.stdout == f"cli:--config {config} sync {target}{suffix}\n"
+    assert not config.exists()
 
 
 @pytest.mark.parametrize("error", (OSError, RuntimeError, ValueError))

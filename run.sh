@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 CONFIG_PATH="${TRADER_CONFIG:-$ROOT_DIR/config/runtime.json}"
 MODE=""
-FORWARD_ARGS=()
 
 usage() {
   printf '%s\n' \
@@ -51,57 +50,20 @@ case "${1:-}" in
     ;;
 esac
 
-if [[ "$MODE" == "train" ]]; then
-  TRAIN_ARGS=("$@")
-  TRAIN_PROFILE_SEEN=0
-  for ((train_index=0; train_index<${#TRAIN_ARGS[@]}; train_index++)); do
-    case "${TRAIN_ARGS[train_index]}" in
-      --json) ;;
-      --diagnostics)
-        if ((train_index+1 >= ${#TRAIN_ARGS[@]})); then
-          printf '%s\n' '用法：./run.sh train [档位列表] [--json] [--diagnostics 新文件路径]' >&2
-          exit 2
-        fi
-        train_index=$((train_index+1))
-        ;;
-      v1|v2|v3|v5|v[1235],*)
-        if ((TRAIN_PROFILE_SEEN)); then
-          printf '%s\n' '用法：./run.sh train 仅接受一个逗号分隔的档位列表。' >&2
-          exit 2
-        fi
-        TRAIN_PROFILE_SEEN=1
-        TRAIN_PROFILE_LIST="${TRAIN_ARGS[train_index]}"
-        ;;
-      *)
-        printf '%s\n' '用法：./run.sh train [档位列表] [--json] [--diagnostics 新文件路径]' >&2
-        exit 2
-        ;;
-    esac
-  done
-fi
-
-if [[ "$COMMAND_KIND" == "server" ]] && (($# > 1)); then
-  printf '%s\n' '用法：./run.sh [档位列表] 或 ./run.sh train [档位列表]；列表以逗号分隔。' >&2
-  exit 2
-fi
-if (($#)); then
-  if [[ "$MODE" == "sync" ]]; then
-    if [[ "$1" != "history" && "$1" != "market" && "$1" != "company" ]]; then
-      printf '%s\n' '用法：./run.sh sync [history|market|company]' >&2
-      exit 2
-    fi
-    if (($# > 1)) && [[ "$2" != "--fill" ]]; then
-      printf '%s\n' '用法：./run.sh sync [history|market|company] [--fill [--repair-codes 代码...]]' >&2
-      exit 2
-    fi
-    if (($# > 2)); then
-      if [[ "$1" == "company" || "$3" != "--repair-codes" ]] || (($# < 4 || $# > 8)); then
-        printf '%s\n' '--repair-codes仅用于history/market --fill，提供1至5个六位代码。' >&2
-        exit 2
-      fi
-    fi
-  elif [[ "$MODE" != "train" || "${TRAIN_PROFILE_SEEN:-0}" == 1 ]]; then
-    PROFILE_LIST="${TRAIN_PROFILE_LIST:-$1}"
+if [[ "$MODE" == "sync" ]]; then
+  if (($# < 1 || $# > 2)) \
+    || [[ "$1" != "history" && "$1" != "market" && "$1" != "company" ]] \
+    || { (($# == 2)) && [[ "$2" != "--fill" ]]; }; then
+    printf '%s\n' '用法：./run.sh sync history|market|company [--fill]' >&2
+    exit 2
+  fi
+else
+  if (($# > 1)); then
+    printf '%s\n' '用法：./run.sh [档位列表] 或 ./run.sh train [档位列表]；列表以逗号分隔。' >&2
+    exit 2
+  fi
+  if (($#)); then
+    PROFILE_LIST="$1"
     if [[ ! "$PROFILE_LIST" =~ ^v(1|2|3|5)(,v(1|2|3|5))*$ ]]; then
       printf '%s\n' '档位列表只能包含 v1、v2、v3、v5，以逗号分隔且不得重复。' >&2
       exit 2
@@ -116,8 +78,8 @@ if (($#)); then
       SEEN_PROFILES+="$profile,"
     done
   fi
-  FORWARD_ARGS=("$@")
 fi
+FORWARD_ARGS=("$@")
 
 find_python() {
   local candidate
@@ -199,30 +161,25 @@ export TRADER_PORT="${TRADER_PORT:-5000}"
 if [[ "$COMMAND_KIND" == "server" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${FORWARD_ARGS[@]}"
 fi
-if [[ "$MODE" == "sync" || "$MODE" == "train" ]]; then
-  command_log 完成 运行环境检查完成
-  trap - ERR
-fi
+command_log 完成 运行环境检查完成
+trap - ERR
 if [[ "$MODE" == "sync" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" sync "${FORWARD_ARGS[@]}"
 fi
-if [[ "$MODE" == "train" ]]; then
-  TRAINING_MEMORY_HIGH=4608M
-  TRAINING_MEMORY_MAX=5120M
-  if [[ "$(uname -s)" == "Linux" ]]; then
-    if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-      exec systemd-run --user --scope --quiet --collect \
-        --unit="trader-${MODE}-training" \
-        --slice=background.slice \
-        --property="MemoryHigh=$TRAINING_MEMORY_HIGH" \
-        --property="MemoryMax=$TRAINING_MEMORY_MAX" \
-        --property=MemorySwapMax=2048M \
-        --property=CPUWeight=20 \
-        --property=IOWeight=20 \
-        -- "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${FORWARD_ARGS[@]}"
-    fi
-    command_log 处理中 '警告：当前用户 systemd scope 不可用；训练仍使用有界资源，但不能提供 cgroup 硬隔离。'
+TRAINING_MEMORY_HIGH=4608M
+TRAINING_MEMORY_MAX=5120M
+if [[ "$(uname -s)" == "Linux" ]]; then
+  if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    exec systemd-run --user --scope --quiet --collect \
+      --unit="trader-${MODE}-training" \
+      --slice=background.slice \
+      --property="MemoryHigh=$TRAINING_MEMORY_HIGH" \
+      --property="MemoryMax=$TRAINING_MEMORY_MAX" \
+      --property=MemorySwapMax=2048M \
+      --property=CPUWeight=20 \
+      --property=IOWeight=20 \
+      -- "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${FORWARD_ARGS[@]}"
   fi
-  exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${FORWARD_ARGS[@]}"
+  command_log 处理中 '警告：当前用户 systemd scope 不可用；训练仍使用有界资源，但不能提供 cgroup 硬隔离。'
 fi
 exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE" "${FORWARD_ARGS[@]}"

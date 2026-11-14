@@ -53,22 +53,14 @@ def test_domain_repair_selection_keeps_unscoped_sync_and_rejects_mutable_scope()
 
 
 @pytest.mark.parametrize("target", ("history", "market"))
-def test_shell_launcher_forwards_bounded_repair_scope(tmp_path, target):
-    executable = tmp_path / "venv" / "bin"
-    executable.mkdir(parents=True)
-    fake_python = executable / "python3"
-    fake_python.write_text("#!/usr/bin/env bash\nif [[ ${1:-} == -c ]]; then printf '0.0\\n'; fi\n", encoding="utf-8")
-    entrypoint = executable / "trader-cli"
-    entrypoint.write_text("#!/usr/bin/env bash\nprintf 'cli:%s\\n' \"$*\"\n", encoding="utf-8")
-    for path in (fake_python, entrypoint):
-        path.chmod(0o755)
-        newer = (ROOT / "pyproject.toml").stat().st_mtime + 10
-        os.utime(path, (newer, newer))
-    config = tmp_path / "runtime.json"
+def test_shell_launcher_rejects_removed_repair_scope_before_environment_setup(tmp_path, target):
+    missing_venv = tmp_path / "missing-venv"
     completed = subprocess.run(
         ("bash", str(ROOT / "run.sh"), "sync", target, "--fill", "--repair-codes", "300118"),
-        env={**os.environ, "VENV_DIR": str(executable.parent), "TRADER_CONFIG": str(config)},
+        env={**os.environ, "VENV_DIR": str(missing_venv)},
         capture_output=True, text=True, timeout=10, check=False,
     )
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == f"cli:--config {config} sync {target} --fill --repair-codes 300118"
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == "用法：./run.sh sync history|market|company [--fill]\n"
+    assert not missing_venv.exists()
