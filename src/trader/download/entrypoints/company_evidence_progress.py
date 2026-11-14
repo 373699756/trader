@@ -54,12 +54,6 @@ def ReportStPreparation(
 
 
 def _st_failure_message(failure: HistoryStCheckFailure) -> ProgressMessage:
-    if failure.reason == "history_st_name_history_empty":
-        return ProgressMessage(tuple(ProgressField(value, ProgressLevel.WARNING) for value in (
-            "来源 新浪", f"股票 {failure.code} {ShortProgressText(failure.name, 20)}",
-            "原因 曾用名历史为空", "结果 待核unknown，继续下载", "后续 下次ST核验重查",
-        )), task=ProgressTask("参考", "ST待核", "ST待核"), state="等待", finished=True,
-           immediate=True, heartbeat=False)
     return ProgressMessage(tuple(ProgressField(value, ProgressLevel.WARNING) for value in (
         "来源 新浪", f"股票 {failure.code} {ShortProgressText(failure.name, 20)}",
         f"原因码 {failure.reason}", f"诊断 {failure.diagnostic}",
@@ -72,7 +66,8 @@ def _st_failure_message(failure: HistoryStCheckFailure) -> ProgressMessage:
 
 def _st_progress_message(observation: HistoryStCheckProgress) -> ProgressMessage:
     summary = observation.summary
-    warning = summary is not None and summary.unknown > 0
+    empty_histories = tuple(failure for failure in observation.failures if failure.reason == "history_st_name_history_empty")
+    warning = bool(empty_histories) or summary is not None and summary.unknown > 0
     source = "本地缓存（原来源 新浪）" if observation.cache_only else "新浪"
     fields = [f"已核验 {observation.processed}/{observation.total}股", f"已保存 {observation.persisted}/{observation.total}股"]
     if summary is not None:
@@ -81,6 +76,12 @@ def _st_progress_message(observation: HistoryStCheckProgress) -> ProgressMessage
     else:
         fields.append("结果 核验中")
     fields.append(f"来源 {source}")
+    if empty_histories:
+        first = empty_histories[0]
+        others = f"；另{len(empty_histories) - 1}股待核" if len(empty_histories) > 1 else ""
+        fields.append(
+            f"待核：{first.code} {ShortProgressText(first.name, 20)}，曾用名历史为空{others}；unknown继续下载，下次ST核验重查"
+        )
     return ProgressMessage(tuple(ProgressField(value, ProgressLevel.WARNING if warning else ProgressLevel.NORMAL) for value in fields),
                            task=ProgressTask("参考", "ST资格", "ST资格"),
                            state="完成" if summary is not None else "处理中", finished=summary is not None,
@@ -279,7 +280,8 @@ class CompanyEvidenceProgress:
             if facts is not None and facts.status == "running":
                 self._latest["facts"] = replace(facts, status="complete")
         if progress.component == "st_eligibility" and progress.st_check is not None:
-            return (*(_st_failure_message(failure) for failure in progress.st_check.failures),
+            return (*(_st_failure_message(failure) for failure in progress.st_check.failures
+                      if failure.reason != "history_st_name_history_empty"),
                     _st_progress_message(progress.st_check))
         if progress.component in {"st_eligibility", "calendar"}:
             return (self._message(progress, immediate=True),)

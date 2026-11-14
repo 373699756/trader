@@ -50,20 +50,57 @@ def test_empty_history_prints_pending_download_instead_of_exception_diagnostics(
     )
     ReportStPreparation(CompanyEvidenceProgress(report=messages.append, monotonic=lambda: 0),
                         HistoryStCheckProgress(1, 0, 2, failures=(failure,)))
+    assert len(messages) == 1
     message = messages[0]
     line = _text(message)
-    assert message.task.label == "ST待核" and message.state == "等待"
-    assert "股票 688055 龙腾光电" in line and "原因 曾用名历史为空" in line
-    assert "待核unknown，继续下载" in line and "下次ST核验重查" in line
+    assert message.task.label == "ST资格" and message.state == "处理中"
+    assert "已核验 1/2股" in line and "已保存 0/2股" in line
+    assert "待核：688055 龙腾光电，曾用名历史为空" in line
+    assert "unknown继续下载，下次ST核验重查" in line
     assert "诊断" not in line and "ValueError" not in line and "超时" not in line
-    assert message.stock_failure_code is None and message.finished and not message.heartbeat
+    assert message.stock_failure_code is None and not message.finished and message.immediate
 
 
-def test_st_summary_with_unknowns_reports_continued_download_without_faking_verified_status():
+def test_multiple_empty_histories_share_one_line_and_keep_all_original_events():
+    messages = []
+    failures = tuple(
+        HistoryStCheckFailure(code, name, "history_st_name_history_empty", "ValueError", 1, 2, 0.1, 15.0)
+        for code, name in (("001965", "招商公路"), ("688055", "龙腾光电"), ("300101", "示例股票"))
+    )
+    observation = HistoryStCheckProgress(3, 1, 4, failures=failures)
+    events = []
+    ReportStPreparation(events.append, observation)
+    assert events[0].st_check is observation and observation.failures == failures
+    CompanyEvidenceProgress(report=messages.append, monotonic=lambda: 0)(events[0])
+    assert len(messages) == 1
+    line = _text(messages[0])
+    assert "待核：001965 招商公路" in line and "另2股待核" in line
+    assert "龙腾光电" not in line and "示例股票" not in line
+
+
+def test_empty_history_merges_into_progress_while_network_failure_keeps_its_diagnostic():
+    stream = StringIO()
+    empty = HistoryStCheckFailure("001965", "招商公路", "history_st_name_history_empty", "ValueError", 1, 2, 0.1, 15.0)
+    timeout = HistoryStCheckFailure("300101", "示例股票", "http_timeout", "HttpTimeout:history_st_source.py:_fetch_code:200",
+                                    2, 2, 29.75, 15.0)
+    ReportStPreparation(CompanyEvidenceProgress(stream, monotonic=lambda: 0),
+                        HistoryStCheckProgress(2, 1, 3, failures=(empty, timeout)))
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 2
+    assert "ST核验失败" in lines[0] and "尝试 2/2" in lines[0] and "HttpTimeout" in lines[0]
+    assert "ST资格" in lines[1] and "待核：001965 招商公路" in lines[1]
+    assert "ST待核" not in stream.getvalue()
+
+
+@pytest.mark.parametrize("with_empty_history", [False, True])
+def test_st_summary_with_unknowns_reports_continued_download_without_faking_verified_status(with_empty_history):
     stream = StringIO()
     progress = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
-    ReportStPreparation(progress, HistoryStCheckProgress(5224, 5224, 5224, HistoryStEligibilitySummary(4402, 820, 2)))
+    failures = (HistoryStCheckFailure("001965", "招商公路", "history_st_name_history_empty", "ValueError", 1, 2, 0.1, 15.0),) if with_empty_history else ()
+    ReportStPreparation(progress, HistoryStCheckProgress(5224, 5224, 5224, HistoryStEligibilitySummary(4402, 820, 2), failures=failures))
     line = stream.getvalue()
+    assert len(line.splitlines()) == 1
+    assert ("待核：001965 招商公路" in line) is with_empty_history
     assert "参考·ST资格" in line and "已核验 5224/5224股" in line and "已保存 5224/5224股" in line
     assert "已核实非ST 4402股" in line and "当前或曾ST排除 820股" in line and "待核继续下载 2股" in line
     assert "结果 核验结束，待核股票继续下载" in line
