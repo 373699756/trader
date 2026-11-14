@@ -300,6 +300,26 @@ def test_source_fields_publish_with_exact_text_subject_and_the_ordinary_fact_ide
     assert (purpose.evidence[0].start_line, purpose.evidence[0].end_line) == (4, 4)
 
 
+@pytest.mark.parametrize("statement", (
+    "回购股份用于维护公司价值及股东权益。",
+    "本次回购为维护公司价值及股东权益。",
+    "☑用于维护公司价值及股东权益。",
+))
+def test_maintenance_purpose_publishes_as_other_with_exact_source_lines(tmp_path, statement):
+    index = fixtures._index(tmp_path)
+    text = _TEXT.replace("回购股份用于注销。", statement)
+    document = _put(index, text)
+    index.publish(document.disclosure.codes, _AT)
+    reader = _reader(index)
+    purpose, = (item for item in reader.read_fields(document.disclosure.codes).results if item.field == "repurchase_purpose")
+    assert purpose.state == "verified" and purpose.value == "other"
+    proof, = purpose.evidence
+    assert proof.quote in statement and (proof.start_line, proof.end_line) == (4, 4)
+    assert proof.body_hash == hashlib.sha256(text.encode()).digest()
+    event, = reader.read(document.disclosure.codes)[0].positive_events
+    assert event.measurements.actual_ratio_pct == 0.3 and event.positive_level == 0 and event.level_milestones == ()
+
+
 @pytest.mark.parametrize(("title", "statement", "implemented"), (
     ("关于首次回购公司股份的公告", "本公司首次回购股份100万股，拟回购股份占公司总股本的比例为0.3%。", True),
     ("控股股东增持股份公告", "本公司控股股东已增持股份100万股，实际比例详见附表。", True),

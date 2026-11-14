@@ -18,6 +18,7 @@ from trader.download.domain.company_events import (
 from trader.download.domain.company_evidence import CompanyDocument, CompanyDocumentFailureRules, Disclosure
 from trader.download.domain.company_event_extraction import (
     COMPANY_REPURCHASE_DECISION_PATTERN,
+    COMPANY_REPURCHASE_MAINTENANCE_DIGEST,
     ExtractCompanyEvents, ExtractCompanyLinkCandidate, IsCompanyRepurchasePlaceholder, IsCompanyRepurchaseShareholderTable,
 )
 from trader.download.domain.company_facts import CompanyFacts
@@ -56,12 +57,14 @@ COMPANY_FIELD_RULES = (
 ) + COMPANY_CONTRACT_FIELD_RULES
 _REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence:1"
 _REPURCHASE_RECHECK_RULE = "same_body_repurchase_fields:1"
+_CURRENT_REPURCHASE_RECHECK_RULE = _REPURCHASE_RECHECK_RULE + ":" + COMPANY_REPURCHASE_MAINTENANCE_DIGEST.hex()
 _INCREASE_RECHECK_RULE = "same_body_increase_fields:1"
 _SHARE_LINK_RECHECK_RULE_PREFIX = "same_body_share_link:"
 _REDUCTION_RECHECK_RULE_PREFIX = "same_body_reduction:"
 _REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX = "same_body_repurchase_subject:"
 _SAME_BODY_RECHECK_PREFIXES = (
     _SHARE_LINK_RECHECK_RULE_PREFIX, _REDUCTION_RECHECK_RULE_PREFIX, _REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX,
+    _REPURCHASE_RECHECK_RULE + ":",
 )
 _REPURCHASE_PLAN_RULE = "issuer_repurchase_plan:1"
 _FIELD_SOURCE_PROOF_REQUIRED = "field_source_proof_required"
@@ -560,7 +563,7 @@ def QueueCompanyShareActionRechecks(
                     or not _has_valid_material_receipt(formal, row[1], evidence_id, fact.code,
                                                        row[3], body_hash, extraction_hash)):
                     continue
-                rule = _REPURCHASE_RECHECK_RULE if isinstance(before, RepurchaseMeasurements) else _INCREASE_RECHECK_RULE
+                rule = _CURRENT_REPURCHASE_RECHECK_RULE if isinstance(before, RepurchaseMeasurements) else _INCREASE_RECHECK_RULE
                 supported = ("actual_pct", "repurchase_purpose") if isinstance(before, RepurchaseMeasurements) else ("actual_pct",)
                 policies = tuple(_repair_policy(event.event_id, field, rule) for field in supported)
                 conditions = " OR ".join("(policy_id=? AND extraction_hash=?)" for _ in policies)
@@ -706,7 +709,7 @@ def PrepareCompanyShareRecheckReceipts(
                 and after.purpose is not RepurchasePurpose.UNKNOWN and after.purpose is not before.purpose)):
             continue
         fields = ("actual_pct", "repurchase_purpose") if isinstance(before, RepurchaseMeasurements) else ("actual_pct",)
-        rule = _REPURCHASE_RECHECK_RULE if isinstance(before, RepurchaseMeasurements) else _INCREASE_RECHECK_RULE
+        rule = _CURRENT_REPURCHASE_RECHECK_RULE if isinstance(before, RepurchaseMeasurements) else _INCREASE_RECHECK_RULE
         field_rules = [(field, rule) for field in fields]
         field_rules.extend(
             (gap.field, _field_attempt_rule(gap)) for gap in _field_gaps(facts, collected)
@@ -867,7 +870,7 @@ def _queue_unverified_repurchase_inputs(
                 or not _has_valid_material_receipt(formal, row[1], evidence_id, code, row[2], body_hash, extraction_hash)):
                 continue
             rule = _REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX + hashlib.sha256(
-                extraction_hash + COMPANY_REPURCHASE_DECISION_PATTERN.encode("utf-8"),
+                extraction_hash + COMPANY_REPURCHASE_DECISION_PATTERN.encode("utf-8") + COMPANY_REPURCHASE_MAINTENANCE_DIGEST,
             ).hexdigest()
             event_id = f"{evidence_id}:{CompanyPositiveType.SHARE_REPURCHASE.value}"
             if _has_recheck_attempt(
@@ -954,7 +957,8 @@ def _refresh_repurchase_link_candidates(
                 continue
             # A formal-event attempt does not prove this cached candidate.
             # Bind the link check to its exact payload and extraction policy.
-            rule = _SHARE_LINK_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + row[8].encode()).hexdigest()
+            purpose_rule = COMPANY_REPURCHASE_MAINTENANCE_DIGEST if isinstance(old.positive.measurements, RepurchaseMeasurements) else b""
+            rule = _SHARE_LINK_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + purpose_rule + row[8].encode()).hexdigest()
             policy = _repair_policy(old.positive.event_id, "actual_pct", rule)
             if formal.run(
                 "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
@@ -1009,7 +1013,7 @@ def _refresh_repurchase_link_candidates(
                             (row[2], row[0], row[1], row[3]),
                         )
             payload = EncodeCompanyLink(current)
-            rule = _SHARE_LINK_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + payload.encode()).hexdigest()
+            rule = _SHARE_LINK_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + purpose_rule + payload.encode()).hexdigest()
             collected.run(
                 "INSERT OR IGNORE INTO company_field_repairs "
                 "SELECT id,?,record_hash,?,'actual_pct',?,'pending' FROM disclosures "

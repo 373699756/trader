@@ -729,7 +729,7 @@ def test_same_body_repurchase_replay_corrects_old_nonnull_purpose_and_missing_ac
         assert ReadCompanyPublicationIdentity(formal).extraction_hash == identity
     with SqliteSession(index.path) as collected:
         states = tuple(collected.run(
-            "SELECT field,state FROM company_field_repairs WHERE rule_id='same_body_repurchase_fields:1' ORDER BY field"
+            "SELECT field,state FROM company_field_repairs WHERE rule_id LIKE 'same_body_repurchase_fields:1:%' ORDER BY field"
         ))
         assert [tuple(row) for row in states] == [("actual_pct", "complete"), ("repurchase_purpose", "complete")]
     for _ in range(2):
@@ -773,7 +773,7 @@ def test_repurchase_recheck_does_not_complete_from_old_nonnull_value_before_new_
         )
         RestoreCompanyFieldRepairs(collected, formal)
         pending = tuple(collected.run(
-            "SELECT state FROM company_field_repairs WHERE rule_id='same_body_repurchase_fields:1'"
+            "SELECT state FROM company_field_repairs WHERE rule_id LIKE 'same_body_repurchase_fields:1:%'"
         ))
         assert [row[0] for row in pending] == ["pending", "pending"]
         assert collected.run("SELECT 1 FROM document_publications WHERE code=?", (item.codes[0],)).fetchone() is None
@@ -810,7 +810,7 @@ def test_repurchase_recheck_does_not_request_missing_local_material(tmp_path):
             fixtures.CompanyEventPolicy(), unavailable,
         )
         assert collected.run(
-            "SELECT 1 FROM company_field_repairs WHERE rule_id='same_body_repurchase_fields:1'"
+            "SELECT 1 FROM company_field_repairs WHERE rule_id LIKE 'same_body_repurchase_fields:1:%'"
         ).fetchone() is None
     event, = _facts(index).positive_events
     assert event.measurements.purpose is RepurchasePurpose.EMPLOYEE_PLAN
@@ -873,7 +873,7 @@ def test_repurchase_recheck_keeps_same_source_multiple_events_unmodified(tmp_pat
             fixtures.CompanyEventPolicy(), CompanyDocumentFilesFixture(tmp_path / "text").read,
         )
         assert collected.run(
-            "SELECT 1 FROM company_field_repairs WHERE rule_id='same_body_repurchase_fields:1'"
+            "SELECT 1 FROM company_field_repairs WHERE rule_id LIKE 'same_body_repurchase_fields:1:%'"
         ).fetchone() is None
 
 
@@ -1158,7 +1158,7 @@ def test_corrected_issuer_decision_rechecks_an_old_negative_attempt_without_reis
     with SqliteSession(index.path) as collected, SqliteTransaction(collected):
         collected.run("DELETE FROM company_field_repairs")
         collected.run("DELETE FROM document_link_candidates WHERE source_key=?", (item.identity,))
-        # This is the exact committed policy in the preceding production code.
+        # A committed policy from the earlier production parser stays historical.
         old_rule = "same_body_repurchase_subject:" + writer.extraction_hash.hex()
         collected.run(
             "INSERT INTO company_field_repairs SELECT id,?,record_hash,?,'repurchase_purpose',?,'pending' "

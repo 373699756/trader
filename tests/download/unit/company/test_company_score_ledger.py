@@ -154,6 +154,13 @@ def test_implemented_employee_buyback_keeps_actual_facts_without_awards(title, s
         ("并非用于注销", RepurchasePurpose.UNKNOWN, 0),
         ("不注销并减少注册资本", RepurchasePurpose.UNKNOWN, 0),
         ("不用于注销，用于员工持股", RepurchasePurpose.EMPLOYEE_PLAN, 0),
+        ("本次回购用于维护公司价值及股东权益", RepurchasePurpose.OTHER, 0),
+        ("本次回购为维护公司价值及股东权益", RepurchasePurpose.OTHER, 0),
+        ("本次回购不用于维护公司价值及股东权益", RepurchasePurpose.UNKNOWN, 0),
+        ("本次回购不是为维护公司价值及股东权益", RepurchasePurpose.UNKNOWN, 0),
+        ("本次回购不再将回购股份用于维护公司价值及股东权益", RepurchasePurpose.UNKNOWN, 0),
+        ("□用于维护公司价值及股东权益", RepurchasePurpose.UNKNOWN, 0),
+        ("☑用于维护公司价值及股东权益", RepurchasePurpose.OTHER, 0),
     ),
 )
 def test_repurchase_cancellation_purpose_requires_an_affirmative_statement(purpose, expected_purpose, level):
@@ -670,6 +677,8 @@ def test_repurchase_plan_requires_the_issuer_decision_to_identify_issuer(decisio
     ("□减少注册资本□用于员工持股计划或股权激励□用于转换公司可转债√为维护公司价值及股东权益",
      RepurchasePurpose.OTHER, 0),
     ("☑减少注册资本☐用于员工持股计划或股权激励", RepurchasePurpose.CANCELLATION, 2),
+    ("☑减少注册资本☐用于维护公司价值及股东权益", RepurchasePurpose.CANCELLATION, 2),
+    ("☑减少注册资本☑用于维护公司价值及股东权益", RepurchasePurpose.OTHER, 0),
     ("□减少注册资本□用于员工持股计划或股权激励", RepurchasePurpose.UNKNOWN, 0),
     ("√减少注册资本√用于员工持股计划或股权激励", RepurchasePurpose.EMPLOYEE_PLAN, 0),
     ("√减少注册资本√用于转换公司可转债", RepurchasePurpose.OTHER, 0),

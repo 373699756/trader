@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import cast
 
-from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence
+from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence, COMPANY_REPURCHASE_MAINTENANCE_DIGEST
 from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent
 from trader.download.domain.company_evidence import CompanyDocument
@@ -191,7 +191,8 @@ def _current_material(
 
 def _field_policy(event_id: str, field: str) -> str:
     rule = next(rule for name, rule in COMPANY_FIELD_RULES if name == field)
-    return f"{_PROOF_RULE}:{rule}:{event_id}:{field}"
+    policy = f"{_PROOF_RULE}:{rule}:{event_id}:{field}"
+    return policy + ":" + COMPANY_REPURCHASE_MAINTENANCE_DIGEST.hex() if field == "repurchase_purpose" else policy
 
 
 __all__ = [

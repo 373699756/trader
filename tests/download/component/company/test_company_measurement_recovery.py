@@ -7,11 +7,13 @@ import hashlib
 import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.download.company.company_field_recovery import NOW, _facts, _legacy_reduction, _put
+from tests.helpers.download.company.company_field_recovery import NOW, _facts, _legacy_reduction, _legacy_repurchase, _put
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
-from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
-from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
-from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, QueueCompanyShareActionRechecks, QueueCompanyReductionRechecks, PrepareCompanyShareRecheckReceipts
+from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition
+from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
+from trader.download.domain.company_events import CompanyPositiveStatus, RepurchasePurpose
+from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
+from trader.download.infra.company_field_recovery import CompanyFieldRepairReceipts, ReadCompanyFieldRecovery, QueueCompanyShareActionRechecks, QueueCompanyReductionRechecks, PrepareCompanyShareRecheckReceipts
 from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
@@ -482,9 +484,77 @@ def test_new_share_preflight_requires_matching_material_and_prepared_values(tmp_
     if guard == "valid":
         assert receipts and all(receipt.outcome == "field_attempted" and receipt.source_key == item.identity
                                 and receipt.code == facts.code and receipt.body_hash == digest for receipt in receipts)
-        assert any(receipt.policy_id.endswith(":same_body_repurchase_fields:1") for receipt in receipts)
+        assert any(":same_body_repurchase_fields:1:" in receipt.policy_id for receipt in receipts)
         assert any(receipt.policy_id.endswith(":repurchase_purpose:explicit_repurchase_purpose:2") for receipt in receipts)
     else:
         assert receipts == ()
     if guard in {"unchanged", "missing_receipt"}:
         assert reads == []
+
+
+@pytest.mark.parametrize("legacy_kind", ("implemented", "known", "planned"))
+def test_maintenance_purpose_rechecks_old_negative_links_and_proofs_once(tmp_path, monkeypatch, legacy_kind):
+    action = "本公司拟回购股份。" if legacy_kind == "planned" else "本公司首次回购股份100万股，占公司总股本的0.3%。"
+    body = action + "\n回购股份用于维护公司价值及股东权益。\n" + _DETAIL + "本公告不涉及其他事项。"
+    assert fixtures._extraction(body).text == body
+    index, item = _legacy_repurchase(tmp_path, body)
+    facts = _facts(index)
+    event, = facts.positive_events
+    if legacy_kind == "known":
+        event = replace(event, measurements=replace(event.measurements, purpose=RepurchasePurpose.OTHER))
+        facts = replace(facts, positive_events=(event,))
+    candidate = ExtractCompanyLinkCandidate(CompanyDocument(item, body, True), NOW, fixtures.CompanyEventPolicy())
+    old_candidate = replace(candidate, positive=replace(
+        candidate.positive, measurements=replace(candidate.positive.measurements, purpose=RepurchasePurpose.UNKNOWN),
+    ))
+    payload = EncodeCompanyLink(old_candidate)
+    writer = index._facts
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        row = collected.run("SELECT id,record_hash,body_hash FROM disclosures WHERE source_key=?", (item.identity,)).require_one()
+        collected.run("INSERT OR REPLACE INTO document_link_candidates VALUES(?,?,?,?,?)",
+                      (item.source, item.identity, row[1], writer.extraction_hash, payload))
+        old_link_rule = "same_body_share_link:" + hashlib.sha256(writer.extraction_hash + payload.encode()).hexdigest()
+        for field, rule in (("actual_pct", "same_body_repurchase_fields:1"),
+                            ("repurchase_purpose", "same_body_repurchase_fields:1"),
+                            ("actual_pct", old_link_rule), ("repurchase_purpose", "explicit_repurchase_purpose:2")):
+            collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
+                          (row[0], item.codes[0], row[1], event.event_id, field, rule))
+        attempted = CompanyFieldRepairReceipts(collected, item.codes, NOW)
+        collected.run("UPDATE company_field_repairs SET state='attempted'")
+    if legacy_kind == "known":
+        policy = f"field_source_lines:1:explicit_repurchase_purpose:2:{event.event_id}:repurchase_purpose"
+        attempted += (CompanyInputReceipt(
+            item.source, item.identity, item.codes[0], item.digest, hashlib.sha256(policy.encode()).digest(),
+            row[2], NOW, "field_attempted", policy,
+        ),)
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+    writer.publish((facts,), {item.identity: item.source}, parent, NOW, receipts=attempted)
+    with SqliteSession(index.facts_path) as formal:
+        original = frozenset(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt"))
+
+    index.prepare_publication(item.codes, NOW)
+
+    restored, = _facts(index).positive_events
+    assert restored.measurements.purpose is RepurchasePurpose.OTHER
+    assert restored.status is (CompanyPositiveStatus.PLANNED if legacy_kind == "planned" else CompanyPositiveStatus.IMPLEMENTING)
+    assert restored.measurements.actual_ratio_pct == (None if legacy_kind == "planned" else 0.3)
+    assert restored.positive_level == 0 and restored.level_milestones == ()
+    purpose, = (item for item in SQLiteCompanyEvidenceReaderFixture(index.facts_path).read_fields(item.codes).results
+                if item.field == "repurchase_purpose")
+    assert purpose.value == "other" and purpose.state == "verified" and purpose.evidence[0].quote in body
+    with SqliteSession(index.facts_path) as formal:
+        current = frozenset(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt"))
+        assert original.issubset(current)
+        assert all(row[-2] == "field_attempted" for row in current - original)
+        publication = ReadCompanyPublicationIdentity(formal)
+        assert publication.extraction_hash == parent.extraction_hash
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("the corrected maintenance-purpose rule must reuse its exact committed result")
+
+    restarted = fixtures._index(tmp_path)
+    monkeypatch.setattr(restarted._documents, "read", unexpected_read)
+    restarted.prepare_publication(item.codes, NOW)
+    with SqliteSession(index.facts_path) as formal:
+        assert ReadCompanyPublicationIdentity(formal) == publication

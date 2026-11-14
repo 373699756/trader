@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from enum import Enum
@@ -73,10 +74,18 @@ COMPANY_REPURCHASE_DECISION_PATTERN = (
     r"(?:本公司|上市公司|(?:^|[。；;，,：:])公司)将(?:在回购期限内|根据董事会决议)"
     r"[^。；;]{0,100}(?:[作做]出回购决策|进行回购)"
 )
+_REPURCHASE_MAINTENANCE_PATTERN = r"(?:为|用于)维护公司价值及股东权益"
+_REPURCHASE_MAINTENANCE_NEGATION = (
+    r"(?:不是|并不|不再|不会|不得|不能|并非|无需|无须|尚未|未曾|不将|未将|未|不|非)"
+    r"(?:将|把)?(?:本次)?(?:回购股份|股份)?$"
+)
+COMPANY_REPURCHASE_MAINTENANCE_DIGEST = hashlib.sha256(
+    (_REPURCHASE_MAINTENANCE_PATTERN + "\0" + _REPURCHASE_MAINTENANCE_NEGATION).encode("utf-8"),
+).digest()
 _REPURCHASE_OPTION = re.compile(
     r"([□☐√✓☑■☒])((?:用于)?减少注册资本|用于注销(?:并减少注册资本)?|"
     r"(?:用于)?员工持股计划(?:或股权激励(?:计划)?)?|(?:用于)?股权激励(?:计划)?|"
-    r"用于转换公司(?:可转债|发行的可转换为股票的公司债券)|为维护公司价值及股东权益)"
+    r"用于转换公司(?:可转债|发行的可转换为股票的公司债券)|" + _REPURCHASE_MAINTENANCE_PATTERN + r")"
 )
 _CONTRACT_ACTOR = re.compile(
     r"(?P<outside>子公司|参股公司)|"
@@ -316,7 +325,7 @@ def _repurchase_purpose_statement(body: str, purpose: RepurchasePurpose) -> str 
             RepurchasePurpose.CANCELLATION: r"用于注销(?:并减少注册资本)?|注销并减少注册资本",
             RepurchasePurpose.EMPLOYEE_PLAN: r"用于员工持股(?:计划)?",
             RepurchasePurpose.INCENTIVE: r"用于股权激励(?:计划)?",
-            RepurchasePurpose.OTHER: r"用于转换公司(?:可转债|发行的可转换为股票的公司债券)|为维护公司价值及股东权益",
+            RepurchasePurpose.OTHER: r"用于转换公司(?:可转债|发行的可转换为股票的公司债券)|" + _REPURCHASE_MAINTENANCE_PATTERN,
         }[purpose]
         statements = tuple(re.finditer(expression, body))
         statement = statements[0][0] if len(statements) == 1 else None
@@ -1216,6 +1225,13 @@ def _positive_measurements(
     return measurements, ratio, eligible
 
 
+def _maintenance_purpose(body: str) -> bool:
+    matches = tuple(re.finditer(_REPURCHASE_MAINTENANCE_PATTERN, body))
+    return bool(matches) and all(
+        re.search(_REPURCHASE_MAINTENANCE_NEGATION, body[:match.start()]) is None for match in matches
+    )
+
+
 def _repurchase_purpose(body: str) -> RepurchasePurpose:
     # Exchange templates print every option. An empty box does not disclose a
     # purpose, even when its words would otherwise match an affirmative rule.
@@ -1236,7 +1252,7 @@ def _repurchase_purpose(body: str) -> RepurchasePurpose:
         return RepurchasePurpose.EMPLOYEE_PLAN
     if "股权激励" in body:
         return RepurchasePurpose.INCENTIVE
-    if "用于转换公司" in body or "为维护公司价值及股东权益" in body:
+    if "用于转换公司" in body or _maintenance_purpose(body):
         return RepurchasePurpose.OTHER
     return RepurchasePurpose.UNKNOWN
 
