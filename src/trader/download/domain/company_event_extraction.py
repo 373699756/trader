@@ -69,6 +69,10 @@ _SUBJECT_MARKERS = (
     ("大股东", CompanySubject.MAJOR_SHAREHOLDER),
 )
 _SUBSIDIARY_MARKERS = ("子公司", "参股公司")
+COMPANY_REPURCHASE_DECISION_PATTERN = (
+    r"(?:本公司|上市公司|(?:^|[。；;，,：:])公司)将(?:在回购期限内|根据董事会决议)"
+    r"[^。；;]{0,100}(?:[作做]出回购决策|进行回购)"
+)
 _REPURCHASE_OPTION = re.compile(
     r"([□☐√✓☑■☒])((?:用于)?减少注册资本|用于注销(?:并减少注册资本)?|"
     r"(?:用于)?员工持股计划(?:或股权激励(?:计划)?)?|(?:用于)?股权激励(?:计划)?|"
@@ -1316,10 +1320,7 @@ def _subject(title: str, body: str) -> CompanySubject | None:
         # Plans also disclose holders' trading/intentions. Only an explicit
         # issuer decision establishes this plan's actor; incidental mentions
         # neither establish another actor nor supply its numeric measurements.
-        decisions = re.finditer(
-            r"(?:本公司|上市公司|(?:^|[。；;，,：:])公司)将(?:在回购期限内|根据董事会决议)"
-            r"[^。；;]{0,100}(?:作出回购决策|进行回购)", body,
-        )
+        decisions = re.finditer(COMPANY_REPURCHASE_DECISION_PATTERN, body)
         if any(not any(marker in match[0] for marker in (*_SUBSIDIARY_MARKERS, *(word for word, _ in _SUBJECT_MARKERS)))
                for match in decisions):
             return CompanySubject.ISSUER

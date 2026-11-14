@@ -17,6 +17,7 @@ from trader.download.domain.company_events import (
 )
 from trader.download.domain.company_evidence import CompanyDocument, CompanyDocumentFailureRules, Disclosure
 from trader.download.domain.company_event_extraction import (
+    COMPANY_REPURCHASE_DECISION_PATTERN,
     ExtractCompanyEvents, ExtractCompanyLinkCandidate, IsCompanyRepurchasePlaceholder, IsCompanyRepurchaseShareholderTable,
 )
 from trader.download.domain.company_facts import CompanyFacts
@@ -636,6 +637,91 @@ def _has_recheck_attempt(
     ).fetchone() is not None
 
 
+def PrepareCompanyShareRecheckReceipts(
+    collected: SqliteConnection,
+    formal: SqliteConnection,
+    facts: CompanyFacts,
+    previous: CompanyFacts | None,
+    *,
+    observed_at: datetime,
+    extraction_hash: bytes,
+    event_policy: CompanyEventPolicy,
+    read_document: Callable[[bytes], str],
+) -> tuple[CompanyInputReceipt, ...]:
+    """Check a newly identified or relinked event before the formal write lock.
+
+    This covers the final linked evidence, which can differ from the plan that
+    opened the event. Receipts commit with the prepared facts; unreadable or
+    contradictory inputs never certify this check or replace existing values.
+    """
+    previous_inputs = frozenset(
+        (event.event_id, event.evidence_ids[-1], event.last_disclosed_at)
+        for event in previous.positive_events
+    ) if previous is not None else frozenset()
+    receipts: list[CompanyInputReceipt] = []
+    for event in facts.positive_events:
+        before = event.measurements
+        evidence_id = event.evidence_ids[-1]
+        if (not isinstance(before, (RepurchaseMeasurements, IncreaseMeasurements))
+            or event.status is CompanyPositiveStatus.CANCELLED or event.last_disclosed_at > observed_at
+            or (event.event_id, evidence_id, event.last_disclosed_at) in previous_inputs
+            or sum(evidence_id in other.evidence_ids for other in facts.positive_events) != 1):
+            continue
+        rows = collected.run(
+            "SELECT d.source,d.record_hash,d.body_hash,d.title,d.published_at,d.url "
+            "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+            "WHERE c.code=? AND d.source_key=? AND d.kind='announcement' AND d.body_checked=1 AND d.body_retained=1 "
+            "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
+            (facts.code, evidence_id),
+        ).fetchall()
+        if len(rows) != 1:
+            continue
+        row = rows[0]
+        body_hash = row[2]
+        if (not isinstance(body_hash, bytes) or len(body_hash) != 32
+            or datetime.fromisoformat(row[4]) != event.last_disclosed_at
+            or not _has_valid_material_receipt(formal, row[0], evidence_id, facts.code, row[1], body_hash, extraction_hash)):
+            continue
+        try:
+            text = read_document(body_hash)
+        except InterruptedError:
+            raise
+        except (OSError, ValueError, EOFError):
+            continue
+        if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
+            continue
+        issuer_codes = ExtractCompanyAnnouncementNumbers(text).issuer_codes
+        if issuer_codes and facts.code not in issuer_codes:
+            continue
+        candidate = ExtractCompanyLinkCandidate(CompanyDocument(
+            Disclosure(row[0], evidence_id, (facts.code,), row[3], event.last_disclosed_at, row[5], row[1]), text, True,
+        ), observed_at, event_policy)
+        if (candidate is None or candidate.positive is None or candidate.subject is not event.subject_type
+            or candidate.positive.event_type is not event.event_type or candidate.positive.status is not event.status):
+            continue
+        after = candidate.positive.measurements
+        if (not isinstance(after, (RepurchaseMeasurements, IncreaseMeasurements)) or type(before) is not type(after)
+            or (after.actual_ratio_pct is not None and after.actual_ratio_pct != before.actual_ratio_pct)
+            or (isinstance(after, RepurchaseMeasurements) and isinstance(before, RepurchaseMeasurements)
+                and after.purpose is not RepurchasePurpose.UNKNOWN and after.purpose is not before.purpose)):
+            continue
+        fields = ("actual_pct", "repurchase_purpose") if isinstance(before, RepurchaseMeasurements) else ("actual_pct",)
+        rule = _REPURCHASE_RECHECK_RULE if isinstance(before, RepurchaseMeasurements) else _INCREASE_RECHECK_RULE
+        field_rules = [(field, rule) for field in fields]
+        field_rules.extend(
+            (gap.field, _field_attempt_rule(gap)) for gap in _field_gaps(facts, collected)
+            if gap.event_id == event.event_id and gap.evidence_id == evidence_id
+            and gap.field in fields and gap.reason == "measurement_missing"
+        )
+        for field, rule in field_rules:
+            policy = _repair_policy(event.event_id, field, rule)
+            receipts.append(CompanyInputReceipt(
+                row[0], evidence_id, facts.code, row[1], hashlib.sha256(policy.encode()).digest(),
+                body_hash, observed_at, "field_attempted", policy,
+            ))
+    return tuple(receipts)
+
+
 def QueueCompanyReductionRechecks(
     collected: SqliteConnection,
     formal: SqliteConnection,
@@ -780,7 +866,9 @@ def _queue_unverified_repurchase_inputs(
             if (not isinstance(body_hash, bytes) or len(body_hash) != 32 or published > observed_at
                 or not _has_valid_material_receipt(formal, row[1], evidence_id, code, row[2], body_hash, extraction_hash)):
                 continue
-            rule = _REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX + extraction_hash.hex()
+            rule = _REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX + hashlib.sha256(
+                extraction_hash + COMPANY_REPURCHASE_DECISION_PATTERN.encode("utf-8"),
+            ).hexdigest()
             event_id = f"{evidence_id}:{CompanyPositiveType.SHARE_REPURCHASE.value}"
             if _has_recheck_attempt(
                 formal,
@@ -1247,6 +1335,7 @@ __all__ = [
     "RegisterCompanyFieldAttempts",
     "CompleteCompanyFieldRepairs",
     "CompanyFieldRepairReceipts",
+    "PrepareCompanyShareRecheckReceipts",
     "RestoreCompanyFieldRepairs",
     "CompanyMaterialDependency",
     "RegisterCompanyMaterialDependencies",

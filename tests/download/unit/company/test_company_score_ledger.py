@@ -649,6 +649,8 @@ def test_contract_conflicting_formatted_amounts_are_not_selected_arbitrarily():
     "公司将根据董事会决议支持控股股东进行回购。",
     "公司将根据董事会决议由子公司进行回购。",
     "控股股东将根据董事会决议进行回购。",
+    "公司将在回购期限内支持控股股东择机做出回购决策。",
+    "公司将在回购期限内由子公司择机做出回购决策。",
 ))
 def test_repurchase_plan_requires_the_issuer_decision_to_identify_issuer(decision):
     result = ExtractCompanyEvents((_document("plan", "关于回购股份的回购报告书",
@@ -698,6 +700,7 @@ def test_holder_table_material_cannot_retire_an_event_when_another_event_shares_
 @pytest.mark.parametrize("decision", (
     "公司将在回购期限内根据市场情况择机作出回购决策予以实施。",
     "公司将根据董事会决议，在回购期限内，根据市场情况择机进行回购。",
+    "公司将在回购期限内根据市场情况择机做出回购决策并予以实施，并将回购情况及时披露。",
 ))
 def test_issuer_repurchase_plan_can_include_holder_trading_disclosures(decision):
     body = ("本公司董事会保证公告真实。" + decision

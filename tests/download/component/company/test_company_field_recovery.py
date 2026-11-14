@@ -1073,14 +1073,15 @@ def test_status_only_holder_refresh_requires_exact_material_and_one_matching_eve
 
 
 @pytest.mark.parametrize("valid_receipt", (True, False))
-def test_retained_issuer_plan_recheck_links_progress_without_reissuing_valid_receipt(tmp_path, valid_receipt):
+@pytest.mark.parametrize("purpose_known", (True, False))
+def test_retained_issuer_plan_recheck_links_progress_without_reissuing_valid_receipt(tmp_path, monkeypatch, valid_receipt, purpose_known):
     index = fixtures._index(tmp_path)
     plan = fixtures._disclosure("plan", "关于回购股份的回购报告书", when=NOW - timedelta(days=1))
     progress = fixtures._disclosure("progress", "关于回购股份进展的公告")
     _put(index, plan, "本公司董事会保证公告真实。公司将在回购期限内根据市场情况择机作出回购决策予以实施。"
                     "控股股东暂无减持计划。" + _DETAIL)
-    _put(index, progress, "本公司根据公告plan，首次回购股份100万股，占公司总股本的0.062%。"
-                        "回购用途□减少注册资本□用于员工持股计划或股权激励√用于转换公司可转债。" + _DETAIL)
+    purpose = "回购用途□减少注册资本□用于员工持股计划或股权激励√用于转换公司可转债。" if purpose_known else "回购用途尚待核实。"
+    _put(index, progress, "本公司根据公告plan，首次回购股份100万股，占公司总股本的0.062%。" + purpose + _DETAIL)
     index.publish(plan.codes, NOW)
     with SqliteSession(index.facts_path) as formal:
         parent = ReadCompanyPublicationIdentity(formal)
@@ -1106,7 +1107,11 @@ def test_retained_issuer_plan_recheck_links_progress_without_reissuing_valid_rec
         assert event.event_id == "plan:share_repurchase"
         assert event.evidence_ids == ("plan", "progress")
         assert event.measurements.actual_ratio_pct == 0.062
-        assert event.measurements.purpose is RepurchasePurpose.OTHER and event.positive_level == 0
+        assert event.measurements.purpose is (RepurchasePurpose.OTHER if purpose_known else RepurchasePurpose.UNKNOWN)
+        assert event.positive_level == 0
+        def unexpected_read(*args, **kwargs):
+            raise AssertionError("the newly linked progress must finish its same-body check in the first publication")
+        monkeypatch.setattr(index._documents, "read", unexpected_read)
         for _ in range(2):
             index.prepare_publication(plan.codes, NOW)
             assert index.pending_documents(plan.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
@@ -1139,3 +1144,87 @@ def test_verified_progress_prioritizes_existing_plan_before_newer_unrelated_docu
     all_tasks = index.pending_documents(plan.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert {task.disclosure.identity for task in all_tasks}.issuperset({"plan", "unrelated"})
     assert not _facts(index).positive_events
+
+
+@pytest.mark.parametrize("interruption", ("none", "before_commit", "after_commit"))
+def test_corrected_issuer_decision_rechecks_an_old_negative_attempt_without_reissuing_valid(tmp_path, monkeypatch, interruption):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("issuer-decision", "关于回购股份的回购报告书")
+    _put(index, item, "本公司董事会保证公告真实。公司将在回购期限内根据市场情况择机做出回购决策并予以实施。"
+                    "控股股东、实际控制人暂无减持计划。控股股东累计已增持股份占总股本比例为2%。" + _DETAIL)
+    index.publish(item.codes, NOW)
+    facts = _facts(index)
+    writer = index._facts
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        collected.run("DELETE FROM company_field_repairs")
+        collected.run("DELETE FROM document_link_candidates WHERE source_key=?", (item.identity,))
+        # This is the exact committed policy in the preceding production code.
+        old_rule = "same_body_repurchase_subject:" + writer.extraction_hash.hex()
+        collected.run(
+            "INSERT INTO company_field_repairs SELECT id,?,record_hash,?,'repurchase_purpose',?,'pending' "
+            "FROM disclosures WHERE source_key=?",
+            (item.codes[0], item.identity + ":share_repurchase", old_rule, item.identity),
+        )
+        attempted = CompanyFieldRepairReceipts(collected, item.codes, NOW)
+        collected.run("UPDATE company_field_repairs SET state='attempted'")
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+        valid = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
+    writer.publish(
+        (replace(facts, positive_events=(), review_reasons=(
+            CompanyReviewReason("positive", "subject_unverified", item.identity, NOW, "原规则主体未识别"),
+        )),),
+        {item.identity: item.source}, parent, NOW, receipts=attempted,
+    )
+    assert _facts(index).positive_events == ()
+
+    if interruption != "none":
+        publish = writer.publish
+
+        def interrupted(*args, **kwargs):
+            if interruption == "after_commit":
+                publish(*args, **kwargs)
+            raise RuntimeError("fixture_formal_interrupted")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(writer, "publish", interrupted)
+            with pytest.raises(RuntimeError, match="fixture_formal_interrupted"):
+                index.prepare_publication(item.codes, NOW)
+        index = fixtures._index(tmp_path)
+        reads = []
+        read = index._documents.read
+
+        def observed(digest, *, check=None):
+            reads.append(digest)
+            return read(digest, check=check)
+
+        monkeypatch.setattr(index._documents, "read", observed)
+    index.prepare_publication(item.codes, NOW)
+    if interruption != "none":
+        assert bool(reads) is (interruption == "before_commit")
+
+    event, = _facts(index).positive_events
+    assert event.subject_type is CompanySubject.ISSUER and event.status is CompanyPositiveStatus.PLANNED
+    assert event.measurements.actual_ratio_pct is None and event.positive_level == 0 and event.level_milestones == ()
+    assert not any(review.evidence_id == item.identity and review.reason_code == "subject_unverified"
+                   for review in _facts(index).review_reasons)
+    actual, = (field for field in SQLiteCompanyEvidenceReaderFixture(index.facts_path).read_fields(item.codes).results
+               if field.field == "actual_pct")
+    assert not actual.applicable and actual.state == "not_applicable" and actual.value is None
+    with SqliteSession(index.facts_path) as formal:
+        assert tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == valid
+        old_policy = attempted[0].policy_id
+        assert formal.run("SELECT 1 FROM company_input_receipt WHERE policy_id=? AND outcome='field_attempted'",
+                          (old_policy,)).fetchone() is not None
+        publication = ReadCompanyPublicationIdentity(formal)
+        assert publication.extraction_hash == parent.extraction_hash
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("the corrected rule must reuse its own committed check after restart")
+
+    restarted = fixtures._index(tmp_path)
+    monkeypatch.setattr(restarted._documents, "read", unexpected_read)
+    restarted.prepare_publication(item.codes, NOW)
+    assert _facts(restarted).positive_events == (event,)
+    with SqliteSession(index.facts_path) as formal:
+        assert ReadCompanyPublicationIdentity(formal) == publication

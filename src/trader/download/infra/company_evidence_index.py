@@ -84,6 +84,7 @@ from trader.download.infra.company_document_recovery import RepairCompanyDocumen
 from trader.download.infra.company_field_recovery import (
     CompleteCompanyFieldRepairs,
     CompanyFieldRepairReceipts,
+    PrepareCompanyShareRecheckReceipts,
     QueueCompanyFieldRepairs,
     QueueCompanyShareActionRechecks,
     RecoverRequiredCompanyText,
@@ -1323,6 +1324,11 @@ class SQLiteCompanyEvidenceIndex:
                         if prior is not None and replace(facts, published_at=prior.published_at) == prior:
                             facts = prior
                         prepared.append(facts)
+                        formal_receipts.extend(PrepareCompanyShareRecheckReceipts(
+                            source, formal, facts, prior, observed_at=observed_at,
+                            extraction_hash=self._facts.extraction_hash, event_policy=self._event_policy,
+                            read_document=partial(self._documents.read, check=self._check_cancelled),
+                        ))
                         fields = PrepareCompanyFieldResults(
                             source, formal, facts, snapshot.announcements, observed_at=observed_at,
                             extraction_hash=self._facts.extraction_hash, event_policy=self._event_policy, read_document=partial(self._documents.read, check=self._check_cancelled),

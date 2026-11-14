@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import timedelta
+import hashlib
 
 import pytest
 
@@ -10,7 +11,7 @@ from tests.helpers.download.company.company_field_recovery import NOW, _facts, _
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
-from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, QueueCompanyShareActionRechecks, QueueCompanyReductionRechecks
+from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, QueueCompanyShareActionRechecks, QueueCompanyReductionRechecks, PrepareCompanyShareRecheckReceipts
 from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
@@ -426,3 +427,64 @@ def test_failed_share_notice_recheck_does_not_record_an_attempt(tmp_path, kind, 
             "SELECT 1 FROM company_field_repairs WHERE rule_id LIKE 'same_body_reduction:%' "
             "OR rule_id LIKE 'same_body_repurchase_subject:%'",
         ).fetchone() is None
+
+
+@pytest.mark.parametrize("guard", (
+    "valid", "unchanged", "missing_receipt", "missing_text", "hash", "cancelled", "conflicting_value", "issuer",
+))
+def test_new_share_preflight_requires_matching_material_and_prepared_values(tmp_path, guard):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("preflight-progress", "关于首次回购公司股份的公告")
+    body = "本公司首次回购股份100万股，占公司总股本的0.3%。回购用途尚待核实。" + _DETAIL
+    _put(index, item, body)
+    index.publish(item.codes, NOW)
+    facts = _facts(index)
+    event, = facts.positive_events
+    assert event.measurements.actual_ratio_pct == 0.3
+    if guard == "conflicting_value":
+        facts = replace(facts, positive_events=(replace(
+            event, measurements=replace(event.measurements, actual_ratio_pct=0.5),
+        ),))
+    if guard == "issuer":
+        body = "证券代码：600002\n" + body
+    digest = hashlib.sha256(body.encode("utf-8")).digest()
+    reads = []
+
+    def read_document(requested):
+        reads.append(requested)
+        if guard == "missing_text":
+            raise FileNotFoundError("fixture_missing")
+        if guard == "hash":
+            return "mismatched material"
+        if guard == "cancelled":
+            raise InterruptedError("fixture_cancelled")
+        return body
+
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+        if guard == "missing_receipt":
+            formal.run("DELETE FROM company_input_receipt WHERE outcome='valid'")
+        if guard == "issuer":
+            collected.run("UPDATE disclosures SET body_hash=? WHERE source_key=?", (digest, item.identity))
+            formal.run("UPDATE company_input_receipt SET body_hash=? WHERE source_key=? AND outcome='valid'",
+                       (digest, item.identity))
+        if guard == "cancelled":
+            with pytest.raises(InterruptedError, match="fixture_cancelled"):
+                PrepareCompanyShareRecheckReceipts(
+                    collected, formal, facts, None, observed_at=NOW, extraction_hash=index._facts.extraction_hash,
+                    event_policy=fixtures.CompanyEventPolicy(), read_document=read_document,
+                )
+            return
+        receipts = PrepareCompanyShareRecheckReceipts(
+            collected, formal, facts, facts if guard == "unchanged" else None,
+            observed_at=NOW, extraction_hash=index._facts.extraction_hash,
+            event_policy=fixtures.CompanyEventPolicy(), read_document=read_document,
+        )
+    if guard == "valid":
+        assert receipts and all(receipt.outcome == "field_attempted" and receipt.source_key == item.identity
+                                and receipt.code == facts.code and receipt.body_hash == digest for receipt in receipts)
+        assert any(receipt.policy_id.endswith(":same_body_repurchase_fields:1") for receipt in receipts)
+        assert any(receipt.policy_id.endswith(":repurchase_purpose:explicit_repurchase_purpose:2") for receipt in receipts)
+    else:
+        assert receipts == ()
+    if guard in {"unchanged", "missing_receipt"}:
+        assert reads == []
