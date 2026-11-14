@@ -86,6 +86,7 @@ def test_field_replay_projection_bounds_fields_and_keeps_physical_source_change_
         "field_items": [field] * 200, "field_states": {"verified": 2, "PRIVATE_RAW": {"a": "PRIVATE_RAW"}},
         "codes": ["600001"] * 100, "source_keys": ["key"] * 100,
         "collection_source_files_sha256_before": ["a" * 64, None, "PRIVATE_RAW"],
+        "round_1_publication_material_reads": [{"body_hash": "b" * 64, "reads": 2, "quote": "PRIVATE_RAW"}] * 20,
     }
     report = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
     summary = report["checks"][0]["summary"]
@@ -95,12 +96,17 @@ def test_field_replay_projection_bounds_fields_and_keeps_physical_source_change_
     assert summary["source_empty_wal_created"] is True and summary["collection_source_files_unchanged"] is False
     assert summary["collection_source_files_sha256_before"] == {"database": "a" * 64, "wal": None, "receipt": None}
     assert summary["production_authorized"] is False and "PRIVATE_RAW" not in json.dumps(report)
+    assert len(summary["round_1_publication_material_reads"]) == 10
+    assert summary["round_1_publication_material_reads"][0] == {"body_hash": "b" * 64, "reads": 2}
 
 
 @pytest.mark.parametrize("changes", (
     {"second_new_field_attempted": False},
     {"missing_texts": 1},
     {"round_2_publication_text_reads": 2},
+    {"original_risks_and_evidence_preserved": False},
+    {"unselected_facts_unchanged": False},
+    {"round_1_risk_comparison": {"all_old_risks_and_evidence_preserved": False}},
 ))
 def test_replay_pass_requires_strict_zero_counts_without_contradictory_evidence(changes):
     payload = {
@@ -111,6 +117,10 @@ def test_replay_pass_requires_strict_zero_counts_without_contradictory_evidence(
         "original_valid_receipts_unchanged": True, "second_fields_and_publication_unchanged": True,
         "second_zero_publication_text_reads": True, "facts_backup_generation_stable": True,
         "second_new_field_attempted": 0, "missing_texts": 0, "round_2_publication_text_reads": 0,
+        "original_risks_and_evidence_preserved": True, "unselected_facts_unchanged": True,
+        **{f"round_{number}_risk_comparison": {
+            "all_old_risks_and_evidence_preserved": True, "missing": [], "changed_requires_review": [],
+        } for number in (1, 2)},
     }
     valid = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
     assert valid["status"] == "passed"

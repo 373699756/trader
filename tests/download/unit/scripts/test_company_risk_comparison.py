@@ -12,7 +12,7 @@ from scripts.core.contracts import DiagnosticResult
 from scripts.core.projections import BuildReport
 from scripts.download.company import company_query_audit
 from scripts.download.company import company_risk_comparison
-from scripts.download.company.company_risk_comparison import CompareCompanyRisks, ProjectCompanyRiskComparison
+from scripts.download.company.company_risk_comparison import CompareCompanyRisks, ProjectCompanyRiskComparison, WriteCompanyRiskBaseline
 from tests.helpers.download.company import company_evidence as collection_fixtures
 from tests.helpers.download.company.company_startup import _AT, _snapshot
 from tests.helpers.download.company_resources import SQLiteCompanyFactsIndexFixture
@@ -46,6 +46,41 @@ def _compare(path, baseline_path):
         path, baseline_path, deadline=time.monotonic() + 5,
         sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False,
     )
+
+
+def test_exported_risk_baseline_round_trips_without_changing_source_or_overwriting(tmp_path):
+    source, expected = _fixture(tmp_path)
+    before = source.read_bytes()
+    baseline = tmp_path / "baseline.json"
+    WriteCompanyRiskBaseline(source, baseline, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
+    comparison = _compare(source, baseline)
+    assert comparison.all_old_risks_and_evidence_preserved and comparison.exactly_preserved == 1
+    assert source.read_bytes() == before
+    payload = json.loads(baseline.read_text())
+    assert payload["evidence"] == expected["evidence"] and "id" not in payload["risks"][0]
+    saved = baseline.read_bytes()
+    with pytest.raises(FileExistsError):
+        WriteCompanyRiskBaseline(source, baseline, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
+    assert baseline.read_bytes() == saved
+
+
+@pytest.mark.parametrize("limit", ("_RISK_LIMIT", "_EVIDENCE_LIMIT", "_BASELINE_BYTES"))
+def test_export_rejects_limit_before_creating_baseline(tmp_path, monkeypatch, limit):
+    source, _ = _fixture(tmp_path)
+    monkeypatch.setattr(company_risk_comparison, limit, 0)
+    target = tmp_path / "baseline.json"
+    with pytest.raises(ValueError, match="limit"):
+        WriteCompanyRiskBaseline(source, target, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
+    assert not target.exists()
+
+
+def test_export_deadline_does_not_create_or_modify_files(tmp_path):
+    source, _ = _fixture(tmp_path)
+    before = source.read_bytes()
+    target = tmp_path / "baseline.json"
+    with pytest.raises(TimeoutError, match="deadline_exceeded"):
+        WriteCompanyRiskBaseline(source, target, deadline=time.monotonic() - 1, sqlite_policy=SqlitePolicyFixture())
+    assert not target.exists() and source.read_bytes() == before
 
 
 @pytest.mark.parametrize("change", ("none", "business", "evidence", "missing"))

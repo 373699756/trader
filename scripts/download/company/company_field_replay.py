@@ -15,6 +15,9 @@ from pathlib import Path
 
 from scripts.core.paths import PROJECT_ROOT
 from scripts.download.company.output_paths import RequireIsolatedReplay
+from scripts.download.company.company_risk_comparison import (
+    CompareCompanyRisks, ProjectCompanyRiskComparison, WriteCompanyRiskBaseline,
+)
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldSnapshot
@@ -31,15 +34,20 @@ from trader.infra.sqlite_publication import PublishSqliteFile
 
 
 _MAX_TEXT_BYTES = 256 * 1024 * 1024
+_MAX_STOCKS = 10_000
 
 
 class _CountingDocuments(CompanyDocumentFiles):
     """Count actual document-owner reads, including initialization validation."""
 
-    read_calls = 0
+    def __init__(self, root: Path, *, max_text_characters: int, max_bytes: int, reserve_bytes: int) -> None:
+        super().__init__(root, max_text_characters=max_text_characters, max_bytes=max_bytes, reserve_bytes=reserve_bytes)
+        self.read_calls = 0
+        self.read_counts: Counter[bytes] = Counter()
 
     def read(self, digest: bytes, *, check: Callable[[], None] | None = None) -> str:
         self.read_calls += 1
+        self.read_counts[digest] += 1
         text = super().read(digest, check=check)
         if not isinstance(text, str):
             raise ValueError("company_field_replay_text_type_invalid")
@@ -52,6 +60,7 @@ class _ReplayState:
     publication: CompanyPublicationIdentity
     valid_receipts: tuple[tuple[object, ...], ...]
     attempted: int
+    other_facts: tuple[CompanyFacts, ...]
 
 
 def _check_deadline(deadline: float) -> None:
@@ -270,7 +279,15 @@ def _state(
             "ORDER BY source,source_key,code,record_hash,extraction_hash"
         ))
         attempted = connection.run("SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted'").require_one()[0]
-    return _ReplayState(fields, identity, valid, attempted)
+        other_codes = tuple(str(row[0]) for row in connection.run(
+            "SELECT code FROM company_facts ORDER BY code LIMIT ?", (_MAX_STOCKS + 1,),
+        ))
+    if len(other_codes) > _MAX_STOCKS:
+        raise ValueError("company_field_replay_population_limit")
+    other_facts: list[CompanyFacts] = []
+    reader.visit(tuple(code for code in other_codes if code not in codes), other_facts.append,
+                 cancel_requested=lambda: time.monotonic() >= deadline)
+    return _ReplayState(fields, identity, valid, attempted, tuple(other_facts))
 
 
 def _field_items(snapshot: CompanyFieldSnapshot) -> list[dict[str, object]]:
@@ -348,7 +365,10 @@ def AuditCompanyFieldReplay(
         codes = _selected_codes(target_raw, reader, source_keys, observed_at, sqlite_policy, deadline)
         report["codes"] = codes
         baseline = _state(target_facts, reader, codes, sqlite_policy, deadline)
+        risk_baseline = directory / "risk-baseline.json"
+        WriteCompanyRiskBaseline(target_facts, risk_baseline, deadline=deadline, sqlite_policy=sqlite_policy)
         states: list[_ReplayState] = []
+        risks_preserved = True
         for round_number in (1, 2):
             _check_deadline(deadline)
             documents = _CountingDocuments(
@@ -364,6 +384,7 @@ def AuditCompanyFieldReplay(
             )
             index.initialize()
             startup_reads = documents.read_calls
+            startup_counts = documents.read_counts.copy()
             if round_number == 1 and recovered_text is not None:
                 _check_deadline(deadline)
                 with recovered_text.open("rb") as stream:
@@ -379,22 +400,36 @@ def AuditCompanyFieldReplay(
             report[f"round_{round_number}_initialize_text_reads"] = startup_reads
             report[f"round_{round_number}_publication_text_reads"] = documents.read_calls - startup_reads
             report[f"round_{round_number}_total_text_reads"] = documents.read_calls
+            material_reads = documents.read_counts - startup_counts
+            report[f"round_{round_number}_publication_material_reads"] = [
+                {"body_hash": digest.hex(), "reads": count} for digest, count in material_reads.most_common(10)
+            ]
+            report[f"round_{round_number}_read_materials_truncated"] = len(material_reads) > 10
+            comparison = CompareCompanyRisks(
+                target_facts, risk_baseline, deadline=deadline, sqlite_policy=sqlite_policy,
+                cancel_requested=lambda: time.monotonic() >= deadline,
+            )
+            report[f"round_{round_number}_risk_comparison"] = ProjectCompanyRiskComparison(comparison)
+            risks_preserved = risks_preserved and comparison.all_old_risks_and_evidence_preserved
             states.append(_state(target_facts, reader, codes, sqlite_policy, deadline))
         first, second = states
-        if recovered_text is not None:
-            report["initial_missing_texts"] = missing
-            required = _text_hashes(target_raw, sqlite_policy, deadline)
-            missing = 0
-            for digest in required:
-                _check_deadline(deadline)
-                key = digest.hex()
-                missing += not (target_raw.parent / "text" / key[:2] / (key + ".txt.gz")).is_file()
-            report["missing_texts"] = missing
+        report["initial_missing_texts"] = missing
+        required = _text_hashes(target_raw, sqlite_policy, deadline)
+        missing = 0
+        for digest in required:
+            _check_deadline(deadline)
+            key = digest.hex()
+            missing += not (target_raw.parent / "text" / key[:2] / (key + ".txt.gz")).is_file()
+        report["final_required_texts"] = len(required)
+        report["missing_texts"] = missing
         original_valid = frozenset(baseline.valid_receipts)
         original_valid_unchanged = original_valid.issubset(first.valid_receipts) and original_valid.issubset(second.valid_receipts)
         fields_reused = first.fields == second.fields and first.publication == second.publication
         attempts_reused = first.attempted == second.attempted
+        other_facts_preserved = baseline.other_facts == first.other_facts == second.other_facts
         report.update({
+            "unselected_stocks": len(baseline.other_facts), "unselected_facts_unchanged": other_facts_preserved,
+            "original_risks_and_evidence_preserved": risks_preserved,
             "first_publication_hash": first.fields.publication_hash,
             "second_publication_hash": second.fields.publication_hash,
             "original_valid_receipts_unchanged": original_valid_unchanged,
@@ -413,12 +448,12 @@ def AuditCompanyFieldReplay(
         report["source_empty_wal_created"] = before[0][1] is None and after[0][1] == hashlib.sha256(b"").hexdigest()
         report["source_input_comparison"] = "database_wal_receipt_sha256_exact"
         _check_deadline(deadline)
-        if not original_valid_unchanged or not fields_reused or not attempts_reused:
+        if not original_valid_unchanged or not fields_reused or not attempts_reused or not other_facts_preserved:
             raise ValueError("company_field_replay_second_state_changed")
         report["second_zero_publication_text_reads"] = report["round_2_publication_text_reads"] == 0
         report["status"] = "passed" if (
             before == after and stable_backup and report["facts_backup_generation_stable"] is True and missing == 0
-            and report["second_zero_publication_text_reads"]
+            and report["second_zero_publication_text_reads"] and risks_preserved
         ) else "degraded"
     except (OSError, sqlite3.Error, ValueError, RuntimeError, TimeoutError, InterruptedError, EOFError) as error:
         report["failure_category"] = type(error).__name__

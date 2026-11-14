@@ -10,7 +10,7 @@ from dataclasses import replace
 
 from scripts.core.contracts import DiagnosticResult
 from scripts.core.projection_values import ProjectMapping, ProjectSummary, SafeNonnegativeInt, SafeStringList, SafeText
-from scripts.download.company.projections import ProjectCompanyResume
+from scripts.download.company.projections import ProjectCompanyResume, ProjectCompanyRiskComparisonDetails
 
 
 def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> DiagnosticResult:
@@ -72,7 +72,14 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                 "source_input_unchanged", "collection_backup_generation_stable", "original_valid_receipts_unchanged",
                 "second_fields_and_publication_unchanged", "second_zero_publication_text_reads",
                 "facts_backup_generation_stable",
+                "original_risks_and_evidence_preserved", "unselected_facts_unchanged",
             ))
+            for number in (1, 2):
+                comparison = source.get(f"round_{number}_risk_comparison")
+                valid = valid and isinstance(comparison, Mapping) and (
+                    comparison.get("all_old_risks_and_evidence_preserved") is True
+                    and comparison.get("missing") == [] and comparison.get("changed_requires_review") == []
+                )
         return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
     if schema in ("company-annual-income-source", "company-structured-field-sampling"):
         return _normalize_source_probe(result, source)
@@ -738,6 +745,8 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
                 "second_zero_publication_text_reads", "source_input_unchanged", "fields_truncated", "deadline_exceeded",
                 "collection_source_files_unchanged", "facts_source_files_unchanged", "source_empty_wal_created",
                 "facts_backup_generation_stable", "recovered_required_text",
+                "original_risks_and_evidence_preserved", "unselected_facts_unchanged",
+                "round_1_read_materials_truncated", "round_2_read_materials_truncated",
             )},
             **{name: _migration_count(source.get(name)) for name in (
                 "network_requests", "source_data_writes", "required_texts", "copied_texts", "missing_texts", "initial_missing_texts",
@@ -745,6 +754,7 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
                 "round_1_publication_text_reads", "round_1_total_text_reads", "round_2_initialize_text_reads",
                 "round_2_publication_text_reads", "round_2_total_text_reads", "initial_field_attempted",
                 "first_field_attempted", "second_field_attempted", "second_new_field_attempted", "fields",
+                "final_required_texts", "unselected_stocks",
             )},
             **{name: _text(source.get(name), 110) for name in (
                 "first_publication_hash", "second_publication_hash", "failure_category", "failure_code",
@@ -754,6 +764,12 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
                       if isinstance(code, str) and len(code) == 6 and code.isascii() and code.isdigit()],
             "source_keys": [key[:240] for key in (keys[:6] if isinstance(keys, (tuple, list)) else []) if isinstance(key, str)],
             "field_items": _field_conclusions(source.get("field_items"), 100),
+            **{f"round_{number}_risk_comparison": ProjectCompanyRiskComparisonDetails(
+                source.get(f"round_{number}_risk_comparison"),
+            ) for number in (1, 2)},
+            **{f"round_{number}_publication_material_reads": _material_reads(
+                source.get(f"round_{number}_publication_material_reads"),
+            ) for number in (1, 2)},
             "field_states": _bounded_migration_counts(source.get("field_states"), (
                 "verified", "present_unverified", "not_applicable", "pending_download", "pending_extraction",
                 "pending_publication", "verification_required", "unsupported", "out_of_range", "not_disclosed",
@@ -781,6 +797,18 @@ def _bounded_migration_counts(value: object, names: tuple[str, ...]) -> dict[str
     fields = ProjectMapping(value)
     return {name: count for name in names
             if (count := _migration_count(fields.get(name))) is not None}
+
+
+def _material_reads(value: object) -> list[dict[str, object]]:
+    projected: list[dict[str, object]] = []
+    for row in value[:10] if isinstance(value, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        digest = row.get("body_hash")
+        count = _migration_count(row.get("reads"))
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) and count is not None:
+            projected.append({"body_hash": digest, "reads": count})
+    return projected
 
 
 def _migration_count(value: object) -> int | None:

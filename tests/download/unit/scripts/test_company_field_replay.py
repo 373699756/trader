@@ -4,6 +4,7 @@ import hashlib
 import json
 import socket
 from datetime import timedelta
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,9 @@ import pytest
 from scripts.download.company import company_field_replay as replay
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceIndexFixture
+from tests.helpers.download.company_resources import SQLiteCompanyFactsIndexFixture
+from tests.helpers.download.company.company_startup import _snapshot
+from trader.download.domain.company_facts import CompileCompanyFacts
 from trader.download.domain.company_evidence import CompanyListing, DisclosurePage, DisclosurePartition
 from trader.download.domain.company_field_plan import BuildCompanyFieldResults
 from trader.download.domain.company_field_results import CompanyFieldConclusion
@@ -18,6 +22,7 @@ from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_field_result_rows import WriteCompanyFieldResults
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash, EncodeCompanyDate, EncodeCompanyTime
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_policy import SqliteIoPolicy
@@ -123,6 +128,11 @@ def test_real_publication_proves_local_fields_and_second_restart_reuses_them(tmp
     assert report["round_2_publication_text_reads"] == 0 and report["second_zero_publication_text_reads"]
     assert report["second_new_field_attempted"] == 0 and report["first_field_attempted"] > 0
     assert report["second_fields_and_publication_unchanged"] and report["original_valid_receipts_unchanged"]
+    assert report["original_risks_and_evidence_preserved"] and report["unselected_facts_unchanged"]
+    assert report["round_1_risk_comparison"]["all_old_risks_and_evidence_preserved"]
+    assert report["round_2_risk_comparison"]["all_old_risks_and_evidence_preserved"]
+    assert sum(item["reads"] for item in report["round_1_publication_material_reads"]) == report["round_1_publication_text_reads"]
+    assert report["round_2_publication_material_reads"] == []
     assert report["first_publication_hash"] == report["second_publication_hash"]
     assert (raw.read_bytes(), facts.read_bytes(), Path(f"{facts}.sha256").read_bytes()) == before
     target = directory / "facts" / "company_facts.sqlite3"
@@ -146,9 +156,75 @@ def test_missing_local_material_is_counted_and_never_downloaded(tmp_path, monkey
     report = _run(raw, facts, tmp_path / "replay", policy)
     assert report["status"] == "degraded", report
     assert report["missing_texts"] == 1 and report["copied_texts"] == 0
+    assert report["initial_missing_texts"] == 1 and report["final_required_texts"] >= 1
     assert report["network_requests"] == 0 and report["source_data_writes"] == 0
     assert report["field_states"] == {"present_unverified": 2}
     assert report["first_field_attempted"] == 0 and report["second_new_field_attempted"] == 0
+
+
+def test_missing_unrequired_body_is_recounted_after_normal_material_cleanup(tmp_path):
+    raw, facts, policy = _sources(tmp_path)
+    with SqliteSession(raw, sqlite_policy=_IO) as connection:
+        connection.run(
+            "INSERT INTO disclosures(source,source_key,kind,title,published_at,url,record_hash,body_hash,body_checked,body_retained) "
+            "VALUES('cninfo','ordinary','announcement','普通事项公告',?,'','ordinary',?,1,1)",
+            (_AT.isoformat(), b"m" * 32),
+        )
+        connection.run("INSERT INTO disclosure_codes SELECT '600001',id FROM disclosures WHERE source_key='ordinary'")
+    with SqliteSession(raw, SqliteConnectionOptions(read_only=True), sqlite_policy=_IO) as existing_reader:
+        existing_reader.run("SELECT COUNT(*) FROM disclosures").require_one()
+        report = _run(raw, facts, tmp_path / "replay", policy)
+    assert report["initial_missing_texts"] == 1 and report["missing_texts"] == 0
+    assert report["final_required_texts"] < report["required_texts"]
+    assert report["original_valid_receipts_unchanged"] and report["status"] == "passed", report
+
+
+@pytest.mark.parametrize("mutation", (None, "unselected_financial", "risk", "risk_evidence"))
+def test_global_old_risks_and_unselected_facts_are_checked_independently_of_valid_receipts(tmp_path, monkeypatch, mutation):
+    raw, facts, policy = _sources(tmp_path)
+    old_risk = CompileCompanyFacts(_snapshot(), policy)
+    with SqliteSession(facts, sqlite_policy=_IO) as connection:
+        parent = ReadCompanyPublicationIdentity(connection)
+        current, = ReadCompanyFactRows(connection, ("600001",))
+    code = "600002" if mutation in (None, "unselected_financial") else "600001"
+    retained = replace(
+        old_risk, code=code,
+        financial=replace(old_risk.financial, code=code) if old_risk.financial else None,
+        latest_financial=replace(old_risk.latest_financial, code=code) if old_risk.latest_financial else None,
+        pledge=replace(old_risk.pledge, code=code) if old_risk.pledge else None,
+        unlock_schedule=tuple(replace(item, code=code) for item in old_risk.unlock_schedule),
+    ) if code == "600002" else replace(current, risk_events=old_risk.risk_events)
+    writer = SQLiteCompanyFactsIndexFixture(facts, event_policy=policy)
+    writer.publish((retained,), {_KEY: "cninfo", "investigation": "cninfo"}, parent, _AT)
+    PublishSqliteFile(facts, sqlite_policy=_IO)
+    original_publish = replay.SQLiteCompanyEvidenceIndex.publish
+
+    def publish(index, *args, **kwargs):
+        result = original_publish(index, *args, **kwargs)
+        if mutation is not None and not kwargs.get("changed_only", False):
+            with SqliteSession(index.facts_path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=_IO) as connection:
+                if mutation == "unselected_financial":
+                    connection.run("UPDATE company_facts SET eps=eps+1 WHERE code='600002'")
+                elif mutation == "risk":
+                    connection.run("DELETE FROM company_risk_event")
+                else:
+                    connection.run("DELETE FROM company_risk_evidence")
+        return result
+
+    monkeypatch.setattr(replay.SQLiteCompanyEvidenceIndex, "publish", publish)
+    with SqliteSession(raw, SqliteConnectionOptions(read_only=True), sqlite_policy=_IO) as existing_reader:
+        existing_reader.run("SELECT COUNT(*) FROM disclosures").require_one()
+        report = _run(raw, facts, tmp_path / "replay", policy)
+    if mutation is None:
+        assert report["status"] == "passed" and report["unselected_stocks"] == 1, report
+        assert report["unselected_facts_unchanged"] and report["original_risks_and_evidence_preserved"]
+        assert report["round_1_risk_comparison"]["exactly_preserved"] == 1
+    else:
+        assert report["status"] != "passed", report
+        if mutation == "unselected_financial":
+            assert not report["unselected_facts_unchanged"]
+        else:
+            assert not report["round_1_risk_comparison"]["all_old_risks_and_evidence_preserved"]
 
 
 def test_explicit_same_hash_text_is_recovered_only_in_the_copy_then_normally_published(tmp_path, monkeypatch):

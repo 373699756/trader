@@ -5,6 +5,25 @@ from collections.abc import Mapping
 from scripts.core.contracts import DiagnosticResult
 from scripts.core.projection_values import ProjectMapping
 
+def ProjectCompanyRiskComparisonDetails(value: object) -> dict[str, object]:
+    comparison = ProjectMapping(value)
+    projected = {key: comparison.get(key) for key in (
+        "read_only", "complete", "stable_read", "baseline_sha256", "baseline_risks", "new_risks",
+        "exactly_preserved", "publication_hash", "all_old_risks_and_evidence_preserved",
+        "missing_means_resolved", "field_correctness_verified",
+    )}
+    for name, keys in (
+        ("missing", ("code", "event_key")),
+        ("changed_requires_review", ("code", "event_key", "changed_fields", "original_evidence_retained")),
+    ):
+        rows = comparison.get(name)
+        projected[name] = [
+            {key: row.get(key) for key in keys}
+            for row in (rows[:10_000] if isinstance(rows, list) else []) if isinstance(row, dict)
+        ]
+    return projected
+
+
 def ProjectCompanyResume(
     _result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]
 ) -> None:
@@ -235,21 +254,7 @@ def ProjectCompanyResume(
         projected_database["publication"] = projected_publication
         risk_comparison = ProjectMapping(database.get("risk_comparison"))
         if risk_comparison:
-            projected_risks = {key: risk_comparison.get(key) for key in (
-                "read_only", "complete", "stable_read", "baseline_sha256", "baseline_risks", "new_risks",
-                "exactly_preserved", "publication_hash", "all_old_risks_and_evidence_preserved",
-                "missing_means_resolved", "field_correctness_verified",
-            )}
-            for name, risk_keys in (
-                ("missing", ("code", "event_key")),
-                ("changed_requires_review", ("code", "event_key", "changed_fields", "original_evidence_retained")),
-            ):
-                rows = risk_comparison.get(name)
-                projected_risks[name] = [
-                    {key: row.get(key) for key in risk_keys}
-                    for row in (rows[:10_000] if isinstance(rows, list) else []) if isinstance(row, dict)
-                ]
-            projected_database["risk_comparison"] = projected_risks
+            projected_database["risk_comparison"] = ProjectCompanyRiskComparisonDetails(risk_comparison)
         for name, count_key in (("partition_failures", "ranges"), ("document_failures", "documents")):
             rows = database.get(name)
             projected_database[name] = [

@@ -180,6 +180,46 @@ def _changed_fields(before: _RiskRecord, after: _RiskRecord) -> tuple[str, ...]:
     ) if first != second)
 
 
+def WriteCompanyRiskBaseline(
+    facts_path: Path, target: Path, *, deadline: float, sqlite_policy: SqliteIoPolicy,
+) -> None:
+    """Export the existing bounded risk-baseline protocol from one formal snapshot."""
+    def check() -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("company_risk_baseline_deadline_exceeded")
+
+    check()
+    with SqliteSession(
+        facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy,
+        cancel_requested=lambda: time.monotonic() >= deadline,
+    ) as connection, SqliteTransaction(connection):
+        if ReadCompanyPublicationIdentity(connection) is None:
+            raise ValueError("company_risk_baseline_publication_missing")
+        risks: list[dict[str, object]] = []
+        for row in connection.run(f"SELECT {','.join(_COLUMNS)} FROM company_risk_event ORDER BY code,event_key"):
+            check()
+            if len(risks) >= _RISK_LIMIT:
+                raise ValueError("company_risk_baseline_risk_limit")
+            risks.append(dict(zip(_COLUMNS, row, strict=True)))
+        evidence: list[dict[str, object]] = []
+        for row in connection.run(
+            "SELECT r.code,r.event_key,e.source,e.source_key FROM company_risk_event r "
+            "JOIN company_risk_evidence re ON re.risk_id=r.id "
+            "JOIN company_evidence_ref e ON e.id=re.evidence_id ORDER BY r.code,r.event_key,e.source,e.source_key"
+        ):
+            check()
+            if len(evidence) >= _EVIDENCE_LIMIT:
+                raise ValueError("company_risk_baseline_evidence_limit")
+            evidence.append(dict(zip(("code", "event_key", "source", "source_key"), row, strict=True)))
+    content = json.dumps({"risks": risks, "evidence": evidence}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(content) > _BASELINE_BYTES:
+        raise ValueError("company_risk_baseline_size_limit")
+    check()
+    with target.open("xb") as stream:
+        stream.write(content)
+    _baseline(target, check)
+
+
 def CompareCompanyRisks(
     facts_path: Path,
     baseline_path: Path,
@@ -279,4 +319,5 @@ __all__ = [
     "CompanyRiskComparison",
     "CompareCompanyRisks",
     "ProjectCompanyRiskComparison",
+    "WriteCompanyRiskBaseline",
 ]
