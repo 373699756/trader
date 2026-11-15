@@ -59,7 +59,7 @@
     "document_ocr_max_pages": 50,
     "document_ocr_dpi": 150,
     "document_ocr_languages": "chi_sim+eng",
-    "raw_capacity_bytes": 2147483648,
+    "raw_capacity_bytes": 5368709120,
     "raw_analysis_reserve_bytes": 536870912,
     "temporary_text_capacity_bytes": 268435456,
     "temporary_disk_reserve_bytes": 536870912,

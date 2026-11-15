@@ -1032,7 +1032,7 @@ CHECK、codec验证、外键启用及发布凭据检查是不同层次；本章�
 | document_ocr_max_pages | 50 | int，页，1–200 | OCR页数上限及策略身份 |
 | document_ocr_dpi | 150 | int，dpi，72–300 | OCR渲染及策略身份 |
 | document_ocr_languages | chi_sim+eng | 非空string，以+分隔，每段仅字母／数字／下划线 | DetectCompanyOcr能力核对及OCR策略身份 |
-| raw_capacity_bytes | 2147483648 | int，字节，≥1，另受容量约束 | CompanyRawFiles.capacity，受管原件容量 |
+| raw_capacity_bytes | 5368709120 | int，字节，≥1，另受容量约束 | CompanyRawFiles.capacity，受管原件容量 |
 | raw_analysis_reserve_bytes | 536870912 | int，字节，≥320MiB，另受容量／并行约束 | CompanyRawFiles.analysis_reserve |
 | temporary_text_capacity_bytes | 268435456 | int，字节，≥1，另受容量约束 | CompanyDocumentFiles.max_bytes，临时文本容量 |
 | temporary_disk_reserve_bytes | 536870912 | int，字节，≥1 | 原件及临时文本写入的磁盘空余保留 |
