@@ -15,6 +15,18 @@ from trader.download.domain.download_failure import DownloadFailureContext
 SyncTarget = Literal["all", "history", "market", "company"]
 
 
+class SyncDatabaseError(RuntimeError):
+    """Database failure translated by a synchronization adapter."""
+
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
+
+def _failure_category(error: BaseException) -> str:
+    return error.category if isinstance(error, SyncDatabaseError) else type(error).__name__
+
+
 @dataclass(frozen=True)
 class SyncTaskResult:
     task: Literal["history", "market", "company"]
@@ -63,7 +75,7 @@ class SyncData:
                     return SyncResult((), cancelled=True)
                 if self.failures is not None:
                     self.failures(DownloadFailureContext("reference_preparation"), exc)
-                return SyncResult((), failure=f"preparation_{type(exc).__name__}")
+                return SyncResult((), failure=f"preparation_{_failure_category(exc)}")
             selected: tuple[Literal["history", "market", "company"], ...] = (
                 ("history", "market", "company") if target == "all" else (target,)
             )
@@ -81,7 +93,7 @@ class SyncData:
                         return SyncResult(tuple(tasks), cancelled=True)
                     if self.failures is not None and task == "market":
                         self.failures(DownloadFailureContext("market_command"), exc)
-                    tasks.append(SyncTaskResult(task, "failed", type(exc).__name__))
+                    tasks.append(SyncTaskResult(task, "failed", _failure_category(exc)))
             return SyncResult(tuple(tasks))
         except KeyboardInterrupt:
             return SyncResult(tuple(tasks), cancelled=True)
@@ -103,7 +115,7 @@ class SyncData:
             return SyncTaskResult(
                 task, "cancelled" if stopped else "failed" if market.shutdown_failure
                 else "pending" if market.needs_retry else "completed",
-                reason=market.shutdown_failure, market=market,
+                reason=market.shutdown_failure or market.failure_reason, market=market,
             )
         company = self.company(reference)
         stopped = self.cancelled() or "task:cancelled" in company.failures
@@ -113,4 +125,4 @@ class SyncData:
         )
 
 
-__all__ = ["SyncData", "SyncResult", "SyncTarget", "SyncTaskResult"]
+__all__ = ["SyncData", "SyncDatabaseError", "SyncResult", "SyncTarget", "SyncTaskResult"]

@@ -72,6 +72,7 @@ from trader.download.infra.published_history_snapshot import SQLitePublishedHist
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqShutdown, QfqShutdownScope, QfqUpdateRunner
 from trader.download.infra.reference_index import SQLiteReferenceIndex
+from trader.download.infra.sync_database_failure import AdaptSyncDatabaseFailures
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
@@ -274,15 +275,15 @@ def ExecuteSync(
 
     return SyncData(
         failures=market_failures,
-        prepare=lambda: report.run("参考", lambda: _prepare_reference(
+        prepare=AdaptSyncDatabaseFailures(lambda: report.run("参考", lambda: _prepare_reference(
             paths.reference, clock.now(), progress,
             report=progress.report_preparation,
             cancel_requested=cancel_requested,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds, sqlite_policy=sqlite_policy, disk_medium=settings.disk_medium,
-        )),
-        history=sync_history,
-        market=sync_market,
-        company=lambda reference: report.run("company", lambda: _sync_company_evidence(
+        ))),
+        history=AdaptSyncDatabaseFailures(sync_history),
+        market=AdaptSyncDatabaseFailures(sync_market),
+        company=AdaptSyncDatabaseFailures(lambda reference: report.run("company", lambda: _sync_company_evidence(
             settings.data_paths,
             progress,
             company_evidence.CompanyEvidenceRequest.from_reference(
@@ -303,7 +304,7 @@ def ExecuteSync(
             failure_configuration=failure_configuration,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             report=report,
-        )),
+        ))),
         cancelled=cancel_requested,
     ).execute(target)
 
