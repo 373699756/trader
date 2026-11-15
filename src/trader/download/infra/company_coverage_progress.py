@@ -29,6 +29,7 @@ def ReadCompanyCoverageProgress(
                 "JOIN temp.requested_codes u ON u.code=c.code LEFT JOIN temp.pending_documents p ON p.id=d.id "
                 "LEFT JOIN document_retries r ON r.disclosure_id=d.id AND r.record_hash=d.record_hash "
                 "WHERE (p.id IS NOT NULL OR d.body_retained=1) AND d.published_at>=? AND d.published_at<? "
+                "AND NOT EXISTS(SELECT 1 FROM temp.unused_financial_inputs f WHERE f.id=d.id) "
                 "ORDER BY d.published_at,d.id",
                 (start.isoformat(), (discovered + timedelta(days=1)).isoformat()),
             ):

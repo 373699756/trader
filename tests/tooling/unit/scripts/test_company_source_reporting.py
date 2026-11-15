@@ -35,6 +35,7 @@ def _structured_page(**changes) -> dict[str, object]:
         "production_adopted": False, "field_correctness_verified": False, "full_window_coverage_verified": False,
         "latest_snapshot_verified": False, "key_lookup_verified": False, "revision_index_verified": False,
         "key_filter_requested": False, "requested_codes": [], "requested_report_date": None,
+        "request_style": None, "remote_column_projection_requested": True, "required_fields": [],
         "fetch_invocations": 1, "physical_http_attempts": 1, "request_limit": 1, "page_limit": 1,
         "page_size": 500, "max_response_bytes": 16 * 1024 * 1024, "pages_followed": 0,
         "raw_rows": 1, "decoded_rows": 1, "reported_pages": 3, "reported_total": 1001,
@@ -107,10 +108,15 @@ def _key_page(**changes):
         key_filter_requested=True, requested_codes=["600900", "688012"], requested_report_date="2026-09-30",
         fetch_invocations=2, physical_http_attempts=2, request_limit=2, page_limit=2, page_size=2,
         max_response_bytes=1024 * 1024,
+        request_style="APP_F10_MAINFINADATA", remote_column_projection_requested=False, requested_fields=[],
+        required_fields=["SECUCODE", "REPORT_DATE", "NOTICE_DATE", "EPSJB", "BPS", "TOTALOPERATEREVETZ",
+                         "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR"],
         key_filter_probe={
             "codes": ["600900", "688012"], "report_date": "2026-09-30",
+            "request_style": "APP_F10_MAINFINADATA",
             "support_status": "sample_verified", "filter_verified": True, "date_filter_independently_verified": False,
             "queries": [{"query": label, "status": "decoded", "selected_codes": codes,
+                         "request_style": "APP_F10_MAINFINADATA",
                          "http_status": 200, "response_bytes": 100, "response_sha256": "a" * 64,
                          "provider_code": 0, "provider_success": True,
                          "raw_rows": len(codes), "reported_total": len(codes), "reported_pages": 1,
@@ -134,6 +140,8 @@ def test_key_sample_projection_preserves_its_two_request_contract_without_promot
     assert summary["key_filter_probe"]["filter_verified"]
     assert not summary["key_filter_probe"]["date_filter_independently_verified"]
     assert not summary["key_lookup_verified"] and not summary["latest_snapshot_verified"]
+    assert summary["request_style"] == "APP_F10_MAINFINADATA" and not summary["remote_column_projection_requested"]
+    assert summary["requested_fields"] == [] and len(summary["required_fields"]) == 11
     assert "PRIVATE_DATA" not in json.dumps(report)
 
 
@@ -213,6 +221,17 @@ def test_key_filter_verified_claim_requires_both_native_successful_http_and_prov
     normalized = NormalizeActionResult("research-source-compare", result)
     assert NormalizeActionResult("research-source-compare", normalized) == normalized
     report = BuildReport("research-source-compare", (normalized,))
+    assert report["status"] == "failed" and not report["checks"][0]["summary"]["key_filter_probe"]["filter_verified"]
+
+
+@pytest.mark.parametrize("field,value", (
+    ("request_style", "ALL"), ("remote_column_projection_requested", True),
+    ("requested_fields", ["EPSJB"]), ("required_fields", ["EPSJB"]),
+))
+def test_key_template_probe_cannot_claim_a_remote_column_projection_or_a_different_style(field, value):
+    source = _key_page()
+    source[field] = value
+    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 0.1, source, None),))
     assert report["status"] == "failed" and not report["checks"][0]["summary"]["key_filter_probe"]["filter_verified"]
 
 

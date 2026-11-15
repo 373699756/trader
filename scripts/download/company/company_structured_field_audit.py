@@ -26,6 +26,7 @@ _SAMPLE_ROWS = 5
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _FINANCIAL_URL = "https://datacenter.eastmoney.com/securities/api/data/get"
 _FINANCIAL_REPORT = "RPT_F10_FINANCE_MAINFINADATA"
+_FINANCIAL_KEY_STYLE = "APP_F10_MAINFINADATA"
 _FINANCIAL_FIELDS = (
     ("eps", "EPSJB"),
     ("bps", "BPS"),
@@ -112,7 +113,10 @@ def AuditCompanyStructuredPage(
         "requested_report_date": financial_report_date.isoformat() if financial_report_date is not None else None,
         "fetch_invocations": 0, "request_limit": 2 if key_probe else 1, "page_limit": 2 if key_probe else 1,
         "page_size": len(financial_codes) if key_probe else 500,
-        "max_response_bytes": 1024 * 1024 if key_probe else 16 * 1024 * 1024, "requested_fields": list(fields),
+        "max_response_bytes": 1024 * 1024 if key_probe else 16 * 1024 * 1024,
+        "request_style": _FINANCIAL_KEY_STYLE if key_probe else None,
+        "remote_column_projection_requested": not key_probe,
+        "requested_fields": [] if key_probe else list(fields), "required_fields": list(fields) if key_probe else [],
         "normal_path_discovery": "pledge_day_required" if query.component == "pledge" else "none_in_current_fetch",
         "pages_followed": 0, "physical_http_attempts": None, "response_bytes": None,
     }
@@ -185,6 +189,7 @@ def _financial_key_pages(
     queries: list[dict[str, object]] = []
     probe: dict[str, object] = {
         "codes": list(codes), "report_date": report_date.isoformat(), "support_status": "not_verified",
+        "request_style": _FINANCIAL_KEY_STYLE,
         "filter_verified": False, "date_filter_independently_verified": False, "queries": queries,
     }
     report["key_filter_probe"] = probe
@@ -195,13 +200,15 @@ def _financial_key_pages(
             raise _FinancialKeyProbeError("company_structured_key_deadline_exhausted")
         identities = tuple(code + "." + {"sse": "SH", "szse": "SZ", "bse": "BJ"}[EvidenceMarket(code)] for code in selected)
         members = ",".join("'" + identity + "'" for identity in identities)
-        evidence: dict[str, object] = {"query": label, "status": "failed", "selected_codes": list(selected)}
+        evidence: dict[str, object] = {
+            "query": label, "status": "failed", "selected_codes": list(selected), "request_style": _FINANCIAL_KEY_STYLE,
+        }
         queries.append(evidence)
         report["fetch_invocations"] = len(queries)
         response = session.get(
             _FINANCIAL_URL,
             params={
-                "type": _FINANCIAL_REPORT, "sty": ",".join(columns), "quoteColumns": "",
+                "type": _FINANCIAL_REPORT, "sty": _FINANCIAL_KEY_STYLE, "quoteColumns": "",
                 "filter": f"(NOTICE_DATE>='{query.start.isoformat()}')(NOTICE_DATE<='{query.end.isoformat()}')"
                           f"(REPORT_DATE='{report_date.isoformat()}')(SECUCODE in ({members}))",
                 "p": "1", "ps": str(len(selected)), "sr": "-1,1,-1", "st": "NOTICE_DATE,SECUCODE,REPORT_DATE",

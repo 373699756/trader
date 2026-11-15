@@ -14,6 +14,11 @@ from scripts.download.company.projections import ProjectCompanyResume, ProjectCo
 from scripts.download.company.company_official_financial_audit import ProjectCompanyOfficialFinancialAudit
 from trader.download.domain.company_evidence import EvidenceMarket
 
+_FINANCIAL_PAGE_COLUMNS = (
+    "SECUCODE", "REPORT_DATE", "NOTICE_DATE", "EPSJB", "BPS", "TOTALOPERATEREVETZ",
+    "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR",
+)
+
 
 def _structured_code(value: object) -> str | None:
     if not isinstance(value, str) or re.fullmatch(r"[0-9]{6}", value) is None:
@@ -58,6 +63,10 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                 2 <= len(codes) <= 8 and all(isinstance(code, str) and _structured_code(code) is not None for code in codes)
                 and len(set(codes)) == len(codes)
             )
+            valid = valid and source.get("request_style") == "APP_F10_MAINFINADATA" and (
+                source.get("remote_column_projection_requested") is False and source.get("requested_fields") == []
+                and source.get("required_fields") == list(_FINANCIAL_PAGE_COLUMNS)
+            )
             key_probe = source.get("key_filter_probe")
             if isinstance(key_probe, Mapping):
                 queries = key_probe.get("queries")
@@ -66,11 +75,13 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                     key_probe.get("support_status") == ("sample_verified" if verified else "not_verified")
                     and key_probe.get("date_filter_independently_verified") is False
                     and key_probe.get("codes") == codes and key_probe.get("report_date") == source.get("requested_report_date")
+                    and key_probe.get("request_style") == source.get("request_style")
                 )
                 if verified:
                     valid = valid and calls == 2 and (attempts is None or attempts == 2) and isinstance(queries, list) and isinstance(codes, list) and all(
                         isinstance(query, Mapping) and query.get("query") == label and query.get("status") == "decoded"
                         and query.get("selected_codes") == selected
+                        and query.get("request_style") == source.get("request_style")
                         and type(query.get("http_status")) is int and query.get("http_status") == 200
                         and type(query.get("provider_code")) is int and query.get("provider_code") == 0
                         and query.get("provider_success") is True
@@ -458,8 +469,7 @@ def _annual_income_details(source: Mapping[str, object], payload: dict[str, obje
 def _structured_page_details(source: Mapping[str, object], payload: dict[str, object]) -> None:
     component = source.get("component")
     columns = {
-        "financial": ("SECUCODE", "REPORT_DATE", "NOTICE_DATE", "EPSJB", "BPS", "TOTALOPERATEREVETZ",
-                      "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR"),
+        "financial": _FINANCIAL_PAGE_COLUMNS,
         "pledge": ("SECURITY_CODE", "TRADE_DATE", "PLEDGE_RATIO"),
         "unlock": ("SECURITY_CODE", "FREE_DATE", "TOTAL_RATIO"),
     }.get(component if isinstance(component, str) else "", ())
@@ -480,6 +490,8 @@ def _structured_page_details(source: Mapping[str, object], payload: dict[str, ob
         "key_filter_requested": source.get("key_filter_requested") is True,
         "requested_codes": [code for code in SafeStringList(source.get("requested_codes"), limit=8) if _structured_code(code) is not None],
         "requested_report_date": _text(source.get("requested_report_date"), 10),
+        "request_style": "APP_F10_MAINFINADATA" if source.get("request_style") == "APP_F10_MAINFINADATA" else None,
+        "remote_column_projection_requested": source.get("remote_column_projection_requested") is True,
         "component": component if component in ("financial", "pledge", "unlock") else None,
         "observation_status": observation if observation in ("decoded", "empty", "failed", "timed_out", "skipped") else None,
         **{name: False for name in (
@@ -496,6 +508,7 @@ def _structured_page_details(source: Mapping[str, object], payload: dict[str, ob
         "normal_path_discovery": discovery if discovery in ("pledge_day_required", "none_in_current_fetch") else None,
         "more_pages_available": source.get("more_pages_available") if type(source.get("more_pages_available")) is bool else None,
         "requested_fields": [field for field in SafeStringList(source.get("requested_fields"), limit=11) if field in columns],
+        "required_fields": [field for field in SafeStringList(source.get("required_fields"), limit=11) if field in columns],
         "fields": projected, "elapsed_seconds": _number(source.get("elapsed_seconds")),
     }
     payload["summary"] = summary
@@ -512,6 +525,7 @@ def _structured_page_details(source: Mapping[str, object], payload: dict[str, ob
                 "query": query.get("query") if query.get("query") in ("batch", "exclude_last_key") else None,
                 "status": query.get("status") if query.get("status") in ("decoded", "failed") else None,
                 "selected_codes": [code for code in SafeStringList(query.get("selected_codes"), limit=8) if _structured_code(code) is not None],
+                "request_style": "APP_F10_MAINFINADATA" if query.get("request_style") == "APP_F10_MAINFINADATA" else None,
                 **{name: _st_count(query.get(name), maximum) for name, maximum in (
                     ("http_status", 599), ("response_bytes", 1024 * 1024),
                     ("raw_rows", 500), ("reported_total", 128000), ("reported_pages", 256),
@@ -524,6 +538,7 @@ def _structured_page_details(source: Mapping[str, object], payload: dict[str, ob
             "support_status": "sample_verified" if verified else "not_verified", "filter_verified": verified,
             "codes": [code for code in SafeStringList(probe.get("codes"), limit=8) if _structured_code(code) is not None],
             "report_date": _text(probe.get("report_date"), 10),
+            "request_style": "APP_F10_MAINFINADATA" if probe.get("request_style") == "APP_F10_MAINFINADATA" else None,
             "date_filter_independently_verified": False, "queries": evidence,
         }
 

@@ -568,12 +568,14 @@ def QueueCompanyContractSigningRechecks(
     extraction_hash: bytes,
     event_policy: CompanyEventPolicy,
     read_document: Callable[[bytes], str],
+    *, cancel_requested: Callable[[], bool] | None,
 ) -> None:
     """Recompile only a retained latest contract whose signing fact was missed."""
     for offset in range(0, len(codes), 128):
         batch = codes[offset:offset + 128]
         facts = {fact.code: fact for fact in ReadCompanyFactRows(formal, batch)}
-        inputs = ReadCompanySnapshotRows(collected, tuple(batch), observed_at, extraction_hash)
+        inputs = ReadCompanySnapshotRows(collected, formal, tuple(batch), observed_at, extraction_hash,
+                                        cancel_requested=cancel_requested)
         for links in ReadCompanyPublicationLinks(
             collected, batch, extraction_hash, observed_at=observed_at,
             event_policy=event_policy, read_document=read_document,

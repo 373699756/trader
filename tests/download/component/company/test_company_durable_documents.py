@@ -316,7 +316,7 @@ def test_dispatch_uses_only_reference_eligible_population_without_changing_direc
     index.prepare_publication(("600001",), now)
     tasks = index.pending_documents(("600001",), now, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert len(tasks) == 1 and tasks[0].disclosure.codes == ("600001",)
-    assert not index.document_required(excluded)
+    assert not index.document_required(excluded, now)
     with SqliteSession(index.path) as connection:
         assert connection.run("SELECT COUNT(*) FROM disclosures").require_one()[0] == 2
 
@@ -342,7 +342,7 @@ def test_new_verified_replacement_skips_old_task_but_new_independent_event_does_
     index.publish(old.codes, now)
     pending = index.pending_documents(old.codes, now, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert {task.disclosure.identity for task in pending} == {independent.identity}
-    assert not index.document_required(old) and index.document_required(independent)
+    assert not index.document_required(old, now) and index.document_required(independent, now)
     with SqliteSession(index.path) as connection:
         assert connection.run("SELECT reason FROM document_supersessions").require_one()[0] == "official_complete_replacement"
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):

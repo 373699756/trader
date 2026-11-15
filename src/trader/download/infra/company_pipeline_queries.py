@@ -3,16 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime
 import re
 
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, CompanyDocumentOutsideSubjectScope
 from trader.download.domain.company_evidence import (
-    CompanyDocumentFailureRules,
-    CompanyDocumentPolicies,
     Disclosure,
     DisclosurePartition,
-    DocumentRepairMode,
     EvidenceMarket,
     Market,
 )
@@ -145,96 +141,6 @@ def PrepareCompanyPublication(connection: SqliteConnection, codes: tuple[str, ..
     MarkCompanyDirty(connection, codes)
 
 
-def SelectCompanyDocuments(
-    connection: SqliteConnection,
-    codes: Sequence[str],
-    at: datetime,
-    policies: CompanyDocumentPolicies,
-    excluded: Sequence[tuple[str, str, str]],
-    repair: DocumentRepairMode | None = None,
-    *,
-    start: date,
-    extraction_hash: bytes,
-    until: datetime | None = None,
-) -> None:
-    connection.run("CREATE TEMP TABLE requested_codes(code TEXT PRIMARY KEY) WITHOUT ROWID")
-    connection.run_many("INSERT OR IGNORE INTO temp.requested_codes VALUES(?)", ((code,) for code in codes))
-    connection.run(
-        "CREATE TEMP TABLE attempted_documents(source TEXT,source_key TEXT,record_hash TEXT,PRIMARY KEY(source,source_key,record_hash)) WITHOUT ROWID"
-    )
-    connection.run_many("INSERT INTO temp.attempted_documents VALUES(?,?,?)", excluded)
-    connection.run(
-        "CREATE TEMP TABLE document_failure_rules(failure TEXT PRIMARY KEY,route TEXT NOT NULL,transient INTEGER NOT NULL) WITHOUT ROWID"
-    )
-    connection.run_many(
-        "INSERT INTO temp.document_failure_rules VALUES(?,?,?)",
-        ((failure, route, int(transient)) for failure, route, transient in CompanyDocumentFailureRules()),
-    )
-    connection.run(
-        "CREATE TEMP TABLE document_policies(route TEXT PRIMARY KEY,identity TEXT NOT NULL) WITHOUT ROWID"
-    )
-    connection.run_many(
-        "INSERT INTO temp.document_policies VALUES(?,?)",
-        ((route, policies.for_route(route)) for route in ("standard", "ocr", "limits")),
-    )
-    repair_route = repair or ""
-    connection.run(
-        "CREATE TEMP TABLE pending_documents AS SELECT d.id,p.route,r.retry_at,"
-        "CASE WHEN EXISTS(SELECT 1 FROM temp.attempted_documents a WHERE a.source=d.source AND a.source_key=d.source_key "
-        "AND a.record_hash=d.record_hash) OR (?<>'' AND (r.disclosure_id IS NULL OR p.route<>?)) THEN 0 "
-        "WHEN r.disclosure_id IS NULL OR r.retry_policy_id<>p.identity THEN 1 "
-        "WHEN COALESCE(f.transient,0)=1 AND r.retry_at<=? THEN 1 ELSE 0 END AS due,"
-        "CASE WHEN r.disclosure_id IS NOT NULL AND r.retry_policy_id=p.identity AND COALESCE(f.transient,0)=1 "
-        "AND (r.retry_at>? OR EXISTS(SELECT 1 FROM temp.attempted_documents a WHERE a.source=d.source "
-        "AND a.source_key=d.source_key AND a.record_hash=d.record_hash)) THEN 1 ELSE 0 END AS cooling,"
-        "CASE WHEN p.route='ocr' THEN 1 ELSE 0 END AS ocr,"
-        "CASE WHEN r.disclosure_id IS NOT NULL AND r.retry_policy_id=p.identity AND COALESCE(f.transient,0)=0 "
-        "THEN 1 ELSE 0 END AS unextractable "
-        "FROM company_document_requirements q JOIN disclosures d ON d.id=q.disclosure_id "
-        "LEFT JOIN document_retries r ON r.disclosure_id=d.id AND r.record_hash=d.record_hash "
-        "LEFT JOIN temp.document_failure_rules f ON f.failure=r.failure "
-        "JOIN temp.document_policies p ON p.route=COALESCE(f.route,'standard') "
-        "WHERE d.body_checked=0 AND d.published_at>=? AND d.published_at<=? "
-        "AND (?='' OR (r.disclosure_id IS NOT NULL AND p.route=?)) "
-        "AND EXISTS(SELECT 1 FROM disclosure_codes c JOIN temp.requested_codes p ON p.code=c.code WHERE c.disclosure_id=d.id "
-        "AND NOT EXISTS(SELECT 1 FROM document_supersessions s JOIN disclosures n ON n.id=s.replacement_id "
-        "JOIN document_publications r ON r.disclosure_id=n.id AND r.code=c.code AND r.record_hash=n.record_hash "
-        "AND r.extraction_hash=s.extraction_hash WHERE s.disclosure_id=d.id AND s.code=c.code AND s.record_hash=d.record_hash "
-        "AND s.replacement_hash=n.record_hash AND s.extraction_hash=?))",
-        (
-            repair_route,
-            repair_route,
-            at.isoformat(),
-            at.isoformat(),
-            start.isoformat(),
-            (until or at).isoformat(),
-            repair_route,
-            repair_route,
-            extraction_hash,
-        ),
-    )
-
-
-def CountCompanyUnpublishedBodies(connection: SqliteConnection, cutoff: datetime, extraction_hash: bytes) -> int:
-    """Count accepted required bodies still missing a current per-security publication.
-
-    SelectCompanyDocuments owns the requested population on this connection.
-    Retained evidence is not pending when already published or superseded.
-    """
-    return int(connection.run(
-        "SELECT COUNT(*) FROM company_document_requirements q JOIN disclosures d ON d.id=q.disclosure_id "
-        "WHERE d.body_checked=1 AND d.body_retained=1 AND d.published_at<=? "
-        "AND EXISTS(SELECT 1 FROM disclosure_codes c JOIN temp.requested_codes u ON u.code=c.code "
-        "WHERE c.disclosure_id=d.id AND NOT EXISTS(SELECT 1 FROM document_publications p "
-        "WHERE p.disclosure_id=d.id AND p.code=c.code AND p.record_hash=d.record_hash AND p.extraction_hash=?) "
-        "AND NOT EXISTS(SELECT 1 FROM document_supersessions s JOIN disclosures n ON n.id=s.replacement_id "
-        "JOIN document_publications p ON p.disclosure_id=n.id AND p.code=c.code AND p.record_hash=n.record_hash "
-        "AND p.extraction_hash=s.extraction_hash WHERE s.disclosure_id=d.id AND s.code=c.code "
-        "AND s.record_hash=d.record_hash AND s.replacement_hash=n.record_hash AND s.extraction_hash=?))",
-        (cutoff.isoformat(), extraction_hash, extraction_hash),
-    ).require_one()[0])
-
-
 __all__ = [
     "PrepareCompanyPipelineQueries",
     "CheckDisclosureQueryContract",
@@ -244,6 +150,4 @@ __all__ = [
     "MarkCompanyMarketDirty",
     "IndexCompanyDocument",
     "PrepareCompanyPublication",
-    "SelectCompanyDocuments",
-    "CountCompanyUnpublishedBodies",
 ]

@@ -11,6 +11,7 @@ import hashlib
 import sqlite3
 import time
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -31,6 +32,8 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
+from trader.download.infra.company_financial_input_use import ReadUnusedCompanyFinancialInputs
+from trader.download.infra.company_facts_protocol import CompanyExtractionHash
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.download_failure_diagnostics import ReadDownloadFailures
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadDownloadFailureConfiguration
@@ -231,7 +234,7 @@ def AuditCompanyDatabase(
             risk_baseline=risk_baseline,
             event_policy=event_policy,
         )
-    except (sqlite3.OperationalError, _CompanyDatabaseAuditBudgetExceeded, CompanyFailureAuditTimeout, CompanyConsumerAuditBudgetExceeded) as exc:
+    except (sqlite3.OperationalError, InterruptedError, _CompanyDatabaseAuditBudgetExceeded, CompanyFailureAuditTimeout, CompanyConsumerAuditBudgetExceeded) as exc:
         # Python 3.10 has no sqlite_errorcode. The exact SQLite interruption
         # message alone is insufficient: our own deadline callback must cancel.
         if not deadline_cancelled or isinstance(exc, sqlite3.OperationalError) and str(exc) != "interrupted":
@@ -288,6 +291,7 @@ def _audit_company_database(
             cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
         ) as connection,
         SqliteTransaction(connection),
+        ExitStack() as publication_scope,
     ):
         page_size = connection.run("PRAGMA page_size").require_one()[0]
         free_pages = connection.run("PRAGMA freelist_count").require_one()[0]
@@ -345,14 +349,32 @@ def _audit_company_database(
                 "files": files, "pdf_files": sum(name.endswith(".pdf") for name in files),
                 "failure_records": sum(name.startswith("failure-") and name.endswith(".json") for name in files),
             })
+        unused: frozenset[int] = frozenset()
+        if facts_path is not None and facts_path.exists() and event_policy is not None:
+            facts_connection = publication_scope.enter_context(SqliteSession(
+                facts_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5),
+                cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
+            ))
+            publication_scope.enter_context(SqliteTransaction(facts_connection))
+            codes = tuple(row[0] for row in connection.run("SELECT code FROM company_population ORDER BY code"))
+            unused = ReadUnusedCompanyFinancialInputs(
+                connection,
+                facts_connection,
+                codes,
+                now,
+                CompanyExtractionHash(event_policy),
+                cancel_requested=cancel_requested,
+            )
         for row in connection.run(
-            "SELECT r.failure,r.retry_at FROM company_document_requirements q JOIN disclosures d ON d.id=q.disclosure_id "
+            "SELECT r.failure,r.retry_at,d.id FROM company_document_requirements q JOIN disclosures d ON d.id=q.disclosure_id "
             "LEFT JOIN document_retries r "
             "ON r.disclosure_id=d.id AND r.record_hash=d.record_hash WHERE d.kind='announcement' AND d.body_checked=0 "
             "AND d.published_at>=? AND d.published_at<=? AND EXISTS(SELECT 1 FROM disclosure_codes c "
             "JOIN company_population p ON p.code=c.code WHERE c.disclosure_id=d.id)",
             (cutoff, now.isoformat()),
         ):
+            if row[2] in unused:
+                continue
             pending += 1
             if row[0]:
                 failures[row[0]] = failures.get(row[0], 0) + 1

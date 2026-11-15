@@ -707,11 +707,15 @@ def test_existing_page_mode_checks_batch_keys_and_exclusion_using_the_shared_pro
     result = _key_run(session)
     assert result["status"] == "decoded" and len(decoded) == len(session.requests) == result["fetch_invocations"] == 2
     assert result["key_filter_requested"] and result["request_limit"] == result["page_limit"] == result["page_size"] == 2
+    assert result["request_style"] == "APP_F10_MAINFINADATA" and not result["remote_column_projection_requested"]
+    assert result["requested_fields"] == []
+    assert result["required_fields"] == ["SECUCODE", "REPORT_DATE", "NOTICE_DATE", *(field for _name, field in audit._FINANCIAL_FIELDS)]
     assert result["key_filter_probe"]["support_status"] == "sample_verified" and result["key_filter_probe"]["filter_verified"]
     assert not result["key_filter_probe"]["date_filter_independently_verified"]
     assert not result["key_lookup_verified"] and not result["latest_snapshot_verified"] and not result["revision_index_verified"]
     for index, (_url, request) in enumerate(session.requests):
         parameters = request["params"]
+        assert parameters["sty"] == "APP_F10_MAINFINADATA"
         assert "NOTICE_DATE>='2026-10-31'" in parameters["filter"] and "NOTICE_DATE<='2026-10-31'" in parameters["filter"]
         assert "REPORT_DATE='2026-09-30'" in parameters["filter"] and "ISNEW" not in parameters["filter"]
         assert parameters["p"] == "1" and parameters["ps"] == str(2 - index)

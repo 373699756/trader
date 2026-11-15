@@ -131,6 +131,8 @@ isolated比较可读取明确指定的旧checkout；只在隔离演练内处理�
 
 财务批量键核验在上述显式财务模式中增加`--structured-report-date 2026-09-30 --codes 600900 688012`，披露窗应选包含已知披露日的允许范围，例如`--structured-start 2026-10-31 --structured-end 2026-10-31`，并选择新的仓库外报告路径。需2至8个不同A股代码及一个季末报告期，最多完整集合和排除末键的子集两次请求，每次只取第1页、上限1MiB；缺参数或请求失败直接停止，不回退到广范围采集。共用生产财务纯decoder，精确键、报告期、披露窗、字段列和子集值全部吻合才记局部`sample_verified`，仍不签通用按键／日期过滤／最新能力或生产准入。本批实调未取得通过结果，不能据示例推断供应商已支持；生产请求参数保持原样。
 
+该实验键路径实际请求`APP_F10_MAINFINADATA`模板，本地仍只核必需11列；报告的`request_style`、`remote_column_projection_requested=false`、空`requested_fields`与`required_fields`明确区分两者。固定样本的列清单与模板对照均收到`code=9501/success=false`，没有执行子集，具体原因待核；不自动换参数或接口，普通生产fetch和普通单页请求不随实验更改。
+
 Web health支持可重复的`--strategy tomorrow|d25`，连续空结果阈值`--consecutive-zero-threshold`须在样本数以内，默认min(3,样本数)。浏览器动作另支持`--strategy`与带时区ISO时间`--simulated-start`；Long admission的`--strategy`表示策略JSON路径，`--workers`范围1至8。这些参数只属于各自选中的动作，不能跨动作隐式生效。
 
 `recommendation/web/shutdown`在前台观测显式`--pid`、`--birth-ticks`及已有普通文件`--shutdown-log`，默认只读；只有显式`--send-sigterm`才通过pidfd向该身份发送一次SIGTERM。每次启动都须重新核对当前boot及进程出生身份，不能跨重启复用旧参数。等待默认40秒、最多60秒，30秒退出门不变；外部PID模式超时只结束观测，不强杀目标。报告区分发送、Python处理器、业务返回和pidfd退出观测时间，缺失或冲突不签完整时轴；pidfd就绪不是精确内核退出时间。外部PID模式仍无法取得非子进程退出码，`runtime_shutdown_acceptance`保持false。当前解释器或内核缺少pidfd能力时明确报告unsupported，不自动换解释器或退回PID信号。

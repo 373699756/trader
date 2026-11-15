@@ -578,8 +578,8 @@ def test_existing_subject_exclusions_are_removed_from_legacy_queue_without_fake_
     restarted.prepare_publication(items[0].codes, NOW)
     tasks = restarted.pending_documents(items[0].codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert {task.disclosure.identity for task in tasks} == {"holder-director", "issuer-board"}
-    assert not restarted.document_required(items[0])
-    assert not restarted.document_required(items[1])
+    assert not restarted.document_required(items[0], NOW)
+    assert not restarted.document_required(items[1], NOW)
     restarted.publish(items[0].codes, NOW, changed_only=True)
     assert _facts(restarted).pending_document_count == 2
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:

@@ -160,7 +160,7 @@ class CompanyDocumentRun:
                 inflight = sum(value[1] == stage for value in pending_documents.values())
                 while ready and inflight < capacity and not CompanyCancelled(dependencies):
                     task = ready.popleft()
-                    if not index.document_required(task.disclosure):
+                    if not index.document_required(task.disclosure, self.observed_at):
                         continue
                     self._stage(task.disclosure, "analyzing", raw_saved=True)
                     pending_documents[self._submit(self.sources[0], task, stage, executor)] = (-1, stage, task)
@@ -170,7 +170,7 @@ class CompanyDocumentRun:
                 slot = available.popleft()
                 task = queue.popleft()
                 item = task.disclosure
-                if not index.document_required(item):
+                if not index.document_required(item, self.observed_at):
                     available.append(slot)
                     continue
                 PrepareCompanyStockProgress(dependencies, self.state, item.codes[0])

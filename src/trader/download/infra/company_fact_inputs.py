@@ -22,6 +22,7 @@ from trader.download.infra.company_facts_protocol import REVIEW_REASONS, DecodeC
 from trader.infra.sqlite_connection import SqliteConnection
 from trader.download.domain.company_annual_income import CompanyAnnualIncome
 from trader.download.infra.company_annual_income_index import ReadCompanyAnnualIncome
+from trader.download.infra.company_financial_input_use import ReadUnusedCompanyFinancialInputs
 
 
 def DecodeCompanyFinancial(row: sqlite3.Row) -> CompanyFinancial:
@@ -76,8 +77,17 @@ def ReadCompanySnapshotShared(connection: SqliteConnection, now: datetime) -> Co
 
 
 def ReadCompanySnapshotRows(
-    connection: SqliteConnection, codes: tuple[str, ...], now: datetime, extraction_hash: bytes
+    connection: SqliteConnection, formal: SqliteConnection, codes: tuple[str, ...], now: datetime, extraction_hash: bytes,
+    *, cancel_requested: Callable[[], bool] | None,
 ) -> dict[str, CompanySnapshotRows]:
+    unused = ReadUnusedCompanyFinancialInputs(
+        connection,
+        formal,
+        codes,
+        now,
+        extraction_hash,
+        cancel_requested=cancel_requested,
+    )
     placeholders = ",".join("?" for _ in codes)
     disclosures = connection.run(
         "SELECT d.*,c.code,r.failure AS document_failure,r.retry_policy_id,r.payload_hash,EXISTS(SELECT 1 FROM document_publications p WHERE p.disclosure_id=d.id "
@@ -94,7 +104,8 @@ def ReadCompanySnapshotRows(
     )
     documents: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
     for row in disclosures:
-        documents[row["code"]].append(row)
+        if row["id"] not in unused:
+            documents[row["code"]].append(row)
     financials: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
     for row in connection.run(
         f"SELECT * FROM financials WHERE code IN ({placeholders}) AND report_date>=? AND published_at<=? ORDER BY report_date",

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.infra.company_financial_input_use import ReadUnusedCompanyFinancialInputs
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
@@ -24,6 +25,7 @@ from trader.download.infra.company_facts_protocol import (
     DecodeCompanyLabel,
     EncodeCompanyDate,
     EncodeCompanyTime,
+    CompanyExtractionHash,
 )
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
@@ -130,6 +132,14 @@ def AuditCompanyPublication(
             ).require_one()[0]
             receipts: dict[str, object] = {"checked": False}
             if identity is not None:
+                unused = ReadUnusedCompanyFinancialInputs(
+                    raw,
+                    formal,
+                    tuple(sorted(population)),
+                    now,
+                    CompanyExtractionHash(event_policy),
+                    cancel_requested=cancel,
+                ) if event_policy is not None else frozenset()
                 missing: set[int] = set()
                 released: set[int] = set()
                 for row in raw.run(
@@ -142,6 +152,8 @@ def AuditCompanyPublication(
                         "AND extraction_hash=? AND outcome='valid'",
                         (row[1], row[2], row[5], row[3], identity.extraction_hash),
                     ).fetchone() is None:
+                        if row[4] and row[0] in unused:
+                            continue
                         missing.add(row[0])
                         if not row[4]:
                             released.add(row[0])
