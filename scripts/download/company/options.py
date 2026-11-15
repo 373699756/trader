@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import Literal
 
 from scripts.core.paths import PROJECT_ROOT
 
@@ -40,6 +41,9 @@ class CompanyOptions:
     field_source_rows: int = 5
     field_source_schema: bool = False
     field_source_identities: bool = False
+    structured_page: Literal["financial", "pledge", "unlock"] | None = None
+    structured_start: date | None = None
+    structured_end: date | None = None
     annual_income_period: date | None = None
     financial_revision_period: date | None = None
     official_financial_baseline: Path | None = None

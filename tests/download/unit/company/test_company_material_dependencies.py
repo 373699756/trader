@@ -13,6 +13,7 @@ from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceIndexFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_events import CompanyReviewReason
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
+from trader.download.infra import company_material_cleanup
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_document_recovery import RepairCompanyDocumentFiles
 from trader.download.infra.company_field_recovery import (
@@ -380,7 +381,7 @@ def test_unsafe_retained_material_stops_recovery_without_deleting_evidence(tmp_p
             pytest.skip("this platform cannot create a test symlink")
     else:
         material.write_bytes(damaged)
-    monkeypatch.setattr(index, "_release_files", lambda: pytest.fail("unsafe recovery must not enter cleanup"))
+    monkeypatch.setattr(company_material_cleanup, "ReleaseCompanyMaterialFiles", lambda *args, **kwargs: pytest.fail("unsafe recovery must not enter cleanup"))
     with pytest.raises(RuntimeError, match="company_document_material_recovery_required") as failure:
         index.initialize()
     assert isinstance(failure.value.__cause__, (OSError, ValueError, EOFError, zlib.error))

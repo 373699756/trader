@@ -6,6 +6,7 @@ import pytest
 
 from scripts.download.company.cli import BuildParser, ParseOptions
 from scripts.download.company.commands import BuildCommands
+from scripts.download.company.options import CompanyOptions
 
 
 def _parse(arguments):
@@ -66,6 +67,45 @@ def test_structured_schema_and_identities_are_forwarded_only_when_explicit():
     default, = BuildCommands(_parse([]))
     assert "--field-sources-only" not in default.argv and "--field-source-schema" not in default.argv
     assert "--field-source-identities" not in default.argv and "--annual-income-period" not in default.argv
+
+
+def test_single_production_page_mode_keeps_explicit_dates_and_outer_deadline():
+    options = _parse([
+        "--structured-page", "financial", "--structured-start", "2026-11-04", "--structured-end", "2026-11-05",
+        "--market-task-seconds", "30", "--command-timeout-seconds", "45",
+    ])
+    command, = BuildCommands(options)
+    assert command.timeout_seconds == 30
+    assert command.argv[-6:] == (
+        "--structured-page", "financial", "--structured-start", "2026-11-04", "--structured-end", "2026-11-05",
+    )
+    assert "--codes" not in command.argv and "--field-sources-only" not in command.argv
+
+
+@pytest.mark.parametrize("arguments", (
+    ("--structured-page", "financial"),
+    ("--structured-start", "2026-11-04", "--structured-end", "2026-11-05"),
+    ("--structured-page", "financial", "--structured-start", "2026-10-01", "--structured-end", "2026-11-05"),
+    ("--structured-page", "pledge", "--structured-start", "2026-11-04", "--structured-end", "2026-11-05"),
+    ("--structured-page", "financial", "--structured-start", "2026-11-04", "--structured-end", "2026-11-05", "--codes", "600001"),
+))
+def test_single_page_mode_rejects_missing_dates_expanded_windows_and_stock_selection(arguments):
+    with pytest.raises(ValueError):
+        _parse(list(arguments))
+
+
+def test_single_page_mode_cannot_enable_other_source_requests():
+    with pytest.raises(SystemExit):
+        _parse(["--structured-page", "financial", "--field-sources-only"])
+
+
+@pytest.mark.parametrize("start,end", ((None, None), (date(2026, 11, 4), None), (None, date(2026, 11, 5))))
+def test_direct_single_page_options_cannot_fall_back_to_unbounded_default_collection(start, end):
+    options = CompanyOptions(
+        "research-source-compare", structured_page="financial", structured_start=start, structured_end=end,
+    )
+    with pytest.raises(ValueError, match="requires explicit"):
+        BuildCommands(options)
 
 
 @pytest.mark.parametrize(

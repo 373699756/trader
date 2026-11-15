@@ -11,6 +11,7 @@ import pytest
 
 from scripts.core.paths import PROJECT_ROOT
 from scripts.download.company import research_source_compare as worker
+from trader.infra.http_contracts import HttpAttempt
 
 
 @pytest.mark.parametrize("arguments", (
@@ -154,3 +155,40 @@ def test_revision_worker_keeps_a_failed_probe_nonzero_and_does_not_select_market
     monkeypatch.setattr("sys.argv", ["research-source-compare", "--config", str(PROJECT_ROOT / "config/runtime.json"), "--codes", "600001", "--financial-revision-period", "2026-06-30"])
     assert worker.Main() == 1
     assert json.loads(capsys.readouterr().out)["financial_revision_probe"]["request_count"] == 1
+
+
+def test_single_page_worker_uses_attempt_observer_without_opening_other_sources(monkeypatch, capsys):
+    callbacks = []
+
+    def open_http(*, observe):
+        callbacks.append(observe)
+        return nullcontext(object())
+
+    def audit(session, query, **kwargs):
+        callbacks[0](HttpAttempt("example", "GET", 0.1, 123, 200, ""))
+        assert query.component == "financial" and query.page == 1
+        assert len(kwargs["http_attempts"]) == 1
+        return {"probe": "structured_page", "status": "failed", "physical_http_attempts": 1}
+
+    monkeypatch.setattr(worker, "OpenExternalHttp", open_http)
+    monkeypatch.setattr(worker, "AuditCompanyStructuredPage", audit)
+    monkeypatch.setattr(worker, "Collect", lambda *_args, **_kwargs: pytest.fail("default collection must remain closed"))
+    monkeypatch.setattr("sys.argv", [
+        "research-source-compare", "--config", str(PROJECT_ROOT / "config/runtime.json"),
+        "--structured-page", "financial", "--structured-start", "2026-11-04", "--structured-end", "2026-11-05",
+    ])
+    assert worker.Main() == 1
+    assert json.loads(capsys.readouterr().out)["physical_http_attempts"] == 1
+
+
+@pytest.mark.parametrize("arguments", (
+    ("--structured-page", "financial"),
+    ("--structured-start", "2026-11-04"),
+    ("--structured-page", "financial", "--structured-start", "2026-10-01", "--structured-end", "2026-11-05"),
+))
+def test_single_page_worker_rejects_unbounded_inputs_before_configuration_or_http(monkeypatch, arguments):
+    monkeypatch.setattr(worker, "LoadRuntimeSettings", lambda *_args: pytest.fail("configuration must remain closed"))
+    monkeypatch.setattr(worker, "OpenExternalHttp", lambda **_kwargs: pytest.fail("HTTP must remain closed"))
+    monkeypatch.setattr("sys.argv", ["research-source-compare", "--config", "unused.json", *arguments])
+    with pytest.raises(SystemExit):
+        worker.Main()

@@ -3,7 +3,7 @@
 import hashlib
 import json
 from contextlib import nullcontext
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -11,6 +11,7 @@ import pytest
 
 from scripts.download.company import company_structured_field_audit as audit
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
+from trader.download.domain.company_evidence import StructuredCompanyQuery
 from trader.infra.http_contracts import HttpConnectionError, HttpResponse
 
 _NOW = datetime(2026, 11, 5, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -530,3 +531,111 @@ def test_existing_source_check_routes_the_explicit_field_mode_without_running_di
         "read_only": True,
         "runtime_configuration_sha256": hashlib.sha256(configuration.read_bytes()).hexdigest(),
     }
+
+
+class _StructuredPageSession:
+    def __init__(self, rows, *, total=None, pages=1):
+        self.requests = []
+        self.payload = {"result": {"count": len(rows) if total is None else total, "pages": pages, "data": rows}}
+
+    def get(self, url, **kwargs):
+        self.requests.append((url, kwargs))
+        return HttpResponse(200, json.dumps(self.payload).encode())
+
+
+def _page_run(session, query, **changes):
+    return audit.AuditCompanyStructuredPage(
+        session, query, observed_at=_NOW, timeout_seconds=8, deadline=60,
+        monotonic=changes.pop("monotonic", lambda: 0), **changes,
+    )
+
+
+def test_structured_financial_page_consumes_all_eight_fields_from_one_response_without_followup():
+    row = {
+        "SECUCODE": "600001.SH", "REPORT_DATE": "2026-09-30", "NOTICE_DATE": "2026-11-04",
+        "EPSJB": 0, "BPS": None, "TOTALOPERATEREVETZ": 10, "PARENTNETPROFITTZ": -5,
+        "KCFJCXSYJLRTZ": 3, "ROEJQ": 0, "PARENTNETPROFIT": -1, "KCFJCXSYJLR": 0,
+        "RAW_SECRET": "private-provider-data",
+    }
+    session = _StructuredPageSession([row, dict(row, SECUCODE="000001.SZ"), dict(row, SECUCODE="00001.HK")], total=1001, pages=3)
+    result = _page_run(session, StructuredCompanyQuery("financial", date(2026, 11, 4), _NOW.date()))
+    assert len(session.requests) == result["fetch_invocations"] == 1
+    parameters = session.requests[0][1]["params"]
+    assert parameters["sty"].split(",") == result["requested_fields"]
+    assert parameters["ps"] == "500" and parameters["p"] == "1" and parameters["quoteColumns"] == ""
+    assert parameters["filter"] == "(NOTICE_DATE>='2026-11-04')(NOTICE_DATE<='2026-11-05')"
+    assert result["raw_rows"] == 3 and result["decoded_rows"] == 2
+    assert result["reported_total"] == 1001 and result["reported_pages"] == 3
+    assert result["more_pages_available"] and result["pages_followed"] == 0
+    assert result["fields"][0] == {"field": "EPSJB", "non_null_rows": 2, "decoded_null_rows": 0}
+    assert result["fields"][1] == {"field": "BPS", "non_null_rows": 0, "decoded_null_rows": 2}
+    assert len(result["fields"]) == 8 and result["physical_http_attempts"] is None
+    assert not result["latest_snapshot_verified"] and not result["full_window_coverage_verified"]
+    assert not result["key_lookup_verified"] and not result["revision_index_verified"]
+    assert "private-provider-data" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("component", ("pledge", "unlock"))
+def test_structured_ratio_sample_keeps_known_date_discovery_separate(component, monkeypatch):
+    monkeypatch.setattr(audit.EastmoneyCompanySource, "pledge_day", lambda *_args: pytest.fail("discovery is outside this sample"))
+    day = _NOW.date() if component == "pledge" else _NOW.date() + timedelta(days=1)
+    row = {"SECURITY_CODE": "600001", "TRADE_DATE" if component == "pledge" else "FREE_DATE": day.isoformat(),
+           "PLEDGE_RATIO" if component == "pledge" else "TOTAL_RATIO": 0 if component == "pledge" else 0.031}
+    session = _StructuredPageSession([row])
+    result = _page_run(session, StructuredCompanyQuery(component, day, day))
+    assert result["status"] == "decoded" and result["decoded_rows"] == 1
+    assert len(session.requests) == 1
+    assert session.requests[0][1]["params"]["columns"].split(",") == result["requested_fields"]
+    assert result["normal_path_discovery"] == ("pledge_day_required" if component == "pledge" else "none_in_current_fetch")
+    assert result["fields"][0]["non_null_rows"] == 1
+
+
+@pytest.mark.parametrize("component,start,end", (
+    ("financial", None, date(2026, 11, 5)),
+    ("financial", date(2026, 10, 28), date(2026, 11, 5)),
+    ("financial", date(2026, 11, 6), date(2026, 11, 6)),
+    ("pledge", date(2026, 11, 4), date(2026, 11, 5)),
+    ("pledge", date(2025, 11, 4), date(2025, 11, 4)),
+    ("unlock", date(2026, 11, 4), date(2026, 11, 5)),
+    ("unlock", date(2026, 11, 5), date(2027, 5, 5)),
+))
+def test_structured_sample_rejects_missing_or_expanded_windows_before_io(component, start, end):
+    with pytest.raises(ValueError, match="company_structured_page_window"):
+        audit.BuildCompanyStructuredPageQuery(component, start, end, observed_at=_NOW)
+
+
+def test_structured_sample_expired_deadline_and_continuation_never_fetch():
+    session = _StructuredPageSession([])
+    query = StructuredCompanyQuery("financial", _NOW.date(), _NOW.date())
+    result = _page_run(session, query, monotonic=lambda: 60)
+    assert result["status"] == "skipped" and result["fetch_invocations"] == 0 and not session.requests
+    with pytest.raises(ValueError, match="options_invalid"):
+        _page_run(session, StructuredCompanyQuery("financial", _NOW.date(), _NOW.date(), page=2))
+    assert not session.requests
+
+
+def test_structured_sample_empty_result_does_not_certify_absence_or_trigger_details():
+    session = _StructuredPageSession([])
+    result = _page_run(session, StructuredCompanyQuery("pledge", _NOW.date(), _NOW.date()))
+    assert result["status"] == "empty" and result["raw_rows"] == result["decoded_rows"] == 0
+    assert len(session.requests) == 1 and not result["full_window_coverage_verified"]
+
+
+@pytest.mark.parametrize("rows,total,pages", (([], 1, 1), ([], 501, 2), ([{}], 501, 1), ([{}], 2, 1)))
+def test_structured_sample_rejects_contradictory_pagination_without_more_requests(rows, total, pages):
+    day = _NOW.date()
+    rows = [{"SECURITY_CODE": "600001", "TRADE_DATE": day.isoformat(), "PLEDGE_RATIO": 0} for _ in rows]
+    session = _StructuredPageSession(rows, total=total, pages=pages)
+    result = _page_run(session, StructuredCompanyQuery("pledge", day, day))
+    assert result["status"] == "failed" and result["failure"] == "company_structured_page_pagination_invalid"
+    assert len(session.requests) == 1
+
+
+def test_structured_sample_failure_is_bounded_and_never_exposes_remote_exception_text():
+    class Session:
+        def get(self, *_args, **_kwargs):
+            raise HttpConnectionError("private-provider-data")
+
+    result = _page_run(Session(), StructuredCompanyQuery("financial", _NOW.date(), _NOW.date()))
+    assert result["status"] == "failed" and result["failure"] == "HttpConnectionError"
+    assert result["fetch_invocations"] == 1 and "private-provider-data" not in json.dumps(result)

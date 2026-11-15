@@ -48,7 +48,7 @@ from trader.download.infra.company_disclosure_source import CninfoMarketDisclosu
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
 from trader.download.infra.company_document_parser import DetectCompanyText
-from trader.download.infra import company_evidence_index
+from trader.download.infra import company_evidence_index, company_material_cleanup
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
@@ -347,7 +347,7 @@ def _observe_company_operations(stack: ExitStack, measurement: _CompanySyncMeasu
         (SQLiteCompanyEvidenceIndex, "publish", measurement.wrap("collection_publish", SQLiteCompanyEvidenceIndex.publish)),
         (SQLiteCompanyFactsIndex, "publish", measurement.wrap("facts_publish", SQLiteCompanyFactsIndex.publish)),
         (SQLiteCompanyFactsIndex, "publish_file", measurement.wrap("facts_seal", SQLiteCompanyFactsIndex.publish_file)),
-        (SQLiteCompanyEvidenceIndex, "_release_files", measurement.wrap("material_cleanup", SQLiteCompanyEvidenceIndex._release_files)),
+        (company_material_cleanup, "ReleaseCompanyMaterialFiles", measurement.wrap("material_cleanup", company_material_cleanup.ReleaseCompanyMaterialFiles)),
     ):
         stack.enter_context(patch.object(owner, name, replacement))
 

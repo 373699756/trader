@@ -23,11 +23,13 @@ from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from scripts.download.company.company_st_source_audit import AuditCompanyStSources, CompanyStSourceRequest
 from scripts.download.company.company_structured_field_audit import AuditCompanyAnnualIncome
 from scripts.download.company.company_structured_field_audit import AuditCompanyStructuredSources
+from scripts.download.company.company_structured_field_audit import AuditCompanyStructuredPage, BuildCompanyStructuredPageQuery
 from scripts.download.company.company_structured_field_audit import AuditCompanyFinancialRevision, CompanyFinancialRevisionRequest
 from scripts.download.company.company_official_financial_audit import AuditCompanyOfficialFinancialSources
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.company_document_parser import DetectCompanyText
+from trader.infra.http_contracts import HttpAttempt
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -223,6 +225,9 @@ def Main() -> int:
     parser.add_argument("--task-seconds", type=float, default=180)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--field-sources-only", action="store_true", help="Read one bounded page of structured company field alternatives; no database writes.")
+    modes.add_argument("--structured-page", choices=("financial", "pledge", "unlock"), help="Decode one production structured page without discovery or pagination; requires explicit dates.")
+    parser.add_argument("--structured-start", type=date.fromisoformat)
+    parser.add_argument("--structured-end", type=date.fromisoformat)
     parser.add_argument("--field-source-rows", type=int, default=5, help="Rows per structured field sample (1..500); requires --field-sources-only.")
     parser.add_argument("--field-source-schema", action="store_true", help="Discover column names from exactly one row per source; requires --field-sources-only and --field-source-rows 1. Values remain projected.")
     parser.add_argument("--field-source-identities", action="store_true", help="Project at most five bounded source identities and measurements; requires --field-sources-only.")
@@ -242,6 +247,16 @@ def Main() -> int:
         parser.error("--field-source-schema requires --field-sources-only and --field-source-rows 1")
     if args.field_source_identities and (not args.field_sources_only or args.field_source_rows > 5):
         parser.error("--field-source-identities requires --field-sources-only and at most five rows")
+    structured_query = None
+    if args.structured_page is not None:
+        try:
+            structured_query = BuildCompanyStructuredPageQuery(
+                args.structured_page, args.structured_start, args.structured_end, observed_at=datetime.now(_SHANGHAI),
+            )
+        except ValueError:
+            parser.error("--structured-page requires a bounded explicit --structured-start and --structured-end")
+    elif args.structured_start is not None or args.structured_end is not None:
+        parser.error("--structured-start and --structured-end require --structured-page")
     if args.annual_income_period is not None and (args.field_sources_only or len(args.codes) != 1):
         parser.error("--annual-income-period requires one code and cannot be combined with --field-sources-only")
     if args.financial_revision_period is not None and len(args.codes) != 1:
@@ -270,7 +285,14 @@ def Main() -> int:
         parser.error("--codes selects securities only with --annual-income-period or --financial-revision-period")
     runtime = LoadRuntimeSettings(args.config)
     runtime_hash = hashlib.sha256(Path(args.config).expanduser().resolve().read_bytes()).hexdigest()
-    if args.official_financial_baseline is not None:
+    if structured_query is not None:
+        attempts: list[HttpAttempt] = []
+        with OpenExternalHttp(observe=attempts.append) as session:
+            report = AuditCompanyStructuredPage(
+                session, structured_query, observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
+                deadline=time.monotonic() + args.task_seconds, http_attempts=attempts,
+            )
+    elif args.official_financial_baseline is not None:
         configuration = LoadCompanySyncConfiguration(runtime.project_root)
         RequireIsolatedReplay(args.official_financial_directory, (runtime.project_root, runtime.data_paths.root, runtime.runtime_dir))
         text_capability = DetectCompanyText()
@@ -334,4 +356,4 @@ def Main() -> int:
         report = Collect(args, project_root=runtime.project_root)
     report["runtime_configuration_sha256"] = runtime_hash
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 1 if (revision_request is not None or args.st_name_history) and report.get("status") in {"failed", "cancelled", "timed_out"} else 0
+    return 1 if (revision_request is not None or args.st_name_history or structured_query is not None) and report.get("status") in {"failed", "cancelled", "timed_out"} else 0

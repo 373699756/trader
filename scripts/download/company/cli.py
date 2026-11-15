@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from scripts.core.paths import PROJECT_ROOT, ExternalPath
 from scripts.download.company.options import CompanyOptions
-from scripts.download.company.company_structured_field_audit import CompanyFinancialRevisionRequest
+from scripts.download.company.company_structured_field_audit import BuildCompanyStructuredPageQuery, CompanyFinancialRevisionRequest
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from scripts.download.market.market_factor_budget import MARKET_SOURCE_LOOP_LIMIT_SECONDS, MARKET_TASK_LIMIT_SECONDS
 
@@ -65,6 +65,9 @@ def BuildParser(
         field_source_rows=5,
         field_source_schema=False,
         field_source_identities=False,
+        structured_page=None,
+        structured_start=None,
+        structured_end=None,
         annual_income_period=None,
         financial_revision_period=None,
         official_financial_baseline=None,
@@ -107,6 +110,9 @@ def BuildParser(
         parser.add_argument('--market-task-seconds', type=float, default=MARKET_TASK_LIMIT_SECONDS, help='hard market comparison task budget, capped at 600 seconds')
         modes = parser.add_mutually_exclusive_group()
         modes.add_argument('--field-sources-only', action='store_true', help='bounded read-only samples of structured company field alternatives')
+        modes.add_argument('--structured-page', choices=('financial', 'pledge', 'unlock'), help='decode one production structured page without discovery or pagination; requires explicit dates')
+        parser.add_argument('--structured-start', type=date.fromisoformat, help='explicit sample start; financial at most seven days, pledge one known day, unlock within the next 180 days')
+        parser.add_argument('--structured-end', type=date.fromisoformat, help='explicit sample end; requires --structured-page')
         modes.add_argument('--annual-income-period', type=date.fromisoformat, help='one December 31 period for exactly one A-share code')
         modes.add_argument('--financial-revision-period', type=date.fromisoformat, help='read-only eight-metric UPDATE_DATE filter diagnostic for one A-share code and one quarter-end period; at most three requests')
         modes.add_argument('--official-financial-baseline', type=Path, help='read-only official third-quarter excerpts for at most 50 source-null stocks in an existing company database audit')
@@ -170,6 +176,9 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         field_source_rows=args.field_source_rows,
         field_source_schema=args.field_source_schema,
         field_source_identities=args.field_source_identities,
+        structured_page=args.structured_page,
+        structured_start=args.structured_start,
+        structured_end=args.structured_end,
         annual_income_period=args.annual_income_period,
         financial_revision_period=args.financial_revision_period,
         official_financial_baseline=args.official_financial_baseline.expanduser().resolve() if args.official_financial_baseline is not None else None,
@@ -230,6 +239,15 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         raise ValueError("--field-source-schema requires --field-sources-only and --field-source-rows 1")
     if options.field_source_identities and (not options.field_sources_only or options.field_source_rows > 5):
         raise ValueError("--field-source-identities requires --field-sources-only and at most five rows")
+    if options.structured_page is not None:
+        if options.codes:
+            raise ValueError("--structured-page audits a batch response and does not select stocks")
+        BuildCompanyStructuredPageQuery(
+            options.structured_page, options.structured_start, options.structured_end,
+            observed_at=datetime.now(ZoneInfo("Asia/Shanghai")),
+        )
+    elif options.structured_start is not None or options.structured_end is not None:
+        raise ValueError("--structured-start and --structured-end require --structured-page")
     if options.st_name_history:
         if (
             options.action_identity != 'research-source-compare'

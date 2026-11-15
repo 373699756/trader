@@ -18,6 +18,28 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
     source = result.payload
     if source is None or result.error_code is not None:
         return result
+    if source.get("probe") == "structured_page":
+        observation = source.get("observation_status", source.get("status"))
+        calls, attempts = source.get("fetch_invocations"), source.get("physical_http_attempts")
+        valid = (
+            observation in ("decoded", "empty", "failed", "timed_out", "skipped")
+            and source.get("component") in ("financial", "pledge", "unlock")
+            and source.get("read_only") is True
+            and all(source.get(name) is False for name in (
+                "production_adopted", "field_correctness_verified", "full_window_coverage_verified",
+                "latest_snapshot_verified", "key_lookup_verified", "revision_index_verified",
+            ))
+            and type(calls) is int and 0 <= calls <= 1
+            and (attempts is None or type(attempts) is int and 0 <= attempts <= 1)
+            and all(type(source.get(name)) is int and source.get(name) == expected for name, expected in (
+                ("page_limit", 1), ("request_limit", 1), ("page_size", 500),
+                ("max_response_bytes", 16 * 1024 * 1024), ("pages_followed", 0),
+            ))
+        )
+        page_status = "degraded" if valid and observation not in ("failed", "timed_out") and source.get("status") not in (
+            "failed", "timed_out", "cancelled",
+        ) else "failed"
+        return replace(result, payload=dict(source, status=page_status, observation_status=observation))
     if source.get("probe") == "st_name_history":
         return _normalize_st_source_probe(result, source)
     if "financial_revision_probe" in source:
@@ -388,6 +410,48 @@ def _annual_income_details(source: Mapping[str, object], payload: dict[str, obje
     }
 
 
+def _structured_page_details(source: Mapping[str, object], payload: dict[str, object]) -> None:
+    component = source.get("component")
+    columns = {
+        "financial": ("SECUCODE", "REPORT_DATE", "NOTICE_DATE", "EPSJB", "BPS", "TOTALOPERATEREVETZ",
+                      "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR"),
+        "pledge": ("SECURITY_CODE", "TRADE_DATE", "PLEDGE_RATIO"),
+        "unlock": ("SECURITY_CODE", "FREE_DATE", "TOTAL_RATIO"),
+    }.get(component if isinstance(component, str) else "", ())
+    fields = source.get("fields")
+    projected = []
+    for field in (fields[:8] if isinstance(fields, list) else []):
+        if not isinstance(field, Mapping) or field.get("field") not in columns:
+            continue
+        projected.append({
+            "field": field["field"],
+            **{name: _st_count(field.get(name), 500) for name in ("non_null_rows", "decoded_null_rows")},
+        })
+    observation = source.get("observation_status", source.get("status"))
+    discovery = source.get("normal_path_discovery")
+    payload["summary"] = {
+        "runtime_configuration_sha256": _configuration_hash(source), "probe": "structured_page",
+        "source": "eastmoney", "read_only": source.get("read_only") is True,
+        "component": component if component in ("financial", "pledge", "unlock") else None,
+        "observation_status": observation if observation in ("decoded", "empty", "failed", "timed_out", "skipped") else None,
+        **{name: False for name in (
+            "production_adopted", "field_correctness_verified", "full_window_coverage_verified",
+            "latest_snapshot_verified", "key_lookup_verified", "revision_index_verified",
+        )},
+        **{name: _text(source.get(name), 64) for name in ("observed_at", "window_start", "window_end", "failure")},
+        **{name: _st_count(source.get(name), limit) for name, limit in (
+            ("fetch_invocations", 1_000_000), ("physical_http_attempts", 1_000_000), ("request_limit", 1), ("page_limit", 1),
+            ("page_size", 500), ("pages_followed", 0), ("raw_rows", 500), ("decoded_rows", 500),
+            ("reported_pages", 256), ("reported_total", 128000),
+            ("max_response_bytes", 16 * 1024 * 1024), ("response_bytes", 16 * 1024 * 1024),
+        )},
+        "normal_path_discovery": discovery if discovery in ("pledge_day_required", "none_in_current_fetch") else None,
+        "more_pages_available": source.get("more_pages_available") if type(source.get("more_pages_available")) is bool else None,
+        "requested_fields": [field for field in SafeStringList(source.get("requested_fields"), limit=11) if field in columns],
+        "fields": projected, "elapsed_seconds": _number(source.get("elapsed_seconds")),
+    }
+
+
 _IDENTITY_FIELDS: Mapping[str, tuple[str, ...]] = {
     "repurchase": (
         "DIM_SCODE", "UPDATEDATE", "REPURNUM", "REPURAMOUNT", "REPURNUMLOWER", "REPURNUMCAP", "ZSZXX", "ZSZSX",
@@ -751,6 +815,9 @@ _DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[st
 
 
 def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    if source.get("probe") == "structured_page":
+        _structured_page_details(source, payload)
+        return
     if source.get("probe") == "st_name_history":
         _st_source_details(source, payload)
         return

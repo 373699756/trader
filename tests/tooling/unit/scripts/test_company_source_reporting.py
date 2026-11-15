@@ -29,6 +29,78 @@ def _structured(**changes) -> dict[str, object]:
     }
 
 
+def _structured_page(**changes) -> dict[str, object]:
+    return {
+        "probe": "structured_page", "status": "decoded", "component": "financial", "read_only": True,
+        "production_adopted": False, "field_correctness_verified": False, "full_window_coverage_verified": False,
+        "latest_snapshot_verified": False, "key_lookup_verified": False, "revision_index_verified": False,
+        "fetch_invocations": 1, "physical_http_attempts": 1, "request_limit": 1, "page_limit": 1,
+        "page_size": 500, "max_response_bytes": 16 * 1024 * 1024, "pages_followed": 0,
+        "raw_rows": 1, "decoded_rows": 1, "reported_pages": 3, "reported_total": 1001,
+        "more_pages_available": True, "normal_path_discovery": "none_in_current_fetch",
+        "requested_fields": ["SECUCODE", "REPORT_DATE", "NOTICE_DATE", "EPSJB"],
+        "fields": [{"field": "EPSJB", "non_null_rows": 1, "decoded_null_rows": 0}],
+        **changes,
+    }
+
+
+def test_single_page_projection_preserves_request_evidence_without_claiming_latest_or_full_coverage():
+    result = DiagnosticResult("research_source_compare", 0, 0.1, _structured_page(raw="PRIVATE_DATA"), None)
+    normalized = NormalizeActionResult("research-source-compare", result)
+    assert NormalizeActionResult("research-source-compare", normalized) == normalized
+    report = BuildReport("research-source-compare", (normalized,))
+    summary = report["checks"][0]["summary"]
+    assert report["status"] == "degraded" and summary["observation_status"] == "decoded"
+    assert summary["physical_http_attempts"] == summary["fetch_invocations"] == 1
+    assert summary["reported_pages"] == 3 and summary["reported_total"] == 1001
+    assert summary["more_pages_available"] and summary["pages_followed"] == 0
+    assert not summary["latest_snapshot_verified"] and not summary["revision_index_verified"]
+    assert "PRIVATE_DATA" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("changes", (
+    {"latest_snapshot_verified": True}, {"full_window_coverage_verified": True}, {"key_lookup_verified": True},
+    {"fetch_invocations": 2}, {"physical_http_attempts": 2}, {"physical_http_attempts": True}, {"pages_followed": 1},
+    {"page_limit": True}, {"request_limit": True}, {"pages_followed": False},
+))
+def test_single_page_projection_rejects_acceptance_claims_and_expanded_requests(changes):
+    report = BuildReport("research-source-compare", (
+        DiagnosticResult("research_source_compare", 0, 0.1, _structured_page(**changes), None),
+    ))
+    assert report["status"] == "failed"
+    summary = report["checks"][0]["summary"]
+    assert not summary["latest_snapshot_verified"] and not summary["full_window_coverage_verified"]
+
+
+def test_single_page_projection_bounds_fields_and_does_not_invent_physical_counts():
+    source = _structured_page(
+        physical_http_attempts=None,
+        requested_fields=["EPSJB", "PRIVATE_DATA"],
+        fields=[{"field": "EPSJB", "non_null_rows": True, "decoded_null_rows": 501, "raw": "PRIVATE_DATA"}] * 12,
+    )
+    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 0.1, source, None),))
+    summary = report["checks"][0]["summary"]
+    assert summary["physical_http_attempts"] is None and summary["requested_fields"] == ["EPSJB"]
+    assert len(summary["fields"]) == 8 and summary["fields"][0]["non_null_rows"] is None
+    assert summary["fields"][0]["decoded_null_rows"] is None and "PRIVATE_DATA" not in json.dumps(report)
+
+
+def test_single_page_projection_preserves_observed_over_budget_request_counts_as_failure_evidence():
+    source = _structured_page(fetch_invocations=2, physical_http_attempts=3)
+    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 0.1, source, None),))
+    assert report["status"] == "failed"
+    summary = report["checks"][0]["summary"]
+    assert summary["fetch_invocations"] == 2 and summary["physical_http_attempts"] == 3
+
+
+def test_single_page_explicit_failure_cannot_be_revived_by_a_decoded_observation():
+    result = DiagnosticResult("research_source_compare", 0, 0.1, _structured_page(status="failed", observation_status="decoded"), None)
+    normalized = NormalizeActionResult("research-source-compare", result)
+    assert NormalizeActionResult("research-source-compare", normalized) == normalized
+    report = BuildReport("research-source-compare", (normalized,))
+    assert report["status"] == "failed" and report["checks"][0]["summary"]["observation_status"] == "decoded"
+
+
 @pytest.mark.parametrize("source", (
     {"schema_version": "research-source-compare", "status": "passed"},
     _annual(),

@@ -99,7 +99,8 @@ from trader.download.infra.company_field_recovery import (
     RestoreCompanyMaterialDependencies,
     RestoreCompanyFieldRepairs,
 )
-from trader.download.infra.company_material_cleanup import ReleaseCompanyMaterialFiles, ReleasePublishedCompanyMaterial
+from trader.download.infra import company_material_cleanup
+from trader.download.infra.company_material_cleanup import ReleasePublishedCompanyMaterial
 from trader.download.infra.company_publication_reads import PendingCompanyContractLinkCodes, ReadCompanyPublicationLinks
 from trader.download.infra.company_contract_link_rules import (
     ApplyCompanyContractLinkRefreshes, CompanyContractLinkRefresh,
@@ -209,7 +210,14 @@ class SQLiteCompanyEvidenceIndex:
             SqliteTransaction(connection, immediate=True),
         ):
             RestoreCompanyMaterialDependencies(connection, formal)
-        self._release_files()
+        company_material_cleanup.ReleaseCompanyMaterialFiles(
+            self._connect,
+            self._facts,
+            self._documents,
+            self._raw_files,
+            self._run_cutoff,
+            sqlite_policy=self._sqlite_policy,
+        )
 
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
         today = observed_at.date()
@@ -1448,22 +1456,19 @@ class SQLiteCompanyEvidenceIndex:
                 ReleasePublishedCompanyMaterial(connection, self._facts.extraction_hash)
         if self._stock_progress is not None:
             self._stock_progress(CompanyPublicationProgress("committed", requested, changed_codes, publication_id))
-        self._release_files()
+        company_material_cleanup.ReleaseCompanyMaterialFiles(
+            self._connect,
+            self._facts,
+            self._documents,
+            self._raw_files,
+            self._run_cutoff,
+            sqlite_policy=self._sqlite_policy,
+        )
         if superseded_codes:
             self.publish(superseded_codes, observed_at, changed_only=True)
         if not changed_only:
             self.finish(observed_at)
         return len(requested)
-
-    def _release_files(self) -> None:
-        with (
-            self._connect() as connection,
-            SqliteTransaction(connection, immediate=True),
-            SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal,
-        ):
-            ReleaseCompanyMaterialFiles(
-                connection, formal, self._documents, self._raw_files, self._facts.extraction_hash, self._run_cutoff,
-            )
 
     def finish(self, observed_at: datetime) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
@@ -1476,7 +1481,14 @@ class SQLiteCompanyEvidenceIndex:
                 "DELETE FROM financials WHERE report_date<?", ((observed_at.date() - timedelta(days=550)).isoformat(),)
             )
             ReleasePublishedCompanyMaterial(connection, self._facts.extraction_hash)
-        self._release_files()
+        company_material_cleanup.ReleaseCompanyMaterialFiles(
+            self._connect,
+            self._facts,
+            self._documents,
+            self._raw_files,
+            self._run_cutoff,
+            sqlite_policy=self._sqlite_policy,
+        )
         with self._connect() as connection:
             connection.run("PRAGMA incremental_vacuum(256)")
 

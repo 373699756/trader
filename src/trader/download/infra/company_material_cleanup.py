@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import replace
 from datetime import datetime, timedelta
 
 from trader.download.domain.company_evidence import IsTransientCompanyDocumentFailure
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EVIDENCE_SOURCES
 from trader.download.infra.company_pipeline_queries import ReleaseUnusedCompanyDisclosures
 from trader.download.infra.company_raw_files import CompanyRawFiles
-from trader.infra.sqlite_connection import SqliteConnection
+from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.infra.sqlite_policy import SqliteIoPolicy
 
 
 def ReleasePublishedCompanyMaterial(connection: SqliteConnection, extraction_hash: bytes) -> None:
@@ -31,41 +35,47 @@ def ReleasePublishedCompanyMaterial(connection: SqliteConnection, extraction_has
 
 
 def ReleaseCompanyMaterialFiles(
-    connection: SqliteConnection,
-    formal: SqliteConnection,
+    connect: Callable[[], AbstractContextManager[SqliteConnection]],
+    facts: SQLiteCompanyFactsIndex,
     documents: CompanyDocumentFiles,
     raw_files: CompanyRawFiles | None,
-    extraction_hash: bytes,
     cutoff: datetime | None,
+    *,
+    sqlite_policy: SqliteIoPolicy,
 ) -> None:
-    """Use caller-owned transactions/connections so deletion cannot race raw acceptance."""
-    if raw_files is not None:
-        _release_obsolete(connection, raw_files, cutoff)
-        rows = connection.run(
-            "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-            "JOIN document_tasks t ON t.source=d.source AND t.source_key=d.source_key AND t.record_hash=d.record_hash "
-            "WHERE d.body_retained=0 AND d.body_checked=1 AND t.stage<>'cleaned' "
-            "AND NOT EXISTS(SELECT 1 FROM company_material_dependencies m WHERE m.disclosure_id=d.id "
-            "AND m.record_hash=t.record_hash) GROUP BY d.id"
-        ).fetchall()
-        for row in rows:
-            item = DecodeCompanyDisclosure(row)
-            if raw_files.release(item):
-                connection.run(
-                    "UPDATE document_tasks SET stage='cleaned',path=NULL WHERE source=? AND source_key=? AND record_hash=?",
-                    (item.source, item.identity, item.digest),
-                )
-        _release_terminal_failures(connection, formal, raw_files, extraction_hash)
-    retained = frozenset(row[0] for row in connection.run(
-        "SELECT body_hash FROM disclosures WHERE body_retained=1 AND body_hash IS NOT NULL "
-        "UNION SELECT body_hash FROM company_material_dependencies"
-    ))
-    documents.release(retained)
-    referenced = tuple(
-        (DecodeCompanyLabel(EVIDENCE_SOURCES, row[0]), row[1])
-        for row in formal.run("SELECT source,source_key FROM company_evidence_ref")
-    )
-    ReleaseUnusedCompanyDisclosures(connection, referenced)
+    """Own the physical release transaction so deletion cannot race raw acceptance."""
+    with (
+        connect() as connection,
+        SqliteTransaction(connection, immediate=True),
+        SqliteSession(facts.path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as formal,
+    ):
+        if raw_files is not None:
+            _release_obsolete(connection, raw_files, cutoff)
+            rows = connection.run(
+                "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
+                "JOIN document_tasks t ON t.source=d.source AND t.source_key=d.source_key AND t.record_hash=d.record_hash "
+                "WHERE d.body_retained=0 AND d.body_checked=1 AND t.stage<>'cleaned' "
+                "AND NOT EXISTS(SELECT 1 FROM company_material_dependencies m WHERE m.disclosure_id=d.id "
+                "AND m.record_hash=t.record_hash) GROUP BY d.id"
+            ).fetchall()
+            for row in rows:
+                item = DecodeCompanyDisclosure(row)
+                if raw_files.release(item):
+                    connection.run(
+                        "UPDATE document_tasks SET stage='cleaned',path=NULL WHERE source=? AND source_key=? AND record_hash=?",
+                        (item.source, item.identity, item.digest),
+                    )
+            _release_terminal_failures(connection, formal, raw_files, facts.extraction_hash)
+        retained = frozenset(row[0] for row in connection.run(
+            "SELECT body_hash FROM disclosures WHERE body_retained=1 AND body_hash IS NOT NULL "
+            "UNION SELECT body_hash FROM company_material_dependencies"
+        ))
+        documents.release(retained)
+        referenced = tuple(
+            (DecodeCompanyLabel(EVIDENCE_SOURCES, row[0]), row[1])
+            for row in formal.run("SELECT source,source_key FROM company_evidence_ref")
+        )
+        ReleaseUnusedCompanyDisclosures(connection, referenced)
 
 
 def _release_obsolete(

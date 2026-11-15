@@ -6,19 +6,20 @@ import hashlib
 import math
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
-from trader.download.domain.company_evidence import EvidenceMarket
+from trader.download.domain.company_evidence import EvidenceMarket, StructuredCompanyQuery
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.domain.company_structured_fields import CompanyStructuredDataset, ResolveCompanyStructuredFields
 from trader.download.infra.company_structured_fields import DecodeCompanyStructuredFields
-from trader.infra.http_contracts import HttpTransport
+from trader.infra.http_contracts import HttpAttempt, HttpTransport
 
 _URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 _SAMPLE_ROWS = 5
@@ -35,6 +36,106 @@ _FINANCIAL_FIELDS = (
     ("parent_profit", "PARENTNETPROFIT"),
     ("core_profit", "KCFJCXSYJLR"),
 )
+
+
+def BuildCompanyStructuredPageQuery(
+    component: Literal["financial", "pledge", "unlock"],
+    start: date | None,
+    end: date | None,
+    *,
+    observed_at: datetime,
+) -> StructuredCompanyQuery:
+    """Bound an explicit sample, without discovering dates or following pages."""
+    if observed_at.utcoffset() is None or type(start) is not date or type(end) is not date:
+        raise ValueError("company_structured_page_window_required")
+    today = observed_at.astimezone(_SHANGHAI).date()
+    if component == "unlock":
+        valid = today <= start <= end <= today + timedelta(days=180)
+    else:
+        valid = today - timedelta(days=365) <= start <= end <= today
+        valid = valid and (end - start).days <= (6 if component == "financial" else 0)
+    if not valid:
+        raise ValueError("company_structured_page_window_invalid")
+    return StructuredCompanyQuery(component, start, end)
+
+
+def AuditCompanyStructuredPage(
+    session: HttpTransport,
+    query: StructuredCompanyQuery,
+    *,
+    observed_at: datetime,
+    timeout_seconds: float,
+    deadline: float,
+    http_attempts: Sequence[HttpAttempt] | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict[str, object]:
+    """Consume one production page; successful decoding does not prove coverage."""
+    bounded = BuildCompanyStructuredPageQuery(query.component, query.start, query.end, observed_at=observed_at)
+    if query != bounded or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30 or not math.isfinite(deadline):
+        raise ValueError("company_structured_page_options_invalid")
+    started = monotonic()
+    fields = ("SECUCODE", "REPORT_DATE", "NOTICE_DATE", *(field for _name, field in _FINANCIAL_FIELDS)) if query.component == "financial" else (
+        ("SECURITY_CODE", "TRADE_DATE", "PLEDGE_RATIO") if query.component == "pledge"
+        else ("SECURITY_CODE", "FREE_DATE", "TOTAL_RATIO")
+    )
+    report: dict[str, object] = {
+        "probe": "structured_page", "status": "skipped", "source": "eastmoney", "read_only": True,
+        "component": query.component, "observed_at": observed_at.isoformat(),
+        "window_start": query.start.isoformat(), "window_end": query.end.isoformat(),
+        "production_adopted": False, "field_correctness_verified": False,
+        "full_window_coverage_verified": False, "latest_snapshot_verified": False,
+        "key_lookup_verified": False, "revision_index_verified": False,
+        "fetch_invocations": 0, "request_limit": 1, "page_limit": 1, "page_size": 500,
+        "max_response_bytes": 16 * 1024 * 1024, "requested_fields": list(fields),
+        "normal_path_discovery": "pledge_day_required" if query.component == "pledge" else "none_in_current_fetch",
+        "pages_followed": 0, "physical_http_attempts": None, "response_bytes": None,
+    }
+    if started < deadline:
+        source = EastmoneyCompanySource(
+            session, monotonic=monotonic, timeout_seconds=min(timeout_seconds, deadline - started),
+            cancel_requested=lambda: monotonic() >= deadline,
+        )
+        report["fetch_invocations"] = 1
+        try:
+            page = source.fetch(query, observed_at=observed_at)
+            if monotonic() >= deadline:
+                report["status"] = "timed_out"
+            elif page.row_count > 500:
+                report.update(status="failed", failure="company_structured_page_row_limit")
+            elif (page.total > 0 and page.row_count == 0 or page.total > page.pages * 500
+                  or page.pages == 1 and page.row_count != page.total):
+                report.update(status="failed", failure="company_structured_page_pagination_invalid")
+            else:
+                measurements: tuple[tuple[str, tuple[float | None, ...]], ...]
+                if query.component == "financial":
+                    measurements = (
+                        ("EPSJB", tuple(item.basic_eps for item in page.financials)),
+                        ("BPS", tuple(item.book_value_per_share for item in page.financials)),
+                        ("TOTALOPERATEREVETZ", tuple(item.revenue_growth_pct for item in page.financials)),
+                        ("PARENTNETPROFITTZ", tuple(item.net_profit_growth_pct for item in page.financials)),
+                        ("KCFJCXSYJLRTZ", tuple(item.core_profit_growth_pct for item in page.financials)),
+                        ("ROEJQ", tuple(item.roe_pct for item in page.financials)),
+                        ("PARENTNETPROFIT", tuple(item.parent_net_profit for item in page.financials)),
+                        ("KCFJCXSYJLR", tuple(item.core_net_profit for item in page.financials)),
+                    )
+                    decoded = len(page.financials)
+                else:
+                    measurements = ((fields[-1], tuple(item.ratio_pct for item in page.ratios)),)
+                    decoded = len(page.ratios)
+                report.update({
+                    "status": "decoded" if page.row_count else "empty", "raw_rows": page.row_count,
+                    "decoded_rows": decoded, "reported_pages": page.pages, "reported_total": page.total,
+                    "more_pages_available": page.page < page.pages,
+                    "fields": [{"field": field, "non_null_rows": sum(value is not None for value in values),
+                                "decoded_null_rows": sum(value is None for value in values)} for field, values in measurements],
+                })
+        except (OSError, RuntimeError, ValueError) as exc:
+            report.update(status="failed", failure=type(exc).__name__)
+    if http_attempts is not None:
+        report["physical_http_attempts"] = len(http_attempts)
+        report["response_bytes"] = sum(attempt.response_bytes for attempt in http_attempts)
+    report["elapsed_seconds"] = max(0.0, monotonic() - started)
+    return report
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,4 +696,11 @@ def _finite_number(value: object) -> bool:
         return False
 
 
-__all__ = ["AuditCompanyAnnualIncome", "AuditCompanyFinancialRevision", "AuditCompanyStructuredSources", "CompanyFinancialRevisionRequest"]
+__all__ = [
+    "AuditCompanyAnnualIncome",
+    "AuditCompanyFinancialRevision",
+    "AuditCompanyStructuredPage",
+    "AuditCompanyStructuredSources",
+    "BuildCompanyStructuredPageQuery",
+    "CompanyFinancialRevisionRequest",
+]

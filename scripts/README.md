@@ -127,6 +127,8 @@ isolated比较可读取明确指定的旧checkout；只在隔离演练内处理�
 
 公司sources的普通与字段模式均检查全市场来源，不按证券清单过滤；另以`--field-sources-only`选择字段观测，`--field-source-rows`限定样本，`--field-source-schema`和`--field-source-identities`仅在字段模式明确选择。`--annual-income-period`查询单个年末期间，必须配合单个`--codes`，不能与字段模式混用；其它模式拒绝codes。每种模式都消费所选`--runtime-config`并报告`runtime_configuration_sha256`，身份摘要不表示字段质量、覆盖或生产采用已合格。
 
+单页结构化路径用`--structured-page financial|pledge|unlock --structured-start YYYY-MM-DD --structured-end YYYY-MM-DD`，与其它sources模式互斥；仅第1页、最多500行／16MiB，复用生产decoder且不翻页、不取详情／PDF或写库。财务为允许年窗内最多7日，质押为明确已知的单日快照（不含正常路径的`pledge_day`发现），解禁为本次至未来180日内的显式范围。报告区分实际HTTP次数／响应字节、接收／解码行及未跟随分页；单页成功不签最新、修订、完整覆盖、字段正确性或生产采用，公共结果保持降级。示例：`.venv/bin/python3 scripts/tools.py --business download --module company --action sources --structured-page financial --structured-start 2026-11-13 --structured-end 2026-11-13 --source-timeout-seconds 5 --market-task-seconds 15 --command-timeout-seconds 40 --report /tmp/company-structured-page.json`；日期须按实际核验时点选择，报告须使用新的仓库外路径。
+
 Web health支持可重复的`--strategy tomorrow|d25`，连续空结果阈值`--consecutive-zero-threshold`须在样本数以内，默认min(3,样本数)。浏览器动作另支持`--strategy`与带时区ISO时间`--simulated-start`；Long admission的`--strategy`表示策略JSON路径，`--workers`范围1至8。这些参数只属于各自选中的动作，不能跨动作隐式生效。
 
 `recommendation/web/shutdown`在前台观测显式`--pid`、`--birth-ticks`及已有普通文件`--shutdown-log`，默认只读；只有显式`--send-sigterm`才通过pidfd向该身份发送一次SIGTERM。每次启动都须重新核对当前boot及进程出生身份，不能跨重启复用旧参数。等待默认40秒、最多60秒，30秒退出门不变；外部PID模式超时只结束观测，不强杀目标。报告区分发送、Python处理器、业务返回和pidfd退出观测时间，缺失或冲突不签完整时轴；pidfd就绪不是精确内核退出时间。外部PID模式仍无法取得非子进程退出码，`runtime_shutdown_acceptance`保持false。当前解释器或内核缺少pidfd能力时明确报告unsupported，不自动换解释器或退回PID信号。

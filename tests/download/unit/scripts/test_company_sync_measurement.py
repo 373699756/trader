@@ -13,6 +13,7 @@ import pytest
 
 from scripts.download.company import company_pipeline_audit
 from scripts.download.company import company_resume
+from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
     CompanyDocumentFailure,
@@ -27,7 +28,7 @@ from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequ
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.download.infra import company_evidence_index
+from trader.download.infra import company_evidence_index, company_material_cleanup
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_http import CompanyRequestPacer
 from trader.download.infra.company_raw_files import CompanyLocalDocument, CompanyRawFiles
@@ -65,6 +66,7 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     local = CompanyLocalDocument(tmp_path, tmp_path / "private.pdf", b"a" * 32, 10)
     text = "本公司已核实的结构化公告文字。" * 10
     extraction = CompanyDocumentExtraction(text, "text", b"a" * 32, "fixture")
+    sqlite_policy = SqlitePolicyFixture()
     arguments = []
 
     def fetch(instance, partition, *, order=""):
@@ -108,7 +110,7 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     monkeypatch.setattr(company_evidence_index, "ReadCompanySnapshotRows", lambda *args: ())
     monkeypatch.setattr(company_evidence_index, "CompileCompanyFacts", lambda *args: None)
     monkeypatch.setattr(SQLiteCompanyFactsIndex, "publish_file", lambda *args: None)
-    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "_release_files", lambda *args: None)
+    monkeypatch.setattr(company_material_cleanup, "ReleaseCompanyMaterialFiles", lambda *args, **kwargs: None)
     monkeypatch.setattr(CompanyRawFiles, "_reservation_usage", lambda *args: (0, 0, 0, 0))
     monkeypatch.setattr(CompanyDocumentFiles, "read", lambda *args: text)
     monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "commit_document", lambda *args: True)
@@ -138,7 +140,14 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
         collection.publish(("600001",), _NOW)
         facts.publish((), {}, None, _NOW)
         facts.publish_file()
-        collection._release_files()
+        company_material_cleanup.ReleaseCompanyMaterialFiles(
+            collection._connect,
+            facts,
+            text_files,
+            raw,
+            None,
+            sqlite_policy=sqlite_policy,
+        )
         assert raw._reservation_usage(tmp_path) == (0, 0, 0, 0)
         assert text_files.read(b"a" * 32) == text
         assert collection.commit_document(_disclosure(), extraction, _NOW)
@@ -160,6 +169,7 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     assert payload["writes_current_company_data"] and not payload["isolated_sample"]
     assert payload["cli_exit_code"] == 0 and not payload["field_correctness_verified"]
     operations = {row["operation"]: row for row in payload["operations"]}
+    assert operations["material_cleanup"]["calls"] == 1
     expected = {name: 1 for name in operations}
     expected["raw_size_scan"] = 3
     assert {name: row["calls"] for name, row in operations.items()} == expected
@@ -192,7 +202,7 @@ def test_publication_phase_failure_restores_all_new_owners_and_keeps_only_failur
         (company_evidence_index, "ReadCompanySnapshotRows"),
         (company_evidence_index, "CompileCompanyFacts"),
         (SQLiteCompanyFactsIndex, "publish_file"),
-        (SQLiteCompanyEvidenceIndex, "_release_files"),
+        (company_material_cleanup, "ReleaseCompanyMaterialFiles"),
         (CompanyRawFiles, "_reservation_usage"),
         (CompanyDocumentFiles, "read"),
         (SQLiteCompanyEvidenceIndex, "commit_document"),
