@@ -31,6 +31,8 @@ def BuildTrainedScoringProfile(
         raise ValueError("shared scoring profiles require one Tomorrow and D25 bundle")
     if any(bundle.serialization_profile_id != profile_id for bundle in bundles):
         raise ValueError("shared scoring profile contains a foreign head")
+    if any(bundle.final_fit is None or bundle.diagnostic_plan is None for bundle in bundles):
+        raise ValueError("shared scoring profile requires current final-fit heads with recent production diagnostics")
     if (
         len({bundle.training_input_hash for bundle in bundles}) != 1
         or len({bundle.training_run_hash for bundle in bundles}) != 1

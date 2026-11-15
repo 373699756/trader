@@ -13,6 +13,10 @@ def TrainingImplementationIdentity() -> str:
         for path in sorted((root / directory).rglob("*.py")):
             digest.update(path.relative_to(root).as_posix().encode())
             digest.update(sha256(path.read_bytes()).digest())
+    # The download adapter owns the narrow row projection consumed by every training profile.
+    projection = root / "download/infra/history_prices.py"
+    digest.update(projection.relative_to(root).as_posix().encode())
+    digest.update(sha256(projection.read_bytes()).digest())
     return digest.hexdigest()
 
 

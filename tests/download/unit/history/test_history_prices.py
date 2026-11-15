@@ -5,14 +5,14 @@ from tests.helpers.shared.configuration import SqlitePolicyFixture
 import math
 from contextlib import closing
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.history_revision import HistoryRevision
-from trader.download.domain.published_history import ProjectHistoryCell
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.price_columns import PriceCellFromColumns, PriceColumnValues
 from trader.download.infra import history_prices as partition_module
 from trader.download.infra.history_prices import (
@@ -22,6 +22,8 @@ from trader.download.infra.history_prices import (
 )
 from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+from trader.recommendation.infra.market_data.aligned_history_bars import BuildAlignedHistoryBars
+from trader.training.infra.history.aligned_training_rows import AlignTrainingRows
 
 
 def _side(day: date, adjustment: str, close: float) -> BaoStockDailySide:
@@ -546,6 +548,43 @@ def test_training_stream_projects_latest_points_without_revision_hashes_or_tempo
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         plan = tuple(str(row[3]) for row in connection.run("EXPLAIN QUERY PLAN " + query))
     assert not any("TEMP B-TREE" in detail for detail in plan)
+
+
+@pytest.mark.parametrize("suspended_close", (8.0, None))
+def test_training_suspended_valuation_matches_online_and_keeps_estimated_days_distinct(tmp_path, suspended_close):
+    dates = tuple(date(2026, 9, 1) + timedelta(days=offset) for offset in range(4))
+    first = _revision(dates[0], 1, 11.0)
+    sides = tuple(
+        replace(
+            _side(dates[1], adjustment, 8.0), open_price=suspended_close, high_price=suspended_close,
+            low_price=suspended_close, close_price=suspended_close, volume=0.0, amount=0.0,
+            preclose=None, pct_change=None, turnover=None, trading_status="suspended",
+        )
+        for adjustment in ("unadjusted", "qfq")
+    )
+    revisions = (
+        first,
+        HistoryRevision(1, "main", BaoStockDailyCell("600001", dates[1], "supplier_marked_suspended", *sides), None, None, None),
+        HistoryRevision(1, "main", BaoStockDailyCell("600001", dates[2], "unknown_missing", None, None), None, None, None),
+        HistoryRevision(1, "main", BaoStockDailyCell("600001", dates[3], "tencent_inferred_suspended", None, None), None, None, None),
+    )
+    index = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
+    index.initialize()
+    index.save_revisions(revisions)
+    projected = tuple(index.iter_training_rows(dates[0], dates[-1], snapshot_sequence=1))
+    aligned = tuple(AlignTrainingRows(projected, dates))
+    window = PublishedHistoryWindow("600001", tuple(ProjectHistoryCell(revision.cell) for revision in revisions))
+    online = BuildAlignedHistoryBars(window, dates)
+
+    expected = 8.0 if suspended_close is not None else 10.0
+    assert projected[1].point is not None and projected[1].point.qfq_close_price == suspended_close
+    assert tuple(row.point.qfq_close_price for row in aligned) == tuple(bar.close for bar in online.bars) == (10.0, expected, expected, expected)
+    assert aligned[1].cell_status == "supplier_marked_suspended"
+    assert aligned[1].point.qfq_amount == aligned[1].point.raw_volume == 0.0
+    assert all(row.point is None for row in projected[2:])
+    assert all(row.cell_status == "unknown_missing" for row in aligned[2:])
+    assert online.latest_observed_date == dates[1]
+    assert online.estimated_dates == dates[2:]
 
 
 def test_month_partition_batch_preserves_a_to_b_to_a_snapshot_replay(tmp_path: Path) -> None:

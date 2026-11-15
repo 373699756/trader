@@ -129,7 +129,8 @@ def test_ridge_and_tcn_keep_their_entire_existing_model_and_metric_values(tmp_pa
     model, metadata = _documents(profile, None)
     _write_documents(tmp_path, profile, model, metadata)
     report = metadata["validation_report"]
-    numeric = json.dumps((model["industries"], report), ensure_ascii=True, sort_keys=True, allow_nan=False).encode()
+    components = {"final": model["industries"], "diagnostic": metadata["final_fit"]["diagnostic_model"]["industries"]}
+    numeric = json.dumps((components, report), ensure_ascii=True, sort_keys=True, allow_nan=False).encode()
     expected = hashlib.sha256(numeric).hexdigest()
     original = alignment._numeric_fingerprints(tmp_path, (profile,))
     assert all(item["model_values_and_metrics_sha256"] == expected for item in original)
@@ -140,37 +141,15 @@ def test_ridge_and_tcn_keep_their_entire_existing_model_and_metric_values(tmp_pa
     assert alignment._numeric_fingerprints(tmp_path, (profile,)) != original
 
 
-def _final_documents(profile, model_text):
-    model, metadata = _documents(profile, model_text)
-    diagnostic = deepcopy(model)
-    if profile == "v1":
-        model["schema_version"] = "learned_rank_final_head_model"
-        metadata["schema_version"] = "learned_rank_final_head_metadata"
-        metadata["training_input"] = {"final_fit": {"fit_dates": ["2026-11-04"]}}
-        metadata["validation_report"]["diagnostic_head"] = {
-            **diagnostic["components"], "split": {"label_cutoff": "2026-01-06"},
-        }
-    else:
-        metadata["schema_version"] = f"{profile}_head_refit_metadata"
-        metadata["final_fit"] = {
-            "diagnostic_model": diagnostic, "fit_dates": ["2026-11-04"],
-            "calibration_policy": "frozen_diagnostic_model_transfer",
-        }
-    return model, metadata
-
-
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
-@pytest.mark.parametrize("recent_diagnostic", (False, True))
 def test_final_diagnostic_weights_change_fingerprint_and_reject_benchmark_with_final_and_metrics_unchanged(
-    tmp_path, models_by_profile, profile, recent_diagnostic,
+    tmp_path, models_by_profile, profile,
 ):
     from scripts.training.jobs.training_performance import SummarizeTrainingBenchmark
     from tests.helpers.training.scripts.training_execution_performance import _results, _summary
 
     text = models_by_profile[profile].two_threads if profile in {"v1", "v2"} else None
-    model, metadata = _final_documents(profile, text)
-    if recent_diagnostic and profile != "v1":
-        metadata["schema_version"] = f"{profile}_head_recent_refit_metadata"
+    model, metadata = _documents(profile, text)
     final_before = deepcopy(model)
     report_before = deepcopy(metadata["validation_report"])
     _write_documents(tmp_path, profile, model, metadata)
@@ -226,7 +205,7 @@ def test_final_numeric_projection_keeps_thread_metadata_and_date_policy_identity
     tmp_path, models_by_profile, profile,
 ):
     text = models_by_profile[profile].two_threads if profile in {"v1", "v2"} else None
-    model, metadata = _final_documents(profile, text)
+    model, metadata = _documents(profile, text)
     _write_documents(tmp_path, profile, model, metadata)
     original = alignment._numeric_fingerprints(tmp_path, (profile,))
     if profile == "v1":
@@ -254,7 +233,7 @@ def test_final_schema_rejects_missing_diagnostic_payload_without_using_final_mod
     tmp_path, models_by_profile, profile, diagnostic,
 ):
     text = models_by_profile[profile].two_threads if profile in {"v1", "v2"} else None
-    model, metadata = _final_documents(profile, text)
+    model, metadata = _documents(profile, text)
     if profile == "v1":
         metadata["validation_report"]["diagnostic_head"] = diagnostic
     else:
@@ -265,11 +244,14 @@ def test_final_schema_rejects_missing_diagnostic_payload_without_using_final_mod
 
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
-def test_historical_schema_keeps_its_original_numeric_fingerprint(tmp_path, models_by_profile, profile):
+def test_historical_schema_is_rejected_without_changing_source_files(tmp_path, models_by_profile, profile):
     text = models_by_profile[profile].two_threads if profile in {"v1", "v2"} else None
     model, metadata = _documents(profile, text)
     _write_documents(tmp_path, profile, model, metadata)
-    original = alignment._numeric_fingerprints(tmp_path, (profile,))
+    assert alignment._numeric_fingerprints(tmp_path, (profile,))
     metadata["schema_version"] = "learned_rank_head_metadata" if profile == "v1" else f"{profile}_head_metadata"
     _write_documents(tmp_path, profile, model, metadata)
-    assert alignment._numeric_fingerprints(tmp_path, (profile,)) == original
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*.json")}
+    with pytest.raises(ValueError, match="current_final_publication_required"):
+        alignment._numeric_fingerprints(tmp_path, (profile,))
+    assert {path: path.read_bytes() for path in before} == before

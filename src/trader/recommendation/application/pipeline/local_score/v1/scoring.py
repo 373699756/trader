@@ -21,6 +21,7 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringDeadlineError,
     ScoringHeadRuntimeStatus,
 )
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.market.factors import PercentileReference, RoundScore
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
@@ -76,6 +77,13 @@ class LearnedRankScoringService:
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
         if feature.model_history_quality is not None and feature.model_history_quality.failure:
+            return False
+        market_day = (
+            feature.preview_context.market_trade_date
+            if feature.preview_context is not None
+            else ShanghaiNow(feature.observed_at).date()
+        )
+        if feature.model_industry is None or feature.model_industry.effective_date > market_day:
             return False
         return (
             feature.history_days >= self.history_required_sessions

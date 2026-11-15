@@ -1239,7 +1239,9 @@ def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
             _training_number(qfq_low),
             _training_number(raw_volume),
         )
-        if raw_status == qfq_status == "trading"
+        if raw_status == qfq_status == "trading" or (
+            cell_status == "supplier_marked_suspended" and raw_status == qfq_status == "suspended"
+        )
         else None
     )
     return HistoryTrainingRow(

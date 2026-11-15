@@ -56,6 +56,7 @@ from trader.training.infra.profile.v1.models import (
     LoadV1ScoringProfile,
     PublishLearnedRankPair,
     ReadLearnedRankPair,
+    ReadV1PublicationIdentities,
 )
 
 from trader.training.infra.profile.v1.samples import (
@@ -399,7 +400,7 @@ def test_final_heads_fit_latest_raw_features_and_keep_distinct_diagnostic_eviden
         assert summary["final_model_unseen_validation_passed"] is False
 
 
-def test_old_diagnostic_pair_keeps_original_schema_but_cannot_reuse_as_final(tmp_path, reusable_pair):
+def test_old_diagnostic_pair_is_rejected_and_cannot_reuse_as_final(tmp_path, reusable_pair):
     root, _ = reusable_pair
     final = ReadLearnedRankPair(root)
     assert isinstance(final, LearnedRankFinalPair)
@@ -434,8 +435,12 @@ def test_old_diagnostic_pair_keeps_original_schema_but_cannot_reuse_as_final(tmp
         metadata["content_hash"] = ContentHash({key: value for key, value in metadata.items() if key != "content_hash"})
         (directory / "model.json").write_text(json.dumps(model), encoding="utf-8")
         (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    read = ReadLearnedRankPair(model_root)
-    assert type(read) is LearnedRankPair and read == old and read.content_hash != final.content_hash
+    with pytest.raises(ValueError, match="identity"):
+        ReadLearnedRankPair(model_root)
+    with pytest.raises(ValueError, match="identity"):
+        ReadV1PublicationIdentities(model_root, cancel_requested=lambda: False)
+    with pytest.raises(ValueError, match="identity"):
+        LoadV1ScoringProfile(model_root)
     for strategy in ("tomorrow", "d25"):
         metadata = json.loads((model_root / "v1" / strategy / "metadata.json").read_text(encoding="utf-8"))
         assert metadata["schema_version"] == "learned_rank_head_metadata"
@@ -444,11 +449,11 @@ def test_old_diagnostic_pair_keeps_original_schema_but_cannot_reuse_as_final(tmp
     assert InspectV1Training(_History(), model_root, _settings()) is None
     before = {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")}
     with pytest.raises(ValueError, match="diagnostic schemas are read-only"):
-        PublishLearnedRankPair(model_root, read)
+        PublishLearnedRankPair(model_root, old)
     assert {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")} == before
     missing_root = tmp_path / "uncreated"
     with pytest.raises(ValueError, match="diagnostic schemas are read-only"):
-        PublishLearnedRankPair(missing_root, read)
+        PublishLearnedRankPair(missing_root, old)
     assert not missing_root.exists()
 
 

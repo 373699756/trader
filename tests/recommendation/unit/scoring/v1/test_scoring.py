@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 import pytest
 
@@ -27,10 +27,11 @@ from trader.recommendation.application.ports.loaded_profile import (
     ProfileEvidence,
 )
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
-from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.market.models import Board, ModelIndustryReference
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.freeze_identity import IsShadowFreeze, VisibleScoredSeats
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.training.infra.profile.composition import SingleHeadCombiner
 
@@ -82,6 +83,9 @@ def _features(factory):
             replace(
                 feature,
                 quote=replace(feature.quote, board=board),
+                model_industry=ModelIndustryReference(
+                    "capco:制造业", "中国上市公司协会上市公司行业分类标准", EVALUATED_AT.date(), "fixture", "fixture",
+                ),
                 history_days=251,
                 values={
                     **feature.values,
@@ -92,6 +96,49 @@ def _features(factory):
             )
         )
     return tuple(result)
+
+
+def test_missing_or_future_industry_is_excluded_from_ranks_and_cost_population(application_feature_factory) -> None:
+    population = _features(application_feature_factory)[:4]
+    current = population[0].model_industry
+    assert current is not None
+    ineligible = (
+        replace(population[2], model_industry=None),
+        replace(population[3], model_industry=replace(current, effective_date=EVALUATED_AT.date() + timedelta(days=1))),
+    )
+    service = _service()
+    reference = service.score(
+        population[:2], context=ModelScoringContext(population_features=population[:2], population_identity="fixed"),
+    )
+    result = service.score(
+        (*population[:2], *ineligible),
+        context=ModelScoringContext(population_features=(*population[:2], *ineligible), population_identity="fixed"),
+    )
+    assert result.missing_codes == tuple(item.quote.code for item in ineligible)
+    assert result.diagnostics == reference.diagnostics
+    assert result.predictions == reference.predictions
+    assert result.rank_population_version == reference.rank_population_version
+    assert result.cost_reference_version == reference.cost_reference_version
+    assert all(not service.is_input_eligible(item) for item in ineligible)
+    # Display-only industry text cannot supply model evidence or invalidate it.
+    assert service.is_input_eligible(replace(population[0], quote=replace(population[0].quote, industry="")))
+
+
+def test_industry_effective_date_uses_preview_market_day_and_shanghai_observation_day(application_feature_factory) -> None:
+    feature = _features(application_feature_factory)[0]
+    industry = feature.model_industry
+    assert industry is not None
+    service = _service()
+    previous_day = EVALUATED_AT.date() - timedelta(days=1)
+    preview = replace(feature, preview_context=PreviewContext("industry-check", previous_day, EVALUATED_AT))
+    assert not service.is_input_eligible(preview)
+    assert service.is_input_eligible(
+        replace(preview, model_industry=replace(industry, effective_date=previous_day)),
+    )
+    midnight = EVALUATED_AT.replace(hour=0, minute=1, second=0, microsecond=0)
+    utc_observation = midnight.astimezone(timezone.utc)
+    assert utc_observation.date() < industry.effective_date
+    assert service.is_input_eligible(replace(feature, observed_at=utc_observation))
 
 
 @pytest.mark.parametrize("expires_during", ("inputs", "publication"))

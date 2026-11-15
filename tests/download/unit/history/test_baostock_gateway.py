@@ -1,12 +1,21 @@
 from datetime import date, timedelta
+import json
 
 from types import SimpleNamespace
 
 import pytest
 
-from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
+from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockDailyCell, BaoStockDailySpec, BaoStockSecurity
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryCell, PublishedHistoryWindow
 
-from trader.download.infra.baostock_gateway import BaoStockRowGateway, QfqSourceWindows, ReadBaoStockResultRows
+from trader.download.infra.baostock_gateway import BaoStockRowGateway, ParseBaoStockDailySide, QfqSourceWindows, ReadBaoStockResultRows
+from trader.download.infra.tencent_daily import DecodeTencentDailyRows, TencentDailyQuery
+from trader.download.infra.tencent_qfq_supplier import _parse_side
+from trader.recommendation.domain.market.history_metrics import BuildHistoryContext
+from trader.recommendation.domain.outcomes.models import OutcomeTradingStatus
+from trader.recommendation.domain.scoring.scoring_calculations import BuildScoringDistributions, NormalizeScoringFeatures
+from trader.recommendation.infra.market_data.aligned_history_bars import BuildAlignedHistoryBars
+from trader.recommendation.infra.market_data.published_history_bars import OutcomeBars
 
 from trader.download.infra.baostock_session import LoginBaostock, RateLimitedBaoStockSdk
 
@@ -88,10 +97,50 @@ def test_gateway_consumes_only_baostock_row_iteration_boundary() -> None:
     assert len(batch.cells) == 2
     assert all(cell.status == "complete" for cell in batch.cells)
     assert batch.cells[0].unadjusted is not None
-    assert batch.cells[0].unadjusted.pct_change == pytest.approx(0.0303)
-    assert batch.cells[0].unadjusted.turnover == pytest.approx(0.012)
+    assert batch.cells[0].unadjusted.pct_change == pytest.approx(3.03)
+    assert batch.cells[0].unadjusted.turnover == pytest.approx(1.2)
     assert download.daily_facts[0].is_st is False
     assert download.daily_facts[1].is_st is True
+
+
+def test_baostock_and_tencent_turnover_use_the_same_scoring_unit(feature_factory):
+    dates = tuple(date(2026, 9, 1) + timedelta(days=offset) for offset in range(20))
+    wire = [[day.isoformat(), "9", "9", "10", "8", "100", {}, "2", "9"] for day in dates]
+    text = json.dumps({"code": 0, "data": {"sh600001": {"day": wire}}})
+    rows = DecodeTencentDailyRows(text, TencentDailyQuery("sh600001", dates[0], dates[-1], "bfq", 20))
+    tencent = PublishedHistoryWindow("600001", tuple(
+        PublishedHistoryCell("600001", row.day, "complete", _parse_side("600001", row, "bfq"), _parse_side("600001", row, "qfq"))
+        for row in rows
+    ))
+    source = {"open": "9", "close": "9", "high": "10", "low": "8", "volume": "10000", "amount": "90000",
+              "preclose": "9", "pctChg": "0", "turn": "2", "tradestatus": "1"}
+    baostock = PublishedHistoryWindow("600001", tuple(
+        ProjectHistoryCell(BaoStockDailyCell(
+            "600001", day, "complete", ParseBaoStockDailySide("600001", day, "unadjusted", source),
+            ParseBaoStockDailySide("600001", day, "qfq", source),
+        )) for day in dates
+    ))
+    for window in (baostock, tencent):
+        aligned = BuildAlignedHistoryBars(window, dates)
+        profile = BuildHistoryContext(aligned.bars).profile
+        assert profile.median_turnover_20d == 2.0
+        feature = feature_factory(turnover_rate=2.0, values={"turnover_median_20d": profile.median_turnover_20d})
+        normalized, _ = NormalizeScoringFeatures((feature,), BuildScoringDistributions((feature,)), "fixture")
+        assert normalized[0].optional_value("turnover_shock_20") == 1.0
+
+
+def test_baostock_percentage_unit_reaches_one_price_outcome_without_rescaling():
+    day = date(2026, 9, 10)
+    source = {"open": "9", "close": "9", "high": "9", "low": "9", "volume": "10000", "amount": "90000",
+              "preclose": "10", "pctChg": "-10", "turn": "2", "tradestatus": "1"}
+    raw = ParseBaoStockDailySide("600001", day, "unadjusted", source)
+    qfq = ParseBaoStockDailySide("600001", day, "qfq", source)
+    cell = ProjectHistoryCell(BaoStockDailyCell("600001", day, "complete", raw, qfq))
+
+    assert cell.unadjusted.pct_change == -10.0
+    assert cell.unadjusted.turnover == 2.0
+    assert cell.qfq.preclose is cell.qfq.pct_change is cell.qfq.turnover is None
+    assert OutcomeBars((cell,))[0].trading_status is OutcomeTradingStatus.ONE_PRICE_LIMIT_DOWN
 
 
 def test_raw_evidence_queries_no_baostock_qfq_and_retains_training_metadata() -> None:

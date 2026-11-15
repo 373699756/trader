@@ -557,8 +557,8 @@ def ParseBaoStockDailySide(
         volume=_optional_float(row.get("volume")),
         amount=_optional_float(row.get("amount")),
         preclose=_optional_float(row.get("preclose")) if adjustment == "unadjusted" else None,
-        pct_change=_optional_ratio(row.get("pctChg")) if adjustment == "unadjusted" else None,
-        turnover=_optional_ratio(row.get("turn")) if adjustment == "unadjusted" else None,
+        pct_change=_optional_float(row.get("pctChg")) if adjustment == "unadjusted" else None,
+        turnover=_optional_float(row.get("turn")) if adjustment == "unadjusted" else None,
         trading_status=status,
     )
 
@@ -583,11 +583,6 @@ def _optional_float(value: str | None) -> float | None:
     if value is None or not value.strip():
         return None
     return float(value)
-
-
-def _optional_ratio(value: str | None) -> float | None:
-    number = _optional_float(value)
-    return None if number is None else number / 100.0
 
 
 def _date(value: str | None, message: str) -> date:

@@ -302,7 +302,9 @@ def _pending_sample(
     close = _eligible_future_close(current)
     if close is None:
         return None
-    amounts = tuple(points[index].qfq_amount for index in range(len(points) - 20, len(points)))
+    # The signal close remains the price anchor; liquidity uses completed days
+    # before the signal session, matching the online factor history boundary.
+    amounts = tuple(points[index].qfq_amount for index in range(len(points) - 21, len(points) - 1))
     if any(amount is None or not math.isfinite(amount) or amount < 0.0 for amount in amounts):
         return None
     if math.fsum(cast(float, amount) for amount in amounts) <= 0.0 or (current.qfq_amount or 0.0) <= 0.0:

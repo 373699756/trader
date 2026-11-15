@@ -203,7 +203,7 @@ def test_refit_evidence_rejects_stale_fit_or_relabelled_validation(trained):
             DecodeHeadBundle(model, metadata, head.strategy, profile)
 
 
-def test_legacy_research_refit_schema_keeps_its_identity_and_cannot_reuse_as_recent(trained):
+def test_legacy_research_refit_schema_is_rejected_and_cannot_reuse_as_recent(trained):
     profile, history, training, result = trained
     research = BuildTrainingDateSplit(
         history.snapshot.calendar.open_dates, parent_manifest_hash=history.snapshot.snapshot_hash,
@@ -242,8 +242,8 @@ def test_legacy_research_refit_schema_keeps_its_identity_and_cannot_reuse_as_rec
         report["evaluation_coverage"]["holdout_status"] = "sealed_rows_count_only"
         report["content_hash"] = ContentHash({key: value for key, value in report.items() if key != "content_hash"})
         metadata["content_hash"] = ContentHash({key: value for key, value in metadata.items() if key != "content_hash"})
-        loaded = DecodeHeadBundle(model, metadata, head.strategy, profile)
-        assert loaded.diagnostic_plan is None and loaded.final_fit == head.final_fit
+        with pytest.raises(ValueError, match="requires current recent-refit publication"):
+            DecodeHeadBundle(model, metadata, head.strategy, profile)
         (path / "metadata.json").write_text(json.dumps(metadata))
     before = {path: path.read_bytes() for path in training.train_root.rglob("*.json")}
     _request, _cache, requested_dates, repeated = InspectSelectedProfile(history, training, sqlite_policy=SqlitePolicyFixture())

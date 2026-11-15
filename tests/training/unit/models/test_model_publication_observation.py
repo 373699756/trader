@@ -287,6 +287,45 @@ def test_v1_metadata_observation_keeps_its_actual_loaded_identity_without_native
     assert reads == [tmp_path / "v1/tomorrow/metadata.json", tmp_path / "v1/d25/metadata.json"]
 
 
+def test_v1_current_nested_diagnostics_load_but_retired_top_level_never_loads_or_recovers(tmp_path, monkeypatch):
+    monkeypatch.setattr(v1_models, "LearnedRankPredictor", lambda head: None)
+    pair = _v1_pair()
+    v1_models.PublishLearnedRankPair(tmp_path, pair)
+    loaded = v1_models.ReadLearnedRankPair(tmp_path)
+    assert loaded == pair
+    assert all(type(head.diagnostic) is LearnedRankHead for head in loaded.heads)
+    assert v1_models.ReadV1PublicationIdentities(tmp_path, cancel_requested=lambda: False) == (
+        v1_models.LoadV1ScoringProfile(tmp_path).publications
+    )
+    # Keep legitimate nested diagnostic payloads intact while retiring only the envelope.
+    for strategy in ("tomorrow", "d25"):
+        directory = tmp_path / "v1" / strategy
+        model = json.loads((directory / "model.json").read_text(encoding="utf-8"))
+        metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
+        model["schema_version"] = "learned_rank_head_model"
+        model.pop("content_hash")
+        model["content_hash"] = ContentHash(model)
+        metadata.update(schema_version="learned_rank_head_metadata", model_hash=model["content_hash"])
+        metadata.pop("content_hash")
+        metadata["content_hash"] = ContentHash(metadata)
+        (directory / "model.json").write_text(json.dumps(model), encoding="utf-8")
+        (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    for read in (
+        lambda: v1_models.ReadLearnedRankPair(tmp_path),
+        lambda: v1_models.ReadV1PublicationIdentities(tmp_path, cancel_requested=lambda: False),
+        lambda: v1_models.LoadV1ScoringProfile(tmp_path),
+    ):
+        with pytest.raises(ModelBundleContractError, match="identity"):
+            read()
+    previous = tmp_path / (".v1.previous." + "a" * 32)
+    (tmp_path / "v1").rename(previous)
+    before = {path.relative_to(previous): path.read_bytes() for path in previous.rglob("*.json")}
+    with pytest.raises(ModelBundleContractError, match="identity"):
+        v1_models.RecoverLearnedRankPublication(tmp_path)
+    assert not (tmp_path / "v1").exists()
+    assert {path.relative_to(previous): path.read_bytes() for path in previous.rglob("*.json")} == before
+
+
 def test_v1_observation_rejects_self_hash_conflicts_and_pre_cancelled_read(tmp_path, monkeypatch):
     monkeypatch.setattr(v1_models, "LearnedRankPredictor", lambda head: None)
     v1_models.PublishLearnedRankPair(tmp_path, _v1_pair())

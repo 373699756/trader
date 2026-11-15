@@ -192,3 +192,14 @@ def test_pair_builder_rejects_duplicate_and_conflicting_run() -> None:
         BuildTrainedScoringProfile("v3", (*artifacts, artifacts[0]))
     with pytest.raises(ValueError, match="different source snapshots"):
         BuildTrainedScoringProfile("v3", (artifacts[0], replace(artifacts[1], training_run_hash="8" * 64)))
+
+
+@pytest.mark.parametrize("missing", ("final_fit", "diagnostic_plan"))
+def test_pair_builder_rejects_direct_diagnostic_objects(missing: str) -> None:
+    artifacts = tuple(
+        DecodeHeadBundle(*_documents(contract), contract.strategy, V3_TRAINING_PROFILE)
+        for contract in V3_TRAINING_PROFILE.heads
+    )
+    diagnostic = replace(artifacts[0], **{missing: None})
+    with pytest.raises(ValueError, match="current final-fit heads with recent production diagnostics"):
+        BuildTrainedScoringProfile("v3", (diagnostic, artifacts[1]))

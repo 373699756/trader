@@ -862,6 +862,8 @@ catalog 还包含第8.5节共同定义的 price_tencent_check、price_repair_att
 | raw_trading_status、qfq_trading_status | TEXT? | trading／suspended；来源分支不存在时为空 |
 | number_flags | INTEGER，非空，0≤值<2^36 | PriceColumnValues／DecodePriceValues保留18个数值位置的原整数类型及负零，不是评分或schema版本；整数／负零标志互斥 |
 
+Tencent与BaoStock的来源涨幅／换手率统一保留百分点，例如2%记为2、−10%记为−10；BaoStock解析不再除以100，qfq未披露的辅助字段仍为空。该规则作用于新采集值，不自动改写存量混合来源记录；旧值是否受影响须按来源证据确认，不能对整库统一乘100。训练窄投影保留raw/qfq均确认停牌时的已知qfq估值；缺估值仍交共享日历规则处理，推定停牌和未知缺日不会因此变成真实标签。
+
 ### 8.5 market窗口及共用修复／失败表
 
 定义见 [qfq_sqlite.py](../src/trader/download/infra/qfq_sqlite.py)，持久化价格列完全复用8.4；下列窗口表无额外二级索引。profile只指当前窗口档位v2／v3，不是格式版本。

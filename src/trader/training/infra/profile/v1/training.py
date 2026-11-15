@@ -118,7 +118,7 @@ class _LearnedRankInspection:
             raise
         except (OSError, ValueError, LightGBMError):
             return None
-        return pair if isinstance(pair, LearnedRankFinalPair) else None
+        return pair
 
     def validate_pair(self, pair: LearnedRankFinalPair) -> bool:
         try:

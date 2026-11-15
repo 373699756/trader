@@ -81,7 +81,7 @@ CLI的`train`通过唯一组合根 `bootstrap.ExecuteSelectedTraining`独立启�
 
 `BuildTrainingInputHash`以价格快照摘要、行业语义摘要和`latest_snapshot`策略共同生成训练输入身份。行业语义摘要只包含分类标准、所选代码到行业ID／中文名称的映射及缺口；发布时间、刷新期限、变更日期、回执和原查询摘要保留为独立凭据，不单独导致重训。同一价格和分组允许按原规则复用完整模型；映射、缺口、价格或其它语义合同变化则不得复用旧样本／模型。模型封存完整所选映射与来源凭据供重建和核查，旧工件不补字段、不重贴身份，也不删除或重建现有数据。此分组规则不证明历史当时行业归属或点时收益验证通过。
 
-当前消费者追链与b第5.1节一致：年度库`history_prices._TRAINING_RANGE_SQL`的量额列只取`raw_volume`及`qfq_amount`，`_decode_training_row`构造`HistoryTrainingPoint`；`AlignTrainingRows`再按市场日历保留交易、确认停牌及估值状态。V1的`profile/v1/samples._complete_point`把金额交给完成日十因子；V2/V3/V5的`sample_builder._pending_sample`计算20日均额，V5的`_sequence_point`将原始量和qfq分支金额交给唯一序列公式，分别形成`log1p(volume)`和`log1p(amount)`。停牌估值的零量额由共享日历对齐规则产生，不改写年度原始事实；缺失、非有限或不满足各档准入的值不能通过换列或补0掩盖。
+当前消费者追链与b第5.1节一致：年度库`history_prices._TRAINING_RANGE_SQL`的量额列只取`raw_volume`及`qfq_amount`，`_decode_training_row`构造`HistoryTrainingPoint`；`AlignTrainingRows`再按市场日历保留交易、确认停牌及估值状态。raw/qfq均确认停牌时保留来源已知qfq估值，不先丢弃后用旧价覆盖；缺估值仍按同一日历规则处理，推定或未知状态不能成为真实标签。V1的`profile/v1/samples._complete_point`把金额交给完成日十因子；V2/V3/V5的`sample_builder._pending_sample`计算信号日前20个完成交易日的均额，排除信号日，与线上`BuildFactorHistory`一致，信号价格锚点不变。V5的`_sequence_point`将原始量和qfq分支金额交给唯一序列公式，分别形成`log1p(volume)`和`log1p(amount)`。停牌估值的零量额由共享日历对齐规则产生，不改写年度原始事实；缺失、非有限或不满足各档准入的值不能通过换列或补0掩盖。
 
 这份追链确认当前代码读取的列及消费方式。腾讯解析的手→股、万元→元换算与raw/qfq分支写入由b第5.1节及d维护；未据此断言各供应商历史逐值一致、`raw_amount == qfq_amount`或已完成B的全历史审计。当前输入/工件的实际身份与覆盖另由本轮真实训练报告交接。
 
@@ -141,7 +141,7 @@ V1十因子和V5的60×6通道在c第7章逐项解释；物理字段、列顺序
 | `code` | TEXT非空 | 六位证券代码，与日期构成行身份 |
 | `board` | TEXT非空 | 板块暴露，来自历史窄投影 |
 | `industry` | TEXT非空 | 本轮固定最新行业，供残差化及行业模型选择 |
-| `avg_amount_20d` | REAL非空，金额沿输入合同 | 20日均额，供对数流动性暴露；写入前检查有效性 |
+| `avg_amount_20d` | REAL非空，金额沿输入合同 | 信号日前20个完成交易日均额，供对数流动性暴露；写入前检查有效性 |
 | 第3.5节具名特征列 | REAL非空、有限数 | 按有序manifest生成，不能用0填必需缺失 |
 | V5 `sequence_start` | INTEGER非空，≥0，时间步 | 当前证券的60步序列在重叠块流中的起点；不是BLOB字节偏移 |
 | `target_t1` | REAL可空，收益小数 | T+1个股收益减同日该期限已观察收益的等权基准；缺失表示标签不可用 |
@@ -504,6 +504,8 @@ C后台可在原内部worker命令追加`--scheduling-candidate fixed|long_task_
 
 特征公式、历史端点、单位、列顺序和缺失掩码由同一合同维护，训练、在线和回放不能各写一份近似版本。到期判断看成熟标签和真实语义修订；文档提交、纯物理压实和无变化重跑不能伪装成新标签或已重新拟合。
 
+训练实现摘要除训练代码及共享领域公式外，显式覆盖下载侧`history_prices.py`的训练窄投影；投影或样本口径改变后，后续训练按新身份检查样本及模型复用资格，不给旧缓存补签身份。正在运行的训练仍使用其已加载实现，不能把落盘源码修改当作该进程已采用修复。
+
 V2/V3/V5到期判断与真实拟合共用`BuildTrainingContractHash`，组合根显式注入当前训练设置、有效当前行业快照及实际线程方案，不再省略预期合同。输入身份同时绑定价格及所选证券行业语义，基线比较只投影旧总体，新增证券不会伪装成旧行业修订；映射／训练合同变化分别形成修订／重训原因。缺当前行业或合法设置明确`training_inputs_unavailable`。启动状态只读已存状态及可确定的元数据变化，不扫描价格差异或写到期记录；无法确定就保留未知。服务的模型发布观察只更新重启提示，V1仍明确不支持这套周期到期判断，不借V2/V3代算。
 
 当前已有同档双头行业共享读取、4096行批读、较大矩阵临时映射、V5重叠序列块和统计小表；实际命中、数值一致性及退出释放须按各自消费者验证，完整负载性能沿第9章取证。V1/V5模型、样本和决策身份独立，不借别档补工件。
@@ -514,7 +516,7 @@ V2/V3/V5到期判断与真实拟合共用`BuildTrainingContractHash`，组合根
 
 当前工件要求是只接受当前实际结构，不维护旧格式兼容、升级或迁移路径，也不增加自定义格式版本控制。当前结构在发布中断后恢复上一完整双头组，仍按[第7.3节](#73-双头模型目录发布的中断恢复)处理；目录发布恢复与旧格式兼容是两件事。历史研究及冻结记录保持原身份，不因本规则改写、升级或删除；下载库不兼容的人工删除重下规则也不扩大到模型和冻结记录。
 
-现有源码仍保留历史格式读取分支，尚未完成上述要求：`model_bundles/bundle_codec.py::DecodeHeadBundle`接受普通`*_head_metadata`、旧`*_head_refit_metadata`和当前`*_head_recent_refit_metadata`三类标识；V1的`models.py::_read_pair_directory`接受诊断`learned_rank_head_model/metadata`和最终`learned_rank_final_head_model/metadata`两组标识。`RecoverProfileBundles/RecoverLearnedRankPublication`恢复目录时仍调用这些decoder，服务加载也经`profile_factory.LoadScoringProfile`使用相同reader。这是历史实现残留，不是继续兼容的要求，不能据本文认定已删除。C须会同A核销decoder、目录恢复、`engine._reuse_profile`、V1训练复用、服务加载及`training_alignment/v5_training`诊断消费者；施工与验证状态只记g。
+生产reader与writer统一只接受当前最终工件：V2/V3/V5的`DecodeHeadBundle`及metadata观察只接受`*_head_recent_refit_metadata`，V1的pair读取和metadata观察只接受`learned_rank_final_head_model/metadata`。目录恢复、训练复用、服务加载及诊断消费者均经同一读取边界；旧普通／旧refit及V1旧诊断顶层明确拒绝，不进入生产评分。当前final内部的近期诊断载荷仍按其业务用途校验，用于校准转移和评价追溯，不作为另一种顶层工件兼容。没有自动迁移、删除或重新训练；实现与验证状态只记g。
 
 当前写入的V2/V3/V5最终metadata标识为`*_head_recent_refit_metadata`，`final_fit`保存完整源日历及其绑定、最终实际拟合日期/行业行数、近期诊断模型完整载荷及摘要、近期计划完整分区/摘要、校准转移政策和`final_model_unseen_validation_passed=false`。`validation_report.model_hash`始终指向实际受评价的诊断模型，顶层`model_hash`指向最终模型；读取时同时校验两者，不能用最终模型摘要替代诊断摘要。近期诊断的holdout为0并明确不适用，不称研究封存。V1当前写入独立`learned_rank_final_head_model/metadata`并保存完整近期诊断头与最终计划；这些是现存边界字段值，不构成新增格式版本制度。前台进度分别报告`model_fit`和`final_model_refit`；命令回执分别列源截止、标签成熟截止、最终拟合首尾/N、诊断拟合首尾、校准首尾和独立评价首尾。
 

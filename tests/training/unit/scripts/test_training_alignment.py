@@ -26,6 +26,21 @@ from scripts.training.jobs.training_alignment import _probe
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 
+@pytest.mark.parametrize("profile,schema", (
+    ("v1", "learned_rank_head_metadata"), ("v2", "v2_head_metadata"),
+    ("v3", "v3_head_refit_metadata"), ("v5", "v5_head_refit_metadata"),
+))
+def test_numeric_alignment_rejects_retired_top_level_before_payload_projection(tmp_path, profile, schema):
+    from scripts.training.jobs.training_alignment import _numeric_fingerprints
+
+    directory = tmp_path / profile / "tomorrow"
+    directory.mkdir(parents=True)
+    (directory / "model.json").write_text("{}", encoding="utf-8")
+    (directory / "metadata.json").write_text(json.dumps({"schema_version": schema}), encoding="utf-8")
+    with pytest.raises(ValueError, match="current_final_publication_required"):
+        _numeric_fingerprints(tmp_path, (profile,))
+
+
 def _publish_industry(history, sqlite_policy):
     from urllib.parse import parse_qs, urlsplit
     from zoneinfo import ZoneInfo

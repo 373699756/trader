@@ -42,7 +42,6 @@ from trader.training.domain.v1.learned_rank import (
     LearnedRankHead,
     LearnedRankFinalHead,
     LearnedRankFinalPair,
-    LearnedRankPair,
     LearnedRankPredictionMetrics,
 )
 from trader.training.domain.final_fit import FinalFitDatePlan
@@ -316,7 +315,7 @@ def RecoverLearnedRankPublication(model_root: Path) -> None:
     RecoverProfilePublication(model_root / "v1", _read_pair_directory)
 
 
-def ReadLearnedRankPair(model_root: Path) -> LearnedRankPair:
+def ReadLearnedRankPair(model_root: Path) -> LearnedRankFinalPair:
     profile_root = model_root / "v1"
     if not model_root.exists():
         raise FileNotFoundError(profile_root)
@@ -375,7 +374,7 @@ def ReadV1PublicationIdentities(
             documents, _STRATEGIES, strict=True,
         ))
         inputs = tuple(_object(metadata["training_input"]) for metadata in documents)
-        fields = _SHARED_INPUT_FIELDS | ({"calendar_dates"} if "calendar_dates" in inputs[0] else set())
+        fields = _SHARED_INPUT_FIELDS | {"calendar_dates"}
         if any(inputs[1][key] != inputs[0][key] for key in fields):
             raise ModelBundleContractError("V1 pair training input differs")
         return identities
@@ -390,7 +389,7 @@ def _validate_metadata_identity(metadata: Mapping[str, object], strategy: Strate
         "feature_ids": list(LEARNED_RANK_FEATURE_IDS),
         "algorithm": "lightgbm_lambdarank_ridge",
     }
-    if metadata["schema_version"] not in {"learned_rank_head_metadata", "learned_rank_final_head_metadata"} or any(
+    if metadata["schema_version"] != "learned_rank_final_head_metadata" or any(
         type(metadata[key]) is not type(value) or metadata[key] != value for key, value in expected.items()
     ):
         raise ModelBundleContractError("V1 model identity is invalid")
@@ -402,8 +401,7 @@ def _validate_metadata_identity(metadata: Mapping[str, object], strategy: Strate
 
 def _metadata_publication_identity(metadata: Mapping[str, object], strategy: Strategy) -> ModelPublicationIdentity:
     training = _object(metadata["training_input"])
-    final = metadata["schema_version"] == "learned_rank_final_head_metadata"
-    fields = _SHARED_INPUT_FIELDS | _HEAD_INPUT_FIELDS | ({"calendar_dates", "final_fit"} if final else set())
+    fields = _SHARED_INPUT_FIELDS | _HEAD_INPUT_FIELDS | {"calendar_dates", "final_fit"}
     RequireExactKeys(training, set(fields), "learned_rank_training_input")
     ValidateTrainingInputIdentity(training)
     split = _split(training["split"])
@@ -411,18 +409,14 @@ def _metadata_publication_identity(metadata: Mapping[str, object], strategy: Str
     if split.label_cutoff >= cutoff or split.maturity_sessions != (1 if strategy is Strategy.TOMORROW else 5):
         raise ModelBundleContractError("V1 publication dates are invalid")
     contract = _text(metadata, "contract_hash")
-    if final:
-        plan = _final_fit_plan(training["final_fit"])
-        if (
-            plan.source_cutoff != cutoff or plan.maturity_sessions != split.maturity_sessions
-            or plan.fit_dates[-1] != split.label_cutoff
-        ):
-            raise ModelBundleContractError("V1 publication final-fit dates differ")
-        metadata_hash = ContentHash((contract, split, plan))
-        label_cutoff = plan.fit_dates[-1]
-    else:
-        metadata_hash = ContentHash((contract, split))
-        label_cutoff = split.label_cutoff
+    plan = _final_fit_plan(training["final_fit"])
+    if (
+        plan.source_cutoff != cutoff or plan.maturity_sessions != split.maturity_sessions
+        or plan.fit_dates[-1] != split.label_cutoff
+    ):
+        raise ModelBundleContractError("V1 publication final-fit dates differ")
+    metadata_hash = ContentHash((contract, split, plan))
+    label_cutoff = plan.fit_dates[-1]
     return ModelPublicationIdentity(
         "v1",
         strategy,
@@ -434,7 +428,7 @@ def _metadata_publication_identity(metadata: Mapping[str, object], strategy: Str
     )
 
 
-def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
+def _read_pair_directory(profile_root: Path) -> LearnedRankFinalPair:
     if not profile_root.exists() and not profile_root.is_symlink():
         raise FileNotFoundError(profile_root)
     if not profile_root.is_dir() or profile_root.is_symlink():
@@ -474,18 +468,15 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
         }
         if metadata["model_hash"] != model["content_hash"]:
             raise ModelBundleIntegrityError("V1 model and metadata hash differ")
-        schemas = (
-            ("learned_rank_head_model", "learned_rank_head_metadata"),
-            ("learned_rank_final_head_model", "learned_rank_final_head_metadata"),
-        )
         if (
-            (model["schema_version"], metadata["schema_version"]) not in schemas
+            (model["schema_version"], metadata["schema_version"]) != (
+                "learned_rank_final_head_model", "learned_rank_final_head_metadata",
+            )
             or any(model[key] != value or metadata[key] != value for key, value in expected.items())
         ):
             raise ModelBundleContractError("V1 head identity differs")
         documents.append((model, metadata))
     first = documents[0][1]
-    final_fit = first["schema_version"] == "learned_rank_final_head_metadata"
     if any(metadata[key] != first[key] for _, metadata in documents[1:] for key in _SHARED_METADATA_FIELDS):
         raise ModelBundleContractError("V1 pair metadata differs")
     expected_report: Mapping[str, object] = {
@@ -495,21 +486,19 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
         "feature_anchor": "previous_completed_session",
         "label_anchor": "signal_close_proxy",
     }
-    heads: list[LearnedRankHead] = []
+    heads: list[LearnedRankFinalHead] = []
     inputs: list[Mapping[str, object]] = []
     for model, metadata in documents:
         components = _object(model["components"])
         training = _object(metadata["training_input"])
         report = _object(metadata["validation_report"])
         RequireExactKeys(components, set(_MODEL_FIELDS), "learned_rank_components")
-        input_fields = _SHARED_INPUT_FIELDS | _HEAD_INPUT_FIELDS
-        if final_fit:
-            input_fields = input_fields | {"calendar_dates", "final_fit"}
+        input_fields = _SHARED_INPUT_FIELDS | _HEAD_INPUT_FIELDS | {"calendar_dates", "final_fit"}
         RequireExactKeys(training, set(input_fields), "learned_rank_training_input")
         ValidateTrainingInputIdentity(training)
         RequireExactKeys(
             report,
-            set(_FINAL_VALIDATION_REPORT_FIELDS if final_fit else _VALIDATION_REPORT_FIELDS),
+            set(_FINAL_VALIDATION_REPORT_FIELDS),
             "learned_rank_validation_report",
         )
         if any(type(report[key]) is not type(value) or report[key] != value for key, value in expected_report.items()):
@@ -520,44 +509,32 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankPair:
             **{key: training[key] for key in _HEAD_INPUT_FIELDS},
             "validation": report["validation"],
         }
-        head = _final_head(head_values, training["final_fit"], report) if final_fit else _head(head_values)
+        head = _final_head(head_values, training["final_fit"], report)
         if head.content_hash != metadata["head_content_hash"]:
             raise ModelBundleIntegrityError("V1 head hash differs")
         heads.append(head)
         inputs.append(training)
-    shared_input_fields = _SHARED_INPUT_FIELDS | {"calendar_dates"} if final_fit else _SHARED_INPUT_FIELDS
+    shared_input_fields = _SHARED_INPUT_FIELDS | {"calendar_dates"}
     if any(inputs[1][key] != inputs[0][key] for key in shared_input_fields):
         raise ModelBundleContractError("V1 pair training input differs")
     first_input = inputs[0]
     industry = ParseTrainingIndustrySnapshot(first_input["industry_snapshot"])
     if industry.content_hash != _text(first_input, "industry_content_hash"):
         raise ModelBundleIntegrityError("V1 industry snapshot semantic identity differs")
-    if final_fit:
-        calendar_dates = _date_vector(first_input["calendar_dates"])
-        if BaoStockCalendar(calendar_dates).content_hash != _text(first_input, "calendar_hash"):
-            raise ModelBundleContractError("V1 final calendar differs from its published identity")
-        pair: LearnedRankPair = LearnedRankFinalPair(
-            _text(first_input, "training_input_hash"),
-            _text(first_input, "source_identity_hash"),
-            _text(first_input, "calendar_hash"),
-            date.fromisoformat(_text(first_input, "source_cutoff")),
-            ParseV1TrainingSettings(_object(first_input["settings"])),
-            (cast(LearnedRankFinalHead, heads[0]), cast(LearnedRankFinalHead, heads[1])),
-            _text(first_input, "training_identity_hash"),
-            calendar_dates,
-            price_snapshot_hash=_text(first_input, "price_snapshot_hash"), industry_snapshot=industry,
-        )
-    else:
-        pair = LearnedRankPair(
-            _text(first_input, "training_input_hash"),
-            _text(first_input, "source_identity_hash"),
-            _text(first_input, "calendar_hash"),
-            date.fromisoformat(_text(first_input, "source_cutoff")),
-            ParseV1TrainingSettings(_object(first_input["settings"])),
-            (heads[0], heads[1]),
-            _text(first_input, "training_identity_hash"),
-            price_snapshot_hash=_text(first_input, "price_snapshot_hash"), industry_snapshot=industry,
-        )
+    calendar_dates = _date_vector(first_input["calendar_dates"])
+    if BaoStockCalendar(calendar_dates).content_hash != _text(first_input, "calendar_hash"):
+        raise ModelBundleContractError("V1 final calendar differs from its published identity")
+    pair = LearnedRankFinalPair(
+        _text(first_input, "training_input_hash"),
+        _text(first_input, "source_identity_hash"),
+        _text(first_input, "calendar_hash"),
+        date.fromisoformat(_text(first_input, "source_cutoff")),
+        ParseV1TrainingSettings(_object(first_input["settings"])),
+        (heads[0], heads[1]),
+        _text(first_input, "training_identity_hash"),
+        calendar_dates,
+        price_snapshot_hash=_text(first_input, "price_snapshot_hash"), industry_snapshot=industry,
+    )
     if first["pair_content_hash"] != pair.content_hash:
         raise ModelBundleIntegrityError("V1 pair content hash differs")
     if first["contract_hash"] != pair.contract_hash:
@@ -600,9 +577,7 @@ def LoadV1ScoringProfile(model_root: Path) -> LoadedScoringProfile:
                 head.strategy,
                 LearnedRankPredictor(head),
                 SingleHeadCombiner(),
-                replace(evidence, training_label_cutoff=(
-                    head.final_fit.fit_dates[-1] if isinstance(head, LearnedRankFinalHead) else head.split.label_cutoff
-                )),
+                replace(evidence, training_label_cutoff=head.final_fit.fit_dates[-1]),
             )
             for head in pair.heads
         },
@@ -611,9 +586,8 @@ def LoadV1ScoringProfile(model_root: Path) -> LoadedScoringProfile:
                 "v1",
                 head.strategy,
                 head.content_hash,
-                ContentHash((pair.contract_hash, head.split, head.final_fit))
-                if isinstance(head, LearnedRankFinalHead) else ContentHash((pair.contract_hash, head.split)),
-                head.final_fit.fit_dates[-1] if isinstance(head, LearnedRankFinalHead) else head.split.label_cutoff,
+                ContentHash((pair.contract_hash, head.split, head.final_fit)),
+                head.final_fit.fit_dates[-1],
                 pair.training_input_hash,
                 pair.content_hash,
             )

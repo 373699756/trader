@@ -73,11 +73,12 @@ def _prediction_report(industry: str = "银行") -> dict[str, object]:
     }
 
 
-def _documents(
+def _diagnostic_documents(
     contract: TrainedHeadContract,
     profile: TrainedProfileContract = V3_TRAINING_PROFILE,
     *, industry: str = "银行",
 ) -> tuple[dict[str, object], dict[str, object]]:
+    """Internal diagnostic payload scaffold; its retired envelope is never publicly admitted."""
     codes = ["600000", "600001"]
     current_industry = CurrentIndustrySnapshotFixture(tuple(codes))
     input_hash = BuildTrainingInputHash("a" * 64, current_industry.content_hash)
@@ -198,13 +199,13 @@ def _documents(
     return model, metadata
 
 
-def _recent_documents(
+def _documents(
     contract: TrainedHeadContract,
     profile: TrainedProfileContract = V3_TRAINING_PROFILE,
     *, industry: str = "银行",
 ) -> tuple[dict[str, object], dict[str, object]]:
-    """Build synthetic recent publisher inputs; keep old-schema reader fixtures separate."""
-    model, metadata = _documents(contract, profile, industry=industry)
+    """Build current final publications with their legitimate embedded diagnostic."""
+    model, metadata = _diagnostic_documents(contract, profile, industry=industry)
     source_cutoff = date(2026, 9, 9)
     candidates = tuple(source_cutoff - timedelta(days=offset) for offset in range(4_000))
     calendar = tuple(day for day in reversed(candidates) if day.weekday() < 5)[-2_000:]
@@ -281,7 +282,7 @@ def _write_bundle(
     *, industry: str = "银行",
 ) -> None:
     staging.mkdir(parents=True, exist_ok=True)
-    model, metadata = _recent_documents(contract, profile, industry=industry)
+    model, metadata = _documents(contract, profile, industry=industry)
     (staging / "model.json").write_text(json.dumps(model), encoding="utf-8")
     (staging / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 

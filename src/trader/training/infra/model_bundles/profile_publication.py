@@ -250,6 +250,7 @@ def _inspect_profile_directory(
         for contract in profile.heads
     )
     _validate_profile_pair(heads)
+    _require_recent_diagnostics(head.model for head in heads)
     return heads
 
 
@@ -302,7 +303,7 @@ def _validate_profile_pair(heads: tuple[LoadedPublishedHeadBundle, ...]) -> None
 
 
 def _require_recent_diagnostics(models: Iterable[TrainedHeadModelBundle]) -> None:
-    if any(model.diagnostic_plan is None for model in models):
+    if any(model.final_fit is None or model.diagnostic_plan is None for model in models):
         raise ModelBundleContractError("profile publication requires recent production diagnostics")
 
 
