@@ -92,8 +92,13 @@ _REPURCHASE_ACTUAL_REJECTION = (
     r"[^。；;，,]{0,80}$"
 )
 _REPURCHASE_ACTUAL_BOUNDARY = r"[。；;！？!?]|公告如下[：:]"
+_REPURCHASE_CANCELLATION_TITLE = (
+    r"(?:关于)?(?:注销回购股份(?:、减少注册资本)?(?:暨(?:修订[《<]公司章程[》>]|通知债权人))?|"
+    r"回购股份注销完成(?:暨股份变动)?)(?:的)?公告"
+)
 COMPANY_REPURCHASE_ACTUAL_DIGEST = hashlib.sha256(
-    (_REPURCHASE_ACTUAL_PATTERN + "\0" + _REPURCHASE_ACTUAL_REJECTION + "\0" + _REPURCHASE_ACTUAL_BOUNDARY).encode("utf-8"),
+    "\0".join((_REPURCHASE_ACTUAL_PATTERN, _REPURCHASE_ACTUAL_REJECTION,
+               _REPURCHASE_ACTUAL_BOUNDARY, _REPURCHASE_CANCELLATION_TITLE)).encode("utf-8"),
 ).digest()
 _REPURCHASE_OPTION = re.compile(
     r"([□☐√✓☑■☒])((?:用于)?减少注册资本|用于注销(?:并减少注册资本)?|"
@@ -436,6 +441,11 @@ def CompanyDocumentNeedsReview(title: str) -> bool:
     return not CompanyDocumentOutsideSubjectScope(title) and (
         any(marker in title for marker in _RISK_HINTS) or _positive_type(title) is not None
     )
+
+
+def IsCompanyRepurchaseCancellationOnly(title: str) -> bool:
+    """Identify supported disposal notices without a separate new buyback action."""
+    return re.fullmatch(_REPURCHASE_CANCELLATION_TITLE, "".join(title.split())) is not None
 
 
 def CompanyDocumentRiskRelevant(title: str) -> bool:
@@ -1024,6 +1034,11 @@ def _append_positive(
         return None
     if previous is not None and previous.status is CompanyPositiveStatus.CANCELLED:
         return None
+    if (kind is CompanyPositiveType.SHARE_REPURCHASE and IsCompanyRepurchaseCancellationOnly(title)
+        and previous is not None and (previous.evidence_ids != (item.identity,)
+            or previous.event_id != f"{item.identity}:{kind.value}"
+            or not previous.first_disclosed_at == previous.last_disclosed_at == item.published_at)):
+        return "implementation_or_measurement_unverified"
     if any(x in title for x in ("终止", "撤销", "取消")):
         if previous is None:
             return "cancellation_unlinked"
@@ -1067,6 +1082,10 @@ def _positive_event(
         if action_status is CompanyPositiveStatus.COMPLETED or not implemented:
             status = action_status or CompanyPositiveStatus.PLANNED
     milestones = list(previous.level_milestones if previous else ())
+    if (kind is CompanyPositiveType.SHARE_REPURCHASE and IsCompanyRepurchaseCancellationOnly(title)
+        and previous is not None and previous.evidence_ids == (item.identity,)
+        and previous.first_disclosed_at == previous.last_disclosed_at == item.published_at):
+        milestones = []
     if ratio is not None and level:
         for threshold_level in range(1, level + 1):
             if not any(x.level == threshold_level for x in milestones):
@@ -1238,7 +1257,7 @@ def _positive_measurements(
         eligible = measurements.binding_confirmed and measurements.amount_basis == "comparable"
     else:
         verb = "回购" if kind is CompanyPositiveType.SHARE_REPURCHASE else "增持"
-        ratio = _actual_ratio(verified, verb)
+        ratio = None if verb == "回购" and IsCompanyRepurchaseCancellationOnly(verified.title) else _actual_ratio(verified, verb)
         eligible = ratio is not None
         if kind is CompanyPositiveType.SHARE_REPURCHASE:
             purpose = _repurchase_purpose(body)

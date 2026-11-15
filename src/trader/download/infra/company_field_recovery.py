@@ -22,6 +22,7 @@ from trader.download.domain.company_event_extraction import (
     COMPANY_REPURCHASE_ACTUAL_DIGEST,
     COMPANY_REPURCHASE_MAINTENANCE_DIGEST,
     ExtractCompanyEvents, ExtractCompanyLinkCandidate, IsCompanyRepurchasePlaceholder, IsCompanyRepurchaseShareholderTable,
+    IsCompanyRepurchaseCancellationOnly,
 )
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES
@@ -681,8 +682,17 @@ def QueueCompanyShareActionRechecks(
                 after = candidate.positive.measurements
                 if not isinstance(after, (RepurchaseMeasurements, IncreaseMeasurements)) or type(before) is not type(after):
                     continue
+                isolated_cancellation = (
+                    isinstance(before, RepurchaseMeasurements) and IsCompanyRepurchaseCancellationOnly(row[5])
+                    and event.event_id == f"{evidence_id}:share_repurchase" and event.evidence_ids == (evidence_id,)
+                    and event.first_disclosed_at == event.last_disclosed_at
+                    and not any(evidence_id in other.evidence_ids for other in fact.risk_events)
+                    and ExtractCompanyAnnouncementNumbers(text).issuer_codes == (fact.code,)
+                )
                 fields = tuple(field for field, needed in (
-                    ("actual_pct", before.actual_ratio_pct is None and after.actual_ratio_pct is not None),
+                    ("actual_pct", before.actual_ratio_pct is None and after.actual_ratio_pct is not None
+                     or isolated_cancellation and (before.actual_ratio_pct is not None
+                         or event.status is not candidate.positive.status or event.positive_level != 0 or bool(event.level_milestones))),
                     ("repurchase_purpose", isinstance(before, RepurchaseMeasurements) and isinstance(after, RepurchaseMeasurements)
                      and after.purpose is not RepurchasePurpose.UNKNOWN and before.purpose is not after.purpose),
                 ) if needed)
