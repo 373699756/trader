@@ -1,13 +1,15 @@
 """Retained, receipted reduction material is corrected through normal publication."""
 
+import hashlib
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_field_recovery import _DETAIL, _facts, _put
-from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyFactsIndexFixture
+from tests.helpers.download.company.company_qualified_reduction import BODY, TITLE
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_event_extraction import CompanyLinkCandidate
 from trader.download.domain.company_events import (
     CompanyEventStatus,
@@ -18,9 +20,10 @@ from trader.download.domain.company_events import (
     CompanySubject,
     ReductionPlan,
 )
-from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.download.infra.company_field_recovery import (
     CompanyFieldRepairReceipts,
+    COMPANY_FIELD_RULES,
     CompleteCompanyFieldRepairs,
     QueueCompanyReductionRechecks,
 )
@@ -259,3 +262,66 @@ def test_retired_reduction_work_needs_its_exact_committed_field_attempt(tmp_path
     with SqliteSession(index.path) as collected, SqliteTransaction(collected), SqliteSession(index.facts_path) as formal:
         CompleteCompanyFieldRepairs(collected, formal, (facts,), parent.extraction_hash)
         assert collected.run("SELECT state FROM company_field_repairs").require_one()[0] == "pending"
+
+
+@pytest.mark.parametrize("known_values", (False, True))
+def test_qualified_plan_retries_old_negative_measurement_and_proof_once(tmp_path, monkeypatch, known_values):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure("qualified-plan", TITLE)
+    old_event = _legacy(index, item, BODY)
+    plan = ReductionPlan(date(2026, 10, 26), date(2027, 1, 25), 1.4708)
+    expiry = datetime.combine(date(2027, 1, 25), time.max, NOW.tzinfo) + timedelta(days=90)
+    event = replace(old_event, subject_type=CompanySubject.MAJOR_SHAREHOLDER,
+                    reduction_plan=plan if known_values else ReductionPlan(), expires_at=expiry if known_values else None)
+    facts = replace(_facts(index), risk_events=(event,))
+    with SqliteSession(index.facts_path) as formal:
+        parent = ReadCompanyPublicationIdentity(formal)
+        # The fixture initially runs today's writer; a historical snapshot has
+        # none of today's qualified-plan proof attempts.
+        with SqliteTransaction(formal):
+            formal.run("DELETE FROM company_input_receipt WHERE policy_id LIKE 'field_source_lines:%'")
+    with SqliteSession(index.path) as collected, SqliteTransaction(collected):
+        row = collected.run("SELECT id,record_hash,body_hash FROM disclosures").require_one()
+        old_rule = "same_body_reduction:" + parent.extraction_hash.hex()
+        for field in ("start_date", "end_date", "planned_pct"):
+            for rule in (old_rule, next(rule for name, rule in COMPANY_FIELD_RULES if name == field)):
+                collected.run("INSERT OR REPLACE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
+                              (row[0], facts.code, row[1], event.event_id, field, rule))
+        attempted = CompanyFieldRepairReceipts(collected, item.codes, NOW)
+        collected.run("UPDATE company_field_repairs SET state='attempted'")
+    if known_values:
+        for field in ("start_date", "end_date", "planned_pct"):
+            rule = next(rule for name, rule in COMPANY_FIELD_RULES if name == field)
+            policy = f"field_source_lines:1:{rule}:{event.event_id}:{field}"
+            attempted += (CompanyInputReceipt(
+                item.source, item.identity, facts.code, item.digest, hashlib.sha256(policy.encode()).digest(),
+                row[2], NOW, "field_attempted", policy,
+            ),)
+    index._facts.publish((facts,), {item.identity: item.source}, parent, NOW, receipts=attempted)
+    valid = _valid_receipts(index)
+    before, = _facts(index).risk_events
+
+    index.prepare_publication(item.codes, NOW)
+
+    restored, = _facts(index).risk_events
+    assert restored == replace(before, reduction_plan=plan, expires_at=expiry)
+    assert IsCompanyRiskEffective(restored, NOW)
+    assert _valid_receipts(index) == valid
+    fields = SQLiteCompanyEvidenceReaderFixture(index.facts_path).read_fields(item.codes).results
+    assert {field.field for field in fields if field.state == "verified"} == {"start_date", "end_date", "planned_pct"}
+    assert all(field.evidence[0].quote in BODY for field in fields if field.state == "verified")
+    with SqliteSession(index.facts_path) as formal:
+        publication = ReadCompanyPublicationIdentity(formal)
+        assert publication.extraction_hash == parent.extraction_hash
+        receipts = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt ORDER BY policy_id"))
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("committed qualified-holder checks must not read retained material again")
+
+    restarted = fixtures._index(tmp_path)
+    monkeypatch.setattr(restarted._documents, "read", unexpected_read)
+    restarted.prepare_publication(item.codes, NOW)
+    assert _facts(restarted).risk_events == (restored,) and _valid_receipts(restarted) == valid
+    with SqliteSession(index.facts_path) as formal:
+        assert ReadCompanyPublicationIdentity(formal) == publication
+        assert tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt ORDER BY policy_id")) == receipts

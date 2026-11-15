@@ -10,6 +10,7 @@ from typing import cast
 
 from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence, COMPANY_REPURCHASE_MAINTENANCE_DIGEST, COMPANY_REPURCHASE_ACTUAL_DIGEST
 from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES
+from trader.download.domain.company_reduction_scope import COMPANY_QUALIFIED_REDUCTION_DIGEST
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent, RepurchaseMeasurements
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.domain.company_facts import CompanyFacts
@@ -192,6 +193,8 @@ def _current_material(
 def _field_policy(event: CompanyPositiveEvent | CompanyRiskEvent, field: str) -> str:
     rule = next(rule for name, rule in COMPANY_FIELD_RULES if name == field)
     policy = f"{_PROOF_RULE}:{rule}:{event.event_id}:{field}"
+    if isinstance(event, CompanyRiskEvent) and field in {"start_date", "end_date", "planned_pct"}:
+        return policy + ":" + COMPANY_QUALIFIED_REDUCTION_DIGEST.hex()
     if field == "actual_pct" and isinstance(event, CompanyPositiveEvent) and isinstance(event.measurements, RepurchaseMeasurements):
         return policy + ":" + COMPANY_REPURCHASE_ACTUAL_DIGEST.hex()
     return policy + ":" + COMPANY_REPURCHASE_MAINTENANCE_DIGEST.hex() if field == "repurchase_purpose" else policy

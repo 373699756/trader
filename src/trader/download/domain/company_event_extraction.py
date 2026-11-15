@@ -32,6 +32,7 @@ from trader.download.domain.company_events import (
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.domain.company_field_results import CompanyFieldConclusion, CompanyFieldName, CompanyFieldUnit
 from trader.download.domain.company_field_source import BuildCompanyFieldEvidence
+from trader.download.domain.company_reduction_scope import CompanyQualifiedReduction, ExtractCompanyQualifiedReduction
 
 _RISK_HINTS = (
     "立案",
@@ -266,8 +267,15 @@ def _reduction_field_evidence(verified: _VerifiedDocument) -> tuple[CompanyField
     if not _reduction_measurement_subject_is_unique(verified):
         return ()
     body = _subject_body(verified)
-    plan = _reduction_plan(body)
+    qualified = verified.qualified_reduction
+    plan = _reduction_plan(body) if qualified is None else None
     fields: list[tuple[CompanyFieldName, date | datetime | float, str, str, CompanyFieldUnit]] = []
+    if qualified is not None:
+        fields.extend((
+            ("start_date", qualified.start_date, qualified.statement, "explicit_reduction_start_date:2", "date"),
+            ("end_date", qualified.end_date, qualified.statement, "explicit_reduction_end_date:2", "date"),
+            ("planned_pct", qualified.planned_ratio_pct, qualified.statement, "reduction_total_capital_ratio:3", "percent"),
+        ))
     if plan is not None:
         for match in _reduction_period_matches(body):
             if plan.planned_start_date is not None and plan.planned_end_date is not None:
@@ -297,6 +305,8 @@ def _reduction_field_evidence(verified: _VerifiedDocument) -> tuple[CompanyField
 
 
 def _reduction_measurement_subject_is_unique(verified: _VerifiedDocument) -> bool:
+    if verified.qualified_reduction is not None:
+        return True
     # Regulation names describe permitted actors, rather than additional plans.
     body = re.sub(r"《[^》]{0,160}》", "", verified.body)
     return not (
@@ -419,6 +429,7 @@ class _VerifiedDocument:
     title: str
     body: str
     subject: CompanySubject
+    qualified_reduction: CompanyQualifiedReduction | None = None
 
 
 def CompanyDocumentNeedsReview(title: str) -> bool:
@@ -565,7 +576,7 @@ def _verify_document(
     subject = _subject(title, body)
     if subject is None:
         return None, _review(document, observed_at, scope, "subject_unverified", "正文主体无法确认")
-    return _VerifiedDocument(document, title, body, subject), None
+    return _VerifiedDocument(document, title, body, subject, ExtractCompanyQualifiedReduction(document, subject)), None
 
 
 def _confirm_risks(
@@ -701,7 +712,9 @@ def _append_risk(
     )
     reduction_plan = previous.reduction_plan if previous else None
     if category is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION:
-        parsed_plan = None if reduction_measurements_ambiguous else _reduction_plan(body)
+        parsed_plan = None if reduction_measurements_ambiguous else (
+            verified.qualified_reduction.plan if verified.qualified_reduction is not None else _reduction_plan(body)
+        )
         if (reduction_measurements_ambiguous and previous is not None
             and previous.evidence_ids == (item.identity,)
             and previous.first_disclosed_at == previous.last_disclosed_at == item.published_at

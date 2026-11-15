@@ -25,6 +25,7 @@ from trader.download.domain.company_event_extraction import (
 )
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES
+from trader.download.domain.company_reduction_scope import COMPANY_QUALIFIED_REDUCTION_DIGEST
 from trader.download.domain.company_field_plan import (
     BuildCompanyFieldGaps,
     CompanyFieldGap,
@@ -846,7 +847,7 @@ def QueueCompanyReductionRechecks(
                         formal, row[1], evidence_id, fact.code, row[2], body_hash, extraction_hash,
                     )):
                     continue
-                rule = _REDUCTION_RECHECK_RULE_PREFIX + extraction_hash.hex()
+                rule = _REDUCTION_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + COMPANY_QUALIFIED_REDUCTION_DIGEST).hexdigest()
                 if _has_recheck_attempt(
                     formal,
                     row[1],
