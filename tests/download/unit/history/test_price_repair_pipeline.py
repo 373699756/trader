@@ -63,12 +63,29 @@ def test_history_waits_for_tencent_and_replaces_entire_basis(tmp_path):
     assert HistoryPriceRepair(config.history_root, sqlite_policy=SqlitePolicyFixture()).source("600001", snapshot.sequence) == "baostock"
 
 
-@pytest.mark.parametrize("write_fails", (False, True))
-def test_history_reports_obtained_before_replacement_and_counts_only_persisted_repairs(tmp_path, monkeypatch, write_fails):
+@pytest.mark.parametrize("failure_mode", ("none", "read", "write", "supplier"))
+def test_history_reports_obtained_before_replacement_and_stops_on_database_failure(tmp_path, monkeypatch, failure_mode):
+    import sqlite3
+
     from tests.helpers.download.history.infra.history_sync import ProgressRecorder
+    from trader.download.infra import history_sync_io
+
+    bao_calls = []
+
+    class AllGapped(RepairHistory):
+        def fetch_tencent_window(self, security, dates):
+            window = super().fetch_tencent_window(security, dates)
+            partial = replace(window, cells=(replace(window.cells[0], status="qfq_missing", qfq=None), *window.cells[1:]))
+            raise HistorySupplierPendingError(partial, "tencent_qfq_invalid_price", dates[:1])
+
+        def fetch_baostock_window(self, security, dates):
+            bao_calls.append(security.code)
+            if failure_mode == "supplier" and security.code == "600001":
+                raise RuntimeError("supplier_query_failed")
+            return super().fetch_baostock_window(security, dates)
 
     days = (date(2026, 1, 2), date(2026, 1, 5))
-    supplier = RepairHistory(days)
+    supplier = AllGapped(days)
     config = _config(tmp_path, days)
     progress = ProgressRecorder()
     original = HistoryPriceRepair.replace
@@ -79,26 +96,45 @@ def test_history_reports_obtained_before_replacement_and_counts_only_persisted_r
         assert len(reports) == 1
         assert reports[0].state == "obtained"
         assert reports[0].repair_summary is None
-        assert reports[0].completed_units == reports[0].total_units == 1
+        assert reports[0].completed_units == (1 if security.code == "600001" else 2)
+        assert reports[0].total_units == 2
         assert tuple(cell.trade_date for cell in incoming.cells) == dates
         entered.append(security.code)
-        if write_fails:
-            raise RuntimeError("fixture_write_failed")
+        if failure_mode == "write":
+            raise RuntimeError("fixture_write_failed") from sqlite3.OperationalError("fixture_database_failure")
         return original(self, security, dates, incoming, prices, sequence, **options)
 
     monkeypatch.setattr(HistoryPriceRepair, "replace", replace_prices)
+    if failure_mode == "read":
+        def fail_read(self, code, requested_dates):
+            assert code == "600001" and requested_dates == days
+            raise RuntimeError("fixture_read_failed") from sqlite3.OperationalError("fixture_database_failure")
+
+        monkeypatch.setattr(HistoryPriceRepair, "source", lambda *args: "baostock")
+        monkeypatch.setattr(history_sync_io._HistoryPriceBatch, "read_prices", fail_read)
     result = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]), progress=progress)
-    assert result.state == "completed"
-    assert result.unresolved_price_cells == int(write_fails)
-    assert entered == ["600001"]
     reports = [item for item in progress.values if item.stage == "baostock_repair"]
     stock_reports = [item for item in reports if item.current_item == "600001"]
-    assert [item.state for item in stock_reports] == (["obtained", "failed"] if write_fails else ["obtained"])
-    if write_fails:
-        assert stock_reports[-1].failure_reason == "fixture_write_failed"
+    if failure_mode in {"read", "write"}:
+        assert result.state == "failed"
+        assert bao_calls == ([] if failure_mode == "read" else ["600001"])
+        assert entered == ([] if failure_mode == "read" else ["600001"])
+        assert sum(item.state == "obtained" for item in stock_reports) == int(failure_mode == "write")
+        assert not any(item.repair_summary is not None and item.repair_summary.repaired for item in reports)
+        with SqliteSession(config.history_root / "catalog.sqlite3") as connection:
+            assert [tuple(row) for row in connection.run(
+                "SELECT code,state,resolved_source FROM price_repair_attempt ORDER BY code",
+            )] == [("600001", "requested", None)]
+        return
+    assert result.state == "completed" and result.unresolved_price_cells == int(failure_mode == "supplier")
+    assert bao_calls == ["600001", "600002"]
+    assert entered == (["600002"] if failure_mode == "supplier" else ["600001", "600002"])
+    assert [item.state for item in stock_reports] == (["failed"] if failure_mode == "supplier" else ["obtained"])
+    if failure_mode == "supplier":
+        assert stock_reports[0].failure_reason == "supplier_query_failed"
     summary = reports[-1].repair_summary
     assert reports[-1].state == "completed" and summary is not None
-    assert (summary.attempted, summary.repaired, summary.skipped) == (1, int(not write_fails), 0)
+    assert (summary.attempted, summary.repaired, summary.skipped) == (2, 1 if failure_mode == "supplier" else 2, 0)
 
 
 def test_history_does_not_report_obtained_for_incomplete_supplier_candidate(tmp_path, monkeypatch):
@@ -127,7 +163,7 @@ def test_history_does_not_report_obtained_for_incomplete_supplier_candidate(tmp_
     assert reports[-1].repair_summary is not None and reports[-1].repair_summary.repaired == 0
 
 
-def test_old_gap_is_not_retried_and_old_snapshot_is_immutable(tmp_path):
+def test_failed_history_gap_is_retried_in_a_new_run_and_old_snapshot_is_immutable(tmp_path):
     days = (date(2026, 1, 2), date(2026, 1, 5))
     supplier = RepairHistory(days)
     supplier.fail_repair = True
@@ -136,12 +172,70 @@ def test_old_gap_is_not_retried_and_old_snapshot_is_immutable(tmp_path):
     assert first.unresolved_price_cells == 1
     snapshot = HistoryControlIndex(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
     previous = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture()).read_day(days[0], snapshot)
+    supplier.fail_repair = False
     supplier.events.clear()
-    RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
-    assert supplier.events == []
+    second = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
+    assert second.state == "completed" and second.unresolved_price_cells == 0
+    assert supplier.events == ["baostock"]
     assert HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture()).read_day(days[0], snapshot) == previous
     with SqliteSession(config.history_root / "catalog.sqlite3") as connection:
-        assert [tuple(row) for row in connection.run("SELECT state,resolved_source FROM price_repair_attempt")] == [("failed", None)]
+        assert [tuple(row) for row in connection.run("SELECT state,resolved_source FROM price_repair_attempt")] == [("resolved", "baostock")]
+    supplier.events.clear()
+    third = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
+    assert third.state == "already_current" and third.unresolved_price_cells == 0
+    assert supplier.events == []
+
+
+def test_same_day_history_retries_timed_out_bao_without_repeating_tencent_or_changing_old_snapshot(tmp_path):
+    class TimeoutHistory(RepairHistory):
+        timeout = True
+
+        def fetch_baostock_window(self, security, dates):
+            if self.timeout:
+                self.events.append("baostock")
+                raise RuntimeError("supplier_price_total_timeout")
+            return super().fetch_baostock_window(security, dates)
+
+    days = (date(2026, 1, 2), date(2026, 1, 5))
+    supplier = TimeoutHistory(days)
+    config = _config(tmp_path, days)
+    first = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
+    assert first.state == "completed" and first.unresolved_price_cells == 1
+    assert supplier.events == ["tencent", "tencent", "baostock"]
+    path = config.history_root / "catalog.sqlite3"
+    control = HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture())
+    previous = control.load_state().published_snapshot
+    reader = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture())
+    old_rows = reader.read_day(days[0], previous)
+    index = HistoryDownloadIndex(path, sqlite_policy=SqlitePolicyFixture())
+    # Tencent's same-day qfq cooldown remains in force; Bao alone must be reachable.
+    assert index.gaps_by_code(days) == {}
+    assert index.gaps_by_code(days, retryable_only=False) == {"600001": days[:1]}
+    with SqliteSession(path) as connection:
+        receipt = connection.run("SELECT batch_id,state,reason,resolved_source FROM price_repair_attempt").require_one()
+        first_batch = receipt[0]
+        assert tuple(receipt[1:]) == ("failed", "supplier_price_total_timeout", None)
+    supplier.timeout = False
+    supplier.events.clear()
+    second = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
+    assert second.state == "completed" and second.unresolved_price_cells == 0
+    assert supplier.events == ["baostock"]
+    current = control.load_state().published_snapshot
+    assert current.sequence > previous.sequence
+    assert reader.read_day(days[0], previous) == old_rows
+    current_rows = reader.read_day(days[0], current)
+    assert next(row.cell for row in current_rows if row.code == "600001").qfq.close_price == days[0].day + 2.0
+    assert next(row.cell for row in current_rows if row.code == "600002") == next(
+        row.cell for row in old_rows if row.code == "600002"
+    )
+    with SqliteSession(path) as connection:
+        receipt = connection.run("SELECT batch_id,state,resolved_source FROM price_repair_attempt").require_one()
+        assert receipt[0] != first_batch and tuple(receipt[1:]) == ("resolved", "baostock")
+    supplier.events.clear()
+    third = RunHistoryFixture(config, supplier, clock=lambda: _now(days[-1]))
+    assert third.state == "already_current" and third.unresolved_price_cells == 0
+    assert supplier.events == []
+    assert control.load_state().published_snapshot == current
 
 
 def test_rolling_calendar_ignores_old_gap_and_repeat_makes_no_supplier_requests(tmp_path):
@@ -258,7 +352,7 @@ def test_excluded_replacement_is_retained_without_decode_and_never_rebased_after
         assert tuple(tuple(row) for row in connection.run("SELECT * FROM price_replacement ORDER BY code,trade_date")) == retained
 
 
-def test_market_second_phase_does_not_repeat_failed_automatic_attempt(tmp_path):
+def test_market_second_phase_retries_previous_run_failure_then_reuses_the_success(tmp_path):
     events = []
 
     class Tencent(Supplier):
@@ -281,10 +375,65 @@ def test_market_second_phase_does_not_repeat_failed_automatic_attempt(tmp_path):
     updater = replace(_updater(tmp_path, Tencent()), repair_supplier=bao)
     first = updater.execute(_now(DAYS[-1]))
     assert first.pending_codes == 1 and events == ["tencent", "baostock"]
+    bao.fail = False
     events.clear()
-    updater.execute(_now(DAYS[-1]))
-    assert events == ["tencent"]
+    second = updater.execute(_now(DAYS[-1]))
+    assert second.pending_codes == 0 and second.failure_reason is None
+    assert events == ["tencent", "baostock"]
     events.clear()
+    third = updater.execute(_now(DAYS[-1]))
+    assert third.skipped_codes == 1 and third.pending_codes == 0 and events == []
+
+
+def test_same_day_market_retries_timed_out_bao_and_reuses_successfully_published_stocks(tmp_path):
+    events = []
+
+    class Tencent(Supplier):
+        def fetch_window(self, security, dates):
+            events.append(("tencent", security.code))
+            window = _window(security.code, dates)
+            if security.code == "600001":
+                partial = replace(window, cells=(replace(window.cells[0], status="qfq_missing", qfq=None), *window.cells[1:]))
+                raise HistorySupplierPendingError(partial, "tencent_qfq_invalid_price", dates[:1])
+            return window
+
+    class Bao:
+        timeout = True
+
+        def fetch_baostock_window(self, security, dates):
+            events.append(("baostock", security.code))
+            if self.timeout:
+                raise RuntimeError("supplier_price_total_timeout")
+            window = _window(security.code, dates)
+            return replace(window, cells=tuple(
+                replace(cell, qfq=replace(cell.qfq, open_price=20.0, high_price=20.2, low_price=19.8, close_price=20.0))
+                for cell in window.cells
+            ))
+
+    bao = Bao()
+    updater = replace(_updater(tmp_path, Tencent(codes=("600001", "600002"))), repair_supplier=bao)
+    first = updater.execute(_now(DAYS[-1]))
+    assert first.completed_codes == 1 and first.pending_codes == 1
+    assert events.count(("tencent", "600001")) == events.count(("tencent", "600002")) == 1
+    assert events[-1] == ("baostock", "600001")
+    retained = updater.v2.read_code("600002")
+    path = tmp_path / "daily_window.sqlite3"
+    with SqliteSession(path) as connection:
+        first_batch = connection.run("SELECT batch_id FROM price_repair_attempt").require_one()[0]
+    bao.timeout = False
+    events.clear()
+    second = updater.execute(_now(DAYS[-1]))
+    assert second.pending_codes == 0 and second.failure_reason is None
+    assert events == [("tencent", "600001"), ("baostock", "600001")]
+    assert updater.v2.read_code("600002") == retained
+    assert all(cell.qfq.close_price == 20.0 for cell in updater.v2.read_code("600001").cells)
+    with SqliteSession(path) as connection:
+        receipt = connection.run("SELECT batch_id,state,resolved_source FROM price_repair_attempt").require_one()
+        assert receipt[0] != first_batch and tuple(receipt[1:]) == ("resolved", "baostock")
+    events.clear()
+    third = updater.execute(_now(DAYS[-1]))
+    assert third.pending_codes == 0 and third.skipped_codes == 2 and third.changed_files == ()
+    assert events == [] and updater.v2.read_code("600002") == retained
 
 
 

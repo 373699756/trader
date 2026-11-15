@@ -14,7 +14,7 @@ from trader.download.domain.history_download import HistoryDownloadBatch, Histor
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_price_repair import HistoryPriceRepair
 from trader.download.infra.price_repair_attempts import PriceRepairAttempts
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 
 def test_checkpoint_records_only_explicit_tencent_source_and_rolls_it_back_with_failure(tmp_path, monkeypatch):
@@ -99,6 +99,45 @@ def test_calendar_membership_limits_summary_and_repairs_without_erasing_old_gaps
             index.gap_summary((task.code,), calendar_dates=invalid)
         with pytest.raises(ValueError, match="history_retry_calendar_invalid"):
             index.gaps_by_code(invalid, retryable_only=False)
+        with pytest.raises(ValueError, match="history_retry_calendar_invalid"):
+            index.retryable_repair_codes(frozenset({task.code}), invalid)
+
+
+@pytest.mark.parametrize("state", (None, "requested", "failed", "resolved"))
+def test_bao_recovery_uses_current_unresolved_gaps_without_tencent_cooldown(tmp_path, state):
+    path = tmp_path / "catalog.sqlite3"
+    policy = SqlitePolicyFixture()
+    HistoryControlIndex(path, sqlite_policy=policy).initialize()
+    index = HistoryDownloadIndex(path, sqlite_policy=policy)
+    days = (date(2026, 11, 2), date(2026, 11, 3))
+    tasks = tuple(HistoryDownloadTask(code, days) for code in ("600001", "600002", "600003", "600004"))
+    index.begin(HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, days[-1]), tasks)
+    index.finish((
+        HistoryDownloadCompletion(tasks[0], days, "tencent_qfq_invalid_price", days),
+        HistoryDownloadCompletion(tasks[1], days, "tencent_qfq_invalid_price", days),
+        HistoryDownloadCompletion(tasks[2], (), None),
+        HistoryDownloadCompletion(tasks[3], days[:1], "tencent_qfq_invalid_price", days[:1]),
+    ))
+    with SqliteSession(path, sqlite_policy=policy) as connection, SqliteTransaction(connection):
+        attempts = PriceRepairAttempts(connection)
+        if state is not None:
+            attempts.reserve("600001", days, "old")
+            if state == "failed":
+                attempts.fail("600001", "old", "supplier_query_failed")
+            elif state == "resolved":
+                attempts.resolve("600001", days, "baostock")
+        # An old receipt alone does not authorize downloading a complete stock.
+        attempts.reserve("600003", days, "old")
+        attempts.fail("600003", "old", "supplier_query_failed")
+
+    assert index.gaps_by_code(days) == {}
+    population = frozenset({"600001", "600003", "600004"})
+    expected = frozenset() if state == "resolved" else frozenset({"600001"})
+    assert index.retryable_repair_codes(population, days[1:]) == expected
+    assert index.retryable_repair_codes(frozenset(), days) == frozenset()
+    assert index.gaps_by_code(retryable_only=False) == {
+        "600001": days, "600002": days, "600004": days[:1],
+    }
 
 
 @pytest.mark.parametrize("change_population", [False, True])

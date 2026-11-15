@@ -87,6 +87,9 @@ class HistoryTaskPort(Protocol):
         self, calendar_dates: tuple[date, ...] | None = None, *, retryable_only: bool = True,
     ) -> Mapping[str, tuple[date, ...]]: ...
     def gap_summary(self, codes: tuple[str, ...], *, calendar_dates: tuple[date, ...]) -> HistoryPriceGapSummary: ...
+    def retryable_repair_codes(
+        self, codes: frozenset[str], calendar_dates: tuple[date, ...],
+    ) -> frozenset[str]: ...
     def rebind_context(
         self,
         previous: HistoryDownloadBatch,

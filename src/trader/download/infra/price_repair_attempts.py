@@ -80,7 +80,7 @@ class PriceRepairAttempts:
         dates: tuple[date, ...],
         batch_id: str,
     ) -> tuple[date, ...]:
-        """Consume automatic repair eligibility once without reopening old attempts."""
+        """Reserve unresolved dates once per batch, recovering old failures and interruptions."""
         self._require_transaction()
         _require_code(code)
         _require_dates(dates)
@@ -90,7 +90,10 @@ class PriceRepairAttempts:
         for day in dates:
             cursor = self._connection.run(
                 "INSERT INTO price_repair_attempt VALUES(?,?,?,'requested','supplier_result_unknown',NULL) "
-                "ON CONFLICT(code,trade_date) DO NOTHING",
+                "ON CONFLICT(code,trade_date) DO UPDATE SET batch_id=excluded.batch_id,"
+                "state='requested',reason='supplier_result_unknown',resolved_source=NULL "
+                "WHERE price_repair_attempt.batch_id<>excluded.batch_id "
+                "AND price_repair_attempt.state IN ('requested','failed')",
                 (code, EncodeDate(day), batch_id),
             )
             if cursor.rowcount:

@@ -158,6 +158,13 @@ class DownloadHistoryUseCase:
             and not any(task.dates for task in tasks)
             and current_snapshot.source_identity_hash == source.content_hash
         )
+        if already_current and self.dependencies.tasks.retryable_repair_codes(
+            frozenset(item.code for item in context.universe), context.calendar.open_dates,
+        ):
+            # Only BaoStock needs another turn; do not break Tencent's cooldown
+            # or dispatch zero-date confirmations for the whole population.
+            tasks = tuple(replace(task, tencent_done=True) for task in tasks)
+            already_current = False
         batch = HistoryDownloadBatch(
             current_snapshot.sequence + 1 if current_snapshot else 1,
             source.content_hash,
@@ -378,13 +385,15 @@ class DownloadHistoryUseCase:
                 if not reserved:
                     continue
                 attempted += 1
+                previous = None
+                if prices.repair_source(security.code, inputs.batch.sequence) == "baostock":
+                    previous = PublishedHistoryWindow(
+                        security.code,
+                        tuple(ProjectHistoryCell(cell) for cell in prices.read_prices(security.code, dates)),
+                    )
                 try:
                     candidate = None
-                    if prices.repair_source(security.code, inputs.batch.sequence) == "baostock":
-                        previous = PublishedHistoryWindow(
-                            security.code,
-                            tuple(ProjectHistoryCell(cell) for cell in prices.read_prices(security.code, dates)),
-                        )
+                    if previous is not None:
                         obtained = {cell.trade_date for cell in previous.cells if cell.status in ("complete", "supplier_marked_suspended")}
                         missing = tuple(day for day in dates if day not in obtained)
                         tail_dates = dates[-max(5, len(missing) + 3):]
@@ -401,7 +410,6 @@ class DownloadHistoryUseCase:
                     PublishHistoryProgress(self.progress, "baostock_repair", "obtained", (completed, len(selected)), security.code)
                     if self.cancel():
                         raise KeyboardInterrupt
-                    prices.replace_repair(security, dates, candidate, inputs.batch.sequence)
                 except (OSError, RuntimeError, ValueError) as exc:
                     reason = self.dependencies.maintenance.download_failure(exc)
                     prices.fail_repair(security.code, batch_id, reason)
@@ -411,6 +419,7 @@ class DownloadHistoryUseCase:
                             failure_reason=reason,
                         ))
                 else:
+                    prices.replace_repair(security, dates, candidate, inputs.batch.sequence)
                     repaired += 1
             prices.replay_repairs(allowed_codes)
             if self.progress is not None:

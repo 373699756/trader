@@ -56,7 +56,7 @@ history速度按最近180秒的新增持久确认计算，排除恢复基数；�
 
 正常history加载上下文只报告开始及结束，内容限于价格、日历和资格；前置当前行业参考准备独立报告，不再把历史行业整窗准备作为正常价格路径的子阶段。显式历史行业审计仍保留真实来源和进度，无变化时每30秒报告等待；候选原件N/N不冒充正式覆盖就绪，失败、重试、取消即时保留，不让先前暂存的完成覆盖后续错误。
 
-BaoStock补缺取得完整目标窗口后立即逐股打印“获取成功，待落库”，不等待旧价重叠核对和年度库回写；缺行或错误窗口不报告获取成功。落库失败另报该股错误，落库成功不再重复逐股成功行，阶段汇总只把实际持久确认的股票计为已修复。获取成功不代表已发布，补缺期间不反复打印等待行。
+BaoStock补缺取得完整目标窗口后立即逐股打印“获取成功，待落库”，不等待旧价重叠核对和年度库回写；缺行或错误窗口不报告获取成功。落库失败终止本轮并报告持久化错误，落库成功不再重复逐股成功行，阶段汇总只把实际持久确认的股票计为已修复。获取成功不代表已发布，补缺期间不反复打印等待行。
 
 下载日志明确实际来源：history保留Tencent下载／BaoStock补缺，具体BaoStock供应商的登录、日历及日线事件也带来源；显式历史行业审计的官方原件来自中上协，巨潮逐股原件及本地官方证据复用分别标原来源，不把CAPCO一概叫巨潮。market按真实下载／补缺／本地检查动作显示来源，本地完整复用保留已核验的Tencent／BaoStock原来源。公共参考由组合根显式注入上交所／深交所、ST新浪／交易所、日历新浪（Akshare SDK）和当前行业巨潮来源，发布标本地；未知注入端口不猜供应商。来源说明是资料出处，不把缓存读取叫网络请求。任务时钟身份只由owner、key及execution决定，来源标签变化不重置阶段时间，也不留下重复心跳。
 
@@ -236,7 +236,7 @@ history／market失败或取消时，在等待单writer前建立关闭期限，�
 
 ### 3.1 请求、配对和来源
 
-先完成ST及其他资格，只为合格股票规划历史日期缺口。腾讯完成这些股票的全批正常请求后，汇总其中问题股进入BaoStock串行阶段；补缺派发同样核对ST资格。raw和qfq必须来自同一供应商、相同目标窗口；不按日期拼不同供应商qfq，不缩放或合成价格凑齐窗口。
+先完成ST及其他资格，只为合格股票规划历史日期缺口。腾讯完成这些股票本轮应请求的全批任务并持久确认成功／失败结果后，合并当前窗口内新旧缺口进入BaoStock串行阶段；个股供应商失败允许继续，取消或数据库未安全提交不能进入补缺。补缺派发同样核对ST资格。raw和qfq必须来自同一供应商、相同目标窗口；不按日期拼不同供应商qfq，不缩放或合成价格凑齐窗口。
 
 HTTP成功或来源返回名为day的数据，不足以证明是合格qfq。复权方法、锚点和特殊等价情况都要有明确同源证据，未知不能冒充前复权；不因旧记录曾有某种重建方法就恢复旧算法。
 
@@ -278,9 +278,9 @@ BaoStock补缺结束后，终端依次显示发布准备、发布分区检查、
 
 ### 3.3 问题和自动恢复
 
-问题以库、证券、缺失日期和原因记录，保留尝试时间、状态、来源和修复回执。普通同步保留原有自动修复机会，不再提供手动fill重开失败尝试。history中断优先重放已落盘的完整候选；market沿原配对事务恢复，未提交的候选下次允许重新取得。
+问题以库、证券、缺失日期和原因记录，保留尝试时间、状态、来源和修复回执。普通同步在每次启动的新补缺批次中，允许当前仍有有效缺口的旧failed及中断requested重新预约，不限失败原因；同批次不重复预约、resolved不重开，单独的旧失败回执不能作为缺价证据。history中断优先重放已落盘的完整候选；market沿原配对事务恢复，未提交的候选下次允许重新取得。供应商层持有唯一有界重试循环，外层不反复创建批次绕过上限；不恢复手动fill入口。history补缺读取旧窗或持久保存失败时停止本轮，不作为单股供应商失败继续请求下一股。
 
-当前同步、自动缺价处理及价格缺口汇总同时限定在本次合格总体和目标交易日历；移出窗口的旧缺口、失败及冷却回执保留，不再让当前窗口显示pending。Tencent的20交易日重查冷却只影响Tencent重试，不从当前缺口总数中排除；BaoStock保留自己的自动机会。已采用BaoStock的窗口，仅当所有缺日都落在请求尾部且通过同源锚点校验时复用尾部；窗口中部的缺日即使只有一格也须请求同源整窗候选。
+当前同步、自动缺价处理及价格缺口汇总同时限定在本次合格总体和目标交易日历；移出窗口的旧缺口、失败及冷却回执保留，不再让当前窗口显示pending。Tencent的20交易日重查冷却只影响Tencent重试，不从当前缺口总数中排除；当前已发布且Tencent没有新任务时，仍须检查可恢复BaoStock缺口，存在则进入本轮补缺。已采用BaoStock的窗口，仅当所有缺日都落在请求尾部且通过同源锚点校验时复用尾部；窗口中部的缺日即使只有一格也须请求同源整窗候选。候选持久采用成功后在原事务解决回执并清除对应缺口，下次正常同步继续复用已成功价格。
 
 “任务结束”“已发布快照”“仍有价格缺口”分别报告。历史已发布但仍有价格缺口时，history收尾显示“历史已发布、价格缺口待补”，sync总行显示“等待、history待补齐”及具体原因，不再标成“失败、原因无”；JSON仍为pending、退出码仍为1，无前置失败时省略其人工占位。正常history不再准备或报告历史行业整窗覆盖；显式历史审计保留自己的覆盖和异常诊断，不据此推断各档训练资格，也不作为价格pending判据。旧 TODO 中 completed 内嵌 pending 的例子，应说明仍有一个已知缺口，不凭发布日志认定资料完全齐全。
 
@@ -905,7 +905,7 @@ Tencent原始日线响应若含同证券、同目标日15:00之后的qt报价，
 | 表 | 全部列及类型 | 主键／约束、读写及保留 |
 | --- | --- | --- |
 | price_tencent_check（WR） | code TEXT；trade_date D | PK(code)；最近腾讯来源核对日，TencentRecheckDue／RecordTencentCheck按市场日历处理20日复查，不刷新为任意读取日 |
-| price_repair_attempt（WR） | code/batch_id/state/reason TEXT；trade_date D；resolved_source TEXT? | PK(code,trade_date)；state=requested/failed/resolved，只有resolved须有tencent／baostock来源。PriceRepairAttempts在请求前预约，在正式采用事务中解决 |
+| price_repair_attempt（WR） | code/batch_id/state/reason TEXT；trade_date D；resolved_source TEXT? | PK(code,trade_date)；state=requested/failed/resolved，只有resolved须有tencent／baostock来源。PriceRepairAttempts在请求前预约，旧requested／failed仅在不同补缺批次重约，同批次和resolved不重开，在正式采用事务中解决 |
 | download_failure | id/attempt/maximum_attempts INTEGER；run_id/occurred_at/stage/code/supplier/reason/causes/diagnostic/endpoint TEXT；elapsed_seconds/timeout_seconds REAL?；window_start/window_end TEXT? | PK(id)，无另建索引；时间为ISO、时长为秒。DownloadFailureDiagnostics安全分类、WriteDownloadFailure按retention_limit保留，ReadDownloadFailures按query_limit有界读取；取消不记为供应商失败，字段非成功进度 |
 
 ### 8.6 company正式事实、字段结论与凭据

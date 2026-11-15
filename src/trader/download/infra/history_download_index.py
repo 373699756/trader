@@ -214,6 +214,25 @@ class HistoryDownloadIndex:
         with SqliteSession(self._path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection:
             return frozenset(row[0] for row in connection.run("SELECT DISTINCT code FROM download_gaps"))
 
+    def retryable_repair_codes(
+        self, codes: frozenset[str], calendar_dates: tuple[date, ...],
+    ) -> frozenset[str]:
+        """Find current BaoStock work independently of Tencent's qfq recheck cooldown."""
+        if not calendar_dates or calendar_dates != tuple(sorted(set(calendar_dates))):
+            raise ValueError("history_retry_calendar_invalid")
+        if not codes:
+            return frozenset()
+        calendar = frozenset(calendar_dates)
+        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            return frozenset(
+                code for code, day in connection.run(
+                    "SELECT g.code,g.trade_date FROM download_gaps g LEFT JOIN price_repair_attempt a "
+                    "ON a.code=g.code AND a.trade_date=g.trade_date "
+                    "WHERE a.code IS NULL OR a.state IN ('requested','failed')",
+                )
+                if code in codes and DecodeDate(day) in calendar
+            )
+
     def gaps_by_code(
         self, calendar_dates: tuple[date, ...] | None = None, *, retryable_only: bool = True,
         activity: HistorySqliteActivity | None = None,
