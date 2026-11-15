@@ -593,3 +593,90 @@ Q24的价格差异检查只比较同源qfq OHLC，不因量额单独变化触发
 仓库外证据根为`/var/tmp/trader-ledger-audit-20261110-01df0b82/`：architecture.xml、model-readers.xml、company-fields.xml、old-consumers.xml、document-contract-before.xml、document-contract-after-review.xml、document-links-verified.xml、live-status.json及historical-receipts.json；types-summary.txt是36项原输出摘要，verification-summary.json保存分组统计。31与70项是fixture／隔离功能，不签真实八头预测／公司全字段；36项不是全仓类型数。
 
 既有281成功／失败、八头冻结基线等16份原件继续保存在`/var/tmp/trader-281-shutdown-20261110/evidence/`，本次未重启／停止服务来重做已通过场景。用户runtime介质配置和data保留；未向观测到的用户sync发信号，用户随后明确确认下载正常并结束功能任务。本批只修改活动文档／当前字典与历史链接，不接管业务实现或运行性能／真实收益。未执行格式工具、数据删除／重建／切换；原始失败不删除、不改门禁断言来签通过。
+
+## 13. 下载、训练字段到荐股准确性Review（2026-11-15）
+
+问：从下载、训练到评分／荐股，是否还有类似“最终只拟合早年数据”的问题，字段和使用方法是否合理？
+
+答：以`70842962`为代码基线交叉审查，确认四项新的实现问题（Q36–Q39），原Q26的旧工件reader缺口仍在；另列三类现行设计／数据限制。P1表示给定合法输入可产生错误特征、标签或可交易性判断，不表示活动全库或所有股票均已命中；P2为条件性准入／加载不一致。审查覆盖原始字段、规范投影、日历与复权、样本／标签、最终拟合、加载、实时模型总体、评分动作及实绩；没有逐一对所有供应商原文或全市场历史字段验值，不签“所有字段100%合理”。本轮仅交付Review，修复与重训均未执行，状态只记g阶段373。
+
+### 13.1 原早年训练问题：本机工件已改变，服务采用及质量另验
+
+只读当前`data/training/models/<profile>/<strategy>/metadata.json`八份元数据，均记录`source_cutoff=2026-11-09`；V1为final头，V2/V3/V5为recent-refit头。实际最终拟合范围如下，不以诊断拟合末日或文件mtime代替。
+
+| 档位 | 元数据记录的最终拟合信号日数 | 拟合起点 | Tomorrow拟合末日 | D25拟合末日 |
+| --- | --- | --- | --- | --- |
+| V1 | 750 | 2023-09，按头不同 | 2026-11-06 | 2026-11-02 |
+| V2 | 1000 | 2022-09，按头不同 | 2026-11-06 | 2026-11-02 |
+| V3 | 750 | 2023-09，按头不同 | 2026-11-06 | 2026-11-02 |
+| V5 | 61 | Tomorrow 2026-08-06／D25 2026-07-31 | 2026-11-06 | 2026-11-02 |
+
+`training/domain/final_fit.py:61`当前从源日历末端分别回退1／5个交易日，再倒取N个成熟信号日；V1正常最终拟合重新读取该计划原始矩阵。不能继续把“当前八头仍只用2016年前资料”列为现存事实；也不能据元数据推断运行进程已采用、源截止后每日均已重训或模型质量合格。近期诊断与最终模型身份分离，`final_model_unseen_validation_passed=false`及收盘代理不具真实点时收益资格，是已声明的验证限制，不当作独立新bug。旧第5节关于当时旧模型的观察保持历史身份。
+
+### 13.2 Q36／P1：BaoStock与Tencent的百分比字段单位不一致
+
+**当前回答：已从公开解析到发布／实绩投影及纯内存反例确认。** [baostock_gateway.py:560](../src/trader/download/infra/baostock_gateway.py#L560)将原`pctChg`、`turn`交给`_optional_ratio`，第588–590行除以100；[tencent_daily.py:189](../src/trader/download/infra/tencent_daily.py#L189)的历史换手率及[实时腾讯字段38](../src/trader/recommendation/infra/market_data/providers/tencent.py#L344)却保留百分数。BaoStock经[published_history.py:106](../src/trader/download/domain/published_history.py#L106)原样复制，Tencent直接产生同名规范字段，边界未统一单位。
+
+换手率由[aligned_history_bars.py:90](../src/trader/recommendation/infra/market_data/aligned_history_bars.py#L90)原样传入历史，`history_metrics.py:189–208`取中位数，[scoring_calculations.py:119](../src/trader/recommendation/domain/scoring/scoring_calculations.py#L119)用实时换手率除该基线。同为2%，BaoStock历史为0.02、Tencent历史为2，实时2分别除得100与1，换手冲击评分随历史来源改变。
+
+另一传播是实绩可交易性：用公开`ParseBaoStockDailySide`输入raw四价9、前收10、`pctChg=-10`、`turn=2`、成交量10000、成交额90000，经`ProjectHistoryCell → OutcomeBars`实际输出：
+
+```text
+published_pct=-0.1
+published_turnover=0.02
+outcome=tradable
+turnover_shock_for_quote_2pct=100.0
+```
+
+[outcome_history.py:85](../src/trader/recommendation/infra/market_data/outcome_history.py#L85)的一字跌停阈值是百分点−4.5，错误单位使本例漏判。此处不是qfq收益公式错误，影响换手冲击及正式实绩的交易状态。原源侧单测还断言0.0303／0.012，未检查两供应商端到端同单位。
+
+建议统一发布及消费者的百分数合同，补跨源等价与一字行情端到端回归；先按原真实来源和发布身份核受影响数据范围，不能把全部存量值一律乘100。活动库命中数量、已有实绩受影响范围尚未盘点，本次不修库、不重签冻结或收益。
+
+### 13.3 Q37／P1：训练丢弃确认停牌日已知估值，随后将旧价用作真实标签
+
+**当前回答：合法输入上的训练／线上差异已确认。** [history_prices.py:1232](../src/trader/download/infra/history_prices.py#L1232)的训练窄投影仅在raw与qfq状态都为`trading`时建立`HistoryTrainingPoint`；确认停牌即使带合法qfq收盘也变成`point=None`。[AlignTrainingRows](../src/trader/training/infra/history/aligned_training_rows.py#L65)因此以前收估值，仍保留`supplier_marked_suspended`；[sample_builder.py:143](../src/trader/training/infra/sample_builder.py#L143)及[V1 samples.py:438](../src/trader/training/infra/profile/v1/samples.py#L438)允许该状态作为未来真实标签。
+
+线上[aligned_history_bars.py:59](../src/trader/recommendation/infra/market_data/aligned_history_bars.py#L59)却把来源估值交给同一[AlignMarketSession](../src/trader/recommendation/domain/market/history_alignment.py#L103)，保留确认停牌的正价格。两日纯内存反例：前日正常10，次日确认停牌、来源qfq估值8，训练投影变None后对齐为10，线上为8；未来收益可分别为0和−20%。该反例不证明现实证券出现过这次变化，影响范围尚未扫描。
+
+建议训练窄投影保留确认停牌可用的来源估值，再交统一对齐；保留推定停牌／unknown的estimated身份，不能为修此项把估算缺行开放成真实标签。核完合法源样本后再决定对应样本和模型的重建范围。
+
+### 13.4 Q38／P1：V2/V3/V5训练20日均额包含信号日，线上截止前一完成日
+
+**当前回答：同一字段的时间窗口差异已确认。** [sample_builder.py:151](../src/trader/training/infra/sample_builder.py#L151)先把当前信号日加入窗口，第305–308行再取最后20日金额，最后写入`average_amount_20d`用于横截面暴露处理。线上[BuildFactorHistory](../src/trader/recommendation/infra/normalization/factor_history.py#L45)严格选择早于观察日的完成日，即使发布历史已含当天，也切回`previous_profile`；[features.py:601](../src/trader/recommendation/infra/normalization/features.py#L601)将此值交给模型流动性暴露，进而影响残差化特征。
+
+对61个完整日，前60日金额均1，信号日1000，实际V3`_pending_sample`输出均额50.95，同日`BuildFactorHistory`输出1.0。这不是金额元／万元转换错误，是真正的训练／线上日期口径不一致；V1在加入信号点前构造特征，不套用本条结论。
+
+建议按完成日合同统一训练窗口，保留当日价格信号和过去流动性暴露各自端点，再重建受影响样本及工件；不能只改字段名、训练截止时间或线上显示掩盖差异。尚未量化当前实际权重／收益影响。
+
+### 13.5 Q39／P2：V1训练要求有效行业，线上缺失或未来行业仍被预测
+
+**当前回答：准入总体不一致已确认。** [V1 samples.py:447](../src/trader/training/infra/profile/v1/samples.py#L447)在缺行业时跳过样本，且拒绝非法行业身份；[V1 scoring.py:77](../src/trader/recommendation/application/pipeline/local_score/v1/scoring.py#L77)只核251日历史、必需数值及Amihud，没有核`model_industry`。第120–136行据此建立预测及百分位总体。[candidate_quote_cache.py:271](../src/trader/recommendation/infra/market_data/candidate_quote_cache.py#L271)把缺失／尚未生效的行业引用置None，后续也没有统一行业门替其阻断。
+
+实际V1服务配测试预测端口的纯内存探针：`model_industry=None`时`is_input_eligible=True`，`score`仍返回该证券预测；未来生效行业同样通过。V1虽是全市场模型，该差异仍让训练排除的缺项证券进入线上排名和分板成本总体，不只是展示少一个行业名称。
+
+建议统一训练与线上当前行业身份／有效期准入，以及缺项证券在排名／成本分母中的处理，不能只在页面隐藏行业空值。也不能因V1单模型就无条件沿用分行业V2/V3/V5的路由门，应按V1自己的样本与总体合同切换。当前命中证券数未扫描。
+
+### 13.6 Q26／344旧问题：新writer拒绝的旧工件，reader仍可授予生产能力
+
+**当前回答：代码缺口仍在；本机当前八头均新版，不能混称当前仍加载旧模型。** [bundle_codec.py:261](../src/trader/training/infra/model_bundles/bundle_codec.py#L261)仍接受普通／旧refit／recent-refit；V1 [models.py:393](../src/trader/training/infra/profile/v1/models.py#L393)接受诊断及final顶层。`InspectPublishedProfileBundles → BuildTrainedScoringProfile`没有writer的近期诊断门，后者[profile.py:69](../src/trader/training/infra/model_bundles/profile.py#L69)按既有授权设置`production_authority=True`。
+
+本轮用旧V3双头fixture纯内存执行`DecodeHeadBundle → BuildTrainedScoringProfile`，输出`final_fit=[False,False]`、`diagnostic_plan=[False,False]`、`production_authority=[True,True]`。这证明旧目录恢复／误放旧文件时仍可能绕过当前工件结构要求，不证明当前进程实际用了旧头，也不撤销原人工生产授权。继续沿344核全部reader、恢复、到期、观察及诊断消费者，不新增兼容或自动删模型。
+
+### 13.7 字段合理性、数据资格和设计风险
+
+| 字段／选择 | 本轮判断 | 证据、影响及待确认 |
+| --- | --- | --- |
+| 成交量／成交额 | 已核到明确单位转换，未发现新的倍数错误 | `tencent_daily.py:196–197`手×100为股、万元×10000为元；`baostock_gateway.py:557–558`保留股／元。未对供应商全量原文逐值签正确；Q38是端点问题，不混作单位问题。 |
+| raw／qfq价格与报价锚 | 旧Q24／Q25已有保护，不重复报旧缺陷 | 普通增量有整窗复权重核；基准不可证输出`history_price_basis_unavailable`，四档模型拒绝。未统计活动旧资料污染，不以本轮代码扫描代替源数据审计。 |
+| 原始昨收／原始涨幅缺失 | 明确限制实绩完整性，不把未知填0 | Tencent `_parse_side:595–596`仍为None。成交量正且raw四价相同的日子，Outcome判UNKNOWN，正式评价可因`invalid_reference_bar/tradability_unknown`不能结算；普通非一字行情不受该条件限制，训练不消费OutcomeBars，不能说所有Tencent标签无效。 |
+| 推定停牌／未知缺日 | 本轮未发现被直接当真实零收益标签 | AlignMarketSession保留estimated，未来真实标签只接trading／确认suspended；已确认来源估值丢失另列Q37。 |
+| 训练当前总体／行业 | 现行授权设计存在研究偏差 | `history_supplier_router.py:40`只采当前eligible_universe，训练沿发布总体；当前ST／退市选择会影响历史样本代表性。`history_snapshot_reader.py:69`给全历史套当前行业，存在事后行业映射偏差；现行e明确允许，不能说实现违规，也不能据结果宣称无生存者偏差／严格点时收益。 |
+| EPS／BPS、ROE／增长率、利润 | HEAD映射与现行单位合同未发现新错误；报告期年龄需裁决 | EPS/BPS元每股，增长率／ROE百分数，利润元，累计季度按现有3/6/9/12月规则年化。`research.py:320–328`只限披露≤550日，报告期仅要求不在未来；多年旧报告刚重述披露且缺近期完整报表时仍可获新鲜资格，应考虑同时约束报告期或TTM覆盖。未证活动数据命中，属于现行合同设计缺口。 |
+| 公司公告／财务正式字段 | 不能以下载回执或本轮静态Review签全字段正确 | 公司字段、年度依据与财务采纳仍有并行未提交施工；本轮只将HEAD和现有消费者用于结论，不把候选原件／提取结果视为正式采用或最新完整事实。 |
+| 最终拟合、样本身份、评分动作 | 若干旧疑点已有保护 | 最终计划取近期成熟标签；缓存绑定实现、价格／行业、分区及最终计划；V1/V5模型分排序而local_score判动作。没有找到相反的新反例。收益质量、服务实际采用和独立最终模型验证仍不能由这些工程检查替代。 |
+
+建议先处理Q36单位、Q37停牌估值、Q38均额端点，再处理Q39总体一致性及344 reader；随后才按来源／样本／工件身份评估必要的重建与重新拟合。历史筛选、行业前视、报告期年龄及实绩缺字段分别列研究／设计决定，不混入实现bug数量。没有同意在本轮修改这些合同、补采全市场、删除资料或重训。
+
+### 13.8 证据和审查边界
+
+三条链路分别审查后交叉核对。主线程独立执行了Q36公开解析到Outcome、Q37停牌训练对齐、Q38训练／线上均额、Q39实际V1服务及旧reader授予authority五个短内存探针，输出见各节；八头日期仅从小型metadata读取，没有打开模型发布锁、读取活动数据库、联网、启动训练或读全库hash。Q38首个探针漏填DailyBar必需元数据后已补齐再运行，构造错误未当生产缺陷。没有运行全仓测试、格式／性能脚本或真实点时回测；原性能／收益失败、用户授权及冻结身份保持原样。本轮业务源码和配置没有修改，完整文档diff及`git diff --check`为交付检查。
