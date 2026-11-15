@@ -16,6 +16,7 @@ from typing import cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from trader.download.application.company_report_inputs import CompanyReportInputPlan
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.infra.company_announcement_links import (
@@ -933,20 +934,17 @@ class SQLiteCompanyEvidenceIndex:
             else observed_at.date() - timedelta(days=365)
         ))
 
-    def annual_income_requests(
-        self, codes: Sequence[str], observed_at: datetime
-    ) -> tuple[CompanyAnnualIncomeRequest, ...]:
-        with self._connect() as collected, SqliteSession(
+    def report_input_plan(self, codes: Sequence[str], observed_at: datetime) -> CompanyReportInputPlan:
+        with self._connect() as collected, SqliteTransaction(collected), SqliteSession(
             self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
-        ) as formal:
-            return PlanCompanyAnnualIncomeRequests(collected, formal, codes, observed_at)
-
-    def financial_report_requests(self, codes: Sequence[str], observed_at: datetime) -> tuple[CompanyFinancialReportRequest, ...]:
-        with self._connect() as collected, SqliteSession(
-            self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
-        ) as formal:
-            return (*PlanCompanyAnnualReportRequests(collected, formal, codes, observed_at),
-                    *PlanCompanyMissingFinancialReports(collected, codes, observed_at))
+            cancel_requested=self._cancel_requested,
+        ) as formal, SqliteTransaction(formal):
+            return CompanyReportInputPlan(
+                observed_at,
+                PlanCompanyAnnualIncomeRequests(collected, formal, codes, observed_at),
+                (*PlanCompanyAnnualReportRequests(collected, formal, codes, observed_at),
+                 *PlanCompanyMissingFinancialReports(collected, codes, observed_at)),
+            )
 
     def commit_financial_reports(self, request: CompanyFinancialReportRequest, rows: tuple[Disclosure, ...], observed_at: datetime) -> int:
         if any(item.source != "cninfo" or item.codes != (request.code,) or item.kind != "announcement"

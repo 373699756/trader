@@ -43,7 +43,9 @@ from trader.download.domain.company_financial_report import CompanyFinancialRepo
 from trader.download.application.company_operations import CompanyOperations, CompanyOperationTiming
 from trader.download.application.company_documents import CompanyDocumentRun
 from trader.download.application.company_structured import CollectCompanyStructured
-from trader.download.application.company_report_inputs import CollectCompanyReportInputs
+from trader.download.application.company_report_inputs import (
+    CompanyReportInputPlan, CollectCompanyReportInputs, PlanCompanyReportInputs,
+)
 from trader.download.application.company_failures import (
     CompanySourceCircuit, CompanyFailureCode, IsTransientCompanyFailure,
     CompanyFailureRequiresRetry,
@@ -54,12 +56,9 @@ from trader.download.application.company_progress import (
 
 
 class CompanyEvidenceIndex(Protocol):
-    def financial_report_requests(self, codes: Sequence[str], observed_at: datetime) -> tuple[CompanyFinancialReportRequest, ...]: ...
+    def report_input_plan(self, codes: Sequence[str], observed_at: datetime) -> CompanyReportInputPlan: ...
     def commit_financial_reports(self, request: CompanyFinancialReportRequest, rows: tuple[Disclosure, ...], observed_at: datetime) -> int: ...
     def document_publication_urgent(self, item: Disclosure) -> bool: ...
-    def annual_income_requests(
-        self, codes: Sequence[str], observed_at: datetime
-    ) -> tuple[CompanyAnnualIncomeRequest, ...]: ...
     def commit_annual_income(
         self,
         request: CompanyAnnualIncomeRequest,
@@ -293,6 +292,14 @@ def _execute_company(
                                  timeout_seconds=configuration.source_timeout_seconds)
     if not CompanyCancelled(dependencies):
         _publish_batch(dependencies, population, observed_at, started, state)
+        if _collect_report_inputs(dependencies, population, observed_at, state):
+            _publish_batch(
+                dependencies,
+                population,
+                observed_at,
+                started,
+                state,
+            )
     if not CompanyCancelled(dependencies) and documents.workload().local_pending:
         # Recover one bounded local batch; directory discovery must not wait for
         # the complete backlog, and later batches still reuse their local files.
@@ -300,6 +307,14 @@ def _execute_company(
         documents.run_batch(local_only=True)
         if documents.completed != completed:
             _publish_batch(dependencies, population, observed_at, started, state)
+            if _collect_report_inputs(dependencies, population, observed_at, state):
+                _publish_batch(
+                    dependencies,
+                    population,
+                    observed_at,
+                    started,
+                    state,
+                )
     pending, published = (
         (None, 0) if CompanyCancelled(dependencies) else _run_batches(dependencies, population, state, context, documents)
     )
@@ -307,6 +322,14 @@ def _execute_company(
     news_updates = () if CompanyCancelled(dependencies) else _news(dependencies, news_population, observed_at, state)
     if news_updates and not CompanyCancelled(dependencies):
         _publish_batch(dependencies, population, observed_at, started, state)
+        if _collect_report_inputs(dependencies, population, observed_at, state):
+            _publish_batch(
+                dependencies,
+                population,
+                observed_at,
+                started,
+                state,
+            )
     if dependencies.coalesce_publications and not CompanyCancelled(dependencies):
         # Final verification remains mandatory even if the last bounded
         # batch was already published. Scheduling is not a file seal.
@@ -398,6 +421,18 @@ def _run_batches(
                 count = _publish_batch(dependencies, population, context.observed_at, context.started, state)
                 if count is not None:
                     published = count
+            if not CompanyCancelled(dependencies) and _collect_report_inputs(
+                dependencies, population, context.observed_at, state,
+            ):
+                count = _publish_batch(
+                    dependencies,
+                    population,
+                    context.observed_at,
+                    context.started,
+                    state,
+                )
+                if count is not None:
+                    published = count
             if not announcements.can_continue and not documents.has_due():
                 break
     finally:
@@ -406,6 +441,23 @@ def _run_batches(
         published = dependencies.index.published_count(population)
         state.published = published
     return pending, published
+
+
+def _collect_report_inputs(
+    dependencies: CompanyEvidenceDependencies,
+    population: tuple[str, ...],
+    observed_at: datetime,
+    state: _SyncState,
+) -> bool:
+    if CompanyCancelled(dependencies):
+        return False
+    plan = PlanCompanyReportInputs(dependencies, population, observed_at, state)
+    changes = CollectCompanyReportInputs(dependencies, plan, state)
+    if CompanyCancelled(dependencies) or not changes:
+        return False
+    state.changes += changes
+    MarkCompanyPublicationPending(dependencies, state)
+    return True
 
 
 def _publish_batch(
@@ -421,15 +473,6 @@ def _publish_batch(
         if CompanyCancelled(dependencies):
             return state.published
         state.published = dependencies.index.published_count(population)
-        changes = CollectCompanyReportInputs(dependencies, population, observed_at, state)
-        if CompanyCancelled(dependencies):
-            return state.published
-        if changes and not CompanyCancelled(dependencies):
-            state.changes += changes
-            _publish_company_facts(dependencies.index, population, observed_at, state.operations)
-            if CompanyCancelled(dependencies):
-                return state.published
-            state.published = dependencies.index.published_count(population)
         ReportCompanyProgress(dependencies, "publish", state, len(population) - state.published, completed=state.published, status="complete")
         state.unpublished_documents = 0
         state.publication_pending_since = None

@@ -33,7 +33,7 @@ def _setup(tmp_path, body=BODY):
     index = fixtures._index(tmp_path)
     _structured(index)
     index.publish(("600001",), NOW)
-    request, = index.financial_report_requests(("600001",), NOW)
+    request, = index.report_input_plan(("600001",), NOW).financial_reports
     assert request == CompanyFinancialReportRequest("600001", date(2026, 9, 30), AT)
     document = ReportDocument(body)
     index.commit_financial_reports(request, (document.disclosure,), NOW)

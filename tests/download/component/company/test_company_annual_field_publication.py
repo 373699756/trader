@@ -144,13 +144,13 @@ def test_new_annual_material_invalidates_an_earlier_proof_without_choosing_a_con
 def test_annual_source_discovery_queues_only_explicit_dependency_and_survives_directory_refresh(tmp_path):
     index = fixtures._index(tmp_path)
     contract = _contract(index)
-    request, = index.financial_report_requests(contract.codes, fixtures.NOW)
+    request, = index.report_input_plan(contract.codes, fixtures.NOW).financial_reports
     assert request == CompanyFinancialReportRequest("600001", _PERIOD, _REPORTED)
     annual = fixtures._disclosure("annual-directory", "2025年年度报告摘要", when=_REPORTED)
     with SqliteSession(index.path) as connection:
         partitions = tuple(tuple(row) for row in connection.run("SELECT * FROM partitions"))
     assert index.commit_financial_reports(request, (annual,), fixtures.NOW) > 0
-    assert index.financial_report_requests(contract.codes, fixtures.NOW) == ()
+    assert index.report_input_plan(contract.codes, fixtures.NOW).financial_reports == ()
     recent = fixtures._disclosure("newer-unrelated", "关于收到监管警示函的公告")
     index.commit_page(DisclosurePartition("sse", fixtures.NOW.date(), fixtures.NOW.date()),
                       DisclosurePage((recent,), 1, False), fixtures.NOW)
@@ -175,7 +175,7 @@ def test_annual_source_discovery_cannot_infer_year_or_accept_unbound_metadata(tm
     index = fixtures._index(tmp_path)
     contract = _contract(index, reference="公司各年度营业收入" if kind == "year" else "公司2025年度经审计营业收入",
                          known_annual=kind != "no_known_report")
-    requests = index.financial_report_requests(contract.codes, fixtures.NOW)
+    requests = index.report_input_plan(contract.codes, fixtures.NOW).financial_reports
     if kind in {"year", "no_known_report"}:
         assert requests == ()
         return
@@ -190,7 +190,7 @@ def test_annual_source_discovery_cannot_infer_year_or_accept_unbound_metadata(tm
         annual = replace(annual, source="news")
     with pytest.raises(ValueError, match="company_annual_report_input_invalid"):
         index.commit_financial_reports(requests[0], (annual,), fixtures.NOW)
-    assert index.financial_report_requests(contract.codes, fixtures.NOW) == requests
+    assert index.report_input_plan(contract.codes, fixtures.NOW).financial_reports == requests
 
 
 @pytest.mark.parametrize("outcome", ("verified", "timeout", "cancelled"))

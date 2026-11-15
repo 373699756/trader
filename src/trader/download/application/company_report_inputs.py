@@ -2,39 +2,70 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING
 
 from trader.download.application.company_failures import CompanyFailureCode
 from trader.download.application.company_progress import CompanyCancelled, CompanyProgressState, ReportCompanyProgress
+from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
+from trader.download.domain.company_financial_report import CompanyFinancialReportRequest
 from trader.download.domain.download_failure import DownloadFailureContext
 
 if TYPE_CHECKING:
     from trader.download.application.company_evidence import CompanyEvidenceDependencies
 
 
-def CollectCompanyReportInputs(
+@dataclass(frozen=True, slots=True)
+class CompanyReportInputPlan:
+    observed_at: datetime
+    annual_income: tuple[CompanyAnnualIncomeRequest, ...]
+    financial_reports: tuple[CompanyFinancialReportRequest, ...]
+
+
+def PlanCompanyReportInputs(
     dependencies: CompanyEvidenceDependencies,
     population: tuple[str, ...],
     observed_at: datetime,
     state: CompanyProgressState,
+) -> CompanyReportInputPlan:
+    """Freeze known local requirements at one collection checkpoint."""
+    if CompanyCancelled(dependencies) or state.annual_income_source_stopped and state.financial_report_source_stopped:
+        return CompanyReportInputPlan(observed_at, (), ())
+    plan = dependencies.index.report_input_plan(population, observed_at)
+    annual_income = () if CompanyCancelled(dependencies) or state.annual_income_source_stopped else tuple(
+        request for request in plan.annual_income
+        if request not in state.annual_income_attempts
+    )
+    financial_reports = () if CompanyCancelled(dependencies) or state.financial_report_source_stopped else tuple(
+        request for request in plan.financial_reports
+        if request not in state.financial_report_attempts
+    )
+    return CompanyReportInputPlan(plan.observed_at, annual_income, financial_reports)
+
+
+def CollectCompanyReportInputs(
+    dependencies: CompanyEvidenceDependencies,
+    plan: CompanyReportInputPlan,
+    state: CompanyProgressState,
 ) -> int:
-    changes = _annual_income(dependencies, population, observed_at, state)
-    changes += _financial_reports(dependencies, population, observed_at, state)
+    """Execute only the frozen requests; new needs wait for a later checkpoint."""
+    changes = _annual_income(dependencies, plan, state)
+    changes += _financial_reports(dependencies, plan, state)
     return changes
 
 
 def _financial_reports(
     dependencies: CompanyEvidenceDependencies,
-    population: tuple[str, ...],
-    observed_at: datetime,
+    plan: CompanyReportInputPlan,
     state: CompanyProgressState,
 ) -> int:
     if CompanyCancelled(dependencies) or state.financial_report_source_stopped:
         return 0
+    observed_at = plan.observed_at
     changes = 0
-    for request in dependencies.index.financial_report_requests(population, observed_at):
+    for request in plan.financial_reports:
         if request in state.financial_report_attempts:
             continue
         if CompanyCancelled(dependencies) or state.financial_report_source_stopped:
@@ -73,14 +104,14 @@ def _financial_reports(
 
 def _annual_income(
     dependencies: CompanyEvidenceDependencies,
-    population: tuple[str, ...],
-    observed_at: datetime,
+    plan: CompanyReportInputPlan,
     state: CompanyProgressState,
 ) -> int:
     if CompanyCancelled(dependencies) or state.annual_income_source_stopped:
         return 0
+    observed_at = plan.observed_at
     requests = tuple(
-        request for request in dependencies.index.annual_income_requests(population, observed_at)
+        request for request in plan.annual_income
         if request not in state.annual_income_attempts
     )
     changes = 0
@@ -126,4 +157,8 @@ def _annual_income(
     return changes
 
 
-__all__ = ["CollectCompanyReportInputs"]
+__all__ = [
+    "CompanyReportInputPlan",
+    "PlanCompanyReportInputs",
+    "CollectCompanyReportInputs",
+]

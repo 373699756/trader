@@ -84,7 +84,7 @@ def test_raw_ledger_formal_facts_and_restart_share_one_annual_reference(tmp_path
     before = _read(index).positive_events[0]
     assert before.measurements.reference_report_date == _PERIOD
     assert before.measurements.reference_annual_revenue_cny is None
-    requests = index.annual_income_requests(item.codes, fixtures.NOW)
+    requests = index.report_input_plan(item.codes, fixtures.NOW).annual_income
     assert requests == (CompanyAnnualIncomeRequest("600001", (_PERIOD,)),)
     income = _income()
     assert index.commit_annual_income(requests[0], (income,), fixtures.NOW) == 1
@@ -94,13 +94,13 @@ def test_raw_ledger_formal_facts_and_restart_share_one_annual_reference(tmp_path
     assert event.measurements.reference_disclosed_at == _REPORTED
     assert event.measurements.amount_to_revenue_pct is None and event.measurements.amount_basis == "unknown"
     assert event.positive_level == before.positive_level == 0 and event.level_milestones == ()
-    assert index.annual_income_requests(item.codes, fixtures.NOW) == ()
+    assert index.report_input_plan(item.codes, fixtures.NOW).annual_income == ()
     with SqliteSession(index.facts_path) as formal:
         receipt = formal.run("SELECT source_key,record_hash,body_hash FROM company_input_receipt WHERE source='eastmoney_annual_income'").require_one()
         assert tuple(receipt) == (income.source_key, income.record_hash, None)
     restarted = fixtures._index(tmp_path)
     restarted.prepare_publication(item.codes, fixtures.NOW + timedelta(minutes=1))
-    assert restarted.annual_income_requests(item.codes, fixtures.NOW + timedelta(minutes=1)) == ()
+    assert restarted.report_input_plan(item.codes, fixtures.NOW + timedelta(minutes=1)).annual_income == ()
     assert _read(restarted).positive_events[0].measurements == event.measurements
 
 
@@ -136,7 +136,7 @@ def test_contract_selection_does_not_rewrite_history_or_pick_a_convenient_versio
 def test_no_known_annual_disclosure_does_not_trigger_new_network_requests(tmp_path):
     index = fixtures._index(tmp_path)
     item = _contract(index, known_annual=False)
-    assert index.annual_income_requests(item.codes, fixtures.NOW) == ()
+    assert index.report_input_plan(item.codes, fixtures.NOW).annual_income == ()
 
 
 def test_cached_source_older_than_known_annual_version_cannot_end_the_recovery(tmp_path):
@@ -147,7 +147,7 @@ def test_cached_source_older_than_known_annual_version_cannot_end_the_recovery(t
     index.commit_annual_income(request, (_income(disclosed_at=earlier, updated_at=earlier),), fixtures.NOW)
     index.publish(item.codes, fixtures.NOW, changed_only=True)
     assert _read(index).positive_events[0].measurements.reference_annual_revenue_cny is None
-    assert index.annual_income_requests(item.codes, fixtures.NOW) == (request,)
+    assert index.report_input_plan(item.codes, fixtures.NOW).annual_income == (request,)
 
 
 @pytest.mark.parametrize("reference", ("公司营业收入", "公司2024年度营业收入及2025年度营业收入", "公司2025年度营业总收入"))
@@ -155,7 +155,7 @@ def test_ambiguous_or_unstated_reference_year_does_not_guess_an_annual_report(tm
     index = fixtures._index(tmp_path)
     item = _contract(index, reference=reference)
     assert _read(index).positive_events[0].measurements.reference_report_date is None
-    assert index.annual_income_requests(item.codes, fixtures.NOW) == ()
+    assert index.report_input_plan(item.codes, fixtures.NOW).annual_income == ()
 
 
 def test_source_cancellation_after_page_does_not_fetch_the_report():
