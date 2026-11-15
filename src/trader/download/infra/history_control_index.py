@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import PublishSqliteFile
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 import os
 import shutil
@@ -153,9 +154,11 @@ class HistoryMaintenanceLock:
 
 class HistoryControlIndex:
     def __init__(
-        self, path: Path, *, reference_path: Path | None = None, fault_injector: FaultInjector | None = None, sqlite_policy: SqliteIoPolicy
+        self, path: Path, *, reference_path: Path | None = None, fault_injector: FaultInjector | None = None, sqlite_policy: SqliteIoPolicy,
+        verification_cache: SqliteVerificationCache | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
+        self._verification_cache = verification_cache
         self._path = path
         self._reference_path = reference_path
         self._fault_injector = fault_injector or (lambda _stage: None)
@@ -333,7 +336,7 @@ class HistoryControlIndex:
 
     def publish_file(self) -> None:
         """Finish the catalog publication with the common database file fingerprint."""
-        PublishSqliteFile(self._path, sqlite_policy=self._sqlite_policy)
+        PublishSqliteFile(self._path, sqlite_policy=self._sqlite_policy, verification_cache=self._verification_cache)
 
     def load_state(self, *, reference_base: Path | None = None) -> HistoryControlState:
         try:

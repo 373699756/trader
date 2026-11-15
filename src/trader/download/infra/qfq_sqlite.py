@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import PublishSqliteFile, VerifiedSqlitePublication, VerifySqliteFile
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureRecord
 from trader.download.infra.download_failure_diagnostics import FAILURE_DIAGNOSTICS_SQL, WriteDownloadFailure
 
@@ -108,8 +109,9 @@ def _digest(rows: _Rows) -> str:
 class SQLiteQfqWindowCache:
     """Profile view; construction and absent reads have no filesystem side effects."""
 
-    def __init__(self, path: Path, profile: Literal["v2", "v3"], *, sqlite_policy: SqliteIoPolicy) -> None:
+    def __init__(self, path: Path, profile: Literal["v2", "v3"], *, sqlite_policy: SqliteIoPolicy, verification_cache: SqliteVerificationCache | None = None) -> None:
         self._sqlite_policy = sqlite_policy
+        self._verification_cache = verification_cache
         if profile not in ("v2", "v3"):
             raise ValueError("qfq_profile_invalid")
         self.path = path
@@ -277,11 +279,12 @@ class SQLiteQfqWindowCache:
                 self.path,
                 sqlite_policy=self._sqlite_policy,
                 previous=self._file_verification,
+                verification_cache=self._verification_cache,
             )
 
     def publish_file(self) -> None:
         if self.path.is_file():
-            PublishSqliteFile(self.path, sqlite_policy=self._sqlite_policy)
+            PublishSqliteFile(self.path, sqlite_policy=self._sqlite_policy, verification_cache=self._verification_cache)
             self._file_verification = None
             self._file_dirty = False
 

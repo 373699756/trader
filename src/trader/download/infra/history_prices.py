@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 import os
 import re
@@ -296,8 +297,10 @@ class HistoryPricePartition:
         *,
         statement_trace: Callable[[str], None] | None = None,
         activity: HistorySqliteActivity | None = None, sqlite_policy: SqliteIoPolicy,
+        verification_cache: SqliteVerificationCache | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
+        self._verification_cache = verification_cache
         if calendar_year < 1990 or not 1 <= calendar_month <= 12:
             raise ValueError("history month partition identity is invalid")
         self._path = path
@@ -781,7 +784,7 @@ class HistoryPricePartition:
             counts = dict.fromkeys(calendar_months, 0)
             check = self._activity.tick if self._activity else None
             prepared = PrepareSqliteFilePublication(
-                self._path, sqlite_policy=self._sqlite_policy, check=check,
+                self._path, sqlite_policy=self._sqlite_policy, check=check, verification_cache=self._verification_cache,
             ) if fingerprint_before_statistics else None
             with (
                 closing(self._read_connection()) as connection,
@@ -812,8 +815,8 @@ class HistoryPricePartition:
                         month = DecodeDate(day).month
                         if month in counts:
                             counts[month] += count
-            fingerprint = PublishPreparedSqliteFile(prepared, check=check) if prepared is not None else PublishSqliteFile(
-                self._path, sqlite_policy=self._sqlite_policy, check=check,
+            fingerprint = PublishPreparedSqliteFile(prepared, check=check, verification_cache=self._verification_cache) if prepared is not None else PublishSqliteFile(
+                self._path, sqlite_policy=self._sqlite_policy, check=check, verification_cache=self._verification_cache,
             )
             return tuple(
                 HistorySnapshotPartition(

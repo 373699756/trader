@@ -37,13 +37,12 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 from trader.infra.sqlite_policy import SqliteIoPolicy
-from trader.infra.sqlite_publication import SqliteFileStamp, SqlitePublicationError
+from trader.infra.sqlite_publication import SqliteFileStamp, SqlitePublicationError, VerifySqliteFile
 from trader.download.infra.price_columns import PRICE_COLUMNS, DecodePriceValues, PriceValues
 from trader.download.domain.history_control import HistoryCalendarIdentity, HistorySnapshot, HistorySnapshotPartition, HistoryUniverseIdentity
 from scripts.core.paths import PROJECT_ROOT, ExternalPath
 
 from scripts.core.reporting import emit_report
-from scripts.download.history.price_file_proofs import PriceAuditFileProofs, PriceAuditProofPath
 
 _MAX_AUDIT_STOCKS = 12000
 _MAX_AUDIT_DATES = 20000
@@ -159,7 +158,6 @@ class PriceAuditPlan:
     cutoff: str | None = None
     metadata_integrity: bool = False
     metadata_sources: tuple[PriceAuditSource, ...] = ()
-    proof_cache: PriceAuditFileProofs | None = None
 
 
 @dataclass(frozen=True)
@@ -330,35 +328,28 @@ def _hash_file(path: Path, budget: PriceAuditBudget) -> _FileProof:
 
 def _proofs(plan: PriceAuditPlan, configuration: tuple[Path, ...], budget: PriceAuditBudget, policy: SqliteIoPolicy) -> tuple[_FileProof, ...]:
     proofs: list[_FileProof] = []
-    cache = plan.proof_cache or PriceAuditFileProofs(None, budget.check)
-
-    def file_proof(path: Path) -> _FileProof:
-        value = cache.digest(path, lambda: _hash_file(path, budget).sha256)
-        return _FileProof(value.path, value.stamp.size, value.sha256, value.stamp.modified_ns, False)
-
     for path, receipt_required in plan.files:
         budget.phase = "sha256:" + path.name
         budget.check()
         if receipt_required:
-            verified = cache.verify(path, replace(
+            verified = VerifySqliteFile(path, sqlite_policy=replace(
                 policy, connection_timeout_seconds=min(policy.connection_timeout_seconds, max(0.001, budget.deadline - budget.clock())),
-            ))
+            ), check=budget.check, file_only=True)
             proofs.append(_FileProof(
                 str(path.resolve()), verified.database.size, verified.fingerprint.database_sha256,
                 verified.database.modified_ns, True,
             ))
-            proofs.append(file_proof(Path(str(path) + ".sha256")))
+            proofs.append(_hash_file(Path(str(path) + ".sha256"), budget))
         else:
-            proofs.append(file_proof(path))
+            proofs.append(_hash_file(path, budget))
         wal = Path(str(path) + "-wal")
         # An existing empty WAL has a real digest and remains distinct from absence.
         if wal.exists() or wal.is_symlink():
-            proofs.append(file_proof(wal))
+            proofs.append(_hash_file(wal, budget))
         else:
             proofs.append(_FileProof(str(wal.resolve()), 0, "absent", 0, False))
     sources = (
         Path(__file__), Path(__file__).with_name("qfq_sqlite.py"),
-        Path(__file__).with_name("price_file_proofs.py"),
         Path(__file__).with_name("cli.py"), Path(__file__).with_name("options.py"), Path(__file__).with_name("commands.py"),
         PROJECT_ROOT / "src/trader/download/infra/price_columns.py",
         PROJECT_ROOT / "src/trader/download/domain/baostock_daily.py",
@@ -369,8 +360,7 @@ def _proofs(plan: PriceAuditPlan, configuration: tuple[Path, ...], budget: Price
     )
     for path in (*sources, *configuration):
         budget.phase = "source_configuration_fingerprint"
-        proofs.append(file_proof(path))
-    cache.flush()
+        proofs.append(_hash_file(path, budget))
     return tuple(proofs)
 
 
@@ -898,9 +888,6 @@ def AuditPriceFields(
         ):
             raise ValueError("price_audit_unit_invalid")
     path = _checkpoint_path(checkpoint, plan.files + tuple((item, False) for item in configuration))
-    cache_path = _checkpoint_path(
-        PriceAuditProofPath(path), plan.files + tuple((item, False) for item in configuration),
-    ) if path is not None else None
     completed: tuple[_UnitResult, ...] = ()
     partial: _UnitResult | None = None
     proofs: tuple[_FileProof, ...] = ()
@@ -908,7 +895,6 @@ def AuditPriceFields(
     resumed = 0
     failure: str | None = None
     try:
-        plan = replace(plan, proof_cache=PriceAuditFileProofs(cache_path, budget.check))
         budget.phase = "metadata_source_stability"
         _check_metadata_sources(plan.metadata_sources, budget)
         proofs = _proofs(plan, configuration, budget, sqlite_policy)
@@ -1137,43 +1123,14 @@ def AuditHistoryPublication(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dic
     }
 
 
-def AuditHistoryYearHash(
-    root: Path,
-    year: int,
-    *,
-    checkpoint: Path,
-    sqlite_policy: SqliteIoPolicy,
-    budget: PriceAuditBudget,
-) -> dict[str, object]:
-    """Verify one annual file without loading the catalog or scanning price rows."""
-    if type(year) is not int or not 1900 <= year <= 9999:
-        raise ValueError("price_audit_hash_year_invalid")
-    database = root / f"prices_{year}.sqlite3"
-    sources = ((database, True),)
-    checkpoint_path = cast(Path, _checkpoint_path(checkpoint, sources))
-    cache_path = _checkpoint_path(PriceAuditProofPath(checkpoint_path), sources)
-    cache = PriceAuditFileProofs(cache_path, budget.check)
-    budget.phase = "sha256:" + database.name
-    proof = cache.verify(database, sqlite_policy)
-    return {"schema_version": "history-publication-audit", "status": "passed", "summary": {
-        "read_only": True, "source_data_writes": 0, "network_requests": 0,
-        "year": year, "annual_databases": 1, "database_sha256": proof.fingerprint.database_sha256,
-        "wal_sha256": proof.fingerprint.wal_sha256, "database_hash_reused": cache.reused_files > 0,
-        "sha256_validation": "passed", "scope": "one_annual_file_and_receipt_not_price_fields_or_date_coverage",
-    }}
-
-
 def _main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--runtime-config", type=Path, required=True)
     parser.add_argument("--price-field-audit", action="store_true")
-    parser.add_argument("--hash-year", type=int)
     parser.add_argument("--audit-checkpoint", type=Path)
-    parser.add_argument("--audit-budget-seconds", type=float)
+    parser.add_argument("--audit-budget-seconds", type=float, default=170.0)
     args = parser.parse_args()
-    if args.hash_year is not None and (args.price_field_audit or args.audit_checkpoint is None):
-        parser.error("--hash-year requires --audit-checkpoint without --price-field-audit")
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
 
@@ -1181,18 +1138,13 @@ def _main() -> int:
     def cancel(_signal: int, _frame: object) -> None:
         nonlocal stopped
         stopped = True
-    previous_signal = signal.signal(signal.SIGINT, cancel) if args.price_field_audit or args.hash_year is not None else None
-    seconds = args.audit_budget_seconds if args.audit_budget_seconds is not None else (5.0 if args.hash_year is not None else 170.0)
-    budget = PriceAuditBudget(seconds, cancelled=lambda: stopped)
+    previous_signal = signal.signal(signal.SIGINT, cancel) if args.price_field_audit else None
+    budget = PriceAuditBudget(args.audit_budget_seconds, cancelled=lambda: stopped)
     try:
         budget.check()
         policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
         budget.check()
-        if args.hash_year is not None:
-            report = AuditHistoryYearHash(
-                args.history_root, args.hash_year, checkpoint=args.audit_checkpoint, sqlite_policy=policy, budget=budget,
-            )
-        elif args.price_field_audit:
+        if args.price_field_audit:
             report = AuditHistoryPriceFields(
                 args.history_root, sqlite_policy=policy, budget=budget, checkpoint=args.audit_checkpoint,
                 configuration=(args.runtime_config, args.runtime_config.parent / "download.json"),
@@ -1200,13 +1152,9 @@ def _main() -> int:
         else:
             report = AuditHistoryPublication(args.history_root, sqlite_policy=policy)
     except PriceAuditInterrupted as exc:
-        interrupted: dict[str, object] = {
+        report = {"schema_version": "history-publication-audit", "status": "failed", "summary": {
             "field_audit": {"complete": False, "failure": "price_audit_" + str(exc), "phase": budget.phase},
-        } if args.hash_year is None else {
-            "year": args.hash_year, "sha256_validation": "incomplete", "failure": "price_audit_" + str(exc),
-            "phase": budget.phase, "source_data_writes": 0, "network_requests": 0,
-        }
-        report = {"schema_version": "history-publication-audit", "status": "failed", "summary": interrupted}
+        }}
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         summary: dict[str, object] = {
             "failure": "history_publication_audit_failed", "category": type(exc).__name__,
@@ -1218,8 +1166,6 @@ def _main() -> int:
                 "failure": str(exc) if isinstance(exc, ValueError) and str(exc).startswith("price_audit_") else "price_audit_metadata_failed",
                 "category": type(exc).__name__, "units": [], "actual_selected_rows": 0,
             }
-        if args.hash_year is not None:
-            summary.update(year=args.hash_year, sha256_validation="incomplete", source_data_writes=0, network_requests=0)
         report = {
             "schema_version": "history-publication-audit",
             "status": "failed",

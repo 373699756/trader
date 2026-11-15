@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import SqlitePublicationError, VerifySqliteFile
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,13 +57,13 @@ def InspectHistorySnapshot(root: Path, *, verify_partitions: bool = False, sqlit
     return _status(history, "published", None)
 
 
-def LoadPublishedHistorySnapshot(root: Path, *, sequence: int | None = None, sqlite_policy: SqliteIoPolicy) -> PublishedHistorySnapshot:
+def LoadPublishedHistorySnapshot(root: Path, *, sequence: int | None = None, sqlite_policy: SqliteIoPolicy, verification_cache: SqliteVerificationCache | None = None) -> PublishedHistorySnapshot:
     history_root = root
     control_path = history_root / "catalog.sqlite3"
     if not control_path.is_file():
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
     try:
-        VerifySqliteFile(control_path, sqlite_policy=sqlite_policy)
+        VerifySqliteFile(control_path, sqlite_policy=sqlite_policy, verification_cache=verification_cache)
         references: dict[str, PreparedReference] = {}
         state = HistoryControlIndex(control_path, sqlite_policy=sqlite_policy).load_published_state(sequence=sequence, references=references)
     except (HistoryControlError, SqlitePublicationError) as exc:

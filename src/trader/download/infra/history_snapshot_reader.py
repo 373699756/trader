@@ -37,6 +37,7 @@ from trader.download.infra.history_reference_index import (
     ReferenceFileStamp,
 )
 from trader.infra.sqlite_publication import SqlitePublicationError, VerifiedSqlitePublication, VerifySqliteFile
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 _CODE = re.compile(r"^[0-9]{6}$")
 
@@ -109,8 +110,9 @@ class _ReferenceVersion:
 
 
 class HistorySnapshotReader:
-    def __init__(self, root: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
+    def __init__(self, root: Path, *, sqlite_policy: SqliteIoPolicy, verification_cache: SqliteVerificationCache | None = None) -> None:
         self._sqlite_policy = sqlite_policy
+        self._verification_cache = verification_cache
         self._root = root
         self._verified: dict[tuple[str, int], _VerifiedPartition] = {}
         self._file_verifications: dict[str, VerifiedSqlitePublication] = {}
@@ -570,6 +572,7 @@ class HistorySnapshotReader:
                     sqlite_policy=self._sqlite_policy,
                     previous=previous,
                     check=check,
+                    verification_cache=self._verification_cache,
                 )
                 self._file_verifications[reference.relative_path] = identity
                 existing = self._verified.get((reference.relative_path, reference.calendar_month))

@@ -26,6 +26,7 @@ from trader.download.domain.history_download import HistoryDownloadTask
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPricePartitionError, HistoryPriceWriteSession
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.infra.sqlite_publication import PublishSqliteFile
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 
 @dataclass(frozen=True)
@@ -61,9 +62,10 @@ class HistoryDirectPrices:
         current_snapshot: HistorySnapshot | None,
         activity: HistorySqliteActivity,
         *,
-        fresh: bool = False, sqlite_policy: SqliteIoPolicy,
+        fresh: bool = False, sqlite_policy: SqliteIoPolicy, verification_cache: SqliteVerificationCache | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
+        self._verification_cache = verification_cache
         self._root = root
         self._sequence = sequence
         self._activity = activity
@@ -88,6 +90,7 @@ class HistoryDirectPrices:
             year,
             month,
             activity=self._activity, sqlite_policy=self._sqlite_policy,
+            verification_cache=self._verification_cache,
         )
 
     def read(self, code: str, dates: tuple[date, ...]) -> tuple[BaoStockDailyCell, ...]:
@@ -421,6 +424,7 @@ class HistoryDirectPrices:
                         self._root / label,
                         sqlite_policy=self._sqlite_policy,
                         check=self._activity.tick,
+                        verification_cache=self._verification_cache,
                     )
             progress("sealing_partitions", "completed", completed + 1, len(years), label)
         return tuple(references[month] for month in months)

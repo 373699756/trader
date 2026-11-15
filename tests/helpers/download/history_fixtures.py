@@ -59,6 +59,7 @@ def RunHistoryFixture(configuration, supplier, **options):
         exact_month_ranges=options.pop("exact_month_ranges", False),
         fingerprint_before_statistics=options.pop("fingerprint_before_statistics", False),
         reuse_catalog_fingerprint=options.pop("reuse_catalog_fingerprint", False),
+        verification_cache=options.pop("verification_cache", None),
     )
     return ExecuteHistorySync(
         configuration,

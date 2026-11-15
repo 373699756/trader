@@ -8,7 +8,10 @@ from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeGuard
+from typing import TYPE_CHECKING, TypeGuard
+
+if TYPE_CHECKING:
+    from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
@@ -200,10 +203,11 @@ def PublishSqliteFile(
     *,
     sqlite_policy: SqliteIoPolicy,
     check: Callable[[], None] | None = None,
+    verification_cache: SqliteVerificationCache | None = None,
 ) -> SqlitePublicationFingerprint:
     """Seal closed writer output once; this never reads a business table or changes the database."""
-    prepared = PrepareSqliteFilePublication(path, sqlite_policy=sqlite_policy, check=check)
-    return PublishPreparedSqliteFile(prepared, check=check)
+    prepared = PrepareSqliteFilePublication(path, sqlite_policy=sqlite_policy, check=check, verification_cache=verification_cache)
+    return PublishPreparedSqliteFile(prepared, check=check, verification_cache=verification_cache)
 
 
 def PrepareSqliteFilePublication(
@@ -211,15 +215,18 @@ def PrepareSqliteFilePublication(
     *,
     sqlite_policy: SqliteIoPolicy,
     check: Callable[[], None] | None = None,
+    verification_cache: SqliteVerificationCache | None = None,
 ) -> PreparedSqlitePublication:
     """Read the required full fingerprint without publishing a receipt."""
-    return _fingerprint(path, check, sqlite_policy)
+    previous = verification_cache.load(path) if verification_cache is not None else None
+    return _fingerprint(path, check, sqlite_policy, previous=previous)
 
 
 def PublishPreparedSqliteFile(
     prepared: PreparedSqlitePublication,
     *,
     check: Callable[[], None] | None = None,
+    verification_cache: SqliteVerificationCache | None = None,
 ) -> SqlitePublicationFingerprint:
     """Publish after read-only statistics and SQLite generation/stamp checks."""
     if check is not None:
@@ -238,6 +245,13 @@ def PublishPreparedSqliteFile(
     })
     if not _same_generation(prepared):
         raise SqlitePublicationError("sqlite_publication_changed_during_publish")
+    if verification_cache is not None:
+        receipt_stamp = _stamp(receipt)
+        assert receipt_stamp is not None
+        verification_cache.remember(path, VerifiedSqlitePublication(
+            prepared.database, prepared.wal, receipt_stamp, value, prepared.database_header, prepared.wal_header,
+            sqlite_readability_verified=False,
+        ))
     return value
 
 
@@ -248,6 +262,7 @@ def VerifySqliteFile(
     previous: VerifiedSqlitePublication | None = None,
     check: Callable[[], None] | None = None,
     file_only: bool = False,
+    verification_cache: SqliteVerificationCache | None = None,
 ) -> VerifiedSqlitePublication:
     """Verify original receipts/headers/full SHA; file_only leaves SQLite readability to its caller."""
     if check is not None:
@@ -258,6 +273,12 @@ def VerifySqliteFile(
     wal = _stamp(Path(f"{path}-wal"), optional=True)
     if database is None or receipt is None:
         raise AssertionError("required publication file stamp missing")
+    if verification_cache is not None and (
+        previous is None or previous.database != database or previous.wal != wal or previous.receipt != receipt
+    ):
+        cached = verification_cache.load(path)
+        if cached is not None and (previous is None or cached.database == database and cached.wal == wal):
+            previous = cached
     if previous is not None and (
         previous.database == database and previous.wal == wal and previous.receipt == receipt
         and (file_only or previous.sqlite_readability_verified)
@@ -268,10 +289,13 @@ def VerifySqliteFile(
     actual = _fingerprint(path, check, sqlite_policy, file_only=file_only, previous=previous)
     if expected != actual.fingerprint or receipt != _stamp(receipt_path):
         raise SqlitePublicationError("sqlite_publication_checksum_mismatch")
-    return VerifiedSqlitePublication(
+    verified = VerifiedSqlitePublication(
         actual.database, actual.wal, receipt, actual.fingerprint, actual.database_header, actual.wal_header,
         sqlite_readability_verified=not file_only,
     )
+    if verification_cache is not None:
+        verification_cache.remember(path, verified)
+    return verified
 
 
 __all__ = [

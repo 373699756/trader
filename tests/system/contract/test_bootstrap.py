@@ -207,11 +207,12 @@ def test_freeze_index_initializes_only_under_the_freeze_directory(tmp_path) -> N
     assert not (tmp_path / "runtime" / "freezes").exists()
 
 
-def test_build_system_reads_the_same_history_owned_by_download(tmp_path) -> None:
+@pytest.mark.parametrize("runtime_scope", (None, "v2"))
+def test_build_system_reads_the_same_history_owned_by_download(tmp_path, runtime_scope) -> None:
     from trader.download.infra.download_settings import LoadHistorySyncConfiguration
     from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
-    system = BuildSystem(_config(tmp_path))
+    system = BuildSystem(_config(tmp_path), runtime_scope=runtime_scope)
     native_data = system.scheduler._dependencies.data
     assert isinstance(native_data, MarketInputCoordinator)
     assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
@@ -219,6 +220,8 @@ def test_build_system_reads_the_same_history_owned_by_download(tmp_path) -> None
     configuration = LoadHistorySyncConfiguration(system.settings.project_root, system.settings.data_paths)
     assert native_data._market.history._history.publication._root == system.settings.data_paths.history  # noqa: SLF001
     assert native_data._market.history._outcome_history.publication._root == configuration.history_root  # noqa: SLF001
+    assert native_data._market.history._history.publication._verification_cache.directory == tmp_path / "runtime" / "sqlite-verification"
+    assert not (tmp_path / "runtime").exists()
 
 
 @pytest.mark.parametrize("hour,minute", ((8, 0), (10, 0), (12, 0), (14, 59), (15, 10), (20, 30)))

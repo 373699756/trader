@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 import time
 import threading
@@ -232,6 +233,7 @@ def ExecuteSync(
         raise ValueError("fill_requires_company_target")
     settings = LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
+    file_verification = SqliteVerificationCache(settings.runtime_dir / "sqlite-verification")
     paths = settings.data_paths
     clock = ShanghaiClock(_utc_now)
     report = report or CreateSyncProgress()
@@ -242,11 +244,12 @@ def ExecuteSync(
     qfq_configuration = LoadQfqWindowConfiguration(settings.project_root) if target != "company" else None
     company_configuration = LoadCompanySyncConfiguration(settings.project_root)
     failure_configuration = LoadDownloadFailureConfiguration(settings.project_root)
+    market_window = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy, verification_cache=file_verification) if target in ("market", "all") else None
     market_failures = (
         DownloadFailureDiagnostics(
-            partial(SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy).RecordDownloadFailure,
+            partial(market_window.RecordDownloadFailure,
                     configuration=failure_configuration), clock.now, report=report,
-        ) if target in ("market", "all") else None
+        ) if market_window is not None else None
     )
 
     def sync_market(reference: PreparedReference) -> QfqUpdateResult:
@@ -259,7 +262,7 @@ def ExecuteSync(
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             reference=reference, cancel_requested=cancel_requested,
             sqlite_policy=sqlite_policy, failures=market_failures,
-            price_review_budget=price_review_budget,
+            price_review_budget=price_review_budget, verification_cache=file_verification, primary=market_window,
         ))
 
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
@@ -270,7 +273,7 @@ def ExecuteSync(
                 shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
                 reference=reference, progress=history_progress,
                 cancel_requested=cancel_requested, disk_medium=settings.disk_medium,
-                price_review_budget=price_review_budget, sqlite_policy=sqlite_policy,
+                price_review_budget=price_review_budget, sqlite_policy=sqlite_policy, verification_cache=file_verification,
         ))
 
     return SyncData(
@@ -560,7 +563,7 @@ def ExecuteHistorySync(
     cancel = cancel_requested or (lambda: False)
     control = HistoryControlIndex(
         configuration.history_root / "catalog.sqlite3",
-        reference_path=configuration.reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy,
+        reference_path=configuration.reference_root / "company_st.sqlite3", sqlite_policy=sqlite_policy, verification_cache=resources.verification_cache,
     )
     tasks = HistoryDownloadIndex(configuration.history_root / "catalog.sqlite3", sqlite_policy=sqlite_policy)
     io = HistorySyncIo(
@@ -586,6 +589,7 @@ def ExecuteHistoryDownload(
     disk_medium: DiskMedium | None = None,
     sqlite_policy: SqliteIoPolicy,
     price_review_budget: PriceReviewBudget | None = None,
+    verification_cache: SqliteVerificationCache | None = None,
 ) -> HistoryMaintenanceStatus:
     disk_kind = DiskProbe(disk_medium).inspect(configuration.history_root).kind
     if reference is None:
@@ -640,7 +644,7 @@ def ExecuteHistoryDownload(
                 resources=HistorySyncResources(
                     history_pool, history_writer, disk_kind=disk_kind,
                     price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(configuration.price_review),
-                    shutdown=shutdown_budget,
+                    shutdown=shutdown_budget, verification_cache=verification_cache,
                 ),
             )
 
@@ -659,12 +663,14 @@ def ExecuteQfqDownload(
     sqlite_policy: SqliteIoPolicy,
     failures: DownloadFailurePort | None = None,
     price_review_budget: PriceReviewBudget | None = None,
+    verification_cache: SqliteVerificationCache | None = None,
+    primary: SQLiteQfqWindowCache | None = None,
 ) -> QfqUpdateResult:
     """Compose explicit short-window maintenance without building the server."""
     if report is None:
         report = CreateSyncProgress()
-    v2 = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy)
-    v3 = SQLiteQfqWindowCache(paths.daily_window, "v3", sqlite_policy=sqlite_policy)
+    v2 = primary if primary is not None else SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy, verification_cache=verification_cache)
+    v3 = SQLiteQfqWindowCache(paths.daily_window, "v3", sqlite_policy=sqlite_policy, verification_cache=verification_cache)
     if failures is None:
         failures = DownloadFailureDiagnostics(
             partial(v2.RecordDownloadFailure, configuration=failure_configuration), ShanghaiClock(now).now,
@@ -685,7 +691,7 @@ def ExecuteQfqDownload(
                 failures(DownloadFailureContext("reference_preparation", elapsed_seconds=time.monotonic() - prepared_started), exc)
             raise
     history_root = paths.history
-    history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=sqlite_policy))
+    history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=sqlite_policy, verification_cache=verification_cache))
     started = time.monotonic()
     qfq_pool = BoundedExecutor(
         worker_count=qfq_configuration.workers,
@@ -817,6 +823,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
 ) -> ApplicationSystem[SQLiteFreezeTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
+    file_verification = SqliteVerificationCache(settings.runtime_dir / "sqlite-verification")
     budget_path = settings.runtime_dir / "deepseek/state.json"
     if runtime_scope is not None:
         settings = replace(settings, runtime_dir=settings.runtime_dir / "profiles" / runtime_scope)
@@ -904,7 +911,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         references,
         eligibility=eligibility,
         training_settings=training_settings,
-        shared_market=shared_inputs.market if shared_inputs else None, sqlite_policy=sqlite_policy,
+        shared_market=shared_inputs.market if shared_inputs else None, sqlite_policy=sqlite_policy, verification_cache=file_verification,
     )
     review_cache = (
         shared_inputs.review_cache
@@ -1241,6 +1248,7 @@ def _build_market_data(
     training_settings: ProfileTrainingSettings | V1TrainingSettings,
     eligibility: CompanyEligibility,
     shared_market: market_feature_service.MarketFeatureService | None = None, sqlite_policy: SqliteIoPolicy,
+    verification_cache: SqliteVerificationCache | None = None,
 ) -> market_feature_service.MarketFeatureService:
     settings, strategy = context.settings, context.strategy
     paths = settings.data_paths
@@ -1250,7 +1258,7 @@ def _build_market_data(
     source_lanes = workers.source_lanes
     market_cache = workers.market_cache
     feature_builder = FeatureBuilder.from_settings(strategy, training_settings.momentum_horizons, market_cache)
-    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(paths.history, sqlite_policy=sqlite_policy))
+    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(paths.history, sqlite_policy=sqlite_policy, verification_cache=verification_cache))
     projection_owner = (
         shared_market.history.projection_owner
         if shared_market

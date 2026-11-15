@@ -47,6 +47,7 @@ from trader.download.infra.history_write_tuning import ChooseHistoryWriteTuning,
 from trader.infra.disk_types import DiskKind
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import PublishSqliteFile
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 from trader.infra.workers import WorkerExecutor
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ class HistorySyncResources:
     fingerprint_before_statistics: bool = False
     reuse_catalog_fingerprint: bool = False
     shutdown: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(30.0))
+    verification_cache: SqliteVerificationCache | None = None
 
 
 @dataclass(frozen=True)
@@ -140,7 +142,7 @@ class HistorySyncIo:
             return
         for path in sorted(self.configuration.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3")):
             if not Path(f"{path}.sha256").is_file():
-                PublishSqliteFile(path, sqlite_policy=self.sqlite_policy)
+                PublishSqliteFile(path, sqlite_policy=self.sqlite_policy, verification_cache=self.resources.verification_cache)
         if not self.resources.reuse_catalog_fingerprint or result.state != "completed":
             self.control.publish_file()
 
@@ -195,7 +197,7 @@ class HistorySyncIo:
             lambda: PublishHistoryProgress(self.progress, "persisting_partitions", "waiting"), self.cancel,
         )
         prices = HistoryDirectPrices(
-            root, inputs.batch.sequence, snapshot, activity, fresh=inputs.fresh, sqlite_policy=self.sqlite_policy,
+            root, inputs.batch.sequence, snapshot, activity, fresh=inputs.fresh, sqlite_policy=self.sqlite_policy, verification_cache=self.resources.verification_cache,
         )
         batch = _HistoryPriceBatch(
             self, inputs, prices, HistoryPriceRepair(root, sqlite_policy=self.sqlite_policy),
@@ -219,6 +221,7 @@ class HistorySyncIo:
             snapshot,
             HistorySqliteActivity(lambda: None, self.cancel),
             sqlite_policy=self.sqlite_policy,
+            verification_cache=self.resources.verification_cache,
         )
         return _CurrentHistoryReview(self, inputs, snapshot, prices, self._flow(inputs, prices, snapshot))
 
@@ -243,7 +246,7 @@ class HistorySyncIo:
             )
         for completed, path in enumerate(changed, 1):
             PublishHistoryProgress(self.progress, "sealing_partitions", "started", (completed - 1, len(changed)), path.name)
-            PublishSqliteFile(path, sqlite_policy=self.sqlite_policy)
+            PublishSqliteFile(path, sqlite_policy=self.sqlite_policy, verification_cache=self.resources.verification_cache)
             PublishHistoryProgress(self.progress, "sealing_partitions", "completed", (completed, len(changed)), path.name)
         self.control.publish_file()
 
