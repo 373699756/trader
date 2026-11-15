@@ -35,6 +35,7 @@ class HistoryOptions:
     repair_profile_year: int | None = None
     repair_profile_code: str | None = None
     price_field_audit: bool = False
+    audit_hash_year: int | None = None
     audit_checkpoint: Path | None = None
     audit_budget_seconds: float | None = None
     sqlite_page_sample_count: int = 1
@@ -65,3 +66,10 @@ class HistoryOptions:
     cninfo_cache_evidence: Path | None = None
     cninfo_cache_codes: tuple[str, ...] = ()
     cninfo_cache_candidate: Literal["baseline", "batched", "compare"] = "baseline"
+
+    @property
+    def effective_audit_budget_seconds(self) -> float:
+        if self.audit_budget_seconds is not None:
+            return self.audit_budget_seconds
+        available = self.command_timeout_seconds - 10
+        return min(5.0, available) if self.audit_hash_year is not None else available

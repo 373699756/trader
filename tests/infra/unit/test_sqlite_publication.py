@@ -101,6 +101,49 @@ def test_wal_changes_are_checked_even_when_main_file_is_unchanged(tmp_path):
             module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), previous=previous)
 
 
+def test_rewritten_receipt_is_checked_without_rehashing_unchanged_database(tmp_path, monkeypatch):
+    path = tmp_path / "prices.sqlite3"
+    _create(path)
+    module.PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
+    previous = module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture())
+    receipt = Path(str(path) + ".sha256")
+    receipt.write_bytes(receipt.read_bytes())
+
+    def forbidden(*_args):
+        pytest.fail("a receipt-only change must not reread the database body")
+
+    monkeypatch.setattr(module, "_digest", forbidden)
+    assert module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), previous=previous).fingerprint == previous.fingerprint
+    payload = json.loads(receipt.read_text())
+    payload["database_sha256"] = "0" * 64
+    receipt.write_text(json.dumps(payload))
+    with pytest.raises(module.SqlitePublicationError, match="checksum_mismatch"):
+        module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), previous=previous)
+
+
+def test_wal_only_change_hashes_only_the_changed_wal(tmp_path, monkeypatch):
+    path = tmp_path / "prices.sqlite3"
+    with SqliteSession(path, SqliteConnectionOptions(journal_mode="WAL")) as writer:
+        with SqliteTransaction(writer):
+            writer.run("CREATE TABLE prices(price REAL)")
+            writer.run("INSERT INTO prices VALUES(10)")
+        module.PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
+        previous = module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), file_only=True)
+        with SqliteTransaction(writer):
+            writer.run("UPDATE prices SET price=11")
+        module.PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
+        original = module._digest
+        calls = []
+
+        def tracked(source, size, check):
+            calls.append(source)
+            return original(source, size, check)
+
+        monkeypatch.setattr(module, "_digest", tracked)
+        module.VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), previous=previous, file_only=True)
+        assert calls == [Path(str(path) + "-wal")]
+
+
 def test_incomplete_or_cancelled_publication_never_creates_a_receipt(tmp_path):
     path = tmp_path / "prices.sqlite3"
     _create(path)

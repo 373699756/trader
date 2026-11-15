@@ -20,6 +20,15 @@
 
 同入口`field_audit.financial_sources`分别核对保留与最新报告八项、报告期及精确披露时点。`source_null`表示当前采集依据为空，`publication_missing`表示依据有值而正式值丢失，`source_revision_changed`另列未确认；不将来源空值认证为发行人未披露。汇总覆盖全部正式行，逐股缺项列表最多50条、每条最多8项；旧完整报告不能遮蔽最新报告缺项。`--company-field-replay-keys`也可选择减持依据，在隔离副本中核验正式字段证据及第二轮复用；来源并发变化、缺原文或仍有重复正文读取时保持degraded，不借用局部出证数签全库或性能通过。
 
+单年文件hash沿`download/history/publication --hash-year YEAR --audit-checkpoint /external/checkpoint.json`核对，只读该年库及WAL／回执，不加载catalog或扫描价格行；与`--price-field-audit`互斥。默认核验预算5秒、子进程期限15秒，可通过显式预算和更大的命令期限调整；超时保留未完成，不签通过。摘要缓存为同目录的`checkpoint.json.hashes.json`，每完成一个年库立即原子保存，后续超时不会丢弃已完成摘要。跨进程按绝对路径、设备／inode、大小、纳秒mtime／ctime及文件头复用；数据库、WAL、回执分别核对，只有变化的内容重新计算hash，回执变化仍须重新验证其声明。缓存损坏明确失败，不悄悄全库重算。缓存和报告／字段检查点必须使用不同的仓库外路径，不写业务库。
+
+```bash
+.venv/bin/python3 scripts/tools.py --business download --module history --action publication \
+  --history-root /external/data/market/history --hash-year 2026 \
+  --audit-budget-seconds 5 --command-timeout-seconds 15 \
+  --audit-checkpoint /external/history-checkpoint.json --report /external/hash-2026.json
+```
+
 真实价格字段与逐股日期深扫沿既有`download/history/publication`和`download/history/qfq`，显式加`--price-field-audit`；不加时保留原快审语义。两者只读数据库，分别报告实际选中行数、core NULL／非法类型／非有限数值／价格范围／OHLC次序／负量额、合法qfq辅助空值及raw原始辅助字段缺失。历史严格按正式快照各月的实际sequence选择观察，年度观察只提取一次到最多320万身份的内存SQLite索引，再顺序读年度修订，不逐行查询磁盘观察索引。manifest行数单列，不当作实际扫描数量；不会反推原始前收或把缺失涨幅填0。逐股日期按已发布本地参考的上市区间和交易日历核对，确认非交易、来源推定及未解释缺日分列；推定不作为明确停牌豁免。原始供应商报文和逐条修订hash未重算的界限在报告中保留，不以文件SHA正确代替字段正确。
 
 ```bash
@@ -34,7 +43,7 @@
   --audit-checkpoint /external/market-audit-checkpoint.json --report /external/market-fields.json
 ```
 
-`--audit-budget-seconds`覆盖SQL、SHA、解析及本地循环，总期限须比公共命令至少少10秒；省略时自动保留这10秒。超时／取消返回非0和`complete=false`，保留已完成单元与在途计数，不把未访问日期或上次已完成年度签成全库通过。公开JSON仍使用原报告schema身份，`summary.field_audit`新增分段证据，SHA、字段及SQLite完整性分别报告。可选`--audit-checkpoint`只允许显式仓库外路径，与报告、输入数据库、WAL、凭据及配置分离；源码、配置、正式发布身份及全部实际源文件／WAL摘要完全相同才复用完整年度或档位，空WAL存在与不存在也分别核对。输入变化明确拒绝旧检查点，不迁移或清空源资料；检查点原子写入，部分单元下次重扫，复用不免除本轮源指纹核验。
+`--audit-budget-seconds`覆盖SQL、SHA、解析及本地循环，总期限须比公共命令至少少10秒；省略时自动保留这10秒。超时／取消返回非0，字段深扫标`complete=false`，单年hash标`sha256_validation=incomplete`；保留已完成证据，不把未访问内容签成通过。公开JSON仍使用原报告schema身份，SHA、字段及SQLite完整性分别报告。字段深扫也复用上述hash缓存；源码、配置、正式发布身份及全部源文件／WAL摘要相同才复用完整年度或档位的字段计数，空WAL存在与不存在仍分别核对。字段输入变化继续明确拒绝旧字段检查点，独立文件摘要不因其它年份或配置变化而重算；不迁移或清空源资料。
 
 当前行业的批量协议核验沿同一`download/history/industry`动作，显式指定2–50个有序、不重复的六位代码、共同日期窗及全新仓库外目录。例如：
 

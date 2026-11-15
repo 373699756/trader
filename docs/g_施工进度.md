@@ -6,6 +6,10 @@
 
 ## 1. 待完成任务
 
+阶段371／价格审计按年复用文件摘要：completed（实现与隔离定向验证）。基线e6cb97dd。现有publication动作增加--hash-year单年文件SHA-256核验，跳过catalog、价格行及日期深扫，默认核验预算5秒／子进程期限15秒，超时明确incomplete。显式仓库外audit-checkpoint旁保存hashes.json缓存，逐年完成即原子提交；按路径、设备／inode、大小、纳秒mtime／ctime和文件头跨运行复用，只有变化的文件重算。统一SQLite发布primitive对主库、WAL及回执分别核对，回执或WAL变化不重算未变主库；同一WAL不重复hash。字段审计共享文件摘要，但字段计数仍要求精确输入一致，不把文件hash当逐行业务hash或字段正确性证明。缓存损坏明确失败，缓存／报告／字段检查点隔离，不新增格式版本或兼容迁移。
+验证：单年CLI子进程、跨运行复用、单年变化／WAL变化／回执篡改、配置变化不重算年库、取消后保留已完成年度、字段错误及字段检查点回归，去重35项通过；其中2项强化未变文件不得重hash的断言并复验通过。XML为`/tmp/trader-annual-hash-{final-tests,no-rehash,entry-wal}.xml`。初验修正fixture在连接未关闭时签回执的生命周期，改用封装连接并先关闭再发布；取消fixture区分文件摘要缓存与字段结果，未放宽异常和取消判据。6源码mypy（显式包根）、受影响严格Ruff、CLI帮助、完整diff Review及git diff --check通过；宽组已停止，未计为完整回归，未运行格式脚本或真实全库／性能／发布验收。
+未完成项／验收边界：本批代码无剩余，真实首次年度hash及全量逐日覆盖未重跑，历史未完成核验不签通过。只读库存初轮按日期阈值漏算周末检查，随后按运行时count(交易日>checked_on)>=5纠正为178股／1280股日到期，仍由正常sync有界复查；本批未触发补采。原始昨收／涨幅没有新增真实来源，继续留空，不回填推算值，不增加BaoStock全市场补采、不修改活动库或并行公司任务。
+
 阶段370／撤销历史和行情手动补缺：completed（实现与隔离定向验证）。基线22820cc8。按用户最新要求从Shell、PowerShell及独立CLI删除history／market fill和--repair-codes；组合根、应用用例、资源／端口、SQLite查询和尝试预约同步移除仅补缺模式、限定总体、辅助字段扫描、手工重开失败及专属结果计数，删除无消费者的选择判据和专用测试。普通sync的自动缺价处理、候选重放、断点和发布保护保持，company fill及独立CLI训练JSON／诊断保留；无隐藏入口或兼容分支。原repair工具删除手动补缺联网回放，仅保留已有自动恢复候选的年度隔离写入诊断，年份、证券及新隔离目录改为必填；未启用性能候选。Shell与PowerShell帮助全文对齐、旧Shadow及高级说明清理，README、b/d与scripts说明同步恢复边界。
 验证：入口71项、核心恢复／进度182项、失败修正及资格专项均通过；诊断扩展187项初验185通过、2失败，其中本批参数fixture补齐后专项通过，另1条未修改的串行探针fixture仍失败。按上述XML中同名用例后一次结果去重共446通过、1失败、0跳过；报告为`/tmp/trader-retire-price-fill-{entry,minimal-core,diagnostics,final-fixes,market-qualification-final,conflict-final}.xml`。冲突用例改为普通请求失败后核旧窗口保全，资格消费者按现行unknown放行纠正旧断言，不改生产ST规则。原长组扩展已主动停止且未计通过；较早宽集还遇到4.8已记录的_industry_cache旧断言失败，不恢复退役实现。受影响Ruff默认规则、20源码及5脚本mypy、最终3源码复验、bash -n、完整diff Review、旧引用清点和git diff --check通过；未运行格式脚本、真实下载、桌面或性能实测。
 未完成项／验收边界：本批实现无剩余；上述未修改的串行探针fixture失败仍保留，既有工程欠项不由本阶段关闭。无PowerShell运行时，只验证其静态入口及帮助一致性，未签Windows实机通过。活动历史／行情资料、公司数据、模型、冻结及预算保持原样，未执行删除重下，未混入并行公司年度字段施工。

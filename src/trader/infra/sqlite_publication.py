@@ -124,6 +124,7 @@ def _fingerprint(
     sqlite_policy: SqliteIoPolicy,
     *,
     file_only: bool = False,
+    previous: VerifiedSqlitePublication | None = None,
 ) -> PreparedSqlitePublication:
     if check is not None:
         check()
@@ -150,9 +151,15 @@ def _fingerprint(
         raise SqlitePublicationError("sqlite_publication_header_invalid")
     value = SqlitePublicationFingerprint(
         before.size,
-        _digest(path, before.size, check),
+        previous.fingerprint.database_sha256
+        if previous is not None and previous.database == before and previous.database_header == header
+        else _digest(path, before.size, check),
         wal.size if wal is not None else 0,
-        _digest(wal_path, wal.size, check) if wal is not None else None,
+        (
+            previous.fingerprint.wal_sha256
+            if previous is not None and previous.wal == wal and previous.wal_header == wal_header
+            else _digest(wal_path, wal.size, check)
+        ) if wal is not None else None,
     )
     prepared = PreparedSqlitePublication(path, before, wal, value, header, wal_header)
     if not _same_generation(prepared):
@@ -258,7 +265,7 @@ def VerifySqliteFile(
     ):
         return previous
     expected = _read_receipt(receipt_path)
-    actual = _fingerprint(path, check, sqlite_policy, file_only=file_only)
+    actual = _fingerprint(path, check, sqlite_policy, file_only=file_only, previous=previous)
     if expected != actual.fingerprint or receipt != _stamp(receipt_path):
         raise SqlitePublicationError("sqlite_publication_checksum_mismatch")
     return VerifiedSqlitePublication(

@@ -49,6 +49,7 @@ def BuildParser(
         repair_profile_year=None,
         repair_profile_code=None,
         price_field_audit=False,
+        audit_hash_year=None,
         audit_checkpoint=None,
         audit_budget_seconds=None,
         sqlite_page_sample_count=1,
@@ -146,6 +147,8 @@ def BuildParser(
         parser.add_argument('--price-field-audit', action='store_true', help='explicit full published field and per-stock date scan, no network or source writes')
         parser.add_argument('--audit-checkpoint', type=Path, help='external checkpoint; exact source/config/publication/file fingerprints required for resume')
         parser.add_argument('--audit-budget-seconds', type=float, help='total deep-audit deadline; reserve at least 10 seconds inside command timeout')
+    if action_identity == "history-publication":
+        parser.add_argument('--hash-year', dest='audit_hash_year', type=int, help='verify one annual file hash only; reuse unchanged files through audit-checkpoint')
     if action_identity == "history-daily-capability":
         parser.add_argument('--universe-size', dest='capability_universe_size', type=int, default=5453)
         parser.add_argument('--code', dest='capability_code', default='600519')
@@ -197,6 +200,7 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         repair_profile_year=args.repair_profile_year,
         repair_profile_code=args.repair_profile_code,
         price_field_audit=args.price_field_audit,
+        audit_hash_year=args.audit_hash_year,
         audit_checkpoint=ExternalPath(args.audit_checkpoint, "--audit-checkpoint"),
         audit_budget_seconds=args.audit_budget_seconds,
         sqlite_page_sample_count=args.sqlite_page_sample_count,
@@ -230,10 +234,14 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
     )
     if not math.isfinite(options.command_timeout_seconds) or not 0 < options.command_timeout_seconds <= 7200:
         raise ValueError("command timeout must be positive and must not exceed 7200 seconds")
-    if (options.audit_checkpoint is not None or options.audit_budget_seconds is not None) and not options.price_field_audit:
+    if options.audit_hash_year is not None and (
+        options.price_field_audit or options.audit_checkpoint is None or not 1900 <= options.audit_hash_year <= 9999
+    ):
+        raise ValueError("--hash-year requires a valid year and --audit-checkpoint, without --price-field-audit")
+    if (options.audit_checkpoint is not None or options.audit_budget_seconds is not None) and not (options.price_field_audit or options.audit_hash_year is not None):
         raise ValueError("audit checkpoint and budget require --price-field-audit")
-    if options.price_field_audit:
-        budget = options.audit_budget_seconds if options.audit_budget_seconds is not None else options.command_timeout_seconds - 10
+    if options.price_field_audit or options.audit_hash_year is not None:
+        budget = options.effective_audit_budget_seconds
         if not math.isfinite(budget) or not 0 < budget <= options.command_timeout_seconds - 10:
             raise ValueError("audit budget must be positive with ten seconds reserved inside command timeout")
     selected_source = bool(options.official_announcements or options.cninfo_query_codes or options.cninfo_cache_evidence)
@@ -346,6 +354,10 @@ def _validate_audit_outputs(options: HistoryOptions, report: str) -> None:
     if options.action_identity not in ("history-publication", "qfq-sqlite"):
         return
     outputs = ([Path(report)] if report != "-" else []) + ([options.audit_checkpoint] if options.audit_checkpoint is not None else [])
+    if options.audit_checkpoint is not None:
+        from scripts.download.history.price_file_proofs import PriceAuditProofPath
+
+        outputs.append(PriceAuditProofPath(options.audit_checkpoint))
     if not outputs:
         return
     from trader.infra.settings import LoadRuntimeSettings
@@ -369,9 +381,9 @@ def _validate_audit_outputs(options: HistoryOptions, report: str) -> None:
         directories.append(root)
         reference = root.parent / "reference" / "company_st.sqlite3"
         catalog = root / "catalog.sqlite3"
-        if catalog.is_symlink():
+        if options.audit_hash_year is None and catalog.is_symlink():
             BuildParser(options.action_identity).error("audit source/output separation cannot use a linked catalog")
-        if catalog.is_file():
+        if options.audit_hash_year is None and catalog.is_file():
             deadline = time.monotonic() + 1.0
             try:
                 with closing(sqlite3.connect(catalog.as_uri() + "?mode=ro", uri=True, timeout=1.0)) as connection:
@@ -388,6 +400,8 @@ def _validate_audit_outputs(options: HistoryOptions, report: str) -> None:
 
 
 def _require_audit_output_separation(outputs: Sequence[Path], directories: Sequence[Path], action: str) -> None:
+    if len({output.resolve() for output in outputs}) != len(outputs):
+        BuildParser(action).error("audit report, checkpoint and hash cache must use distinct paths")
     for output in outputs:
         target = output.resolve()
         if any(target == directory or target.is_relative_to(directory) or directory.is_relative_to(target) for directory in directories):
@@ -406,6 +420,7 @@ def _prevalidate_audit_outputs(args: argparse.Namespace) -> None:
             history_root=args.history_root.expanduser().resolve() if args.history_root is not None else None,
             qfq_database=args.qfq_database.expanduser().resolve() if args.qfq_database is not None else None,
             audit_checkpoint=args.audit_checkpoint.expanduser().resolve() if args.audit_checkpoint is not None else None,
+            audit_hash_year=args.audit_hash_year,
         )
         _validate_audit_outputs(inputs, args.report)
     except (OSError, RuntimeError, TypeError, ValueError):

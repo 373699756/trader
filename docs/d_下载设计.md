@@ -1088,6 +1088,8 @@ company的交付合同按第5.9–5.12节：字段取得、证据及数据库读
 
 ### 11.1 history、market及相邻公共能力
 
+价格审计按用户要求支持逐年文件hash：`download/history/publication --hash-year YEAR`只核对指定年库／WAL和发布回执，必须提供仓库外`--audit-checkpoint`以持久保存独立摘要缓存；不加载全量历史或逐行扫描。每年完成立即保存，文件身份、大小、纳秒mtime／ctime及文件头未变时复用已验证hash，只重算变化的文件；WAL或回执变化不强制重算未变的主库。字段深扫共享摘要缓存，但字段结果仍要求精确输入一致，hash通过不代替字段／日期覆盖通过。具体短时限、缓存路径和参数互斥见[scripts说明](../scripts/README.md)。
+
 | 现有文件与功能 | 现行选择、输入与输出 | 联网、写入及消费者 | 去留和目标职责 |
 | --- | --- | --- | --- |
 | `history_sources.py`、`history_fallback.py`：来源与raw/qfq样本 | `history`及组合profiles；代码、采样轮、worker、日数、来源、超时及腾讯host；JSON采样结果 | 联网；统一入口子进程，`test_history_sources.py`，`component/market_data_test_support.py`复用fallback | 保留有界来源检查；history/source。fallback是内部实现，不能成为第二个入口；测试辅助消费者一并切换 |

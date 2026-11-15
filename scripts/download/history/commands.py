@@ -168,7 +168,7 @@ def BuildCommands(
                 "--history-root", str(options.history_root), "--runtime-config", str(options.runtime_config),
                 *_field_audit_arguments(options),
             ),
-            common_timeout,
+            min(common_timeout, options.effective_audit_budget_seconds + 10) if options.audit_hash_year is not None else common_timeout,
         ),)
     elif options.action_identity == "history-source-compare":
         commands = (DiagnosticCommand(
@@ -319,11 +319,12 @@ def BuildCommands(
 
 
 def _field_audit_arguments(options: HistoryOptions) -> tuple[str, ...]:
-    if not options.price_field_audit:
+    if not options.price_field_audit and options.audit_hash_year is None:
         return ()
-    budget = options.audit_budget_seconds if options.audit_budget_seconds is not None else options.command_timeout_seconds - 10
+    budget = options.effective_audit_budget_seconds
     return (
-        "--price-field-audit", "--audit-budget-seconds", str(budget),
+        *(("--hash-year", str(options.audit_hash_year)) if options.audit_hash_year is not None else ("--price-field-audit",)),
+        "--audit-budget-seconds", str(budget),
         *(("--audit-checkpoint", str(options.audit_checkpoint)) if options.audit_checkpoint is not None else ()),
     )
 

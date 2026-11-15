@@ -30,6 +30,7 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.history_revision_codec import RevisionColumnValues, RevisionFromColumns
 from trader.infra.sqlite_codec import EncodeDate, EncodeHash
+from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.infra.sqlite_publication import PublishSqliteFile
 
 
@@ -42,8 +43,8 @@ def _seed_history(root: Path, *, days: tuple[date, ...] | None = None) -> None:
 
 
 def _edit(path: Path, sql: str, arguments: tuple[object, ...] = ()) -> None:
-    with sqlite3.connect(path) as connection:
-        connection.execute(sql, arguments)
+    with SqliteSession(path) as connection, SqliteTransaction(connection):
+        connection.run(sql, arguments)
     PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
 
 
@@ -341,6 +342,8 @@ def test_checkpoint_exact_inputs_reuse_only_completed_units(tmp_path, monkeypatc
         pytest.fail("an exactly matching completed annual scan must be reused")
 
     monkeypatch.setattr(audit, "_scan_unit", unexpected)
+    monkeypatch.setattr(audit, "_hash_file", unexpected)
+    monkeypatch.setattr("trader.infra.sqlite_publication._digest", unexpected)
     resumed = _history_report(root, checkpoint)
     assert resumed["resumed_units"] == 1 and resumed["actual_selected_rows"] == 6
 
@@ -364,7 +367,7 @@ def test_checkpoint_rejects_changed_wal_existence(tmp_path):
     assert fields["failure"] == "price_audit_checkpoint_fingerprint_mismatch"
 
 
-def test_checkpoint_rejects_changed_configuration_bytes(tmp_path):
+def test_checkpoint_rejects_changed_configuration_bytes(tmp_path, monkeypatch):
     root = tmp_path / "history"
     _seed_history(root)
     configuration = tmp_path / "config" / "audit.json"
@@ -377,6 +380,11 @@ def test_checkpoint_rejects_changed_configuration_bytes(tmp_path):
     assert "schema_version" not in saved
     configuration.write_text('{"sample":2}', encoding="utf-8")
 
+    def unexpected(*_args):
+        pytest.fail("a configuration change must not rehash unchanged annual databases")
+
+    monkeypatch.setattr("trader.infra.sqlite_publication._digest", unexpected)
+
     changed = audit.AuditHistoryPriceFields(root, sqlite_policy=SqlitePolicyFixture(), budget=audit.PriceAuditBudget(30), checkpoint=checkpoint, configuration=(configuration,))
 
     assert changed["summary"]["field_audit"]["failure"] == "price_audit_checkpoint_fingerprint_mismatch"
@@ -388,6 +396,11 @@ def test_checkpoint_rejects_changed_source_digest(tmp_path, monkeypatch):
     checkpoint = tmp_path / "checkpoint.json"
     assert _history_report(root, checkpoint)["complete"] is True
     original = audit._hash_file
+    # Losing the digest cache requires a fresh proof; field checkpoints still
+    # reject any different source digest rather than borrowing old counts.
+    from scripts.download.history.price_file_proofs import PriceAuditProofPath
+
+    PriceAuditProofPath(checkpoint).unlink()
 
     def changed(path, budget):
         proof = original(path, budget)
@@ -493,6 +506,7 @@ def test_checkpoint_encoding_and_fsync_check_same_cancellation_budget(tmp_path, 
     _seed_history(root)
     checkpoint = tmp_path / "checkpoint.json"
     stopped = False
+    budget = audit.PriceAuditBudget(30, cancelled=lambda: stopped)
     if phase == "encoding":
         original_dumps = json.dumps
 
@@ -510,14 +524,18 @@ def test_checkpoint_encoding_and_fsync_check_same_cancellation_budget(tmp_path, 
         def fsync(descriptor):
             nonlocal stopped
             original_fsync(descriptor)
-            stopped = True
+            if budget.phase == "checkpoint:fsync":
+                stopped = True
 
         monkeypatch.setattr(audit.os, "fsync", fsync)
-    report = audit.AuditHistoryPriceFields(root, sqlite_policy=SqlitePolicyFixture(), budget=audit.PriceAuditBudget(30, cancelled=lambda: stopped), checkpoint=checkpoint)
+    report = audit.AuditHistoryPriceFields(root, sqlite_policy=SqlitePolicyFixture(), budget=budget, checkpoint=checkpoint)
     fields = report["summary"]["field_audit"]
     assert fields["complete"] is False and fields["failure"] == "price_audit_cancelled"
     assert fields["completed_units"] == 1 and fields["actual_selected_rows"] == 6
-    assert not checkpoint.exists() and not tuple(tmp_path.glob("checkpoint.json.*"))
+    from scripts.download.history.price_file_proofs import PriceAuditProofPath
+
+    assert not checkpoint.exists()
+    assert tuple(tmp_path.glob("checkpoint.json.*")) == (PriceAuditProofPath(checkpoint),)
 
 
 def test_qfq_scan_validates_both_binding_hashes_and_fields(tmp_path):
