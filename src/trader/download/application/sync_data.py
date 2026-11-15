@@ -10,7 +10,7 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.application.download_failure import DownloadFailurePort
-from trader.download.domain.download_failure import DownloadFailureContext
+from trader.download.domain.download_failure import DownloadFailureContext, DownloadValidationFailure
 
 SyncTarget = Literal["all", "history", "market", "company"]
 
@@ -24,6 +24,8 @@ class SyncDatabaseError(RuntimeError):
 
 
 def _failure_category(error: BaseException) -> str:
+    if isinstance(error, DownloadValidationFailure):
+        return str(error)
     return error.category if isinstance(error, SyncDatabaseError) else type(error).__name__
 
 
