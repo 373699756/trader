@@ -351,18 +351,28 @@ class HistoryPricePartition:
         """Compare bounded incoming keys with their latest visible price identity, read-only."""
         return tuple(item for batch in self.iter_changed_batches(revisions) for item in batch)
 
-    def has_observations_after(self, sequence: int) -> bool:
+    def changed_months_since(self, references: tuple[HistorySnapshotPartition, ...]) -> frozenset[int]:
+        """Probe one annual sequence index, retaining each month's publication fence."""
+        if not references:
+            return frozenset()
+        sequences = {reference.calendar_month: reference.sequence for reference in references}
+        if len(sequences) != len(references) or any(reference.calendar_year != self._calendar_year for reference in references):
+            raise ValueError("history change probe requires distinct months from one annual file")
         with (
             closing(self._read_connection()) as connection,
             self._activity.watch(connection) if self._activity else nullcontext(),
         ):
-            return (
-                connection.run(
-                    "SELECT 1 FROM daily_price_observation WHERE sync_sequence>? AND trade_date>=? AND trade_date<? LIMIT 1",
-                    (sequence, *self._month_bounds()),
-                ).fetchone()
-                is not None
-            )
+            self._require_metadata(connection)
+            changed: set[int] = set()
+            for day, sequence in connection.run(
+                "SELECT trade_date,MAX(sync_sequence) FROM daily_price_observation "
+                "INDEXED BY history_price_sequence_idx WHERE sync_sequence>? GROUP BY trade_date",
+                (min(sequences.values()),),
+            ):
+                month = DecodeDate(day).month
+                if month in sequences and sequence > sequences[month]:
+                    changed.add(month)
+            return frozenset(changed)
 
     def iter_changed_batches(
         self, revisions: Iterable[HistoryRevision]

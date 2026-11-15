@@ -23,6 +23,7 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 from trader.infra.sqlite_publication import (
     PreparedSqlitePublication,
     PrepareSqliteFilePublication,
@@ -164,9 +165,10 @@ class HistoryPublicationMeasurement:
             *,
             sqlite_policy: SqliteIoPolicy,
             check: Callable[[], None] | None = None,
+            verification_cache: SqliteVerificationCache | None = None,
         ) -> SqlitePublicationFingerprint:
             with self.phase("file_seal", path.name) as record:
-                fingerprint = PublishSqliteFile(path, sqlite_policy=sqlite_policy, check=check)
+                fingerprint = PublishSqliteFile(path, sqlite_policy=sqlite_policy, check=check, verification_cache=verification_cache)
                 record.update({
                     "database_bytes": fingerprint.database_size, "database_sha256": fingerprint.database_sha256,
                     "wal_bytes": fingerprint.wal_size, "wal_sha256": fingerprint.wal_sha256,
@@ -178,9 +180,10 @@ class HistoryPublicationMeasurement:
             *,
             sqlite_policy: SqliteIoPolicy,
             check: Callable[[], None] | None = None,
+            verification_cache: SqliteVerificationCache | None = None,
         ) -> PreparedSqlitePublication:
             with self.phase("file_fingerprint", path.name) as record:
-                prepared = PrepareSqliteFilePublication(path, sqlite_policy=sqlite_policy, check=check)
+                prepared = PrepareSqliteFilePublication(path, sqlite_policy=sqlite_policy, check=check, verification_cache=verification_cache)
                 record["database_bytes"] = prepared.fingerprint.database_size
                 record["wal_bytes"] = prepared.fingerprint.wal_size
                 return prepared
@@ -189,9 +192,10 @@ class HistoryPublicationMeasurement:
             prepared: PreparedSqlitePublication,
             *,
             check: Callable[[], None] | None = None,
+            verification_cache: SqliteVerificationCache | None = None,
         ) -> SqlitePublicationFingerprint:
             with self.phase("file_receipt", prepared.path.name) as record:
-                fingerprint = PublishPreparedSqliteFile(prepared, check=check)
+                fingerprint = PublishPreparedSqliteFile(prepared, check=check, verification_cache=verification_cache)
                 record.update({
                     "database_bytes": fingerprint.database_size, "database_sha256": fingerprint.database_sha256,
                     "wal_bytes": fingerprint.wal_size, "wal_sha256": fingerprint.wal_sha256,
@@ -205,7 +209,7 @@ class HistoryPublicationMeasurement:
                 self._stack.enter_context(patch.object(module, "PublishSqliteFile", measured_publish))
             for owner, name, replacement in (
                 (HistoryPricePartition, "seal_months", measured_seal),
-                (HistoryPricePartition, "has_observations_after", self._timed("change_probe", HistoryPricePartition.has_observations_after)),
+                (HistoryPricePartition, "changed_months_since", self._timed("change_probe", HistoryPricePartition.changed_months_since)),
                 (HistoryDirectPrices, "close_pipeline", self._timed("writer_close", HistoryDirectPrices.close_pipeline)),
                 (HistoryDirectPrices, "publishable_partitions", self._timed("partitions_total", HistoryDirectPrices.publishable_partitions, profile=False)),
                 (HistoryControlIndex, "publish_file", self._timed("catalog_seal", HistoryControlIndex.publish_file)),

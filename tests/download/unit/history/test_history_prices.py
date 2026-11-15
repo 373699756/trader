@@ -659,6 +659,37 @@ def test_multi_month_seal_uses_one_latest_observation_query_and_matches_individu
     assert not any("JOIN daily_price_revision" in statement for statement in statements)
 
 
+@pytest.mark.parametrize("changed_month", (None, 1, 2))
+def test_annual_change_probe_uses_sequence_index_and_each_months_fence(tmp_path: Path, changed_month) -> None:
+    path = tmp_path / "prices_2026.sqlite3"
+    writer = HistoryPricePartition(path, 2026, 1, sqlite_policy=SqlitePolicyFixture())
+    writer.initialize()
+    writer.save_revisions((_revision(date(2026, 1, 30), 1, 10.0),))
+    january = writer.seal(1)
+    february_writer = HistoryPricePartition(path, 2026, 2, sqlite_policy=SqlitePolicyFixture())
+    february_writer.save_revisions((_revision(date(2026, 2, 2), 2, 20.0),))
+    february = february_writer.seal(2)
+    if changed_month == 1:
+        writer.save_revisions((_revision(date(2026, 1, 30), 3, 11.0),))
+    elif changed_month == 2:
+        # The price is identical, but its new observation must still advance the month.
+        february_writer.save_revisions((_revision(date(2026, 2, 2), 3, 20.0),))
+    march = HistoryPricePartition(path, 2026, 3, sqlite_policy=SqlitePolicyFixture())
+    march.save_revisions((_revision(date(2026, 3, 2), 4, 30.0),))
+    statements: list[str] = []
+    reader = HistoryPricePartition(path, 2026, 1, statement_trace=statements.append, sqlite_policy=SqlitePolicyFixture())
+
+    actual = reader.changed_months_since((january, february))
+
+    assert actual == (frozenset() if changed_month is None else frozenset((changed_month,)))
+    queries = tuple(statement for statement in statements if "FROM daily_price_observation" in statement)
+    assert len(queries) == 1
+    with SqliteSession(path) as connection:
+        plan = tuple(str(row[3]) for row in connection.run("EXPLAIN QUERY PLAN " + queries[0]))
+    assert any("SEARCH" in detail and "history_price_sequence_idx" in detail for detail in plan)
+    assert not any("SCAN daily_price_observation" in detail for detail in plan)
+
+
 def test_batch_verification_keeps_each_month_observation_sequence(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "prices_2026.sqlite3"
     writer = HistoryPricePartition(path, 2026, 1, sqlite_policy=SqlitePolicyFixture())

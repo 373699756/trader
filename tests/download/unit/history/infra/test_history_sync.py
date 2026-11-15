@@ -22,6 +22,8 @@ from trader.download.domain.history_price_qualification import QualifyPriceOverl
 
 
 from trader.download.domain.history_sync import HistorySyncProgress
+from trader.download.domain.history_control import HistorySnapshot
+from trader.download.domain.history_revision import HistoryRevision
 
 
 from trader.download.application.download_history import DownloadHistoryUseCase
@@ -32,6 +34,8 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPriceWriteSession
+from trader.download.infra.history_direct_prices import HistoryDirectPrices
+from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 
@@ -129,10 +133,8 @@ def test_initial_cross_month_sync_batches_publication_proofs(tmp_path: Path) -> 
     assert tuple(
         (value.state, value.completed_units, value.total_units, value.current_item) for value in checking
     ) == (
-        ("started", 0, 2, "2026-01"),
-        ("completed", 1, 2, "2026-01"),
-        ("started", 1, 2, "2026-02"),
-        ("completed", 2, 2, "2026-02"),
+        ("started", 0, 1, "prices_2026.sqlite3"),
+        ("completed", 1, 1, "prices_2026.sqlite3"),
     )
     sealing = tuple(value for value in progress.values if value.stage == "sealing_partitions")
     assert tuple(
@@ -148,8 +150,6 @@ def test_initial_cross_month_sync_batches_publication_proofs(tmp_path: Path) -> 
 def test_incremental_partition_check_heartbeats_preserve_the_published_snapshot(
     tmp_path, monkeypatch, cancel_during_check,
 ):
-    from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     config = _configuration(tmp_path)
     assert RunHistoryFixture(config, FakeSupplier(days), clock=lambda: NOW).state == "completed"
@@ -157,19 +157,19 @@ def test_incremental_partition_check_heartbeats_preserve_the_published_snapshot(
     progress = ProgressRecorder()
     cancelled = False
     elapsed = 0.0
-    original_check = HistoryPricePartition.has_observations_after
+    original_check = HistoryPricePartition.changed_months_since
 
     def advance():
         nonlocal elapsed
         elapsed += 5.0
         return elapsed
 
-    def check(prices, sequence):
+    def check(prices, references):
         nonlocal cancelled
         assert progress.values[-1].stage == "checking_partitions"
         assert any(value.stage == "checking_partitions" and value.state == "started" for value in progress.values)
         before = len(progress.values)
-        result = original_check(prices, sequence)
+        result = original_check(prices, references)
         assert len(progress.values) > before
         assert progress.values[-1].stage == "checking_partitions"
         assert progress.values[-1].state == "waiting"
@@ -181,7 +181,7 @@ def test_incremental_partition_check_heartbeats_preserve_the_published_snapshot(
         history_sync_module, "HistorySqliteActivity",
         lambda report, cancel: HistorySqliteActivity(report, cancel, monotonic=advance),
     )
-    monkeypatch.setattr(HistoryPricePartition, "has_observations_after", check)
+    monkeypatch.setattr(HistoryPricePartition, "changed_months_since", check)
     advanced = (*days[1:], date(2026, 9, 11))
     result = RunHistoryFixture(
         config, FakeSupplier(advanced), clock=lambda: NOW + timedelta(days=1),
@@ -194,6 +194,54 @@ def test_incremental_partition_check_heartbeats_preserve_the_published_snapshot(
     else:
         assert _snapshot(tmp_path).sequence == previous.sequence + 1
     assert HistorySnapshotReader(tmp_path, sqlite_policy=SqlitePolicyFixture()).read_day(days[-1], previous)
+
+
+@pytest.mark.parametrize("cancel_during_check", (False, True))
+def test_annual_publication_check_recovers_new_observations_and_keeps_unchanged_months(tmp_path, monkeypatch, cancel_during_check):
+    days = (date(2025, 12, 31), date(2026, 1, 2), date(2026, 2, 2))
+    references = []
+    for day in days:
+        partition = HistoryPricePartition(tmp_path / f"prices_{day.year}.sqlite3", day.year, day.month, sqlite_policy=SqlitePolicyFixture())
+        partition.initialize()
+        cell = _download("600001", (day,)).batch.cells[0]
+        partition.save_revisions((HistoryRevision(1, "main", cell, None, None, None),))
+        references.append(partition.seal(1))
+    previous = HistorySnapshot(1, days[-1], days[-1], "a" * 64, "b" * 64, "c" * 64, tuple(references))
+    january = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 1, sqlite_policy=SqlitePolicyFixture())
+    old_rows = january.read_day(days[1], snapshot_sequence=previous.sequence)
+    january.save_revisions((replace(old_rows[0], first_seen_sequence=previous.sequence + 1),))
+    probes = []
+    cancelled = False
+    original = HistoryPricePartition.changed_months_since
+    receipts = {path: path.read_bytes() for path in tmp_path.glob("*.sha256")}
+
+    def probe(partition, references):
+        nonlocal cancelled
+        probes.append((partition._calendar_year, tuple(item.calendar_month for item in references)))
+        cancelled = cancel_during_check and partition._calendar_year == 2026
+        return original(partition, references)
+
+    monkeypatch.setattr(HistoryPricePartition, "changed_months_since", probe)
+    prices = HistoryDirectPrices(
+        tmp_path, previous.sequence + 1, previous, HistorySqliteActivity(lambda: None, lambda: cancelled),
+        sqlite_policy=SqlitePolicyFixture(),
+    )
+    if cancel_during_check:
+        with pytest.raises(KeyboardInterrupt):
+            prices.publishable_partitions(days, lambda *_: None)
+        assert {path: path.read_bytes() for path in receipts} == receipts
+        assert january.read_day(days[1], snapshot_sequence=previous.sequence) == old_rows
+        return
+    actual = prices.publishable_partitions(days, lambda *_: None)
+
+    assert probes == [(2025, (12,)), (2026, (1, 2))]
+    before = {(item.calendar_year, item.calendar_month): item for item in previous.partitions}
+    after = {(item.calendar_year, item.calendar_month): item for item in actual}
+    assert after[(2025, 12)] == before[(2025, 12)]
+    assert after[(2026, 2)] == before[(2026, 2)]
+    assert after[(2026, 1)].sequence == previous.sequence + 1
+    assert after[(2026, 1)].row_count == before[(2026, 1)].row_count
+    assert january.read_day(days[1], snapshot_sequence=previous.sequence) == old_rows
 
 
 def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(

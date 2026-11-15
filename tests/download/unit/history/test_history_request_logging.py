@@ -65,7 +65,7 @@ def test_reuse_and_write_wait_do_not_invent_supplier_requests():
     clock[0] = 5
     report.heartbeat()
     line = stream.getvalue().splitlines()[-1]
-    assert "价格写入" in line and "请求 0" in line and "写入 8" in line
+    assert "价格写入" in line and "请求 0" in line and "提交中 8" in line
     progress.publish(HistorySyncProgress("tencent_history", "completed", 1051, 4402, "000001", pipeline=replace(pipeline, queued_codes=0, writing_codes=0)))
     assert "复用确认000001" in stream.getvalue().splitlines()[-1]
 

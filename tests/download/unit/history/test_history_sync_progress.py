@@ -384,35 +384,35 @@ def test_partition_sealing_reports_start_and_completion_without_wait_heartbeats(
     assert all("prices_2026.sqlite3" in line for line in lines)
 
 
-def test_publication_checks_keep_stage_elapsed_across_months(capsys) -> None:
+def test_publication_checks_keep_stage_elapsed_across_years(capsys) -> None:
     clock = [100.0]
     progress = StderrHistorySyncProgress(monotonic=lambda: clock[0])
     clock[0] = 101
-    progress.publish(HistorySyncProgress("checking_partitions", "started", 0, 2, "2026-01"))
+    progress.publish(HistorySyncProgress("checking_partitions", "started", 0, 2, "prices_2025.sqlite3"))
     clock[0] = 106
-    progress.publish(HistorySyncProgress("checking_partitions", "waiting", 0, 2, "2026-01"))
+    progress.publish(HistorySyncProgress("checking_partitions", "waiting", 0, 2, "prices_2025.sqlite3"))
     progress._output.heartbeat()
     clock[0] = 107
-    progress.publish(HistorySyncProgress("checking_partitions", "completed", 1, 2, "2026-01"))
+    progress.publish(HistorySyncProgress("checking_partitions", "completed", 1, 2, "prices_2025.sqlite3"))
     clock[0] = 108
-    progress.publish(HistorySyncProgress("checking_partitions", "started", 1, 2, "2026-02"))
+    progress.publish(HistorySyncProgress("checking_partitions", "started", 1, 2, "prices_2026.sqlite3"))
     clock[0] = 113
-    progress.publish(HistorySyncProgress("checking_partitions", "waiting", 1, 2, "2026-02"))
+    progress.publish(HistorySyncProgress("checking_partitions", "waiting", 1, 2, "prices_2026.sqlite3"))
     progress._output.heartbeat()
     clock[0] = 114
-    progress.publish(HistorySyncProgress("checking_partitions", "completed", 2, 2, "2026-02"))
+    progress.publish(HistorySyncProgress("checking_partitions", "completed", 2, 2, "prices_2026.sqlite3"))
 
     lines = _compact_log(capsys.readouterr().err).splitlines()
     assert len(lines) == 3
-    assert "发布分区检查 00:00:00 | 开始 | 0/2" in lines[0]
-    assert "月份 2026-01" in lines[0]
-    assert "发布分区检查 00:00:06 | 处理中 | 1/2" in lines[1]
-    assert "月份 2026-02" in lines[-1]
-    assert "发布分区检查 00:00:13 | 完成 | 2/2" in lines[-1]
+    assert "年库变更检查 00:00:00 | 开始 | 0/2" in lines[0]
+    assert "数据库 prices_2025.sqlite3" in lines[0]
+    assert "年库变更检查 00:00:06 | 处理中 | 1/2" in lines[1]
+    assert "数据库 prices_2026.sqlite3" in lines[-1]
+    assert "年库变更检查 00:00:13 | 完成 | 2/2" in lines[-1]
 
 
 @pytest.mark.parametrize("stage,items", [
-    ("checking_partitions", ("2026-01", "2026-02")),
+    ("checking_partitions", ("prices_2025.sqlite3", "prices_2026.sqlite3")),
     ("sealing_partitions", ("prices_2025.sqlite3", "prices_2026.sqlite3")),
 ])
 def test_verification_prints_every_changed_count_even_within_one_second(stage, items, capsys):
@@ -616,7 +616,7 @@ def test_tencent_waiting_only_prints_compact_pipeline_counts(capsys) -> None:
     assert "history·Tencent下载" in output
     compact = _compact_log(output)
     assert "已确认 176/4401" in compact
-    assert "请求 0 待写 16 写入 0" in compact
+    assert "请求 0 待确认 16 提交中 0" in compact
     assert "读库/校验" in compact
     assert all(text not in output for text in ("累计", "回压", "在途", "待派发", "本批待确认"))
 

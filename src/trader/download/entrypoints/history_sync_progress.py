@@ -49,7 +49,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "preparing_partitions": "准备月分片",
     "downloading_codes": "股票下载",
     "preparing_publication": "发布准备",
-    "checking_partitions": "发布分区检查",
+    "checking_partitions": "年库变更检查",
     "sealing_partitions": "数据库文件校验",
     "publishing_snapshot": "发布快照",
     "confirming_download": "下载断点提交",
@@ -74,7 +74,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "tencent_history": "股票",
     "persisting_partitions": "月份",
     "sealing_partitions": "数据库",
-    "checking_partitions": "月份",
+    "checking_partitions": "数据库",
     "history_published_gaps": "月份",
     "history_gap_resume": "处理项",
     "baostock_repair": "股票",
@@ -147,8 +147,8 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
             f"本轮网络返回 {ProgressNumber(pipeline.network_completed_codes)}股",
             f"本轮本地复用 {ProgressNumber(pipeline.reused_codes)}股",
             f"已确认 {ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}",
-            f"待写 {ProgressNumber(pipeline.queued_codes - pipeline.writing_codes)}",
-            f"写入中 {ProgressNumber(pipeline.writing_codes)}股",
+            f"待确认 {ProgressNumber(pipeline.queued_codes - pipeline.writing_codes)}股",
+            f"提交中 {ProgressNumber(pipeline.writing_codes)}股",
         )
     return _download_summary_parts(progress)
 

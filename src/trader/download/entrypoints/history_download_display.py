@@ -117,7 +117,7 @@ class HistoryDownloadDisplay:
         fields = (
             f"已确认{self._completed:6d}/{latest.total_units:6d}",
             PadProgressText(ShortProgressText(action, 26), 26),
-            f"请求{len(self._requests):2d} 待写{queued:3d} 写入{writing:2d}",
+            f"请求{len(self._requests):2d} 待确认{queued:3d} 提交中{writing:2d}",
             PadProgressText(age or f"距确认{int(now - self._confirmed_at)}秒", 16),
             self._estimate(now),
         )

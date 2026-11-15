@@ -22,7 +22,8 @@ from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.bootstrap import ExecuteHistorySync
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.sqlite_publication import SqlitePublicationError
+from trader.infra.sqlite_publication import SqlitePublicationError, VerifySqliteFile
+from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 
 def _published_fixture(directory: Path) -> Path:
@@ -94,6 +95,25 @@ def test_sync_profile_separates_duplicate_catalog_seals_and_keeps_original_resul
     assert len(catalog_files) == 2
     assert catalog_files[0]["database_sha256"] == catalog_files[1]["database_sha256"]
     assert any(item["phase"] == "annual_seal" and item["parent_id"] is not None for item in phases)
+
+
+def test_measurement_preserves_runtime_cache_through_each_publication_path(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "prices_2026.sqlite3"
+    cache = SqliteVerificationCache(tmp_path / "runtime")
+    prices = HistoryPricePartition(path, 2026, 1, sqlite_policy=SqlitePolicyFixture(), verification_cache=cache)
+    prices.initialize()
+    measurement = HistoryPublicationMeasurement(profiler=False)
+    with measurement:
+        references = prices.seal_months((1, 2), 1, fingerprint_before_statistics=True)
+        assert prices.changed_months_since(references) == frozenset()
+        prices.seal_months((1,), 1)
+
+    def forbidden(*_args):
+        pytest.fail("diagnostic wrappers must preserve the producer's reusable file digest")
+
+    monkeypatch.setattr("trader.infra.sqlite_publication._digest", forbidden)
+    VerifySqliteFile(path, sqlite_policy=SqlitePolicyFixture(), verification_cache=SqliteVerificationCache(cache.directory))
+    assert any(phase["phase"] == "change_probe" for phase in measurement.report()["phases"])
 
 
 def test_cancellation_restores_hooks_and_profiler() -> None:

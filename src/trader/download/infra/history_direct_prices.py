@@ -384,21 +384,25 @@ class HistoryDirectPrices:
     ) -> tuple[HistorySnapshotPartition, ...]:
         months = tuple(sorted(set(self._previous) | {(day.year, day.month) for day in dates}))
         references: dict[tuple[int, int], HistorySnapshotPartition] = {}
-        for completed, (year, month) in enumerate(months):
-            label = f"{year:04d}-{month:02d}"
-            progress("checking_partitions", "started", completed, len(months), label)
+        calendar_years = tuple(sorted({year for year, _ in months}))
+        for completed, year in enumerate(calendar_years):
+            label = f"prices_{year:04d}.sqlite3"
+            progress("checking_partitions", "started", completed, len(calendar_years), label)
             with self._activity.reporting(
-                partial(progress, "checking_partitions", "waiting", completed, len(months), label)
+                partial(progress, "checking_partitions", "waiting", completed, len(calendar_years), label)
             ):
                 self._activity.tick()
-                target = self._month(year, month)
-                if not (self._root / f"prices_{year:04d}.sqlite3").exists():
+                selected_months = tuple(month for candidate_year, month in months if candidate_year == year)
+                target = self._month(year, selected_months[0])
+                if not (self._root / label).exists():
                     target.initialize()
-                if (year, month) in self._previous and not target.has_observations_after(
-                    self._previous[(year, month)].sequence
-                ):
-                    references[(year, month)] = self._previous[(year, month)]
-            progress("checking_partitions", "completed", completed + 1, len(months), label)
+                previous = tuple(self._previous[(year, month)] for month in selected_months if (year, month) in self._previous)
+                changed = target.changed_months_since(previous)
+                references.update(
+                    ((year, reference.calendar_month), reference)
+                    for reference in previous if reference.calendar_month not in changed
+                )
+            progress("checking_partitions", "completed", completed + 1, len(calendar_years), label)
 
         years = tuple(sorted(
             {year for year, month in months if (year, month) not in references}

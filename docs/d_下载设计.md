@@ -1090,6 +1090,8 @@ company的交付合同按第5.9–5.12节：字段取得、证据及数据库读
 
 日常history／market更新和run.sh／run.ps1服务启动自动使用同一SQLite文件发布／核验primitive及运行目录的`sqlite-verification`缓存，不增加hash参数或独立命令。history按既有年库、market按既有共享短窗文件核对；写入封存将本次已计算的SHA及完整文件世代存入缓存，启动按路径、设备／inode、大小、纳秒mtime／ctime、文件头及回执匹配复用，首次缺缓存或变化文件才读取全部字节。WAL、回执与主库分别失效，不重复读取未变主库或其它旧年库。缓存是可验证的派生证据，不改变数据库／业务回执结构，不把文件hash解释成逐行业务校验；业务快照、修订身份及正式冻结保护仍保留。显式字段深扫仍是独立诊断，不加入日常启动；用法见[scripts说明](../scripts/README.md)。
 
+history发布前的变更探测也按年度数据库执行：每年一次沿既有`history_price_sequence_idx`查询晚于该年最小月发布序号的观察，按日期聚合后分别比较各月原发布序号。无变化的月份保留原引用，有变化或新增月份才重新生成发布信息；各月序号不统一抬高，取消不推进正式快照，不新增表或索引。进度显示`年库变更检查`及`prices_YEAR.sqlite3`，按年库计数。下载流水线的`待确认`包含本地复用结果等待批量提交断点，`提交中`只表示当前在途批次；左侧`已确认`才是累计持久确认数量。
+
 | 现有文件与功能 | 现行选择、输入与输出 | 联网、写入及消费者 | 去留和目标职责 |
 | --- | --- | --- | --- |
 | `history_sources.py`、`history_fallback.py`：来源与raw/qfq样本 | `history`及组合profiles；代码、采样轮、worker、日数、来源、超时及腾讯host；JSON采样结果 | 联网；统一入口子进程，`test_history_sources.py`，`component/market_data_test_support.py`复用fallback | 保留有界来源检查；history/source。fallback是内部实现，不能成为第二个入口；测试辅助消费者一并切换 |
