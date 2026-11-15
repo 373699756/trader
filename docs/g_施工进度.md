@@ -220,6 +220,49 @@
 
 本批验证／未完成项：三路独立只读审查覆盖现有链路、全部主要消费者及切换风险；官方接口文档核对完成。完整文档diff Review和git diff --check通过，仅提交本台账方案；未运行功能／格式／性能／发布门禁，未改源码、采购、删除／重建资料或操作活动writer。重构实施、来源准入、合同采纳、真实全量质量／终态／HTTP及性能仍未完成，原332／362保持in_progress，方案交付不关闭旧四项任务。
 
+**332／362双Codex并行执行接续／in_progress：** 用户要求把上述提案变为两个Codex能直接执行的计划并加快施工。共同上游5dbc767a已成功推送并核对，本批接续原记录，不新增阶段。下述A／B仅指公司重构内部两条工作线，不重分配台账任务A荐股或任务C训练的owner。立即并行A1来源准入准备和B1内部职责切片；A2／B2为隔离新链开发，A3／B3合流。采购、利好研究删减、评分／风险合同放宽和活动数据切换不包含在本次准备／内部整理中。当前4个ROE未提交文件与`data/`保留，不自动并入重构。
+
+| 执行者 | 唯一负责范围 | 明确不得同时修改的范围 |
+| --- | --- | --- |
+| Codex A／来源与规范事实 | `download/infra/company_structured_source.py`、`company_structured_fields.py`，`download/domain/company_structured_fields.py`；`scripts/download/company/research_source_compare.py`、`company_structured_field_audit.py`及来源定向测试。确需新合同只在`download/domain/company_source_records.py`、`download/application/company_source_ports.py`由A定义，先冻结真实消费者和字段，不预建空框架。新供应商adapter只为最终选定来源新增一份，不预建三套实现。 | 不改`application/company_evidence.py`、`company_structured.py`、`domain/company_evidence.py`、正式SQLite／reader／清理、bootstrap／CLI／配置／权威文档和g。不能把候选事件直接签为正式风险。 |
+| Codex B／编排、发布与全部消费者，兼唯一合流者 | `download/application/company_evidence.py`、`company_structured.py`，`download/domain/company_evidence.py`／`company_facts.py`／`company_events.py`；正式事实index／schema／codec／publication／reader、`company_material_cleanup.py`、恢复和材料依赖；`bootstrap.py`、CLI／配置、生产reader及其定向测试；必要诊断接线与b／c／d行为文档。只改实际切片所需文件，不把清单当全仓授权。g由本批协调者写，后续由B统一汇总A的证据。 | 不改A独占adapter／来源decoder／规范记录／来源端口／来源诊断文件。不能修改其它A／C并行任务或未提交ROE文件；不启动新的性能执行者。 |
+
+共享契约现在冻结到真实类型及已知缺口：首轮仍用`StructuredCompanyQuery(component,start,end,page,expected_rows,received_rows)`、`StructuredCompanyPage(component,page,pages,total,financials,ratios,raw_count)`，财务行为`CompanyFinancial`八指标，质押／解禁行为`CompanyRatio(code,day,ratio_pct)`；目录沿`DisclosurePage`，正式风险沿`CompanyRiskEvent`，不把它当成已有结构化风险供应商端口。当前财务行缺来源记录／修订／接收身份和具名缺值，比例行缺分母与覆盖证明，必须明确未证实。新记录确需证券／来源记录身份、报告期或业务日、原披露／修订／接收时点、内容摘要、单位／分母、缺值原因；A先交精确字段与可验证含义，B冻结消费者，不虚构供应商未返回的元数据。不修改旧Protocol的同时再定义第二份活动协议；迁到A的来源端口须由B在消费者切换同批删除旧定义。
+
+两条线的轮次及交接物如下，A1与B1、A2与B2均可并行，不能把整条B排在供应商账号之后：
+
+| 轮次／原任务内工作包 | Codex A可执行任务与交接物 | Codex B可执行任务与交接物 | 进入下一轮的门 |
+| --- | --- | --- | --- |
+| 第一轮A1／B1 | 核实际请求／decoder／日期／单位／分页／权限，列文档声明、历史实调、本次实调、正式准入四种证据；优先复用明确窄模式。交字段映射、来源能力矩阵、缺证清单和类型差异，不能继续按问题股票补解析。 | 先做行为保留的物理材料维护owner切片：现有`company_material_cleanup.py::ReleaseCompanyMaterialFiles`唯一拥有会话／事务／正式引用核查及物理回收；index启动／发布／finish直接消费，删除`_release_files`旧owner，计量／patch消费者同批切换。保留原清理时点、逻辑回收SQL、来源调用和业务结果，不把它称为有限新主链已完成。 | A无需账号即可交真实缺口；B切片定向回归、Ruff／mypy及Review通过即可交付，不等完整来源试验。来源权限未满足独立保留。 |
+| 第二轮A2／B2 | 按冻结合同实现唯一选定来源的批量decoder／规范记录及有界失败；保留零、负值、原披露、修订与未知原因。先由现有sources审计实际消费，不提交无人使用的DTO／空端口；候选事件不转签风险。 | 同步建立固定T／总体／资料窗／请求预算的有限编排；发布只接受已规范事实，不在发布内联网、取PDF、重排字段修复或清理。把采集、规范、发布和物理维护接成单向链；保留最新不完整与上一完整财报及持续风险。对固定类型输入做正常、无变化、失败和取消恢复验证，fixture不代签真实来源。 | A的字段口径与来源身份合同明确、B的恢复与发布边界可独立验证。未过来源门的第二套完整主链只在仓库外同基线源码候选内开发，不并入活动源码制造双实现；两人共用一份候选、各守文件边界，不新建Git分支。 |
+| 第三轮A3／B3 | 有合法权限后先真实核两个报告期和固定披露区间，再按允许范围核批量分页、更正及持续风险；交实际来源准入、记录／证据样本、请求成本与仍未知能力。每资料族单独签，不把一页可解码当全市场合格。 | B为唯一合流者：固定最新完整风险基线逐项对应主体／同案／状态／原证据；A新owner、所有消费者及旧派发／解析／修复路径删除同批完成。跑独立留出及恢复、生产reader／服务身份验证，形成明确候选与具体切换范围。 | 任一必需风险类未过主体／同案／有效／解除／修订门，不切换该域，不签完整重构完成。真实数据切换及发布另获具体授权；性能交4.5原owner，不以本批功能测试冒签。 |
+
+交给Codex A的首条执行指令：从当前Afuture共同提交读取g本节及Python工程规范，只改A独占范围。先交A1能力／字段证据及准确缺口；小范围来源观察用既有sources字段模式，不取PDF、不读写活动业务库、不打印凭据。A2使用真实调用者需要的不可变类型，B负责共享接线，来源不具备的单位／主体／修订不得推断。新源未准入继续具名未知，不回到逐股补源；完成一个可独立消费的切片后把完整diff、验证命令和未完成项交B串行整合。
+
+交给Codex B的首条执行指令：从同一共同提交读取g本节及Python工程规范，只改B独占范围。立即完成B1物理维护owner切片，保留原行为；当前共享工作区已有本次五文件候选时先复核其完整diff及下述类型欠项，不重复写另一份实现，不把未提交ROE带入。A1并行准备来源证据不阻塞本切片。B2依据冻结类型在隔离候选实现有限批次和独立发布，明确来源准入前只属候选验证。B3才接真实合格来源并删除旧主路径，风险保全逐项核，正式reader与真实服务钉住同一身份；不改变评分／冻结，不代替C跑性能。g和共享文件仅B整合，两位Codex不得同时暂存／提交。
+
+可复用的首轮窄观察命令如下；它只观测候选字段，不能作为来源准入通过。工具内30秒任务限额不等于进程总时限；40秒受管worker期限外再以45秒SIGINT请求父进程中止，预留最多15秒兜底以走既有5秒grace及5秒reap。不能用默认SIGTERM直接结束父进程而遗留独立session的worker；未获回收凭据仍列未完成，不把兜底退出当来源失败或回收通过。不得改跑默认Collect（含550天财务baseline及90日解禁，与当前合同不同）。
+
+```bash
+timeout --signal=INT --kill-after=15s 45s .venv/bin/python3 scripts/tools.py --business download --module company --action sources --runtime-config config/runtime.json --command-timeout-seconds 40 --field-sources-only --field-source-rows 1 --source-timeout-seconds 5 --market-source-loop-seconds 5 --market-task-seconds 30
+```
+
+A的定向门禁在完成实际代码切片后运行，不把计划命令记作已通过：
+
+```bash
+.venv/bin/python3 -m pytest -q tests/download/unit/company/test_company_sources.py tests/download/unit/company/test_company_structured_fields.py tests/download/unit/company/domain/test_company_structured_fields.py tests/download/unit/scripts/test_company_structured_field_audit.py
+```
+
+B按实际改动选择`test_company_batch_cleanup.py`、`test_company_field_material_retention.py`、`test_company_cancellation.py`及受影响诊断回归；更广发布／reader门在B2／B3切片完成后集中执行。所有Python改动运行受影响Ruff，公共边界变化再mypy；不运行formatter／格式测试，不把完整性能目录或Make聚合门混入。定向功能证据、真实来源证据、全量质量、性能与活动采用分别签署。
+
+并行提交规则：共同基线固定，A／B互不改对方工作树文件，不要求对方清空未提交内容。候选内联调先冻结A输入字段，再由B接唯一生产owner；有契约变更先交字段差异，不由两端各加fallback。Git暂存／提交／推送串行，一批只纳入该完整切片及g摘要；共享g只由协调者／B写，A通过消息交证据。上游变化先重新核基线与暂存区，推送失败保存本地提交并停止，不提前开启下一批。旧4个ROE文件不重置、不暂存；旧已确认风险、原件／证据、模型、冻结及预算保护范围不变。
+
+本轮实际进度：A已完成现有类型／decoder／消费者与来源证据差异核对，未创建另一套空实现。一次四类候选各一页一行的只读来源诊断没有产出stdout报告，已只终止其自身进程，exit130；本次接口能力仍未证实，不推断远端字段失败，不重试扩页、不操作活动writer。B1物理维护候选已在两个源码、一个计量诊断及两份测试中实现：唯一清理owner拥有原会话／事务，index三处直接调用，旧私有方法删除，原清理时点／来源／finish逻辑不变，index为1500行。独立Review修正了测量fixture未初始化策略及任务单命令／进程回收表述，最终完整scope未发现其它必改项。
+
+本批真实验证：公开sources参数经`ParseArguments`实际解析通过，仅解析、不发请求。B候选指定8个节点共11个参数化实例通过，覆盖4项字段材料／启动恢复、2项finish取消、3项危险原件保护、2项计量／失败恢复，并核清理计量恰一次；5个受影响Python文件Ruff通过，最终fixture修正后该文件再次通过，完整diff及git diff --check通过。原较大四文件组仅输出7个通过点后由本批停止、exit130，不能叫整组通过。正常三文件mypy无输出后停止、exit130；另将实际SQLite合同显式加入6文件、以`--follow-imports=skip --explicit-package-bases`校验，在60秒外限exit124未完成，且产生7处未修改旧方法的`no-any-return`（index旧helper被跳过成Any），不能据此改无关逻辑或签类型通过。没有再放宽检查，不运行格式、性能、真实切换或活动同步。
+
+本批交付／下一步：双Codex任务单已完成，只有本g文档纳入本次提交；B1五文件代码候选保留未提交，类型门尚未闭合，不把候选签成正式代码交付。下次B先核mypy依赖范围和真实结果，闭合此最小切片再提交，不禁用类型规则消除噪声；A可同时继续来源能力准备。原4个ROE文件与`data/`原样保留，两类未提交改动不混入任务单提交；来源准入、有限主链、独立质量、服务／活动采用及原332／362整体继续in_progress。
+
 332／原计划第4项官方年度原件定位接续／completed（本批原件定位与逐值标注；跨来源正式出证仍待实施）：基线48d45f75。上批目录检索未找到的年度依据，已从交易所官方来源取得原件并核页表，不再笼统列为“原件未定位”。本批只更新本台账，不改生产行为、字段状态或权威合同。
 003008来源：[深交所2025年度报告摘要](https://disc.static.szse.cn/disc/disk03/finalpage/2026-04-10/f74eaa6b-0a03-4288-bd45-c52ac7b073a7.PDF)与[巨潮1225089203](https://static.cninfo.com.cn/finalpage/2026-04-10/1225089203.PDF)实取字节完全相同，272347字节／6页，PDF SHA-256为557994ba70956708abba72edddaaaf66fc866a5ec2dc3cecc5a02085b1837550；仓库外原件为`/tmp/trader-company-annual-003008-cninfo-20261115.pdf`。第1页证券代码及发行人一致，第4页“近三年主要会计数据”表／2025年列／营业收入为232728984.80元，pypdf该页第34、39–40行分别为单位、年份表头及数值；已看页面图核列，2024／2023比较列及第5页分季度数据不混入。与27副本既有CNY年度值232728984.8及2025-12-31报告期一致；既有来源披露／修订时点均2026-04-10，当前目录仍无1225089203行，不因同值或同日期补造正式valid／目录凭据。此次取得的是官方摘要，全文及原始披露／修订身份仍待核。
 688700来源：[上交所2025年度报告官方繁体站原件](https://big5.sse.com.cn/site/cht/www.sse.com.cn/disclosure/listedinfo/announcement/c/new/2026-04-28/688700_20260428_6FAP.pdf)，1752667字节／241页，PDF SHA-256为f758d0e0b76c92217b248ba49419f3b0e014f0690cfae36f757aac83545c363f；仓库外原件为`/tmp/trader-company-annual-688700-official-20261115.pdf`。第1页代码／主体、第8页主要会计数据、第35页变动分析及第107页合并利润表交叉核到2025年度营业收入1098386778.65元；第107页明确人民币元、2025年度列及“其中：营业收入”，pypdf第21–26行保留表头／年度／单位／科目，已看页面图核列。虽然本例营业总收入同值，仍按营业收入科目取证；不取第37页主营收入1093108121.12、2024比较值749997504.95或季度值。27副本已有2025-12-31／2026-04-28财报时点，但annual_income无该股记录；两篇合同只写“各年度业绩”，没有明确引用年度，不能仅凭找到年报就填入合同分母。直连www站下载返回压缩非PDF内容，未当原件；官方繁体站下载经PDF头、页数及内容核验后采用为本批观察材料。
