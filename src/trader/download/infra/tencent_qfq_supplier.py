@@ -592,8 +592,8 @@ def _parse_side(code: str, row: TencentDailyRow, mode: str) -> PublishedHistoryS
         close,
         row.volume,
         row.amount,
-        None,
-        None,
+        None if mode == "qfq" else row.preclose,
+        None if mode == "qfq" else row.pct_change,
         None if mode == "qfq" else row.turnover_rate,
         "trading",
     )

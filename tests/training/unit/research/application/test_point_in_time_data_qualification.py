@@ -11,6 +11,7 @@ from trader.training.domain.evaluation.historical_industry_facts import (
     HistoricalIndustrySourceContract,
     MergeHistoricalIndustryFacts,
 )
+from trader.training.entrypoints.research_evidence_projection import ProjectPointInTimeDataQualification
 
 
 def _industry_report():
@@ -81,3 +82,33 @@ def test_daily_evidence_count_mismatch_is_reported_instead_of_becoming_an_invali
     assert "daily_archive_sessions_below_2000" in report.daily_archive.failure_reasons
     assert report.daily_archive.completed_codes == 5000
     assert report.daily_archive.failed_codes == 0
+
+
+def test_complete_current_archive_does_not_prove_the_historical_daily_universe() -> None:
+    evidence = HistorySnapshotStatus(
+        state="published",
+        snapshot_hash="a" * 64,
+        data_cutoff=date(2026, 9, 10),
+        label_cutoff=date(2026, 9, 9),
+        calendar_sessions=2000,
+        universe_count=5000,
+        partition_count=100,
+        reason=None,
+    )
+    sources = BuildH1CapabilityAudit(
+        (H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 1, 1, 1.0),)
+    )
+
+    report = AssemblePointInTimeDataQualification(evidence, sources, _industry_report())
+
+    assert report.daily_archive.state == "qualified"
+    assert report.daily_archive.completed_codes == 5000
+    assert report.daily_archive.failure_reasons == ()
+    assert report.state == "historical_data_insufficient"
+    assert "historical_universe_not_proven" in report.failure_reasons
+    assert report.point_in_time_parity is False
+    assert report.terminal_holdout_opened is False
+    assert report.production_authority is False
+    projection = ProjectPointInTimeDataQualification(report)
+    assert "historical_universe_not_proven" in projection["failure_reasons"]
+    assert projection["point_in_time_parity"] is False

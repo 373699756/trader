@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 
 from dataclasses import replace
 
@@ -13,6 +14,7 @@ from tests.helpers.download.qfq import QFQ_TENCENT_OPTIONS
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 
 from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow
+from trader.download.infra.tencent_daily import DecodeTencentDailyRows, TencentDailyQuery
 
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
@@ -21,6 +23,8 @@ from trader.download.infra.tencent_qfq_supplier import (
 )
 
 from trader.infra.http_contracts import HttpTimeout
+from trader.recommendation.domain.outcomes.models import OutcomeTradingStatus
+from trader.recommendation.infra.market_data.published_history_bars import OutcomeBars
 
 from tests.helpers.download.history.tencent_history_supplier import (
     DAY,
@@ -41,6 +45,79 @@ def test_pairs_preserve_units_and_leave_unavailable_facts_missing():
     assert cell.unadjusted.turnover == 1.2
     assert cell.unadjusted.preclose is None and cell.unadjusted.pct_change is None
     assert cell.qfq.turnover is None
+
+
+def _one_price_http():
+    http = _SuspensionHttp()
+    http.raw = http.adjusted = [[DAY.isoformat(), "9", "9", "9", "9", "100", {}, "1.2", "20", "0", "0"]]
+    http.quote[3], http.quote[4], http.quote[5] = "9", "10", "9"
+    http.quote[6], http.quote[32] = "100", "-10.00"
+    http.quote[33], http.quote[34], http.quote[40] = "9", "9", "F"
+    return http
+
+
+@pytest.mark.parametrize(
+    "price,change,status",
+    [("9", "-10.00", OutcomeTradingStatus.ONE_PRICE_LIMIT_DOWN),
+     ("11", "10.00", OutcomeTradingStatus.TRADABLE),
+     ("10", "0.00", OutcomeTradingStatus.TRADABLE)],
+)
+def test_one_price_outcome_uses_same_session_raw_quote_without_extra_requests(price, change, status):
+    http = _one_price_http()
+    http.raw[0][1:5] = [price] * 4
+    for index in (3, 5, 33, 34):
+        http.quote[index] = price
+    http.quote[32] = change
+
+    window = http.supplier().fetch_window(SECURITY, (DAY,))
+
+    assert len(http.calls) == 2
+    raw, qfq = window.cells[0].unadjusted, window.cells[0].qfq
+    assert raw.preclose == 10.0 and raw.pct_change == float(change)
+    assert qfq.preclose is None and qfq.pct_change is None
+    assert OutcomeBars(window.cells)[0].trading_status is status
+    payload = {"data": {"sh600001": {"day": http.raw, "qt": {"sh600001": http.quote}}}}
+    decoded = DecodeTencentDailyRows(json.dumps(payload), TencentDailyQuery("sh600001", DAY, DAY, "bfq", 1))
+    assert decoded[0].preclose == raw.preclose and decoded[0].pct_change == raw.pct_change
+
+
+@pytest.mark.parametrize(
+    "position,value",
+    [(2, "600002"), (30, "20261008161500"), (30, "20261010161500"),
+     (30, "20261009145959"), (30, "20261009151599"), (30, "invalid"),
+     (3, "8.9"), (5, "8.9"), (33, "8.9"), (34, "8.9"), (6, "99"), (40, "S"),
+     (4, "0"), (4, "-10"), (4, "NaN"), (4, "inf"), (4, None), (4, True),
+     (32, "-9"), (32, "NaN"), (32, "inf"), (32, None), (32, True)],
+)
+def test_unmatched_or_invalid_one_price_quote_preserves_unknown_outcome(position, value):
+    http = _one_price_http()
+    http.quote[position] = value
+
+    window = http.supplier().fetch_window(SECURITY, (DAY,))
+
+    assert len(http.calls) == 2
+    assert window.cells[0].unadjusted.preclose is None
+    assert window.cells[0].unadjusted.pct_change is None
+    assert OutcomeBars(window.cells)[0].trading_status is OutcomeTradingStatus.UNKNOWN
+
+
+def test_same_session_quote_cannot_supply_earlier_one_price_day_or_leak_into_next_request():
+    http = _one_price_http()
+    previous = DAY - timedelta(days=1)
+    http.raw = http.adjusted = [[previous.isoformat(), *http.raw[0][1:]], http.raw[0]]
+    supplier = http.supplier()
+
+    window = supplier.fetch_window(SECURITY, (previous, DAY))
+
+    assert tuple(bar.trading_status for bar in OutcomeBars(window.cells)) == (
+        OutcomeTradingStatus.UNKNOWN, OutcomeTradingStatus.ONE_PRICE_LIMIT_DOWN,
+    )
+    assert window.cells[0].unadjusted.preclose is None
+    assert window.cells[0].unadjusted.pct_change is None
+    http.quote = []
+    subsequent = supplier.fetch_window(SECURITY, (previous, DAY))
+    assert all(bar.trading_status is OutcomeTradingStatus.UNKNOWN for bar in OutcomeBars(subsequent.cells))
+    assert len(http.calls) == 4
 
 
 def test_tencent_explicit_suspension_reuses_raw_response_and_skips_qfq():

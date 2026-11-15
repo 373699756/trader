@@ -80,7 +80,7 @@ class PriceAuditBudget:
         if self.interrupted is not None:
             raise PriceAuditInterrupted(self.interrupted)
 
-    def _progress(self) -> int:
+    def progress(self) -> int:
         try:
             self.check()
         except PriceAuditInterrupted:
@@ -99,7 +99,7 @@ class PriceAuditBudget:
         connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro" + ("&immutable=1" if immutable else ""), uri=True, timeout=timeout)
         try:
             connection.execute("PRAGMA query_only=ON")
-            connection.set_progress_handler(self._progress, 10000)
+            connection.set_progress_handler(self.progress, 10000)
             connection.execute("BEGIN")
             yield connection
             self.check()
@@ -197,6 +197,18 @@ def _check_metadata_sources(sources: tuple[PriceAuditSource, ...], budget: Price
         budget.check()
         if _source_stamp(Path(source.path), optional=True) != source.database or _source_stamp(Path(source.path + "-wal"), optional=True) != source.wal:
             raise ValueError("price_audit_metadata_source_changed")
+
+
+def PriceAuditSourcesUnchanged(sources: tuple[PriceAuditSource, ...]) -> bool:
+    """Finish stat protection even when the SQL audit has exhausted its deadline."""
+    try:
+        return all(
+            _source_stamp(Path(source.path), optional=True) == source.database
+            and _source_stamp(Path(source.path + "-wal"), optional=True) == source.wal
+            for source in sources
+        )
+    except (OSError, ValueError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -1127,10 +1139,18 @@ def _main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--runtime-config", type=Path, required=True)
-    parser.add_argument("--price-field-audit", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--price-field-audit", action="store_true")
+    modes.add_argument("--percentage-unit-audit", action="store_true")
+    parser.add_argument("--market-path", type=Path)
     parser.add_argument("--audit-checkpoint", type=Path)
-    parser.add_argument("--audit-budget-seconds", type=float, default=170.0)
+    parser.add_argument("--audit-budget-seconds", type=float)
     args = parser.parse_args()
+    if args.percentage_unit_audit and (args.audit_checkpoint is not None or args.audit_budget_seconds is not None
+                                     and not 0 < args.audit_budget_seconds <= 15):
+        parser.error("percentage unit audit requires a budget within 15 seconds and has no checkpoint")
+    if args.market_path is not None and not args.percentage_unit_audit:
+        parser.error("--market-path requires --percentage-unit-audit")
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
 
@@ -1138,13 +1158,21 @@ def _main() -> int:
     def cancel(_signal: int, _frame: object) -> None:
         nonlocal stopped
         stopped = True
-    previous_signal = signal.signal(signal.SIGINT, cancel) if args.price_field_audit else None
-    budget = PriceAuditBudget(args.audit_budget_seconds, cancelled=lambda: stopped)
+    previous_signal = signal.signal(signal.SIGINT, cancel) if args.price_field_audit or args.percentage_unit_audit else None
+    seconds = args.audit_budget_seconds if args.audit_budget_seconds is not None else 15.0 if args.percentage_unit_audit else 170.0
+    budget = PriceAuditBudget(seconds, cancelled=lambda: stopped)
     try:
         budget.check()
         policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
         budget.check()
-        if args.price_field_audit:
+        if args.percentage_unit_audit:
+            from scripts.download.history.price_percentage_units import AuditPricePercentageUnits
+
+            report = AuditPricePercentageUnits(
+                args.history_root, market_path=args.market_path or args.history_root.parent / "daily_window.sqlite3",
+                sqlite_policy=policy, budget=budget,
+            )
+        elif args.price_field_audit:
             report = AuditHistoryPriceFields(
                 args.history_root, sqlite_policy=policy, budget=budget, checkpoint=args.audit_checkpoint,
                 configuration=(args.runtime_config, args.runtime_config.parent / "download.json"),
@@ -1153,15 +1181,17 @@ def _main() -> int:
             report = AuditHistoryPublication(args.history_root, sqlite_policy=policy)
     except PriceAuditInterrupted as exc:
         report = {"schema_version": "history-publication-audit", "status": "failed", "summary": {
-            "field_audit": {"complete": False, "failure": "price_audit_" + str(exc), "phase": budget.phase},
+            "percentage_unit_audit" if args.percentage_unit_audit else "field_audit": {
+                "complete": False, "failure": "price_audit_" + str(exc), "phase": budget.phase,
+            },
         }}
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         summary: dict[str, object] = {
             "failure": "history_publication_audit_failed", "category": type(exc).__name__,
             "diagnostic": HistoryFailureDetail(exc),
         }
-        if args.price_field_audit:
-            summary["field_audit"] = {
+        if args.price_field_audit or args.percentage_unit_audit:
+            summary["percentage_unit_audit" if args.percentage_unit_audit else "field_audit"] = {
                 "complete": False, "phase": budget.phase,
                 "failure": str(exc) if isinstance(exc, ValueError) and str(exc).startswith("price_audit_") else "price_audit_metadata_failed",
                 "category": type(exc).__name__, "units": [], "actual_selected_rows": 0,

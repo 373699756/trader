@@ -19,7 +19,9 @@ from typing import cast
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
-from trader.download.domain.history_price_qualification import HistoryQfqBasisError, QualifyReplacementWindow
+from trader.download.domain.history_price_qualification import (
+    HistoryQfqBasisError, QualifyReplacementWindow, RetainTencentRawFacts,
+)
 from trader.download.domain.history_supplier_failure import (
     HISTORY_SUPPLIER_PENDING_REASONS,
     HistorySupplierPendingError,
@@ -133,10 +135,13 @@ class HistoryDownloadFlow:
         self._progress_lock = Lock()
         self._download_progress: HistorySyncProgress | None = None
         self._emit(HistorySyncProgress("initializing", "started", 0, 1, "repair_index"))
-        self._baostock_codes = HistoryPriceRepair(
+        repair = HistoryPriceRepair(
             resources.configuration.history_root, sqlite_policy=self._sqlite_policy,
-        ).baostock_codes() & frozenset(item.code for item in resources.context.universe)
-        self._recheck_codes = HistoryPriceRepair(resources.configuration.history_root, sqlite_policy=self._sqlite_policy).recheck_due(self._baostock_codes, resources.context.calendar.open_dates)
+        )
+        allowed_codes = frozenset(item.code for item in resources.context.universe)
+        self._baostock_codes = repair.source_codes("baostock") & allowed_codes
+        self._tencent_codes = repair.source_codes("tencent") & allowed_codes
+        self._recheck_codes = repair.recheck_due(self._baostock_codes, resources.context.calendar.open_dates)
         self._emit(HistorySyncProgress("initializing", "completed", 1, 1, "repair_index"))
 
     def _check(self) -> None:
@@ -239,6 +244,18 @@ class HistoryDownloadFlow:
         try:
             with self._write_lock:
                 self._write_operation = "提交下载断点"
+            tencent_codes = frozenset(
+                item.price.task.code for item in batch
+                if item.price.replacement is not None
+                or (
+                    item.price.revisions and item.price.task.code not in self._baostock_codes
+                    and (
+                        item.price.task.code in self._tencent_codes
+                        or set(self._resources.context.calendar.expected_dates(self._security(item.price.task.code)))
+                        .issubset(revision.cell.trade_date for revision in item.price.revisions)
+                    )
+                )
+            )
             self._resources.index.finish(
                 tuple(
                     HistoryDownloadCompletion(
@@ -248,10 +265,12 @@ class HistoryDownloadFlow:
                         item.price.unusable_qfq_dates,
                         item.price.inferred_suspended_dates,
                         item.dates if item.review_confirmed else (),
+                        item.price.task.code in tencent_codes,
                     )
                     for item in batch
                 )
             )
+            self._tencent_codes = self._tencent_codes | tencent_codes
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
             raise HistorySyncFailureError(exc, "confirming_download") from exc
         with self._write_lock:
@@ -598,9 +617,10 @@ class HistoryDownloadFlow:
             if window.code != task.code or tuple(cell.trade_date for cell in window.cells) != dates:
                 raise RuntimeError("history_supplier_identity_conflict")
             validation_started = time.monotonic()
-            qualified = QualifyReplacementWindow(
-                dates, PublishedHistoryWindow(task.code, tuple(ProjectHistoryCell(cell) for cell in previous)), window
-            )
+            prior = PublishedHistoryWindow(task.code, tuple(ProjectHistoryCell(cell) for cell in previous))
+            if task.code in self._tencent_codes:
+                window = RetainTencentRawFacts(prior, window)
+            qualified = QualifyReplacementWindow(dates, prior, window)
             price = HistoryPriceResult(full_task, (), (), None, replacement=qualified)
             validation_seconds = time.monotonic() - validation_started
         except (OSError, RuntimeError, TypeError, ValueError) as exc:

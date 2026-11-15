@@ -263,6 +263,10 @@ class HistoryDownloadIndex:
             if cutoff_row is None:
                 raise ValueError("history_download_batch_missing")
             checked_cutoff = cutoff_row[0]
+            connection.run_many(
+                "INSERT OR REPLACE INTO price_source VALUES(?,?,?)",
+                ((item.task.code, cutoff_row[1], "tencent") for item in completions if item.tencent_source_confirmed),
+            )
             codes = tuple(item.task.code for item in completions)
             placeholders = ",".join("?" for _ in codes)
             gap_codes = {

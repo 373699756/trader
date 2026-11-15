@@ -37,9 +37,9 @@ class HistoryPriceRepair:
             ).fetchone()
         return cast(RepairSource, row[0]) if row else "tencent"
 
-    def baostock_codes(self) -> frozenset[str]:
+    def source_codes(self, source: RepairSource) -> frozenset[str]:
         with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-            return frozenset(row[0] for row in connection.run("SELECT p.code FROM price_source p WHERE p.source='baostock' AND p.sync_sequence=(SELECT MAX(s.sync_sequence) FROM price_source s WHERE s.code=p.code)"))
+            return frozenset(row[0] for row in connection.run("SELECT p.code FROM price_source p WHERE p.source=? AND p.sync_sequence=(SELECT MAX(s.sync_sequence) FROM price_source s WHERE s.code=p.code)", (source,)))
 
     def recheck_due(self, codes: frozenset[str], calendar: tuple[date, ...]) -> frozenset[str]:
         with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:

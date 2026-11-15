@@ -9,11 +9,14 @@ from datetime import date, datetime, timedelta
 from enum import Enum
 from types import MappingProxyType
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_events import CompanyRiskType
 from trader.recommendation.domain.market.factors import Clamp, WeightedScore
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.scoring.company import CompanyScoringContext, IsCompanyRiskEffective
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -322,9 +325,14 @@ def FinancialReportIsFresh(
 ) -> bool:
     if observed_at.utcoffset() is None or type(maximum_age_days) is not int or maximum_age_days < 1:
         raise ValueError("financial_freshness_context_invalid")
+    if financial is None:
+        return False
+    observed_on = observed_at.astimezone(_SHANGHAI).date()
+    disclosed_on = financial.published_at.astimezone(_SHANGHAI).date()
     return (
-        financial is not None and financial.published_at <= observed_at and financial.report_date <= observed_at.date()
-        and 0 <= (observed_at.date() - financial.published_at.date()).days <= maximum_age_days
+        financial.published_at <= observed_at
+        and 0 <= (observed_on - financial.report_date).days <= maximum_age_days
+        and 0 <= (observed_on - disclosed_on).days <= maximum_age_days
     )
 
 

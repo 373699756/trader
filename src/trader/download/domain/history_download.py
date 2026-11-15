@@ -53,6 +53,7 @@ class HistoryDownloadCompletion:
     unusable_qfq_dates: tuple[date, ...] = ()
     inferred_suspended_dates: tuple[date, ...] = ()
     reviewed_dates: tuple[date, ...] = ()
+    tencent_source_confirmed: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -66,6 +67,7 @@ class HistoryDownloadCompletion:
             or self.reviewed_dates != tuple(sorted(set(self.reviewed_dates)))
             or not set(self.reviewed_dates).issubset(self.task.dates)
             or (self.failure is not None and bool(self.reviewed_dates))
+            or type(self.tencent_source_confirmed) is not bool
         ):
             raise ValueError("history_download_completion_invalid")
 

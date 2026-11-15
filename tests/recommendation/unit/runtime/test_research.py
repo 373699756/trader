@@ -18,6 +18,7 @@ from trader.recommendation.domain.market.research import (
     DeriveMarketRegime,
     FeatureComponentWeightPolicy,
     FinancialReport,
+    FinancialReportIsFresh,
     LongResearchInputs,
     LongResearchPolicy,
     MarketRegimePolicy,
@@ -110,26 +111,64 @@ def test_latest_disclosed_report_loss_is_point_in_time_and_requires_both_profit_
 
 @pytest.mark.parametrize("age", (550, 551, 900))
 def test_financial_scoring_uses_original_disclosure_age_and_keeps_latest_loss_independent(age):
+    observed_at = datetime.fromisoformat("2024-12-31T14:50:00+08:00") + timedelta(days=age)
     report = FinancialReport(
-        date(2022, 12, 31), NOW - timedelta(days=age), 1, 5, 20, 10, 10, 10, -3, 2,
+        date(2024, 12, 31), observed_at - timedelta(days=age), 1, 5, 20, 10, 10, 10, -3, 2,
     )
     observation = ResearchObservation(
-        financial=report, financial_history=(report,), snapshot_at=NOW, loaded_at=NOW,
+        financial=report, financial_history=(report,), snapshot_at=observed_at, loaded_at=observed_at,
         source_errors=("financial_scoring:report_stale",) if age > 550 else (),
         corporate_risk_facts=(CorporateRiskFact(
-            CorporateRiskCategory.FINANCIAL_FRAUD, NOW - timedelta(days=900), "fraud", "issuer_disclosure", persistent=True,
+            CorporateRiskCategory.FINANCIAL_FRAUD, observed_at - timedelta(days=900), "fraud", "issuer_disclosure", persistent=True,
         ),),
     )
     features = DeriveLongResearchFeatures(
-        observation, LongResearchInputs(20, 80, 70, 80), _long_policy(), _feature_component_weights(), observed_at=NOW,
+        observation, LongResearchInputs(20, 80, 70, 80), _long_policy(), _feature_component_weights(), observed_at=observed_at,
     )
     for field in ("value_score", "growth_score", "quality_score", "financial_deterioration"):
         assert (features[field] is not None) is (age <= 550)
-    assert DeriveLatestDisclosedReportLoss(observation, NOW) == 1.0
+    assert DeriveLatestDisclosedReportLoss(observation, observed_at) == 1.0
     positive = replace(report, parent_net_profit=3)
-    assert DeriveLatestDisclosedReportLoss(replace(observation, financial_history=(positive,), financial=positive), NOW) == 0.0
-    assert ResearchComponentsFromObservation(observation, NOW).financial == ("stale" if age > 550 else "known_clear")
-    assert DeriveCorporateRiskFeatures(observation.corporate_risk_facts, NOW, window_complete=True)["financial_fraud_history"] == 1
+    assert DeriveLatestDisclosedReportLoss(replace(observation, financial_history=(positive,), financial=positive), observed_at) == 0.0
+    assert ResearchComponentsFromObservation(observation, observed_at).financial == ("stale" if age > 550 else "known_clear")
+    assert DeriveCorporateRiskFeatures(observation.corporate_risk_facts, observed_at, window_complete=True)["financial_fraud_history"] == 1
+
+
+@pytest.mark.parametrize(("maximum_age_days", "report_age", "fresh"), (
+    (550, 550, True), (550, 551, False), (30, 30, True), (30, 31, False),
+))
+def test_recent_restatement_does_not_reset_financial_report_period_age(maximum_age_days, report_age, fresh):
+    observed_at = datetime.fromisoformat("2024-12-31T14:50:00+08:00") + timedelta(days=report_age)
+    report = FinancialReport(
+        date(2024, 12, 31), observed_at - timedelta(days=1), 1, 5, 20, 10, 10, 10, -3, 2,
+    )
+    assert FinancialReportIsFresh(report, observed_at, maximum_age_days=maximum_age_days) is fresh
+    observation = ResearchObservation(financial=report, financial_history=(report,))
+    features = DeriveLongResearchFeatures(
+        observation, LongResearchInputs(20, 80, 70, 80),
+        replace(_long_policy(), financial_max_age_days=maximum_age_days), _feature_component_weights(), observed_at=observed_at,
+    )
+    for field in ("value_score", "growth_score", "quality_score", "financial_deterioration"):
+        assert (features[field] is not None) is fresh
+    assert DeriveLatestDisclosedReportLoss(observation, observed_at) == 1.0
+
+
+def test_financial_freshness_uses_shanghai_dates_and_preserves_missing_and_future_guards():
+    observed = datetime.fromisoformat("2026-07-16T00:30:00+08:00")
+    report = FinancialReport(observed.date() - timedelta(days=550), observed - timedelta(days=1))
+    utc = datetime.fromisoformat("2026-07-15T16:30:00+00:00")
+    assert FinancialReportIsFresh(report, observed, maximum_age_days=550)
+    assert FinancialReportIsFresh(replace(report, published_at=report.published_at.astimezone(utc.tzinfo)), utc,
+                                  maximum_age_days=550)
+    assert not FinancialReportIsFresh(replace(report, report_date=report.report_date - timedelta(days=1)), utc,
+                                      maximum_age_days=550)
+    assert not FinancialReportIsFresh(None, observed, maximum_age_days=550)
+    assert not FinancialReportIsFresh(replace(report, published_at=observed + timedelta(seconds=1)), observed,
+                                      maximum_age_days=550)
+    assert not FinancialReportIsFresh(replace(report, report_date=observed.date() + timedelta(days=1)), observed,
+                                      maximum_age_days=550)
+    with pytest.raises(ValueError, match="financial_freshness_context_invalid"):
+        FinancialReportIsFresh(report, observed.replace(tzinfo=None), maximum_age_days=550)
 
 
 def test_long_research_features_use_point_in_time_financial_and_event_inputs() -> None:

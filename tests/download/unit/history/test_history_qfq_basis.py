@@ -18,7 +18,7 @@ from trader.download.infra.history_price_repair import HistoryPriceRepair
 from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_write_tuning import HistoryWriteTuning
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 
 _DAYS = (date(2025, 12, 29), date(2025, 12, 30), date(2025, 12, 31), date(2026, 1, 2), date(2026, 1, 5))
@@ -114,6 +114,46 @@ def test_unchanged_basis_keeps_incremental_requests_bounded(tmp_path):
     result = RunHistoryFixture(config, supplier, clock=lambda: _now(_DAYS[-1]))
     assert result.state == "completed" and result.unresolved_price_cells == 0
     assert supplier.requests == [_DAYS[-2:]]
+
+
+@pytest.mark.parametrize("source_known", (False, True))
+def test_whole_tencent_qfq_refresh_preserves_raw_facts_only_with_explicit_source(tmp_path, source_known):
+    class QuoteSupplier(_BasisSupplier):
+        def fetch_tencent_window(self, security, dates):
+            window = super().fetch_tencent_window(security, dates)
+            if self.rebased:
+                return window
+            return replace(window, cells=tuple(
+                replace(cell, unadjusted=replace(cell.unadjusted, preclose=125.0, pct_change=-20.0))
+                if cell.trade_date == self.seed_cutoff else cell for cell in window.cells
+            ))
+
+    supplier = QuoteSupplier(_DAYS[:-1])
+    supplier, config, control, reader, old_snapshot, old_cells = _seed(tmp_path, supplier)
+    repair = HistoryPriceRepair(config.history_root, sqlite_policy=SqlitePolicyFixture())
+    assert repair.source_codes("tencent") == frozenset({"600001"})
+    if not source_known:
+        with (
+            SqliteSession(config.history_root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()) as connection,
+            SqliteTransaction(connection, immediate=True),
+        ):
+            connection.run("DELETE FROM price_source WHERE code=?", ("600001",))
+    supplier.dates, supplier.rebased = _DAYS, True
+
+    result = RunHistoryFixture(config, supplier, clock=lambda: _now(_DAYS[-1]))
+
+    assert supplier.requests == [_DAYS[-2:], _DAYS[1:]]
+    assert reader.read_published_code_window("600001", _DAYS[:-1], old_snapshot) == old_cells
+    if source_known:
+        assert result.state == "completed"
+        current = control.load_state().published_snapshot
+        cell = next(cell for cell in reader.read_published_code_window("600001", _DAYS[1:], current)
+                    if cell.trade_date == _DAYS[-2])
+        assert cell.unadjusted.preclose == 125.0 and cell.unadjusted.pct_change == -20.0
+        assert cell.qfq.close_price == 50.0
+    else:
+        assert result.needs_retry
+        assert repair.source_codes("tencent") == frozenset()
 
 
 @pytest.mark.parametrize("failure", ("transport", "pending", "missing", "short", "raw"))

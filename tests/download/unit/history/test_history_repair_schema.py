@@ -127,7 +127,7 @@ def test_reopening_current_history_catalog_preserves_sources_and_replay_candidat
 
     repair = HistoryPriceRepair(catalog.parent, sqlite_policy=SqlitePolicyFixture())
     assert repair.source("600001", 1) == "baostock"
-    assert repair.baostock_codes() == frozenset({"600001"})
+    assert repair.source_codes("baostock") == frozenset({"600001"})
     assert repair.recheck_due(frozenset({"600001"}), (_DAY,)) == frozenset()
     with SqliteSession(
         catalog, SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture(),

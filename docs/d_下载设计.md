@@ -872,6 +872,8 @@ catalog 还包含第8.5节共同定义的 price_tencent_check、price_repair_att
 
 Tencent与BaoStock的来源涨幅／换手率统一保留百分点，例如2%记为2、−10%记为−10；BaoStock解析不再除以100，qfq未披露的辅助字段仍为空。该规则作用于新采集值，不自动改写存量混合来源记录；旧值是否受影响须按来源证据确认，不能对整库统一乘100。训练窄投影保留raw/qfq均确认停牌时的已知qfq估值；缺估值仍交共享日历规则处理，推定停牌和未知缺日不会因此变成真实标签。
 
+Tencent原始日线响应若含同证券、同目标日15:00之后的qt报价，仅对有成交的一字行情核对四价、成交股数、有限正昨收和涨幅自洽后采用来源真实昨收／涨幅，不增加请求，也不从历史收盘推算。qfq辅助字段及没有同日证据的历史日期继续为空。market增量锚点与history整窗换基仅在旧源已明确为Tencent、同日raw价量额完全一致且新来源缺项时保留旧真实辅助事实；新已知值优先，不跨BaoStock或未知来源继承。history仅在完整Tencent窗口实际写入、已有明确Tencent来源的续写或完整Tencent替换时随确认事务登记原有`price_source`，不补签旧combined来源，失败同事务回滚。
+
 ### 8.5 market窗口及共用修复／失败表
 
 定义见 [qfq_sqlite.py](../src/trader/download/infra/qfq_sqlite.py)，持久化价格列完全复用8.4；下列窗口表无额外二级索引。profile只指当前窗口档位v2／v3，不是格式版本。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date
 
 from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
@@ -74,7 +75,15 @@ def AssemblePointInTimeDataQualification(
     )
     if not minute_probes:
         raise ValueError("historical minute capability evidence is missing")
-    return BuildPointInTimeDataQualification(daily, industries, minute_probes)
+    report = BuildPointInTimeDataQualification(daily, industries, minute_probes)
+    # A published current universe proves archive coverage, not the complete
+    # security population available at every historical signal date.
+    return replace(
+        report,
+        state="historical_data_insufficient",
+        failure_reasons=(*report.failure_reasons, "historical_universe_not_proven"),
+        point_in_time_parity=False,
+    )
 
 
 def _industry_qualification(

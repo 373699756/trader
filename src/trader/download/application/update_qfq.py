@@ -25,7 +25,7 @@ from trader.download.application.qfq_download_progress import (
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
-from trader.download.domain.history_price_qualification import QualifyReplacementWindow
+from trader.download.domain.history_price_qualification import QualifyReplacementWindow, RetainTencentRawFacts
 from trader.download.domain.price_repair import PriceIssue
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.download.domain.price_review import PriceReviewBudget, PriceReviewBudgetExhausted, PriceReviewExhaustionReason, PriceReviewRequestBudget
@@ -969,6 +969,8 @@ class UpdateQfqWindows:
             observed_dates = job.dates[-count:]
             tail = self._fetch(job.security, observed_dates)
             tail, retained_confirmed = self._retain_confirmed_nontrading(tail, job.nontrading, job.source)
+            if job.source.startswith("tencent-newfqkline:"):
+                tail = RetainTencentRawFacts(job.previous, tail)
             merged = MergeDailyTail(job.previous, tail, job.dates)
             if retained_confirmed and any(cell.status == "complete" for cell in job.previous.cells) and not any(cell.status == "complete" and cell.trade_date in previous_dates for cell in tail.cells):
                 # A restored nontrading fact proves coverage, not the current
@@ -980,6 +982,8 @@ class UpdateQfqWindows:
             observed_dates = job.dates
             window = self._fetch(job.security, job.dates, request_budget=request_budget)
             window, retained_confirmed = self._retain_confirmed_nontrading(window, job.nontrading, job.source)
+            if not job.baostock_basis and job.source.startswith("tencent-newfqkline:"):
+                window = RetainTencentRawFacts(job.previous, window)
         prior = {cell.trade_date: cell for cell in job.previous.cells}
         if any(
             cell.status in ("supplier_marked_suspended", "tencent_inferred_suspended")

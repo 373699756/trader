@@ -12,6 +12,38 @@ import pytest
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.domain.history_download import HistoryDownloadBatch, HistoryDownloadCompletion, HistoryDownloadTask
 from trader.download.infra.history_download_index import HistoryDownloadIndex
+from trader.download.infra.history_price_repair import HistoryPriceRepair
+from trader.download.infra.price_repair_attempts import PriceRepairAttempts
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
+
+
+def test_checkpoint_records_only_explicit_tencent_source_and_rolls_it_back_with_failure(tmp_path, monkeypatch):
+    path = tmp_path / "catalog.sqlite3"
+    policy = SqlitePolicyFixture()
+    HistoryControlIndex(path, sqlite_policy=policy).initialize()
+    index = HistoryDownloadIndex(path, sqlite_policy=policy)
+    repair = HistoryPriceRepair(tmp_path, sqlite_policy=policy)
+    task = HistoryDownloadTask("600001", (date(2026, 11, 5),))
+
+    def begin(sequence):
+        index.begin(HistoryDownloadBatch(sequence, "a" * 64, "b" * 64, "c" * 64, task.dates[-1]), (task,))
+
+    begin(1)
+    index.finish((HistoryDownloadCompletion(task, (), None),))
+    assert repair.source_codes("tencent") == frozenset()
+    begin(2)
+    index.finish((HistoryDownloadCompletion(task, (), None, tencent_source_confirmed=True),))
+    assert repair.source_codes("tencent") == frozenset({task.code})
+
+    def fail_resolution(*_args):
+        raise OSError("fixture_confirmation_failed")
+
+    begin(3)
+    monkeypatch.setattr(PriceRepairAttempts, "resolve", fail_resolution)
+    with pytest.raises(OSError, match="fixture_confirmation_failed"):
+        index.finish((HistoryDownloadCompletion(task, (), None, tencent_source_confirmed=True),))
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=policy) as connection:
+        assert connection.run("SELECT MAX(sync_sequence) FROM price_source").require_one()[0] == 2
 
 
 def test_nonpositive_qfq_gap_is_deferred_for_20_market_sessions_and_kept_unresolved(tmp_path):

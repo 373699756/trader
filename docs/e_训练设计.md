@@ -81,6 +81,8 @@ CLI的`train`通过唯一组合根 `bootstrap.ExecuteSelectedTraining`独立启�
 
 `BuildTrainingInputHash`以价格快照摘要、行业语义摘要和`latest_snapshot`策略共同生成训练输入身份。行业语义摘要只包含分类标准、所选代码到行业ID／中文名称的映射及缺口；发布时间、刷新期限、变更日期、回执和原查询摘要保留为独立凭据，不单独导致重训。同一价格和分组允许按原规则复用完整模型；映射、缺口、价格或其它语义合同变化则不得复用旧样本／模型。模型封存完整所选映射与来源凭据供重建和核查，旧工件不补字段、不重贴身份，也不删除或重建现有数据。此分组规则不证明历史当时行业归属或点时收益验证通过。
 
+用户2026-11-15再次确认普通训练使用今天的有效行业分组，不采用历史行业分组，也不因缺少历史行业而阻断普通训练。原独立严格点时研究资格仍按真实证据判定：当前发布总体不能证明过去每日完整股票名单，组装报告明确列`historical_universe_not_proven`，不改变完整日库自身的覆盖结果；该诊断不接入普通训练门。
+
 当前消费者追链与b第5.1节一致：年度库`history_prices._TRAINING_RANGE_SQL`的量额列只取`raw_volume`及`qfq_amount`，`_decode_training_row`构造`HistoryTrainingPoint`；`AlignTrainingRows`再按市场日历保留交易、确认停牌及估值状态。raw/qfq均确认停牌时保留来源已知qfq估值，不先丢弃后用旧价覆盖；缺估值仍按同一日历规则处理，推定或未知状态不能成为真实标签。V1的`profile/v1/samples._complete_point`把金额交给完成日十因子；V2/V3/V5的`sample_builder._pending_sample`计算信号日前20个完成交易日的均额，排除信号日，与线上`BuildFactorHistory`一致，信号价格锚点不变。V5的`_sequence_point`将原始量和qfq分支金额交给唯一序列公式，分别形成`log1p(volume)`和`log1p(amount)`。停牌估值的零量额由共享日历对齐规则产生，不改写年度原始事实；缺失、非有限或不满足各档准入的值不能通过换列或补0掩盖。
 
 这份追链确认当前代码读取的列及消费方式。腾讯解析的手→股、万元→元换算与raw/qfq分支写入由b第5.1节及d维护；未据此断言各供应商历史逐值一致、`raw_amount == qfq_amount`或已完成B的全历史审计。当前输入/工件的实际身份与覆盖另由本轮真实训练报告交接。

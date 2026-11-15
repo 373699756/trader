@@ -154,9 +154,16 @@ def test_retained_parsed_financial_cache_can_explicitly_publish_to_another_forma
     assert original_path.read_bytes() == original
 
 
-def test_financial_age_is_requalified_without_reload_and_does_not_expire_latest_loss():
+@pytest.mark.parametrize(("report_age", "disclosure_age", "initial_fresh"), (
+    (550, 550, True), (550, 1, True), (551, 1, False),
+))
+def test_financial_age_is_requalified_without_reload_and_does_not_expire_latest_loss(
+    report_age, disclosure_age, initial_fresh,
+):
     old, _ = _reports()
-    report = replace(old, report_date=date(2024, 6, 30), published_at=_AT - timedelta(days=550))
+    report = replace(
+        old, report_date=_AT.date() - timedelta(days=report_age), published_at=_AT - timedelta(days=disclosure_age),
+    )
     reader = _Reader(_source((report,)))
     research = PublishedCompanyResearchFixture(
         reader, wall_clock=lambda: _AT,
@@ -167,8 +174,9 @@ def test_financial_age_is_requalified_without_reload_and_does_not_expire_latest_
     initial = research.cached((report.code,), include_structured=True, as_of=_AT)[report.code]
     later_at = _AT + timedelta(days=1)
     later = research.cached((report.code,), include_structured=True, as_of=later_at)[report.code]
-    assert initial.financial_history_complete
-    assert ResearchComponentsFromObservation(initial).financial == "known_clear"
+    assert initial.financial_history_complete is initial_fresh
+    assert ResearchComponentsFromObservation(initial).financial == ("known_clear" if initial_fresh else "stale")
+    assert ("financial_scoring:report_stale" not in initial.source_errors) is initial_fresh
     assert not later.financial_history_complete
     assert ResearchComponentsFromObservation(later).financial == "stale"
     assert "financial_scoring:report_stale" in later.source_errors

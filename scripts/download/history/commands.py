@@ -319,6 +319,12 @@ def BuildCommands(
 
 
 def _field_audit_arguments(options: HistoryOptions) -> tuple[str, ...]:
+    if options.percentage_unit_audit:
+        budget = options.audit_budget_seconds if options.audit_budget_seconds is not None else 15.0
+        return (
+            "--percentage-unit-audit", "--audit-budget-seconds", str(budget),
+            *(("--market-path", str(options.market_path)) if options.market_path is not None else ()),
+        )
     if not options.price_field_audit:
         return ()
     budget = options.audit_budget_seconds if options.audit_budget_seconds is not None else options.command_timeout_seconds - 10

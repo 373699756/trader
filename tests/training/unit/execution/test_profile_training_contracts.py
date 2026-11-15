@@ -86,7 +86,7 @@ def test_profile_windows_algorithms_costs_and_research_arms_have_typed_configura
     )
     assert research.deepseek_comparison_arms == ("local_only", "structured_facts_veto")
     assert research.tomorrow_embargo_sessions >= 5
-    assert research.ablation_arms == ("rule_only", "rule_model_gate", "industry_model_utility", "pooled_model_utility")
+    assert research.ablation_arms == ("rule_only", "rule_model_gate", "profile_model_utility", "pooled_model_utility")
 
 
 def test_profile_training_modules_do_not_import_each_other() -> None:

@@ -49,6 +49,8 @@ def BuildParser(
         repair_profile_year=None,
         repair_profile_code=None,
         price_field_audit=False,
+        percentage_unit_audit=False,
+        market_path=None,
         audit_checkpoint=None,
         audit_budget_seconds=None,
         sqlite_page_sample_count=1,
@@ -146,6 +148,9 @@ def BuildParser(
         parser.add_argument('--price-field-audit', action='store_true', help='explicit full published field and per-stock date scan, no network or source writes')
         parser.add_argument('--audit-checkpoint', type=Path, help='external checkpoint; exact source/config/publication/file fingerprints required for resume')
         parser.add_argument('--audit-budget-seconds', type=float, help='total deep-audit deadline; reserve at least 10 seconds inside command timeout')
+    if action_identity == "history-publication":
+        parser.add_argument('--percentage-unit-audit', action='store_true', help='bounded BaoStock percentage-source evidence only; at most 15 seconds, no source writes')
+        parser.add_argument('--market-path', type=Path, help='published shared daily window for percentage evidence')
     if action_identity == "history-daily-capability":
         parser.add_argument('--universe-size', dest='capability_universe_size', type=int, default=5453)
         parser.add_argument('--code', dest='capability_code', default='600519')
@@ -197,6 +202,8 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         repair_profile_year=args.repair_profile_year,
         repair_profile_code=args.repair_profile_code,
         price_field_audit=args.price_field_audit,
+        percentage_unit_audit=args.percentage_unit_audit,
+        market_path=args.market_path.expanduser().resolve() if args.market_path is not None else None,
         audit_checkpoint=ExternalPath(args.audit_checkpoint, "--audit-checkpoint"),
         audit_budget_seconds=args.audit_budget_seconds,
         sqlite_page_sample_count=args.sqlite_page_sample_count,
@@ -230,7 +237,16 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
     )
     if not math.isfinite(options.command_timeout_seconds) or not 0 < options.command_timeout_seconds <= 7200:
         raise ValueError("command timeout must be positive and must not exceed 7200 seconds")
-    if (options.audit_checkpoint is not None or options.audit_budget_seconds is not None) and not options.price_field_audit:
+    if options.percentage_unit_audit:
+        budget = options.audit_budget_seconds if options.audit_budget_seconds is not None else 15.0
+        if (options.price_field_audit or options.audit_checkpoint is not None or not math.isfinite(budget)
+                or not 0 < budget <= min(15.0, options.command_timeout_seconds - 1)):
+            raise ValueError("percentage unit audit requires a budget within 15 seconds, no field audit or checkpoint")
+    if options.market_path is not None and not options.percentage_unit_audit:
+        raise ValueError("--market-path requires --percentage-unit-audit")
+    if (options.audit_checkpoint is not None or options.audit_budget_seconds is not None) and not (
+        options.price_field_audit or options.percentage_unit_audit
+    ):
         raise ValueError("audit checkpoint and budget require --price-field-audit")
     if options.price_field_audit:
         budget = options.audit_budget_seconds if options.audit_budget_seconds is not None else options.command_timeout_seconds - 10
@@ -360,6 +376,12 @@ def _validate_audit_outputs(options: HistoryOptions, report: str) -> None:
         settings = LoadRuntimeSettings(options.runtime_config)
     except (OSError, RuntimeError, ValueError):
         BuildParser(options.action_identity).error("audit source/output separation requires readable runtime configuration")
+    if options.percentage_unit_audit:
+        root = options.history_root if options.history_root is not None else settings.data_paths.history
+        market = options.market_path if options.market_path is not None else root.parent / "daily_window.sqlite3"
+        directories.extend((root.resolve(), market.parent.resolve()))
+        _require_audit_output_separation(outputs, directories, options.action_identity)
+        return
     if options.action_identity == "qfq-sqlite":
         database = options.qfq_database if options.qfq_database is not None else settings.data_paths.daily_window
         directories.extend((database.parent.resolve(), settings.data_paths.reference_database.parent.resolve()))
@@ -405,6 +427,8 @@ def _prevalidate_audit_outputs(args: argparse.Namespace) -> None:
             runtime_config=Path(args.runtime_config).expanduser().resolve(),
             history_root=args.history_root.expanduser().resolve() if args.history_root is not None else None,
             qfq_database=args.qfq_database.expanduser().resolve() if args.qfq_database is not None else None,
+            percentage_unit_audit=args.percentage_unit_audit,
+            market_path=args.market_path.expanduser().resolve() if args.market_path is not None else None,
             audit_checkpoint=args.audit_checkpoint.expanduser().resolve() if args.audit_checkpoint is not None else None,
         )
         _validate_audit_outputs(inputs, args.report)

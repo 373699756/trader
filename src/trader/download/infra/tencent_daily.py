@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from typing import Literal
@@ -39,6 +39,8 @@ class TencentDailyRow:
     amount: float | None
     turnover_rate: float | None
     turnover_valid: bool
+    preclose: float | None = None
+    pct_change: float | None = None
 
     def prices(self) -> tuple[float, float, float, float]:
         if self.open_price is None or self.close is None or self.high is None or self.low is None:
@@ -83,7 +85,7 @@ def FetchTencentDailyRows(
         )
         response.raise_for_status()
         payload = DecodeTencentDailyPayload(response.text)
-        rows = tuple(_row(row) for row in _rows(payload, query))
+        rows = _daily_rows(payload, query)
         if observe_suspension is not None and not any(row.day == query.end for row in rows):
             day = _suspended_day(payload, query)
             if day is not None:
@@ -127,7 +129,56 @@ def _suspended_day(payload: object, query: TencentDailyQuery) -> date | None:
 
 
 def DecodeTencentDailyRows(text: str, query: TencentDailyQuery) -> tuple[TencentDailyRow, ...]:
-    return tuple(_row(row) for row in _rows(DecodeTencentDailyPayload(text), query))
+    return _daily_rows(DecodeTencentDailyPayload(text), query)
+
+
+def _daily_rows(payload: object, query: TencentDailyQuery) -> tuple[TencentDailyRow, ...]:
+    rows = tuple(_row(row) for row in _rows(payload, query))
+    if query.mode != "bfq" or not isinstance(payload, Mapping):
+        return rows
+    data = payload.get("data")
+    stock = data.get(query.symbol) if isinstance(data, Mapping) else None
+    quotes = stock.get("qt") if isinstance(stock, Mapping) else None
+    fields = quotes.get(query.symbol) if isinstance(quotes, Mapping) else None
+    if (
+        not isinstance(fields, list)
+        or len(fields) <= 40
+        or fields[2] != query.symbol[2:]
+        or fields[40] == "S"
+        or not isinstance(fields[30], str)
+        or len(fields[30]) != 14
+        or not fields[30].isdigit()
+    ):
+        return rows
+    try:
+        observed = datetime.strptime(fields[30], "%Y%m%d%H%M%S")
+    except ValueError:
+        return rows
+    if observed.date() != query.end or observed.time() < time(15):
+        return rows
+    preclose, pct_change = _number(fields[4]), _number(fields[32])
+    if preclose is None or preclose <= 0 or pct_change is None:
+        return rows
+    result = []
+    for row in rows:
+        prices = (row.close, row.open_price, row.high, row.low)
+        if (
+            row.day != observed.date()
+            or row.close is None
+            or row.close <= 0
+            or row.volume is None
+            or row.volume <= 0
+            or len(set(prices)) != 1
+            or prices != tuple(_number(fields[index]) for index in (3, 5, 33, 34))
+            or row.volume != _number(fields[6], 100.0)
+            or not math.isclose(pct_change, (row.close / preclose - 1.0) * 100.0, rel_tol=0.0, abs_tol=0.01)
+        ):
+            result.append(row)
+            continue
+        # These are the source's same-session raw facts, never an inferred
+        # previous bar or an adjustment of a qfq price. Older days stay unknown.
+        result.append(replace(row, preclose=preclose, pct_change=pct_change))
+    return tuple(result)
 
 
 def _rows(payload: object, query: TencentDailyQuery) -> list[object]:

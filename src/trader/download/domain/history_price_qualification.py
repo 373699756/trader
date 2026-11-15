@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
-from math import isclose
+from math import isclose, isfinite
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
@@ -16,6 +17,36 @@ _RAW_ACTIVITY_REL_TOLERANCE = 0.001
 
 class HistoryQfqBasisError(RuntimeError):
     """An incremental window cannot prove one observed qfq price basis."""
+
+
+def RetainTencentRawFacts(
+    previous: PublishedHistoryWindow, incoming: PublishedHistoryWindow
+) -> PublishedHistoryWindow:
+    """Retain verified raw facts only after the caller proves both Tencent sources."""
+    if previous.code != incoming.code:
+        raise RuntimeError("history_supplier_identity_conflict")
+    prior = {cell.trade_date: cell for cell in previous.cells}
+    cells = []
+    for cell in incoming.cells:
+        before = prior.get(cell.trade_date)
+        raw = cell.unadjusted
+        old = before.unadjusted if before is not None else None
+        if (
+            before is not None and before.status == cell.status == "complete"
+            and old is not None and raw is not None
+            and old.trading_status == raw.trading_status == "trading"
+            and old.preclose is not None and isfinite(old.preclose) and old.preclose > 0
+            and old.pct_change is not None and isfinite(old.pct_change)
+            and raw.preclose is None and raw.pct_change is None
+            and raw.volume is not None and raw.volume > 0
+            and raw.close_price is not None and raw.close_price > 0
+            and raw.open_price == raw.high_price == raw.low_price == raw.close_price
+            and (old.open_price, old.high_price, old.low_price, old.close_price, old.volume, old.amount)
+            == (raw.open_price, raw.high_price, raw.low_price, raw.close_price, raw.volume, raw.amount)
+        ):
+            cell = replace(cell, unadjusted=replace(raw, preclose=old.preclose, pct_change=old.pct_change))
+        cells.append(cell)
+    return replace(incoming, cells=tuple(cells))
 
 
 def QualifyReplacementWindow(
