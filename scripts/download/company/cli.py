@@ -67,6 +67,8 @@ def BuildParser(
         field_source_identities=False,
         annual_income_period=None,
         financial_revision_period=None,
+        official_financial_baseline=None,
+        official_financial_directory=None,
         st_name_history=False,
         st_rounds=3,
         st_workers=2,
@@ -107,6 +109,8 @@ def BuildParser(
         modes.add_argument('--field-sources-only', action='store_true', help='bounded read-only samples of structured company field alternatives')
         modes.add_argument('--annual-income-period', type=date.fromisoformat, help='one December 31 period for exactly one A-share code')
         modes.add_argument('--financial-revision-period', type=date.fromisoformat, help='read-only eight-metric UPDATE_DATE filter diagnostic for one A-share code and one quarter-end period; at most three requests')
+        modes.add_argument('--official-financial-baseline', type=Path, help='read-only official third-quarter excerpts for at most 50 source-null stocks in an existing company database audit')
+        parser.add_argument('--official-financial-directory', type=Path, help='explicit external material archive; requires --official-financial-baseline')
         modes.add_argument('--st-name-history', action='store_true', help='read-only Eastmoney F10 name-history comparison against Sina for one to 64 explicit reference stocks')
         parser.add_argument('--st-rounds', type=int, default=3, help='Eastmoney observation rounds (1..5); requires --st-name-history')
         parser.add_argument('--st-workers', type=int, default=2, help='read-only source workers (1..4); requires --st-name-history')
@@ -168,6 +172,8 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         field_source_identities=args.field_source_identities,
         annual_income_period=args.annual_income_period,
         financial_revision_period=args.financial_revision_period,
+        official_financial_baseline=args.official_financial_baseline.expanduser().resolve() if args.official_financial_baseline is not None else None,
+        official_financial_directory=ExternalPath(args.official_financial_directory, "--official-financial-directory"),
         st_name_history=args.st_name_history,
         st_rounds=args.st_rounds,
         st_workers=args.st_workers,
@@ -238,10 +244,23 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
             raise ValueError('--st-name-history requires 1..64 unique Shanghai/Shenzhen codes, rounds 1..5, workers 1..4 and timeout <=15 seconds')
     elif options.st_rounds != 3 or options.st_workers != 2:
         raise ValueError('--st-rounds and --st-workers require --st-name-history')
+    if options.official_financial_baseline is not None:
+        from scripts.download.company.output_paths import RequireIsolatedReplay
+
+        if options.official_financial_directory is None:
+            raise ValueError("--official-financial-baseline requires --official-financial-directory")
+        RequireIsolatedReplay(options.official_financial_directory, (PROJECT_ROOT, options.runtime_config.parent.parent))
+    elif options.official_financial_directory is not None:
+        raise ValueError("--official-financial-directory requires --official-financial-baseline")
     if options.financial_revision_period is not None:
         if options.field_sources_only or options.annual_income_period is not None or len(options.codes) != 1:
             raise ValueError("--financial-revision-period requires one code and cannot be combined with other source modes")
         CompanyFinancialRevisionRequest(options.codes[0], options.financial_revision_period)
+    elif options.official_financial_baseline is not None:
+        if options.codes or options.field_sources_only or options.annual_income_period is not None or options.st_name_history:
+            raise ValueError("--official-financial-baseline cannot be combined with other source modes")
+        if not options.official_financial_baseline.is_file():
+            raise ValueError("--official-financial-baseline requires an existing database audit")
     elif options.annual_income_period is not None:
         if options.field_sources_only or len(options.codes) != 1:
             raise ValueError("--annual-income-period requires one code and cannot be combined with --field-sources-only")

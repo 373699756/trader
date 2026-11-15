@@ -48,6 +48,9 @@ class Sources:
     def request_endpoint(self, component):
         return f"fixture:{component}"
 
+    def financial_reports(self, request, *, observed_at):
+        return ()
+
     def __init__(self):
         self.calls = []
         self.failure = False

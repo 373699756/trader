@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date, datetime
+import re
 
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, CompanyDocumentOutsideSubjectScope
 from trader.download.domain.company_evidence import (
@@ -16,6 +17,7 @@ from trader.download.domain.company_evidence import (
     Market,
 )
 from trader.download.infra.company_facts_protocol import COMPANY_EXTRACTION_IDENTITY
+from trader.download.infra.company_financial_report_index import IndexCompanyFinancialReportInputs
 from trader.infra.sqlite_connection import SqliteConnection
 
 _COMPANY_WORK_POLICY = COMPANY_EXTRACTION_IDENTITY + ":applicable-subjects:1:repurchase-events:2"
@@ -129,9 +131,12 @@ def IndexCompanyDocument(connection: SqliteConnection, rows: Sequence[Disclosure
         (
             (item.source, item.identity)
             for item in rows
-            if item.kind != "announcement" or not CompanyDocumentNeedsReview(item.title)
+            if item.kind != "announcement" or (
+                not CompanyDocumentNeedsReview(item.title) and re.search(r"20[0-9]{2}年(?:年度|第三季度|三季度|三季)报告", item.title) is None
+            )
         ),
     )
+    IndexCompanyFinancialReportInputs(connection, rows)
 
 
 def PrepareCompanyPublication(connection: SqliteConnection, codes: tuple[str, ...]) -> None:

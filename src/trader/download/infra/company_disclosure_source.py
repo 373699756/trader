@@ -1,4 +1,4 @@
-"""Bounded public CNInfo market/date pages; no per-stock annual query fallback."""
+"""Bounded CNInfo pages and explicit, period-bound annual evidence requests."""
 
 from __future__ import annotations
 
@@ -12,11 +12,12 @@ import tempfile
 from pathlib import Path
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from trader.download.domain.company_financial_report import CompanyFinancialReportRequest, IsCompanyFinancialReportTitle
 from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
     CompanyDocumentFailure,
@@ -29,6 +30,7 @@ from trader.download.domain.company_evidence import (
     DisclosureQuery,
     DisclosureSecurity,
     DocumentRoute,
+    EvidenceMarket,
 )
 from trader.download.infra.company_document_ocr import CompanyOcrEngine
 from trader.download.domain.download_failure import DownloadValidationFailure
@@ -61,6 +63,8 @@ class CninfoMarketDisclosureSource:
         return {
             "announcements": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
             "directory": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+            "annual_income": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+            "financial": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
             "download": "https://static.cninfo.com.cn/finalpage/",
             "risk_documents": "https://static.cninfo.com.cn/finalpage/",
             "text": "local_pdf_text_extraction",
@@ -144,6 +148,30 @@ class CninfoMarketDisclosureSource:
             deadline=self._monotonic() + self._timeout,
             cancel_requested=self._cancel_requested,
         )
+
+    def financial_reports(self, request: CompanyFinancialReportRequest, *, observed_at: datetime) -> tuple[Disclosure, ...]:
+        day = request.disclosed_at.date()
+        partition = DisclosurePartition(EvidenceMarket(request.code), max(day - timedelta(days=1), observed_at.date() - timedelta(days=365)),
+                                        min(day + timedelta(days=1), observed_at.date()),
+                                        query=DisclosureQuery(_plate(request.code)))
+        queries = self.split_queries(partition)
+        members = tuple(member for query in queries for member in query.securities if member.code == request.code)
+        if len(members) != 1:
+            raise ValueError("company_annual_report_issuer_unavailable")
+        page = self.fetch(replace(partition, query=DisclosureQuery(_plate(request.code), members)))
+        rows = list(page.rows)
+        pages = 1
+        while page.has_more and request.report_date.month == 9 and pages < 3:
+            following = self.fetch(replace(partition, query=DisclosureQuery(_plate(request.code), members), page=pages + 1))
+            if following.total != page.total or {row.identity for row in rows}.intersection(row.identity for row in following.rows):
+                raise ValueError("company_financial_report_directory_changed")
+            rows.extend(following.rows)
+            page = following
+            pages += 1
+        if page.has_more:
+            raise ValueError("company_annual_report_directory_limit")
+        return tuple(item for item in rows if item.codes == (request.code,)
+                     and item.published_at <= observed_at and IsCompanyFinancialReportTitle(item.title, request.report_date))
 
     def split_queries(self, partition: DisclosurePartition) -> tuple[DisclosureQuery, ...]:
         query = partition.query
@@ -288,7 +316,13 @@ class CninfoMarketDisclosureSource:
     def document_ready(self, item: Disclosure) -> bool:
         if self._raw_files is None:
             raise RuntimeError("company_raw_files_required")
-        return self._raw_files.result(item, (self._document_policies.standard, self._document_policies.ocr, self._document_policies.limits)) is not None or self._raw_files.local(item, check=self._document_read_check()) is not None
+        return self._raw_files.result(item, self._report_policies(item)) is not None or self._raw_files.local(item, check=self._document_read_check()) is not None
+
+    def _report_policies(self, item: Disclosure) -> tuple[str, str, str]:
+        policy = self._document_policies
+        if _quarterly_layout(item):
+            return _layout_policy(policy.standard), policy.ocr, _layout_policy(policy.limits)
+        return policy.standard, policy.ocr, policy.limits
 
     def download_document(self, item: Disclosure) -> None:
         if self._raw_files is None:
@@ -386,7 +420,7 @@ class CninfoMarketDisclosureSource:
     ) -> CompanyDocumentExtraction:
         if self._raw_files is None:
             raise RuntimeError("company_raw_files_required")
-        policies = (self._document_policies.standard, self._document_policies.ocr, self._document_policies.limits)
+        policies = self._report_policies(item)
         cached = self._raw_files.result(item, policies)
         if cached is not None:
             return cached
@@ -398,13 +432,14 @@ class CninfoMarketDisclosureSource:
         if reserve is None:
             raise ValueError("company_document_reservations_required")
         with self._raw_files.reserve(local.directory, reserve, analysis=True):
-            result = self._analyze_document(local, route, page_progress=page_progress)
+            result = self._analyze_document(local, route, page_progress=page_progress, layout=_quarterly_layout(item))
             self._raw_files.save_result(item, result)
             return result
 
     def _analyze_document(
         self, local: CompanyLocalDocument, route: DocumentRoute, *,
         page_progress: Callable[[int, int], None] | None = None,
+        layout: bool = False,
     ) -> CompanyDocumentExtraction:
         limits = self._extended_document_limits if route == "limits" or local.size > self._document_limits.max_bytes else self._document_limits
         if limits is self._extended_document_limits and route == "standard":
@@ -412,8 +447,9 @@ class CninfoMarketDisclosureSource:
         payload, payload_hash = local.path, local.payload_hash
         if route == "ocr":
             return self._ocr(payload, payload_hash, page_progress=page_progress)
+        parse = partial(self._parse_document, layout=True) if layout else self._parse_document
         try:
-            text = self._parse_document(payload, limits)
+            text = parse(payload, limits)
         except CompanyDocumentFailure as exc:
             if exc.reason in {
                 "disclosure_document_no_text",
@@ -428,7 +464,7 @@ class CninfoMarketDisclosureSource:
                 "disclosure_document_text_limit",
             }:
                 try:
-                    text = self._parse_document(payload, self._extended_document_limits)
+                    text = parse(payload, self._extended_document_limits)
                 except CompanyDocumentFailure as expanded:
                     if expanded.reason in {
                         "disclosure_document_no_text",
@@ -442,7 +478,8 @@ class CninfoMarketDisclosureSource:
                 route = "limits"
             else:
                 raise
-        return CompanyDocumentExtraction(text, "text", payload_hash, self._document_policies.for_route(route))
+        policy = self._document_policies.for_route(route)
+        return CompanyDocumentExtraction(text, "text", payload_hash, _layout_policy(policy) if layout else policy)
 
     def _ocr(
         self, payload: Path, payload_hash: bytes, *,
@@ -453,12 +490,12 @@ class CninfoMarketDisclosureSource:
         text, quality = self._ocr_engine.extract(payload, payload_hash, page_progress=page_progress)
         return CompanyDocumentExtraction(text, "ocr", payload_hash, self._document_policies.ocr, quality)
 
-    def _parse_document(self, payload: Path, limits: CompanyDocumentLimits | None = None) -> str:
+    def _parse_document(self, payload: Path, limits: CompanyDocumentLimits | None = None, *, layout: bool = False) -> str:
         limits = limits or self._document_limits
         with tempfile.TemporaryDirectory(prefix="text-", dir=payload.parent) as directory:
-            return self._extract_document(payload, limits, directory)
+            return self._extract_document(payload, limits, directory, layout=True) if layout else self._extract_document(payload, limits, directory)
 
-    def _extract_document(self, payload: Path, limits: CompanyDocumentLimits, directory: str) -> str:
+    def _extract_document(self, payload: Path, limits: CompanyDocumentLimits, directory: str, *, layout: bool = False) -> str:
         payload_hash = bytes.fromhex(payload.stem)
         if not self._text_capability.available:
             raise CompanyDocumentFailure(
@@ -493,6 +530,7 @@ class CninfoMarketDisclosureSource:
                     self._text_capability.pdftotext or "pdftotext",
                     "--pdfinfo",
                     self._text_capability.pdfinfo or "pdfinfo",
+                    *(("--layout",) if layout else ()),
                 ),
                 maximum_bytes=4 * limits.max_text_characters,
                 check=check,
@@ -604,6 +642,14 @@ def _parse_disclosure(row: object, partition: DisclosurePartition) -> Disclosure
         f"https://static.cninfo.com.cn/{adjunct}" if adjunct else "",
         digest,
     )
+
+
+def _quarterly_layout(item: Disclosure) -> bool:
+    return item.kind == "announcement" and re.search(r"20[0-9]{2}年(?:第三季度|三季度|三季)报告", "".join(item.title.split())) is not None
+
+
+def _layout_policy(policy: str) -> str:
+    return hashlib.sha256((policy + "\0pdftotext:-layout").encode()).hexdigest()
 
 
 __all__ = ["CninfoMarketDisclosureSource"]

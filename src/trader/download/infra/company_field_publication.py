@@ -12,6 +12,7 @@ from trader.download.domain.company_event_extraction import ExtractCompanyFieldE
 from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES
 from trader.download.domain.company_reduction_scope import COMPANY_QUALIFIED_REDUCTION_DIGEST
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent, RepurchaseMeasurements
+from trader.download.infra.company_annual_field_publication import CanReuseCompanyAnnualFieldResults, IsCompanyAnnualFieldEvidence, PrepareCompanyAnnualFieldResults
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_plan import BuildCompanyFieldResults
@@ -69,7 +70,11 @@ def PrepareCompanyFieldResults(
         if (existing is not None and existing.state == "verified" and item.applicable
             and type(existing.value) is type(item.value) and existing.value == item.value
             and event is not None
-            and all(proof.source_key in event.evidence_ids and proof.subject is event.subject_type
+            and (all(proof.source_key in event.evidence_ids for proof in existing.evidence)
+                 or isinstance(event, CompanyPositiveEvent)
+                 and CanReuseCompanyAnnualFieldResults(collected, formal, facts, event, existing))
+            and all((proof.source_key in event.evidence_ids or isinstance(event, CompanyPositiveEvent)
+                     and IsCompanyAnnualFieldEvidence(event, item.field, proof)) and proof.subject is event.subject_type
                     and (item.field, proof.rule_id) in COMPANY_FIELD_RULES
                     and _current_material(collected, facts, proof.source, proof.source_key, proof.record_hash,
                                           proof.body_hash, proof.published_at) for proof in existing.evidence)):
@@ -163,7 +168,17 @@ def PrepareCompanyFieldResults(
             if (item.event_id == event.event_id and item.field == candidate.field and item.applicable
                 and type(item.value) is type(candidate.value) and item.value == candidate.value):
                 results[position] = replace(candidate, event_id=event.event_id)
-    return CompanyFieldPublication(tuple(results), tuple(receipts))
+    annual = PrepareCompanyAnnualFieldResults(
+        collected,
+        formal,
+        facts,
+        results,
+        documents,
+        observed_at=observed_at,
+        extraction_hash=extraction_hash,
+        read_document=read_document,
+    )
+    return CompanyFieldPublication(annual.results, (*receipts, *annual.receipts))
 
 
 def _field_events(facts: CompanyFacts, field: str) -> Sequence[CompanyRiskEvent | CompanyPositiveEvent]:

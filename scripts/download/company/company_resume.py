@@ -315,11 +315,25 @@ def Main() -> int:
     for relative in (
         "scripts/download/company/company_resume.py",
         "scripts/download/company/company_failure_audit.py",
+        "scripts/download/company/company_query_audit.py",
+        "scripts/download/company/company_publication_audit.py",
         "src/trader/download/application/company_evidence.py",
         "src/trader/download/infra/company_disclosure_source.py",
         "src/trader/download/infra/company_disclosure_queries.py",
         "src/trader/download/infra/company_evidence_index.py",
         "src/trader/download/infra/company_document_parser.py",
+        "src/trader/download/domain/company_annual_report.py",
+        "src/trader/download/domain/company_financial_report.py",
+        "src/trader/download/domain/company_announcement_numbers.py",
+        "src/trader/download/domain/company_event_extraction.py",
+        "src/trader/download/domain/company_reduction_scope.py",
+        "src/trader/download/infra/company_annual_income_index.py",
+        "src/trader/download/infra/company_annual_field_publication.py",
+        "src/trader/download/infra/company_financial_publication.py",
+        "src/trader/download/infra/company_financial_report_index.py",
+        "src/trader/download/infra/company_field_publication.py",
+        "src/trader/download/infra/company_field_recovery.py",
+        "src/trader/download/infra/company_pipeline_queries.py",
     ):
         implementation.update((_ROOT / relative).read_bytes())
     if not 30 <= args.budget_seconds <= 10800:
@@ -366,6 +380,7 @@ def Main() -> int:
             budget_seconds=min(180.0, args.budget_seconds),
             facts_path=args.facts_database, sqlite_policy=sqlite_policy,
             risk_baseline=args.risk_baseline,
+            event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
         )
         if args.directory is not None and report["status"] != "failed":
             summary = report["summary"]

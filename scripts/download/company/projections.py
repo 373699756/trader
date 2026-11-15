@@ -224,6 +224,8 @@ def ProjectCompanyResume(
                           "unlock_incomplete_stocks", "pending_document_references")),
             ("ongoing_risks", ("events", "stocks", "older_than_year", "missing_evidence_events")),
             ("receipts", ("checked", "awaiting_publication_documents", "released_without_receipts")),
+            ("consumer_read", ("checked", "http_checked", "stocks", "fields", "facts_equal", "fields_equal",
+                               "publication_equal", "consistent", "failure")),
         ):
             fields = ProjectMapping(publication.get(name))
             projected_publication[name] = {key: fields.get(key) for key in keys}

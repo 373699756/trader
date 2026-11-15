@@ -87,6 +87,8 @@ def BuildCommands(
             + (("--field-source-identities",) if options.field_source_identities else ())
             + (("--codes", *options.codes, "--annual-income-period", options.annual_income_period.isoformat()) if options.annual_income_period is not None else ())
             + (("--codes", *options.codes, "--financial-revision-period", options.financial_revision_period.isoformat()) if options.financial_revision_period is not None else ())
+            + (("--official-financial-baseline", str(options.official_financial_baseline), "--official-financial-directory",
+                str(options.official_financial_directory)) if options.official_financial_baseline is not None else ())
             + (("--st-name-history", "--codes", *options.codes, "--st-rounds", str(options.st_rounds),
                 "--st-workers", str(options.st_workers)) if options.st_name_history else ()),
             min(common_timeout, options.market_task_seconds),

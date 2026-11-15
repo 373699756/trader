@@ -8,6 +8,7 @@ from pathlib import Path
 from collections.abc import Mapping
 from collections import Counter
 from datetime import date, datetime
+from math import isfinite
 
 from trader.infra.sqlite_connection import SqliteConnection
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
@@ -15,11 +16,14 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, ContractMeasurements, IncreaseMeasurements, RepurchaseMeasurements
 from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
-from trader.download.domain.company_evidence import CompanyDocument, Disclosure
+from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, Disclosure
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
-from trader.download.infra.company_facts_protocol import DecodeCompanyDate, EncodeCompanyTime, EVIDENCE_SOURCES
+from trader.download.infra.company_facts_protocol import DecodeCompanyDate, EncodeCompanyTime, EVIDENCE_SOURCES, RequireCompanyTime
+from trader.download.infra.company_fact_inputs import DecodeCompanyFinancial
+from trader.download.infra.company_financial_publication import ReadCompanyFinancialSourceProofs
+from scripts.core.projection_values import SafeStringList, SafeNonnegativeInt, SafeText, ProjectMapping
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
 from trader.download.infra.company_field_recovery import ReadRequiredCompanyMaterialDependencies
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
@@ -182,7 +186,7 @@ def _contract_details(event: CompanyPositiveEvent, measurements: ContractMeasure
     }
 
 
-def _financial_sources(formal: SqliteConnection, raw: SqliteConnection) -> dict[str, object]:
+def _financial_sources(formal: SqliteConnection, raw: SqliteConnection, observed_at: datetime) -> dict[str, object]:
     columns = ("eps", "bps", "revenue_growth_pct", "profit_growth_pct", "core_profit_growth_pct", "roe_pct", "parent_profit", "core_profit")
     inputs = {(row["code"], row["report_date"]): row for row in raw.run("SELECT * FROM financials")}
     result: dict[str, object] = {}
@@ -190,6 +194,9 @@ def _financial_sources(formal: SqliteConnection, raw: SqliteConnection) -> dict[
         rows = formal.run(f"SELECT code,report_date,disclosed_at,{','.join(columns)} FROM {table} WHERE report_date IS NOT NULL ORDER BY code").fetchall()
         missing: Counter[str] = Counter()
         reasons: Counter[str] = Counter()
+        official_states: Counter[str] = Counter()
+        official_evidence: list[dict[str, object]] = []
+        provider_null_fields = 0
         items: list[dict[str, object]] = []
         incomplete = mismatches = identity_changes = gap_rows = 0
         for row in rows:
@@ -198,12 +205,28 @@ def _financial_sources(formal: SqliteConnection, raw: SqliteConnection) -> dict[
             same_identity = source is not None and EncodeCompanyTime(datetime.fromisoformat(source["published_at"])) == row["disclosed_at"]
             identity_changes += not same_identity
             gaps: list[dict[str, str]] = []
+            proofs = ReadCompanyFinancialSourceProofs(
+                raw, formal, DecodeCompanyFinancial(source),
+                CompanyFinancial(row["code"], day, RequireCompanyTime(row["disclosed_at"]), *tuple(row)[3:]), observed_at,
+            ) if (same_identity and source is not None and day is not None
+                  and any(source[field] is None for field in ("eps", "roe_pct", "core_profit_growth_pct", "revenue_growth_pct"))
+                  and all(row[field] is None or type(row[field]) in {int, float} and isfinite(row[field]) for field in columns)) else ()
             different = False
             incomplete += any(row[field] is None for field in columns)
             for field in columns:
+                provider_null_fields += source is not None and source[field] is None
+                proof = next((proof for proof in proofs if ("eps" if proof.field == "basic_eps" else proof.field) == field), None)
                 if row[field] is None:
                     missing[field] += 1
-                if source is None:
+                if proof is not None and row[field] == proof.value:
+                    official_states[proof.state] += 1
+                    if len(official_evidence) < 50:
+                        official_evidence.append({"code": row["code"], "report_date": str(day), "field": field,
+                                                  "state": proof.state, "source_keys": list(proof.source_keys)})
+                    if proof.state == "numeric":
+                        continue
+                    reason = "official_" + proof.state
+                elif source is None:
                     reason = "source_record_missing"
                 elif not same_identity:
                     reason = "source_revision_changed"
@@ -226,6 +249,8 @@ def _financial_sources(formal: SqliteConnection, raw: SqliteConnection) -> dict[
         result[name] = {"rows": len(rows), "incomplete_rows": incomplete, "missing_fields": dict(missing),
                         "value_mismatch_rows": mismatches, "source_identity_unconfirmed_rows": identity_changes,
                         "reasons": dict(reasons), "items": items,
+                        "provider_null_fields": provider_null_fields, "official_fields": dict(official_states),
+                        "official_evidence": official_evidence, "official_evidence_truncated": sum(official_states.values()) > len(official_evidence),
                         "items_truncated": gap_rows > len(items)}
     return result
 
@@ -259,7 +284,7 @@ def AuditCompanyFields(
             fields.append({"name": column[1], "populated": populated, "null": counts[0] - populated, "invalid_type": invalid, "nonfinite": nonfinite})
         field_count += len(columns)
         tables.append({"table": table[0], "rows": counts[0], "fields": fields})
-    financial_sources = _financial_sources(formal, raw)
+    financial_sources = _financial_sources(formal, raw, observed_at)
     retained = financial_sources["retained"]
     latest = financial_sources["latest"]
     assert isinstance(retained, dict) and isinstance(latest, dict)
@@ -417,13 +442,21 @@ def ProjectCompanyFieldAudit(source: Mapping[str, object]) -> dict[str, object]:
         result["financial_sources"] = {
             name: {key: group.get(key) for key in (
                 "rows", "incomplete_rows", "missing_fields", "value_mismatch_rows",
-                "source_identity_unconfirmed_rows", "reasons", "items_truncated",
+                "source_identity_unconfirmed_rows", "reasons", "items_truncated", "official_evidence_truncated",
             )} | {"items": [
                 {key: item.get(key) for key in ("code", "report_date", "disclosed_at")}
                 | {"fields": [{key: field.get(key) for key in ("field", "reason")} for field in _rows(item.get("fields"), 8)]}
                 for item in _rows(group.get("items"), 50)
-            ]}
+            ], "official_evidence": [
+                {key: SafeText(item.get(key)) for key in ("code", "report_date", "field", "state")}
+                | {"source_keys": SafeStringList(item.get("source_keys"), limit=4)}
+                for item in _rows(group.get("official_evidence"), 50)
+            ], "provider_null_fields": SafeNonnegativeInt(group.get("provider_null_fields")),
+               "official_fields": {key: SafeNonnegativeInt(counts.get(key))
+                                   for key in ("numeric", "not_applicable", "not_disclosed", "not_meaningful", "unquantified", "unsupported")
+                                   if key in counts}}
             for name in ("retained", "latest") if isinstance(group := financial_sources.get(name), dict)
+            for counts in (ProjectMapping(group.get("official_fields")),)
         }
     for name, keys in (
         ("source_agreement", ("financial_rows", "financial_value_mismatches", "pledge_rows", "pledge_explicit_source_matches", "pledge_zeros_from_complete_snapshot", "pledge_unmatched", "unlock_rows", "unlock_value_mismatches", "unlocated_evidence_refs", "risk_events_without_evidence", "positive_events_without_evidence")),

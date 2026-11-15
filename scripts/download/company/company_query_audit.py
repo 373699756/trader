@@ -17,11 +17,10 @@ from pathlib import Path
 from typing import Literal, cast
 from urllib.parse import parse_qs
 
-from scripts.download.company.company_publication_audit import AuditCompanyPublication
+from scripts.download.company.company_publication_audit import AuditCompanyPublication, CompanyConsumerAuditBudgetExceeded
 from scripts.download.company.company_failure_audit import AuditCompanyFailureObjects, CompanyFailureAuditTimeout
 from scripts.download.company.company_risk_comparison import CompareCompanyRisks, ProjectCompanyRiskComparison
 from trader.bootstrap import OpenExternalHttp
-from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_evidence import (
     CompanyDocumentRouteForFailure,
     DisclosurePartition,
@@ -35,6 +34,7 @@ from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.download_failure_diagnostics import ReadDownloadFailures
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadDownloadFailureConfiguration
+from trader.download.domain.company_events import CompanyEventPolicy
 from trader.infra.http_contracts import HttpRequest, HttpResponse
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
@@ -212,6 +212,7 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float, sqlite_policy: Sql
 def AuditCompanyDatabase(
     path: Path, *, now: datetime, budget_seconds: float, facts_path: Path | None = None, sqlite_policy: SqliteIoPolicy,
     risk_baseline: Path | None = None,
+    event_policy: CompanyEventPolicy | None = None,
 ) -> dict[str, object]:
     """Count local records and persisted retry reasons without reading bodies into the report."""
     deadline = time.monotonic() + budget_seconds
@@ -228,8 +229,9 @@ def AuditCompanyDatabase(
             path, now=now, deadline=deadline, cancel_requested=cancel_requested,
             facts_path=facts_path, sqlite_policy=sqlite_policy,
             risk_baseline=risk_baseline,
+            event_policy=event_policy,
         )
-    except (sqlite3.OperationalError, _CompanyDatabaseAuditBudgetExceeded, CompanyFailureAuditTimeout) as exc:
+    except (sqlite3.OperationalError, _CompanyDatabaseAuditBudgetExceeded, CompanyFailureAuditTimeout, CompanyConsumerAuditBudgetExceeded) as exc:
         # Python 3.10 has no sqlite_errorcode. The exact SQLite interruption
         # message alone is insufficient: our own deadline callback must cancel.
         if not deadline_cancelled or isinstance(exc, sqlite3.OperationalError) and str(exc) != "interrupted":
@@ -259,6 +261,7 @@ def _audit_company_database(
     facts_path: Path | None,
     sqlite_policy: SqliteIoPolicy,
     risk_baseline: Path | None,
+    event_policy: CompanyEventPolicy | None,
 ) -> dict[str, object]:
     cutoff = (now.date() - timedelta(days=365)).isoformat()
     pending = cooling = ready = deterministic = 0
@@ -343,26 +346,25 @@ def _audit_company_database(
                 "failure_records": sum(name.startswith("failure-") and name.endswith(".json") for name in files),
             })
         for row in connection.run(
-            "SELECT d.title,r.failure,r.retry_at FROM disclosures d LEFT JOIN document_retries r "
+            "SELECT r.failure,r.retry_at FROM company_document_requirements q JOIN disclosures d ON d.id=q.disclosure_id "
+            "LEFT JOIN document_retries r "
             "ON r.disclosure_id=d.id AND r.record_hash=d.record_hash WHERE d.kind='announcement' AND d.body_checked=0 "
             "AND d.published_at>=? AND d.published_at<=? AND EXISTS(SELECT 1 FROM disclosure_codes c "
             "JOIN company_population p ON p.code=c.code WHERE c.disclosure_id=d.id)",
             (cutoff, now.isoformat()),
         ):
-            if not CompanyDocumentNeedsReview(row[0]):
-                continue
             pending += 1
-            if row[1]:
-                failures[row[1]] = failures.get(row[1], 0) + 1
+            if row[0]:
+                failures[row[0]] = failures.get(row[0], 0) + 1
                 classification = (
                     "transient"
-                    if IsTransientCompanyDocumentFailure(row[1])
-                    else CompanyDocumentRouteForFailure(row[1])
+                    if IsTransientCompanyDocumentFailure(row[0])
+                    else CompanyDocumentRouteForFailure(row[0])
                 )
                 failure_classes[classification] = failure_classes.get(classification, 0) + 1
-            if row[1] and not IsTransientCompanyDocumentFailure(row[1]):
+            if row[0] and not IsTransientCompanyDocumentFailure(row[0]):
                 deterministic += 1
-            elif row[2] and datetime.fromisoformat(row[2]) > now:
+            elif row[1] and datetime.fromisoformat(row[1]) > now:
                 cooling += 1
             else:
                 ready += 1
@@ -437,6 +439,7 @@ def _audit_company_database(
         failure_objects["configuration_hash"] = configuration_hash
     publication = AuditCompanyPublication(
         path, facts_path, now=now, deadline=deadline, sqlite_policy=sqlite_policy, cancel_requested=cancel_requested,
+        event_policy=event_policy,
     )
     publication_findings = publication["findings"]
     if not isinstance(publication_findings, list):

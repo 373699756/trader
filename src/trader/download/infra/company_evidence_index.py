@@ -52,6 +52,9 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.company_facts import CompanyFacts, CompileCompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldConclusion
+from trader.download.domain.company_financial_report import CompanyFinancialReportRequest, IsCompanyFinancialReportTitle
+from trader.download.infra.company_financial_report_index import PlanCompanyMissingFinancialReports, PrioritizeCompanyFinancialReportInputs
+from trader.download.infra.company_financial_publication import PrepareCompanyFinancialReports
 from trader.download.infra.company_field_publication import PrepareCompanyFieldResults
 from trader.download.infra.company_disclosure_queries import (
     CommitDisclosureQueryPage,
@@ -105,6 +108,8 @@ from trader.download.infra.company_contract_link_rules import (
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
 from trader.download.domain.company_annual_income import ApplyCompanyAnnualIncome, CompanyAnnualIncome, CompanyAnnualIncomeRequest
 from trader.download.infra.company_annual_income_index import (
+    PlanCompanyAnnualReportRequests,
+    PrioritizeCompanyAnnualReportInputs,
     PlanCompanyAnnualIncomeRequests,
     WriteCompanyAnnualIncome,
 )
@@ -646,6 +651,8 @@ class SQLiteCompanyEvidenceIndex:
             with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True),
                                sqlite_policy=self._sqlite_policy, cancel_requested=self._cancel_requested) as formal:
                 PrioritizeCompanyRepurchaseInputs(connection, formal, codes, observed_at, self._facts.extraction_hash)
+                PrioritizeCompanyAnnualReportInputs(connection, formal, codes, observed_at)
+                PrioritizeCompanyFinancialReportInputs(connection, codes, observed_at)
             rows = connection.run(
                 "SELECT d.source,d.source_key,d.kind,d.title,d.published_at,d.url,d.record_hash,c.code,p.route FROM disclosures d "
                 "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN temp.requested_codes u ON u.code=c.code "
@@ -940,6 +947,32 @@ class SQLiteCompanyEvidenceIndex:
             self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
         ) as formal:
             return PlanCompanyAnnualIncomeRequests(collected, formal, codes, observed_at)
+
+    def financial_report_requests(self, codes: Sequence[str], observed_at: datetime) -> tuple[CompanyFinancialReportRequest, ...]:
+        with self._connect() as collected, SqliteSession(
+            self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
+        ) as formal:
+            return (*PlanCompanyAnnualReportRequests(collected, formal, codes, observed_at),
+                    *PlanCompanyMissingFinancialReports(collected, codes, observed_at))
+
+    def commit_financial_reports(self, request: CompanyFinancialReportRequest, rows: tuple[Disclosure, ...], observed_at: datetime) -> int:
+        if any(item.source != "cninfo" or item.codes != (request.code,) or item.kind != "announcement"
+               or not IsCompanyFinancialReportTitle(item.title, request.report_date)
+               or abs((item.published_at.date() - request.disclosed_at.date()).days) > 1
+               or not observed_at.date() - timedelta(days=365) <= item.published_at.date() <= observed_at.date()
+               or item.published_at > observed_at for item in rows):
+            raise ValueError("company_annual_report_input_invalid")
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            if connection.run("SELECT 1 FROM company_population WHERE code=?", (request.code,)).fetchone() is None:
+                raise ValueError("company_annual_report_population_mismatch")
+            changes = self._write_disclosures(connection, rows)
+            connection.run_many(
+                "INSERT OR IGNORE INTO company_document_requirements SELECT id FROM disclosures WHERE source=? AND source_key=?",
+                ((item.source, item.identity) for item in rows),
+            )
+            if changes:
+                MarkCompanyDirty(connection, (request.code,))
+            return changes
 
     def commit_annual_income(
         self,
@@ -1294,6 +1327,13 @@ class SQLiteCompanyEvidenceIndex:
                             listed_on=listing_dates.get(code),
                             read_document=partial(self._documents.read, check=self._check_cancelled),
                         )
+                        financial = PrepareCompanyFinancialReports(
+                            source, formal, snapshot.financials, previous[code].latest_financial if code in previous else None,
+                            snapshot.announcements, observed_at=observed_at, extraction_hash=self._facts.extraction_hash,
+                            read_document=partial(self._documents.read, check=self._check_cancelled),
+                        )
+                        snapshot = replace(snapshot, financials=financial.financials, failures=(*snapshot.failures, *financial.failures))
+                        formal_receipts.extend(financial.receipts)
                         facts = CompileCompanyFacts(
                             snapshot, self._event_policy, previous=None if rebuild else previous.get(code)
                         )

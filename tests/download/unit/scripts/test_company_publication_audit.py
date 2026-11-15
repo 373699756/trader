@@ -36,6 +36,41 @@ def _audit(index, now=fixtures.NOW):
     return AuditCompanyPublication(index.path, index.facts_path, now=now, deadline=time.monotonic() + 10, sqlite_policy=SqlitePolicyFixture())
 
 
+@pytest.mark.parametrize("mismatch", (False, True))
+def test_production_reader_is_compared_with_the_same_pinned_facts_fields_and_identity(tmp_path, monkeypatch, mismatch):
+    index = _published(tmp_path)
+    before = index.path.read_bytes(), index.facts_path.read_bytes()
+    if mismatch:
+        monkeypatch.setattr(company_publication_audit.SQLiteCompanyEvidenceReader, "visit", lambda *args, **kwargs: None)
+    result = AuditCompanyPublication(
+        index.path, index.facts_path, now=fixtures.NOW, deadline=time.monotonic() + 10,
+        sqlite_policy=SqlitePolicyFixture(), event_policy=fixtures.CompanyEventPolicy(),
+    )
+    consumer = result["consumer_read"]
+    assert consumer["checked"] and consumer["fields_equal"] and consumer["publication_equal"]
+    assert consumer["facts_equal"] is (not mismatch) and consumer["consistent"] is (not mismatch)
+    assert consumer["http_checked"] is False
+    assert ("company_consumer_read_not_verified" in result["findings"]) is mismatch
+    assert before == (index.path.read_bytes(), index.facts_path.read_bytes())
+    public = BuildReport("company-resume", [DiagnosticResult(
+        "company_resume", 0, 1.0,
+        {"schema_version": "company-resume", "status": "degraded", "summary": {"database": {"publication": result}}}, None,
+    )])
+    projected = public["checks"][0]["summary"]["database"]["publication"]["consumer_read"]
+    assert all(projected[key] == value for key, value in consumer.items())
+
+
+def test_a_wrong_consumer_policy_or_failed_read_cannot_count_as_consistency(tmp_path):
+    index = _published(tmp_path)
+    policy = fixtures.CompanyEventPolicy()
+    result = AuditCompanyPublication(
+        index.path, index.facts_path, now=fixtures.NOW, deadline=time.monotonic() + 10,
+        sqlite_policy=SqlitePolicyFixture(), event_policy=replace(policy, risk_days=policy.risk_days + 1),
+    )
+    assert result["consumer_read"] == {"checked": False, "http_checked": False, "failure": "company_consumer_unreadable"}
+    assert "company_consumer_read_not_verified" in result["findings"]
+
+
 def test_published_projection_keeps_unknown_components_and_valid_released_receipts_distinct(tmp_path):
     index = _published(tmp_path)
     before = (index.path.read_bytes(), index.facts_path.read_bytes())

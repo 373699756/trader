@@ -271,6 +271,9 @@ def test_committed_receipt_keeps_publication_cleanup_visible_until_index_returns
         def annual_income_requests(self, codes, observed_at):
             return ()
 
+        def financial_report_requests(self, codes, observed_at):
+            return ()
+
     source = fixtures.Sources()
     dependencies = CompanyEvidenceDependencies(Index(), source, source, lambda: clock[0], report)
     state = _SyncState(CompanyOperations(report, lambda: clock[0], ()), 1)

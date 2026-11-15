@@ -61,6 +61,7 @@ def Main() -> int:
     parser.add_argument("--max-text-characters", required=True, type=int)
     parser.add_argument("--pdftotext", default="pdftotext")
     parser.add_argument("--pdfinfo", default="pdfinfo")
+    parser.add_argument("--layout", action="store_true")
     args = parser.parse_args()
     limits = CompanyDocumentLimits(args.max_bytes, args.max_pages, args.max_text_characters)
     pdf = Path(args.input)
@@ -83,7 +84,7 @@ def Main() -> int:
         if int(pages) > limits.max_pages:
             return 4
         extracted = subprocess.run(
-            (args.pdftotext, "-enc", "UTF-8", "-nopgbrk", str(pdf), str(text_path)),
+            (args.pdftotext, "-enc", "UTF-8", "-nopgbrk", *(("-layout",) if args.layout else ()), str(pdf), str(text_path)),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,

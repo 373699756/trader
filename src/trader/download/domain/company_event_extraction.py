@@ -32,7 +32,7 @@ from trader.download.domain.company_events import (
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.domain.company_field_results import CompanyFieldConclusion, CompanyFieldName, CompanyFieldUnit
 from trader.download.domain.company_field_source import BuildCompanyFieldEvidence
-from trader.download.domain.company_reduction_scope import CompanyQualifiedReduction, ExtractCompanyQualifiedReduction
+from trader.download.domain.company_reduction_scope import CompanyQualifiedReduction, ExtractCompanyQualifiedReduction, COMPANY_REDUCTION_NONPARTICIPANT_DECLARATION
 
 _RISK_HINTS = (
     "立案",
@@ -279,8 +279,9 @@ def _reduction_field_evidence(verified: _VerifiedDocument) -> tuple[CompanyField
         fields.extend((
             ("start_date", qualified.start_date, qualified.statement, "explicit_reduction_start_date:2", "date"),
             ("end_date", qualified.end_date, qualified.statement, "explicit_reduction_end_date:2", "date"),
-            ("planned_pct", qualified.planned_ratio_pct, qualified.statement, "reduction_total_capital_ratio:3", "percent"),
         ))
+        if qualified.planned_ratio_pct is not None:
+            fields.append(("planned_pct", qualified.planned_ratio_pct, qualified.statement, "reduction_total_capital_ratio:3", "percent"))
     if plan is not None:
         for match in _reduction_period_matches(body):
             if plan.planned_start_date is not None and plan.planned_end_date is not None:
@@ -314,6 +315,7 @@ def _reduction_measurement_subject_is_unique(verified: _VerifiedDocument) -> boo
         return True
     # Regulation names describe permitted actors, rather than additional plans.
     body = re.sub(r"《[^》]{0,160}》", "", verified.body)
+    body = re.sub(COMPANY_REDUCTION_NONPARTICIPANT_DECLARATION, "", body)
     return not (
         verified.subject is CompanySubject.ISSUER
         or any(marker in body for marker in ("分别", "各自", "一致行动人", "合计持有", "合计持股"))
@@ -725,7 +727,8 @@ def _append_risk(
         parsed_plan = None if reduction_measurements_ambiguous else (
             verified.qualified_reduction.plan if verified.qualified_reduction is not None else _reduction_plan(body)
         )
-        if (reduction_measurements_ambiguous and previous is not None
+        if ((reduction_measurements_ambiguous or verified.qualified_reduction is not None
+             and verified.qualified_reduction.planned_ratio_pct is None) and previous is not None
             and previous.evidence_ids == (item.identity,)
             and previous.first_disclosed_at == previous.last_disclosed_at == item.published_at
             and previous.status is CompanyEventStatus.ONGOING):

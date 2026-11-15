@@ -13,6 +13,7 @@ from trader.download.domain.company_evidence import (
     DisclosureSecurity,
     StructuredCompanyQuery,
 )
+from trader.download.domain.company_financial_report import CompanyFinancialReportRequest
 
 from tests.helpers.download.company_resources import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource, EastmoneyCompanySourceFixture as EastmoneyCompanySource
 
@@ -51,6 +52,36 @@ def test_cninfo_uses_market_dates_default_sort_and_actual_more_flag():
     assert query["stock"] == query["sortName"] == query["sortType"] == ""
     assert query["pageSize"] == "30"
     assert session.requests[0]["timeout"] == 8
+
+
+@pytest.mark.parametrize("changed", (False, True))
+def test_quarterly_metadata_search_reads_later_pages_and_rejects_source_drift(changed):
+    class Pages(Session):
+        def get(self, url, **kwargs):
+            return HttpResponse(200, json.dumps({"stockList": [{"code": "600001", "orgId": "issuer"}]}).encode())
+
+        def post(self, url, **kwargs):
+            self.requests.append(kwargs)
+            page = int(kwargs["data"]["pageNum"])
+            return HttpResponse(200, json.dumps({
+                "totalRecordNum": 32 if changed and page == 2 else 31,
+                "hasMore": page == 1,
+                "announcements": [{"announcementId": str(page), "secCode": "600001", "orgId": "issuer",
+                    "announcementTitle": "普通公告" if page == 1 else "2026年第三季度报告",
+                    "announcementTime": NOW.timestamp() * 1000,
+                    "adjunctUrl": f"finalpage/2026-10-18/{page}.PDF"}],
+            }).encode())
+
+    session = Pages({})
+    source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda _: None)
+    request = CompanyFinancialReportRequest("600001", date(2026, 9, 30), NOW)
+    if changed:
+        with pytest.raises(ValueError, match="company_financial_report_directory_changed"):
+            source.financial_reports(request, observed_at=NOW)
+    else:
+        item, = source.financial_reports(request, observed_at=NOW)
+        assert item.title == "2026年第三季度报告" and item.identity == "2"
+    assert [row["data"]["pageNum"] for row in session.requests] == ["1", "2"]
 
 
 def test_cninfo_refuses_page_beyond_official_hundred_page_window_without_request():

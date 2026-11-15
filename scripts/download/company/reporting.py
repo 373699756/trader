@@ -11,6 +11,7 @@ from dataclasses import replace
 from scripts.core.contracts import DiagnosticResult
 from scripts.core.projection_values import ProjectMapping, ProjectSummary, SafeNonnegativeInt, SafeStringList, SafeText
 from scripts.download.company.projections import ProjectCompanyResume, ProjectCompanyRiskComparisonDetails
+from scripts.download.company.company_official_financial_audit import ProjectCompanyOfficialFinancialAudit
 
 
 def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> DiagnosticResult:
@@ -610,6 +611,10 @@ def _research_source_compare_details(
     source: Mapping[str, object],
     payload: dict[str, object],
 ) -> None:
+    official = source.get("official_financial_probe")
+    if isinstance(official, Mapping):
+        payload["official_financial_probe"] = ProjectCompanyOfficialFinancialAudit(official)
+        return
     revision = source.get("financial_revision_probe")
     if isinstance(revision, Mapping):
         fields = (

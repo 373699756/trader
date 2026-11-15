@@ -39,6 +39,7 @@ from trader.infra.workers import WorkerExecutor, WorkerResourceRejectedError
 from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.domain.download_failure import DownloadFailureContext
 from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
+from trader.download.domain.company_financial_report import CompanyFinancialReportRequest
 from trader.download.application.company_operations import CompanyOperations, CompanyOperationTiming
 from trader.download.application.company_documents import CompanyDocumentRun
 from trader.download.application.company_structured import CollectCompanyStructured
@@ -52,6 +53,8 @@ from trader.download.application.company_progress import (
 
 
 class CompanyEvidenceIndex(Protocol):
+    def financial_report_requests(self, codes: Sequence[str], observed_at: datetime) -> tuple[CompanyFinancialReportRequest, ...]: ...
+    def commit_financial_reports(self, request: CompanyFinancialReportRequest, rows: tuple[Disclosure, ...], observed_at: datetime) -> int: ...
     def document_publication_urgent(self, item: Disclosure) -> bool: ...
     def annual_income_requests(
         self, codes: Sequence[str], observed_at: datetime
@@ -135,6 +138,7 @@ class CompanyEvidenceIndex(Protocol):
 
 
 class CompanyDisclosureSource(Protocol):
+    def financial_reports(self, request: CompanyFinancialReportRequest, *, observed_at: datetime) -> tuple[Disclosure, ...]: ...
     def request_endpoint(self, component: str) -> str: ...
     @property
     def source(self) -> str: ...
@@ -209,6 +213,9 @@ class _SyncState:
     annual_income_attempts: set[CompanyAnnualIncomeRequest] = field(default_factory=set)
     annual_income_circuit: CompanySourceCircuit = field(default_factory=lambda: CompanySourceCircuit())
     annual_income_source_stopped: bool = False
+    financial_report_attempts: set[CompanyFinancialReportRequest] = field(default_factory=set)
+    financial_report_circuit: CompanySourceCircuit = field(default_factory=lambda: CompanySourceCircuit())
+    financial_report_source_stopped: bool = False
     unpublished_documents: int = 0
     publication_pending_since: float | None = None
     publication_required: bool = True
@@ -414,6 +421,7 @@ def _publish_batch(
             return state.published
         state.published = dependencies.index.published_count(population)
         changes = _annual_income(dependencies, population, observed_at, state)
+        changes += _financial_reports(dependencies, population, observed_at, state)
         if CompanyCancelled(dependencies):
             return state.published
         if changes and not CompanyCancelled(dependencies):
@@ -442,6 +450,52 @@ def _publish_company_facts(index: CompanyEvidenceIndex, population: tuple[str, .
                 raise
             operations.recover(exc, "retry", str(exc))
     raise RuntimeError("company_publication_retry_exhausted")
+
+
+def _financial_reports(
+    dependencies: CompanyEvidenceDependencies,
+    population: tuple[str, ...],
+    observed_at: datetime,
+    state: _SyncState,
+) -> int:
+    if CompanyCancelled(dependencies) or state.financial_report_source_stopped:
+        return 0
+    changes = 0
+    for request in dependencies.index.financial_report_requests(population, observed_at):
+        if request in state.financial_report_attempts:
+            continue
+        if CompanyCancelled(dependencies) or state.financial_report_source_stopped:
+            break
+        state.financial_report_attempts.add(request)
+        component = "annual_income" if request.report_date.month == 12 else "financial"
+        try:
+            identity = f"financial_report:{request.code}:{request.report_date}"
+            rows, fetched = state.operations.call_observed(
+                "annual_income" if request.report_date.month == 12 else "directory", partial(dependencies.disclosures.financial_reports, request, observed_at=observed_at),
+                code=request.code, source=dependencies.disclosures.source, object_id=identity,
+                component=component, endpoint=dependencies.disclosures.request_endpoint(component),
+            )
+            if CompanyCancelled(dependencies):
+                break
+            changed, committed = state.operations.call_observed(
+                "collection_commit", partial(dependencies.index.commit_financial_reports, request, rows, observed_at),
+                code=request.code, source=dependencies.disclosures.source, object_id=identity,
+                component=component, endpoint="sqlite:company_collection",
+            )
+            changes += changed
+            state.operations.result(fetched, "accepted" if rows else "empty", rows=len(rows), commit=committed,
+                                    changed_rows=changed, component=component)
+            state.pages += 1
+            state.financial_report_circuit.success()
+        except (OSError, RuntimeError, ValueError) as exc:
+            if CompanyCancelled(dependencies):
+                break
+            failure = CompanyFailureCode(exc)
+            state.failures += (f"{component}:{failure}",)
+            state.financial_report_source_stopped = state.financial_report_circuit.failed(exc, validation=isinstance(exc, ValueError))
+            state.operations.recover(exc, "source_deferred", failure,
+                                    fallback=DownloadFailureContext("company_financial_report", supplier=dependencies.disclosures.source))
+    return changes
 
 
 def _annual_income(

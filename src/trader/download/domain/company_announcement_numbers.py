@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 _NUMBER = re.compile(r"公告编号[：:]?[（(]?(20[0-9]{2}[-－—][0-9]{1,4})(?![0-9])")
 _DASHES = str.maketrans({"－": "-", "—": "-"})
-_CODE = re.compile(r"(?:证券|股票)代码[：:]?([0-9]{6})(?![0-9])")
+_CODE = re.compile(r"(?:证券|股票|公司)代码[：:]?([0-9]{6})(?![0-9])")
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +35,7 @@ def ExtractCompanyAnnouncementNumbers(text: str) -> CompanyAnnouncementNumbers:
         compact = "".join(line.split())
         if any(marker in compact for marker in ("本公司", "特别提示", "重要提示", "一、", "公告如下")):
             break
-        if compact.startswith(("公告编号", "证券代码", "证券简称", "股票代码", "股票简称")):
+        if compact.startswith(("公告编号", "证券代码", "证券简称", "股票代码", "股票简称", "公司代码")):
             header.append(compact)
     header_text = "\n".join(header)
     issuer_codes = tuple(sorted({match[1] for match in _CODE.finditer(header_text)}))

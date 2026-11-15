@@ -12,6 +12,7 @@ import hashlib
 
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.domain.company_annual_income import ApplyCompanyAnnualIncome
+from trader.download.domain.company_annual_report import COMPANY_ANNUAL_REPORT_DISCLOSURE_RULE
 from trader.download.domain.company_events import (
     CompanyEventPolicy, CompanyEventStatus, CompanyPositiveEvent, CompanyPositiveStatus, CompanyPositiveType, CompanyReviewReason, CompanyRiskEvent, CompanyRiskType, CompanySubject, IncreaseMeasurements,
     RepurchaseMeasurements, RepurchasePurpose, ContractMeasurements,
@@ -39,6 +40,7 @@ from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_fact_inputs import DecodeCompanyFinancial, ReadCompanySnapshotRows
 from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
+from trader.download.infra.company_financial_publication import ReadCompanyFinancialMaterials
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_publication_reads import ReadCompanyPublicationLinks
@@ -60,7 +62,7 @@ COMPANY_FIELD_RULES = (
     ("completion_disclosed_at", "explicit_reduction_completion:1"),
     ("actual_pct", "implemented_total_capital_ratio:3"),
     ("repurchase_purpose", "explicit_repurchase_purpose:2"),
-) + COMPANY_CONTRACT_FIELD_RULES
+) + COMPANY_CONTRACT_FIELD_RULES + (("revenue_disclosed_at", COMPANY_ANNUAL_REPORT_DISCLOSURE_RULE),)
 _REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence:1"
 _REPURCHASE_RECHECK_RULE = "same_body_repurchase_fields:1"
 _REPURCHASE_RECHECK_DIGEST = hashlib.sha256(
@@ -211,7 +213,13 @@ def _field_material_requirements(
             (item.code, item.event_id) for item in fields
             if item.applicable and item.state not in {"verified", "not_disclosed", "not_applicable"}
         }
+        financial_materials = ReadCompanyFinancialMaterials(formal, batch)
         for fact in ReadCompanyFactRows(formal, batch):
+            periods = {str(report.report_date) for report in (fact.financial, fact.latest_financial) if report is not None}
+            for material in financial_materials:
+                if material.code == fact.code:
+                    destination = required if str(material.report_date) in periods else settled
+                    destination.setdefault(fact.code, set()).add((material.source_key, "financial", _FIELD_SOURCE_PROOF_REQUIRED))
             scoped_events: tuple[tuple[str, tuple[CompanyRiskEvent | CompanyPositiveEvent, ...]], ...] = (
                 ("risk", fact.risk_events), ("positive", fact.positive_events),
             )
@@ -224,6 +232,11 @@ def _field_material_requirements(
                     destination.setdefault(fact.code, set()).update(
                         (evidence_id, scope, _FIELD_SOURCE_PROOF_REQUIRED) for evidence_id in event.evidence_ids
                     )
+                    destination[fact.code].update(
+                        (proof.source_key, scope, _FIELD_SOURCE_PROOF_REQUIRED)
+                        for item in fields if item.code == fact.code and item.event_id == event.event_id
+                        for proof in item.evidence
+                    )
     return (
         {code: frozenset(items) for code, items in required.items()},
         {code: frozenset(items) for code, items in settled.items()},
@@ -231,13 +244,23 @@ def _field_material_requirements(
 
 
 def _field_material_source(formal: SqliteConnection, code: str, scope: str, evidence_id: str, source: str) -> bool:
+    if scope == "financial" and source in EVIDENCE_SOURCES:
+        return formal.run(
+            "SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=? "
+            "AND outcome='field_attempted' AND policy_id LIKE 'financial_source:%' LIMIT 1", (code, source, evidence_id),
+        ).fetchone() is not None
     if scope not in {"risk", "positive"} or source not in EVIDENCE_SOURCES:
         return False
-    return formal.run(
+    linked = formal.run(
         f"SELECT 1 FROM company_{scope}_event e JOIN company_{scope}_evidence l ON l.{scope}_id=e.id "
         "JOIN company_evidence_ref r ON r.id=l.evidence_id "
         "WHERE e.code=? AND r.source_key=? AND r.source=? LIMIT 1",
         (code, evidence_id, EVIDENCE_SOURCES[source]),
+    ).fetchone() is not None
+    return linked or scope == "positive" and formal.run(
+        "SELECT 1 FROM company_field_evidence WHERE code=? AND source_key=? AND source=? "
+        "AND field IN ('annual_revenue','revenue_report_date','revenue_disclosed_at') LIMIT 1",
+        (code, evidence_id, source),
     ).fetchone() is not None
 
 
@@ -286,9 +309,19 @@ def RestoreCompanyMaterialDependencies(collected: SqliteConnection, formal: Sqli
                     f"SELECT DISTINCT r.source FROM company_{scope}_event e JOIN company_{scope}_evidence l "
                     f"ON l.{scope}_id=e.id JOIN company_evidence_ref r ON r.id=l.evidence_id "
                     "WHERE e.code=? AND r.source_key=?", (code, evidence_id),
-                ).fetchall()
-                for reference in references:
-                    source = DecodeCompanyLabel(EVIDENCE_SOURCES, reference[0])
+                ).fetchall() if scope != "financial" else ()
+                sources = {DecodeCompanyLabel(EVIDENCE_SOURCES, reference[0]) for reference in references}
+                if scope == "financial":
+                    sources.update(row[0] for row in formal.run(
+                        "SELECT DISTINCT source FROM company_input_receipt WHERE code=? AND source_key=? "
+                        "AND outcome='field_attempted' AND policy_id LIKE 'financial_source:%'", (code, evidence_id),
+                    ))
+                if scope == "positive":
+                    sources.update(row[0] for row in formal.run(
+                        "SELECT DISTINCT source FROM company_field_evidence WHERE code=? AND source_key=? "
+                        "AND field IN ('annual_revenue','revenue_report_date','revenue_disclosed_at')", (code, evidence_id),
+                    ))
+                for source in sorted(sources):
                     receipts = formal.run(
                         "SELECT record_hash,body_hash,extraction_hash FROM company_input_receipt "
                         "WHERE source=? AND source_key=? AND code=? AND extraction_hash=? "

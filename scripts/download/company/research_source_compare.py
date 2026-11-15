@@ -13,7 +13,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.bootstrap import BuildSqlitePolicy, OpenExternalHttp
-from trader.download.domain.company_evidence import DisclosurePartition, StructuredCompanyQuery
+from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, DisclosurePartition, StructuredCompanyQuery
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
@@ -24,6 +24,10 @@ from scripts.download.company.company_st_source_audit import AuditCompanyStSourc
 from scripts.download.company.company_structured_field_audit import AuditCompanyAnnualIncome
 from scripts.download.company.company_structured_field_audit import AuditCompanyStructuredSources
 from scripts.download.company.company_structured_field_audit import AuditCompanyFinancialRevision, CompanyFinancialRevisionRequest
+from scripts.download.company.company_official_financial_audit import AuditCompanyOfficialFinancialSources
+from scripts.download.company.output_paths import RequireIsolatedReplay
+from trader.download.infra.company_raw_files import CompanyRawFiles
+from trader.download.infra.company_document_parser import DetectCompanyText
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -224,6 +228,8 @@ def Main() -> int:
     parser.add_argument("--field-source-identities", action="store_true", help="Project at most five bounded source identities and measurements; requires --field-sources-only.")
     modes.add_argument("--annual-income-period", type=date.fromisoformat, help="Read one explicit annual period with the production F10 decoder; requires exactly one --codes value.")
     modes.add_argument("--financial-revision-period", type=date.fromisoformat, help="Read-only eight-metric UPDATE_DATE filter diagnostic for one code and one quarter end; at most three requests.")
+    modes.add_argument("--official-financial-baseline", type=Path, help="Read official third-quarter source excerpts for at most 50 stocks from an existing database audit.")
+    parser.add_argument("--official-financial-directory", type=Path, help="Explicit external archive for the official financial PDFs and parser results.")
     modes.add_argument("--st-name-history", action="store_true", help="Read-only F10 and Sina name-history comparisons for one to 64 explicit reference stocks.")
     parser.add_argument("--st-rounds", type=int, default=3)
     parser.add_argument("--st-workers", type=int, default=2)
@@ -240,6 +246,10 @@ def Main() -> int:
         parser.error("--annual-income-period requires one code and cannot be combined with --field-sources-only")
     if args.financial_revision_period is not None and len(args.codes) != 1:
         parser.error("--financial-revision-period requires one code")
+    if args.official_financial_baseline is not None and (args.codes or not args.official_financial_baseline.is_file()):
+        parser.error("--official-financial-baseline requires an existing database audit and no --codes")
+    if (args.official_financial_baseline is None) != (args.official_financial_directory is None):
+        parser.error("--official-financial-baseline and --official-financial-directory are required together")
     if args.st_name_history:
         if (
             not 1 <= len(args.codes) <= 64 or len(set(args.codes)) != len(args.codes)
@@ -260,7 +270,33 @@ def Main() -> int:
         parser.error("--codes selects securities only with --annual-income-period or --financial-revision-period")
     runtime = LoadRuntimeSettings(args.config)
     runtime_hash = hashlib.sha256(Path(args.config).expanduser().resolve().read_bytes()).hexdigest()
-    if args.st_name_history:
+    if args.official_financial_baseline is not None:
+        configuration = LoadCompanySyncConfiguration(runtime.project_root)
+        RequireIsolatedReplay(args.official_financial_directory, (runtime.project_root, runtime.data_paths.root, runtime.runtime_dir))
+        text_capability = DetectCompanyText()
+        raw_files = CompanyRawFiles(
+            args.official_financial_directory, capacity=configuration.raw_capacity_bytes,
+            analysis_reserve=configuration.raw_analysis_reserve_bytes, free_reserve=configuration.temporary_disk_reserve_bytes,
+            maximum_document_bytes=configuration.extended_document_limits.max_bytes,
+        )
+        deadline = time.monotonic() + args.task_seconds
+        with OpenExternalHttp() as session:
+            source = CninfoMarketDisclosureSource(
+                session, monotonic=time.monotonic, sleeper=time.sleep, timeout_seconds=args.timeout_seconds,
+                document_download_timeout_seconds=configuration.document_download_timeout_seconds,
+                document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
+                request_interval_seconds=configuration.request_interval_seconds,
+                document_limits=configuration.document_limits, extended_document_limits=configuration.extended_document_limits,
+                raw_files=raw_files, text_reserve_bytes=configuration.text_task_reserve_bytes,
+                ocr_reserve_bytes=configuration.ocr_task_reserve_bytes, text_capability=text_capability,
+                document_policies=BuildCompanyDocumentPolicies(configuration, "unavailable", text_identity=text_capability.identity),
+                cancel_requested=lambda: time.monotonic() >= deadline,
+            )
+            report = AuditCompanyOfficialFinancialSources(
+                source, args.official_financial_baseline, observed_at=datetime.now(_SHANGHAI), deadline=deadline,
+                raw_files=raw_files, pdftotext=text_capability.pdftotext,
+            )
+    elif args.st_name_history:
         requests, reference_hash = _st_requests(runtime, tuple(args.codes))
         report = AuditCompanyStSources(
             requests, session_factory=OpenExternalHttp, rounds=args.st_rounds, workers=args.st_workers,

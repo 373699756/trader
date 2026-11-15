@@ -12,6 +12,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
+from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
+from trader.download.domain.company_events import CompanyEventPolicy
+from trader.download.domain.company_facts import CompanyFacts
 from trader.download.infra.company_facts_protocol import (
     REVIEW_REASONS,
     REVIEW_SCOPES,
@@ -20,12 +25,58 @@ from trader.download.infra.company_facts_protocol import (
     EncodeCompanyDate,
     EncodeCompanyTime,
 )
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
+
+
+class CompanyConsumerAuditBudgetExceeded(TimeoutError):
+    """The production reader observed this diagnostic's deadline cancellation."""
+
+
+def _consumer_read(
+    formal: SqliteConnection,
+    facts_path: Path,
+    codes: tuple[str, ...],
+    event_policy: CompanyEventPolicy,
+    sqlite_policy: SqliteIoPolicy,
+    cancel_requested: Callable[[], bool],
+) -> dict[str, object]:
+    """Compare the real production reader with the caller's pinned SQL snapshot."""
+    identity = ReadCompanyPublicationIdentity(formal)
+    if identity is None or not codes or len(codes) > 12000:
+        return {"checked": False, "http_checked": False, "failure": "company_consumer_population_or_publication_missing"}
+    expected_facts = ReadCompanyFactRows(formal, codes)
+    expected_fields = ReadCompanyFieldResults(formal, codes)
+    reader = SQLiteCompanyEvidenceReader(facts_path, event_policy=event_policy, sqlite_policy=sqlite_policy)
+    actual_facts: list[CompanyFacts] = []
+    try:
+        reader.visit(codes, actual_facts.append, cancel_requested=cancel_requested)
+        actual_fields = reader.read_fields(codes, cancel_requested=cancel_requested)
+        actual_identity = reader.publication_identity(cancel_requested=cancel_requested)
+        if cancel_requested():
+            raise InterruptedError("company_consumer_audit_cancelled")
+    except InterruptedError as exc:
+        if str(exc) in {
+            "company_preload_cancelled", "company_field_read_cancelled", "company_observation_cancelled",
+            "company_consumer_audit_cancelled",
+        } and cancel_requested():
+            raise CompanyConsumerAuditBudgetExceeded("company_consumer_audit_budget_exhausted") from exc
+        raise
+    except (OSError, RuntimeError, ValueError):
+        return {"checked": False, "http_checked": False, "failure": "company_consumer_unreadable"}
+    same_facts = tuple(actual_facts) == expected_facts
+    same_fields = actual_fields.results == expected_fields
+    same_identity = actual_fields.publication_hash == identity.content_hash.hex() == actual_identity
+    return {
+        "checked": True, "http_checked": False, "stocks": len(actual_facts), "fields": len(actual_fields.results),
+        "facts_equal": same_facts, "fields_equal": same_fields, "publication_equal": same_identity,
+        "consistent": same_facts and same_fields and same_identity,
+    }
 
 
 def AuditCompanyPublication(
     path: Path, facts_path: Path | None, *, now: datetime, deadline: float, sqlite_policy: SqliteIoPolicy,
     cancel_requested: Callable[[], bool] | None = None,
+    event_policy: CompanyEventPolicy | None = None,
 ) -> dict[str, object]:
     """Two read snapshots, with concurrent changes rejected; not a source completeness certificate."""
     if facts_path is None or not facts_path.exists():
@@ -120,6 +171,11 @@ def AuditCompanyPublication(
             if not isinstance(field_findings, list):
                 raise ValueError("company_field_findings_invalid")
             findings.extend(field_findings)
+            consumer = _consumer_read(formal, facts_path, tuple(sorted(published)), event_policy, sqlite_policy, cancel) if (
+                event_policy is not None
+            ) else {"checked": False, "http_checked": False, "failure": "company_consumer_policy_not_supplied"}
+            if event_policy is not None and consumer.get("consistent") is not True:
+                findings.append("company_consumer_read_not_verified")
             result: dict[str, object] = {
                 "available": True,
                 "observed_at": now.isoformat(),
@@ -145,6 +201,7 @@ def AuditCompanyPublication(
                 "receipts": receipts,
                 "findings": findings,
                 "field_audit": field_audit,
+                "consumer_read": consumer,
             }
         stable = versions == (
             raw.run("PRAGMA data_version").require_one()[0], formal.run("PRAGMA data_version").require_one()[0]

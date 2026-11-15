@@ -32,7 +32,7 @@ def _budget_failure(monkeypatch, *, inventory=False):
     clock = _Clock()
     monkeypatch.setattr(company_query_audit.time, "monotonic", clock)
 
-    def interrupted(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy, risk_baseline):
+    def interrupted(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy, risk_baseline, event_policy):
         clock.now = deadline
         assert cancel_requested()
         if inventory:
@@ -121,6 +121,38 @@ def test_retry_inventory_deadline_produces_the_same_failed_budget_report(tmp_pat
     assert index.path.read_bytes() == before
 
 
+@pytest.mark.parametrize("known_cancellation", (False, True))
+def test_production_reader_cancellation_is_only_a_budget_failure_when_explicitly_observed(tmp_path, monkeypatch, known_cancellation):
+    index = fixtures._index(tmp_path)
+    item = fixtures._disclosure(title="关于收到立案告知书的公告")
+    index.commit_page(index.partitions(("sse",), fixtures.NOW)[0], DisclosurePage((item,), 1, False), fixtures.NOW)
+    index.commit_document(item, fixtures._extraction("本公司收到证监会立案告知书。"), fixtures.NOW)
+    index.publish(item.codes, fixtures.NOW)
+    clock = _Clock()
+    monkeypatch.setattr(company_query_audit.time, "monotonic", clock)
+    error = InterruptedError("company_preload_cancelled" if known_cancellation else "unrelated_io_interruption")
+
+    def interrupted(*args, **kwargs):
+        clock.now = 30
+        assert kwargs["cancel_requested"]()
+        raise error
+
+    monkeypatch.setattr(company_publication_audit.SQLiteCompanyEvidenceReader, "visit", interrupted)
+    if not known_cancellation:
+        with pytest.raises(InterruptedError) as captured:
+            company_query_audit.AuditCompanyDatabase(
+                index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=30,
+                sqlite_policy=SqlitePolicyFixture(), event_policy=fixtures.CompanyEventPolicy(),
+            )
+        assert captured.value is error
+        return
+    report = company_query_audit.AuditCompanyDatabase(
+        index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=30,
+        sqlite_policy=SqlitePolicyFixture(), event_policy=fixtures.CompanyEventPolicy(),
+    )
+    assert report["status"] == "failed" and report["summary"]["database"]["budget_exhausted"]
+
+
 @pytest.mark.parametrize(("message", "expired", "callback"), (
     ("interrupted", True, False),
     ("interrupted", False, True),
@@ -134,7 +166,7 @@ def test_unproven_interrupt_and_other_sqlite_errors_keep_their_original_cause(
     cause = ValueError("private cause remains on the exception")
     monkeypatch.setattr(company_query_audit.time, "monotonic", clock)
 
-    def failed(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy, risk_baseline):
+    def failed(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy, risk_baseline, event_policy):
         clock.now = deadline if expired else deadline - 1
         if callback:
             assert cancel_requested() is expired
@@ -155,7 +187,7 @@ def test_unrelated_timeout_keeps_its_identity_and_cause_even_after_deadline_canc
     cause = OSError(f"private {origin} timeout cause")
     monkeypatch.setattr(company_query_audit.time, "monotonic", clock)
 
-    def failed(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy, risk_baseline):
+    def failed(path, *, now, deadline, cancel_requested, facts_path, sqlite_policy, risk_baseline, event_policy):
         clock.now = deadline
         assert cancel_requested()
         raise error from cause
