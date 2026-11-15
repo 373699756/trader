@@ -14,6 +14,9 @@ from trader.download.domain.company_evidence import (
 
 if TYPE_CHECKING:
     from trader.download.application.company_evidence import CompanyEvidenceDependencies
+    from trader.download.application.company_failures import CompanySourceCircuit
+    from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
+    from trader.download.domain.company_financial_report import CompanyFinancialReportRequest
 
 
 class CompanyProgressState(Protocol):
@@ -30,6 +33,12 @@ class CompanyProgressState(Protocol):
     failures: tuple[str, ...]
     failed_documents: int
     batch: int
+    annual_income_attempts: set[CompanyAnnualIncomeRequest]
+    annual_income_circuit: CompanySourceCircuit
+    annual_income_source_stopped: bool
+    financial_report_attempts: set[CompanyFinancialReportRequest]
+    financial_report_circuit: CompanySourceCircuit
+    financial_report_source_stopped: bool
     unpublished_documents: int
     publication_pending_since: float | None
     publication_required: bool

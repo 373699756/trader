@@ -192,3 +192,19 @@ def test_single_page_worker_rejects_unbounded_inputs_before_configuration_or_htt
     monkeypatch.setattr("sys.argv", ["research-source-compare", "--config", "unused.json", *arguments])
     with pytest.raises(SystemExit):
         worker.Main()
+
+
+def test_page_worker_preserves_explicit_batch_keys_and_period_without_selecting_default_collection(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(worker, "OpenExternalHttp", lambda **_kwargs: nullcontext(object()))
+    monkeypatch.setattr(worker, "AuditCompanyStructuredPage", lambda *args, **kwargs: calls.append(kwargs) or {"status": "failed"})
+    monkeypatch.setattr(worker, "Collect", lambda *_args, **_kwargs: pytest.fail("default collection must stay closed"))
+    monkeypatch.setattr("sys.argv", [
+        "research-source-compare", "--config", str(PROJECT_ROOT / "config/runtime.json"),
+        "--structured-page", "financial", "--structured-start", "2026-10-31", "--structured-end", "2026-10-31",
+        "--codes", "600900", "688012", "--structured-report-date", "2026-09-30",
+    ])
+    assert worker.Main() == 1
+    assert calls[0]["financial_codes"] == ("600900", "688012")
+    assert calls[0]["financial_report_date"].isoformat() == "2026-09-30"
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"

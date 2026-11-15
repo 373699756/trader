@@ -15,8 +15,8 @@ from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
-from trader.download.domain.company_evidence import EvidenceMarket, StructuredCompanyQuery
-from trader.download.infra.company_structured_source import EastmoneyCompanySource
+from trader.download.domain.company_evidence import EvidenceMarket, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.infra.company_structured_source import DecodeCompanyFinancialPage, EastmoneyCompanySource
 from trader.download.domain.company_structured_fields import CompanyStructuredDataset, ResolveCompanyStructuredFields
 from trader.download.infra.company_structured_fields import DecodeCompanyStructuredFields
 from trader.infra.http_contracts import HttpAttempt, HttpTransport
@@ -59,6 +59,25 @@ def BuildCompanyStructuredPageQuery(
     return StructuredCompanyQuery(component, start, end)
 
 
+def ValidateCompanyStructuredFinancialKeys(
+    query: StructuredCompanyQuery,
+    codes: tuple[str, ...],
+    report_date: date | None,
+) -> None:
+    """Keep experimental key filters explicit and outside normal source queries."""
+    if not codes and report_date is None:
+        return
+    if (query.component != "financial" or not 2 <= len(codes) <= 8 or len(set(codes)) != len(codes)
+        or type(report_date) is not date or report_date > query.end):
+        raise ValueError("company_structured_key_options_invalid")
+    for code in codes:
+        CompanyFinancialRevisionRequest(code, report_date)
+
+
+class _FinancialKeyProbeError(ValueError):
+    """Only this diagnostic's fixed protocol reasons may reach the report."""
+
+
 def AuditCompanyStructuredPage(
     session: HttpTransport,
     query: StructuredCompanyQuery,
@@ -66,6 +85,8 @@ def AuditCompanyStructuredPage(
     observed_at: datetime,
     timeout_seconds: float,
     deadline: float,
+    financial_codes: tuple[str, ...] = (),
+    financial_report_date: date | None = None,
     http_attempts: Sequence[HttpAttempt] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
@@ -73,7 +94,9 @@ def AuditCompanyStructuredPage(
     bounded = BuildCompanyStructuredPageQuery(query.component, query.start, query.end, observed_at=observed_at)
     if query != bounded or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30 or not math.isfinite(deadline):
         raise ValueError("company_structured_page_options_invalid")
+    ValidateCompanyStructuredFinancialKeys(query, financial_codes, financial_report_date)
     started = monotonic()
+    key_probe = bool(financial_codes)
     fields = ("SECUCODE", "REPORT_DATE", "NOTICE_DATE", *(field for _name, field in _FINANCIAL_FIELDS)) if query.component == "financial" else (
         ("SECURITY_CODE", "TRADE_DATE", "PLEDGE_RATIO") if query.component == "pledge"
         else ("SECURITY_CODE", "FREE_DATE", "TOTAL_RATIO")
@@ -85,8 +108,11 @@ def AuditCompanyStructuredPage(
         "production_adopted": False, "field_correctness_verified": False,
         "full_window_coverage_verified": False, "latest_snapshot_verified": False,
         "key_lookup_verified": False, "revision_index_verified": False,
-        "fetch_invocations": 0, "request_limit": 1, "page_limit": 1, "page_size": 500,
-        "max_response_bytes": 16 * 1024 * 1024, "requested_fields": list(fields),
+        "key_filter_requested": key_probe, "requested_codes": list(financial_codes),
+        "requested_report_date": financial_report_date.isoformat() if financial_report_date is not None else None,
+        "fetch_invocations": 0, "request_limit": 2 if key_probe else 1, "page_limit": 2 if key_probe else 1,
+        "page_size": len(financial_codes) if key_probe else 500,
+        "max_response_bytes": 1024 * 1024 if key_probe else 16 * 1024 * 1024, "requested_fields": list(fields),
         "normal_path_discovery": "pledge_day_required" if query.component == "pledge" else "none_in_current_fetch",
         "pages_followed": 0, "physical_http_attempts": None, "response_bytes": None,
     }
@@ -95,9 +121,15 @@ def AuditCompanyStructuredPage(
             session, monotonic=monotonic, timeout_seconds=min(timeout_seconds, deadline - started),
             cancel_requested=lambda: monotonic() >= deadline,
         )
-        report["fetch_invocations"] = 1
         try:
-            page = source.fetch(query, observed_at=observed_at)
+            if key_probe and financial_report_date is not None:
+                page = _financial_key_pages(
+                    session, query, financial_codes, financial_report_date, observed_at=observed_at,
+                    timeout_seconds=timeout_seconds, deadline=deadline, monotonic=monotonic, report=report,
+                )
+            else:
+                report["fetch_invocations"] = 1
+                page = source.fetch(query, observed_at=observed_at)
             if monotonic() >= deadline:
                 report["status"] = "timed_out"
             elif page.row_count > 500:
@@ -130,12 +162,102 @@ def AuditCompanyStructuredPage(
                                 "decoded_null_rows": sum(value is None for value in values)} for field, values in measurements],
                 })
         except (OSError, RuntimeError, ValueError) as exc:
-            report.update(status="failed", failure=type(exc).__name__)
+            report.update(status="failed", failure=str(exc) if isinstance(exc, _FinancialKeyProbeError) else type(exc).__name__)
     if http_attempts is not None:
         report["physical_http_attempts"] = len(http_attempts)
         report["response_bytes"] = sum(attempt.response_bytes for attempt in http_attempts)
     report["elapsed_seconds"] = max(0.0, monotonic() - started)
     return report
+
+
+def _financial_key_pages(
+    session: HttpTransport,
+    query: StructuredCompanyQuery,
+    codes: tuple[str, ...],
+    report_date: date,
+    *,
+    observed_at: datetime,
+    timeout_seconds: float,
+    deadline: float,
+    monotonic: Callable[[], float],
+    report: dict[str, object],
+) -> StructuredCompanyPage:
+    queries: list[dict[str, object]] = []
+    probe: dict[str, object] = {
+        "codes": list(codes), "report_date": report_date.isoformat(), "support_status": "not_verified",
+        "filter_verified": False, "date_filter_independently_verified": False, "queries": queries,
+    }
+    report["key_filter_probe"] = probe
+    columns = ("SECUCODE", "REPORT_DATE", "NOTICE_DATE", *(field for _name, field in _FINANCIAL_FIELDS))
+
+    def fetch(selected: tuple[str, ...], label: str) -> StructuredCompanyPage:
+        if monotonic() >= deadline:
+            raise _FinancialKeyProbeError("company_structured_key_deadline_exhausted")
+        identities = tuple(code + "." + {"sse": "SH", "szse": "SZ", "bse": "BJ"}[EvidenceMarket(code)] for code in selected)
+        members = ",".join("'" + identity + "'" for identity in identities)
+        evidence: dict[str, object] = {"query": label, "status": "failed", "selected_codes": list(selected)}
+        queries.append(evidence)
+        report["fetch_invocations"] = len(queries)
+        response = session.get(
+            _FINANCIAL_URL,
+            params={
+                "type": _FINANCIAL_REPORT, "sty": ",".join(columns), "quoteColumns": "",
+                "filter": f"(NOTICE_DATE>='{query.start.isoformat()}')(NOTICE_DATE<='{query.end.isoformat()}')"
+                          f"(REPORT_DATE='{report_date.isoformat()}')(SECUCODE in ({members}))",
+                "p": "1", "ps": str(len(selected)), "sr": "-1,1,-1", "st": "NOTICE_DATE,SECUCODE,REPORT_DATE",
+                "source": "HSF10", "client": "PC",
+            },
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"},
+            timeout=min(timeout_seconds, max(0.001, deadline - monotonic())), deadline=deadline,
+            max_response_bytes=1024 * 1024, cancel_requested=lambda: monotonic() >= deadline,
+        )
+        evidence.update(http_status=response.status_code, response_bytes=len(response.content),
+                        response_sha256=hashlib.sha256(response.content).hexdigest())
+        if monotonic() >= deadline:
+            raise _FinancialKeyProbeError("company_structured_key_deadline_exhausted")
+        if not response.content or len(response.content) > 1024 * 1024:
+            raise _FinancialKeyProbeError("company_structured_key_response_size_invalid")
+        CheckCompanyResponse(response)
+        if response.status_code != 200:
+            raise _FinancialKeyProbeError("company_structured_key_http_status_invalid")
+        payload = response.json()
+        if not isinstance(payload, Mapping):
+            raise _FinancialKeyProbeError("company_structured_key_response_schema_invalid")
+        provider_code = payload.get("code") if type(payload.get("code")) is int else None
+        provider_success = payload.get("success") if type(payload.get("success")) is bool else None
+        evidence.update(provider_code=provider_code, provider_success=provider_success)
+        if provider_success is False or provider_code is not None and provider_code != 0:
+            raise _FinancialKeyProbeError("company_structured_key_provider_rejected")
+        if provider_success is not True or provider_code != 0:
+            raise _FinancialKeyProbeError("company_structured_key_provider_status_invalid")
+        page = DecodeCompanyFinancialPage(payload, query, observed_at=observed_at)
+        evidence.update(raw_rows=page.row_count, reported_total=page.total, reported_pages=page.pages)
+        if page.pages != 1 or page.total != page.row_count or page.row_count > len(selected):
+            raise _FinancialKeyProbeError("company_structured_key_pagination_invalid")
+        keys = tuple((item.code, item.report_date) for item in page.financials)
+        if page.row_count != len(keys) or len(keys) != len(set(keys)):
+            raise _FinancialKeyProbeError("company_structured_key_identity_ambiguous")
+        if set(keys) != {(code, report_date) for code in selected}:
+            raise _FinancialKeyProbeError("company_structured_key_set_mismatch")
+        raw_result = payload.get("result")
+        rows = raw_result.get("data") if isinstance(raw_result, Mapping) else None
+        if not isinstance(rows, list) or any(not isinstance(row, Mapping) or any(column not in row for column in columns) for row in rows):
+            raise _FinancialKeyProbeError("company_structured_key_fields_missing")
+        raw_identities = tuple(row["SECUCODE"] for row in rows)
+        if (any(not isinstance(identity, str) or identity not in identities for identity in raw_identities)
+            or len(set(raw_identities)) != len(identities)):
+            raise _FinancialKeyProbeError("company_structured_key_raw_identity_mismatch")
+        evidence["status"] = "decoded"
+        return page
+
+    baseline = fetch(codes, "batch")
+    subset = fetch(codes[:-1], "exclude_last_key")
+    if tuple(sorted(subset.financials, key=lambda item: item.code)) != tuple(
+        sorted((item for item in baseline.financials if item.code != codes[-1]), key=lambda item: item.code)
+    ):
+        raise _FinancialKeyProbeError("company_structured_key_source_changed")
+    probe.update(support_status="sample_verified", filter_verified=True)
+    return baseline
 
 
 @dataclass(frozen=True, slots=True)
@@ -703,4 +825,5 @@ __all__ = [
     "AuditCompanyStructuredSources",
     "BuildCompanyStructuredPageQuery",
     "CompanyFinancialRevisionRequest",
+    "ValidateCompanyStructuredFinancialKeys",
 ]

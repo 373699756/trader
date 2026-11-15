@@ -34,6 +34,7 @@ def _structured_page(**changes) -> dict[str, object]:
         "probe": "structured_page", "status": "decoded", "component": "financial", "read_only": True,
         "production_adopted": False, "field_correctness_verified": False, "full_window_coverage_verified": False,
         "latest_snapshot_verified": False, "key_lookup_verified": False, "revision_index_verified": False,
+        "key_filter_requested": False, "requested_codes": [], "requested_report_date": None,
         "fetch_invocations": 1, "physical_http_attempts": 1, "request_limit": 1, "page_limit": 1,
         "page_size": 500, "max_response_bytes": 16 * 1024 * 1024, "pages_followed": 0,
         "raw_rows": 1, "decoded_rows": 1, "reported_pages": 3, "reported_total": 1001,
@@ -99,6 +100,120 @@ def test_single_page_explicit_failure_cannot_be_revived_by_a_decoded_observation
     assert NormalizeActionResult("research-source-compare", normalized) == normalized
     report = BuildReport("research-source-compare", (normalized,))
     assert report["status"] == "failed" and report["checks"][0]["summary"]["observation_status"] == "decoded"
+
+
+def _key_page(**changes):
+    return _structured_page(
+        key_filter_requested=True, requested_codes=["600900", "688012"], requested_report_date="2026-09-30",
+        fetch_invocations=2, physical_http_attempts=2, request_limit=2, page_limit=2, page_size=2,
+        max_response_bytes=1024 * 1024,
+        key_filter_probe={
+            "codes": ["600900", "688012"], "report_date": "2026-09-30",
+            "support_status": "sample_verified", "filter_verified": True, "date_filter_independently_verified": False,
+            "queries": [{"query": label, "status": "decoded", "selected_codes": codes,
+                         "http_status": 200, "response_bytes": 100, "response_sha256": "a" * 64,
+                         "provider_code": 0, "provider_success": True,
+                         "raw_rows": len(codes), "reported_total": len(codes), "reported_pages": 1,
+                         "raw": "PRIVATE_DATA"} for label, codes in (
+                             ("batch", ["600900", "688012"]), ("exclude_last_key", ["600900"]),
+                         )],
+        }, **changes,
+    )
+
+
+def test_key_sample_projection_preserves_its_two_request_contract_without_promoting_production_capability():
+    source = _key_page()
+    result = DiagnosticResult("research_source_compare", 0, 0.1, source, None)
+    normalized = NormalizeActionResult("research-source-compare", result)
+    assert NormalizeActionResult("research-source-compare", normalized) == normalized
+    report = BuildReport("research-source-compare", (normalized,))
+    summary = report["checks"][0]["summary"]
+    assert report["status"] == "degraded" and summary["key_filter_requested"]
+    assert summary["request_limit"] == summary["page_limit"] == summary["physical_http_attempts"] == 2
+    assert summary["requested_codes"] == ["600900", "688012"] and summary["requested_report_date"] == "2026-09-30"
+    assert summary["key_filter_probe"]["filter_verified"]
+    assert not summary["key_filter_probe"]["date_filter_independently_verified"]
+    assert not summary["key_lookup_verified"] and not summary["latest_snapshot_verified"]
+    assert "PRIVATE_DATA" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("change", ("missing_control", "date_claim", "request_overrun"))
+def test_key_sample_projection_cannot_certify_a_positive_query_alone_or_expanded_capability(change):
+    source = _key_page()
+    if change == "missing_control":
+        source["key_filter_probe"]["queries"].pop()
+        source["fetch_invocations"] = source["physical_http_attempts"] = 1
+    elif change == "date_claim":
+        source["key_filter_probe"]["date_filter_independently_verified"] = True
+    else:
+        source["physical_http_attempts"] = 3
+    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 0.1, source, None),))
+    summary = report["checks"][0]["summary"]
+    assert report["status"] == "failed" and not summary["key_filter_probe"]["filter_verified"]
+    if change == "request_overrun":
+        assert summary["physical_http_attempts"] == 3
+
+
+@pytest.mark.parametrize("field,value", (
+    ("selected_codes", ["688012"]), ("raw_rows", True), ("reported_total", 2), ("reported_pages", 2),
+))
+def test_key_filter_projection_requires_the_exact_excluded_subset_and_its_response_counts(field, value):
+    source = _key_page()
+    source["key_filter_probe"]["queries"][1][field] = value
+    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 0.1, source, None),))
+    assert report["status"] == "failed" and not report["checks"][0]["summary"]["key_filter_probe"]["filter_verified"]
+
+
+@pytest.mark.parametrize("field,value", (("codes", ["600900", "688013"]), ("report_date", "2026-06-30")))
+def test_key_filter_projection_binds_the_probe_identity_to_the_requested_batch(field, value):
+    source = _key_page()
+    source["key_filter_probe"][field] = value
+    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 0.1, source, None),))
+    assert report["status"] == "failed" and not report["checks"][0]["summary"]["key_filter_probe"]["filter_verified"]
+
+
+def test_key_filter_projection_preserves_two_legal_beijing_securities_without_changing_st_scope():
+    source = _key_page()
+    codes = ["920001", "830001"]
+    source["requested_codes"] = source["key_filter_probe"]["codes"] = codes
+    source["key_filter_probe"]["queries"][0]["selected_codes"] = codes
+    source["key_filter_probe"]["queries"][1]["selected_codes"] = codes[:-1]
+    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 0.1, source, None),))
+    summary = report["checks"][0]["summary"]
+    assert report["status"] == "degraded" and summary["requested_codes"] == codes
+    assert summary["key_filter_probe"]["codes"] == codes and summary["key_filter_probe"]["filter_verified"]
+    assert summary["key_filter_probe"]["queries"][1]["selected_codes"] == codes[:-1]
+
+
+@pytest.mark.parametrize("code,success,expected_code,expected_success", ((9501, False, 9501, False), (True, 1, None, None)))
+def test_key_filter_failure_projection_preserves_only_native_provider_status_scalars(code, success, expected_code, expected_success):
+    source = _key_page()
+    source["status"] = "failed"
+    source["key_filter_probe"]["queries"][0].update(provider_code=code, provider_success=success, message="PRIVATE_DATA")
+    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 0.1, source, None),))
+    query = report["checks"][0]["summary"]["key_filter_probe"]["queries"][0]
+    assert query["provider_code"] == expected_code and query["provider_success"] is expected_success
+    assert "PRIVATE_DATA" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("index", (0, 1))
+@pytest.mark.parametrize("field,value", (
+    ("http_status", 500), ("http_status", 201), ("http_status", "200"), ("http_status", None),
+    ("provider_code", 9501), ("provider_code", -1), ("provider_code", True), ("provider_code", "0"),
+    ("provider_code", None), ("provider_success", False), ("provider_success", 1), ("provider_success", None),
+))
+def test_key_filter_verified_claim_requires_both_native_successful_http_and_provider_statuses(index, field, value):
+    source = _key_page()
+    query = source["key_filter_probe"]["queries"][index]
+    if value is None:
+        query.pop(field)
+    else:
+        query[field] = value
+    result = DiagnosticResult("research_source_compare", 0, 0.1, source, None)
+    normalized = NormalizeActionResult("research-source-compare", result)
+    assert NormalizeActionResult("research-source-compare", normalized) == normalized
+    report = BuildReport("research-source-compare", (normalized,))
+    assert report["status"] == "failed" and not report["checks"][0]["summary"]["key_filter_probe"]["filter_verified"]
 
 
 @pytest.mark.parametrize("source", (

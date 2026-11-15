@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from contextlib import nullcontext
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -639,3 +640,126 @@ def test_structured_sample_failure_is_bounded_and_never_exposes_remote_exception
     result = _page_run(Session(), StructuredCompanyQuery("financial", _NOW.date(), _NOW.date()))
     assert result["status"] == "failed" and result["failure"] == "HttpConnectionError"
     assert result["fetch_invocations"] == 1 and "private-provider-data" not in json.dumps(result)
+
+
+class _FinancialKeySession:
+    def __init__(self):
+        self.requests = []
+        self.change = None
+        self.rows = [{
+            "SECUCODE": code + ".SH", "REPORT_DATE": "2026-09-30", "NOTICE_DATE": "2026-10-31",
+            **{field: None if field == "BPS" else 0 for _name, field in audit._FINANCIAL_FIELDS},
+        } for code in ("600900", "688012")]
+
+    def get(self, url, **kwargs):
+        self.requests.append((url, kwargs))
+        selected = re.search(r"SECUCODE in \(([^)]+)\)", kwargs["params"]["filter"])
+        assert selected is not None
+        identities = set(re.findall(r"'([0-9]{6}\.(?:SH|SZ|BJ))'", selected[1]))
+        rows = [dict(row) for row in self.rows if row["SECUCODE"] in identities]
+        if self.change == "ignored_subset" and len(self.requests) == 2:
+            rows = [dict(row) for row in self.rows]
+        elif self.change == "missing_key":
+            rows = rows[:1]
+        elif self.change == "wrong_period":
+            rows[0]["REPORT_DATE"] = "2026-06-30"
+        elif self.change == "wrong_date":
+            rows[0]["NOTICE_DATE"] = "2026-11-01"
+        elif self.change == "wrong_exchange":
+            rows = [dict(row, SECUCODE=row["SECUCODE"].replace(".SH", ".SZ")) for row in rows]
+        elif self.change == "missing_field":
+            rows[0].pop("BPS")
+        elif self.change == "duplicate_key":
+            rows = [rows[0], rows[0]]
+        elif self.change == "provider_rejected":
+            return HttpResponse(200, b'{"code":1,"success":false,"message":"private-provider-data"}')
+        elif self.change == "status_missing":
+            return HttpResponse(200, b'{"code":0,"result":null}')
+        elif self.change == "bad_root":
+            return HttpResponse(200, b'[]')
+        elif self.change == "nonstandard_http_success":
+            return HttpResponse(201, b'{"success":true,"code":0}')
+        elif self.change == "drift" and len(self.requests) == 2:
+            rows[0]["EPSJB"] = 1
+        return HttpResponse(200, json.dumps({"success": True, "code": 0, "result": {
+            "count": len(rows), "pages": 1, "data": rows,
+        }}).encode())
+
+
+def _key_run(session, **kwargs):
+    return _page_run(
+        session, StructuredCompanyQuery("financial", date(2026, 10, 31), date(2026, 10, 31)),
+        financial_codes=("600900", "688012"), financial_report_date=date(2026, 9, 30), **kwargs,
+    )
+
+
+def test_existing_page_mode_checks_batch_keys_and_exclusion_using_the_shared_production_decoder(monkeypatch):
+    session = _FinancialKeySession()
+    decoded = []
+    decoder = audit.DecodeCompanyFinancialPage
+
+    def decode(*args, **kwargs):
+        decoded.append(True)
+        return decoder(*args, **kwargs)
+
+    monkeypatch.setattr(audit, "DecodeCompanyFinancialPage", decode)
+    monkeypatch.setattr(audit.EastmoneyCompanySource, "fetch", lambda *_args, **_kwargs: pytest.fail("normal source request must stay unchanged"))
+    result = _key_run(session)
+    assert result["status"] == "decoded" and len(decoded) == len(session.requests) == result["fetch_invocations"] == 2
+    assert result["key_filter_requested"] and result["request_limit"] == result["page_limit"] == result["page_size"] == 2
+    assert result["key_filter_probe"]["support_status"] == "sample_verified" and result["key_filter_probe"]["filter_verified"]
+    assert not result["key_filter_probe"]["date_filter_independently_verified"]
+    assert not result["key_lookup_verified"] and not result["latest_snapshot_verified"] and not result["revision_index_verified"]
+    for index, (_url, request) in enumerate(session.requests):
+        parameters = request["params"]
+        assert "NOTICE_DATE>='2026-10-31'" in parameters["filter"] and "NOTICE_DATE<='2026-10-31'" in parameters["filter"]
+        assert "REPORT_DATE='2026-09-30'" in parameters["filter"] and "ISNEW" not in parameters["filter"]
+        assert parameters["p"] == "1" and parameters["ps"] == str(2 - index)
+        assert request["max_response_bytes"] == 1024 * 1024 and request["deadline"] == 60
+    assert result["fields"][1]["decoded_null_rows"] == 2
+
+
+@pytest.mark.parametrize("change,expected,requests", (
+    ("ignored_subset", "company_structured_key_pagination_invalid", 2),
+    ("missing_key", "company_structured_key_set_mismatch", 1),
+    ("wrong_period", "company_structured_key_set_mismatch", 1),
+    ("wrong_date", "DownloadValidationFailure", 1),
+    ("wrong_exchange", "company_structured_key_raw_identity_mismatch", 1),
+    ("missing_field", "company_structured_key_fields_missing", 1),
+    ("duplicate_key", "company_structured_key_identity_ambiguous", 1),
+    ("provider_rejected", "company_structured_key_provider_rejected", 1),
+    ("status_missing", "company_structured_key_provider_status_invalid", 1),
+    ("bad_root", "company_structured_key_response_schema_invalid", 1),
+    ("nonstandard_http_success", "company_structured_key_http_status_invalid", 1),
+    ("drift", "company_structured_key_source_changed", 2),
+))
+def test_key_filter_mismatch_drift_and_missing_data_never_trigger_unbounded_fallback(change, expected, requests):
+    session = _FinancialKeySession()
+    session.change = change
+    result = _key_run(session)
+    assert result["status"] == "failed" and result["failure"] == expected
+    assert len(session.requests) == result["fetch_invocations"] == requests
+    assert result["key_filter_probe"]["support_status"] == "not_verified" and not result["key_filter_probe"]["filter_verified"]
+    assert "private-provider-data" not in json.dumps(result)
+
+
+def test_key_filter_deadline_stops_before_the_second_request():
+    session = _FinancialKeySession()
+    ticks = iter((0, 0, 0, 0, 60, 60))
+    result = _key_run(session, monotonic=lambda: next(ticks, 60))
+    assert result["status"] == "failed" and result["failure"] == "company_structured_key_deadline_exhausted"
+    assert result["fetch_invocations"] == len(session.requests) == 1
+
+
+def test_key_filter_binds_the_full_beijing_exchange_identity_before_certifying_the_sample():
+    session = _FinancialKeySession()
+    codes = ("920001", "830001")
+    session.rows = [dict(row, SECUCODE=code + ".BJ") for row, code in zip(session.rows, codes, strict=False)]
+    result = _page_run(
+        session, StructuredCompanyQuery("financial", date(2026, 10, 31), date(2026, 10, 31)),
+        financial_codes=codes, financial_report_date=date(2026, 9, 30),
+    )
+    assert result["status"] == "decoded" and result["key_filter_probe"]["filter_verified"]
+    assert len(session.requests) == 2
+    assert "'920001.BJ','830001.BJ'" in session.requests[0][1]["params"]["filter"]
+    assert "'920001.BJ'" in session.requests[1][1]["params"]["filter"]

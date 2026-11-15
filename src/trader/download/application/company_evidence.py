@@ -43,6 +43,7 @@ from trader.download.domain.company_financial_report import CompanyFinancialRepo
 from trader.download.application.company_operations import CompanyOperations, CompanyOperationTiming
 from trader.download.application.company_documents import CompanyDocumentRun
 from trader.download.application.company_structured import CollectCompanyStructured
+from trader.download.application.company_report_inputs import CollectCompanyReportInputs
 from trader.download.application.company_failures import (
     CompanySourceCircuit, CompanyFailureCode, IsTransientCompanyFailure,
     CompanyFailureRequiresRetry,
@@ -420,8 +421,7 @@ def _publish_batch(
         if CompanyCancelled(dependencies):
             return state.published
         state.published = dependencies.index.published_count(population)
-        changes = _annual_income(dependencies, population, observed_at, state)
-        changes += _financial_reports(dependencies, population, observed_at, state)
+        changes = CollectCompanyReportInputs(dependencies, population, observed_at, state)
         if CompanyCancelled(dependencies):
             return state.published
         if changes and not CompanyCancelled(dependencies):
@@ -450,107 +450,6 @@ def _publish_company_facts(index: CompanyEvidenceIndex, population: tuple[str, .
                 raise
             operations.recover(exc, "retry", str(exc))
     raise RuntimeError("company_publication_retry_exhausted")
-
-
-def _financial_reports(
-    dependencies: CompanyEvidenceDependencies,
-    population: tuple[str, ...],
-    observed_at: datetime,
-    state: _SyncState,
-) -> int:
-    if CompanyCancelled(dependencies) or state.financial_report_source_stopped:
-        return 0
-    changes = 0
-    for request in dependencies.index.financial_report_requests(population, observed_at):
-        if request in state.financial_report_attempts:
-            continue
-        if CompanyCancelled(dependencies) or state.financial_report_source_stopped:
-            break
-        state.financial_report_attempts.add(request)
-        component = "annual_income" if request.report_date.month == 12 else "financial"
-        try:
-            identity = f"financial_report:{request.code}:{request.report_date}"
-            rows, fetched = state.operations.call_observed(
-                "annual_income" if request.report_date.month == 12 else "directory", partial(dependencies.disclosures.financial_reports, request, observed_at=observed_at),
-                code=request.code, source=dependencies.disclosures.source, object_id=identity,
-                component=component, endpoint=dependencies.disclosures.request_endpoint(component),
-            )
-            if CompanyCancelled(dependencies):
-                break
-            changed, committed = state.operations.call_observed(
-                "collection_commit", partial(dependencies.index.commit_financial_reports, request, rows, observed_at),
-                code=request.code, source=dependencies.disclosures.source, object_id=identity,
-                component=component, endpoint="sqlite:company_collection",
-            )
-            changes += changed
-            state.operations.result(fetched, "accepted" if rows else "empty", rows=len(rows), commit=committed,
-                                    changed_rows=changed, component=component)
-            state.pages += 1
-            state.financial_report_circuit.success()
-        except (OSError, RuntimeError, ValueError) as exc:
-            if CompanyCancelled(dependencies):
-                break
-            failure = CompanyFailureCode(exc)
-            state.failures += (f"{component}:{failure}",)
-            state.financial_report_source_stopped = state.financial_report_circuit.failed(exc, validation=isinstance(exc, ValueError))
-            state.operations.recover(exc, "source_deferred", failure,
-                                    fallback=DownloadFailureContext("company_financial_report", supplier=dependencies.disclosures.source))
-    return changes
-
-
-def _annual_income(
-    dependencies: CompanyEvidenceDependencies,
-    population: tuple[str, ...],
-    observed_at: datetime,
-    state: _SyncState,
-) -> int:
-    if CompanyCancelled(dependencies) or state.annual_income_source_stopped:
-        return 0
-    requests = tuple(
-        request for request in dependencies.index.annual_income_requests(population, observed_at)
-        if request not in state.annual_income_attempts
-    )
-    changes = 0
-    for completed, request in enumerate(requests):
-        if CompanyCancelled(dependencies) or state.annual_income_source_stopped:
-            break
-        state.current_stock = None
-        ReportCompanyProgress(dependencies, "annual_income", state, len(requests) - completed, completed=completed)
-        if CompanyCancelled(dependencies):
-            break
-        state.annual_income_attempts.add(request)
-        try:
-            identity = f"annual_income:{request.code}:" + ",".join(day.isoformat() for day in request.report_dates)
-            incomes, fetched = state.operations.call_observed(
-                "annual_income", partial(dependencies.structured.annual_income, request, observed_at=observed_at),
-                code=request.code, source=dependencies.structured.source, object_id=identity,
-                component="annual_income", endpoint=dependencies.structured.request_endpoint("annual_income"),
-            )
-            if CompanyCancelled(dependencies):
-                break
-            changed, committed = state.operations.call_observed(
-                "collection_commit", partial(dependencies.index.commit_annual_income, request, incomes, observed_at),
-                code=request.code, source=dependencies.structured.source, object_id=identity,
-                component="annual_income", endpoint="sqlite:company_collection",
-            )
-            changes += changed
-            state.operations.result(fetched, "accepted" if incomes else "empty", rows=len(incomes),
-                                    commit=committed, changed_rows=changed, component="annual_income")
-            state.pages += 1
-            state.annual_income_circuit.success()
-            remaining = len(requests) - completed - 1
-            ReportCompanyProgress(dependencies, "annual_income", state, remaining, completed=completed + 1,
-                    status="running" if remaining else "complete")
-        except (OSError, RuntimeError, ValueError) as exc:
-            if CompanyCancelled(dependencies):
-                break
-            failure = CompanyFailureCode(exc)
-            state.failures += (f"annual_income:{failure}",)
-            state.annual_income_source_stopped = state.annual_income_circuit.failed(exc, validation=isinstance(exc, ValueError))
-            state.operations.recover(exc, "source_deferred", failure,
-                                     fallback=DownloadFailureContext("company_annual_income", supplier=dependencies.structured.source))
-            ReportCompanyProgress(dependencies, "annual_income", state, len(requests) - completed, completed=completed, status="deferred")
-    return changes
 
 
 def _validated_population(codes: Sequence[str]) -> tuple[str, ...]:

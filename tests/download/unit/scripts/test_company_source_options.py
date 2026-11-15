@@ -108,6 +108,36 @@ def test_direct_single_page_options_cannot_fall_back_to_unbounded_default_collec
         BuildCommands(options)
 
 
+def test_existing_page_mode_forwards_an_explicit_batch_key_probe_without_enabling_other_modes():
+    options = _parse([
+        "--structured-page", "financial", "--structured-start", "2026-10-31", "--structured-end", "2026-10-31",
+        "--codes", "600900", "688012", "--structured-report-date", "2026-09-30",
+    ])
+    command, = BuildCommands(options)
+    assert command.argv[-5:] == ("--codes", "600900", "688012", "--structured-report-date", "2026-09-30")
+    assert "--financial-revision-period" not in command.argv and "--field-sources-only" not in command.argv
+
+
+@pytest.mark.parametrize("codes,period", (
+    ((), "2026-09-30"), (("600900",), "2026-09-30"), (("600900", "600900"), "2026-09-30"),
+    (("600900", "688012"), "2026-09-29"), (("600900", "688012"), None),
+    (("600900", "private-filter"), "2026-09-30"),
+))
+def test_key_probe_requires_a_bounded_unique_batch_and_one_report_period(codes, period):
+    arguments = ["--structured-page", "financial", "--structured-start", "2026-10-31", "--structured-end", "2026-10-31"]
+    if codes:
+        arguments += ["--codes", *codes]
+    if period is not None:
+        arguments += ["--structured-report-date", period]
+    with pytest.raises(ValueError):
+        _parse(arguments)
+
+
+def test_direct_key_probe_options_without_the_page_mode_cannot_be_silently_ignored():
+    with pytest.raises(ValueError, match="requires --structured-page"):
+        BuildCommands(CompanyOptions("research-source-compare", structured_report_date=date(2026, 9, 30)))
+
+
 @pytest.mark.parametrize(
     "arguments",
     (

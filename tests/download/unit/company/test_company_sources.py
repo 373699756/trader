@@ -14,6 +14,7 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.domain.company_financial_report import CompanyFinancialReportRequest
+from trader.download.infra.company_structured_source import DecodeCompanyFinancialPage
 
 from tests.helpers.download.company_resources import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource, EastmoneyCompanySourceFixture as EastmoneyCompanySource
 
@@ -312,6 +313,33 @@ def test_financial_date_validation_keeps_the_one_year_floor_when_caller_is_older
     assert session.requests[0]["params"]["filter"] == (
         f"(NOTICE_DATE>='{lower}')(NOTICE_DATE<='{NOW.date()}')"
     )
+
+
+def test_financial_fetch_and_shared_pure_decoder_keep_identical_values_and_raw_membership():
+    payload = {"result": {"count": 2, "pages": 1, "data": [
+        {"SECUCODE": identity, "REPORT_DATE": "2026-06-30", "NOTICE_DATE": "2026-10-17",
+         "EPSJB": 0, "BPS": None, "PARENTNETPROFIT": -2, "KCFJCXSYJLR": 0}
+        for identity in ("600001.SH", "00001.HK")
+    ]}}
+    query = StructuredCompanyQuery("financial", date(2024, 1, 1), NOW.date())
+    session = Session(payload)
+    actual = EastmoneyCompanySource(session, monotonic=lambda: 0).fetch(query, observed_at=NOW)
+    assert actual == DecodeCompanyFinancialPage(payload, query, observed_at=NOW)
+    assert actual.row_count == 2 and len(actual.financials) == 1
+    assert actual.financials[0].basic_eps == actual.financials[0].core_net_profit == 0
+    assert actual.financials[0].book_value_per_share is None and actual.financials[0].parent_net_profit == -2
+
+
+def test_shared_financial_decoder_preserves_clipped_date_and_page_limit_failures():
+    query = StructuredCompanyQuery("financial", date(2024, 1, 1), NOW.date())
+    row = {"SECUCODE": "600001.SH", "REPORT_DATE": "2024-12-31",
+           "NOTICE_DATE": (NOW.date() - timedelta(days=366)).isoformat()}
+    payload = {"result": {"count": 1, "pages": 1, "data": [row]}}
+    with pytest.raises(ValueError, match="financial_date_filter_ignored"):
+        DecodeCompanyFinancialPage(payload, query, observed_at=NOW)
+    payload["result"]["pages"] = 257
+    with pytest.raises(ValueError, match="company_source_page_limit"):
+        DecodeCompanyFinancialPage(payload, query, observed_at=NOW)
 
 
 @pytest.mark.parametrize("age,reason", [(365, None), (366, "outside_window"), (-1, "future")])

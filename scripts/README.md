@@ -125,9 +125,11 @@ isolated比较可读取明确指定的旧checkout；只在隔离演练内处理�
 
 对单个仍必需的缺失原文，可再显式指定`--company-recovered-text /external/recovered.txt`，只在隔离副本经当前目录版本、唯一证券、必要材料依赖、精确有效回执及原正文hash核验后接纳。采用现有文字owner、容量和取消边界，正常编译／正式发布负责后续字段结论；不接受另一版本或无关材料，也不新增下载／提取成功回执。报告区分`initial_missing_texts`与最终`missing_texts`，并单列`recovered_required_text`；第二轮来源变化、未解决缺项和实际正文读取仍按原规则降级。合同派生字段的金额、年度依据和披露时间分别保留有界证据，结构化线索未核实官方事件身份时不写成正式事实。
 
-公司sources的普通与字段模式均检查全市场来源，不按证券清单过滤；另以`--field-sources-only`选择字段观测，`--field-source-rows`限定样本，`--field-source-schema`和`--field-source-identities`仅在字段模式明确选择。`--annual-income-period`查询单个年末期间，必须配合单个`--codes`，不能与字段模式混用；其它模式拒绝codes。每种模式都消费所选`--runtime-config`并报告`runtime_configuration_sha256`，身份摘要不表示字段质量、覆盖或生产采用已合格。
+公司sources的普通与字段模式均检查全市场来源，不按证券清单过滤；另以`--field-sources-only`选择字段观测，`--field-source-rows`限定样本，`--field-source-schema`和`--field-source-identities`仅在字段模式明确选择。`--annual-income-period`查询单个年末期间，必须配合单个`--codes`，不能与字段模式混用；证券清单仅用于具名年度营收、财务修订、ST名称历史及下述财务批量键核验模式。每种模式都消费所选`--runtime-config`并报告`runtime_configuration_sha256`，身份摘要不表示字段质量、覆盖或生产采用已合格。
 
 单页结构化路径用`--structured-page financial|pledge|unlock --structured-start YYYY-MM-DD --structured-end YYYY-MM-DD`，与其它sources模式互斥；仅第1页、最多500行／16MiB，复用生产decoder且不翻页、不取详情／PDF或写库。财务为允许年窗内最多7日，质押为明确已知的单日快照（不含正常路径的`pledge_day`发现），解禁为本次至未来180日内的显式范围。报告区分实际HTTP次数／响应字节、接收／解码行及未跟随分页；单页成功不签最新、修订、完整覆盖、字段正确性或生产采用，公共结果保持降级。示例：`.venv/bin/python3 scripts/tools.py --business download --module company --action sources --structured-page financial --structured-start 2026-11-13 --structured-end 2026-11-13 --source-timeout-seconds 5 --market-task-seconds 15 --command-timeout-seconds 40 --report /tmp/company-structured-page.json`；日期须按实际核验时点选择，报告须使用新的仓库外路径。
+
+财务批量键核验在上述显式财务模式中增加`--structured-report-date 2026-09-30 --codes 600900 688012`，披露窗应选包含已知披露日的允许范围，例如`--structured-start 2026-10-31 --structured-end 2026-10-31`，并选择新的仓库外报告路径。需2至8个不同A股代码及一个季末报告期，最多完整集合和排除末键的子集两次请求，每次只取第1页、上限1MiB；缺参数或请求失败直接停止，不回退到广范围采集。共用生产财务纯decoder，精确键、报告期、披露窗、字段列和子集值全部吻合才记局部`sample_verified`，仍不签通用按键／日期过滤／最新能力或生产准入。本批实调未取得通过结果，不能据示例推断供应商已支持；生产请求参数保持原样。
 
 Web health支持可重复的`--strategy tomorrow|d25`，连续空结果阈值`--consecutive-zero-threshold`须在样本数以内，默认min(3,样本数)。浏览器动作另支持`--strategy`与带时区ISO时间`--simulated-start`；Long admission的`--strategy`表示策略JSON路径，`--workers`范围1至8。这些参数只属于各自选中的动作，不能跨动作隐式生效。
 

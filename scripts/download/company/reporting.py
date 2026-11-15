@@ -12,6 +12,17 @@ from scripts.core.contracts import DiagnosticResult
 from scripts.core.projection_values import ProjectMapping, ProjectSummary, SafeNonnegativeInt, SafeStringList, SafeText
 from scripts.download.company.projections import ProjectCompanyResume, ProjectCompanyRiskComparisonDetails
 from scripts.download.company.company_official_financial_audit import ProjectCompanyOfficialFinancialAudit
+from trader.download.domain.company_evidence import EvidenceMarket
+
+
+def _structured_code(value: object) -> str | None:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9]{6}", value) is None:
+        return None
+    try:
+        EvidenceMarket(value)
+    except ValueError:
+        return None
+    return value
 
 
 def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> DiagnosticResult:
@@ -21,6 +32,10 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
     if source.get("probe") == "structured_page":
         observation = source.get("observation_status", source.get("status"))
         calls, attempts = source.get("fetch_invocations"), source.get("physical_http_attempts")
+        key_filter = source.get("key_filter_requested") is True
+        codes = source.get("requested_codes")
+        key_count = len(codes) if isinstance(codes, list) else 0
+        request_limit = 2 if key_filter else 1
         valid = (
             observation in ("decoded", "empty", "failed", "timed_out", "skipped")
             and source.get("component") in ("financial", "pledge", "unlock")
@@ -29,13 +44,43 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                 "production_adopted", "field_correctness_verified", "full_window_coverage_verified",
                 "latest_snapshot_verified", "key_lookup_verified", "revision_index_verified",
             ))
-            and type(calls) is int and 0 <= calls <= 1
-            and (attempts is None or type(attempts) is int and 0 <= attempts <= 1)
+            and type(source.get("key_filter_requested")) is bool
+            and type(calls) is int and 0 <= calls <= request_limit
+            and (attempts is None or type(attempts) is int and 0 <= attempts <= request_limit)
             and all(type(source.get(name)) is int and source.get(name) == expected for name, expected in (
-                ("page_limit", 1), ("request_limit", 1), ("page_size", 500),
-                ("max_response_bytes", 16 * 1024 * 1024), ("pages_followed", 0),
+                ("page_limit", request_limit), ("request_limit", request_limit),
+                ("page_size", key_count if key_filter else 500),
+                ("max_response_bytes", 1024 * 1024 if key_filter else 16 * 1024 * 1024), ("pages_followed", 0),
             ))
         )
+        if key_filter:
+            valid = valid and source.get("component") == "financial" and isinstance(codes, list) and (
+                2 <= len(codes) <= 8 and all(isinstance(code, str) and _structured_code(code) is not None for code in codes)
+                and len(set(codes)) == len(codes)
+            )
+            key_probe = source.get("key_filter_probe")
+            if isinstance(key_probe, Mapping):
+                queries = key_probe.get("queries")
+                verified = key_probe.get("filter_verified")
+                valid = valid and isinstance(queries, list) and len(queries) == calls and type(verified) is bool and (
+                    key_probe.get("support_status") == ("sample_verified" if verified else "not_verified")
+                    and key_probe.get("date_filter_independently_verified") is False
+                    and key_probe.get("codes") == codes and key_probe.get("report_date") == source.get("requested_report_date")
+                )
+                if verified:
+                    valid = valid and calls == 2 and (attempts is None or attempts == 2) and isinstance(queries, list) and isinstance(codes, list) and all(
+                        isinstance(query, Mapping) and query.get("query") == label and query.get("status") == "decoded"
+                        and query.get("selected_codes") == selected
+                        and type(query.get("http_status")) is int and query.get("http_status") == 200
+                        and type(query.get("provider_code")) is int and query.get("provider_code") == 0
+                        and query.get("provider_success") is True
+                        and all(type(query.get(name)) is int and query.get(name) == expected for name, expected in (
+                            ("raw_rows", len(selected)), ("reported_total", len(selected)), ("reported_pages", 1),
+                        ))
+                        for query, label, selected in zip(queries, ("batch", "exclude_last_key"), (codes, codes[:-1]), strict=False)
+                    )
+            else:
+                valid = valid and calls == 0 and observation == "skipped"
         page_status = "degraded" if valid and observation not in ("failed", "timed_out") and source.get("status") not in (
             "failed", "timed_out", "cancelled",
         ) else "failed"
@@ -429,9 +474,12 @@ def _structured_page_details(source: Mapping[str, object], payload: dict[str, ob
         })
     observation = source.get("observation_status", source.get("status"))
     discovery = source.get("normal_path_discovery")
-    payload["summary"] = {
+    summary: dict[str, object] = {
         "runtime_configuration_sha256": _configuration_hash(source), "probe": "structured_page",
         "source": "eastmoney", "read_only": source.get("read_only") is True,
+        "key_filter_requested": source.get("key_filter_requested") is True,
+        "requested_codes": [code for code in SafeStringList(source.get("requested_codes"), limit=8) if _structured_code(code) is not None],
+        "requested_report_date": _text(source.get("requested_report_date"), 10),
         "component": component if component in ("financial", "pledge", "unlock") else None,
         "observation_status": observation if observation in ("decoded", "empty", "failed", "timed_out", "skipped") else None,
         **{name: False for name in (
@@ -440,7 +488,7 @@ def _structured_page_details(source: Mapping[str, object], payload: dict[str, ob
         )},
         **{name: _text(source.get(name), 64) for name in ("observed_at", "window_start", "window_end", "failure")},
         **{name: _st_count(source.get(name), limit) for name, limit in (
-            ("fetch_invocations", 1_000_000), ("physical_http_attempts", 1_000_000), ("request_limit", 1), ("page_limit", 1),
+            ("fetch_invocations", 1_000_000), ("physical_http_attempts", 1_000_000), ("request_limit", 2), ("page_limit", 2),
             ("page_size", 500), ("pages_followed", 0), ("raw_rows", 500), ("decoded_rows", 500),
             ("reported_pages", 256), ("reported_total", 128000),
             ("max_response_bytes", 16 * 1024 * 1024), ("response_bytes", 16 * 1024 * 1024),
@@ -450,6 +498,34 @@ def _structured_page_details(source: Mapping[str, object], payload: dict[str, ob
         "requested_fields": [field for field in SafeStringList(source.get("requested_fields"), limit=11) if field in columns],
         "fields": projected, "elapsed_seconds": _number(source.get("elapsed_seconds")),
     }
+    payload["summary"] = summary
+    probe = source.get("key_filter_probe")
+    if isinstance(probe, Mapping):
+        queries = probe.get("queries")
+        verified = source.get("status") != "failed" and probe.get("filter_verified") is True
+        evidence = []
+        for query in queries[:2] if isinstance(queries, list) else []:
+            if not isinstance(query, Mapping):
+                continue
+            digest = query.get("response_sha256")
+            evidence.append({
+                "query": query.get("query") if query.get("query") in ("batch", "exclude_last_key") else None,
+                "status": query.get("status") if query.get("status") in ("decoded", "failed") else None,
+                "selected_codes": [code for code in SafeStringList(query.get("selected_codes"), limit=8) if _structured_code(code) is not None],
+                **{name: _st_count(query.get(name), maximum) for name, maximum in (
+                    ("http_status", 599), ("response_bytes", 1024 * 1024),
+                    ("raw_rows", 500), ("reported_total", 128000), ("reported_pages", 256),
+                )},
+                "response_sha256": digest if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None else None,
+                "provider_code": query.get("provider_code") if type(query.get("provider_code")) is int else None,
+                "provider_success": query.get("provider_success") if type(query.get("provider_success")) is bool else None,
+            })
+        summary["key_filter_probe"] = {
+            "support_status": "sample_verified" if verified else "not_verified", "filter_verified": verified,
+            "codes": [code for code in SafeStringList(probe.get("codes"), limit=8) if _structured_code(code) is not None],
+            "report_date": _text(probe.get("report_date"), 10),
+            "date_filter_independently_verified": False, "queries": evidence,
+        }
 
 
 _IDENTITY_FIELDS: Mapping[str, tuple[str, ...]] = {

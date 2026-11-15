@@ -24,6 +24,7 @@ from scripts.download.company.company_st_source_audit import AuditCompanyStSourc
 from scripts.download.company.company_structured_field_audit import AuditCompanyAnnualIncome
 from scripts.download.company.company_structured_field_audit import AuditCompanyStructuredSources
 from scripts.download.company.company_structured_field_audit import AuditCompanyStructuredPage, BuildCompanyStructuredPageQuery
+from scripts.download.company.company_structured_field_audit import ValidateCompanyStructuredFinancialKeys
 from scripts.download.company.company_structured_field_audit import AuditCompanyFinancialRevision, CompanyFinancialRevisionRequest
 from scripts.download.company.company_official_financial_audit import AuditCompanyOfficialFinancialSources
 from scripts.download.company.output_paths import RequireIsolatedReplay
@@ -228,6 +229,7 @@ def Main() -> int:
     modes.add_argument("--structured-page", choices=("financial", "pledge", "unlock"), help="Decode one production structured page without discovery or pagination; requires explicit dates.")
     parser.add_argument("--structured-start", type=date.fromisoformat)
     parser.add_argument("--structured-end", type=date.fromisoformat)
+    parser.add_argument("--structured-report-date", type=date.fromisoformat)
     parser.add_argument("--field-source-rows", type=int, default=5, help="Rows per structured field sample (1..500); requires --field-sources-only.")
     parser.add_argument("--field-source-schema", action="store_true", help="Discover column names from exactly one row per source; requires --field-sources-only and --field-source-rows 1. Values remain projected.")
     parser.add_argument("--field-source-identities", action="store_true", help="Project at most five bounded source identities and measurements; requires --field-sources-only.")
@@ -253,9 +255,10 @@ def Main() -> int:
             structured_query = BuildCompanyStructuredPageQuery(
                 args.structured_page, args.structured_start, args.structured_end, observed_at=datetime.now(_SHANGHAI),
             )
+            ValidateCompanyStructuredFinancialKeys(structured_query, tuple(args.codes), args.structured_report_date)
         except ValueError:
             parser.error("--structured-page requires a bounded explicit --structured-start and --structured-end")
-    elif args.structured_start is not None or args.structured_end is not None:
+    elif args.structured_start is not None or args.structured_end is not None or args.structured_report_date is not None:
         parser.error("--structured-start and --structured-end require --structured-page")
     if args.annual_income_period is not None and (args.field_sources_only or len(args.codes) != 1):
         parser.error("--annual-income-period requires one code and cannot be combined with --field-sources-only")
@@ -281,7 +284,7 @@ def Main() -> int:
             revision_request = CompanyFinancialRevisionRequest(args.codes[0], args.financial_revision_period)
         except ValueError:
             parser.error("financial revision requires an A-share code and a quarter-end period")
-    if args.annual_income_period is None and args.financial_revision_period is None and not args.st_name_history and args.codes:
+    if args.annual_income_period is None and args.financial_revision_period is None and not args.st_name_history and structured_query is None and args.codes:
         parser.error("--codes selects securities only with --annual-income-period or --financial-revision-period")
     runtime = LoadRuntimeSettings(args.config)
     runtime_hash = hashlib.sha256(Path(args.config).expanduser().resolve().read_bytes()).hexdigest()
@@ -291,6 +294,7 @@ def Main() -> int:
             report = AuditCompanyStructuredPage(
                 session, structured_query, observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
                 deadline=time.monotonic() + args.task_seconds, http_attempts=attempts,
+                financial_codes=tuple(args.codes), financial_report_date=args.structured_report_date,
             )
     elif args.official_financial_baseline is not None:
         configuration = LoadCompanySyncConfiguration(runtime.project_root)

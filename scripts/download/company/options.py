@@ -44,6 +44,7 @@ class CompanyOptions:
     structured_page: Literal["financial", "pledge", "unlock"] | None = None
     structured_start: date | None = None
     structured_end: date | None = None
+    structured_report_date: date | None = None
     annual_income_period: date | None = None
     financial_revision_period: date | None = None
     official_financial_baseline: Path | None = None

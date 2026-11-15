@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import sys
 from dataclasses import replace
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from scripts.core.catalog import WorkerArguments
 from scripts.core.contracts import DiagnosticCommand
 from scripts.download.company.options import CompanyOptions
+from scripts.download.company.company_structured_field_audit import BuildCompanyStructuredPageQuery, ValidateCompanyStructuredFinancialKeys
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from scripts.core.paths import PROJECT_ROOT
 
@@ -69,6 +72,14 @@ def BuildCommands(
     elif options.action_identity == "research-source-compare":
         if options.structured_page is not None and (options.structured_start is None or options.structured_end is None):
             raise ValueError("--structured-page requires explicit --structured-start and --structured-end")
+        if options.structured_page is not None:
+            query = BuildCompanyStructuredPageQuery(
+                options.structured_page, options.structured_start, options.structured_end,
+                observed_at=datetime.now(ZoneInfo("Asia/Shanghai")),
+            )
+            ValidateCompanyStructuredFinancialKeys(query, options.codes, options.structured_report_date)
+        elif options.structured_report_date is not None:
+            raise ValueError("--structured-report-date requires --structured-page financial")
         commands = (DiagnosticCommand(
             "research_source_compare",
             (
@@ -91,6 +102,8 @@ def BuildCommands(
                 "--structured-start", options.structured_start.isoformat(),
                 "--structured-end", options.structured_end.isoformat())
                if options.structured_page is not None and options.structured_start is not None and options.structured_end is not None else ())
+            + (("--codes", *options.codes, "--structured-report-date", options.structured_report_date.isoformat())
+               if options.structured_page is not None and options.structured_report_date is not None else ())
             + (("--codes", *options.codes, "--annual-income-period", options.annual_income_period.isoformat()) if options.annual_income_period is not None else ())
             + (("--codes", *options.codes, "--financial-revision-period", options.financial_revision_period.isoformat()) if options.financial_revision_period is not None else ())
             + (("--official-financial-baseline", str(options.official_financial_baseline), "--official-financial-directory",

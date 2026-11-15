@@ -209,17 +209,9 @@ class EastmoneyCompanySource:
                     "filter": f"({field}>='{start.isoformat()}')({field}<='{end.isoformat()}')",
                 },
             )
-        rows, pages, total = _result(payload)
-        if pages > 256:
-            raise DownloadValidationFailure("company_source_page_limit", "pages", "1..256", pages)
-        if page > pages:
-            raise DownloadValidationFailure("company_source_page_limit", "page", f"1..{pages}", page)
         if component == "financial":
-            reports = tuple(_financial(row) for row in rows if _is_a_share(row))
-            for item in reports:
-                if not start <= item.published_at.date() <= end:
-                    raise DownloadValidationFailure("financial_date_filter_ignored", "NOTICE_DATE", f"{start}..{end}", item.published_at.date().isoformat())
-            return StructuredCompanyPage(component, page, pages, total, financials=reports, raw_count=len(rows))
+            return DecodeCompanyFinancialPage(payload, query, observed_at=observed_at)
+        rows, pages, total = _page_rows(payload, page)
         ratios: list[CompanyRatio] = []
         for row in rows:
             code = _code(row)
@@ -308,6 +300,33 @@ class EastmoneyCompanySource:
         return tuple(evidence)
 
 
+def DecodeCompanyFinancialPage(
+    payload: Mapping[str, object],
+    query: StructuredCompanyQuery,
+    *,
+    observed_at: datetime,
+) -> StructuredCompanyPage:
+    """Decode the production financial page without performing I/O."""
+    if query.component != "financial":
+        raise ValueError("company_financial_page_component_invalid")
+    start, end = max(query.start, observed_at.date() - timedelta(days=365)), query.end
+    rows, pages, total = _page_rows(payload, query.page)
+    reports = tuple(_financial(row) for row in rows if _is_a_share(row))
+    for item in reports:
+        if not start <= item.published_at.date() <= end:
+            raise DownloadValidationFailure("financial_date_filter_ignored", "NOTICE_DATE", f"{start}..{end}", item.published_at.date().isoformat())
+    return StructuredCompanyPage("financial", query.page, pages, total, financials=reports, raw_count=len(rows))
+
+
+def _page_rows(payload: Mapping[str, object], page: int) -> tuple[tuple[Mapping[str, object], ...], int, int]:
+    rows, pages, total = _result(payload)
+    if pages > 256:
+        raise DownloadValidationFailure("company_source_page_limit", "pages", "1..256", pages)
+    if page > pages:
+        raise DownloadValidationFailure("company_source_page_limit", "page", f"1..{pages}", page)
+    return rows, pages, total
+
+
 def _result(payload: Mapping[str, object]) -> tuple[tuple[Mapping[str, object], ...], int, int]:
     result = payload.get("result")
     if not isinstance(result, Mapping):
@@ -389,4 +408,7 @@ def _is_a_share(row: Mapping[str, object]) -> bool:
     )
 
 
-__all__ = ["EastmoneyCompanySource"]
+__all__ = [
+    "DecodeCompanyFinancialPage",
+    "EastmoneyCompanySource",
+]
