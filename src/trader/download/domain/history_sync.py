@@ -117,7 +117,7 @@ class HistorySyncConfiguration:
             or not 1 <= self.history_workers <= 12
             or self.minimum_free_bytes < 0
             or self.supplier_timeout_seconds <= 0
-            or not 0 <= self.supplier_retries <= 2
+            or not 0 <= self.supplier_retries <= 3
             or self.query_interval_seconds < BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS
             or not 0 < self.cancellation_grace_seconds <= 10.0
             or not 0 < self.progress_heartbeat_seconds <= self.supplier_timeout_seconds
@@ -383,6 +383,7 @@ class HistorySyncProgress:
     stock_validation_seconds: float | None = None
     request: HistoryStockRequest | None = None
     data_source: str | None = None
+    retry_delay_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if self.state == "obtained" and (self.stage != "baostock_repair" or self.current_item is None):
@@ -406,6 +407,12 @@ class HistorySyncProgress:
             or not 1 <= self.attempt <= self.max_attempts
             or not math.isfinite(self.call_elapsed_seconds)
             or self.call_elapsed_seconds < 0.0
+            or self.retry_delay_seconds is not None and (
+                self.state != "retrying"
+                or type(self.retry_delay_seconds) not in (int, float)
+                or not math.isfinite(self.retry_delay_seconds)
+                or self.retry_delay_seconds < 0.0
+            )
             or (self.current_item is not None and _PROGRESS_ITEM.fullmatch(self.current_item) is None)
             or (self.current_name is not None and (self.current_item is None or not self.current_name.strip()))
             or (

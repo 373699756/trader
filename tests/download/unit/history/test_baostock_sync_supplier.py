@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import cast
 
@@ -32,9 +32,14 @@ class _ProgressRecorder:
 @dataclass
 class _Clock:
     value: float = 0.0
+    sleeps: list[float] = field(default_factory=list)
 
     def __call__(self) -> float:
         return self.value
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.value += seconds
 
 
 def test_supplier_serializes_callers_and_rejects_another_vendor_owner(tmp_path, monkeypatch):
@@ -72,35 +77,43 @@ def test_supplier_serializes_callers_and_rejects_another_vendor_owner(tmp_path, 
                 other._start(_Attempt(1, 1))
 
 
-def test_price_total_deadline_survives_page_activity_and_bounds_retries(tmp_path, monkeypatch) -> None:
+def test_price_attempt_deadline_survives_pages_but_resets_for_each_retry(tmp_path, monkeypatch) -> None:
     import trader.download.infra.baostock_sync_supplier as supplier_module
 
     clock = _Clock()
     supplier = BaoStockHistorySupplier(
-        HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference"),
+        HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference", supplier_retries=3),
         monotonic=clock,
+        sleep=clock.sleep,
         price_total_seconds=45.0,
     )
     attempts = []
 
     def request(command, state, attempt, timeout):
-        attempts.append(attempt.number)
-        clock.value += 25.0
-        return supplier_module._AttemptResult(None, state, "supplier_daily_qfq_timeout")
+        attempts.append((attempt.number, clock.value, supplier._request_deadline))
+        clock.value += 45.0
+        failure = RuntimeError(f"fixture_attempt_{attempt.number}")
+        return supplier_module._AttemptResult(None, state, "supplier_price_total_timeout", failure)
 
     monkeypatch.setattr(supplier, "_request_once", request)
     monkeypatch.setattr(supplier, "close", lambda: None)
     security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
-    with pytest.raises(RuntimeError, match="supplier_price_total_timeout"):
+    with pytest.raises(RuntimeError, match="supplier_price_total_timeout") as caught:
         supplier.fetch_code(security, (date(2026, 10, 9),))
-    assert attempts == [1, 2]
+    assert [number for number, _, _ in attempts] == [1, 2, 3, 4]
+    assert [started for _, started, _ in attempts] == pytest.approx([0.0, 60.0, 135.0, 240.0])
+    assert [deadline - started for _, started, deadline in attempts] == pytest.approx([45.0] * 4)
+    assert clock.value == pytest.approx(4 * 45.0 + 15.0 + 30.0 + 60.0)
+    assert sum(clock.sleeps) == pytest.approx(105.0)
+    assert str(caught.value.__cause__) == "fixture_attempt_4"
     clock.value = 44.0
+    supplier._request_deadline = 45.0
     state = supplier._handle_activity(
-        _Activity("supplier_daily_raw", "started"), _RequestState("supplier_daily_raw", None, 0), _Attempt(1, 3), 45
+        _Activity("supplier_daily_raw", "started"), _RequestState("supplier_daily_raw", None, 0), _Attempt(1, 4), 45
     )
     clock.value = 45.0
     with pytest.raises(RuntimeError, match="supplier_price_total_timeout"):
-        supplier._receive(None, state, _Attempt(1, 3))
+        supplier._receive(None, state, _Attempt(1, 4))
 
 
 def test_worker_reports_price_fact_mismatch_without_hiding_it_as_supplier_failure():
@@ -178,8 +191,9 @@ def test_price_poll_deadline_stops_pages_and_allows_next_stock(tmp_path, monkeyp
     next_security = BaoStockSecurity("600002", "fixture", "main", date(2000, 1, 1), None, "fixture")
     vendor_lock = ProcessLock(tmp_path / "vendor.lock")
     supplier = BaoStockHistorySupplier(
-        HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference"),
+        HistorySyncConfiguration(history_root=tmp_path / "history", reference_root=tmp_path / "reference", supplier_retries=3),
         monotonic=clock,
+        sleep=clock.sleep,
         price_total_seconds=45.0,
         vendor_lock=vendor_lock,
     )
@@ -188,19 +202,20 @@ def test_price_poll_deadline_stops_pages_and_allows_next_stock(tmp_path, monkeyp
         starts.append(attempt.number)
         vendor_lock.acquire()
         connection = _TimedConnection(clock)
-        if len(starts) == 1:
+        if len(starts) <= 4:
+            started_at = clock.value
             connection._events = [
-                (0.0, _Activity("supplier_daily_raw", "started")),
-                (14.0, _Activity("supplier_daily_raw", "returned")),
-                (15.0, _Activity("supplier_daily_raw", "started")),
-                (29.0, _Activity("supplier_daily_raw", "returned")),
-                (30.0, _Activity("supplier_daily_qfq", "started")),
-                (44.0, _Activity("supplier_daily_qfq", "returned")),
-                (44.5, _Activity("supplier_daily_qfq", "started")),
+                (started_at, _Activity("supplier_daily_raw", "started")),
+                (started_at + 14.0, _Activity("supplier_daily_raw", "returned")),
+                (started_at + 15.0, _Activity("supplier_daily_raw", "started")),
+                (started_at + 29.0, _Activity("supplier_daily_raw", "returned")),
+                (started_at + 30.0, _Activity("supplier_daily_qfq", "started")),
+                (started_at + 44.0, _Activity("supplier_daily_qfq", "returned")),
+                (started_at + 44.5, _Activity("supplier_daily_qfq", "started")),
             ]
         else:
             connection._events = [
-                (46.0, supplier_module._Response(download=_download(next_security.code, days, 1))),
+                (clock.value + 1.0, supplier_module._Response(download=_download(next_security.code, days, 1))),
             ]
         process = _LiveProcess()
         processes.append(process)
@@ -210,12 +225,12 @@ def test_price_poll_deadline_stops_pages_and_allows_next_stock(tmp_path, monkeyp
     monkeypatch.setattr(supplier, "_start", start)
     with pytest.raises(RuntimeError, match="supplier_price_total_timeout"):
         supplier.fetch_code(security, days)
-    assert clock.value == pytest.approx(45.0)
-    assert starts == [1]
-    assert not processes[0].alive
+    assert clock.value == pytest.approx(285.0)
+    assert starts == [1, 2, 3, 4]
+    assert all(not process.alive for process in processes)
     assert supplier.fetch_code(next_security, days).batch.cells
-    assert starts == [1, 1]
-    assert clock.value == pytest.approx(46.0)
+    assert starts == [1, 2, 3, 4, 1]
+    assert clock.value == pytest.approx(286.0)
     supplier.close()
     with ProcessLock(tmp_path / "vendor.lock"):
         pass
@@ -405,42 +420,119 @@ def test_supplier_keeps_context_and_price_request_policies_separate(tmp_path, mo
     ]
 
 
-@pytest.mark.parametrize("recovers", (False, True))
-def test_price_timeout_restarts_session_with_bounded_retries(tmp_path, monkeypatch, recovers):
+@pytest.mark.parametrize("recovery_attempt", (2, 3, 4, None))
+@pytest.mark.parametrize("failure_reason", ("supplier_daily_raw_timeout", "supplier_login_timeout"))
+def test_price_timeout_restarts_session_with_bounded_retries(tmp_path, monkeypatch, recovery_attempt, failure_reason):
     from trader.download.infra import baostock_sync_supplier as supplier_module
     from tests.helpers.download.history.infra.history_sync import _download
 
     failures = []
     clock = _Clock()
+    recorder = _ProgressRecorder()
     supplier = BaoStockHistorySupplier(HistorySyncConfiguration(
-        history_root=tmp_path / "history", reference_root=tmp_path / "reference", supplier_retries=2
-    ), failures=lambda context, exc: failures.append((context, str(exc))), monotonic=clock, price_total_seconds=45.0)
-    attempts, closes = [], []
+        history_root=tmp_path / "history", reference_root=tmp_path / "reference", supplier_retries=3
+    ), failures=lambda context, exc: failures.append((context, str(exc))), monotonic=clock, sleep=clock.sleep,
+       price_total_seconds=45.0, progress=recorder)
+    attempts, starts, closes = [], [], []
     security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
     days = (date(2026, 10, 9),)
 
     def request(command, state, attempt, timeout):
         attempts.append(attempt.number)
+        starts.append(clock.value)
         clock.value += 2.0
-        if recovers and attempt.number == 2:
+        if attempt.number == recovery_attempt:
             return supplier_module._AttemptResult(
                 supplier_module._Response(download=_download(security.code, days, 1)), state, None
             )
-        return supplier_module._AttemptResult(None, state, "supplier_daily_raw_timeout")
+        if failure_reason == "supplier_login_timeout":
+            state = replace(state, stage="supplier_login", current_item=None)
+        return supplier_module._AttemptResult(None, state, failure_reason)
 
     monkeypatch.setattr(supplier, "_request_once", request)
     monkeypatch.setattr(supplier, "close", lambda: closes.append(True))
-    if recovers:
+    if recovery_attempt is not None:
         assert supplier.fetch_code(security, days).batch.cells
-        assert attempts == [1, 2] and len(closes) == 1
     else:
-        with pytest.raises(RuntimeError, match="supplier_daily_raw_timeout"):
+        with pytest.raises(RuntimeError, match=failure_reason):
             supplier.fetch_code(security, days)
-        assert attempts == [1, 2, 3] and len(closes) == 3
-    assert len(failures) == (1 if recovers else 3)
+    attempted = recovery_attempt or 4
+    failed = attempted - 1 if recovery_attempt is not None else 4
+    assert attempts == list(range(1, attempted + 1)) and len(closes) == failed
+    assert [later - earlier - 2.0 for earlier, later in zip(starts[:-1], starts[1:], strict=True)] == pytest.approx(
+        [15.0, 30.0, 60.0][:attempted - 1]
+    )
+    assert sum(clock.sleeps) == pytest.approx(sum([15.0, 30.0, 60.0][:attempted - 1]))
+    assert all(0 < seconds <= 0.1 for seconds in clock.sleeps)
+    assert [context.attempt for context, _ in failures] == list(range(1, failed + 1))
+    assert len(failures) == failed
     assert failures[0][0].code == security.code and failures[0][0].supplier == "baostock"
-    assert failures[0][0].maximum_attempts == 3 and failures[0][0].window_start == days[0]
-    assert failures[0][1] == "supplier_daily_raw_timeout"
+    assert all(context.maximum_attempts == 4 for context, _ in failures)
+    assert failures[0][0].window_start == failures[0][0].window_end == days[0]
+    assert failures[0][1] == failure_reason
+    retries = [item for item in recorder.values if item.state == "retrying"]
+    assert [item.attempt for item in retries] == list(range(2, attempted + 1))
+    assert all(item.max_attempts == 4 and item.data_source == "BaoStock" for item in retries)
+    assert [item.retry_delay_seconds for item in retries] == [15.0, 30.0, 60.0][:attempted - 1]
+
+
+def test_late_success_is_discarded_before_retrying_with_a_fresh_price_deadline(tmp_path, monkeypatch):
+    from trader.download.infra import baostock_sync_supplier as supplier_module
+    from tests.helpers.download.history.infra.history_sync import _download
+
+    clock = _Clock()
+    attempts, failures, closes = [], [], []
+    security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
+    days = (date(2026, 10, 9),)
+    late, valid = _download(security.code, days, 1), _download(security.code, days, 2)
+    supplier = BaoStockHistorySupplier(
+        HistorySyncConfiguration(tmp_path / "history", tmp_path / "reference", supplier_retries=3),
+        monotonic=clock, sleep=clock.sleep, price_total_seconds=45.0,
+        failures=lambda context, exc: failures.append((context, str(exc))),
+    )
+
+    def request(command, state, attempt, timeout):
+        attempts.append((attempt.number, clock.value, supplier._request_deadline))
+        clock.value += 46.0 if attempt.number == 1 else 1.0
+        return supplier_module._AttemptResult(
+            supplier_module._Response(download=late if attempt.number == 1 else valid), state, None,
+        )
+
+    monkeypatch.setattr(supplier, "_request_once", request)
+    monkeypatch.setattr(supplier, "close", lambda: closes.append(True))
+    assert supplier.fetch_code(security, days) is valid
+    assert [number for number, _, _ in attempts] == [1, 2]
+    assert [started for _, started, _ in attempts] == pytest.approx([0.0, 61.0])
+    assert [deadline - started for _, started, deadline in attempts] == pytest.approx([45.0, 45.0])
+    assert clock.value == pytest.approx(62.0) and sum(clock.sleeps) == pytest.approx(15.0)
+    assert len(closes) == len(failures) == 1
+    assert failures[0][0].attempt == 1 and failures[0][0].maximum_attempts == 4
+    assert failures[0][1] == "supplier_price_total_timeout"
+
+
+def test_price_retry_backoff_is_cancelled_without_starting_another_attempt(tmp_path, monkeypatch):
+    from trader.download.infra import baostock_sync_supplier as supplier_module
+
+    clock = _Clock()
+    attempts, failures = [], []
+    supplier = BaoStockHistorySupplier(
+        HistorySyncConfiguration(tmp_path / "history", tmp_path / "reference", supplier_retries=3),
+        monotonic=clock, sleep=clock.sleep, cancel_requested=lambda: clock.value >= 0.2,
+        price_total_seconds=45.0, failures=lambda context, exc: failures.append((context, str(exc))),
+    )
+
+    def fail(command, state, attempt, timeout):
+        attempts.append(attempt.number)
+        return supplier_module._AttemptResult(None, state, "supplier_daily_raw_timeout")
+
+    monkeypatch.setattr(supplier, "_request_once", fail)
+    monkeypatch.setattr(supplier, "close", lambda: None)
+    security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
+    with pytest.raises(RuntimeError, match="supplier_cancelled"):
+        supplier.fetch_code(security, (date(2026, 10, 9),))
+    assert attempts == [1] and clock.value == pytest.approx(0.2)
+    assert sum(clock.sleeps) == pytest.approx(0.2) and max(clock.sleeps) <= 0.1
+    assert len(failures) == 1 and failures[0][1] == "supplier_daily_raw_timeout"
 
 
 @pytest.mark.parametrize(("deadline", "expected_wait"), ((float("inf"), 10.0), (45.0, 3.0), (40.0, 0.0)))
@@ -479,13 +571,16 @@ def test_close_bounds_grace_by_remaining_price_deadline(tmp_path, deadline, expe
 def test_supplier_login_timeout_does_not_repeat_the_slow_start(tmp_path, monkeypatch) -> None:
     from trader.download.infra import baostock_sync_supplier as supplier_module
 
+    clock = _Clock()
     supplier = BaoStockHistorySupplier(
         HistorySyncConfiguration(
             history_root=tmp_path / "history",
             reference_root=tmp_path / "reference",
             supplier_timeout_seconds=45.0,
-            supplier_retries=2,
+            supplier_retries=3,
         ),
+        monotonic=clock,
+        sleep=clock.sleep,
     )
     attempts = []
 
@@ -498,6 +593,7 @@ def test_supplier_login_timeout_does_not_repeat_the_slow_start(tmp_path, monkeyp
         supplier.load_context(date(2026, 10, 9), 2000, universe=())
 
     assert attempts == [1]
+    assert clock.sleeps == []
 
 
 @pytest.mark.parametrize(("restart_session", "expected_closes"), ((False, 0), (True, 1)))
@@ -509,11 +605,14 @@ def test_price_failure_restarts_only_an_unhealthy_supplier_session(
 ) -> None:
     from trader.download.infra import baostock_sync_supplier as supplier_module
 
+    clock = _Clock()
     supplier = BaoStockHistorySupplier(
         HistorySyncConfiguration(
             history_root=tmp_path / "history", reference_root=tmp_path / "reference", supplier_retries=0
         ),
         price_policy=BaoStockRequestPolicy(20.0, 0),
+        monotonic=clock,
+        sleep=clock.sleep,
     )
     closes = 0
 
@@ -540,12 +639,17 @@ def test_price_failure_restarts_only_an_unhealthy_supplier_session(
         supplier.fetch_code(security, (date(2026, 10, 9),))
 
     assert closes == expected_closes
+    assert clock.sleeps == []
 
 
-@pytest.mark.parametrize(("timeout_seconds", "retries"), ((float("nan"), 0), (0.0, 0), (20.0, -1), (20.0, 3)))
+@pytest.mark.parametrize(("timeout_seconds", "retries"), ((float("nan"), 0), (0.0, 0), (20.0, -1), (20.0, 4)))
 def test_supplier_request_policy_rejects_unbounded_values(timeout_seconds: float, retries: int) -> None:
     with pytest.raises(ValueError, match="request policy"):
         BaoStockRequestPolicy(timeout_seconds, retries)
+
+
+def test_supplier_request_policy_accepts_three_retries() -> None:
+    assert BaoStockRequestPolicy(45.0, 3).retries == 3
 
 
 def test_worker_context_keeps_official_universe_without_querying_baostock_industry(monkeypatch) -> None:

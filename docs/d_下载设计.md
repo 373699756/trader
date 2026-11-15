@@ -244,7 +244,9 @@ HTTP成功或来源返回名为day的数据，不足以证明是合格qfq。复�
 
 BaoStock会话串行，物理请求含重试、分页共用限速时间线；现行最小起点间隔1.5秒，所有BaoStock调用仍受同一进程锁约束，正常当前行业准备不调用该供应商。网络可达、单股取数成功与整股持久完成分别核对，不能把“TCP能连上”等同服务可用。
 
-history和market补缺的每股完整候选共用`history.supplier_timeout_seconds`总请求预算（当前45秒），从该股请求开始覆盖登录、raw、qfq、翻页及配置内重试；阶段切换、翻页和重试不续期。单次物理请求期限仍不超过同一配置值，快速失败可在剩余预算内重试，耗尽后记为待补并继续后续股票，不覆盖原有效价格。取消／超时收尾的优雅等待不超过剩余总预算；耗尽即终止自有供应商子进程，进程回收仍有既有有界等待。因此该预算约束最坏等待，不承诺供应商传输变快；超过预算的合法慢窗口仍会保留为未修复。
+history和market补缺的每次股票窗口尝试使用独立`history.supplier_timeout_seconds`总请求预算（当前45秒），该次尝试从开始覆盖登录、raw、qfq和翻页，阶段切换及分页不续期。失败后最多重试`history.supplier_retries`次（当前3次，即首次加3次重试、最多4轮），在下次请求前分别额外等待15／30／60秒；等待不计入45秒请求预算，下一次尝试重新计时，不能因第一轮耗尽预算而跳过后续重试。等待每0.1秒检查取消，成功后不再等待或请求；配置0次重试时失败立即结束。重试只由supplier管理，外层不再叠加次数；三次重试耗尽后才保留待补并处理下一股，不覆盖原有效价格。同源尾窗成功后因合并证据不足转完整窗口属于另一个窗口请求，不重新预约同一失败回执。
+
+取消／单轮超时收尾的优雅等待不超过该轮剩余预算，耗尽即终止自有供应商子进程，进程回收保留既有有界等待。新轮重连再登录，日志显示同股尝试编号及失败后的真实等待时间。四轮都耗尽45秒时，请求预算合计180秒、三次等待合计105秒，此外保留有界进程收尾；不再以每股共用45秒承诺整个失败序列的耗时。
 
 该总预算约束供应商取数，不覆盖后续完整候选的旧价读取、年度回写、提交和连接关闭。取得候选后的“待落库”仍可能持续较长时间；必须按真实持久确认判断完成，不能用45秒网络预算承诺整股或完整同步耗时。取数与年度落库的分段定位及尚未解决的性能问题沿g原357记录。
 
@@ -1017,8 +1019,8 @@ CHECK、codec验证、外键启用及发布凭据检查是不同层次；本章�
 | download_batch_size | 64 | int，1–256；尚无运行消费单位 | 当前只解析／领域校验，未找到下载执行路径读取，不能当作真实写入批次 |
 | history_workers | 8 | int，worker，1–12 | bootstrap历史线程池／HTTP会话数及HistoryDownloadFlow在途派发 |
 | minimum_free_bytes | 1073741824 | int，字节，≥0 | DownloadHistoryUseCase经HistorySyncIo.has_space做空间准入 |
-| supplier_timeout_seconds | 45.0 | number，秒，≥0.001，无配置上限 | BaoStock物理请求期限，且history/market补缺每股登录、raw/qfq、分页及重试共用同值总预算 |
-| supplier_retries | 2 | int，重试次数，0–2 | BaoStock请求策略，物理失败请求仍实际发生 |
+| supplier_timeout_seconds | 45.0 | number，秒，≥0.001，无配置上限 | BaoStock单轮完整价格窗口预算，含登录、raw/qfq及分页；失败后的等待不计入、下一轮独立计时 |
+| supplier_retries | 3 | int，重试次数，0–3 | 首次失败后最多3次重试，依次额外等待15／30／60秒，物理失败请求仍实际发生 |
 | query_interval_seconds | 1.5 | number，秒，≥1.5 | BaoStock worker的BaoStockQueryLimiter |
 | cancellation_grace_seconds | 10.0 | number，秒，0.001–10 | BaoStockHistorySupplier子进程取消等待 |
 | progress_heartbeat_seconds | 5.0 | number，秒，0.001–supplier_timeout_seconds | BaoStock供应商等待心跳，且不得超过实际价格请求策略timeout |

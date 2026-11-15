@@ -253,7 +253,10 @@ class StderrHistorySyncProgress:
             self._repair_counts = (progress.completed_units, progress.total_units)
             if progress.current_item is not None or progress.state == "completed":
                 self._finish_daily_stage()
-        if progress.stage in _DAILY_STAGES and self._repair_counts is not None:
+        repair_retry = (
+            progress.stage in _DAILY_STAGES and self._repair_counts is not None and progress.state == "retrying"
+        )
+        if progress.stage in _DAILY_STAGES and self._repair_counts is not None and not repair_retry:
             return
         if progress.stage in _DAILY_STAGES:
             if self._daily_stage != progress.stage:
@@ -339,7 +342,7 @@ class StderrHistorySyncProgress:
                       or progress.stage in _VERIFICATION_STAGES and progress.state == "started" and verification_started_before
                       else _STATE_LABELS[progress.state],
                 immediate=progress.stage == "baostock_repair" or progress.stage in _VERIFICATION_STAGES,
-                heartbeat=progress.stage not in _VERIFICATION_STAGES and progress.stage != "loading_context",
+                heartbeat=not repair_retry and progress.stage not in _VERIFICATION_STAGES and progress.stage != "loading_context",
                 heartbeat_interval_seconds=30.0 if progress.stage == "supplier_industry" else 5.0,
                 finished=not industry_completion_pending and (progress.stage == "baostock_repair"
                          or progress.state == "completed" and (progress.stage not in _COUNT_STAGES or progress.completed_units == progress.total_units)
@@ -482,10 +485,14 @@ class StderrHistorySyncProgress:
             and not any(part.startswith("来源 ") for part in parts)
         ):
             parts.append(f"来源 {progress.data_source}")
-        if progress.stage in _DAILY_STAGES and self._stock_counts is not None:
-            parts.append(f"总进度 {_format_count(*self._stock_counts)}")
+        if progress.stage in _DAILY_STAGES:
+            counts = self._repair_counts if self._repair_counts is not None else self._stock_counts
+            if counts is not None:
+                parts.append(f"总进度 {_format_count(*counts)}")
         if progress.max_attempts > 1:
             parts.append(f"尝试 {progress.attempt}/{progress.max_attempts}")
+        if progress.retry_delay_seconds is not None:
+            parts.append(f"等待 {ProgressDuration(progress.retry_delay_seconds)} 后重试")
         if progress.call_elapsed_seconds > 0.0:
             parts.append(f"调用 {ProgressDuration(progress.call_elapsed_seconds)}")
         if progress.failure_reason is not None:

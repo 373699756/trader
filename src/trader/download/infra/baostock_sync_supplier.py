@@ -86,7 +86,7 @@ class BaoStockRequestPolicy:
     retries: int
 
     def __post_init__(self) -> None:
-        if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0 or not 0 <= self.retries <= 2:
+        if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0 or not 0 <= self.retries <= 3:
             raise ValueError("BaoStock request policy is invalid")
 
 
@@ -202,6 +202,7 @@ class BaoStockHistorySupplier:
         *,
         progress: HistorySyncProgressPort | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
         cancel_requested: Callable[[], bool] = lambda: False,
         price_policy: BaoStockRequestPolicy | None = None,
         price_total_seconds: float | None = None,
@@ -222,6 +223,7 @@ class BaoStockHistorySupplier:
         self._heartbeat_interval_seconds = settings.progress_heartbeat_seconds
         self._progress = progress
         self._monotonic = monotonic
+        self._sleep = sleep
         self._cancel_requested = cancel_requested
         self._process: BaseProcess | None = None
         self._connection: Connection | None = None
@@ -283,21 +285,22 @@ class BaoStockHistorySupplier:
             return self._serial_request(command)
 
     def _serial_request(self, command: _LoadContext | _FetchCode) -> _Response:
-        self._request_deadline = (
-            self._monotonic() + self._price_total_seconds
-            if isinstance(command, _FetchCode) and self._price_total_seconds is not None
-            else float("inf")
-        )
-        policy = self._price_policy if isinstance(command, _FetchCode) else self._context_policy
+        price_request = isinstance(command, _FetchCode)
+        policy = self._price_policy if price_request else self._context_policy
         failure = "supplier_process_failed"
         max_attempts = policy.retries + 1
         initial_stage, initial_item = _command_progress(command)
         last_failure: BaseException | None = None
         for attempt_number in range(1, max_attempts + 1):
-            if self._monotonic() >= self._request_deadline:
-                raise RuntimeError("supplier_price_total_timeout")
             if self._cancel_requested():
                 raise RuntimeError("supplier_cancelled")
+            # Each attempt bounds the complete price window, including login,
+            # raw/qfq and pagination. Retry waits are outside this deadline.
+            self._request_deadline = (
+                self._monotonic() + self._price_total_seconds
+                if price_request and self._price_total_seconds is not None
+                else float("inf")
+            )
             attempt = _Attempt(attempt_number, max_attempts)
             result = self._request_once(
                 command,
@@ -305,11 +308,14 @@ class BaoStockHistorySupplier:
                 attempt,
                 policy.timeout_seconds,
             )
+            if result.response is not None and not result.failure_reason and self._monotonic() >= self._request_deadline:
+                result = replace(
+                    result, response=None, failure_reason="supplier_price_total_timeout",
+                    failure=RuntimeError("supplier_price_total_timeout"),
+                )
             state = result.state
             failure = result.failure_reason or ""
             if result.response is not None and not failure:
-                if self._monotonic() >= self._request_deadline:
-                    raise RuntimeError("supplier_price_total_timeout")
                 self._publish(state.stage, "completed", attempt, state.current_item, self._elapsed(state))
                 return result.response
             last_failure = result.failure
@@ -336,12 +342,28 @@ class BaoStockHistorySupplier:
             )
             if result.response is None or result.response.restart_session or attempt.number < attempt.total:
                 self.close()
-            if failure == "supplier_login_timeout":
+            if failure == "supplier_cancelled" or failure == "supplier_login_timeout" and not price_request:
                 break
             if attempt.number < attempt.total:
                 next_attempt = _Attempt(attempt.number + 1, attempt.total)
-                self._publish(state.stage, "retrying", next_attempt, state.current_item, 0.0)
+                delay = 15.0 * 2 ** (attempt.number - 1) if price_request else None
+                self._publish(
+                    initial_stage if price_request else state.stage, "retrying", next_attempt,
+                    initial_item if price_request else state.current_item, 0.0, retry_delay_seconds=delay,
+                )
+                if delay is not None:
+                    self._wait_before_retry(delay)
         raise RuntimeError(failure) from last_failure
+
+    def _wait_before_retry(self, seconds: float) -> None:
+        deadline = self._monotonic() + seconds
+        while True:
+            if self._cancel_requested():
+                raise RuntimeError("supplier_cancelled")
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                return
+            self._sleep(min(remaining, 0.1))
 
     def _request_once(
         self,
@@ -487,6 +509,8 @@ class BaoStockHistorySupplier:
         attempt: _Attempt,
         current_item: str | None,
         call_elapsed_seconds: float,
+        *,
+        retry_delay_seconds: float | None = None,
     ) -> None:
         self._emit_progress(
             HistorySyncProgress(
@@ -498,6 +522,7 @@ class BaoStockHistorySupplier:
                 attempt=attempt.number,
                 max_attempts=attempt.total,
                 call_elapsed_seconds=max(0.0, call_elapsed_seconds),
+                retry_delay_seconds=retry_delay_seconds,
                 data_source="BaoStock",
             )
         )
