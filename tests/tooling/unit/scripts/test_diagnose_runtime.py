@@ -37,13 +37,6 @@ def test_removed_index_experiment_is_rejected_before_execution(capsys):
     assert "required" in capsys.readouterr().err
 
 
-def test_price_repair_audit_can_resume_its_external_copy_without_empty_directory_preparation():
-    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('price-repair-audit'), "--history-root", "data/market/history", "--database-probe-directory", "/tmp/trader-price-repair-test"]))
-    commands = BuildToolCommands(options, python_executable="/python3")
-    assert len(commands) == 1
-    assert commands[0].name == "price_repair_audit"
-    assert commands[0].argv[commands[0].argv.index("--work-root") + 1] == "/tmp/trader-price-repair-test"
-    assert commands[0].prepare is None
 
 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))

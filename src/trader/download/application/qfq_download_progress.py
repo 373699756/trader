@@ -57,7 +57,6 @@ class QfqDownloadProgress:
     latest_missing: int = 0
     latest_suspended: int = 0
     latest_inferred_suspended: int = 0
-    unresolved_supplement_codes: int = 0
     price_review: QfqPriceReviewSummary = field(default_factory=QfqPriceReviewSummary)
     rows: int = 0
     errors: int = 0
@@ -192,7 +191,6 @@ class QfqDownloadProgress:
             latest_suspended=self.latest_suspended,
             latest_inferred_suspended=self.latest_inferred_suspended,
             latest_missing=self.latest_missing,
-            unresolved_supplement_codes=self.unresolved_supplement_codes,
             changed_files=len(self.changed),
             rows=self.rows,
             write_seconds=self.write_seconds,
@@ -249,7 +247,6 @@ class QfqDownloadProgress:
             self.latest_suspended,
             self.latest_inferred_suspended,
             price_review=self.price_review,
-            unresolved_supplement_codes=self.unresolved_supplement_codes,
         )
 
 

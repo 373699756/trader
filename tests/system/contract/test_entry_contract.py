@@ -178,7 +178,7 @@ def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
 
 
 @pytest.mark.parametrize("help_argument", ("help", "-h", "--help"))
-def test_run_script_help_lists_two_commands_per_download_or_training_kind(tmp_path: Path, help_argument: str) -> None:
+def test_run_script_help_lists_retained_download_and_training_commands(tmp_path: Path, help_argument: str) -> None:
     missing_venv = tmp_path / "missing-venv"
     completed = subprocess.run(
         ("bash", str(ROOT / "run.sh"), help_argument),
@@ -197,8 +197,8 @@ def test_run_script_help_lists_two_commands_per_download_or_training_kind(tmp_pa
     commands = completed.stdout.split("下载与训练:\n", 1)[1].split("\n\n", 1)[0]
     assert [line.strip().split("  ", 1)[0] for line in commands.splitlines()] == [
         "./run.sh sync",
-        "./run.sh sync history", "./run.sh sync history fill",
-        "./run.sh sync market", "./run.sh sync market fill",
+        "./run.sh sync history",
+        "./run.sh sync market",
         "./run.sh sync company", "./run.sh sync company fill",
         "./run.sh train", "./run.sh train v1,v5",
     ]
@@ -207,6 +207,7 @@ def test_run_script_help_lists_two_commands_per_download_or_training_kind(tmp_pa
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "档位以逗号分隔，可自由组合；省略时选择全部。" in completed.stdout
+    assert "未完成可重跑原命令续传；fill用于补缺，仍需处理具体失败原因。" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
 
@@ -242,6 +243,8 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
         ("train", "v1", "v5"),
         ("train", "v1,v1"),
         ("sync", "fill"),
+        ("sync", "history", "fill"),
+        ("sync", "market", "fill"),
         ("sync", "all"),
         ("sync", "history", "--json"),
         ("sync", "market", "fill", "extra"),
@@ -427,7 +430,7 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
 
 
 @pytest.mark.parametrize("arguments", (
-    (), ("history",), ("history", "fill"), ("market",), ("market", "fill"),
+    (), ("history",), ("market",),
     ("company",), ("company", "fill"),
 ))
 def test_run_script_forwards_retained_sync_commands(tmp_path: Path, arguments: tuple[str, ...]) -> None:
@@ -570,9 +573,15 @@ def test_removed_data_commands_are_rejected_before_configuration(command):
 
 def test_powershell_help_uses_the_same_command_groups() -> None:
     powershell = (ROOT / "run.ps1").read_text(encoding="utf-8")
+    shell_help = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "-h"),
+        cwd=ROOT, text=True, capture_output=True, check=True, timeout=10,
+    ).stdout.rstrip("\n")
+    powershell_help = powershell.split('    @"\n', 1)[1].split('\n"@ | Write-Host', 1)[0]
 
+    assert powershell_help.replace(".\\run.ps1", "./run.sh") == shell_help
     assert "日常使用（不做离线研究）:" in powershell
-    assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
+    assert "下载与训练:" in powershell
     assert ".\\run.ps1                         同时启动全部档位 V1、V2、V3、V5" in powershell
     assert ".\\run.ps1 v1,v2,v3                同时启动所列档位，Web按钮互斥切换" in powershell
     assert "research-history" not in powershell
@@ -587,6 +596,8 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert '$PublicModes = @("help", "-h", "--help", "sync", "train")' in powershell
     assert "install-history-automation" not in powershell
     assert "uninstall-history-automation" not in powershell
+    for removed in ("--repair-codes", "--json", "--diagnostics", "--fill", "高级配置", "工程Shadow"):
+        assert removed not in powershell
 
 
 def test_research_status_is_historical_only_and_does_not_create_runtime_files(

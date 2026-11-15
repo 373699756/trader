@@ -13,37 +13,25 @@ function Show-Usage {
   .\run.ps1                         同时启动全部档位 V1、V2、V3、V5
   .\run.ps1 v2                      只启动 V2
   .\run.ps1 v1,v2,v3                同时启动所列档位，Web按钮互斥切换
-  .\run.ps1 help                    查看本帮助
+  .\run.ps1 -h                      查看本帮助
 
-离线研究（仅在明确执行研究任务时使用）:
-  .\run.ps1 sync                    依次更新参考、完整历史、行情窗口与公司资料
-  .\run.ps1 sync history            单独更新完整历史，自动续传
-  .\run.ps1 sync history fill       补历史缺价、待核停牌及必要字段
-  .\run.ps1 sync market             单独更新行情窗口
-  .\run.ps1 sync market fill        补行情窗口缺价、待核停牌及必要字段
-  .\run.ps1 sync history fill --repair-codes 300118  定向补采，保留完整股票总体
-  .\run.ps1 sync company            单独更新公司资料
-  .\run.ps1 sync company fill       补充历史缺口和待补正文，自动OCR/扩限，复用已完成资料
-  .\run.ps1 train                   历史维护后处理全部档位 V1、V2、V3、V5
-  .\run.ps1 train v1,v5             历史维护后只训练所列档位
+下载与训练:
+  .\run.ps1 sync                    依次更新参考、历史、行情窗口和公司资料
+  .\run.ps1 sync history            更新历史，自动续传
+  .\run.ps1 sync market             更新行情窗口
+  .\run.ps1 sync company            更新公司资料
+  .\run.ps1 sync company fill       补齐公司资料缺口
+  .\run.ps1 train                   使用本地历史训练全部档位
+  .\run.ps1 train v1,v5             使用本地历史训练指定档位
 
-档位以逗号分隔，可自由组合；省略时选择全部。V1已正式接入，V5保持工程Shadow并需可选CPU依赖。
-本地检测使用 scripts/tools.py --business recommendation --module pipeline --action snapshot。
-
-高级配置（一般无需设置）:
-  TRADER_CONFIG=C:\absolute\path\runtime.json
-  TRADER_HOST=127.0.0.1
-  TRADER_PORT=5000
-  DEEPSEEK_API_KEY=...
-  DEEPSEEK_API_KEY_FILE=C:\protected\path (default: project root .token_key)
-  TUSHARE_TOKEN_FILE=C:\protected\path (default: project root .token_key)
-  FORCE_INSTALL_DEPS=1
+档位以逗号分隔，可自由组合；省略时选择全部。
+未完成可重跑原命令续传；fill用于补缺，仍需处理具体失败原因。
 "@ | Write-Host
 }
 
 $PublicModes = @("help", "-h", "--help", "sync", "train")
 
-if ($args.Count -gt 0 -and [string]$args[0] -in $PublicModes) {
+if ($args.Count -gt 0 -and [string]$args[0] -cin $PublicModes) {
     $Mode = [string]$args[0]
     $ForwardArgs = @($args | Select-Object -Skip 1)
 } else {
@@ -56,13 +44,10 @@ if ($Mode -in @("help", "-h", "--help")) {
 }
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
 if ($Mode -eq "sync") {
-    $ValidTarget = $ForwardArgs.Count -eq 0 -or $ForwardArgs[0] -in @("history", "market", "company")
-    $ValidFill = $ForwardArgs.Count -ge 2 -and $ForwardArgs[1] -eq "fill"
-    if ($ForwardArgs.Count -gt 2) {
-        $ValidFill = $ValidFill -and $ForwardArgs[0] -in @("history", "market") -and $ForwardArgs[2] -eq "--repair-codes" -and $ForwardArgs.Count -ge 4 -and $ForwardArgs.Count -le 8
-    }
-    if (-not $ValidTarget -or ($ForwardArgs.Count -gt 1 -and -not $ValidFill)) {
-        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]；指定分项后可加 fill 补充下载。")
+    if ($ForwardArgs.Count -gt 2 -or
+        ($ForwardArgs.Count -gt 0 -and $ForwardArgs[0] -cnotin @("history", "market", "company")) -or
+        ($ForwardArgs.Count -eq 2 -and ($ForwardArgs[0] -cne "company" -or $ForwardArgs[1] -cne "fill"))) {
+        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]；仅 company 可加 fill。")
         exit 2
     }
 } elseif ($ForwardArgs.Count -gt 0) {

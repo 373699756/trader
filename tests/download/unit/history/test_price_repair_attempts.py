@@ -21,8 +21,7 @@ def test_failed_and_interrupted_attempts_are_not_automatically_repeated(tmp_path
         assert attempts.reserve("600188", (DAY, NEXT), "next") == (NEXT,)
         attempts.fail("600188", "first", "supplier_timeout")
         assert attempts.reserve("600188", (DAY,), "third") == ()
-        assert attempts.reserve("600188", (DAY,), "manual", explicit=True) == (DAY,)
-        assert attempts.reserve("600188", (DAY,), "manual", explicit=True) == ()
+        assert attempts.reserve("600188", (DAY,), "manual") == ()
 
 
 def test_publication_rollback_does_not_resolve_attempt(tmp_path):
@@ -41,7 +40,7 @@ def test_publication_rollback_does_not_resolve_attempt(tmp_path):
         assert attempts.read("600188")[0].state == "resolved"
         assert attempts.read("600188")[0].resolved_source == "baostock"
         attempts.fail("600188", "first", "late_failure")
-        assert attempts.reserve("600188", (DAY,), "manual", explicit=True) == ()
+        assert attempts.reserve("600188", (DAY,), "manual") == ()
         assert attempts.read("600188")[0].state == "resolved"
 
 

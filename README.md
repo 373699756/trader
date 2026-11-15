@@ -40,9 +40,7 @@ Windows CMD执行run.bat。脚本按需创建.venv并安装项目，默认同进
 | 查看帮助 | ./run.sh help |
 | 依次更新参考、完整历史、行情窗口和公司资料 | ./run.sh sync |
 | 只维护完整历史，不自动训练 | ./run.sh sync history |
-| 补齐历史缺口 | ./run.sh sync history fill |
 | 只更新在线日线 | ./run.sh sync market |
-| 补齐行情缺口 | ./run.sh sync market fill |
 | 只更新公司资料 | ./run.sh sync company |
 | 补齐公司资料缺口 | ./run.sh sync company fill |
 | 使用本地已发布历史训练全部档位 | ./run.sh train |
@@ -52,6 +50,10 @@ Windows CMD执行run.bat。脚本按需创建.venv并安装项目，默认同进
 
 档位直接用逗号分隔，无需--profile；不再使用both。Web只显示已启动档位的按钮，一次查看一个档位；切换视图不会停止其它档位。
 
+Shell与PowerShell使用相同的精简命令和参数范围，Windows可将上表的`./run.sh`替换为`.\run.ps1`。训练JSON／诊断参数仍由独立`trader-cli`提供，不经启动脚本转发。
+
+同步中断或请求失败时，先按错误原因处理，再重跑原`sync`命令续传。历史与行情保留普通同步的自动缺价处理及有界停牌复核，手动fill及定向补采入口已删除。`sync company fill`仍补公告目录及正文，沿原流程重试结构化资料、解析和必要OCR，但不采新闻；它不保证一次补齐，也不能解决持续网络失败、来源缺值、容量不足或数据库结构不兼容，仍遵守冷却及不可提取限制。详见[下载恢复说明](docs/d_下载设计.md#1-三个模块下载什么)。
+
 首次使用建议：
 
 1. 运行`./run.sh sync`，依次准备参考、完整历史、行情窗口和公司资料；也可按需指定单项，待补时按原因补缺或续传。
@@ -60,7 +62,7 @@ Windows CMD执行run.bat。脚本按需创建.venv并安装项目，默认同进
 4. 查看页面输入准备和诊断，确认是否真正达到评分条件。
 
 train只使用本地已发布资料，不下载资料，也不是普通启动的前置脚本。价格截止、各头最新成熟训练日和预测特征截止各有含义，日期不足与进度口径见[训练设计](docs/e_训练设计.md#1-输入固定双头独立)。
-`sync`省略类型时依次执行history、market和company；指定类型时只更新对应资料，`fill`须指定类型。stdout为最终JSON，进度走stderr。
+`sync`省略类型时依次执行history、market和company；指定类型时只更新对应资料，`fill`仅用于`company`。stdout为最终JSON，进度走stderr。
 退出码0/1/2/130分别为完成、失败或待补、参数/配置错误、取消。
 
 每个下载命令都会准备公共参考，只缺某类资料时使用对应命令。train不准备在线参考，不更新历史、在线短窗口或公司资料。

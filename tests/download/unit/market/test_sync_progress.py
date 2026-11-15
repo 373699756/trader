@@ -320,7 +320,7 @@ def test_shell_feedback_uses_shared_prefix_and_sanitizes_installer_lines():
 
 
 @pytest.mark.parametrize("target,fill", [("all", False), ("history", False), ("market", False), ("company", False),
-                                        ("history", True), ("market", True), ("company", True)])
+                                        ("company", True)])
 def test_sync_entrypoints_share_timing_and_keep_business_results(monkeypatch, tmp_path, target, fill):
     from trader.bootstrap import ExecuteSync
 
@@ -338,14 +338,14 @@ def test_sync_entrypoints_share_timing_and_keep_business_results(monkeypatch, tm
         report(ProgressMessage((), task=ProgressTask("参考", "test", "夹具准备"), state="完成", finished=True))
         return reference
 
-    def history(*args, progress, repair_only, **kwargs):
-        assert repair_only is fill
+    def history(*args, progress, **kwargs):
+        assert "repair_only" not in kwargs
         progress.publish(HistorySyncProgress("tencent_history", "started", 0, 1))
         clock[0] += 10
         return HistoryMaintenanceStatus("completed", None, tmp_path, "tencent", None, "a" * 64, now.date(), now.date())
 
-    def market(*args, report, repair_only, **kwargs):
-        assert repair_only is fill
+    def market(*args, report, **kwargs):
+        assert "repair_only" not in kwargs
         report(ProgressMessage((), task=ProgressTask("market", "prices", "价格更新"), state="开始"))
         clock[0] += 10
         return QfqUpdateResult(now.date(), 1)

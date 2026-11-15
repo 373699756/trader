@@ -48,7 +48,6 @@ def BuildParser(
         database_probe_directory=None,
         repair_profile_year=None,
         repair_profile_code=None,
-        repair_codes=(),
         price_field_audit=False,
         audit_checkpoint=None,
         audit_budget_seconds=None,
@@ -117,7 +116,6 @@ def BuildParser(
     if action_identity in ("history-sqlite","price-repair-audit","history-write","download-performance",):
         parser.add_argument('--database-probe-directory', type=Path, help='new external directory for SQLite benchmarks')
     if action_identity == "price-repair-audit":
-        parser.add_argument('--repair-codes', nargs='+', help='explicit 1..5 unique six-digit repair sample codes; external probe directory required')
         parser.add_argument('--repair-profile-year', type=int, help='profile one annual replacement on a complete isolated copy; no network')
         parser.add_argument('--repair-profile-code', help='six-digit code with an unpublished repair journal candidate')
     if action_identity in ("history-sqlite",):
@@ -198,7 +196,6 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         database_probe_directory=ExternalPath(args.database_probe_directory, "--database-probe-directory"),
         repair_profile_year=args.repair_profile_year,
         repair_profile_code=args.repair_profile_code,
-        repair_codes=tuple(args.repair_codes or ()),
         price_field_audit=args.price_field_audit,
         audit_checkpoint=ExternalPath(args.audit_checkpoint, "--audit-checkpoint"),
         audit_budget_seconds=args.audit_budget_seconds,
@@ -233,12 +230,6 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
     )
     if not math.isfinite(options.command_timeout_seconds) or not 0 < options.command_timeout_seconds <= 7200:
         raise ValueError("command timeout must be positive and must not exceed 7200 seconds")
-    if options.repair_codes and (
-        options.action_identity != "price-repair-audit" or options.database_probe_directory is None
-        or not 1 <= len(options.repair_codes) <= 5 or len(set(options.repair_codes)) != len(options.repair_codes)
-        or any(re.fullmatch(r"[0-9]{6}", code) is None for code in options.repair_codes)
-    ):
-        raise ValueError("--repair-codes requires 1..5 unique six-digit codes and an external --database-probe-directory")
     if (options.audit_checkpoint is not None or options.audit_budget_seconds is not None) and not options.price_field_audit:
         raise ValueError("audit checkpoint and budget require --price-field-audit")
     if options.price_field_audit:
@@ -297,7 +288,7 @@ def ParseOptions(args: argparse.Namespace) -> HistoryOptions:
         raise ValueError("--sqlite-revision-write-sample-count must be within 1..5000")
     if not 0 <= options.history_resume_samples <= 8:
         raise ValueError("--history-resume-samples must be within 0..8")
-    if options.repair_profile_year is not None or options.repair_profile_code is not None:
+    if options.action_identity == "price-repair-audit":
         if (options.repair_profile_year is None or not 1990 <= options.repair_profile_year <= 2100
             or options.repair_profile_code is None or re.fullmatch(r"[0-9]{6}", options.repair_profile_code) is None
             or options.database_probe_directory is None or options.database_probe_directory.exists()):

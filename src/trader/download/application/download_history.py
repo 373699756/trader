@@ -21,7 +21,7 @@ from trader.download.domain.history_maintenance import (
     HistoryMaintenanceState, HistoryMaintenanceStatus, HistoryPriceGapSummary, HistoryPriceReviewSummary,
 )
 from trader.download.domain.history_price_qualification import (
-    HISTORY_UNIVERSE_CONTRACT, NeedsPriceSupplement, QualifyReplacementWindow,
+    HISTORY_UNIVERSE_CONTRACT, QualifyReplacementWindow,
 )
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_sync import (
@@ -42,12 +42,6 @@ class _AlreadyCurrent:
 
 
 @dataclass(frozen=True)
-class _DownloadedHistory:
-    snapshot: HistorySnapshot
-    unresolved_supplement_cells: int = 0
-
-
-@dataclass(frozen=True)
 class DownloadHistoryUseCase:
     configuration: HistorySyncConfiguration
     supplier: HistoryTwoStageSupplier
@@ -55,16 +49,14 @@ class DownloadHistoryUseCase:
     cancel: Callable[[], bool]
     progress: HistorySyncProgressPort | None
     dependencies: HistorySyncDependencies
-    repair_only: bool = False
     price_review_budget: PriceReviewBudget | None = None
-    repair_codes: frozenset[str] | None = None
 
     def execute(self) -> HistoryMaintenanceStatus:
         PublishHistoryProgress(self.progress, "initializing", "started")
         maintenance = self.dependencies.maintenance
         try:
             with maintenance.lease():
-                result = replace(self._synchronize(), repair_codes=tuple(sorted(self.repair_codes or ())))
+                result = self._synchronize()
                 maintenance.finalize(result)
                 return result
         except KeyboardInterrupt:
@@ -77,8 +69,6 @@ class DownloadHistoryUseCase:
             return _status("failed", failure.reason, self.configuration, maintenance.safe_snapshot())
 
     def _synchronize(self) -> HistoryMaintenanceStatus:
-        if self.repair_codes is not None and not self.repair_only:
-            raise ValueError("history_repair_scope_requires_fill")
         PublishHistoryProgress(self.progress, "initializing", "started", current_item="published_state")
         state = self.dependencies.control.load_published_state()
         current_snapshot = state.snapshot if state is not None else None
@@ -88,8 +78,6 @@ class DownloadHistoryUseCase:
         pending = self.dependencies.tasks.pending(current_snapshot.sequence if current_snapshot else 0)
         PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "published_state")
         target = CompletedDailyCutoff(self.observed_at)
-        if self.repair_only:
-            target = pending.cutoff if pending else current_snapshot.data_cutoff if current_snapshot else target
         try:
             inputs = self._prepare(current_snapshot, pending, target, previous)
         except HistoryReviewDeferredError:
@@ -100,11 +88,9 @@ class DownloadHistoryUseCase:
                 current_snapshot,
                 price_review=self._review_summary(),
             )
-        if isinstance(inputs, HistoryMaintenanceStatus):
-            return inputs
         if isinstance(inputs, _AlreadyCurrent):
             unresolved = self.dependencies.tasks.gap_summary(
-                tuple(previous if self.repair_codes is None else previous & self.repair_codes),
+                tuple(previous),
                 calendar_dates=state.calendar.open_dates,
             ) if state is not None else None
             return _status(
@@ -117,20 +103,16 @@ class DownloadHistoryUseCase:
                 price_review=self._review_summary(),
                 industry_readiness=inputs.industry_readiness,
             )
-        downloaded = self._download(inputs, current_snapshot)
-        snapshot = downloaded.snapshot
+        snapshot = self._download(inputs, current_snapshot)
         unresolved = self.dependencies.tasks.gap_summary(
-            tuple(sorted(self._repair_population(inputs.context))), calendar_dates=inputs.calendar.open_dates,
+            tuple(item.code for item in inputs.context.universe), calendar_dates=inputs.calendar.open_dates,
         )
         return _status(
             "completed",
-            "history_price_gaps_remaining" if unresolved and unresolved.cells else (
-                "history_price_supplements_remaining" if downloaded.unresolved_supplement_cells else None
-            ),
+            "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
             self.configuration,
             snapshot,
             unresolved_price_cells=unresolved.cells if unresolved else 0,
-            unresolved_supplement_cells=downloaded.unresolved_supplement_cells,
             price_gap_summary=unresolved,
             price_review=self._review_summary(),
             industry_readiness=inputs.context.industry_readiness,
@@ -142,22 +124,13 @@ class DownloadHistoryUseCase:
         pending: HistoryDownloadBatch | None,
         target: date,
         previous: frozenset[str],
-    ) -> HistoryBatchInput | HistoryMaintenanceStatus | _AlreadyCurrent:
+    ) -> HistoryBatchInput | _AlreadyCurrent:
         PublishHistoryProgress(self.progress, "loading_context", "started")
         context = self.supplier.load_context(target, self.configuration.sessions)
         publication_id = _validate_context(context, self.configuration.sessions)
         PublishHistoryProgress(self.progress, "loading_context", "completed", (1, 1))
         if self.cancel():
             raise KeyboardInterrupt
-        if self.repair_codes is not None and (
-            not self.repair_codes or len(self.repair_codes) > 5
-            or not self.repair_codes.issubset(item.code for item in context.universe)
-            or pending is not None and (
-                any(task.dates and task.code not in self.repair_codes for task in self.dependencies.tasks.tasks())
-                or not self.dependencies.prices.pending_repair_codes().issubset(self.repair_codes)
-            )
-        ):
-            return _status("blocked", "repair_scope_conflict", self.configuration, current_snapshot)
         if (
             not previous.issubset(item.code for item in context.universe)
             and HISTORY_UNIVERSE_CONTRACT not in context.source_versions.dependency_versions
@@ -166,8 +139,6 @@ class DownloadHistoryUseCase:
         if pending is not None:
             PublishHistoryProgress(self.progress, "initializing", "started", current_item="resuming_tasks")
             result = self._resume(context, current_snapshot, pending, publication_id)
-            if self.repair_only and isinstance(result, HistoryBatchInput) and current_snapshot is not None:
-                self._resume_supplements(result, current_snapshot)
             PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "resuming_tasks")
             return result
         total = len(context.universe)
@@ -181,21 +152,6 @@ class DownloadHistoryUseCase:
             self.dependencies.tasks.gaps_by_code(context.calendar.open_dates),
             self.configuration.reread_sessions,
         )
-        if self.repair_only:
-            selected_codes = self._repair_population(context)
-            gaps = self.dependencies.tasks.gaps_by_code(context.calendar.open_dates, retryable_only=False)
-            supplements = (
-                {task.code: task.dates for task in self.dependencies.prices.supplemental_tasks(context, current_snapshot)}
-                if current_snapshot is not None else {}
-            )
-            tasks = tuple(
-                HistoryDownloadTask(
-                    item.code, tuple(sorted(set(gaps.get(item.code, ())) | set(supplements.get(item.code, ()))))
-                    if item.code in selected_codes else (),
-                    tencent_done=True,
-                )
-                for item in context.universe
-            )
         PublishHistoryProgress(self.progress, "initializing", "completed", (total, total), "planning_tasks")
         already_current = (
             current_snapshot
@@ -238,7 +194,7 @@ class DownloadHistoryUseCase:
         tasks: tuple[HistoryDownloadTask, ...], publication_id: str,
     ) -> bool:
         budget = self.price_review_budget
-        if budget is None or self.repair_only:
+        if budget is None:
             return False
         review = self.dependencies.prices.current_review(inputs, snapshot)
         begun = False
@@ -285,7 +241,7 @@ class DownloadHistoryUseCase:
         current_snapshot: HistorySnapshot | None,
         pending: HistoryDownloadBatch,
         publication_id: str,
-    ) -> HistoryBatchInput | HistoryMaintenanceStatus:
+    ) -> HistoryBatchInput:
         state = self.dependencies.control.load_state()
         source = next((item for item in state.sources if item.content_hash == pending.source_hash), None)
         calendar = next((item for item in state.calendars if item.content_hash == pending.calendar_hash), None)
@@ -320,14 +276,6 @@ class DownloadHistoryUseCase:
                 raise RuntimeError("history_resume_security_changed")
         if (source.source, source.dataset) != (current_source.source, current_source.dataset):
             raise RuntimeError("history_resume_source_changed")
-        allowed_codes = frozenset(item.code for item in context.universe)
-        if self.repair_only and (
-            not allowed_codes.issubset(previous_by_code)
-            or any(
-                not task.tencent_done and task.dates for task in self.dependencies.tasks.tasks(codes=allowed_codes)
-            )
-        ):
-            return _status("blocked", "history_download_incomplete", self.configuration, current_snapshot)
         reference = self.dependencies.maintenance.read_reference(source.supplier_contract)
         if (
             advancing
@@ -366,32 +314,6 @@ class DownloadHistoryUseCase:
             return HistoryBatchInput(context, current_source, current_calendar, current_universe, reference, current, False)
         return HistoryBatchInput(context, source, calendar, universe, reference, pending, False)
 
-    def _resume_supplements(self, inputs: HistoryBatchInput, snapshot: HistorySnapshot) -> None:
-        supplements = self.dependencies.prices.supplemental_tasks(inputs.context, snapshot)
-        allowed_codes = self._repair_population(inputs.context)
-        previous = {
-            task.code: task for task in self.dependencies.tasks.tasks(
-                codes=frozenset(item.code for item in inputs.context.universe),
-            )
-        }
-        changed = []
-        for supplement in supplements:
-            if supplement.code not in allowed_codes:
-                continue
-            task = previous.get(supplement.code, HistoryDownloadTask(supplement.code, (), tencent_done=True))
-            dates = tuple(sorted(set(task.dates) | set(supplement.dates)))
-            if dates != task.dates:
-                # Resume rejected unfinished Tencent work; these added dates are BaoStock-only.
-                changed.append(replace(task, dates=dates, tencent_done=True))
-        if changed:
-            self.dependencies.tasks.rebind_context(
-                inputs.batch, inputs.batch, tasks=tuple(changed),
-                reopened_codes=frozenset(task.code for task in changed),
-            )
-
-    def _repair_population(self, context: HistorySupplierContext) -> frozenset[str]:
-        return self.repair_codes if self.repair_codes is not None else frozenset(item.code for item in context.universe)
-
     def _advance_tasks(
         self, context: HistorySupplierContext, pending: HistoryDownloadBatch, previous_codes: frozenset[str]
     ) -> tuple[HistoryDownloadTask, ...]:
@@ -426,30 +348,23 @@ class DownloadHistoryUseCase:
         except (OSError, ValueError):
             self.dependencies.control.save_reference(reference, publication_id)
 
-    def _download(self, inputs: HistoryBatchInput, current_snapshot: HistorySnapshot | None) -> _DownloadedHistory:
+    def _download(self, inputs: HistoryBatchInput, current_snapshot: HistorySnapshot | None) -> HistorySnapshot:
         with self.dependencies.prices.open_batch(
             inputs, current_snapshot,
         ) as prices:
-            allowed_codes = self._repair_population(inputs.context)
+            allowed_codes = frozenset(item.code for item in inputs.context.universe)
             PublishHistoryProgress(self.progress, "initializing", "started", current_item="replaying_repairs")
             prices.replay_repairs(allowed_codes)
             PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "replaying_repairs")
-            if not self.repair_only:
-                prices.download_tencent()
+            prices.download_tencent()
             prices.prepare_retry_pass()
             gaps = {
                 code: dates for code, dates in self.dependencies.tasks.gaps_by_code(
                     inputs.calendar.open_dates, retryable_only=False,
                 ).items() if code in allowed_codes
             }
-            supplements = {
-                task.code: task.dates for task in prices.supplemental_tasks() if task.code in allowed_codes
-            } if self.repair_only else {}
             batch_id = self.dependencies.maintenance.new_repair_identity()
-            selected = (
-                *tuple(item for item in inputs.context.universe if item.code in gaps),
-                *tuple(item for item in inputs.context.universe if item.code in supplements and item.code not in gaps),
-            )
+            selected = tuple(item for item in inputs.context.universe if item.code in gaps)
             attempted = repaired = 0
             PublishHistoryProgress(self.progress, "baostock_repair", "started", (0, len(selected)))
             for completed, security in enumerate(selected, 1):
@@ -457,16 +372,15 @@ class DownloadHistoryUseCase:
                     raise KeyboardInterrupt
                 dates = inputs.context.calendar.expected_dates(security)
                 eligible = tuple(day for day in gaps.get(security.code, ()) if day in dates)
-                supplemental = supplements.get(security.code, ())
                 reserved = bool(eligible) and prices.reserve_repair(
-                    security.code, eligible, batch_id, explicit=self.repair_only,
+                    security.code, eligible, batch_id,
                 )
-                if not reserved and not supplemental:
+                if not reserved:
                     continue
                 attempted += 1
                 try:
                     candidate = None
-                    if not supplemental and prices.repair_source(security.code, inputs.batch.sequence) == "baostock":
+                    if prices.repair_source(security.code, inputs.batch.sequence) == "baostock":
                         previous = PublishedHistoryWindow(
                             security.code,
                             tuple(ProjectHistoryCell(cell) for cell in prices.read_prices(security.code, dates)),
@@ -484,10 +398,6 @@ class DownloadHistoryUseCase:
                         if self.cancel():
                             raise KeyboardInterrupt
                     QualifyReplacementWindow(dates, PublishedHistoryWindow(security.code, ()), candidate)
-                    if supplemental and any(
-                        NeedsPriceSupplement(cell) for cell in candidate.cells if cell.trade_date in supplemental
-                    ):
-                        raise RuntimeError("history_price_supplement_unresolved")
                     PublishHistoryProgress(self.progress, "baostock_repair", "obtained", (completed, len(selected)), security.code)
                     if self.cancel():
                         raise KeyboardInterrupt
@@ -518,14 +428,10 @@ class DownloadHistoryUseCase:
                         raise KeyboardInterrupt
                     if missing_dates := remaining_gaps.get(security.code):
                         prices.record_missing(security, missing_dates)
-                if self.price_review_budget is not None and not self.repair_only and not inputs.reviewed:
+                if self.price_review_budget is not None and not inputs.reviewed:
                     prices.review_inferred(self.price_review_budget)
                 if self.cancel():
                     raise KeyboardInterrupt
-                unresolved_supplements = (
-                    sum(len(task.dates) for task in prices.supplemental_tasks() if task.code in allowed_codes)
-                    if self.repair_only else 0
-                )
             PublishHistoryProgress(self.progress, "preparing_publication", "completed", (1, 1))
             partitions = prices.publishable_partitions(inputs.calendar.open_dates)
         calendar, batch = inputs.calendar, inputs.batch
@@ -556,7 +462,7 @@ class DownloadHistoryUseCase:
             ),
         )
         PublishHistoryProgress(self.progress, "publishing_snapshot", "completed", (1, 1))
-        return _DownloadedHistory(snapshot, unresolved_supplements)
+        return snapshot
 
 
 def _validate_context(context: HistorySupplierContext, sessions: int) -> str:
@@ -574,7 +480,6 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
     snapshot: HistorySnapshot | None,
     *,
     unresolved_price_cells: int = 0,
-    unresolved_supplement_cells: int = 0,
     price_gap_summary: HistoryPriceGapSummary | None = None,
     price_review: HistoryPriceReviewSummary | None = None,
     industry_readiness: HistoryIndustryReadiness | None = None,
@@ -590,7 +495,6 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
         data_cutoff=snapshot.data_cutoff if snapshot is not None else None,
         label_cutoff=snapshot.label_cutoff if snapshot is not None else None,
         unresolved_price_cells=unresolved_price_cells,
-        unresolved_supplement_cells=unresolved_supplement_cells,
         price_gap_summary=price_gap_summary,
         price_review=price_review,
         industry_readiness=industry_readiness,

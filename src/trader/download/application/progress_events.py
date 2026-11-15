@@ -74,7 +74,6 @@ class QfqSummary:
     latest_suspended: int
     latest_inferred_suspended: int
     latest_missing: int
-    unresolved_supplement_codes: int
     changed_files: int
     rows: int
     write_seconds: float

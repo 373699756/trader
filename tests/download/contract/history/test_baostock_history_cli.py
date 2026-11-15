@@ -25,7 +25,7 @@ from tests.helpers.shared.reference_fixtures import PreparedFixture
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
-@pytest.mark.parametrize("target", ("history", "market", "company"))
+@pytest.mark.parametrize("target", ("company",))
 def test_fill_is_forwarded_by_shell_and_parser(tmp_path, target):
     parsed = BuildParser().parse_args(["sync", target, "fill"])
     assert parsed.target == target and parsed.operation == "fill"
@@ -43,6 +43,7 @@ def test_fill_is_forwarded_by_shell_and_parser(tmp_path, target):
 
 @pytest.mark.parametrize("arguments", (
     ["sync", "all", "fill"], ["sync", "fill"], ["sync", "company", "fill", "baostock"],
+    ["sync", "history", "fill"], ["sync", "market", "fill"],
     ["sync", "history", "--fill"], ["sync", "market", "--fill"], ["sync", "company", "--fill"],
 ))
 def test_fill_rejects_incompatible_commands_before_configuration(arguments, monkeypatch):
@@ -61,16 +62,16 @@ def test_retired_fill_options_are_rejected_before_configuration(option, monkeypa
 
 
 @pytest.mark.parametrize("target", ("history", "market"))
-@pytest.mark.parametrize("fill_missing", (False, True))
-def test_fill_selects_existing_price_repair_path_without_changing_normal_sync(tmp_path, monkeypatch, target, fill_missing):
+def test_normal_price_sync_keeps_automatic_recovery_without_explicit_fill(tmp_path, monkeypatch, target):
     from trader.bootstrap import ExecuteSync
 
     settings = replace(LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json"), data_paths=DataPaths(tmp_path / "data"))
     reference = PreparedFixture(datetime(2026, 11, 1, tzinfo=timezone.utc))
     calls = []
 
-    def download(*args, repair_only, **kwargs):
-        calls.append(repair_only)
+    def download(*args, **kwargs):
+        assert "repair_only" not in kwargs
+        calls.append(target)
         if target == "market":
             return QfqUpdateResult(date(2026, 11, 1), 1)
         return HistoryMaintenanceStatus("completed", None, tmp_path, "baostock", None, "a" * 64, date(2026, 11, 1), date(2026, 11, 1))
@@ -79,8 +80,8 @@ def test_fill_selects_existing_price_repair_path_without_changing_normal_sync(tm
     monkeypatch.setattr("trader.bootstrap._prepare_reference", lambda *args, **kwargs: reference)
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", download)
     monkeypatch.setattr("trader.bootstrap.ExecuteQfqDownload", download)
-    result = ExecuteSync(PROJECT_ROOT / "config/runtime.json", target, fill_missing=fill_missing)
-    assert result.exit_code == 0 and calls == [fill_missing]
+    result = ExecuteSync(PROJECT_ROOT / "config/runtime.json", target)
+    assert result.exit_code == 0 and calls == [target]
     assert not (tmp_path / "data").exists()
 
 

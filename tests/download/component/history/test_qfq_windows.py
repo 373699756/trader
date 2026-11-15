@@ -662,8 +662,7 @@ def test_existing_window_without_receipt_is_rejected_before_republishing(tmp_pat
 
 
 @pytest.mark.parametrize("status", ("unknown", "ever_st"))
-@pytest.mark.parametrize("repair_only", (False, True))
-def test_market_eligibility_exit_keeps_window_and_success_receipt(tmp_path, status, repair_only):
+def test_market_eligibility_preserves_unknown_and_retains_excluded_window(tmp_path, status):
     class Qualified(Supplier):
         reference = _reference(("600001", "600002"))
 
@@ -684,21 +683,21 @@ def test_market_eligibility_exit_keeps_window_and_success_receipt(tmp_path, stat
         ),
     )
     supplier.calls.clear()
-    result = replace(updater, repair_only=repair_only).execute(now)
-    assert result.completed_codes == (0 if repair_only else 1) and result.pending_codes == 0
+    result = updater.execute(now)
+    allowed = frozenset({"600001", "600002"} if status == "unknown" else {"600001"})
+    assert result.completed_codes == len(allowed) and result.pending_codes == 0
     assert supplier.calls == []
-    assert updater.v2.codes() == updater.v3.codes() == frozenset({"600001"})
+    assert updater.v2.codes() == updater.v3.codes() == allowed
     assert (updater.v2.read_code("600002"), updater.v3.read_code("600002")) == before
     assert updater.v2.completed(DAYS[-1], "600002", source)
     if status == "unknown":
         supplier.reference = _reference(("600001", "600002"))
-        result = replace(updater, repair_only=repair_only).execute(now)
-        assert result.completed_codes == result.skipped_codes == (0 if repair_only else 2)
+        result = updater.execute(now)
+        assert result.completed_codes == result.skipped_codes == 2
         assert supplier.calls == []
 
 
-@pytest.mark.parametrize("repair_only", (False, True))
-def test_explicit_market_sync_rejects_incomplete_database_without_restoring_tables(tmp_path, repair_only):
+def test_explicit_market_sync_rejects_incomplete_database_without_restoring_tables(tmp_path):
     class Qualified(Supplier):
         def load_qfq_context(self, as_of, sessions):
             return replace(super().load_qfq_context(as_of, sessions), universe=_reference(("600001",)).eligible_universe)
@@ -717,7 +716,7 @@ def test_explicit_market_sync_rejects_incomplete_database_without_restoring_tabl
         updater.v2.manifest()
     assert updater.v2.path.read_bytes() == before
     with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
-        replace(updater, repair_only=repair_only).execute(now)
+        updater.execute(now)
     assert updater.v2.path.read_bytes() == before
     assert supplier.calls == []
 

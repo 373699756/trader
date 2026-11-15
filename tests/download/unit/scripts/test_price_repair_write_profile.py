@@ -45,7 +45,7 @@ def test_repair_write_profile_keeps_source_and_measures_existing_replacement(
             for cell in cells
         ))
     before = {path.name: path.read_bytes() for path in root.glob("*.sqlite3")}
-    monkeypatch.setattr(price_repair_audit, "BaoStockHistorySupplier", lambda *args, **kwargs: pytest.fail("network"))
+    monkeypatch.setattr("trader.bootstrap.OpenExternalHttp", lambda *args, **kwargs: pytest.fail("network"))
     work = tmp_path / "profile"
     result = price_repair_audit._profile_repair_year(root, work, 2026, "600001", sqlite_policy=policy)
     assert result["status"] == ("passed" if changed else "empty")

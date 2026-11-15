@@ -54,13 +54,11 @@ def RunHistoryFixture(configuration, supplier, **options):
         writer_pool=options.pop("writer_pool", None),
         write_tuning=options.pop("write_tuning", None),
         disk_kind=options.pop("disk_kind", "unknown"),
-        repair_only=options.pop("repair_only", False),
         price_review_budget=options.pop("price_review_budget", None),
         batched_price_reads=options.pop("batched_price_reads", False),
         exact_month_ranges=options.pop("exact_month_ranges", False),
         fingerprint_before_statistics=options.pop("fingerprint_before_statistics", False),
         reuse_catalog_fingerprint=options.pop("reuse_catalog_fingerprint", False),
-        repair_codes=options.pop("repair_codes", None),
     )
     return ExecuteHistorySync(
         configuration,

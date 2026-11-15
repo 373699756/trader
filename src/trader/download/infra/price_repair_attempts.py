@@ -79,10 +79,8 @@ class PriceRepairAttempts:
         code: str,
         dates: tuple[date, ...],
         batch_id: str,
-        *,
-        explicit: bool = False,
     ) -> tuple[date, ...]:
-        """Consume automatic eligibility once; explicit retries remain batch-idempotent."""
+        """Consume automatic repair eligibility once without reopening old attempts."""
         self._require_transaction()
         _require_code(code)
         _require_dates(dates)
@@ -92,10 +90,8 @@ class PriceRepairAttempts:
         for day in dates:
             cursor = self._connection.run(
                 "INSERT INTO price_repair_attempt VALUES(?,?,?,'requested','supplier_result_unknown',NULL) "
-                "ON CONFLICT(code,trade_date) DO UPDATE SET batch_id=excluded.batch_id,state='requested',"
-                "reason='supplier_result_unknown',resolved_source=NULL "
-                "WHERE ? AND price_repair_attempt.state<>'resolved' AND price_repair_attempt.batch_id<>excluded.batch_id",
-                (code, EncodeDate(day), batch_id, int(explicit)),
+                "ON CONFLICT(code,trade_date) DO NOTHING",
+                (code, EncodeDate(day), batch_id),
             )
             if cursor.rowcount:
                 reserved.append(day)

@@ -1,4 +1,4 @@
-"""Explicit repair selection crosses CLI and launcher boundaries without narrowing publication."""
+"""Retired manual price repair commands fail before composition or environment setup."""
 
 from __future__ import annotations
 
@@ -8,34 +8,19 @@ from pathlib import Path
 
 import pytest
 
-from trader.download.domain.price_repair import ValidateRepairSelection
 from trader.entrypoints import cli
 
 ROOT = Path(__file__).resolve().parents[4]
 
 
-@pytest.mark.parametrize("target", ("history", "market"))
-def test_cli_accepts_explicit_repair_selection_without_running_suppliers(monkeypatch, target):
-    received = []
-    monkeypatch.setattr(cli, "_run_sync", lambda args, progress: received.append(args) or 0)
-
-    assert cli.Main(["sync", target, "fill", "--repair-codes", "300118", "002129"]) == 0
-    assert received[0].target == target
-    assert received[0].operation == "fill"
-    assert received[0].repair_codes == ["300118", "002129"]
-
-
 @pytest.mark.parametrize("arguments", (
+    ("history", "fill"), ("market", "fill"),
     ("history", "--repair-codes", "300118"),
     ("company", "fill", "--repair-codes", "300118"),
-    ("history", "fill", "--repair-codes", "300118", "300118"),
-    ("history", "fill", "--repair-codes", "３００１１８"),
-    ("history", "fill", "--repair-codes", "bad"),
-    ("market", "fill", "--repair-codes", "000001", "000002", "000003", "000004", "000005", "000006"),
 ))
-def test_invalid_repair_scope_is_rejected_before_composition(monkeypatch, arguments):
+def test_retired_price_repair_is_rejected_before_composition(monkeypatch, arguments):
     def forbidden(*args, **kwargs):
-        pytest.fail("invalid scope must not reach configuration or suppliers")
+        pytest.fail("retired commands must not reach configuration or suppliers")
 
     monkeypatch.setattr(cli, "_run_sync", forbidden)
     with pytest.raises(SystemExit) as caught:
@@ -43,24 +28,24 @@ def test_invalid_repair_scope_is_rejected_before_composition(monkeypatch, argume
     assert caught.value.code == 2
 
 
-def test_domain_repair_selection_keeps_unscoped_sync_and_rejects_mutable_scope():
-    ValidateRepairSelection(None, fill=False, target="all")
-    ValidateRepairSelection(frozenset({"300118"}), fill=True, target="history")
-    with pytest.raises(ValueError, match="fill_requires_explicit_target"):
-        ValidateRepairSelection(None, fill=True, target="all")
-    with pytest.raises(ValueError, match="repair_codes_require"):
-        ValidateRepairSelection(set(), fill=True, target="history")
+@pytest.mark.parametrize("target", ("all", "history", "market"))
+def test_composition_rejects_retired_fill_before_loading_configuration(monkeypatch, target):
+    from trader.bootstrap import ExecuteSync
+
+    monkeypatch.setattr("trader.bootstrap.LoadRuntimeSettings", lambda *_: pytest.fail("configuration was touched"))
+    with pytest.raises(ValueError, match="fill_requires_company_target"):
+        ExecuteSync(Path("unused"), target, fill_missing=True)
 
 
 @pytest.mark.parametrize("target", ("history", "market"))
-def test_shell_launcher_rejects_removed_repair_scope_before_environment_setup(tmp_path, target):
+def test_shell_launcher_rejects_retired_fill_before_environment_setup(tmp_path, target):
     missing_venv = tmp_path / "missing-venv"
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "sync", target, "fill", "--repair-codes", "300118"),
+        ("bash", str(ROOT / "run.sh"), "sync", target, "fill"),
         env={**os.environ, "VENV_DIR": str(missing_venv)},
         capture_output=True, text=True, timeout=10, check=False,
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "用法：./run.sh sync [history|market|company [fill]]\n"
+    assert completed.stderr == "用法：./run.sh sync [history|market|company]；仅 company 可加 fill。\n"
     assert not missing_venv.exists()

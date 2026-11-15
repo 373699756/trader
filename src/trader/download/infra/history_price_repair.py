@@ -37,10 +37,6 @@ class HistoryPriceRepair:
             ).fetchone()
         return cast(RepairSource, row[0]) if row else "tencent"
 
-    def pending_codes(self) -> frozenset[str]:
-        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-            return frozenset(row[0] for row in connection.run("SELECT DISTINCT code FROM price_replacement"))
-
     def baostock_codes(self) -> frozenset[str]:
         with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             return frozenset(row[0] for row in connection.run("SELECT p.code FROM price_source p WHERE p.source='baostock' AND p.sync_sequence=(SELECT MAX(s.sync_sequence) FROM price_source s WHERE s.code=p.code)"))
@@ -53,9 +49,9 @@ class HistoryPriceRepair:
         with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
             RecordTencentCheck(connection, code, day)
 
-    def reserve(self, code: str, dates: tuple[date, ...], batch: str, *, explicit: bool) -> tuple[date, ...]:
+    def reserve(self, code: str, dates: tuple[date, ...], batch: str) -> tuple[date, ...]:
         with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
-            return PriceRepairAttempts(connection).reserve(code, dates, batch, explicit=explicit)
+            return PriceRepairAttempts(connection).reserve(code, dates, batch)
 
     def fail(self, code: str, batch: str, reason: str) -> None:
         with SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):

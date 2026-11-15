@@ -187,7 +187,6 @@ def ProjectDownloadProgress(event: DownloadProgressEvent) -> ProgressMessage:
             f"无真实日线 {ProgressNumber(event.no_trade_data)}", f"最近日停牌 {ProgressNumber(event.latest_suspended)}",
             f"最近日推定停牌 {ProgressNumber(event.latest_inferred_suspended)}",
             f"最近日未解释缺价 {ProgressNumber(event.latest_missing)}",
-            f"补采待核 {ProgressNumber(event.unresolved_supplement_codes)}",
             f"未处理 {ProgressNumber(event.total - event.processed)}",
             f"变更文件 {ProgressNumber(event.changed_files)}", f"变更行 {ProgressNumber(event.rows)}",
             f"落库耗时 {ProgressDuration(event.write_seconds)}",

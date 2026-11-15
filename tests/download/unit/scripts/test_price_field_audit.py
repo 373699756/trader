@@ -650,23 +650,12 @@ def test_public_audit_rejects_new_output_in_external_sources_before_execution(tm
     assert not output.exists()
 
 
-def test_repair_codes_require_external_work_root_and_wire_explicit_codes(tmp_path):
-    selection = SelectionArguments("price-repair-audit")
-    options = ParseBusinessOptions(ParseToolArguments([*selection, "--repair-codes", "300118", "600001", "--database-probe-directory", str(tmp_path / "probe")]))
-    command, = BuildToolCommands(options)
-    assert command.argv[command.argv.index("--codes") + 1:command.argv.index("--codes") + 3] == ("300118", "600001")
-    with pytest.raises(ValueError):
-        ParseBusinessOptions(ParseToolArguments([*selection, "--repair-codes", "300118"]))
 
 
-@pytest.mark.parametrize("mode", ("ordinary", "codes", "profile"))
-def test_repair_runtime_configuration_is_forwarded_once_for_every_mode(tmp_path, mode):
+def test_repair_profile_runtime_configuration_is_forwarded_once(tmp_path):
     configuration = tmp_path / "selected-config" / "runtime.json"
     arguments = [*SelectionArguments("price-repair-audit"), "--history-root", str(tmp_path / "history"), "--database-probe-directory", str(tmp_path / "probe"), "--runtime-config", str(configuration)]
-    if mode == "codes":
-        arguments.extend(("--repair-codes", "300118"))
-    elif mode == "profile":
-        arguments.extend(("--repair-profile-year", "2026", "--repair-profile-code", "300118"))
+    arguments.extend(("--repair-profile-year", "2026", "--repair-profile-code", "300118"))
     command, = BuildToolCommands(ParseBusinessOptions(ParseToolArguments(arguments)))
     assert command.argv.count("--runtime-config") == 1
     assert command.argv[command.argv.index("--runtime-config") + 1] == str(configuration)
