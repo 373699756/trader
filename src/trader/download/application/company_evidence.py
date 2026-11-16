@@ -823,8 +823,6 @@ class _AnnouncementRun:
         if CompanyCancelled(self._dependencies):
             self._queue.appendleft(partition)
             return True
-        if str(exc) == "company_evidence_persistence_unavailable":
-            raise exc
         if CompanyFailureCode(exc) in {"cninfo_duplicate_page_links", "cninfo_page_limit"} or (
             CompanyFailureCode(exc) == "cninfo_partition_changed" and partition.start < partition.end
         ):
@@ -837,6 +835,8 @@ class _AnnouncementRun:
         if CompanyCancelled(self._dependencies):
             self._queue.appendleft(partition)
             return True
+        if str(exc) == "company_evidence_persistence_unavailable":
+            raise exc
         failure = CompanyFailureCode(exc)
         fallback = DownloadFailureContext(
             "company_directory", supplier=self._dependencies.disclosures.source, window_start=partition.start,
@@ -972,10 +972,22 @@ def _news(
             continue
         attempted.append(code)
         ReportCompanyProgress(dependencies, "news", state, total - completed, completed=completed)
+        source_error: BaseException | None = None
+
+        def fetch(code: str = code) -> tuple[Disclosure, ...]:
+            nonlocal source_error
+            try:
+                return dependencies.structured.news(code, observed_at=observed_at)
+            except (OSError, RuntimeError, ValueError) as exc:
+                source_error = exc
+                raise
+
         try:
-            rows, fetched = state.operations.call_observed("news", partial(dependencies.structured.news, code, observed_at=observed_at),
+            rows, fetched = state.operations.call_observed("news", fetch,
                                                            code=code, source=dependencies.structured.news_source, object_id=f"news:{code}",
                                                            component="news", endpoint=dependencies.structured.request_endpoint("news"))
+            if CompanyCancelled(dependencies):
+                break
             changed, committed = state.operations.call_observed("collection_commit", partial(index.commit_news, code, rows, observed_at),
                                                                code=code, source=dependencies.structured.news_source, object_id=f"news:{code}",
                                                                component="news", endpoint="sqlite:company_collection")
@@ -987,6 +999,8 @@ def _news(
         except (OSError, RuntimeError, ValueError) as exc:
             if CompanyCancelled(dependencies):
                 break
+            if exc is not source_error:
+                raise
             failure = CompanyFailureCode(exc)
             state.operations.register_failure(exc, partial(index.component_failure, "news", code, failure))
             state.failures += (f"news:{failure}",)
