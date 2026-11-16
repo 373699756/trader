@@ -10,6 +10,9 @@ from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_field_recovery import _facts, _put
 from tests.helpers.download.company_resources import SQLiteCompanyEvidenceReaderFixture
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_annual_field_publication import CanReuseCompanyAnnualFieldResults
+from trader.download.infra.company_field_publication import PrepareCompanyFieldResults
 from trader.download.domain.company_financial_report import CompanyFinancialReportRequest
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from tests.helpers.download.company.company_annual_income import _contract, _PERIOD, _REPORTED
@@ -122,6 +125,38 @@ def test_annual_revenue_has_exact_external_source_proof_or_explicitly_stays_unve
     restarted.prepare_and_publish(contract.codes, fixtures.NOW)
     assert _field(restarted) == field
     with SqliteSession(index.facts_path) as formal:
+        assert ReadCompanyPublicationIdentity(formal) == publication
+
+
+def test_annual_attempt_receipt_cannot_replace_missing_current_valid_receipt(tmp_path):
+    index, contract = _setup(tmp_path, disclosed_at=_ANNUAL_AT)
+    annual = _annual(index)
+    index.prepare_and_publish(contract.codes, fixtures.NOW)
+    facts = _facts(index)
+    fields = tuple(_field(index, field) for field in ("annual_revenue", "revenue_disclosed_at"))
+    assert all(field.state == "verified" for field in fields)
+    with SqliteSession(index.facts_path) as formal:
+        formal.run("DELETE FROM company_input_receipt WHERE source_key=? AND outcome='valid'", (annual.identity,))
+
+    def unexpected_read(_digest):
+        raise AssertionError("missing valid receipt must not authorize a body read")
+
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+        publication = ReadCompanyPublicationIdentity(formal)
+        assert all(CanReuseCompanyAnnualFieldResults(collected, formal, facts, facts.positive_events[0], field)
+                   for field in fields)
+        before = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source_key,extraction_hash"))
+        prepared = PrepareCompanyFieldResults(
+            collected, formal, facts, (), observed_at=fixtures.NOW,
+            extraction_hash=publication.extraction_hash, event_policy=fixtures.CompanyEventPolicy(),
+            read_document=unexpected_read,
+        )
+        after = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source_key,extraction_hash"))
+        actual = tuple(field for field in prepared.results if field.field in {"annual_revenue", "revenue_disclosed_at"})
+        assert len(actual) == 2 and all(field.state == "present_unverified" and not field.evidence for field in actual)
+        assert {field.field: field.value for field in actual} == {field.field: field.value for field in fields}
+        assert not prepared.receipts and before == after
+        assert ReadCompanyFactRows(formal, contract.codes) == (facts,)
         assert ReadCompanyPublicationIdentity(formal) == publication
 
 

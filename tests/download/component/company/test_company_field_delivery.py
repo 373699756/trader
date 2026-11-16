@@ -118,6 +118,41 @@ def test_reduction_fields_publish_with_risk_facts_and_reuse_without_reading_body
     assert reader.read(("600001",)) == before
 
 
+@pytest.mark.parametrize("mismatch", ("missing", "source", "source_key", "code", "record", "body", "extraction", "outcome"))
+def test_cached_verified_fields_require_the_exact_current_valid_receipt(tmp_path, mismatch):
+    index = fixtures._index(tmp_path)
+    document = _put(index)
+    index.publish(document.disclosure.codes, _AT)
+    reader = _reader(index)
+    facts, = reader.read(document.disclosure.codes)
+    before = reader.read_fields(document.disclosure.codes).results
+    assert before and all(item.state == "verified" for item in before)
+    with SqliteSession(index.facts_path) as formal:
+        if mismatch == "missing":
+            formal.run("DELETE FROM company_input_receipt WHERE source_key=? AND outcome='valid'", (document.disclosure.identity,))
+        else:
+            columns = {
+                "source": ("source", "exchange_disclosure"),
+                "source_key": ("source_key", "other-document"),
+                "code": ("code", "600002"),
+                "record": ("record_hash", "different-record"),
+                "body": ("body_hash", b"b" * 32),
+                "extraction": ("extraction_hash", b"e" * 32),
+                "outcome": ("outcome", "field_attempted"),
+            }
+            column, value = columns[mismatch]
+            formal.run(f"UPDATE company_input_receipt SET {column}=? WHERE source_key=? AND outcome='valid'",
+                       (value, document.disclosure.identity))
+    before_prepare = _logical_state(index)
+    prepared = _prepare(index, facts, ())
+    assert tuple((item.event_id, item.field, item.value) for item in prepared.results) == tuple(
+        (item.event_id, item.field, item.value) for item in before
+    )
+    assert all(item.state == "present_unverified" and not item.evidence for item in prepared.results)
+    assert not prepared.receipts
+    assert _logical_state(index) == before_prepare and before_prepare[1] == (facts,)
+
+
 def test_completion_proof_requires_unique_formally_linked_resolved_plan(tmp_path):
     index = fixtures._index(tmp_path)
     _put(index, "本公司控股股东拟减持股份，占公司总股本的比例为2%。本公告为正式预披露信息。" + _DETAIL,

@@ -77,7 +77,9 @@ def PrepareCompanyFieldResults(
                      and IsCompanyAnnualFieldEvidence(event, item.field, proof)) and proof.subject is event.subject_type
                     and (item.field, proof.rule_id) in COMPANY_FIELD_RULES
                     and _current_material(collected, facts, proof.source, proof.source_key, proof.record_hash,
-                                          proof.body_hash, proof.published_at) for proof in existing.evidence)):
+                                          proof.body_hash, proof.published_at)
+                    and _has_valid_receipt(formal, facts.code, proof.source, proof.source_key, proof.record_hash,
+                                           proof.body_hash, extraction_hash) for proof in existing.evidence)):
             results[position] = existing
     inputs: list[CompanyDocument] = []
     receipts: list[CompanyInputReceipt] = []
@@ -121,11 +123,9 @@ def PrepareCompanyFieldResults(
                     or hashlib.sha256(document.text.encode()).digest() != body_hash):
                     continue
             else:
-                if formal.run(
-                    "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
-                    "AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='valid'",
-                    (row["source"], evidence_id, facts.code, row["record_hash"], body_hash, extraction_hash),
-                ).fetchone() is None:
+                if not _has_valid_receipt(
+                    formal, facts.code, row["source"], evidence_id, row["record_hash"], body_hash, extraction_hash,
+                ):
                     continue
                 try:
                     text = read_document(body_hash)
@@ -183,6 +183,22 @@ def PrepareCompanyFieldResults(
 
 def _field_events(facts: CompanyFacts, field: str) -> Sequence[CompanyRiskEvent | CompanyPositiveEvent]:
     return facts.risk_events if field in _RISK_FIELDS else facts.positive_events
+
+
+def _has_valid_receipt(
+    formal: SqliteConnection,
+    code: str,
+    source: str,
+    source_key: str,
+    record_hash: str,
+    body_hash: bytes,
+    extraction_hash: bytes,
+) -> bool:
+    return formal.run(
+        "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
+        "AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='valid'",
+        (source, source_key, code, record_hash, body_hash, extraction_hash),
+    ).fetchone() is not None
 
 
 def _current_material(
