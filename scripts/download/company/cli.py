@@ -44,6 +44,7 @@ def BuildParser(
         company_replay_directory=None,
         company_query_audit=False,
         company_database_audit=False,
+        company_consumer_audit=False,
         company_risk_baseline=None,
         company_pagination_audit=False,
         company_pipeline_audit=False,
@@ -69,6 +70,7 @@ def BuildParser(
         structured_start=None,
         structured_end=None,
         structured_report_date=None,
+        financial_source_records=False,
         annual_income_period=None,
         financial_revision_period=None,
         official_financial_baseline=None,
@@ -88,6 +90,7 @@ def BuildParser(
         modes = parser.add_mutually_exclusive_group()
         modes.add_argument('--company-query-audit', action='store_true', help='read-only bounded CNInfo query coverage audit')
         modes.add_argument('--company-database-audit', action='store_true', help='read-only local company text and retry counts; no network')
+        modes.add_argument('--company-consumer-audit', action='store_true', help='read-only formal facts/fields/publication comparison with the production reader; no collection or recovery planning')
         parser.add_argument('--company-risk-baseline', type=Path, help='bounded prior company risk JSON; requires --company-database-audit and compares business fields and original evidence without writes')
         modes.add_argument('--company-pagination-audit', action='store_true', help='read-only CNInfo page-size comparison')
         modes.add_argument('--company-pipeline-audit', action='store_true', help='isolated same-PDF serial/parallel comparison')
@@ -115,6 +118,7 @@ def BuildParser(
         parser.add_argument('--structured-start', type=date.fromisoformat, help='explicit sample start; financial at most seven days, pledge one known day, unlock within the next 180 days')
         parser.add_argument('--structured-end', type=date.fromisoformat, help='explicit sample end; requires --structured-page')
         parser.add_argument('--structured-report-date', type=date.fromisoformat, help='experimental two-request financial key filter check for 2..8 explicit --codes and one report period; requires --structured-page financial')
+        parser.add_argument('--financial-source-records', action='store_true', help='explicit same-row financial metadata observation; requires --structured-page financial without --codes')
         modes.add_argument('--annual-income-period', type=date.fromisoformat, help='one December 31 period for exactly one A-share code')
         modes.add_argument('--financial-revision-period', type=date.fromisoformat, help='read-only eight-metric UPDATE_DATE filter diagnostic for one A-share code and one quarter-end period; at most three requests')
         modes.add_argument('--official-financial-baseline', type=Path, help='read-only official third-quarter excerpts for at most 50 source-null stocks in an existing company database audit')
@@ -153,6 +157,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_replay_directory=ExternalPath(args.company_replay_directory, "--company-replay-directory"),
         company_query_audit=args.company_query_audit,
         company_database_audit=args.company_database_audit,
+        company_consumer_audit=args.company_consumer_audit,
         company_risk_baseline=args.company_risk_baseline.expanduser().absolute() if args.company_risk_baseline is not None else None,
         company_pagination_audit=args.company_pagination_audit,
         company_pipeline_audit=args.company_pipeline_audit,
@@ -182,6 +187,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         structured_start=args.structured_start,
         structured_end=args.structured_end,
         structured_report_date=args.structured_report_date,
+        financial_source_records=args.financial_source_records,
         annual_income_period=args.annual_income_period,
         financial_revision_period=args.financial_revision_period,
         official_financial_baseline=args.official_financial_baseline.expanduser().resolve() if args.official_financial_baseline is not None else None,
@@ -196,6 +202,8 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         not options.company_database_audit or options.company_replay_directory is not None
     ):
         raise ValueError("--company-risk-baseline requires read-only --company-database-audit without replay output")
+    if options.company_consumer_audit and options.company_replay_directory is not None:
+        raise ValueError("--company-consumer-audit does not accept a replay directory")
     if not math.isfinite(options.source_timeout_seconds) or not 0 < options.source_timeout_seconds <= 30:
         raise ValueError("source timeout must be finite, greater than zero and at most 30 seconds")
     if not math.isfinite(options.market_source_loop_seconds) or not 0 < options.market_source_loop_seconds <= MARKET_SOURCE_LOOP_LIMIT_SECONDS:
@@ -203,14 +211,14 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
     if not math.isfinite(options.market_task_seconds) or not 0 < options.market_task_seconds <= MARKET_TASK_LIMIT_SECONDS:
         raise ValueError("--market-task-seconds must be within 0..600")
     if sum((
-        options.company_query_audit, options.company_database_audit, options.company_pagination_audit,
+        options.company_query_audit, options.company_database_audit, options.company_consumer_audit, options.company_pagination_audit,
         options.company_pipeline_audit, options.company_ocr_audit, options.company_document_audit,
         options.company_directory_audit, options.company_pacing_audit, options.company_io_candidates_audit,
         bool(options.company_material_keys), bool(options.company_field_replay_keys),
     )) > 1:
         raise ValueError("company audit modes are mutually exclusive")
     if options.action_identity == "company-resume" and options.company_replay_directory is None and not (
-        options.company_query_audit or options.company_database_audit or options.company_pagination_audit
+        options.company_query_audit or options.company_database_audit or options.company_consumer_audit or options.company_pagination_audit
         or options.company_document_audit or options.company_material_keys
     ):
         raise ValueError("company-resume requires --company-replay-directory")
@@ -242,6 +250,11 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         raise ValueError("--field-source-schema requires --field-sources-only and --field-source-rows 1")
     if options.field_source_identities and (not options.field_sources_only or options.field_source_rows > 5):
         raise ValueError("--field-source-identities requires --field-sources-only and at most five rows")
+    if options.financial_source_records and (
+        options.action_identity != "research-source-compare" or options.structured_page != "financial"
+        or options.codes or options.structured_report_date is not None
+    ):
+        raise ValueError("--financial-source-records requires --structured-page financial without key filters")
     if options.structured_page is not None:
         structured_query = BuildCompanyStructuredPageQuery(
             options.structured_page, options.structured_start, options.structured_end,

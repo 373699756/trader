@@ -20,6 +20,10 @@ from trader.download.domain.company_evidence import (
     EvidenceMarket,
 )
 from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
+from trader.download.domain.company_source_records import (
+    CompanyFinancialMissingField, CompanyFinancialSourceObservation, CompanyFinancialSourcePage, CompanyFinancialSourceValues,
+    CompanyFinancialSourceRecordHash,
+)
 from trader.download.domain.download_failure import DownloadValidationFailure
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.infra.http_contracts import HttpCancelled, HttpTransport
@@ -27,6 +31,10 @@ from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DATA_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+COMPANY_FINANCIAL_SOURCE_COLUMNS = (
+    "SECUCODE", "SECURITY_CODE", "REPORT_DATE", "REPORT_TYPE", "NOTICE_DATE", "UPDATE_DATE", "CURRENCY",
+    "EPSJB", "BPS", "TOTALOPERATEREVETZ", "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR",
+)
 
 
 class EastmoneyCompanySource:
@@ -59,6 +67,11 @@ class EastmoneyCompanySource:
     def _json(
         self, url: str, params: Mapping[str, str], *, max_response_bytes: int = 16 * 1024 * 1024
     ) -> Mapping[str, object]:
+        return self._json_response(url, params, max_response_bytes=max_response_bytes)[0]
+
+    def _json_response(
+        self, url: str, params: Mapping[str, str], *, max_response_bytes: int,
+    ) -> tuple[Mapping[str, object], bytes]:
         self._check_cancelled()
         response = self._session.get(
             url,
@@ -77,7 +90,7 @@ class EastmoneyCompanySource:
             raise DownloadValidationFailure("company_source_json_invalid", "json", "valid_json", f"line_{exc.lineno}_column_{exc.colno}") from exc
         if not isinstance(payload, Mapping):
             raise DownloadValidationFailure("company_source_schema_invalid", "root", "mapping", type(payload).__name__)
-        return payload
+        return payload, response.content
 
     def _check_cancelled(self) -> None:
         if self._cancel_requested is not None and self._cancel_requested():
@@ -238,6 +251,25 @@ class EastmoneyCompanySource:
             ratios.append(CompanyRatio(code, day, ratio))
         return StructuredCompanyPage(component, page, pages, total, ratios=tuple(ratios))
 
+    def financial_observations(
+        self, query: StructuredCompanyQuery, *, observed_at: datetime,
+    ) -> CompanyFinancialSourcePage:
+        """Explicit metadata observation; the production eleven-column fetch is unchanged."""
+        _validate_financial_source_query(query, observed_at)
+        payload, content = self._json_response(
+            "https://datacenter.eastmoney.com/securities/api/data/get",
+            {
+                "type": "RPT_F10_FINANCE_MAINFINADATA", "sty": ",".join(COMPANY_FINANCIAL_SOURCE_COLUMNS),
+                "quoteColumns": "", "filter": f"(NOTICE_DATE>='{query.start.isoformat()}')(NOTICE_DATE<='{query.end.isoformat()}')",
+                "p": str(query.page), "ps": "500", "sr": "-1,1,-1", "st": "NOTICE_DATE,SECUCODE,REPORT_DATE",
+                "source": "HSF10", "client": "PC",
+            },
+            max_response_bytes=1024 * 1024,
+        )
+        return DecodeCompanyFinancialSourcePage(
+            payload, query, observed_at=observed_at, response_hash=hashlib.sha256(content).hexdigest(),
+        )
+
     def news(self, code: str, *, observed_at: datetime) -> tuple[Disclosure, ...]:
         # Ordinary news is bounded candidate context, not an exhaustive regulatory feed.
         parameter = {
@@ -322,6 +354,71 @@ def DecodeCompanyFinancialPage(
         if not start <= item.published_at.date() <= end:
             raise DownloadValidationFailure("financial_date_filter_ignored", "NOTICE_DATE", f"{start}..{end}", item.published_at.date().isoformat())
     return StructuredCompanyPage("financial", query.page, pages, total, financials=reports, raw_count=len(rows))
+
+
+def DecodeCompanyFinancialSourcePage(
+    payload: Mapping[str, object], query: StructuredCompanyQuery, *, observed_at: datetime, response_hash: str,
+) -> CompanyFinancialSourcePage:
+    """Preserve same-row metadata; neither supplier dates nor hashes prove issuer revisions."""
+    _validate_financial_source_query(query, observed_at)
+    if not isinstance(response_hash, str) or re.fullmatch(r"[0-9a-f]{64}", response_hash) is None:
+        raise ValueError("company_financial_source_response_hash_invalid")
+    page = DecodeCompanyFinancialPage(payload, query, observed_at=observed_at)
+    rows, _, _ = _page_rows(payload, query.page)
+    observations: list[CompanyFinancialSourceObservation] = []
+    reports = iter(page.financials)
+    for row in rows:
+        if any(field not in row for field in COMPANY_FINANCIAL_SOURCE_COLUMNS):
+            raise DownloadValidationFailure("financial_source_fields_missing", "columns", "fifteen_required_columns", "missing")
+        identity, code = row["SECUCODE"], row["SECURITY_CODE"]
+        if (not isinstance(identity, str) or not isinstance(code, str) or not code
+            or identity.count(".") != 1 or identity.split(".")[0] != code or not identity.split(".")[1]):
+            raise DownloadValidationFailure("financial_source_identity_invalid", "SECUCODE", "matching_source_security_identity", "invalid")
+        _day(row["NOTICE_DATE"])
+        notice = _income_time(row["NOTICE_DATE"])
+        if not query.start <= notice.date() <= query.end or notice > observed_at:
+            raise DownloadValidationFailure("financial_date_filter_ignored", "NOTICE_DATE", "requested_window_and_cutoff", "outside")
+        if not _is_a_share(row):
+            continue
+        financial = next(reports)
+        report_type = {3: "一季报", 6: "中报", 9: "三季报", 12: "年报"}.get(financial.report_date.month)
+        if row["REPORT_TYPE"] != report_type or (financial.report_date.month, financial.report_date.day) not in {
+            (3, 31), (6, 30), (9, 30), (12, 31),
+        }:
+            raise DownloadValidationFailure("financial_source_report_identity_invalid", "REPORT_TYPE", "matching_quarter_end", "mismatch")
+        if row["UPDATE_DATE"] is not None:
+            _day(row["UPDATE_DATE"])
+        updated = None if row["UPDATE_DATE"] is None else _income_time(row["UPDATE_DATE"])
+        currency = row["CURRENCY"]
+        if currency != "CNY":
+            raise DownloadValidationFailure("financial_source_currency_unsupported", "CURRENCY", "CNY", "unsupported")
+        try:
+            observation = CompanyFinancialSourceObservation(
+                financial, identity, notice, updated, observed_at, currency,
+                CompanyFinancialSourceRecordHash(financial, identity, notice, updated, currency),
+                tuple(CompanyFinancialMissingField(field) for field, value in CompanyFinancialSourceValues(financial) if value is None),
+            )
+        except ValueError as exc:
+            if str(exc) not in {
+                "company_financial_source_observation_invalid", "company_financial_source_time_invalid",
+                "company_financial_source_hash_mismatch",
+            }:
+                raise
+            raise DownloadValidationFailure(str(exc), "financial_source_row", "valid_source_observation", "invalid") from exc
+        observations.append(observation)
+    try:
+        return CompanyFinancialSourcePage(query.page, page.pages, page.total, len(rows), tuple(observations), response_hash)
+    except ValueError as exc:
+        if str(exc) != "company_financial_source_page_invalid":
+            raise
+        raise DownloadValidationFailure(str(exc), "financial_source_page", "consistent_unique_source_rows", "invalid") from exc
+
+
+def _validate_financial_source_query(query: StructuredCompanyQuery, observed_at: datetime) -> None:
+    if (query.component != "financial" or observed_at.utcoffset() is None or query.page > 256
+        or not observed_at.astimezone(_SHANGHAI).date() - timedelta(days=365)
+        <= query.start <= query.end <= observed_at.astimezone(_SHANGHAI).date()):
+        raise ValueError("company_financial_source_query_invalid")
 
 
 def _page_rows(payload: Mapping[str, object], page: int) -> tuple[tuple[Mapping[str, object], ...], int, int]:
@@ -437,6 +534,8 @@ def _is_a_share(row: Mapping[str, object]) -> bool:
 
 
 __all__ = [
+    "COMPANY_FINANCIAL_SOURCE_COLUMNS",
     "DecodeCompanyFinancialPage",
+    "DecodeCompanyFinancialSourcePage",
     "EastmoneyCompanySource",
 ]

@@ -7,7 +7,10 @@ from scripts.download.company.company_field_audit import AuditCompanyFields
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import time
+import math
+import sqlite3
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -32,6 +35,95 @@ from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOpt
 
 class CompanyConsumerAuditBudgetExceeded(TimeoutError):
     """The production reader observed this diagnostic's deadline cancellation."""
+
+
+def AuditCompanyConsumer(
+    facts_path: Path,
+    *,
+    now: datetime,
+    budget_seconds: float,
+    sqlite_policy: SqliteIoPolicy,
+    event_policy: CompanyEventPolicy,
+) -> dict[str, object]:
+    """Verify only the formal read contract; never plan repairs or inspect collection data."""
+    if (
+        isinstance(budget_seconds, bool) or not math.isfinite(budget_seconds)
+        or not 0 < budget_seconds <= 180 or now.utcoffset() is None
+    ):
+        raise ValueError("company_consumer_audit_budget_or_time_invalid")
+    deadline = time.monotonic() + budget_seconds
+    expired = False
+
+    def cancel() -> bool:
+        nonlocal expired
+        if time.monotonic() >= deadline:
+            expired = True
+        return expired
+
+    def check() -> None:
+        if cancel():
+            raise CompanyConsumerAuditBudgetExceeded("company_consumer_audit_budget_exhausted")
+
+    publication_hash: str | None = None
+    extraction_hash: str | None = None
+    published_at: str | None = None
+    consumer: dict[str, object] = {"checked": False, "http_checked": False}
+    stable = False
+    findings: list[str] = []
+    try:
+        check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            cancel()
+            raise CompanyConsumerAuditBudgetExceeded("company_consumer_audit_budget_exhausted")
+        policy = replace(sqlite_policy, connection_timeout_seconds=min(sqlite_policy.connection_timeout_seconds, remaining))
+        with SqliteSession(
+            facts_path, SqliteConnectionOptions(read_only=True), cancel_requested=cancel, sqlite_policy=policy,
+        ) as formal:
+            version = formal.run("PRAGMA data_version").require_one()[0]
+            with SqliteTransaction(formal):
+                identity = ReadCompanyPublicationIdentity(formal)
+                if identity is None:
+                    findings.append("company_publication_missing")
+                else:
+                    publication_hash = identity.content_hash.hex()
+                    extraction_hash = identity.extraction_hash.hex()
+                    published_at = identity.published_at.isoformat()
+                    codes: list[str] = []
+                    for row in formal.run("SELECT code FROM company_facts ORDER BY code"):
+                        check()
+                        if len(codes) >= 12_000:
+                            raise ValueError("company_consumer_audit_population_exceeded")
+                        codes.append(row[0])
+                    consumer = _consumer_read(formal, facts_path, tuple(codes), event_policy, policy, cancel)
+            stable = version == formal.run("PRAGMA data_version").require_one()[0]
+        check()
+        if not stable:
+            findings.append("company_audit_concurrent_change")
+        if consumer.get("consistent") is not True:
+            findings.append("company_consumer_read_not_verified")
+    except (sqlite3.OperationalError, CompanyConsumerAuditBudgetExceeded) as exc:
+        if not expired or isinstance(exc, sqlite3.OperationalError) and str(exc) != "interrupted":
+            raise
+        findings = ["company_consumer_audit_budget_exhausted"]
+        if consumer.get("failure") is not None:
+            findings.append("company_consumer_read_not_verified")
+        else:
+            consumer = {"checked": False, "http_checked": False}
+        stable = False
+    complete = stable and consumer.get("consistent") is True and not findings
+    return {
+        "schema_version": "company-resume",
+        "status": "passed" if complete else "failed" if expired else "degraded",
+        "summary": {"consumer_audit": {
+            "read_only": True, "scope": "formal_reader_consistency_only", "observed_at": now.isoformat(),
+            "complete": complete, "budget_exhausted": expired, "stable_read": stable,
+            "publication_hash": publication_hash, "extraction_hash": extraction_hash, "published_at": published_at,
+            "consumer_read": consumer, "collection_checked": False, "recovery_planned": False,
+            "field_correctness_verified": False, "full_market_verified": False, "http_checked": False,
+        }},
+        "findings": findings,
+    }
 
 
 def _consumer_read(

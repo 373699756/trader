@@ -16,7 +16,9 @@ from zoneinfo import ZoneInfo
 from trader.download.infra.company_http import CheckCompanyResponse
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from trader.download.domain.company_evidence import EvidenceMarket, StructuredCompanyPage, StructuredCompanyQuery
-from trader.download.infra.company_structured_source import DecodeCompanyFinancialPage, EastmoneyCompanySource
+from trader.download.infra.company_structured_source import (
+    COMPANY_FINANCIAL_SOURCE_COLUMNS, DecodeCompanyFinancialPage, EastmoneyCompanySource,
+)
 from trader.download.domain.company_structured_fields import CompanyStructuredDataset, ResolveCompanyStructuredFields
 from trader.download.infra.company_structured_fields import DecodeCompanyStructuredFields
 from trader.infra.http_contracts import HttpAttempt, HttpTransport
@@ -88,6 +90,7 @@ def AuditCompanyStructuredPage(
     deadline: float,
     financial_codes: tuple[str, ...] = (),
     financial_report_date: date | None = None,
+    financial_source_records: bool = False,
     http_attempts: Sequence[HttpAttempt] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
@@ -96,12 +99,18 @@ def AuditCompanyStructuredPage(
     if query != bounded or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30 or not math.isfinite(deadline):
         raise ValueError("company_structured_page_options_invalid")
     ValidateCompanyStructuredFinancialKeys(query, financial_codes, financial_report_date)
+    if type(financial_source_records) is not bool or financial_source_records and (
+        query.component != "financial" or financial_codes or financial_report_date is not None
+    ):
+        raise ValueError("company_financial_source_records_options_invalid")
     started = monotonic()
     key_probe = bool(financial_codes)
     fields = ("SECUCODE", "REPORT_DATE", "NOTICE_DATE", *(field for _name, field in _FINANCIAL_FIELDS)) if query.component == "financial" else (
         ("SECURITY_CODE", "TRADE_DATE", "PLEDGE_RATIO") if query.component == "pledge"
         else ("SECURITY_CODE", "FREE_DATE", "TOTAL_RATIO")
     )
+    if financial_source_records:
+        fields = COMPANY_FINANCIAL_SOURCE_COLUMNS
     report: dict[str, object] = {
         "probe": "structured_page", "status": "skipped", "source": "eastmoney", "read_only": True,
         "component": query.component, "observed_at": observed_at.isoformat(),
@@ -110,10 +119,11 @@ def AuditCompanyStructuredPage(
         "full_window_coverage_verified": False, "latest_snapshot_verified": False,
         "key_lookup_verified": False, "revision_index_verified": False,
         "key_filter_requested": key_probe, "requested_codes": list(financial_codes),
+        "financial_source_records_requested": financial_source_records,
         "requested_report_date": financial_report_date.isoformat() if financial_report_date is not None else None,
         "fetch_invocations": 0, "request_limit": 2 if key_probe else 1, "page_limit": 2 if key_probe else 1,
         "page_size": len(financial_codes) if key_probe else 500,
-        "max_response_bytes": 1024 * 1024 if key_probe else 16 * 1024 * 1024,
+        "max_response_bytes": 1024 * 1024 if key_probe or financial_source_records else 16 * 1024 * 1024,
         "request_style": _FINANCIAL_KEY_STYLE if key_probe else None,
         "remote_column_projection_requested": not key_probe,
         "requested_fields": [] if key_probe else list(fields), "required_fields": list(fields) if key_probe else [],
@@ -126,7 +136,30 @@ def AuditCompanyStructuredPage(
             cancel_requested=lambda: monotonic() >= deadline,
         )
         try:
-            if key_probe and financial_report_date is not None:
+            if financial_source_records:
+                report["fetch_invocations"] = 1
+                observed = source.financial_observations(query, observed_at=observed_at)
+                page = StructuredCompanyPage(
+                    "financial", observed.page, observed.pages, observed.total,
+                    financials=tuple(item.financial for item in observed.observations), raw_count=observed.raw_count,
+                )
+                report["source_records"] = {
+                    "raw_rows": observed.raw_count, "accepted_rows": len(observed.observations),
+                    "excluded_rows": observed.raw_count - len(observed.observations),
+                    "response_sha256": observed.response_hash,
+                    "source_updated_at_unknown_rows": sum(item.source_updated_at is None for item in observed.observations),
+                    "source_null_fields": sum(len(item.missing_fields) for item in observed.observations),
+                    "currency": "CNY", "issuer_revision_verified": False, "original_disclosure_verified": False,
+                    "business_key": "code_report_date", "hash_basis": "normalized_same_source_row",
+                    "identity_samples": [{
+                        "code": item.financial.code, "report_date": item.financial.report_date.isoformat(),
+                        "source_notice_at": item.source_notice_at.isoformat(),
+                        "source_updated_at": item.source_updated_at.isoformat() if item.source_updated_at is not None else None,
+                        "observed_at": item.observed_at.isoformat(), "record_hash": item.record_hash,
+                        "source_null_fields": [field.field for field in item.missing_fields],
+                    } for item in observed.observations[:5]],
+                }
+            elif key_probe and financial_report_date is not None:
                 page = _financial_key_pages(
                     session, query, financial_codes, financial_report_date, observed_at=observed_at,
                     timeout_seconds=timeout_seconds, deadline=deadline, monotonic=monotonic, report=report,

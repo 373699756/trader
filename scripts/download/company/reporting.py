@@ -18,6 +18,10 @@ _FINANCIAL_PAGE_COLUMNS = (
     "SECUCODE", "REPORT_DATE", "NOTICE_DATE", "EPSJB", "BPS", "TOTALOPERATEREVETZ",
     "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR",
 )
+_FINANCIAL_SOURCE_COLUMNS = (
+    "SECUCODE", "SECURITY_CODE", "REPORT_DATE", "REPORT_TYPE", "NOTICE_DATE", "UPDATE_DATE", "CURRENCY",
+    *_FINANCIAL_PAGE_COLUMNS[3:],
+)
 
 
 def _structured_code(value: object) -> str | None:
@@ -38,6 +42,7 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
         observation = source.get("observation_status", source.get("status"))
         calls, attempts = source.get("fetch_invocations"), source.get("physical_http_attempts")
         key_filter = source.get("key_filter_requested") is True
+        source_records = source.get("financial_source_records_requested", False)
         codes = source.get("requested_codes")
         key_count = len(codes) if isinstance(codes, list) else 0
         request_limit = 2 if key_filter else 1
@@ -50,14 +55,22 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                 "latest_snapshot_verified", "key_lookup_verified", "revision_index_verified",
             ))
             and type(source.get("key_filter_requested")) is bool
+            and type(source_records) is bool
             and type(calls) is int and 0 <= calls <= request_limit
             and (attempts is None or type(attempts) is int and 0 <= attempts <= request_limit)
             and all(type(source.get(name)) is int and source.get(name) == expected for name, expected in (
                 ("page_limit", request_limit), ("request_limit", request_limit),
                 ("page_size", key_count if key_filter else 500),
-                ("max_response_bytes", 1024 * 1024 if key_filter else 16 * 1024 * 1024), ("pages_followed", 0),
+                ("max_response_bytes", 1024 * 1024 if key_filter or source_records else 16 * 1024 * 1024), ("pages_followed", 0),
             ))
         )
+        if source_records:
+            valid = valid and not key_filter and source.get("component") == "financial" and (
+                source.get("requested_fields") == list(_FINANCIAL_SOURCE_COLUMNS)
+                and source.get("remote_column_projection_requested") is True
+            )
+            if observation in ("decoded", "empty"):
+                valid = valid and _valid_financial_source_records(source)
         if key_filter:
             valid = valid and source.get("component") == "financial" and isinstance(codes, list) and (
                 2 <= len(codes) <= 8 and all(isinstance(code, str) and _structured_code(code) is not None for code in codes)
@@ -135,6 +148,32 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
         revision_status = "degraded" if valid and source.get("status") != "failed" else "failed"
         return replace(result, payload=dict(source, status=revision_status))
     schema = source.get("schema_version")
+    summary = source.get("summary")
+    if schema == "company-resume" and isinstance(summary, Mapping) and "consumer_audit" in summary:
+        audit = summary["consumer_audit"]
+        valid = isinstance(audit, Mapping) and (
+            source.get("status") in ("passed", "degraded", "failed")
+            and audit.get("read_only") is True and audit.get("scope") == "formal_reader_consistency_only"
+            and all(audit.get(name) is False for name in (
+                "collection_checked", "recovery_planned", "field_correctness_verified", "full_market_verified", "http_checked",
+            ))
+        )
+        if valid and source.get("status") == "passed" and isinstance(audit, Mapping):
+            read = audit.get("consumer_read")
+            valid = (
+                audit.get("complete") is True and audit.get("stable_read") is True
+                and audit.get("budget_exhausted") is False and source.get("findings") == []
+                and all(isinstance(audit.get(key), str) and re.fullmatch(r"[0-9a-f]{64}", audit[key]) is not None
+                        for key in ("publication_hash", "extraction_hash"))
+                and isinstance(audit.get("published_at"), str)
+                and isinstance(read, Mapping) and read.get("http_checked") is False
+                and all(read.get(name) is True for name in (
+                    "checked", "facts_equal", "fields_equal", "publication_equal", "consistent",
+                ))
+                and type(read.get("stocks")) is int and 0 < read["stocks"] <= 12000
+                and type(read.get("fields")) is int and read["fields"] >= 0
+            )
+        return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
     if schema == "company-field-replay":
         valid = (
             isinstance(source.get("status"), str) and source.get("status") in ("passed", "degraded", "failed")
@@ -467,6 +506,27 @@ def _annual_income_details(source: Mapping[str, object], payload: dict[str, obje
     }
 
 
+def _valid_financial_source_records(source: Mapping[str, object]) -> bool:
+    records = source.get("source_records")
+    if not isinstance(records, Mapping):
+        return False
+    raw, accepted, excluded = (records.get(name) for name in ("raw_rows", "accepted_rows", "excluded_rows"))
+    unknown, nulls = (records.get(name) for name in ("source_updated_at_unknown_rows", "source_null_fields"))
+    digest = records.get("response_sha256")
+    return (
+        type(raw) is int and type(accepted) is int and type(excluded) is int
+        and 0 <= accepted <= raw <= 500 and excluded == raw - accepted
+        and raw == source.get("raw_rows") and accepted == source.get("decoded_rows")
+        and type(unknown) is int and 0 <= unknown <= accepted
+        and type(nulls) is int and 0 <= nulls <= accepted * 8
+        and records.get("currency") == "CNY" and records.get("issuer_revision_verified") is False
+        and records.get("original_disclosure_verified") is False
+        and records.get("business_key") == "code_report_date"
+        and records.get("hash_basis") == "normalized_same_source_row"
+        and isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+    )
+
+
 def _structured_page_details(source: Mapping[str, object], payload: dict[str, object]) -> None:
     component = source.get("component")
     columns = {
@@ -474,6 +534,8 @@ def _structured_page_details(source: Mapping[str, object], payload: dict[str, ob
         "pledge": ("SECURITY_CODE", "TRADE_DATE", "PLEDGE_RATIO"),
         "unlock": ("SECURITY_CODE", "FREE_DATE", "TOTAL_RATIO"),
     }.get(component if isinstance(component, str) else "", ())
+    if source.get("financial_source_records_requested") is True and component == "financial":
+        columns = _FINANCIAL_SOURCE_COLUMNS
     fields = source.get("fields")
     projected = []
     for field in (fields[:8] if isinstance(fields, list) else []):
@@ -508,11 +570,25 @@ def _structured_page_details(source: Mapping[str, object], payload: dict[str, ob
         )},
         "normal_path_discovery": discovery if discovery in ("pledge_day_required", "none_in_current_fetch") else None,
         "more_pages_available": source.get("more_pages_available") if type(source.get("more_pages_available")) is bool else None,
-        "requested_fields": [field for field in SafeStringList(source.get("requested_fields"), limit=11) if field in columns],
+        "requested_fields": [field for field in SafeStringList(source.get("requested_fields"), limit=15) if field in columns],
         "required_fields": [field for field in SafeStringList(source.get("required_fields"), limit=11) if field in columns],
         "fields": projected, "elapsed_seconds": _number(source.get("elapsed_seconds")),
     }
     payload["summary"] = summary
+    summary["financial_source_records_requested"] = source.get("financial_source_records_requested") is True
+    records = source.get("source_records")
+    if source.get("financial_source_records_requested") is True and isinstance(records, Mapping):
+        digest = records.get("response_sha256")
+        summary["source_records"] = {
+            **{name: _st_count(records.get(name), maximum) for name, maximum in (
+                ("raw_rows", 500), ("accepted_rows", 500), ("excluded_rows", 500),
+                ("source_updated_at_unknown_rows", 500), ("source_null_fields", 4000),
+            )},
+            "response_sha256": digest if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) else None,
+            "currency": "CNY" if records.get("currency") == "CNY" else None,
+            "issuer_revision_verified": False, "original_disclosure_verified": False,
+            "business_key": "code_report_date", "hash_basis": "normalized_same_source_row",
+        }
     probe = source.get("key_filter_probe")
     if isinstance(probe, Mapping):
         queries = probe.get("queries")

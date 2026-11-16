@@ -19,6 +19,8 @@ def BuildCommands(
     options: CompanyOptions, *, python_executable: str = sys.executable
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
+    if options.financial_source_records and options.action_identity != "research-source-compare":
+        raise ValueError("--financial-source-records requires the sources action")
     commands: tuple[DiagnosticCommand, ...]
     if options.action_identity == "company-resume" and (
         options.company_evidence_database is None or options.company_collection_database is None
@@ -54,6 +56,7 @@ def BuildCommands(
                 str(options.company_audit_budget_seconds),
                 *(("--audit-only",) if options.company_query_audit else ()),
                 *(("--database-only",) if options.company_database_audit else ()),
+                *(("--consumer-only",) if options.company_consumer_audit else ()),
                 *(("--risk-baseline", str(options.company_risk_baseline)) if options.company_risk_baseline else ()),
                 *(("--pagination-only",) if options.company_pagination_audit else ()),
                 *(("--pipeline-only",) if options.company_pipeline_audit else ()),
@@ -70,6 +73,10 @@ def BuildCommands(
             common_timeout,
         ),)
     elif options.action_identity == "research-source-compare":
+        if options.financial_source_records and (
+            options.structured_page != "financial" or options.codes or options.structured_report_date is not None
+        ):
+            raise ValueError("--financial-source-records requires --structured-page financial without key filters")
         if options.structured_page is not None and (options.structured_start is None or options.structured_end is None):
             raise ValueError("--structured-page requires explicit --structured-start and --structured-end")
         if options.structured_page is not None:
@@ -98,6 +105,7 @@ def BuildCommands(
             + (("--field-sources-only", "--field-source-rows", str(options.field_source_rows)) if options.field_sources_only else ())
             + (("--field-source-schema",) if options.field_source_schema else ())
             + (("--field-source-identities",) if options.field_source_identities else ())
+            + (("--financial-source-records",) if options.financial_source_records else ())
             + (("--structured-page", options.structured_page,
                 "--structured-start", options.structured_start.isoformat(),
                 "--structured-end", options.structured_end.isoformat())

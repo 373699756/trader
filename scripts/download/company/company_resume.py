@@ -28,6 +28,7 @@ from scripts.download.company.company_field_audit import InspectCompanyFieldMate
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from scripts.download.company.company_query_audit import AuditCompanyQueries
 from scripts.download.company.company_query_audit import AuditCompanyDatabase
+from scripts.download.company.company_publication_audit import AuditCompanyConsumer
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_events import CompanyEventPolicy
@@ -283,6 +284,7 @@ def Main() -> int:
     audit = parser.add_mutually_exclusive_group()
     audit.add_argument("--audit-only", action="store_true")
     audit.add_argument("--database-only", action="store_true")
+    audit.add_argument("--consumer-only", action="store_true")
     audit.add_argument("--field-replay-keys", nargs="+")
     parser.add_argument("--recovered-text", type=Path)
     parser.add_argument("--replay-observed-at", type=ParseCompanyReplayObservation)
@@ -301,7 +303,9 @@ def Main() -> int:
         parser.error("--risk-baseline requires read-only --database-only with --facts-database and without --directory")
     if args.budget_seconds is None:
         parser.error("--budget-seconds is required")
-    if args.database is None:
+    if args.consumer_only and (args.facts_database is None or args.directory is not None):
+        parser.error("--consumer-only requires --facts-database and does not accept --directory")
+    if args.database is None and not args.consumer_only:
         parser.error("--database is required")
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
@@ -356,6 +360,16 @@ def Main() -> int:
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
+    if args.consumer_only:
+        report = AuditCompanyConsumer(
+            args.facts_database.resolve(strict=True),
+            now=datetime.now(ZoneInfo("Asia/Shanghai")),
+            budget_seconds=min(180.0, args.budget_seconds),
+            sqlite_policy=sqlite_policy,
+            event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1 if report["status"] == "failed" else 0
     source_path = args.database.resolve(strict=True)
     if args.document_only:
         report = AuditCompanyDocumentDownloads(

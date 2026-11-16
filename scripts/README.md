@@ -22,6 +22,10 @@
 
 同一`--company-database-audit`入口按实际配置的事件规则调用生产`SQLiteCompanyEvidenceReader`，将全部正式股票事实、事件字段结论／证据和发布身份与固定SQL快照逐值比较，输出`publication.consumer_read`；未读完、规则不匹配或预算到期不能计为一致。`http_checked=false`明确表示未验HTTP接口；并发变更、未完成库存及来源质量继续独立报告。
 
+只核正式库与生产reader一致性时，选择`download/company/coverage --company-consumer-audit`，可用`--company-evidence-database`指定正式库。该模式不打开采集库、不做dbstat或字段恢复规划，不需要回放目录；与其它company审计模式互斥，并拒绝回放目录和旧风险对照参数。输出`consumer_audit.scope=formal_reader_consistency_only`，事实、字段和发布身份逐值一致且读窗未变、预算未耗尽才通过；`collection_checked/recovery_planned/field_correctness_verified/full_market_verified/http_checked`均为false。通过只表示这个只读合同，不证明来源正确、覆盖齐全、同步终态或HTTP采用；预算、字段恢复和源质量欠项保留各自验收范围。
+
+财务单页可显式加`--financial-source-records`观察同一供应商行的八指标、证券／报告期、NOTICE_DATE、UPDATE_DATE及CURRENCY；须配`--structured-page financial`，不能与代码筛选／报告期键试验或修订过滤试验混用。仅该模式请求15个精确列、最多500行／1MiB，复用现八值decoder；缺元数据拒绝，不回退旧11列模式。NOTICE／UPDATE为供应商时点，observed_at为本地观察时点，业务复合键和内容摘要不冒充供应商记录号／真实更正身份；source_null不签未披露。原始行数与A股观察行数分列，公开最多5条安全身份／缺项摘要，不输出原行；默认生产fetch、正式库和来源准入均不变。
+
 `download/company/sources --official-financial-baseline <已有公司全库审计JSON> --official-financial-directory <仓库外原件目录>`只读查询该报告中最多50股的三季报来源空项，每股目录最多3页、每页30条，复用正式目录、下载、原件校验及解析封装，不写公司数据库。报告保留精确目录／PDF／正常正文摘要、实际提取方式与策略，以及前四页表格版式的独立摘要和有限引文，供逐列标注；不同范围的文本摘要分列，不混作正式字段证据。季度正常文本现沿版式提取，旧报告中的原生文本摘要仍保留原含义。缺页、失败、歧义或未完成标注保持待核，不将0、破折号及未披露混算，也不以此诊断自动替换财务值。
 
 `company_financial_replay.AuditCompanyFinancialReplay`接收该来源报告、独立复核的逐值标注、已归档原件及全新仓库外目录，经正常季度版式解析／提交／发布链验证最多50股400项；显式注入实际配置、SQLite策略及下载器构造器。原始财务库只读，隔离副本中的供应商NULL输入再次刷新后，逐值核正式数值／非数值状态、原valid、发布身份、新增尝试和发布正文读取；不签生产采用、历史版本可得性或完整风险保全。普通全库审计的`official_fields`、`official_evidence`区分已采纳的官方季度证明与仍为NULL的结构化来源，非数值原因单列，不把官方可用零值再报为缺项。

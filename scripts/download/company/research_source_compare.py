@@ -230,6 +230,7 @@ def Main() -> int:
     parser.add_argument("--structured-start", type=date.fromisoformat)
     parser.add_argument("--structured-end", type=date.fromisoformat)
     parser.add_argument("--structured-report-date", type=date.fromisoformat)
+    parser.add_argument("--financial-source-records", action="store_true", help="Explicit financial metadata observation; no issuer revision claim or production adoption.")
     parser.add_argument("--field-source-rows", type=int, default=5, help="Rows per structured field sample (1..500); requires --field-sources-only.")
     parser.add_argument("--field-source-schema", action="store_true", help="Discover column names from exactly one row per source; requires --field-sources-only and --field-source-rows 1. Values remain projected.")
     parser.add_argument("--field-source-identities", action="store_true", help="Project at most five bounded source identities and measurements; requires --field-sources-only.")
@@ -250,6 +251,10 @@ def Main() -> int:
     if args.field_source_identities and (not args.field_sources_only or args.field_source_rows > 5):
         parser.error("--field-source-identities requires --field-sources-only and at most five rows")
     structured_query = None
+    if args.financial_source_records and (
+        args.structured_page != "financial" or args.codes or args.structured_report_date is not None
+    ):
+        parser.error("--financial-source-records requires --structured-page financial without key filters")
     if args.structured_page is not None:
         try:
             structured_query = BuildCompanyStructuredPageQuery(
@@ -295,6 +300,7 @@ def Main() -> int:
                 session, structured_query, observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
                 deadline=time.monotonic() + args.task_seconds, http_attempts=attempts,
                 financial_codes=tuple(args.codes), financial_report_date=args.structured_report_date,
+                financial_source_records=args.financial_source_records,
             )
     elif args.official_financial_baseline is not None:
         configuration = LoadCompanySyncConfiguration(runtime.project_root)

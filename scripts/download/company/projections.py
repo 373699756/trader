@@ -5,6 +5,11 @@ from collections.abc import Mapping
 from scripts.core.contracts import DiagnosticResult
 from scripts.core.projection_values import ProjectMapping
 
+_CONSUMER_READ_FIELDS = (
+    "checked", "http_checked", "stocks", "fields", "facts_equal", "fields_equal",
+    "publication_equal", "consistent", "failure",
+)
+
 def ProjectCompanyRiskComparisonDetails(value: object) -> dict[str, object]:
     comparison = ProjectMapping(value)
     projected = {key: comparison.get(key) for key in (
@@ -43,6 +48,17 @@ def ProjectCompanyResume(
             "directory_only",
         )
     }
+    consumer_audit = ProjectMapping(summary.get("consumer_audit"))
+    if consumer_audit:
+        read = ProjectMapping(consumer_audit.get("consumer_read"))
+        selected["consumer_audit"] = {
+            **{key: consumer_audit.get(key) for key in (
+                "read_only", "scope", "observed_at", "complete", "budget_exhausted", "stable_read",
+                "publication_hash", "extraction_hash", "published_at", "collection_checked", "recovery_planned",
+                "field_correctness_verified", "full_market_verified", "http_checked",
+            )},
+            "consumer_read": {key: read.get(key) for key in _CONSUMER_READ_FIELDS},
+        }
     runs = summary.get("runs")
     document_download = ProjectMapping(summary.get("document_download_audit"))
     if document_download:
@@ -224,8 +240,7 @@ def ProjectCompanyResume(
                           "unlock_incomplete_stocks", "pending_document_references")),
             ("ongoing_risks", ("events", "stocks", "older_than_year", "missing_evidence_events")),
             ("receipts", ("checked", "awaiting_publication_documents", "released_without_receipts")),
-            ("consumer_read", ("checked", "http_checked", "stocks", "fields", "facts_equal", "fields_equal",
-                               "publication_equal", "consistent", "failure")),
+            ("consumer_read", _CONSUMER_READ_FIELDS),
         ):
             fields = ProjectMapping(publication.get(name))
             projected_publication[name] = {key: fields.get(key) for key in keys}
