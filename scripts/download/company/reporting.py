@@ -122,6 +122,7 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
             and revision.get("read_only") is True
             and all(revision.get(name) is False for name in (
                 "production_adopted", "field_correctness_verified", "full_window_coverage_verified", "sort_verified",
+                "issuer_revision_verified", "original_disclosure_verified",
             ))
             and type(count) is int and 0 <= count <= 3
             and isinstance(queries, list) and len(queries) == count
@@ -902,6 +903,7 @@ def _research_source_compare_details(
             )},
             "read_only": True, "production_adopted": False, "field_correctness_verified": False,
             "full_window_coverage_verified": False, "sort_verified": False,
+            "issuer_revision_verified": False, "original_disclosure_verified": False,
             "update_filter_verified": revision.get("update_filter_verified") is True,
             "support_status": revision.get("support_status") if revision.get("support_status") in (
                 "sample_verified", "unverified", "not_verified",

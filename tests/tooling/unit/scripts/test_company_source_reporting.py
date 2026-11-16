@@ -408,6 +408,7 @@ def _revision_probe():
         "source": "eastmoney", "report": "RPT_F10_FINANCE_MAINFINADATA", "code": "600001",
         "report_date": "2026-06-30", "read_only": True, "production_adopted": False,
         "field_correctness_verified": False, "full_window_coverage_verified": False, "sort_verified": False,
+        "issuer_revision_verified": False, "original_disclosure_verified": False,
         "support_status": "sample_verified", "update_filter_verified": True,
         "request_count": 3, "request_limit": 3, "max_response_bytes": 1024 * 1024,
         "queries": [
@@ -426,11 +427,14 @@ def test_revision_sample_filter_success_is_at_most_degraded_even_if_input_claims
     report = BuildReport("research-source-compare", (normalized,))
     assert report["status"] == "degraded"
     assert report["checks"][0]["financial_revision_probe"]["update_filter_verified"]
+    assert not report["checks"][0]["financial_revision_probe"]["issuer_revision_verified"]
+    assert not report["checks"][0]["financial_revision_probe"]["original_disclosure_verified"]
 
 
 @pytest.mark.parametrize("change", (
     {"read_only": False}, {"production_adopted": True}, {"field_correctness_verified": True},
     {"full_window_coverage_verified": True}, {"sort_verified": True},
+    {"issuer_revision_verified": True}, {"original_disclosure_verified": True},
     {"request_count": 4}, {"queries": _revision_probe()["queries"] * 2},
     {"request_count": True}, {"request_limit": 4}, {"max_response_bytes": 2 * 1024 * 1024},
     {"queries": [{"query": "baseline", "status": "decoded", "row_count": 1}] * 3},
@@ -441,7 +445,10 @@ def test_revision_invalid_claims_or_unbounded_attempts_fail_closed(change) -> No
     report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 1.0, source, None),))
     assert report["status"] == "failed"
     projected = report["checks"][0]["financial_revision_probe"]
-    assert not any(projected[name] for name in ("production_adopted", "field_correctness_verified", "full_window_coverage_verified", "sort_verified"))
+    assert not any(projected[name] for name in (
+        "production_adopted", "field_correctness_verified", "full_window_coverage_verified", "sort_verified",
+        "issuer_revision_verified", "original_disclosure_verified",
+    ))
 
 
 def test_revision_failed_status_is_preserved_even_with_valid_sample_evidence() -> None:

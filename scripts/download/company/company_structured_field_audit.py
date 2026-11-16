@@ -360,13 +360,14 @@ def AuditCompanyFinancialRevision(
     started = monotonic()
     identity = request.code + "." + {"sse": "SH", "szse": "SZ", "bse": "BJ"}[EvidenceMarket(request.code)]
     columns = ("SECUCODE", "REPORT_DATE", "NOTICE_DATE", "UPDATE_DATE", *(field for _name, field in _FINANCIAL_FIELDS))
-    base_filter = f"(SECUCODE='{identity}')(REPORT_DATE='{request.report_date.isoformat()}')"
+    base_filter = f'(SECUCODE="{identity}")(REPORT_DATE=\'{request.report_date.isoformat()}\')'
     queries: list[dict[str, object]] = []
     projection: dict[str, object] = {
         "source": "eastmoney", "report": _FINANCIAL_REPORT, "code": request.code,
         "report_date": request.report_date.isoformat(), "observed_at": observed_at.isoformat(),
         "read_only": True, "production_adopted": False, "field_correctness_verified": False,
         "full_window_coverage_verified": False, "update_filter_verified": False, "sort_verified": False,
+        "issuer_revision_verified": False, "original_disclosure_verified": False,
         "support_status": "unverified", "request_limit": 3, "max_response_bytes": 1024 * 1024,
         "request_count": 0, "queries": queries,
     }

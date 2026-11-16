@@ -124,13 +124,16 @@ def _revision_run(session, **kwargs):
     )
 
 
-def test_revision_probe_verifies_an_excluding_boundary_and_retains_original_notice_and_eight_metrics():
+def test_revision_probe_verifies_an_excluding_boundary_and_retains_source_notice_and_eight_metrics():
     session = _RevisionSession()
     report = _revision_run(session)
     probe = report["financial_revision_probe"]
     assert report["status"] == "degraded" and probe["support_status"] == "sample_verified"
     assert probe["update_filter_verified"] and probe["read_only"]
-    assert not any(probe[name] for name in ("production_adopted", "field_correctness_verified", "full_window_coverage_verified", "sort_verified"))
+    assert not any(probe[name] for name in (
+        "production_adopted", "field_correctness_verified", "full_window_coverage_verified", "sort_verified",
+        "issuer_revision_verified", "original_disclosure_verified",
+    ))
     assert "schema_version" not in report
     assert probe["record"] == {
         "identity": "600001.SH", "report_date": "2026-06-30",
@@ -149,7 +152,7 @@ def test_revision_probe_verifies_an_excluding_boundary_and_retains_original_noti
             "SECUCODE", "REPORT_DATE", "NOTICE_DATE", "UPDATE_DATE", "EPSJB", "BPS", "TOTALOPERATEREVETZ",
             "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR",
         }
-        assert "(SECUCODE='600001.SH')(REPORT_DATE='2026-06-30')" in parameters["filter"]
+        assert parameters["filter"].startswith('(SECUCODE="600001.SH")(REPORT_DATE=\'2026-06-30\')')
         assert request["deadline"] == 60 and request["timeout"] == 8 and request["max_response_bytes"] == 1024 * 1024
         assert not request["cancel_requested"]()
         assert probe["queries"][index]["response_sha256"] == hashlib.sha256(session.responses[index].content).hexdigest()

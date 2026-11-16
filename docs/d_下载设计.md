@@ -656,6 +656,8 @@ Tushare作为补充候选：[利润表](https://tushare.pro/document/2?doc_id=33
 
 财务单页显式`--financial-source-records`选择同源15列观察：八指标沿唯一decoder解析，额外保留证券／报告身份、供应商NOTICE_DATE／UPDATE_DATE、本地observed_at、CNY、单位、具名source_null、内容及响应摘要；上限500行／1MiB，缺元数据拒绝，不静默退回普通11列。观察保留原始／A股接纳行数，禁止将合法非A行排除数冒作缺页，证券身份畸形则拒绝该页。业务键不是供应商记录号，NOTICE不自动签首次披露、UPDATE不自动签发行人修订，离线观察不签HTTP接收时刻。该模式不与代码／报告期键筛选或修订试验组合，不写正式事实、不切生产默认；实际batch／覆盖／版本证据仍由g分别记录。
 
+既有`--financial-revision-period`只核一个业务键及供应商UPDATE_DATE过滤边界，最多三次物理请求／每次1MiB；`update_filter_verified`的样本结论不等于发行人更正身份。原生及公开报告均明确`issuer_revision_verified=false`、`original_disclosure_verified=false`，来源更新、首次披露和正式更正分别取证，仍不签生产采用或全市场最新。
+
 财务模式可显式增加`--structured-report-date YYYY-MM-DD --codes <2至8个不同A股代码>`，核对一个季末报告期的批量键筛选。披露窗仍受上述7日及一年上限约束；最多请求完整键集合、排除末键的子集各一次，均只取第1页，每次行数上限为所选键数、响应上限1MiB，不跟随分页或失败后扩大范围。正常财务fetch与此核验共用纯函数`DecodeCompanyFinancialPage`；试验筛选参数只在诊断中构造，不进入生产fetch或公共查询对象。仅当来源状态有效、返回集合精确、证券／报告期／披露窗／字段列齐全、无重复或额外行，且子集值与首次响应一致时，局部`key_filter_probe`可记`sample_verified`。该结论只约束本次样本，日期过滤仍未独立验证，公共整体保持降级，最新发现、通用按键能力、修订、字段正确性、完整覆盖及生产采用标记仍为false。报告仅保留安全的来源code／success标量和固定失败分类，不输出原载荷；HTTP 200本身不表示来源接受请求。
 
 实验键路径使用`sty=APP_F10_MAINFINADATA`模板，报告显式保留`request_style`，并以`remote_column_projection_requested=false`、空`requested_fields`和本地11列`required_fields`区分远端请求与本地必需字段，不宣称供应商已按列投影。普通生产fetch及普通单页仍沿原参数；两种sty的对照失败仅是固定候选请求未获接纳，既不归因某一参数，也不证明整个来源不支持，不自动切换模板或其它接口。
