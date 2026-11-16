@@ -15,6 +15,7 @@ from tests.helpers.download.company_resources import CompanyDocumentFilesFixture
 from tests.helpers.download.configuration import CompanyEventPolicyFixture, CompanySyncConfigurationFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.company_evidence import CompanyDocumentExtraction, Disclosure, DisclosurePage, DisclosurePartition
+from trader.download.application.company_publication import PublishCompanyEvidence
 from trader.download.infra import company_document_recovery
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_raw_files import CompanyRawFiles
@@ -249,7 +250,8 @@ def test_candidate_recovery_preserves_existing_formal_receipts(tmp_path):
     text = "本公司收到立案告知书，事项仍在调查中。" * 5
     extraction = CompanyDocumentExtraction(text, "text", hashlib.sha256(text.encode()).digest(), "test-text")
     assert index.commit_document(items[0], extraction, _NOW)
-    index.publish(items[0].codes, _NOW)
+    outcome = PublishCompanyEvidence(index, items[0].codes, _NOW)
+    assert not outcome.pending_codes
     receipts = _receipts(index)
     assert receipts
     index.prepare_publication(items[0].codes, _NOW)

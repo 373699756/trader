@@ -253,7 +253,7 @@ def test_failure_workload_persists_after_restart_and_clears_after_success(tmp_pa
     index.commit_page(partition, DisclosurePage((item,), 1, False), now)
     index.document_failure(item, fixtures._TEST_DOCUMENT_POLICIES.ocr, "disclosure_document_ocr_low_quality", now, now + timedelta(days=1))
     assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).unresolved_failures == 1
-    index.prepare_publication(item.codes, now)
+    index.prepare_and_publish(item.codes, now)
     assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).unresolved_failures == 1
     index.commit_document(item, fixtures._extraction("本公司收到中国证监会立案告知书。"), now)
     assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).unresolved_failures == 0
@@ -289,7 +289,7 @@ def test_discovery_frontier_keeps_gap_and_terminal_unknown_closes_processing_onl
     partition = next(p for p in index.partitions(("sse",), now) if p.start == now.date())
     item = _item()
     index.commit_page(partition, DisclosurePage((item,), 1, False), now)
-    index.prepare_publication(item.codes, now)
+    index.prepare_and_publish(item.codes, now)
     assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).watermarks[0].discovered_day is None
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         connection.run("INSERT INTO coverage VALUES('sse',?,?,?)", (str(start), str(now.date() - timedelta(days=1)), now.isoformat()))
@@ -313,7 +313,7 @@ def test_dispatch_uses_only_reference_eligible_population_without_changing_direc
     shared = replace(_item(), codes=("600001", "600002"))
     excluded = replace(shared, identity="excluded", codes=("600002",), digest="excluded")
     index.commit_page(part, DisclosurePage((shared, excluded), 2, False), now)
-    index.prepare_publication(("600001",), now)
+    index.prepare_and_publish(("600001",), now)
     tasks = index.pending_documents(("600001",), now, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert len(tasks) == 1 and tasks[0].disclosure.codes == ("600001",)
     assert not index.document_required(excluded, now)
@@ -337,7 +337,7 @@ def test_new_verified_replacement_skips_old_task_but_new_independent_event_does_
     independent = replace(old, identity="1000000003", digest="independent")
     new = replace(_item(), identity="1000000004", title="关于收到立案告知书的更正公告", digest="newer")
     index.commit_page(part, DisclosurePage((old, independent, new), 3, False), now)
-    index.prepare_publication(old.codes, now)
+    index.prepare_and_publish(old.codes, now)
     index.commit_document(new, fixtures._extraction("本公司未被立案。本公告完整替代原公告编号1000000002。"), now)
     index.publish(old.codes, now)
     pending = index.pending_documents(old.codes, now, policies=fixtures._TEST_DOCUMENT_POLICIES)
@@ -414,7 +414,7 @@ def test_formal_commit_survives_crash_before_collection_receipt(tmp_path, monkey
     with SqliteSession(index.path) as connection:
         assert connection.run("SELECT count(*) FROM document_publications").require_one()[0] == 0
     monkeypatch.setattr(index._facts, "publish", publish)
-    index.prepare_publication(("600001",), fixtures.NOW)
+    index.prepare_and_publish(("600001",), fixtures.NOW)
     assert index.pending_documents(("600001",), fixtures.NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
 
 

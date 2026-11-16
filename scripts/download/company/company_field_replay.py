@@ -18,6 +18,7 @@ from scripts.download.company.output_paths import RequireIsolatedReplay
 from scripts.download.company.company_risk_comparison import (
     CompareCompanyRisks, ProjectCompanyRiskComparison, WriteCompanyRiskBaseline,
 )
+from trader.download.application.company_publication import PublishCompanyEvidence
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldSnapshot
@@ -370,6 +371,7 @@ def AuditCompanyFieldReplay(
         WriteCompanyRiskBaseline(target_facts, risk_baseline, deadline=deadline, sqlite_policy=sqlite_policy)
         states: list[_ReplayState] = []
         risks_preserved = True
+        publications_complete = True
         for round_number in (1, 2):
             _check_deadline(deadline)
             documents = _CountingDocuments(
@@ -396,7 +398,9 @@ def AuditCompanyFieldReplay(
                     source_keys[0], payload.decode("utf-8").strip(), observed_at,
                 )
             index.prepare_publication(codes, observed_at)
-            index.publish(codes, observed_at)
+            publication = PublishCompanyEvidence(index, codes, observed_at)
+            report[f"round_{round_number}_publication_pending_codes"] = len(publication.pending_codes)
+            publications_complete = publications_complete and not publication.pending_codes
             index.publish_file()
             report[f"round_{round_number}_initialize_text_reads"] = startup_reads
             report[f"round_{round_number}_publication_text_reads"] = documents.read_calls - startup_reads
@@ -454,7 +458,7 @@ def AuditCompanyFieldReplay(
         report["second_zero_publication_text_reads"] = report["round_2_publication_text_reads"] == 0
         report["status"] = "passed" if (
             before == after and stable_backup and report["facts_backup_generation_stable"] is True and missing == 0
-            and report["second_zero_publication_text_reads"] and risks_preserved
+            and report["second_zero_publication_text_reads"] and risks_preserved and publications_complete
         ) else "degraded"
     except (OSError, sqlite3.Error, ValueError, RuntimeError, TimeoutError, InterruptedError, EOFError) as error:
         report["failure_category"] = type(error).__name__

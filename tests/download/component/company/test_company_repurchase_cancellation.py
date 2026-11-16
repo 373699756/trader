@@ -71,7 +71,7 @@ def test_old_verified_ratio_and_self_derived_rewards_are_withdrawn_once(tmp_path
     assert next(field for field in fields if field.field == "actual_pct").state == "verified"
     valid = _valid(index)
 
-    index.prepare_publication(item.codes, fixtures.NOW)
+    index.prepare_and_publish(item.codes, fixtures.NOW)
 
     event, = _facts(index).positive_events
     assert event.event_id == before.event_id and event.evidence_ids == before.evidence_ids
@@ -92,7 +92,7 @@ def test_old_verified_ratio_and_self_derived_rewards_are_withdrawn_once(tmp_path
 
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(item.codes, fixtures.NOW)
+    restarted.prepare_and_publish(item.codes, fixtures.NOW)
     assert _facts(restarted).positive_events == (event,) and _valid(restarted) == valid
     with SqliteSession(index.facts_path) as formal:
         assert ReadCompanyPublicationIdentity(formal) == publication
@@ -123,5 +123,5 @@ def test_missing_material_or_independent_evidence_cannot_be_automatically_rewrit
             formal.run("DELETE FROM company_input_receipt WHERE outcome='valid'")
         index._facts.publish_file()
     before = _facts(index).positive_events
-    index.prepare_publication(item.codes, fixtures.NOW)
+    index.prepare_and_publish(item.codes, fixtures.NOW)
     assert _facts(index).positive_events == before

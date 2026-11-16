@@ -21,7 +21,7 @@ from trader.download.infra.company_field_recovery import (
     CompanyFieldRepairReceipts,
     QueueCompanyShareActionRechecks,
     ReadCompanyFieldRecovery,
-    RegisterCompanyFieldAttempts,
+    PlanCompanyFieldAttempts,
     RestoreCompanyFieldRepairs,
 )
 
@@ -48,7 +48,7 @@ from trader.download.infra.company_publication_reads import ReadCompanyPublicati
 
 def test_legacy_reduction_repairs_only_its_missing_field_and_stays_complete_after_restart(tmp_path):
     index, item = _legacy_reduction(tmp_path)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     pending = index.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert [task.disclosure.identity for task in pending] == [item.identity]
     assert [tuple(row) for row in _state(index)] == [("planned_pct", "pending")]
@@ -75,14 +75,14 @@ def test_legacy_reduction_repairs_only_its_missing_field_and_stays_complete_afte
     for turn in range(1, 4):
         restarted = fixtures._index(tmp_path)
         at = NOW + timedelta(minutes=turn)
-        restarted.prepare_publication(item.codes, at)
+        restarted.prepare_and_publish(item.codes, at)
         assert restarted.pending_documents(item.codes, at, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
         assert [tuple(row) for row in _state(restarted)] == [("planned_pct", "complete")]
 
 
 def test_same_rule_missing_measurement_is_attempted_once_and_retains_local_text(tmp_path):
     index, item = _legacy_reduction(tmp_path, _PLAN_WITHOUT_RATIO)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     assert index.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert index.commit_document(item, fixtures._extraction(_PLAN_WITHOUT_RATIO), NOW)
     index.publish(item.codes, NOW)
@@ -91,7 +91,7 @@ def test_same_rule_missing_measurement_is_attempted_once_and_retains_local_text(
     assert tuple((tmp_path / "text").rglob("*.gz"))
 
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
         plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
@@ -117,7 +117,7 @@ def test_first_missing_measurement_is_checkpointed_and_retained_without_second_d
     for turn in range(1, 4):
         restarted = fixtures._index(tmp_path)
         at = NOW + timedelta(minutes=turn)
-        restarted.prepare_publication(item.codes, at)
+        restarted.prepare_and_publish(item.codes, at)
         assert restarted.pending_documents(item.codes, at, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
         assert [tuple(row) for row in _state(restarted)] == [
             ("end_date", "complete"), ("planned_pct", "attempted"),
@@ -156,7 +156,7 @@ def test_first_contract_with_amount_but_missing_dependencies_retains_evidence_wi
         ).require_one()[0] == len(states)
     assert tuple((tmp_path / "text").rglob("*.gz"))
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
         plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
@@ -206,7 +206,7 @@ def test_first_field_receipt_recovers_task_lost_in_collection_rollback(tmp_path)
     with SqliteSession(index.path) as collected, SqliteTransaction(collected):
         collected.run("DROP TRIGGER fail_first_collection_commit")
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     assert [tuple(row) for row in _state(restarted)] == [
         ("end_date", "complete"), ("planned_pct", "attempted"),
         ("planned_pct", "attempted"), ("start_date", "complete"),
@@ -238,7 +238,8 @@ def test_field_attempt_requires_the_accepted_source_version_and_body_hash(tmp_pa
             changed = replace(receipt, body_hash=bytes(32))
         else:
             changed = replace(receipt, extraction_hash=bytes(32))
-        RegisterCompanyFieldAttempts(collected, (facts,), (changed,), index._facts.extraction_hash)
+        attempts = PlanCompanyFieldAttempts(collected, (facts,), (changed,), index._facts.extraction_hash, NOW)
+        assert attempts == ()
         assert collected.run("SELECT COUNT(*) FROM company_field_repairs").require_one()[0] == 0
 
 
@@ -290,7 +291,7 @@ def test_existing_reduction_date_rules_recover_old_generic_tasks_from_local_text
         valid = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
         plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
     assert all(plan.action == "extract" for plan in plans if plan.gap.field in {"start_date", "end_date"})
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     restored = _facts(index)
     assert len(restored.risk_events) == 1 and restored.risk_events[0].event_id == event.event_id
     assert restored.risk_events[0].reduction_plan.planned_start_date == date(2026, 10, 19)
@@ -319,7 +320,7 @@ def test_repurchase_purpose_rule_preserves_planned_state_and_other_event_require
             "SELECT * FROM company_input_receipt WHERE source_key=? AND outcome='valid'", (item.identity,),
         ))
 
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
 
     facts = _facts(index)
     assert len(facts.positive_events) == 2
@@ -354,7 +355,7 @@ def test_unmatched_repurchase_purpose_is_attempted_once_then_verified_without_re
     with SqliteSession(index.facts_path) as formal:
         valid = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
     before = _facts(index)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     after = _facts(index)
     assert after.risk_events == before.risk_events
     assert after.positive_events[0].measurements == before.positive_events[0].measurements
@@ -373,7 +374,7 @@ def test_unmatched_repurchase_purpose_is_attempted_once_then_verified_without_re
     assert len(tuple(row for row in attempts if row[-1].startswith("field_source_lines:"))) == 1
     for _ in range(2):
         restarted = fixtures._index(tmp_path)
-        restarted.prepare_publication(item.codes, NOW)
+        restarted.prepare_and_publish(item.codes, NOW)
         assert not restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
         with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
             purpose = next(plan for plan in ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
@@ -506,7 +507,7 @@ def test_attempt_on_material_removed_from_code_does_not_suppress_current_same_id
 
 def test_formal_field_receipt_recovers_collection_rollback_without_another_document_request(tmp_path):
     index, item = _legacy_reduction(tmp_path)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     assert index.commit_document(item, fixtures._extraction(_PLAN), NOW)
     with SqliteSession(index.path) as collected, SqliteTransaction(collected):
         collected.run(
@@ -525,7 +526,7 @@ def test_formal_field_receipt_recovers_collection_rollback_without_another_docum
         collected.run("DROP TRIGGER fail_after_formal_commit")
 
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     assert [tuple(row) for row in _state(restarted)] == [
         ("end_date", "complete"), ("planned_pct", "complete"),
         ("planned_pct", "complete"), ("start_date", "complete"),
@@ -575,7 +576,7 @@ def test_existing_subject_exclusions_are_removed_from_legacy_queue_without_fake_
         collected.run("INSERT OR IGNORE INTO company_document_requirements SELECT id FROM disclosures")
         collected.run("UPDATE company_work_policy SET work_policy_id=?", (COMPANY_EXTRACTION_IDENTITY,))
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(items[0].codes, NOW)
+    restarted.prepare_and_publish(items[0].codes, NOW)
     tasks = restarted.pending_documents(items[0].codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert {task.disclosure.identity for task in tasks} == {"holder-director", "issuer-board"}
     assert not restarted.document_required(items[0], NOW)
@@ -592,7 +593,7 @@ def test_existing_subject_exclusions_are_removed_from_legacy_queue_without_fake_
 
 def test_latest_value_retires_older_queued_repair_without_download_or_new_document_receipt(tmp_path):
     index, item = _legacy_reduction(tmp_path)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     assert index.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     with SqliteSession(index.facts_path) as formal:
         original = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt"))
@@ -619,16 +620,16 @@ def test_latest_value_retires_older_queued_repair_without_download_or_new_docume
         ).require_one()[0] == 0
     for turn in range(2, 5):
         restarted = fixtures._index(tmp_path)
-        restarted.prepare_publication(item.codes, NOW + timedelta(minutes=turn))
+        restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=turn))
         assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
 
 
 def test_restart_retires_old_repair_after_latest_formal_commit_before_collection_commit(tmp_path):
     index, item = _legacy_reduction(tmp_path)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     _publish_latest_ratio(index, item)
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=2))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=2))
     assert [tuple(row) for row in _state(restarted)] == [("planned_pct", "complete")]
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
 
@@ -636,7 +637,7 @@ def test_restart_retires_old_repair_after_latest_formal_commit_before_collection
 @pytest.mark.parametrize("guard", ["different_event", "changed_source", "changed_body", "changed_rule", "missing_receipt", "other_field", "other_code"])
 def test_latest_field_does_not_skip_unverified_versions_or_other_requirements(tmp_path, guard):
     index, item = _legacy_reduction(tmp_path)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     _publish_latest_ratio(index, item, different_event=guard == "different_event")
     if guard in {"changed_source", "changed_body", "other_field", "other_code"}:
         with SqliteSession(index.path) as collected, SqliteTransaction(collected):
@@ -674,14 +675,14 @@ def test_latest_field_does_not_skip_unverified_versions_or_other_requirements(tm
         assert collected.run("SELECT body_checked FROM disclosures").require_one()[0] == 0
     restarted = fixtures._index(tmp_path)
     codes = (*item.codes, "600002") if guard == "other_code" else item.codes
-    restarted.prepare_publication(codes, NOW + timedelta(minutes=2))
+    restarted.prepare_and_publish(codes, NOW + timedelta(minutes=2))
     assert restarted.pending_documents(codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
 
 
 @pytest.mark.parametrize("missing_event", (False, True))
 def test_receipt_restore_keeps_missing_event_field_open_when_evidence_changes_and_other_task_is_pending(tmp_path, missing_event):
     index, item = _legacy_reduction(tmp_path, _PLAN_WITHOUT_RATIO)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     assert index.commit_document(item, fixtures._extraction(_PLAN_WITHOUT_RATIO), NOW)
     facts = _facts(index)
     event = facts.risk_events[0]
@@ -718,7 +719,7 @@ def test_same_body_repurchase_replay_corrects_old_nonnull_purpose_and_missing_ac
         before = tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
         identity = ReadCompanyPublicationIdentity(formal).extraction_hash
 
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
 
     event, = _facts(index).positive_events
     assert event.measurements.actual_ratio_pct == 0.062
@@ -733,7 +734,7 @@ def test_same_body_repurchase_replay_corrects_old_nonnull_purpose_and_missing_ac
         ))
         assert [tuple(row) for row in states] == [("actual_pct", "complete"), ("repurchase_purpose", "complete")]
     for _ in range(2):
-        index.prepare_publication(item.codes, NOW)
+        index.prepare_and_publish(item.codes, NOW)
         assert index.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
         assert _facts(index).positive_events == (event,)
 
@@ -751,7 +752,7 @@ def test_holder_table_recheck_retires_only_empty_event_and_review_without_blessi
         identity = ReadCompanyPublicationIdentity(formal).extraction_hash
     for _ in range(2):
         index.initialize()
-        index.prepare_publication(item.codes, NOW)
+        index.prepare_and_publish(item.codes, NOW)
         assert _facts(index).positive_events == ()
         assert not any(review.evidence_id == item.identity for review in _facts(index).review_reasons)
         assert index.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
@@ -777,7 +778,7 @@ def test_repurchase_recheck_does_not_complete_from_old_nonnull_value_before_new_
         ))
         assert [row[0] for row in pending] == ["pending", "pending"]
         assert collected.run("SELECT 1 FROM document_publications WHERE code=?", (item.codes[0],)).fetchone() is None
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     assert _facts(index).positive_events[0].measurements.purpose is RepurchasePurpose.OTHER
 
 
@@ -792,7 +793,7 @@ def test_holder_table_recheck_clears_old_subject_review_without_creating_a_repur
         )),), {item.identity: item.source}, parent, NOW,
     )
     index.initialize()
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     assert _facts(index).positive_events == ()
     assert not any(review.evidence_id == item.identity for review in _facts(index).review_reasons)
     with SqliteSession(index.facts_path) as formal:
@@ -845,7 +846,7 @@ def test_holder_table_recheck_keeps_unproven_or_measured_previous_events(tmp_pat
             (replace(_facts(index), positive_events=(old,)),), {item.identity: item.source, "actual-progress": item.source}, parent, NOW,
         )
     index.initialize()
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     assert len(_facts(index).positive_events) == 1
     assert index.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     if guard == "known_purpose":
@@ -895,7 +896,7 @@ def test_unlinked_repurchase_cache_uses_fixed_measurements_when_plan_arrives(tmp
     with SqliteSession(index.facts_path) as formal:
         receipt = tuple(formal.run("SELECT * FROM company_input_receipt WHERE source_key='progress' AND outcome='valid'"))
 
-    index.prepare_publication(progress.codes, NOW)
+    index.prepare_and_publish(progress.codes, NOW)
     with SqliteSession(index.path) as collected:
         refreshed = DecodeCompanyLink(collected.run(
             "SELECT payload FROM document_link_candidates WHERE source_key='progress'"
@@ -972,7 +973,7 @@ def test_same_body_planned_status_refreshes_formal_applicability_once_without_re
             assert collected.run("SELECT 1 FROM document_publications WHERE code=?", (item.codes[0],)).fetchone() is None
         assert _facts(index).positive_events[0].status is CompanyPositiveStatus.PLANNED
         index = fixtures._index(tmp_path)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
 
     event, = _facts(index).positive_events
     actual, = (value for value in reader.read_fields(item.codes).results if value.field == "actual_pct")
@@ -987,7 +988,7 @@ def test_same_body_planned_status_refreshes_formal_applicability_once_without_re
     assert any(row[-1].endswith(":actual_pct:implemented_total_capital_ratio:3") for row in attempts)
     for minute in (1, 2):
         restarted = fixtures._index(tmp_path)
-        restarted.prepare_publication(item.codes, NOW + timedelta(minutes=minute))
+        restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=minute))
         assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
         with SqliteSession(index.facts_path) as formal:
             assert tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'")) == valid
@@ -1100,7 +1101,7 @@ def test_retained_issuer_plan_recheck_links_progress_without_reissuing_valid_rec
             formal.run("DELETE FROM company_input_receipt WHERE source_key='plan' AND outcome='valid'")
             before = tuple(formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid'"))
 
-    index.prepare_publication(plan.codes, NOW)
+    index.prepare_and_publish(plan.codes, NOW)
 
     if valid_receipt:
         event, = _facts(index).positive_events
@@ -1113,7 +1114,7 @@ def test_retained_issuer_plan_recheck_links_progress_without_reissuing_valid_rec
             raise AssertionError("the newly linked progress must finish its same-body check in the first publication")
         monkeypatch.setattr(index._documents, "read", unexpected_read)
         for _ in range(2):
-            index.prepare_publication(plan.codes, NOW)
+            index.prepare_and_publish(plan.codes, NOW)
             assert index.pending_documents(plan.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     else:
         assert _facts(index).positive_events == ()
@@ -1189,7 +1190,7 @@ def test_corrected_issuer_decision_rechecks_an_old_negative_attempt_without_reis
         with monkeypatch.context() as patch:
             patch.setattr(writer, "publish", interrupted)
             with pytest.raises(RuntimeError, match="fixture_formal_interrupted"):
-                index.prepare_publication(item.codes, NOW)
+                index.prepare_and_publish(item.codes, NOW)
         index = fixtures._index(tmp_path)
         reads = []
         read = index._documents.read
@@ -1199,7 +1200,7 @@ def test_corrected_issuer_decision_rechecks_an_old_negative_attempt_without_reis
             return read(digest, check=check)
 
         monkeypatch.setattr(index._documents, "read", observed)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     if interruption != "none":
         assert bool(reads) is (interruption == "before_commit")
 
@@ -1224,7 +1225,7 @@ def test_corrected_issuer_decision_rechecks_an_old_negative_attempt_without_reis
 
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
     assert _facts(restarted).positive_events == (event,)
     with SqliteSession(index.facts_path) as formal:
         assert ReadCompanyPublicationIdentity(formal) == publication

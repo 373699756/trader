@@ -150,11 +150,19 @@ def test_structured_first_local_recovery_resumes_after_cancellation(tmp_path, ph
     assert "task:cancelled" in first.failures
     assert first.published_codes == int(phase == "local")
     assert analyzed == ([items[0].identity] if phase == "local" else [])
-    assert all(raw.local(item) is not None for item in items if item.identity not in analyzed)
+    assert all(raw.local(item) is not None for item in items)
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT sum(body_checked) FROM disclosures").require_one()[0] == 0
+        assert connection.run("SELECT count(*) FROM document_publications").require_one()[0] == 0
     cancelled, resumed = False, True
     second = SyncCompanyEvidence(dependencies, request)
     assert not second.needs_retry and second.pending_documents == 0
-    assert Counter(analyzed) == Counter(item.identity for item in items)
+    expected = [item.identity for item in items]
+    if phase == "local":
+        expected.append(items[0].identity)
+    assert Counter(analyzed) == Counter(expected)
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT sum(body_checked) FROM disclosures").require_one()[0] == len(items)
     assert SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001",))[0].risk_events
 
 

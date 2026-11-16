@@ -59,7 +59,7 @@ def test_unresolved_review_survives_cleanup_restart_and_later_publication(tmp_pa
         index.path, facts_path=index.facts_path, documents=CompanyDocumentFiles(tmp_path / "text")
     )
     resumed.initialize()
-    resumed.prepare_publication(("600001",), NOW + timedelta(minutes=1))
+    resumed.prepare_and_publish(("600001",), NOW + timedelta(minutes=1))
     assert resumed.pending_documents(("600001",), NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     resumed.publish(("600001",), NOW + timedelta(minutes=1))
     assert tuple(item for item in reader.read(("600001",))[0].review_reasons if item.evidence_id) == before
@@ -68,7 +68,7 @@ def test_unresolved_review_survives_cleanup_restart_and_later_publication(tmp_pa
 
 def test_shared_document_waits_for_every_requested_issuer_before_cleanup(tmp_path):
     index = fixtures._index(tmp_path)
-    index.prepare_publication(("600001", "600002"), NOW)
+    index.prepare_and_publish(("600001", "600002"), NOW)
     item = replace(fixtures._disclosure("shared", "关于收到立案告知书的公告"), codes=("600001", "600002"))
     _put(index, item, _CASE)
     index.publish(("600001",), NOW)
@@ -350,7 +350,7 @@ class _DocumentContext:
 
 def test_text_capacity_failure_drains_other_accepted_results_and_stops_dispatch(tmp_path, monkeypatch):
     index = fixtures._index(tmp_path)
-    index.prepare_publication(("600001",), NOW)
+    index.prepare_and_publish(("600001",), NOW)
     retained = fixtures._extraction(_CASE)
     payload = gzip.compress(retained.text.encode(), compresslevel=1, mtime=0)
     files = CompanyDocumentFiles(tmp_path / "text", max_bytes=len(payload), reserve_bytes=1)
@@ -416,7 +416,7 @@ def test_download_capacity_failure_drains_queued_local_inputs_and_publishes_them
     from trader.download.domain.company_evidence import CompanyDocumentFailure
 
     index = fixtures._index(tmp_path)
-    index.prepare_publication(("600001",), NOW)
+    index.prepare_and_publish(("600001",), NOW)
     items = tuple(
         fixtures._disclosure(str(number), "关于收到立案告知书的公告", when=NOW - timedelta(seconds=number))
         for number in range(4)

@@ -12,7 +12,7 @@
 .venv/bin/python3 scripts/tools.py --business recommendation --module assets --action consistency
 ```
 
-公司资料重下后的旧风险对照沿同一`download/company/coverage`动作，显式组合`--company-database-audit --company-risk-baseline /external/baseline-risks.json`，并用`--company-collection-database`、`--company-evidence-database`选定采集库和正式库。基线只读，上限4MiB、10000条风险及50000条证据；比较原风险业务字段和来源证据集合，忽略自增ID，分别报告精确保留、缺失及变化待审。比较与原数据库审计共用总期限，公开报告只含身份、变更字段名和证据保全状态，不含案件正文或原字段值。缺失不等于解除，快照变化或无正式发布不能签稳定完成；该对照不证明供应商原值、其它附表或全市场资料正确。此参数不能与隔离回放目录组合，也不会启动同步或初始化数据库。
+公司资料重下后的旧风险对照沿同一`download/company/coverage`动作，显式组合`--company-database-audit --company-risk-baseline /external/baseline-risks.json`，并用`--company-collection-database`、`--company-evidence-database`选定采集库和正式库。基线只读，上限4MiB、10000条风险、50000条证据及50000条匹配凭证；保存固定发布的摘要／提取身份／时点、全风险业务字段，以及每个来源依据对应的全部valid输入修订／正文hash／原提交时间／策略。当前结构必须包含publication、risks、evidence及每条依据的receipts，旧基线须重新显式导出，不提供兼容或迁移。比较忽略自增ID，分别报告精确保留、缺失及变化待审；同公告编号但原凭证丢失不能签保全，缺valid或正文hash则保留evidence_identity_confirmed=false。比较与原数据库审计共用总期限，公开报告只含发布身份、变更字段名和证据保全状态，不含凭证明细、案件正文或原字段值。缺失不等于解除，快照变化或无正式发布不能签稳定完成；匹配凭证保留不证明具体事件与修订的语义绑定、供应商原值、其它附表或全市场资料正确。此参数不能与隔离回放目录组合，也不会启动同步或初始化数据库。
 
 公司正文错误复验仍用`download/company/coverage`：`--company-ocr-audit --company-replay-directory /external/new-ocr`覆盖低质量、超时及耗尽，优先复制hash一致的本地失败PDF，缺原件才下载。`--company-document-audit`不加目录仍只做请求对照；显式加`--company-replay-directory /external/new-documents`改为复验容量失败的未核验正文，核对最近50条记录的当前来源版本，至多2篇走正常下载、解析及必要OCR。容量复验须用隔离新目录，报告只含有限身份、字符数及状态，不改活动公司库；超过抽样上限、未提取正文或版本失配不能签完整恢复。两种模式互斥，预算通过`--company-audit-budget-seconds`和更大的`--command-timeout-seconds`显式限制。
 

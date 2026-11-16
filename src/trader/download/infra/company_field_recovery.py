@@ -40,6 +40,7 @@ from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_fact_inputs import DecodeCompanyFinancial, ReadCompanySnapshotRows
 from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
+from trader.download.infra.company_field_attempts import CompanyFieldAttempt
 from trader.download.infra.company_financial_publication import ReadCompanyFinancialMaterials
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_document_files import CompanyDocumentFiles
@@ -523,18 +524,19 @@ def QueueCompanyFieldRepairs(
         collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (item.gap.code,))
 
 
-def RegisterCompanyFieldAttempts(
+def PlanCompanyFieldAttempts(
     connection: SqliteConnection,
     facts: Sequence[CompanyFacts],
     accepted: Sequence[CompanyInputReceipt],
     extraction_hash: bytes,
-) -> None:
+    observed_at: datetime,
+) -> tuple[CompanyFieldAttempt, ...]:
     """Bind first-pass gaps only to newly accepted, matching source and body versions.
 
     An evidence-only rule records an unresolved requirement, not a successful
     extraction or non-disclosure. It never authorizes an automatic retry.
-    The caller keeps these rows in the collection transaction enclosing formal
-    facts and field receipts, so a failed formal commit cannot retain a new task.
+    No collection rows are written during preparation. The exact formal field
+    receipts recover acknowledgement after a formal commit/collection rollback.
     """
     inputs = frozenset(
         (receipt.source, receipt.source_key, receipt.code, receipt.record_hash, receipt.body_hash)
@@ -542,7 +544,8 @@ def RegisterCompanyFieldAttempts(
         if receipt.outcome == "valid" and receipt.body_hash is not None and receipt.extraction_hash == extraction_hash
     )
     if not inputs:
-        return
+        return ()
+    attempts: dict[tuple[int, str, str, str, str, str], CompanyFieldAttempt] = {}
     for fact in facts:
         for gap in _field_gaps(fact, connection):
             for row in connection.run(
@@ -554,10 +557,17 @@ def RegisterCompanyFieldAttempts(
             ).fetchall():
                 if tuple(row[:5]) not in inputs:
                     continue
-                connection.run(
-                    "INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
-                    (row[5], gap.code, row[3], gap.event_id, gap.field, _field_attempt_rule(gap)),
-                )
+                rule = _field_attempt_rule(gap)
+                key = (row[5], gap.code, row[3], gap.event_id, gap.field, rule)
+                if connection.run("SELECT 1 FROM company_field_repairs WHERE disclosure_id=? AND code=? "
+                                  "AND record_hash=? AND event_id=? AND field=? AND rule_id=?", key).fetchone() is not None:
+                    continue
+                policy = _repair_policy(gap.event_id, gap.field, rule)
+                attempts[key] = CompanyFieldAttempt(*key, CompanyInputReceipt(
+                    row[0], row[1], gap.code, row[3], hashlib.sha256(policy.encode()).digest(), row[4],
+                    observed_at, "field_attempted", policy,
+                ))
+    return tuple(attempts.values())
 
 
 def QueueCompanyContractSigningRechecks(
@@ -1458,7 +1468,7 @@ __all__ = [
     "QueueCompanyContractSigningRechecks",
     "QueueCompanyReductionRechecks",
     "PrioritizeCompanyRepurchaseInputs",
-    "RegisterCompanyFieldAttempts",
+    "PlanCompanyFieldAttempts",
     "CompleteCompanyFieldRepairs",
     "CompanyFieldRepairReceipts",
     "PrepareCompanyShareRecheckReceipts",

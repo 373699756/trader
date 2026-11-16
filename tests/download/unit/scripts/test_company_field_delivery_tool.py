@@ -158,6 +158,8 @@ def test_field_replay_projection_bounds_fields_and_keeps_physical_source_change_
     {"second_new_field_attempted": False},
     {"missing_texts": 1},
     {"round_2_publication_text_reads": 2},
+    {"round_1_publication_pending_codes": 1},
+    {"round_2_publication_pending_codes": 1},
     {"original_risks_and_evidence_preserved": False},
     {"unselected_facts_unchanged": False},
     {"round_1_risk_comparison": {"all_old_risks_and_evidence_preserved": False}},
@@ -171,6 +173,7 @@ def test_replay_pass_requires_strict_zero_counts_without_contradictory_evidence(
         "original_valid_receipts_unchanged": True, "second_fields_and_publication_unchanged": True,
         "second_zero_publication_text_reads": True, "facts_backup_generation_stable": True,
         "second_new_field_attempted": 0, "missing_texts": 0, "round_2_publication_text_reads": 0,
+        "round_1_publication_pending_codes": 0, "round_2_publication_pending_codes": 0,
         "original_risks_and_evidence_preserved": True, "unselected_facts_unchanged": True,
         **{f"round_{number}_risk_comparison": {
             "all_old_risks_and_evidence_preserved": True, "missing": [], "changed_requires_review": [],

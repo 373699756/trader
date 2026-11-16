@@ -42,7 +42,7 @@ def _structured(index, report):
 
 def _setup(tmp_path, *, publish=True, report=CURRENT):
     index = fixtures._index(tmp_path)
-    index.prepare_publication((CODE,), NOW)
+    index.prepare_and_publish((CODE,), NOW)
     _structured(index, OLD)
     item = fixtures._disclosure("older-current-financial", "2025年第三季度报告", when=OLD_DISCLOSED)
     request = CompanyFinancialReportRequest(CODE, OLD_PERIOD, OLD_DISCLOSED)

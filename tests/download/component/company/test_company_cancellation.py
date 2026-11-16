@@ -240,7 +240,7 @@ def test_long_query_cancellation_rolls_back_only_uncommitted_changes(tmp_path):
 
 
 def test_cancelled_publication_keeps_previous_projection(tmp_path, monkeypatch):
-    from trader.download.infra import company_evidence_index as publication
+    from trader.download.infra import company_publication_preparation as publication
 
     cancelled = Event()
     index = SQLiteCompanyEvidenceIndex(

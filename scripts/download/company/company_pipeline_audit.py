@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
+from trader.download.application.company_publication import CompanyPublicationSession
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_evidence import (
     BuildCompanyDocumentPolicies,
@@ -48,7 +49,7 @@ from trader.download.infra.company_disclosure_source import CninfoMarketDisclosu
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
 from trader.download.infra.company_document_parser import DetectCompanyText
-from trader.download.infra import company_evidence_index, company_material_cleanup
+from trader.download.infra import company_material_cleanup, company_publication_preparation
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
@@ -299,6 +300,22 @@ def _observe_company_operations(stack: ExitStack, measurement: _CompanySyncMeasu
     fetch = EastmoneyCompanySource.fetch
     extract = CninfoMarketDisclosureSource.extract_document
     analyze = CninfoMarketDisclosureSource._analyze_document
+    publication = SQLiteCompanyEvidenceIndex.publication
+
+    @contextmanager
+    def publishing(
+        index: SQLiteCompanyEvidenceIndex,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        changed_only: bool = False,
+    ) -> Iterator[CompanyPublicationSession | None]:
+        # Measure the lease through preparation, formal commit and collection
+        # acknowledgement. Independent file maintenance has its own operation.
+        with measurement.operation("collection_publish"), publication(
+            index, codes, observed_at, changed_only=changed_only,
+        ) as session:
+            yield session
 
     def structured(
         source: EastmoneyCompanySource, query: StructuredCompanyQuery, *, observed_at: datetime
@@ -342,9 +359,9 @@ def _observe_company_operations(stack: ExitStack, measurement: _CompanySyncMeasu
         (CompanyRequestPacer, "wait", measurement.wrap("pacer_wait", CompanyRequestPacer.wait)),
         (SQLiteCompanyEvidenceIndex, "initialize", measurement.wrap("collection_initialize", SQLiteCompanyEvidenceIndex.initialize)),
         (SQLiteCompanyEvidenceIndex, "prepare_publication", measurement.wrap("publication_prepare", SQLiteCompanyEvidenceIndex.prepare_publication)),
-        (company_evidence_index, "ReadCompanySnapshotRows", measurement.wrap("facts_inputs", company_evidence_index.ReadCompanySnapshotRows)),
-        (company_evidence_index, "CompileCompanyFacts", measurement.wrap("facts_compile", company_evidence_index.CompileCompanyFacts)),
-        (SQLiteCompanyEvidenceIndex, "publish", measurement.wrap("collection_publish", SQLiteCompanyEvidenceIndex.publish)),
+        (company_publication_preparation, "ReadCompanySnapshotRows", measurement.wrap("facts_inputs", company_publication_preparation.ReadCompanySnapshotRows)),
+        (company_publication_preparation, "CompileCompanyFacts", measurement.wrap("facts_compile", company_publication_preparation.CompileCompanyFacts)),
+        (SQLiteCompanyEvidenceIndex, "publication", publishing),
         (SQLiteCompanyFactsIndex, "publish", measurement.wrap("facts_publish", SQLiteCompanyFactsIndex.publish)),
         (SQLiteCompanyFactsIndex, "publish_file", measurement.wrap("facts_seal", SQLiteCompanyFactsIndex.publish_file)),
         (company_material_cleanup, "ReleaseCompanyMaterialFiles", measurement.wrap("material_cleanup", company_material_cleanup.ReleaseCompanyMaterialFiles)),
@@ -396,7 +413,8 @@ def MeasureCompanySync(runtime_config: Path, report_path: Path, *, fill_missing:
             "operation_timing": "inclusive; recursive, nested and concurrent operations overlap and must not be summed as total wall time",
             "operation_counts": "completed method invocations; inflight counts and durations are separate; directory_request and download_transfer count physical attempts",
             "operation_boundaries": {
-                "publication_prepare": "prepare_publication startup/resume work; may include publication",
+                "publication_prepare": "prepare_publication startup/resume recovery; publication is a separate explicit checkpoint",
+                "collection_publish": "candidate lease through preparation, formal commit and collection confirmation; excludes independent physical cleanup",
                 "facts_inputs": "ReadCompanySnapshotRows batch SQL input read and decode",
                 "facts_compile": "CompileCompanyFacts only; event linking and other publication work remain outside",
                 "facts_seal": "publish_file call including its no-file branch; not a pure hash or fsync duration",

@@ -9,12 +9,12 @@ def ProjectCompanyRiskComparisonDetails(value: object) -> dict[str, object]:
     comparison = ProjectMapping(value)
     projected = {key: comparison.get(key) for key in (
         "read_only", "complete", "stable_read", "baseline_sha256", "baseline_risks", "new_risks",
-        "exactly_preserved", "publication_hash", "all_old_risks_and_evidence_preserved",
+        "exactly_preserved", "publication_hash", "baseline_publication_hash", "all_old_risks_and_evidence_preserved",
         "missing_means_resolved", "field_correctness_verified",
     )}
     for name, keys in (
         ("missing", ("code", "event_key")),
-        ("changed_requires_review", ("code", "event_key", "changed_fields", "original_evidence_retained")),
+        ("changed_requires_review", ("code", "event_key", "changed_fields", "original_evidence_retained", "evidence_identity_confirmed")),
     ):
         rows = comparison.get(name)
         projected[name] = [

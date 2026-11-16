@@ -234,7 +234,7 @@ def AuditCompanyDatabase(
             risk_baseline=risk_baseline,
             event_policy=event_policy,
         )
-    except (sqlite3.OperationalError, InterruptedError, _CompanyDatabaseAuditBudgetExceeded, CompanyFailureAuditTimeout, CompanyConsumerAuditBudgetExceeded) as exc:
+    except (sqlite3.OperationalError, _CompanyDatabaseAuditBudgetExceeded, CompanyFailureAuditTimeout, CompanyConsumerAuditBudgetExceeded) as exc:
         # Python 3.10 has no sqlite_errorcode. The exact SQLite interruption
         # message alone is insufficient: our own deadline callback must cancel.
         if not deadline_cancelled or isinstance(exc, sqlite3.OperationalError) and str(exc) != "interrupted":

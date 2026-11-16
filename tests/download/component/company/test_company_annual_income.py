@@ -99,7 +99,7 @@ def test_raw_ledger_formal_facts_and_restart_share_one_annual_reference(tmp_path
         receipt = formal.run("SELECT source_key,record_hash,body_hash FROM company_input_receipt WHERE source='eastmoney_annual_income'").require_one()
         assert tuple(receipt) == (income.source_key, income.record_hash, None)
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(item.codes, fixtures.NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, fixtures.NOW + timedelta(minutes=1))
     assert restarted.report_input_plan(item.codes, fixtures.NOW + timedelta(minutes=1)).annual_income == ()
     assert _read(restarted).positive_events[0].measurements == event.measurements
 
@@ -244,14 +244,14 @@ def test_durable_annual_input_recovers_after_formal_publication_failure_without_
     index = fixtures._index(tmp_path)
     item = _contract(index)
     source = _Sources(item)
-    publish = index.publish
+    publish = index.publication
 
     def failing_publish(*args, **kwargs):
         if source.annual_calls:
             raise RuntimeError("fixture_formal_crash")
         return publish(*args, **kwargs)
 
-    monkeypatch.setattr(index, "publish", failing_publish)
+    monkeypatch.setattr(index, "publication", failing_publish)
     with pytest.raises(RuntimeError, match="fixture_formal_crash"):
         fixtures._sync_company_evidence(
             CompanyEvidenceDependencies(index, source, source, lambda: 0), item.codes, fixtures.NOW

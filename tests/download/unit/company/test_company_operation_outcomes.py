@@ -429,7 +429,7 @@ def test_real_use_case_fatal_database_boundary_reports_then_preserves_failure(tm
     def fail(*args, **kwargs):
         raise original
 
-    monkeypatch.setattr(index, {"publication": "publish", "finish": "finish", "document_commit": "commit_document"}[stage], fail)
+    monkeypatch.setattr(index, {"publication": "publication", "finish": "finish", "document_commit": "commit_document"}[stage], fail)
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0, events.append,
         failures=lambda context, exc: failures.append((context, exc)), run_id="database-failure-run")
     with pytest.raises(sqlite3.OperationalError) as raised:

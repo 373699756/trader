@@ -203,7 +203,7 @@ def test_extraction_upgrade_rebuilds_case_status_and_does_not_stamp_unprocessed_
             "UPDATE company_risk_event SET status=2,resolved_at=last_disclosed_at,expires_at=last_disclosed_at WHERE code='600001'",
         )
         connection.run("UPDATE company_publication SET extraction_hash=?", (b"0" * 32,))
-    index.prepare_publication(("600001", "600002"), _AT)
+    index.prepare_and_publish(("600001", "600002"), _AT)
     _old_document(index, "本公司收到证监会立案告知书〔2025〕调查1号，仍在调查中。")
     index.publish(("600001",), _AT + timedelta(minutes=1))
     facts = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path).read(("600001", "600002"))

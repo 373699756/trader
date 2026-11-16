@@ -18,6 +18,7 @@ from trader.download.application.company_evidence import (
 from trader.download.domain.company_evidence import DisclosurePage, DisclosurePartition
 from trader.download.application.company_operations import CompanyOperations
 from trader.download.application.company_documents import CompanyDocumentRun
+from trader.infra.sqlite_connection import SqliteSession
 from trader.infra.workers import BoundedExecutor, WorkerResourceRejectedError
 
 
@@ -202,9 +203,11 @@ def test_publication_failure_does_not_discard_inflight_directory_request(tmp_pat
     assert executor.future.cancelled() and state.pages == 0
 
 
-def test_coalesced_cancel_keeps_accepted_body_without_querying_urgent_state(tmp_path, monkeypatch):
+def test_coalesced_cancel_discards_late_body_without_querying_urgent_state(tmp_path, monkeypatch):
     index = fixtures._index(tmp_path)
     cancelled = Event()
+    extracted, urgent_calls = [], []
+    original_urgent = index.document_publication_urgent
 
     class Source(fixtures.Sources):
         def fetch(self, query, **kwargs):
@@ -214,11 +217,15 @@ def test_coalesced_cancel_keeps_accepted_body_without_querying_urgent_state(tmp_
             return super().fetch(query, **kwargs)
 
         def document(self, item):
-            cancelled.set()
+            extracted.append(item.identity)
+            if len(extracted) == 1:
+                cancelled.set()
             return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     def urgent(item):
-        pytest.fail("cancelled sync must not open the field-repair inventory")
+        assert not cancelled.is_set(), "cancelled sync must not open the field-repair inventory"
+        urgent_calls.append(item.identity)
+        return original_urgent(item)
 
     monkeypatch.setattr(index, "document_publication_urgent", urgent)
     item = fixtures._disclosure("cancelled-body", "关于收到立案告知书的公告")
@@ -232,6 +239,14 @@ def test_coalesced_cancel_keeps_accepted_body_without_querying_urgent_state(tmp_
     request = fixtures.CompanyEvidenceRequest(("600001",), fixtures.NOW, fixtures._TEST_COMPANY_CONFIGURATION)
     result = SyncCompanyEvidence(dependencies, request)
     assert result.needs_retry and result.pending_documents is None
+    assert extracted == [item.identity] and not urgent_calls
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT sum(body_checked) FROM disclosures").require_one()[0] == 0
+        assert connection.run("SELECT count(*) FROM document_publications").require_one()[0] == 0
     cancelled.clear()
     resumed = SyncCompanyEvidence(dependencies, request)
     assert resumed.published_codes == 1 and resumed.pending_documents == 0
+    assert not resumed.needs_retry and extracted == [item.identity, item.identity]
+    with SqliteSession(index.facts_path) as connection:
+        assert connection.run("SELECT count(*) FROM company_input_receipt WHERE source_key=? AND outcome='valid'",
+                              (item.identity,)).require_one()[0] == 1

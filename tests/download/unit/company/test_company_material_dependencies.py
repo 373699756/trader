@@ -92,7 +92,7 @@ def test_review_only_material_survives_publish_resume_and_capacity_backpressure(
     assert local.path.is_file()
 
     restarted, _raw = _index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     assert _dependencies(restarted) == _dependencies(index)
     assert local.path.is_file()
@@ -107,7 +107,7 @@ def test_review_dependency_is_reconstructed_after_formal_commit_collection_rollb
     with SqliteSession(index.path) as collected, SqliteTransaction(collected):
         collected.run("DELETE FROM company_material_dependencies")
     restarted, _raw = _index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     assert _dependencies(restarted) == expected
     assert local.path.is_file()
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
@@ -124,7 +124,7 @@ def test_legacy_missing_review_material_is_reported_without_reopening_valid_docu
     index._documents.release(frozenset())
     assert raw.release(item)
     restarted, _raw = _index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     assert len(_dependencies(restarted)) == 1
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     assert not tuple((tmp_path / "text").rglob("*.gz"))
@@ -140,7 +140,7 @@ def test_first_dependency_projection_recovers_original_receipt_after_missing_tex
         collected.run("DELETE FROM company_material_dependencies")
     index._documents.release(frozenset())
     restarted, _raw = _index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     required = _dependencies(restarted)[0]
     assert required.body_hash == original_hash and required.current_body_hash is None
     assert not required.is_current_version and original.path.is_file()
@@ -206,7 +206,7 @@ def test_publication_batch_candidate_preserves_facts_receipts_and_generation(tmp
 
 def test_new_document_publication_is_urgent_only_for_its_other_current_pending_fields(tmp_path):
     index, old = field_fixtures._legacy_reduction(tmp_path)
-    index.prepare_publication(old.codes, NOW)
+    index.prepare_and_publish(old.codes, NOW)
     later = replace(old, identity="new-progress", digest="new-version")
     assert index.document_publication_urgent(later)
     assert not index.document_publication_urgent(old)
@@ -235,7 +235,7 @@ def test_record_revision_preserves_original_needed_material_until_new_verified_r
     assert required.record_hash == item.digest and required.current_record_hash == revised.digest
     assert required.current_body_hash is None and not required.is_current_version
     restarted, raw = _index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     assert original.path.is_file() and original_text.is_file()
     tasks = restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
     assert [task.disclosure.digest for task in tasks] == [revised.digest]
@@ -293,7 +293,7 @@ def test_new_extraction_identity_does_not_discard_original_review_dependency(tmp
     old_hash = index._facts.extraction_hash
     policy = CompanyEventPolicyFixture()
     restarted, _raw = _index(tmp_path, event_policy=replace(policy, risk_days=policy.risk_days + 1))
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     required = _dependencies(restarted)
     assert len(required) == 2
     assert {dependency.extraction_hash for dependency in required} == {old_hash, restarted._facts.extraction_hash}
@@ -342,11 +342,11 @@ def test_amount_rule_upgrade_reuses_retained_text_once_without_upgrading_documen
         ))
     amount = next(plan for plan in plans if plan.gap.field == "contract_amount")
     assert amount.action == "extract"
-    index.prepare_publication(item.codes, NOW + timedelta(minutes=2))
+    index.prepare_and_publish(item.codes, NOW + timedelta(minutes=2))
     assert _facts(index).positive_events[0].measurements.contract_amount_cny == 200_000_000
     for minute in (3, 4):
         restarted, _raw = _index(tmp_path)
-        restarted.prepare_publication(item.codes, NOW + timedelta(minutes=minute))
+        restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=minute))
         assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     with SqliteSession(index.facts_path) as formal:
         assert tuple(tuple(row) for row in formal.run(

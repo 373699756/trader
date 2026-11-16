@@ -165,6 +165,8 @@ class EastmoneyCompanySource:
         rows, _, _ = _result(payload)
         if not rows:
             raise ValueError("pledge_snapshot_unavailable")
+        if len(rows) != 1:
+            raise DownloadValidationFailure("pledge_snapshot_rows_invalid", "data.length", "one_row", len(rows))
         day = _day(rows[0].get("TRADE_DATE"))
         if day > observed_at.date():
             raise DownloadValidationFailure("pledge_snapshot_future", "TRADE_DATE", f"{window_start}..{observed_at.date()}", day.isoformat())
@@ -213,10 +215,14 @@ class EastmoneyCompanySource:
             return DecodeCompanyFinancialPage(payload, query, observed_at=observed_at)
         rows, pages, total = _page_rows(payload, page)
         ratios: list[CompanyRatio] = []
+        seen: set[tuple[str, date]] = set()
         for row in rows:
             code = _code(row)
             date_field = "TRADE_DATE" if component == "pledge" else "FREE_DATE"
             day = _day(row.get(date_field))
+            if (code, day) in seen:
+                raise DownloadValidationFailure("company_ratio_duplicate", "security_code.date", "unique_key", "duplicate")
+            seen.add((code, day))
             ratio_field = "PLEDGE_RATIO" if component == "pledge" else "TOTAL_RATIO"
             ratio = _number(row.get(ratio_field), field=ratio_field)
             if ratio is None:
@@ -324,10 +330,17 @@ def _page_rows(payload: Mapping[str, object], page: int) -> tuple[tuple[Mapping[
         raise DownloadValidationFailure("company_source_page_limit", "pages", "1..256", pages)
     if page > pages:
         raise DownloadValidationFailure("company_source_page_limit", "page", f"1..{pages}", page)
+    if len(rows) > 500 or total > pages * 500 or pages == 1 and len(rows) != total:
+        raise DownloadValidationFailure("structured_source_pagination_invalid", "data.length", "consistent_bounded_page", len(rows))
     return rows, pages, total
 
 
 def _result(payload: Mapping[str, object]) -> tuple[tuple[Mapping[str, object], ...], int, int]:
+    code, success = payload.get("code"), payload.get("success")
+    if type(code) is not int or code != 0:
+        raise DownloadValidationFailure("structured_source_not_accepted", "code", 0, code if type(code) is int else type(code).__name__)
+    if success is not True:
+        raise DownloadValidationFailure("structured_source_not_accepted", "success", "true", str(success).lower() if type(success) is bool else type(success).__name__)
     result = payload.get("result")
     if not isinstance(result, Mapping):
         raise DownloadValidationFailure("structured_source_result_missing", "result", "mapping", type(result).__name__)
@@ -343,12 +356,23 @@ def _result(payload: Mapping[str, object]) -> tuple[tuple[Mapping[str, object], 
         if not isinstance(row, Mapping):
             raise DownloadValidationFailure("structured_source_rows_invalid", f"data.{position}", "mapping", type(row).__name__)
     assert isinstance(count, int) and isinstance(pages, int)
+    if (
+        count == 0 and (rows or pages not in (0, 1))
+        or count > 0 and (not rows or not 1 <= pages <= count)
+        or len(rows) > count
+    ):
+        raise DownloadValidationFailure("structured_source_pagination_invalid", "data.length", "consistent_count_and_pages", len(rows))
     return tuple(rows), max(1, pages), count
 
 
 def _day(value: object) -> date:
+    if not isinstance(value, str) or re.match(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:$|[ T])", value) is None:
+        raise DownloadValidationFailure("company_source_date_invalid", "date", "ISO_date_or_timestamp", type(value).__name__)
     try:
-        return date.fromisoformat(str(value)[:10])
+        if len(value) == 10:
+            return date.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
+        return parsed.date() if parsed.utcoffset() is None else parsed.astimezone(_SHANGHAI).date()
     except ValueError as exc:
         raise DownloadValidationFailure("company_source_date_invalid", "date", "ISO_date", type(value).__name__) from exc
 
@@ -361,9 +385,13 @@ def _income_time(value: object) -> datetime:
 
 
 def _code(row: Mapping[str, object]) -> str:
-    code = str(row.get("SECURITY_CODE") or row.get("SECUCODE") or "").split(".")[0]
-    if len(code) != 6 or not code.isdigit():
-        raise DownloadValidationFailure("company_source_code_invalid", "security_code", "six_digits", f"length_{len(code)}")
+    identity = row.get("SECUCODE")
+    code = row.get("SECURITY_CODE") if "SECURITY_CODE" in row else identity.split(".")[0] if isinstance(identity, str) else None
+    if not isinstance(code, str) or re.fullmatch(r"[0-9]{6}", code) is None:
+        raise DownloadValidationFailure("company_source_code_invalid", "security_code", "six_ascii_digits", type(code).__name__)
+    market = {"sse": "SH", "szse": "SZ", "bse": "BJ"}[EvidenceMarket(code)]
+    if "SECUCODE" in row and identity != f"{code}.{market}":
+        raise DownloadValidationFailure("company_source_identity_invalid", "SECUCODE", "matching_code_and_market", "mismatch")
     return code
 
 
@@ -383,7 +411,7 @@ def _number(value: object, *, field: str = "number") -> float | None:
 
 def _financial(row: Mapping[str, object]) -> CompanyFinancial:
     return CompanyFinancial(
-        _code({"SECUCODE": row["SECUCODE"]}),
+        _code(row),
         _day(row.get("REPORT_DATE")),
         datetime.combine(_day(row.get("NOTICE_DATE")), time.min, _SHANGHAI),
         _number(row.get("EPSJB"), field="EPSJB"),

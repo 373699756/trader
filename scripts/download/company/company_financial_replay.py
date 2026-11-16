@@ -15,6 +15,7 @@ from typing import cast
 
 from scripts.core.paths import PROJECT_ROOT
 from scripts.download.company.output_paths import RequireIsolatedReplay
+from trader.download.application.company_publication import PublishCompanyEvidence
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_evidence import CompanyFinancial, CompanySyncConfiguration, Disclosure, StructuredCompanyPage, StructuredCompanyQuery
@@ -164,7 +165,7 @@ def AuditCompanyFinancialReplay(
     index = build()
     index.initialize()
     commit_structured(index)
-    index.publish(codes, observed_at)
+    PublishCompanyEvidence(index, codes, observed_at)
     source = create_source(raw_files)
     for item in catalog:
         if item["code"] not in codes:
@@ -187,7 +188,9 @@ def AuditCompanyFinancialReplay(
             extraction = source.extract_document(disclosure)
             if not index.commit_document(disclosure, extraction, observed_at):
                 raise ValueError("company_financial_replay_document_not_accepted")
-    index.publish(codes, observed_at)
+    publication = PublishCompanyEvidence(index, codes, observed_at)
+    if publication.pending_codes:
+        raise ValueError("company_financial_replay_publication_pending")
     reader = SQLiteCompanyEvidenceReader(facts_path, event_policy=event_policy, sqlite_policy=sqlite_policy)
     facts = reader.read(codes)
     observations: list[dict[str, object]] = []

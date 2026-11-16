@@ -12,6 +12,8 @@ from trader.download.application.company_evidence import (
     CompanyEvidenceDependencies, _AnnouncementRun, _CompanyRunContext, _SyncState, _news, _publish_batch,
 )
 from trader.download.application.company_operations import CompanyOperations
+from trader.download.application.company_publication import CompanyPublicationConflict
+from trader.download.infra.company_publication_commit import _SQLiteCompanyPublication
 from trader.download.application.company_report_inputs import (
     CompanyReportInputPlan, CollectCompanyReportInputs, PlanCompanyReportInputs,
 )
@@ -111,9 +113,9 @@ def test_queued_cancellation_prevents_actual_callback_and_does_not_claim_an_inpu
 
     for method in ("fetch", "pledge_day", "annual_income", "financial_reports", "news"):
         monkeypatch.setattr(source, method, forbidden)
-    publish = index.publish
+    publish = index.publication
     if stage == "publication":
-        monkeypatch.setattr(index, "publish", forbidden)
+        monkeypatch.setattr(index, "publication", forbidden)
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, observe, cancel_requested=cancelled.is_set)
     state = _state(dependencies, observe)
     state.published = 1
@@ -147,7 +149,7 @@ def test_queued_cancellation_prevents_actual_callback_and_does_not_claim_an_inpu
             announcements.close()
         if executor is not None:
             executor.stop(wait=True, cancel_futures=True)
-        monkeypatch.setattr(index, "publish", publish)
+        monkeypatch.setattr(index, "publication", publish)
     assert observed and cancelled.is_set() and not calls
     assert state.annual_income_attempts == state.financial_report_attempts == set()
     assert state.failures == () and not state.operations._submitted
@@ -263,7 +265,7 @@ def test_publication_observation_with_a_conflict_code_is_never_retried(tmp_path,
     calls = []
     events = []
     original = RuntimeError(code)
-    publish = index.publish
+    publish = index.publication
 
     def publisher(*args, **kwargs):
         calls.append(fixtures.NOW)
@@ -276,7 +278,7 @@ def test_publication_observation_with_a_conflict_code_is_never_retried(tmp_path,
         if event.operation is not None and event.operation.kind == "publication" and event.operation.state == phase:
             raise original
 
-    monkeypatch.setattr(index, "publish", publisher)
+    monkeypatch.setattr(index, "publication", publisher)
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, observe)
     state = _state(dependencies, observe)
     with pytest.raises(RuntimeError) as raised:
@@ -292,19 +294,21 @@ def test_only_actual_publication_conflicts_retry_with_the_original_bound_and_can
     source = fixtures.Sources()
     cancelled = Event()
     before = _identity(index)
-    publish = index.publish
+    commit = _SQLiteCompanyPublication.commit
     calls = []
-    original = RuntimeError("company_publication_parent_changed")
+    original = CompanyPublicationConflict("company_publication_parent_changed")
+    with SqliteSession(index.path) as connection:
+        connection.run("INSERT OR IGNORE INTO company_dirty_codes VALUES('600001')")
 
-    def publisher(*args, **kwargs):
+    def publisher(session):
         calls.append(fixtures.NOW)
         if outcome == "cancelled" or outcome == "cancelled_final" and len(calls) == 3:
             cancelled.set()
         if len(calls) == 1 or outcome in {"exhausted", "cancelled_final"}:
             raise original
-        return publish(*args, **kwargs)
+        return commit(session)
 
-    monkeypatch.setattr(index, "publish", publisher)
+    monkeypatch.setattr(_SQLiteCompanyPublication, "commit", publisher)
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, cancel_requested=cancelled.is_set)
     state = _state(dependencies)
     state.published = 1

@@ -147,6 +147,7 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
         if source.get("status") == "passed":
             valid = valid and all(_migration_count(source.get(name)) == 0 for name in (
                 "second_new_field_attempted", "missing_texts", "round_2_publication_text_reads",
+                "round_1_publication_pending_codes", "round_2_publication_pending_codes",
             )) and all(source.get(name) is True for name in (
                 "source_input_unchanged", "collection_backup_generation_stable", "original_valid_receipts_unchanged",
                 "second_fields_and_publication_unchanged", "second_zero_publication_text_reads",
@@ -931,7 +932,7 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
                 "round_1_publication_text_reads", "round_1_total_text_reads", "round_2_initialize_text_reads",
                 "round_2_publication_text_reads", "round_2_total_text_reads", "initial_field_attempted",
                 "first_field_attempted", "second_field_attempted", "second_new_field_attempted", "fields",
-                "final_required_texts", "unselected_stocks",
+                "final_required_texts", "unselected_stocks", "round_1_publication_pending_codes", "round_2_publication_pending_codes",
             )},
             **{name: _text(source.get(name), 110) for name in (
                 "first_publication_hash", "second_publication_hash", "failure_category", "failure_code", "observed_at",

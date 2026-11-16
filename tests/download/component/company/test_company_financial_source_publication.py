@@ -64,7 +64,7 @@ def test_normal_publication_adopts_official_cells_and_reuses_their_exact_receipt
         raise AssertionError("unchanged official quarterly proof must not re-read its body")
 
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(("600001",), NOW)
+    restarted.prepare_and_publish(("600001",), NOW)
     assert _latest(restarted) == latest
     with SqliteSession(index.facts_path) as formal:
         assert ReadCompanyPublicationIdentity(formal) == before

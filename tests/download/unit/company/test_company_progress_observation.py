@@ -1,6 +1,7 @@
 """Company snapshots observe real execution and committed publication boundaries."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, datetime
 from io import StringIO
@@ -257,13 +258,26 @@ def test_committed_receipt_keeps_publication_cleanup_visible_until_index_returns
     report = CompanyEvidenceProgress(report=messages.append, monotonic=lambda: clock[0])
     committed, release = Event(), Event()
 
+    class Session:
+        codes = ("600001",)
+
+        def commit(self):
+            ReportCompanyStock(report, (), CompanyPublicationProgress("started", self.codes))
+            return self.codes
+
+        def confirm(self):
+            ReportCompanyStock(report, (), CompanyPublicationProgress("committed", self.codes, self.codes))
+            return ()
+
     class Index:
-        def publish(self, codes, observed_at, *, changed_only=False):
-            ReportCompanyStock(report, (), CompanyPublicationProgress("started", tuple(codes)))
-            ReportCompanyStock(report, (), CompanyPublicationProgress("committed", tuple(codes), tuple(codes)))
+        @contextmanager
+        def publication(self, codes, observed_at, *, changed_only=False):
+            assert tuple(codes) == Session.codes
+            yield Session()
+
+        def release_publication_material(self):
             committed.set()
             assert release.wait(5)
-            return len(codes)
 
         def published_count(self, codes):
             return len(codes)

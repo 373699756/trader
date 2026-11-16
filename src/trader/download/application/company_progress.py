@@ -96,6 +96,7 @@ def ReportCompanyProgress(
         failures = tuple(
             dict.fromkeys(
                 item for item in state.failures if component == "complete" or item.startswith(f"{component}:")
+                or component == "publish" and item == "publication:pending"
             )
         )
         dependencies.progress(

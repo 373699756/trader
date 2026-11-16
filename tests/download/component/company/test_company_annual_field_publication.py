@@ -63,7 +63,7 @@ def test_catalog_disclosure_proof_binds_the_existing_value_to_exact_official_met
     annual = _annual(index)
     before, = _facts(index).positive_events
 
-    index.prepare_publication(contract.codes, fixtures.NOW)
+    index.prepare_and_publish(contract.codes, fixtures.NOW)
 
     assert _facts(index).positive_events == (before,) and before.evidence_ids == (contract.identity,)
     field = _field(index, "revenue_disclosed_at")
@@ -83,7 +83,7 @@ def test_catalog_disclosure_proof_binds_the_existing_value_to_exact_official_met
         raise AssertionError("the same catalog conclusion must not read annual text again")
 
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(contract.codes, fixtures.NOW)
+    restarted.prepare_and_publish(contract.codes, fixtures.NOW)
     assert _field(restarted, "revenue_disclosed_at") == field
 
 
@@ -95,7 +95,7 @@ def test_annual_revenue_has_exact_external_source_proof_or_explicitly_stays_unve
         _annual(index, key="conflicting-annual", amount="233,728,984.80")
     before, = _facts(index).positive_events
 
-    index.prepare_publication(contract.codes, fixtures.NOW)
+    index.prepare_and_publish(contract.codes, fixtures.NOW)
 
     event, = _facts(index).positive_events
     assert event == before and event.evidence_ids == (contract.identity,)
@@ -119,7 +119,7 @@ def test_annual_revenue_has_exact_external_source_proof_or_explicitly_stays_unve
 
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(contract.codes, fixtures.NOW)
+    restarted.prepare_and_publish(contract.codes, fixtures.NOW)
     assert _field(restarted) == field
     with SqliteSession(index.facts_path) as formal:
         assert ReadCompanyPublicationIdentity(formal) == publication
@@ -129,11 +129,11 @@ def test_annual_revenue_has_exact_external_source_proof_or_explicitly_stays_unve
 def test_new_annual_material_invalidates_an_earlier_proof_without_choosing_a_convenient_version(tmp_path, revision):
     index, contract = _setup(tmp_path)
     _annual(index)
-    index.prepare_publication(contract.codes, fixtures.NOW)
+    index.prepare_and_publish(contract.codes, fixtures.NOW)
     assert _field(index).state == "verified"
     _annual(index, key="new-material", amount="233,728,984.80" if revision else "232,728,984.80",
             when=_ANNUAL_AT.replace(day=11), title="2025年年度报告修订版" if revision else "2025年年度报告")
-    index.prepare_publication(contract.codes, fixtures.NOW)
+    index.prepare_and_publish(contract.codes, fixtures.NOW)
     field = _field(index)
     assert field.value == 232728984.8
     assert field.state == ("present_unverified" if revision else "verified")

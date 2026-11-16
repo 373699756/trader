@@ -23,7 +23,7 @@ from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_field_result_rows import WriteCompanyFieldResults
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash, EncodeCompanyDate, EncodeCompanyTime
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
-from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_policy import SqliteIoPolicy
@@ -231,9 +231,11 @@ def test_global_old_risks_and_unselected_facts_are_checked_independently_of_vali
         unlock_schedule=tuple(replace(item, code=code) for item in old_risk.unlock_schedule),
     ) if code == "600002" else replace(current, risk_events=old_risk.risk_events)
     writer = SQLiteCompanyFactsIndexFixture(facts, event_policy=policy)
-    writer.publish((retained,), {_KEY: "cninfo", "investigation": "cninfo"}, parent, _AT)
+    writer.publish((retained,), {_KEY: "cninfo", "investigation": "cninfo"}, parent, _AT, receipts=(
+        CompanyInputReceipt("cninfo", "investigation", code, "risk-revision", writer.extraction_hash, b"r" * 32, _AT),
+    ))
     PublishSqliteFile(facts, sqlite_policy=_IO)
-    original_publish = replay.SQLiteCompanyEvidenceIndex.publish
+    original_publish = replay.PublishCompanyEvidence
 
     def publish(index, *args, **kwargs):
         result = original_publish(index, *args, **kwargs)
@@ -247,7 +249,7 @@ def test_global_old_risks_and_unselected_facts_are_checked_independently_of_vali
                     connection.run("DELETE FROM company_risk_evidence")
         return result
 
-    monkeypatch.setattr(replay.SQLiteCompanyEvidenceIndex, "publish", publish)
+    monkeypatch.setattr(replay, "PublishCompanyEvidence", publish)
     with SqliteSession(raw, SqliteConnectionOptions(read_only=True), sqlite_policy=_IO) as existing_reader:
         existing_reader.run("SELECT COUNT(*) FROM disclosures").require_one()
         report = _run(raw, facts, tmp_path / "replay", policy)
@@ -261,6 +263,23 @@ def test_global_old_risks_and_unselected_facts_are_checked_independently_of_vali
             assert not report["unselected_facts_unchanged"]
         else:
             assert not report["round_1_risk_comparison"]["all_old_risks_and_evidence_preserved"]
+
+
+def test_replay_with_finite_unresolved_publication_work_cannot_pass(tmp_path, monkeypatch):
+    raw, facts, policy = _sources(tmp_path)
+    original = replay.PublishCompanyEvidence
+
+    def pending(*args, **kwargs):
+        result = original(*args, **kwargs)
+        return replace(result, pending_codes=("600001",))
+
+    monkeypatch.setattr(replay, "PublishCompanyEvidence", pending)
+    with SqliteSession(raw, SqliteConnectionOptions(read_only=True), sqlite_policy=_IO) as existing_reader:
+        existing_reader.run("SELECT COUNT(*) FROM disclosures").require_one()
+        report = _run(raw, facts, tmp_path / "replay", policy)
+    assert report["status"] == "degraded"
+    assert report["round_1_publication_pending_codes"] == report["round_2_publication_pending_codes"] == 1
+    assert report["second_zero_publication_text_reads"] and report["source_input_unchanged"]
 
 
 def test_explicit_same_hash_text_is_recovered_only_in_the_copy_then_normally_published(tmp_path, monkeypatch):

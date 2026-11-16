@@ -373,7 +373,7 @@ def test_cancellation_keeps_durable_pages_without_starting_a_new_publication(tmp
     previous = reader.publication_version()
     cancelled = phase == "before_start"
     publications = []
-    publish = index.publish
+    publish = index.publication
 
     def tracked_publish(codes, observed_at, **kwargs):
         publications.append(tuple(codes))
@@ -400,7 +400,7 @@ def test_cancellation_keeps_durable_pages_without_starting_a_new_publication(tmp
 
     monkeypatch.setattr(index, "partitions", partitions)
     monkeypatch.setattr(source, "fetch", checked_fetch)
-    monkeypatch.setattr(index, "publish", tracked_publish)
+    monkeypatch.setattr(index, "publication", tracked_publish)
     if phase == "before_start":
         monkeypatch.setattr(index, "initialize", lambda: pytest.fail("cancelled task initialized the database"))
     result = _sync_company_evidence(
@@ -419,18 +419,20 @@ def test_cancellation_keeps_durable_pages_without_starting_a_new_publication(tmp
         assert reader.publication_version() == previous
 
 
-def test_company_cancellation_saves_the_last_page_and_resumes_it(tmp_path, monkeypatch):
+def test_company_cancellation_discards_late_page_and_resumes_the_prior_cursor(tmp_path, monkeypatch):
     index = _index(tmp_path)
     monkeypatch.setattr(index, "partitions", lambda *args: ())
     cancelled = False
+    cancel_once = True
 
     class PagedFinancials(Sources):
         def fetch(self, first, *args, **kwargs):
-            nonlocal cancelled
+            nonlocal cancelled, cancel_once
             if isinstance(first, StructuredCompanyQuery) and first.component == "financial":
                 self.calls.append(first)
-                if first.page == 1:
+                if first.page == 1 and cancel_once:
                     cancelled = True
+                    cancel_once = False
                 return StructuredCompanyPage("financial", first.page, 2, 2, raw_count=1)
             return super().fetch(first, *args, **kwargs)
 
@@ -439,13 +441,16 @@ def test_company_cancellation_saves_the_last_page_and_resumes_it(tmp_path, monke
     first = _sync_company_evidence(dependencies, ("600001",), NOW)
     assert first.published_codes == 0 and first.failures == ("task:cancelled",)
     assert len(source.calls) == 1
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT count(*) FROM structured_progress").require_one()[0] == 0
+        assert connection.run("SELECT count(*) FROM financials").require_one()[0] == 0
     cancelled = False
     source.calls.clear()
     resumed = _sync_company_evidence(dependencies, ("600001",), NOW)
     financial = [
         item for item in source.calls if isinstance(item, StructuredCompanyQuery) and item.component == "financial"
     ]
-    assert [item.page for item in financial] == [2]
+    assert [item.page for item in financial] == [1, 2]
     assert not resumed.needs_retry and resumed.published_codes == 1
 
 
@@ -608,7 +613,7 @@ def test_reader_does_not_initialize_or_write_missing_database(tmp_path):
 
 
 def test_company_publication_build_allows_writes_and_rejects_a_changed_source(tmp_path, monkeypatch):
-    import trader.download.infra.company_evidence_index as publication
+    import trader.download.infra.company_publication_preparation as publication
 
     index = _index(tmp_path)
     partition = index.partitions(("sse",), NOW)[0]

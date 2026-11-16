@@ -148,7 +148,7 @@ def test_exact_local_recheck_removes_only_unsafe_holder_measurement_and_preserve
     # percentage to the qualifying holder; this is an isolated fixture only.
     with SqliteSession(index.facts_path) as formal:
         formal.run("UPDATE company_reduction_plan SET planned_pct=0.2571")
-    index.prepare_publication(("600001",), _AT)
+    index.prepare_and_publish(("600001",), _AT)
     index.publish(("600001",), _AT)
     fact, = _reader(index).read(("600001",))
     corrected, = fact.risk_events
@@ -172,7 +172,7 @@ def test_all_contract_source_fields_publish_and_second_publication_reuses_proofs
     ratio, = (item for item in fields if item.field == "contract_revenue_pct")
     assert ratio.value == 20 and len(ratio.evidence) == 3
     identity = _identity(index)
-    index.prepare_publication(("600001",), _AT)
+    index.prepare_and_publish(("600001",), _AT)
     index.publish(("600001",), _AT)
     assert _identity(index) == identity
     assert _reader(index).read_fields(("600001",)).results == fields
@@ -195,7 +195,7 @@ def test_increase_latest_same_body_recheck_publishes_measurement_without_new_val
     with SqliteSession(index.path) as collected:
         collected.run("UPDATE disclosures SET body_retained=1 WHERE source_key='increase-proof'")
     valid = _receipts(index, ordinary_only=True)
-    index.prepare_publication(("600001",), _AT)
+    index.prepare_and_publish(("600001",), _AT)
     index.publish(("600001",), _AT)
     actual = _reader(index).read(("600001",))[0].positive_events[0]
     assert actual.event_id == before.event_id and actual.subject_type is before.subject_type
@@ -448,7 +448,7 @@ def test_failed_same_body_proof_is_attempted_once_and_restart_does_not_queue_a_r
     checked_receipts = None
     for turn in (1, 2):
         restarted = fixtures._index(tmp_path)
-        restarted.prepare_publication(document.disclosure.codes, _AT + timedelta(minutes=turn))
+        restarted.prepare_and_publish(document.disclosure.codes, _AT + timedelta(minutes=turn))
         assert restarted.pending_documents(
             document.disclosure.codes, _AT, policies=fixtures._TEST_DOCUMENT_POLICIES,
         ) == ()

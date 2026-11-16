@@ -291,7 +291,7 @@ def test_financial_non_a_shares_are_excluded_without_corrupting_raw_page_count()
         }
         for code in ("600001.SH", "XYZ.SH", "00001.HK")
     ]
-    session = Session({"result": {"count": 3, "pages": 1, "data": rows}})
+    session = Session({"code": 0, "success": True, "result": {"count": 3, "pages": 1, "data": rows}})
     source = EastmoneyCompanySource(session, monotonic=lambda: 0)
     page = source.fetch(StructuredCompanyQuery("financial", date(2026, 10, 11), NOW.date()), observed_at=NOW)
     assert page.row_count == 3
@@ -302,7 +302,7 @@ def test_financial_non_a_shares_are_excluded_without_corrupting_raw_page_count()
 
 def test_financial_date_validation_keeps_the_one_year_floor_when_caller_is_older():
     lower = NOW.date() - timedelta(days=365)
-    session = Session({"result": {"count": 1, "pages": 1, "data": [{
+    session = Session({"code": 0, "success": True, "result": {"count": 1, "pages": 1, "data": [{
         "SECUCODE": "600001.SH", "REPORT_DATE": "2024-12-31",
         "NOTICE_DATE": (lower - timedelta(days=1)).isoformat(),
         "PARENTNETPROFIT": 1, "KCFJCXSYJLR": 1,
@@ -316,7 +316,7 @@ def test_financial_date_validation_keeps_the_one_year_floor_when_caller_is_older
 
 
 def test_financial_fetch_and_shared_pure_decoder_keep_identical_values_and_raw_membership():
-    payload = {"result": {"count": 2, "pages": 1, "data": [
+    payload = {"code": 0, "success": True, "result": {"count": 2, "pages": 1, "data": [
         {"SECUCODE": identity, "REPORT_DATE": "2026-06-30", "NOTICE_DATE": "2026-10-17",
          "EPSJB": 0, "BPS": None, "PARENTNETPROFIT": -2, "KCFJCXSYJLR": 0}
         for identity in ("600001.SH", "00001.HK")
@@ -334,10 +334,11 @@ def test_shared_financial_decoder_preserves_clipped_date_and_page_limit_failures
     query = StructuredCompanyQuery("financial", date(2024, 1, 1), NOW.date())
     row = {"SECUCODE": "600001.SH", "REPORT_DATE": "2024-12-31",
            "NOTICE_DATE": (NOW.date() - timedelta(days=366)).isoformat()}
-    payload = {"result": {"count": 1, "pages": 1, "data": [row]}}
+    payload = {"code": 0, "success": True, "result": {"count": 1, "pages": 1, "data": [row]}}
     with pytest.raises(ValueError, match="financial_date_filter_ignored"):
         DecodeCompanyFinancialPage(payload, query, observed_at=NOW)
     payload["result"]["pages"] = 257
+    payload["result"]["count"] = 257
     with pytest.raises(ValueError, match="company_source_page_limit"):
         DecodeCompanyFinancialPage(payload, query, observed_at=NOW)
 
@@ -345,7 +346,7 @@ def test_shared_financial_decoder_preserves_clipped_date_and_page_limit_failures
 @pytest.mark.parametrize("age,reason", [(365, None), (366, "outside_window"), (-1, "future")])
 def test_pledge_day_never_requests_or_accepts_a_snapshot_older_than_one_year(age, reason):
     day = NOW.date() - timedelta(days=age)
-    session = Session({"result": {"count": 1, "pages": 1, "data": [{"TRADE_DATE": day.isoformat()}]}})
+    session = Session({"code": 0, "success": True, "result": {"count": 1, "pages": 1, "data": [{"TRADE_DATE": day.isoformat()}]}})
     source = EastmoneyCompanySource(session, monotonic=lambda: 0)
     if reason is None:
         assert source.pledge_day(NOW) == day
@@ -362,6 +363,8 @@ def test_pledge_day_never_requests_or_accepts_a_snapshot_older_than_one_year(age
 def test_unlock_source_converts_fraction_to_percentage():
     session = Session(
         {
+            "code": 0,
+            "success": True,
             "result": {
                 "count": 1,
                 "pages": 1,
@@ -381,7 +384,7 @@ def test_unlock_source_converts_fraction_to_percentage():
 
 
 def test_broken_empty_payload_is_not_a_successful_zero_snapshot():
-    source = EastmoneyCompanySource(Session({"result": None}), monotonic=lambda: 0)
+    source = EastmoneyCompanySource(Session({"code": 0, "success": True, "result": None}), monotonic=lambda: 0)
     with pytest.raises(ValueError, match="result_missing"):
         source.fetch(StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), observed_at=NOW)
 
@@ -397,10 +400,12 @@ def test_invalid_json_keeps_decode_location_without_exposing_supplier_content(su
     session = Raw({})
     if supplier == "eastmoney":
         source = EastmoneyCompanySource(session, monotonic=lambda: 0)
-        call = lambda: source.fetch(StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), observed_at=NOW)
+        def call():
+            return source.fetch(StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), observed_at=NOW)
     else:
         source = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda value: None)
-        call = lambda: source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date()))
+        def call():
+            return source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date()))
     with pytest.raises(DownloadValidationFailure) as caught:
         call()
     failure = caught.value
@@ -412,14 +417,14 @@ def test_invalid_json_keeps_decode_location_without_exposing_supplier_content(su
 
 
 def test_invalid_pagination_names_the_exact_field_and_safe_actual_type():
-    source = EastmoneyCompanySource(Session({"result": {"count": "private-remote-value", "pages": 1, "data": []}}), monotonic=lambda: 0)
+    source = EastmoneyCompanySource(Session({"code": 0, "success": True, "result": {"count": "private-remote-value", "pages": 1, "data": []}}), monotonic=lambda: 0)
     with pytest.raises(DownloadValidationFailure) as caught:
         source.fetch(StructuredCompanyQuery("pledge", NOW.date(), NOW.date()), observed_at=NOW)
     assert (caught.value.field, caught.value.expected, caught.value.actual) == ("count", "nonnegative_integer", "str")
 
 
 def test_unlock_validation_reports_the_actual_supplier_fraction_before_conversion():
-    source = EastmoneyCompanySource(Session({"result": {"count": 1, "pages": 1, "data": [{
+    source = EastmoneyCompanySource(Session({"code": 0, "success": True, "result": {"count": 1, "pages": 1, "data": [{
         "SECURITY_CODE": "600001", "FREE_DATE": NOW.date().isoformat(), "TOTAL_RATIO": 1.1,
     }]}}), monotonic=lambda: 0)
     with pytest.raises(DownloadValidationFailure, match="company_ratio_out_of_range") as caught:

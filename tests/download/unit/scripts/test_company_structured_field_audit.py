@@ -537,7 +537,7 @@ def test_existing_source_check_routes_the_explicit_field_mode_without_running_di
 class _StructuredPageSession:
     def __init__(self, rows, *, total=None, pages=1):
         self.requests = []
-        self.payload = {"result": {"count": len(rows) if total is None else total, "pages": pages, "data": rows}}
+        self.payload = {"code": 0, "success": True, "result": {"count": len(rows) if total is None else total, "pages": pages, "data": rows}}
 
     def get(self, url, **kwargs):
         self.requests.append((url, kwargs))
@@ -628,7 +628,7 @@ def test_structured_sample_rejects_contradictory_pagination_without_more_request
     rows = [{"SECURITY_CODE": "600001", "TRADE_DATE": day.isoformat(), "PLEDGE_RATIO": 0} for _ in rows]
     session = _StructuredPageSession(rows, total=total, pages=pages)
     result = _page_run(session, StructuredCompanyQuery("pledge", day, day))
-    assert result["status"] == "failed" and result["failure"] == "company_structured_page_pagination_invalid"
+    assert result["status"] == "failed" and result["failure"] == "DownloadValidationFailure"
     assert len(session.requests) == 1
 
 

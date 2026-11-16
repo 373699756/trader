@@ -20,6 +20,8 @@ from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.shared.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
 from trader.download.domain.company_facts import CompileCompanyFacts
+from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
+from trader.download.infra.company_facts_protocol import EncodeCompanyTime
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
 
@@ -27,7 +29,8 @@ def _fixture(tmp_path):
     writer = SQLiteCompanyFactsIndexFixture(tmp_path / "facts.sqlite3")
     writer.initialize()
     facts = CompileCompanyFacts(_snapshot(), CompanyEventPolicyFixture())
-    writer.publish((facts,), {"investigation": "cninfo"}, None, _AT)
+    receipt = CompanyInputReceipt("cninfo", "investigation", facts.code, "revision-1", writer.extraction_hash, b"b" * 32, _AT)
+    writer.publish((facts,), {"investigation": "cninfo"}, None, _AT, receipts=(receipt,))
     with SqliteSession(
         writer.path, SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture(),
     ) as connection:
@@ -37,8 +40,18 @@ def _fixture(tmp_path):
             "JOIN company_risk_evidence re ON re.risk_id=r.id "
             "JOIN company_evidence_ref e ON e.id=re.evidence_id"
         )]
+        publication = ReadCompanyPublicationIdentity(connection)
     assert len(risks) == len(links) == 1
-    return writer.path, {"risks": risks, "evidence": links}
+    links[0]["receipts"] = [{
+        "record_hash": receipt.record_hash, "extraction_hash": receipt.extraction_hash.hex(),
+        "body_hash": receipt.body_hash.hex(), "published_at": EncodeCompanyTime(_AT), "policy_id": "",
+    }]
+    return writer.path, {
+        "publication": {"content_hash": publication.content_hash.hex(),
+                        "extraction_hash": publication.extraction_hash.hex(),
+                        "published_at": publication.published_at.isoformat()},
+        "risks": risks, "evidence": links,
+    }
 
 
 def _compare(path, baseline_path):
@@ -83,7 +96,7 @@ def test_export_deadline_does_not_create_or_modify_files(tmp_path):
     assert not target.exists() and source.read_bytes() == before
 
 
-@pytest.mark.parametrize("change", ("none", "business", "evidence", "missing"))
+@pytest.mark.parametrize("change", ("none", "business", "evidence", "missing", "revision", "body", "receipt_age", "unconfirmed"))
 def test_risk_comparison_preserves_ids_and_business_evidence_without_writing(tmp_path, change):
     path, baseline = _fixture(tmp_path)
     risk = baseline["risks"][0]
@@ -94,6 +107,14 @@ def test_risk_comparison_preserves_ids_and_business_evidence_without_writing(tmp
         baseline["evidence"][0]["source_key"] = "original-evidence-not-in-current-publication"
     elif change == "missing":
         risk["event_key"] = baseline["evidence"][0]["event_key"] = "missing-original-risk"
+    elif change == "revision":
+        baseline["evidence"][0]["receipts"][0]["record_hash"] = "previous-revision"
+    elif change == "body":
+        baseline["evidence"][0]["receipts"][0]["body_hash"] = "a" * 64
+    elif change == "receipt_age":
+        baseline["evidence"][0]["receipts"][0]["published_at"] -= 1
+    elif change == "unconfirmed":
+        baseline["evidence"][0]["receipts"] = []
     baseline_path = tmp_path / "baseline.json"
     baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
     before = path.read_bytes()
@@ -107,16 +128,20 @@ def test_risk_comparison_preserves_ids_and_business_evidence_without_writing(tmp
     assert report["missing_means_resolved"] is False
     assert "private original case content" not in json.dumps(report)
     assert "original-evidence-not-in-current-publication" not in json.dumps(report)
-    if change in ("business", "evidence"):
+    if change in ("business", "evidence", "revision", "body", "receipt_age", "unconfirmed"):
         assert len(result.changed_requires_review) == 1
         changed = result.changed_requires_review[0]
         assert changed.changed_fields == (("case_number",) if change == "business" else ())
-        assert changed.original_evidence_retained is (change != "evidence")
+        assert changed.original_evidence_retained is (change in ("business", "unconfirmed"))
+        assert changed.evidence_identity_confirmed is (change != "unconfirmed")
     if change == "missing":
         assert result.missing == ((risk["code"], "missing-original-risk"),)
 
 
-@pytest.mark.parametrize("invalid", ("duplicate", "orphan_evidence", "no_evidence", "bool", "category", "field_missing"))
+@pytest.mark.parametrize("invalid", (
+    "duplicate", "orphan_evidence", "no_evidence", "bool", "category", "field_missing", "old_structure",
+    "receipt_missing", "receipt_digest", "receipt_bool", "duplicate_receipt", "duplicate_evidence", "publication",
+))
 def test_invalid_risk_baseline_is_rejected_without_repair_or_writes(tmp_path, invalid):
     path, baseline = _fixture(tmp_path)
     if invalid == "duplicate":
@@ -129,14 +154,77 @@ def test_invalid_risk_baseline_is_rejected_without_repair_or_writes(tmp_path, in
         baseline["risks"][0]["risk_type"] = True
     elif invalid == "category":
         baseline["risks"][0]["status"] = 9
-    else:
+    elif invalid == "field_missing":
         del baseline["risks"][0]["effective_at"]
+    elif invalid == "old_structure":
+        del baseline["publication"]
+    elif invalid == "receipt_missing":
+        del baseline["evidence"][0]["receipts"]
+    elif invalid == "receipt_digest":
+        baseline["evidence"][0]["receipts"][0]["body_hash"] = "wrong"
+    elif invalid == "receipt_bool":
+        baseline["evidence"][0]["receipts"][0]["published_at"] = True
+    elif invalid == "duplicate_receipt":
+        baseline["evidence"][0]["receipts"] *= 2
+    elif invalid == "duplicate_evidence":
+        baseline["evidence"] *= 2
+    elif invalid == "publication":
+        baseline["publication"]["published_at"] = "2026-11-16T10:00:00"
     baseline_path = tmp_path / "baseline.json"
     baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
     before = path.read_bytes()
     with pytest.raises(ValueError, match="company_risk_baseline_"):
         _compare(path, baseline_path)
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("proof", ("no_receipt", "no_body", "failed_only"))
+def test_existing_edges_without_original_valid_body_proof_remain_unconfirmed(tmp_path, proof):
+    path, _ = _fixture(tmp_path)
+    with sqlite3.connect(path) as connection:
+        if proof == "no_receipt":
+            connection.execute("DELETE FROM company_input_receipt")
+        elif proof == "no_body":
+            connection.execute("UPDATE company_input_receipt SET body_hash=NULL")
+        else:
+            connection.execute("UPDATE company_input_receipt SET outcome='field_attempted'")
+    baseline_path = tmp_path / "baseline.json"
+    WriteCompanyRiskBaseline(path, baseline_path, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
+    result = _compare(path, baseline_path)
+    assert result.exactly_preserved == 0 and not result.all_old_risks_and_evidence_preserved
+    change, = result.changed_requires_review
+    assert change.original_evidence_retained and not change.evidence_identity_confirmed
+    assert ProjectCompanyRiskComparison(result)["changed_requires_review"][0]["evidence_identity_confirmed"] is False
+
+
+def test_new_receipt_keeps_original_proof_and_changed_extraction_does_not_erase_it(tmp_path):
+    path, _ = _fixture(tmp_path)
+    baseline_path = tmp_path / "baseline.json"
+    WriteCompanyRiskBaseline(path, baseline_path, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO company_input_receipt SELECT source,source_key,code,'revision-2',?,body_hash,published_at,outcome,policy_id "
+            "FROM company_input_receipt", (b"n" * 32,),
+        )
+        connection.execute("UPDATE company_publication SET content_hash=?,extraction_hash=?", (b"n" * 32, b"n" * 32))
+    result = _compare(path, baseline_path)
+    assert result.all_old_risks_and_evidence_preserved
+    assert result.baseline_publication_hash != result.publication_hash
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM company_input_receipt WHERE record_hash='revision-1'")
+    lost = _compare(path, baseline_path)
+    assert not lost.all_old_risks_and_evidence_preserved
+    assert not lost.changed_requires_review[0].original_evidence_retained
+
+
+def test_export_with_missing_risk_edge_is_rejected_before_creating_target(tmp_path):
+    path, _ = _fixture(tmp_path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM company_risk_evidence")
+    target = tmp_path / "baseline.json"
+    with pytest.raises(ValueError, match="original_evidence_missing"):
+        WriteCompanyRiskBaseline(path, target, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
+    assert not target.exists()
 
 
 def test_expired_budget_precedes_missing_baseline_file_and_database_access(tmp_path):
@@ -156,8 +244,8 @@ def test_baseline_read_parse_and_rows_observe_the_same_cancellation(tmp_path, mo
         "status": 1, "resolved_at": None, "expires_at": None,
     }
     baseline = {"risks": [risk, dict(risk, event_key="second")], "evidence": [
-        {"code": "600001", "event_key": key, "source": 1, "source_key": key} for key in ("first", "second")
-    ]}
+        {"code": "600001", "event_key": key, "source": 1, "source_key": key, "receipts": []} for key in ("first", "second")
+    ], "publication": {"content_hash": "a" * 64, "extraction_hash": "b" * 64, "published_at": _AT.isoformat()}}
     content = json.dumps(baseline).encode()
     phase = "start"
     identities = 0
@@ -231,7 +319,8 @@ def test_baseline_is_a_bounded_regular_file_and_cancelled_reads_do_not_create_da
     database = tmp_path / "missing.sqlite3"
     with pytest.raises(ValueError, match="regular_file_size_limit"):
         _compare(database, baseline)
-    baseline.write_text('{"risks": [], "evidence": []}', encoding="utf-8")
+    baseline.write_text(json.dumps({"publication": {"content_hash": "a" * 64, "extraction_hash": "b" * 64,
+                                                   "published_at": _AT.isoformat()}, "risks": [], "evidence": []}), encoding="utf-8")
     with pytest.raises(sqlite3.OperationalError, match="interrupted"):
         CompareCompanyRisks(
             database, baseline, deadline=time.monotonic() + 5,
@@ -262,7 +351,7 @@ def test_comparison_reaches_public_report_whitelist(tmp_path):
     index = collection_fixtures._index(tmp_path)
     index.publish(("600001",), collection_fixtures.NOW)
     baseline = tmp_path / "baseline.json"
-    baseline.write_text('{"risks": [], "evidence": []}', encoding="utf-8")
+    WriteCompanyRiskBaseline(index.facts_path, baseline, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
     report = company_query_audit.AuditCompanyDatabase(
         index.path, now=collection_fixtures.NOW, budget_seconds=30, facts_path=index.facts_path,
         sqlite_policy=SqlitePolicyFixture(), risk_baseline=baseline,
@@ -280,7 +369,7 @@ def test_comparison_budget_uses_existing_audit_deadline_classification(tmp_path,
     index = collection_fixtures._index(tmp_path)
     index.publish(("600001",), collection_fixtures.NOW)
     baseline = tmp_path / "baseline.json"
-    baseline.write_text('{"risks": [], "evidence": []}', encoding="utf-8")
+    WriteCompanyRiskBaseline(index.facts_path, baseline, deadline=time.monotonic() + 5, sqlite_policy=SqlitePolicyFixture())
 
     def interrupted(*args, cancel_requested, **kwargs):
         monkeypatch.setattr(company_query_audit.time, "monotonic", lambda: float("inf"))

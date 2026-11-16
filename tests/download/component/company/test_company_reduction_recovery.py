@@ -121,7 +121,7 @@ def test_legacy_closure_becomes_review_without_redownload_and_preserves_valid_re
     _legacy(index, item, body)
     receipts = _valid_receipts(index)
 
-    index.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    index.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
 
     facts = _facts(index)
     assert facts.risk_events == ()
@@ -133,7 +133,7 @@ def test_legacy_closure_becomes_review_without_redownload_and_preserves_valid_re
         assert collected.run("SELECT count(*) FROM company_field_repairs WHERE state='pending'").require_one()[0] == 0
     for minute in range(2, 4):
         restarted = fixtures._index(tmp_path)
-        restarted.prepare_publication(item.codes, NOW + timedelta(minutes=minute))
+        restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=minute))
         assert _facts(restarted).risk_events == ()
         assert _valid_receipts(restarted) == receipts
         assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
@@ -177,7 +177,7 @@ def test_reduction_date_rule_two_recovers_previous_attempt_and_keeps_ratio(tmp_p
     _legacy(index, item, _DATES, dates=True)
     receipts = _valid_receipts(index)
 
-    index.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    index.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
 
     plan = _facts(index).risk_events[0].reduction_plan
     assert (plan.planned_start_date, plan.planned_end_date, plan.planned_ratio_pct) == (
@@ -193,7 +193,7 @@ def test_reduction_date_rule_two_recovers_previous_attempt_and_keeps_ratio(tmp_p
     assert _valid_receipts(index) == receipts
     for minute in range(2, 4):
         restarted = fixtures._index(tmp_path)
-        restarted.prepare_publication(item.codes, NOW + timedelta(minutes=minute))
+        restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=minute))
         assert _facts(restarted).risk_events[0].reduction_plan == plan
         assert _valid_receipts(restarted) == receipts
         assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
@@ -212,7 +212,7 @@ def test_recovered_closure_keeps_original_plan_and_requires_an_unambiguous_holde
     _legacy(index, item, body, keep_original=True)
     receipts = _valid_receipts(index)
 
-    index.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    index.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
 
     event, = _facts(index).risk_events
     assert event.event_id == original_event.event_id
@@ -301,7 +301,7 @@ def test_qualified_plan_retries_old_negative_measurement_and_proof_once(tmp_path
     valid = _valid_receipts(index)
     before, = _facts(index).risk_events
 
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
 
     restored, = _facts(index).risk_events
     assert restored == replace(before, reduction_plan=plan, expires_at=expiry)
@@ -320,7 +320,7 @@ def test_qualified_plan_retries_old_negative_measurement_and_proof_once(tmp_path
 
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
     assert _facts(restarted).risk_events == (restored,) and _valid_receipts(restarted) == valid
     with SqliteSession(index.facts_path) as formal:
         assert ReadCompanyPublicationIdentity(formal) == publication

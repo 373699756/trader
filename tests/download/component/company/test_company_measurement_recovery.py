@@ -63,7 +63,7 @@ def test_changed_plan_rule_reuses_local_text_once_and_preserves_ordinary_valid(t
         plan, = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
     assert (plan.action, plan.reason) == ("extract", "local_text_available")
 
-    index.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    index.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     reader = SQLiteCompanyEvidenceReaderFixture(index.facts_path)
     actual = reader.read(item.codes)[0].risk_events[0]
     assert actual.reduction_plan.planned_ratio_pct == ratio
@@ -79,7 +79,7 @@ def test_changed_plan_rule_reuses_local_text_once_and_preserves_ordinary_valid(t
     assert len(attempted) == 1
 
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=2))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=2))
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     assert _attempt_receipts(restarted, "planned_pct", "reduction_total_capital_ratio:3") == attempted
     assert _valid_receipts(restarted) == ordinary
@@ -106,7 +106,7 @@ def test_changed_cny_amount_rule_recovers_local_text_once_without_inventing_basi
     _old_attempt(index, item, event.event_id, "contract_amount", "explicit_cny_contract_amount:2")
     ordinary = _valid_receipts(index)
 
-    index.prepare_publication(item.codes, NOW + timedelta(minutes=1))
+    index.prepare_and_publish(item.codes, NOW + timedelta(minutes=1))
     reader = SQLiteCompanyEvidenceReaderFixture(index.facts_path)
     actual, = reader.read(item.codes)[0].positive_events
     assert actual.measurements.contract_amount_cny == 3_340_000
@@ -123,7 +123,7 @@ def test_changed_cny_amount_rule_recovers_local_text_once_without_inventing_basi
     assert len(attempted) == 1
 
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW + timedelta(minutes=2))
+    restarted.prepare_and_publish(item.codes, NOW + timedelta(minutes=2))
     assert restarted.pending_documents(item.codes, NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
     assert _attempt_receipts(restarted, "contract_amount", "explicit_cny_contract_amount:3") == attempted
     assert _valid_receipts(restarted) == ordinary
@@ -153,7 +153,7 @@ def test_unchanged_planned_share_action_records_attempt_and_restarts_without_bod
         return read(digest, check=check)
 
     monkeypatch.setattr(index._documents, "read", observed)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     index.publish(item.codes, NOW, changed_only=True)
     assert reads
     assert _facts(index) == before
@@ -173,7 +173,7 @@ def test_unchanged_planned_share_action_records_attempt_and_restarts_without_bod
         raise AssertionError("unchanged checked share action must reuse its exact formal attempt")
 
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
     restarted.publish(item.codes, NOW, changed_only=True)
     assert _facts(restarted) == before
     assert _valid_receipts(restarted) == valid
@@ -225,7 +225,7 @@ def test_share_link_attempt_only_reuses_its_exact_material_and_candidate(tmp_pat
     body = "本公司控股股东计划增持公司股份，拟增持比例不低于公司总股本的1%。" + _DETAIL
     assert index.commit_document(item, fixtures._extraction(body), NOW)
     index.publish(item.codes, NOW)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     with SqliteSession(index.facts_path) as formal:
         assert formal.run(
             "SELECT 1 FROM company_input_receipt WHERE policy_id LIKE '%:same_body_share_link:%'",
@@ -275,7 +275,7 @@ def test_share_check_restart_uses_only_committed_attempt_after_publication_failu
 
     monkeypatch.setattr(index._facts, "publish", fail_publication)
     with pytest.raises(RuntimeError, match="fixture_publication_interrupted"):
-        index.prepare_publication(item.codes, NOW)
+        index.prepare_and_publish(item.codes, NOW)
     restarted = fixtures._index(tmp_path)
     reads = []
     read = restarted._documents.read
@@ -285,7 +285,7 @@ def test_share_check_restart_uses_only_committed_attempt_after_publication_failu
         return read(digest, check=check)
 
     monkeypatch.setattr(restarted._documents, "read", observed)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
     assert bool(reads) is not committed
     assert _valid_receipts(restarted) == valid
 
@@ -305,7 +305,7 @@ def test_interrupted_valued_share_link_waits_for_formal_attempt_before_retiring(
             "SELECT 1 FROM company_field_repairs WHERE rule_id LIKE 'same_body_share_link:%' AND state='pending'",
         ).fetchone() is not None
     restarted = fixtures._index(tmp_path)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
     with SqliteSession(index.facts_path) as formal:
         assert formal.run(
             "SELECT 1 FROM company_input_receipt WHERE policy_id LIKE '%:same_body_share_link:%' AND outcome='field_attempted'",
@@ -316,7 +316,7 @@ def test_interrupted_valued_share_link_waits_for_formal_attempt_before_retiring(
 
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
 
 
 def _checked_share_notice(tmp_path, kind):
@@ -343,7 +343,7 @@ def _checked_share_notice(tmp_path, kind):
 def test_unchanged_reduction_or_unknown_subject_preserves_facts_and_does_not_reread(tmp_path, monkeypatch, kind):
     index, item = _checked_share_notice(tmp_path, kind)
     before, valid = _facts(index), _valid_receipts(index)
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
     assert _facts(index) == before
     assert _valid_receipts(index) == valid
     with SqliteSession(index.path) as collected:
@@ -368,7 +368,7 @@ def test_unchanged_reduction_or_unknown_subject_preserves_facts_and_does_not_rer
 
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
     assert _facts(restarted) == before
     with SqliteSession(index.facts_path) as formal:
         assert ReadCompanyPublicationIdentity(formal) == publication
@@ -391,7 +391,7 @@ def test_unchanged_share_notice_requires_formal_commit_across_restart(tmp_path, 
 
     monkeypatch.setattr(index._facts, "publish", interrupted)
     with pytest.raises(RuntimeError, match="fixture_interrupted"):
-        index.prepare_publication(item.codes, NOW)
+        index.prepare_and_publish(item.codes, NOW)
     restarted = fixtures._index(tmp_path)
     reads = []
     read = restarted._documents.read
@@ -401,7 +401,7 @@ def test_unchanged_share_notice_requires_formal_commit_across_restart(tmp_path, 
         return read(digest, check=check)
 
     monkeypatch.setattr(restarted._documents, "read", observed)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
     assert bool(reads) is not committed
     assert _facts(restarted) == before and _valid_receipts(restarted) == valid
 
@@ -533,7 +533,7 @@ def test_maintenance_purpose_rechecks_old_negative_links_and_proofs_once(tmp_pat
     with SqliteSession(index.facts_path) as formal:
         original = frozenset(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt"))
 
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
 
     restored, = _facts(index).positive_events
     assert restored.measurements.purpose is RepurchasePurpose.OTHER
@@ -555,7 +555,7 @@ def test_maintenance_purpose_rechecks_old_negative_links_and_proofs_once(tmp_pat
 
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
     with SqliteSession(index.facts_path) as formal:
         assert ReadCompanyPublicationIdentity(formal) == publication
 
@@ -601,7 +601,7 @@ def test_first_repurchase_quantity_rechecks_old_attempts_and_publishes_exact_pro
     with SqliteSession(index.facts_path) as formal:
         original = frozenset(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt"))
 
-    index.prepare_publication(item.codes, NOW)
+    index.prepare_and_publish(item.codes, NOW)
 
     restored, = _facts(index).positive_events
     assert restored.event_id == event.event_id and restored.evidence_ids == event.evidence_ids
@@ -624,6 +624,6 @@ def test_first_repurchase_quantity_rechecks_old_attempts_and_publishes_exact_pro
 
     restarted = fixtures._index(tmp_path)
     monkeypatch.setattr(restarted._documents, "read", unexpected_read)
-    restarted.prepare_publication(item.codes, NOW)
+    restarted.prepare_and_publish(item.codes, NOW)
     with SqliteSession(index.facts_path) as formal:
         assert ReadCompanyPublicationIdentity(formal) == publication

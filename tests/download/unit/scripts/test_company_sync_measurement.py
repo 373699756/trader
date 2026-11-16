@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from datetime import datetime
 from pathlib import Path
 from threading import Event, Thread
@@ -28,7 +28,7 @@ from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequ
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
-from trader.download.infra import company_evidence_index, company_material_cleanup
+from trader.download.infra import company_material_cleanup, company_publication_preparation
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_http import CompanyRequestPacer
 from trader.download.infra.company_raw_files import CompanyLocalDocument, CompanyRawFiles
@@ -103,12 +103,12 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
     monkeypatch.setattr(CompanyRawFiles, "_size", staticmethod(lambda directory: 3))
     monkeypatch.setattr(CompanyRawFiles, "digest", lambda instance, path, **kwargs: b"d" * 32)
     monkeypatch.setattr(CompanyRequestPacer, "wait", lambda *args: None)
-    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "publish", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "publication", lambda *args, **kwargs: nullcontext(None))
     monkeypatch.setattr(SQLiteCompanyFactsIndex, "publish", lambda *args, **kwargs: None)
     monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "initialize", lambda *args: None)
     monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "prepare_publication", lambda *args: None)
-    monkeypatch.setattr(company_evidence_index, "ReadCompanySnapshotRows", lambda *args, **kwargs: ())
-    monkeypatch.setattr(company_evidence_index, "CompileCompanyFacts", lambda *args: None)
+    monkeypatch.setattr(company_publication_preparation, "ReadCompanySnapshotRows", lambda *args, **kwargs: ())
+    monkeypatch.setattr(company_publication_preparation, "CompileCompanyFacts", lambda *args: None)
     monkeypatch.setattr(SQLiteCompanyFactsIndex, "publish_file", lambda *args: None)
     monkeypatch.setattr(company_material_cleanup, "ReleaseCompanyMaterialFiles", lambda *args, **kwargs: None)
     monkeypatch.setattr(CompanyRawFiles, "_reservation_usage", lambda *args: (0, 0, 0, 0))
@@ -135,9 +135,10 @@ def test_live_measurement_uses_real_cli_entrypoint_and_measures_nested_routes(tm
         pacer.wait()
         collection.initialize()
         collection.prepare_publication(("600001",), _NOW)
-        company_evidence_index.ReadCompanySnapshotRows(None, None, ("600001",), _NOW, b"a" * 32, cancel_requested=None)
-        company_evidence_index.CompileCompanyFacts(None, None)
-        collection.publish(("600001",), _NOW)
+        company_publication_preparation.ReadCompanySnapshotRows(None, None, ("600001",), _NOW, b"a" * 32, cancel_requested=None)
+        company_publication_preparation.CompileCompanyFacts(None, None)
+        with collection.publication(("600001",), _NOW):
+            pass
         facts.publish((), {}, None, _NOW)
         facts.publish_file()
         company_material_cleanup.ReleaseCompanyMaterialFiles(
@@ -192,15 +193,15 @@ def test_publication_phase_failure_restores_all_new_owners_and_keeps_only_failur
         raise original
 
     def main(argv):
-        company_evidence_index.CompileCompanyFacts("private-input", "private-policy")
+        company_publication_preparation.CompileCompanyFacts("private-input", "private-policy")
 
-    monkeypatch.setattr(company_evidence_index, "CompileCompanyFacts", failed_compile)
+    monkeypatch.setattr(company_publication_preparation, "CompileCompanyFacts", failed_compile)
     monkeypatch.setattr(cli, "Main", main)
     owners = (
         (SQLiteCompanyEvidenceIndex, "initialize"),
         (SQLiteCompanyEvidenceIndex, "prepare_publication"),
-        (company_evidence_index, "ReadCompanySnapshotRows"),
-        (company_evidence_index, "CompileCompanyFacts"),
+        (company_publication_preparation, "ReadCompanySnapshotRows"),
+        (company_publication_preparation, "CompileCompanyFacts"),
         (SQLiteCompanyFactsIndex, "publish_file"),
         (company_material_cleanup, "ReleaseCompanyMaterialFiles"),
         (CompanyRawFiles, "_reservation_usage"),
@@ -219,6 +220,27 @@ def test_publication_phase_failure_restores_all_new_owners_and_keeps_only_failur
     operation = next(row for row in payload["operations"] if row["operation"] == "facts_compile")
     assert operation["calls"] == 1 and operation["failures"] == [{"category": "runtime_error", "calls": 1}]
     assert "private" not in report.read_text(encoding="utf-8")
+
+
+def test_publication_measurement_includes_failure_inside_the_open_candidate_lease(tmp_path, monkeypatch):
+    configuration, report = _paths(tmp_path)
+    original = RuntimeError("private-commit-payload")
+    monkeypatch.setattr(SQLiteCompanyEvidenceIndex, "publication", lambda *args, **kwargs: nullcontext(None))
+    publication = SQLiteCompanyEvidenceIndex.publication
+
+    def main(argv):
+        collection = object.__new__(SQLiteCompanyEvidenceIndex)
+        with collection.publication(("600001",), _NOW):
+            raise original
+
+    monkeypatch.setattr(cli, "Main", main)
+    with pytest.raises(RuntimeError) as raised:
+        company_pipeline_audit.MeasureCompanySync(configuration, report)
+    assert raised.value is original and SQLiteCompanyEvidenceIndex.publication is publication
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    operation = next(row for row in payload["operations"] if row["operation"] == "collection_publish")
+    assert operation["calls"] == 1 and operation["failures"] == [{"category": "runtime_error", "calls": 1}]
+    assert "private-commit" not in report.read_text(encoding="utf-8")
 
 
 def test_candidate_reservation_scan_is_observed_without_counting_it_as_legacy_usage(tmp_path):

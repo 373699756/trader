@@ -7,29 +7,29 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 import sqlite3
 import json
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import cast
-from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from trader.download.application.company_report_inputs import CompanyReportInputPlan
-from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
+from trader.download.application.company_publication import CompanyPublicationSession
+from trader.download.infra.company_publication_commit import OpenCompanyPublication
+from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.infra.company_announcement_links import (
-    LinkCompanyAnnouncementNumbers, WriteCompanyAnnouncementNumbers,
+    WriteCompanyAnnouncementNumbers,
 )
 from trader.download.domain.company_event_extraction import (
-    CompanyDocumentNeedsReview, ExtractCompanyLinkCandidate, ResolveCompanyLinks,
+    ExtractCompanyLinkCandidate,
 )
 from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
     CompanyInputValidationFailure,
     CompanyDocument,
-    IsTransientCompanyDocumentFailure,
     CompanyDocumentPolicies,
     CompanyDocumentTask,
     CompanyDocumentWorkload,
@@ -52,12 +52,8 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyPage,
     StructuredCompanyQuery,
 )
-from trader.download.domain.company_facts import CompanyFacts, CompileCompanyFacts
-from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_financial_report import CompanyFinancialReportRequest, IsCompanyFinancialReportTitle
 from trader.download.infra.company_financial_report_index import PlanCompanyMissingFinancialReports, PrioritizeCompanyFinancialReportInputs
-from trader.download.infra.company_financial_publication import PrepareCompanyFinancialReports
-from trader.download.infra.company_field_publication import PrepareCompanyFieldResults
 from trader.download.infra.company_disclosure_queries import (
     CommitDisclosureQueryPage,
     DeferDisclosurePartition,
@@ -71,51 +67,38 @@ from trader.download.infra.company_disclosure_queries import (
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.company_link_codec import EncodeCompanyLink
-from trader.download.infra.company_supersession import PublishCompanySupersessions
 from trader.download.infra.company_coverage_progress import ReadCompanyCoverageProgress
-from trader.download.infra.company_publication_progress import ReportCompanyVerification
 from trader.download.infra.download_failure_diagnostics import WriteDownloadFailure
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureRecord
 from trader.download.infra.company_evidence_initialization import InitializeCompanyEvidence
-from trader.download.infra.company_fact_inputs import (
-    BindCompanyEvidenceSource,
-    BuildCompanySnapshot,
-    ReadCompanySnapshotRows,
-    ReadCompanySnapshotShared,
-)
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_document_recovery import RepairCompanyDocumentFiles, RestoreCompanyDocumentTasks
 from trader.download.infra.company_field_recovery import (
-    CompleteCompanyFieldRepairs,
-    CompanyFieldRepairReceipts,
-    PrepareCompanyShareRecheckReceipts,
     QueueCompanyFieldRepairs,
     QueueCompanyShareActionRechecks,
     QueueCompanyContractSigningRechecks,
     RecoverRequiredCompanyText,
     QueueCompanyReductionRechecks,
     PrioritizeCompanyRepurchaseInputs,
-    RegisterCompanyFieldAttempts,
     RegisterCompanyMaterialDependencies,
     RestoreCompanyMaterialDependencies,
     RestoreCompanyFieldRepairs,
 )
 from trader.download.infra import company_material_cleanup
 from trader.download.infra.company_material_cleanup import ReleasePublishedCompanyMaterial
-from trader.download.infra.company_publication_reads import PendingCompanyContractLinkCodes, ReadCompanyPublicationLinks
+from trader.download.infra.company_publication_reads import PendingCompanyContractLinkCodes
 from trader.download.infra.company_contract_link_rules import (
-    ApplyCompanyContractLinkRefreshes, CompanyContractLinkRefresh,
     WriteCompanyContractLinkRules,
 )
-from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
-from trader.download.domain.company_annual_income import ApplyCompanyAnnualIncome, CompanyAnnualIncome, CompanyAnnualIncomeRequest
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
+from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
 from trader.download.infra.company_annual_income_index import (
     PlanCompanyAnnualReportRequests,
     PrioritizeCompanyAnnualReportInputs,
     PlanCompanyAnnualIncomeRequests,
     WriteCompanyAnnualIncome,
 )
-from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES, DecodeCompanyLabel, RequireCompanyTime
+from trader.download.infra.company_facts_protocol import RequireCompanyTime
 from trader.download.infra.company_pipeline_queries import (
     CheckDisclosureQueryContract,
     IndexCompanyDocument,
@@ -1157,7 +1140,7 @@ class SQLiteCompanyEvidenceIndex:
             MarkCompanyDirty(connection, (code,))
         return changes
 
-    def prepare_publication(self, codes: Sequence[str], observed_at: datetime) -> None:
+    def prepare_publication(self, codes: Sequence[str], observed_at: datetime) -> bool:
         self._run_cutoff = observed_at
         contract_codes: list[str] = []
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
@@ -1232,9 +1215,7 @@ class SQLiteCompanyEvidenceIndex:
                 MarkCompanyDirty(connection, tuple(codes))
         with self._connect() as connection:
             prepared = connection.run("SELECT 1 FROM disclosures WHERE body_retained=1 LIMIT 1").fetchone()
-        if prepared is not None:
-            # Drain a recovered batch before any new dispatch consumes temporary capacity.
-            self.publish(codes, observed_at, changed_only=True)
+        return prepared is not None
 
     def published_count(self, codes: Sequence[str]) -> int:
         with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
@@ -1255,193 +1236,27 @@ class SQLiteCompanyEvidenceIndex:
                     return True
         return False
 
-    def publish(self, codes: Sequence[str], observed_at: datetime, *, changed_only: bool = False) -> int:
-        requested = tuple(sorted(set(codes)))
-        if len(requested) > 12_000:
-            raise ValueError("company_publication_population_exceeded")
-        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-            connection.run_many("INSERT OR IGNORE INTO company_population VALUES(?)", ((code,) for code in requested))
-        prepared: list[CompanyFacts] = []
-        previous_facts: dict[str, CompanyFacts] = {}
-        receipts: list[tuple[object, ...]] = []
-        formal_receipts: list[CompanyInputReceipt] = []
-        field_results: list[CompanyFieldConclusion] = []
-        contract_refreshes: list[CompanyContractLinkRefresh] = []
-        listing_dates = {item.code: item.listed_on for item in self._listings}
-        with (
-            SqliteSession(
-                self.path,
-                SqliteConnectionOptions(read_only=True),
-                cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
-            ) as source,
-            ExitStack() as formal_scope,
-        ):
-            formal = formal_scope.enter_context(SqliteSession(
-                self.facts_path,
-                SqliteConnectionOptions(read_only=True),
-                cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
-            ))
-            source_version = source.run("PRAGMA data_version").require_one()[0]
-            with SqliteTransaction(source), SqliteTransaction(formal):
-                parent = ReadCompanyPublicationIdentity(formal)
-                rebuild = parent is not None and parent.extraction_hash != self._facts.extraction_hash
-                existing = {row[0] for row in formal.run("SELECT code FROM company_facts")}
-                if rebuild:
-                    requested = tuple(sorted(set(requested) | existing))
-                elif changed_only and parent is not None and parent.published_at.date() == observed_at.date():
-                    dirty = {row[0] for row in source.run("SELECT code FROM company_dirty_codes")}
-                    requested = tuple(code for code in requested if code in dirty or code not in existing)
-                if not requested:
-                    return 0
-                sources: dict[str, str] = {}
-                for row in formal.run("SELECT source,source_key FROM company_evidence_ref"):
-                    BindCompanyEvidenceSource(sources, row[1], DecodeCompanyLabel(EVIDENCE_SOURCES, row[0]))
-                shared = ReadCompanySnapshotShared(source, observed_at)
-                for offset in range(0, len(requested), 128):
-                    batch = requested[offset : offset + 128]
-                    inputs = ReadCompanySnapshotRows(source, formal, batch, observed_at, b"" if rebuild else self._facts.extraction_hash,
-                                                    cancel_requested=self._cancel_requested)
-                    previous = {item.code: item for item in ReadCompanyFactRows(formal, batch)}
-                    previous_facts.update(previous)
-                    link_rows = ReadCompanyPublicationLinks(
-                        source, batch, self._facts.extraction_hash, observed_at=observed_at,
-                        event_policy=self._event_policy, read_document=partial(self._documents.read, check=self._check_cancelled),
-                    ) if self._batch_publication_reads else ()
-                    for code in batch:
-                        self._check_cancelled()
-                        rows = inputs[code].disclosures
-                        for row in rows:
-                            if row["kind"] == "announcement":
-                                BindCompanyEvidenceSource(sources, row["source_key"], row["source"])
-                        snapshot = BuildCompanySnapshot(
-                            code,
-                            observed_at,
-                            inputs[code],
-                            shared,
-                            listed_on=listing_dates.get(code),
-                            read_document=partial(self._documents.read, check=self._check_cancelled),
-                        )
-                        financial = PrepareCompanyFinancialReports(
-                            source, formal, snapshot.financials, previous[code].latest_financial if code in previous else None,
-                            snapshot.announcements, observed_at=observed_at, extraction_hash=self._facts.extraction_hash,
-                            read_document=partial(self._documents.read, check=self._check_cancelled),
-                        )
-                        snapshot = replace(snapshot, financials=financial.financials, failures=(*snapshot.failures, *financial.failures))
-                        formal_receipts.extend(financial.receipts)
-                        facts = CompileCompanyFacts(
-                            snapshot, self._event_policy, previous=None if rebuild else previous.get(code)
-                        )
-                        link_input = (
-                            next(item for item in link_rows if item.code == code)
-                            if self._batch_publication_reads
-                            else ReadCompanyPublicationLinks(
-                                source, (code,), self._facts.extraction_hash, observed_at=observed_at,
-                                event_policy=self._event_policy, read_document=partial(self._documents.read, check=self._check_cancelled),
-                            )[0]
-                        )
-                        contract_refreshes.extend(link_input.refreshes)
-                        review_keys = {(r.scope, r.reason_code, r.evidence_id) for r in facts.review_reasons}
-                        recompiled = {
-                            (r["source"], r["source_key"], r["record_hash"], r["body_hash"]) for r in rows
-                            if r["kind"] == "announcement" and r["body_checked"] and r["body_retained"]
-                            and not r["published_for_code"] and not r["superseded_for_code"] and CompanyDocumentNeedsReview(r["title"])
-                        }
-                        reviewed_inputs = {r.evidence_id for r in facts.review_reasons if r.scope == "positive"
-                                           and r.reason_code in {"progress_unlinked", "resolution_unlinked", "cancellation_unlinked"}}
-                        reviewed_inputs.difference_update(item[1] for item in recompiled)
-                        reviewed_inputs.update(
-                            r.binding.source_key for r in link_input.refreshes
-                            if (r.binding.source, r.binding.source_key, r.binding.record_hash, r.binding.body_hash) not in recompiled
-                        )
-                        # Current compiled input owns its business conclusions;
-                        # stale cache differences cannot add another blocker.
-                        reviews = (*facts.review_reasons, *(r for r in link_input.reviews if r.evidence_id in reviewed_inputs
-                                   and (r.scope, r.reason_code, r.evidence_id) not in review_keys))
-                        candidates = LinkCompanyAnnouncementNumbers(source, code, link_input.candidates)
-                        linked = ResolveCompanyLinks(candidates, facts.risk_events, facts.positive_events, reviews, self._event_policy)
-                        facts = replace(facts, risk_events=tuple(event for event in linked.risks if event.expires_at is None or event.expires_at > observed_at),
-                                        positive_events=ApplyCompanyAnnualIncome(code, linked.positives, inputs[code].annual_incomes, observed_at, financials=snapshot.financials), review_reasons=linked.reviews,
-                                        announcement_state=CompanyDataState.COMPLETE if snapshot.announcement_complete and not any(r.scope == "risk" for r in linked.reviews) else CompanyDataState.PARTIAL)
-                        prior = previous.get(code)
-                        if prior is not None and replace(facts, published_at=prior.published_at) == prior:
-                            facts = prior
-                        prepared.append(facts)
-                        formal_receipts.extend(PrepareCompanyShareRecheckReceipts(
-                            source, formal, facts, prior, observed_at=observed_at,
-                            extraction_hash=self._facts.extraction_hash, event_policy=self._event_policy,
-                            read_document=partial(self._documents.read, check=self._check_cancelled),
-                        ))
-                        fields = PrepareCompanyFieldResults(
-                            source, formal, facts, snapshot.announcements, observed_at=observed_at,
-                            extraction_hash=self._facts.extraction_hash, event_policy=self._event_policy, read_document=partial(self._documents.read, check=self._check_cancelled),
-                        )
-                        field_results.extend(fields.results)
-                        formal_receipts.extend(fields.receipts)
-                        receipts.extend(
-                            (row["id"], code, row["record_hash"], self._facts.extraction_hash, observed_at.isoformat())
-                            for row in rows
-                            if row["kind"] == "announcement"
-                            and row["body_checked"]
-                            and row["body_retained"]
-                            and not row["published_for_code"]
-                        )
-                        formal_receipts.extend(
-                            CompanyInputReceipt(row["source"], row["source_key"], code, row["record_hash"],
-                                                self._facts.extraction_hash, row["body_hash"], observed_at)
-                            for row in rows if row["kind"] == "announcement" and row["body_checked"]
-                            and row["body_retained"] and not row["published_for_code"]
-                        )
-                        formal_receipts.extend(
-                            CompanyInputReceipt(
-                                "eastmoney_annual_income",
-                                income.source_key,
-                                code,
-                                income.record_hash,
-                                self._facts.extraction_hash,
-                                None,
-                                observed_at,
-                            )
-                            for income in inputs[code].annual_incomes
-                        )
-                        formal_receipts.extend(
-                            CompanyInputReceipt(row["source"], row["source_key"], code, row["record_hash"], self._facts.extraction_hash,
-                                                row["payload_hash"], observed_at, row["document_failure"], row["retry_policy_id"])
-                            for row in rows if row["document_failure"] and not IsTransientCompanyDocumentFailure(row["document_failure"])
-                        )
-                        ReportCompanyVerification(self._stock_progress, facts, len(prepared), len(requested),
-                                                  len(rows), sum(bool(row["body_checked"]) for row in rows), facts is prior)
-            # A retained read handle prevents the writer's last close from
-            # checkpointing WAL before its file fingerprint is published.
-            formal_scope.close()
-            self._check_cancelled()
-            publication_id = uuid4().hex
-            if self._stock_progress is not None:
-                self._stock_progress(CompanyPublicationProgress("started", requested, publication_id=publication_id))
-            # Pin the sole collection writer across verification, formal commit and receipt creation.
-            with self._connect() as connection, SqliteTransaction(connection, immediate=True):
-                if source.run("PRAGMA data_version").require_one()[0] != source_version:
-                    raise RuntimeError("company_publication_source_changed")
-                RegisterCompanyFieldAttempts(connection, prepared, formal_receipts, self._facts.extraction_hash)
-                changed_codes = self._facts.publish(
-                    tuple(item for item in prepared if item is not previous_facts.get(item.code)),
-                    sources,
-                    parent,
-                    observed_at,
-                    receipts=(*formal_receipts, *CompanyFieldRepairReceipts(connection, requested, observed_at)),
-                    field_results=field_results,
-                )
-                connection.run_many("INSERT OR REPLACE INTO document_publications VALUES(?,?,?,?,?)", receipts)
-                ApplyCompanyContractLinkRefreshes(connection, contract_refreshes)
-                with SqliteSession(self.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
-                    repaired_codes = CompleteCompanyFieldRepairs(connection, formal, prepared, self._facts.extraction_hash)
-                    RegisterCompanyMaterialDependencies(connection, formal, prepared, self._facts.extraction_hash)
-                connection.run_many("DELETE FROM company_dirty_codes WHERE code=?", ((code,) for code in requested))
-                superseded_codes = tuple(sorted(set(repaired_codes) | set(
-                    PublishCompanySupersessions(connection, prepared, self._facts.extraction_hash))))
-                MarkCompanyDirty(connection, superseded_codes)
-                ReleasePublishedCompanyMaterial(connection, self._facts.extraction_hash)
-        if self._stock_progress is not None:
-            self._stock_progress(CompanyPublicationProgress("committed", requested, changed_codes, publication_id))
+    def publication(
+        self, codes: Sequence[str], observed_at: datetime, *, changed_only: bool = False,
+    ) -> AbstractContextManager[CompanyPublicationSession | None]:
+        return OpenCompanyPublication(
+            self._connect,
+            self._facts,
+            self.path,
+            codes,
+            observed_at,
+            changed_only=changed_only,
+            event_policy=self._event_policy,
+            listings=self._listings,
+            batch_publication_reads=self._batch_publication_reads,
+            read_document=partial(self._documents.read, check=self._check_cancelled),
+            check_cancelled=self._check_cancelled,
+            cancel_requested=self._cancel_requested,
+            sqlite_policy=self._sqlite_policy,
+            stock_progress=self._stock_progress,
+        )
+
+    def release_publication_material(self) -> None:
         company_material_cleanup.ReleaseCompanyMaterialFiles(
             self._connect,
             self._facts,
@@ -1450,11 +1265,6 @@ class SQLiteCompanyEvidenceIndex:
             self._run_cutoff,
             sqlite_policy=self._sqlite_policy,
         )
-        if superseded_codes:
-            self.publish(superseded_codes, observed_at, changed_only=True)
-        if not changed_only:
-            self.finish(observed_at)
-        return len(requested)
 
     def finish(self, observed_at: datetime) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):

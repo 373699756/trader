@@ -22,7 +22,7 @@ def _prepare(tmp_path, count=1):
     index = fixtures._index(tmp_path)
     items = tuple(fixtures._disclosure(str(number), "关于收到立案告知书的公告", when=fixtures.NOW - timedelta(seconds=number))
                   for number in range(count))
-    index.prepare_publication(items[0].codes, fixtures.NOW)
+    index.prepare_and_publish(items[0].codes, fixtures.NOW)
     index.commit_page(DisclosurePartition("sse", fixtures.NOW.date(), fixtures.NOW.date()),
                       DisclosurePage(items, count, False), fixtures.NOW)
     return index, items

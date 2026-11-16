@@ -10,7 +10,7 @@ from trader.download.domain.company_descriptions import (
     CompanyReviewDescription,
     CompanyRiskDescription,
 )
-from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, ExtractCompanyEvents
+from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, CompanyExtractedEvents, ExtractCompanyEvents
 from trader.download.domain.company_events import (
     CompanyDataState,
     CompanyEventPolicy,
@@ -76,6 +76,28 @@ class CompanyFacts:
             {item.event_id for item in self.positive_events}
         ) != len(self.positive_events):
             raise ValueError("company_facts_duplicate_events")
+
+
+def FinalizeCompanyFacts(
+    facts: CompanyFacts,
+    snapshot: CompanyEvidenceInput,
+    linked: CompanyExtractedEvents,
+    previous: CompanyFacts | None,
+) -> CompanyFacts:
+    """Apply linked conclusions at the fixed cutoff without refreshing unchanged facts."""
+    finalized = replace(
+        facts,
+        risk_events=tuple(event for event in linked.risks if event.expires_at is None or event.expires_at > snapshot.published_at),
+        positive_events=ApplyCompanyAnnualIncome(
+            facts.code, linked.positives, snapshot.annual_incomes, snapshot.published_at, financials=snapshot.financials,
+        ),
+        review_reasons=linked.reviews,
+        announcement_state=CompanyDataState.COMPLETE if snapshot.announcement_complete
+        and not any(review.scope == "risk" for review in linked.reviews) else CompanyDataState.PARTIAL,
+    )
+    if previous is not None and replace(finalized, published_at=previous.published_at) == previous:
+        return previous
+    return finalized
 
 
 def CompileCompanyFacts(

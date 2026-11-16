@@ -47,6 +47,9 @@ from trader.download.application.company_structured import CollectCompanyStructu
 from trader.download.application.company_report_inputs import (
     CompanyReportInputPlan, CollectCompanyReportInputs, PlanCompanyReportInputs,
 )
+from trader.download.application.company_publication import (
+    CompanyPublicationConflict, CompanyPublicationOutcome, CompanyPublicationPort, PublishCompanyEvidence,
+)
 from trader.download.application.company_failures import (
     CompanySourceCircuit, CompanyFailureCode, IsTransientCompanyFailure,
     CompanyFailureRequiresRetry,
@@ -59,7 +62,7 @@ from trader.download.application.company_progress import (
 _CompanySourceResult = TypeVar("_CompanySourceResult")
 
 
-class CompanyEvidenceIndex(Protocol):
+class CompanyEvidenceIndex(CompanyPublicationPort, Protocol):
     def report_input_plan(self, codes: Sequence[str], observed_at: datetime) -> CompanyReportInputPlan: ...
     def commit_financial_reports(self, request: CompanyFinancialReportRequest, rows: tuple[Disclosure, ...], observed_at: datetime) -> int: ...
     def document_publication_urgent(self, item: Disclosure) -> bool: ...
@@ -135,9 +138,8 @@ class CompanyEvidenceIndex(Protocol):
     ) -> int: ...
     def component_failure(self, component: str, scope: str, failure: str) -> None: ...
     def commit_news(self, code: str, rows: Sequence[Disclosure], observed_at: datetime) -> int: ...
-    def prepare_publication(self, codes: Sequence[str], observed_at: datetime) -> None: ...
+    def prepare_publication(self, codes: Sequence[str], observed_at: datetime) -> bool: ...
     def published_count(self, codes: Sequence[str]) -> int: ...
-    def publish(self, codes: Sequence[str], observed_at: datetime, *, changed_only: bool = False) -> int: ...
     def finish(self, observed_at: datetime) -> None: ...
 
 
@@ -223,6 +225,7 @@ class _SyncState:
     unpublished_documents: int = 0
     publication_pending_since: float | None = None
     publication_required: bool = True
+    publication_pending_codes: tuple[str, ...] = ()
 
 
 def SyncCompanyEvidence(
@@ -274,8 +277,10 @@ def _execute_company(
         ReportCompanyProgress(dependencies, "prepare", state, 1, completed=0)
         state.operations.call("prepare", index.initialize, component="prepare", endpoint="sqlite:company_indexes")
         if not CompanyCancelled(dependencies):
-            state.operations.call("prepare", partial(index.prepare_publication, population, observed_at),
-                                  component="prepare", endpoint="sqlite:company_publication")
+            recovered = state.operations.call("prepare", partial(index.prepare_publication, population, observed_at),
+                                               component="prepare", endpoint="sqlite:company_publication")
+            if recovered and not CompanyCancelled(dependencies):
+                _publish_batch(dependencies, population, observed_at, started, state)
         if not CompanyCancelled(dependencies):
             state.existing_published_codes = state.operations.call("inventory", partial(index.published_count, population),
                                                                   component="prepare", endpoint="sqlite:company_facts")
@@ -473,20 +478,25 @@ def _publish_batch(
 ) -> int | None:
     ReportCompanyProgress(dependencies, "facts", state, len(population), completed=0)
     if not CompanyCancelled(dependencies):
-        _publish_company_facts(
+        publication = _publish_company_facts(
             dependencies.index,
-            population,
+            tuple(sorted(set(population) | set(state.publication_pending_codes))),
             observed_at,
             state.operations,
             cancel_requested=dependencies.cancel_requested,
         )
         if CompanyCancelled(dependencies):
             return state.published
+        state.publication_pending_codes = publication.pending_codes
+        state.failures = tuple(item for item in state.failures if item != "publication:pending")
+        if publication.pending_codes:
+            state.failures += ("publication:pending",)
         state.published = dependencies.index.published_count(population)
-        ReportCompanyProgress(dependencies, "publish", state, len(population) - state.published, completed=state.published, status="complete")
+        ReportCompanyProgress(dependencies, "publish", state, max(len(population) - state.published, len(publication.pending_codes)),
+                              completed=state.published, status="deferred" if publication.pending_codes else "complete")
         state.unpublished_documents = 0
-        state.publication_pending_since = None
-        state.publication_required = False
+        state.publication_pending_since = dependencies.monotonic() if publication.pending_codes else None
+        state.publication_required = bool(publication.pending_codes)
         return state.published
     return None
 
@@ -498,18 +508,18 @@ def _publish_company_facts(
     operations: CompanyOperations,
     *,
     cancel_requested: Callable[[], bool] | None,
-) -> int:
+) -> CompanyPublicationOutcome:
     for attempt in range(3):
         if cancel_requested is not None and cancel_requested():
-            return 0
+            return CompanyPublicationOutcome((), (), ())
         publication_error: RuntimeError | None = None
 
-        def publish() -> int:
+        def publish() -> CompanyPublicationOutcome:
             nonlocal publication_error
             if cancel_requested is not None and cancel_requested():
                 raise InterruptedError("company_sync_cancelled")
             try:
-                return index.publish(population, observed_at, changed_only=True)
+                return PublishCompanyEvidence(index, population, observed_at, changed_only=True)
             except RuntimeError as exc:
                 publication_error = exc
                 raise
@@ -517,19 +527,19 @@ def _publish_company_facts(
         try:
             published, timing = operations.call_observed("publication", publish,
                                                        object_id=f"publication:{observed_at.isoformat()}", component="publish", endpoint="sqlite:company_publication")
-            operations.result(timing, "accepted", rows=published, component="publish")
+            operations.result(timing, "accepted", rows=len(published.selected_codes), component="publish")
             return published
         except InterruptedError:
             if cancel_requested is None or not cancel_requested():
                 raise
-            return 0
+            return CompanyPublicationOutcome((), (), ())
         except RuntimeError as exc:
-            if exc is not publication_error or str(exc) not in {
+            if exc is not publication_error or not isinstance(exc, CompanyPublicationConflict) or str(exc) not in {
                 "company_publication_source_changed", "company_publication_parent_changed",
             }:
                 raise
             if cancel_requested is not None and cancel_requested():
-                return 0
+                return CompanyPublicationOutcome((), (), ())
             if attempt == 2:
                 raise
             operations.recover(exc, "retry", str(exc))

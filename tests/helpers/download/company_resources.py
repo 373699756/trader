@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TypedDict
@@ -10,6 +11,7 @@ from typing import TypedDict
 from tests.helpers.download.configuration import CompanyEventPolicyFixture, CompanySyncConfigurationFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.company_events import CompanyEventPolicy
+from trader.download.application.company_publication import PublishCompanyEvidence
 from trader.download.domain.company_evidence import (
     CompanyDocumentLimits, CompanyDocumentPolicies, CompanyListing, CompanyPublicationProgress, CompanyStockProgress, CompanySyncConfiguration,
 )
@@ -33,6 +35,16 @@ class _DocumentOptions(TypedDict, total=False):
 
 
 class SQLiteCompanyEvidenceIndexFixture(SQLiteCompanyEvidenceIndex):
+    def prepare_and_publish(self, codes: tuple[str, ...], observed_at: datetime) -> None:
+        if self.prepare_publication(codes, observed_at):
+            outcome = PublishCompanyEvidence(self, codes, observed_at, changed_only=True)
+            assert not outcome.pending_codes, "fixture_publication_pending"
+
+    def publish(self, codes: tuple[str, ...], observed_at: datetime, *, changed_only: bool = False) -> int:
+        outcome = PublishCompanyEvidence(self, codes, observed_at, changed_only=changed_only)
+        assert not outcome.pending_codes, "fixture_publication_pending"
+        return len(outcome.selected_codes)
+
     def __init__(
         self,
         path: Path,

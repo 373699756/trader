@@ -21,7 +21,7 @@ def test_saved_unknown_documents_resume_while_known_st_waits(tmp_path, fill_miss
     index = fixtures._index(tmp_path)
     now = fixtures.NOW
     codes = ("600001", "600002", "600003")
-    index.prepare_publication(codes[:2], now)
+    index.prepare_and_publish(codes[:2], now)
     part = next(part for part in index.partitions(("sse",), now) if part.start == now.date())
     items = tuple(
         replace(

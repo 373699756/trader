@@ -237,6 +237,15 @@ def _financial_key_pages(
             raise _FinancialKeyProbeError("company_structured_key_provider_rejected")
         if provider_success is not True or provider_code != 0:
             raise _FinancialKeyProbeError("company_structured_key_provider_status_invalid")
+        raw_result = payload.get("result")
+        rows = raw_result.get("data") if isinstance(raw_result, Mapping) else None
+        if not isinstance(rows, list) or any(not isinstance(row, Mapping) or any(column not in row for column in columns) for row in rows):
+            raise _FinancialKeyProbeError("company_structured_key_fields_missing")
+        if len(rows) > len(selected):
+            raise _FinancialKeyProbeError("company_structured_key_pagination_invalid")
+        raw_identities = tuple(row["SECUCODE"] for row in rows)
+        if any(not isinstance(identity, str) or identity not in identities for identity in raw_identities):
+            raise _FinancialKeyProbeError("company_structured_key_raw_identity_mismatch")
         page = DecodeCompanyFinancialPage(payload, query, observed_at=observed_at)
         evidence.update(raw_rows=page.row_count, reported_total=page.total, reported_pages=page.pages)
         if page.pages != 1 or page.total != page.row_count or page.row_count > len(selected):
@@ -246,13 +255,7 @@ def _financial_key_pages(
             raise _FinancialKeyProbeError("company_structured_key_identity_ambiguous")
         if set(keys) != {(code, report_date) for code in selected}:
             raise _FinancialKeyProbeError("company_structured_key_set_mismatch")
-        raw_result = payload.get("result")
-        rows = raw_result.get("data") if isinstance(raw_result, Mapping) else None
-        if not isinstance(rows, list) or any(not isinstance(row, Mapping) or any(column not in row for column in columns) for row in rows):
-            raise _FinancialKeyProbeError("company_structured_key_fields_missing")
-        raw_identities = tuple(row["SECUCODE"] for row in rows)
-        if (any(not isinstance(identity, str) or identity not in identities for identity in raw_identities)
-            or len(set(raw_identities)) != len(identities)):
+        if len(set(raw_identities)) != len(identities):
             raise _FinancialKeyProbeError("company_structured_key_raw_identity_mismatch")
         evidence["status"] = "decoded"
         return page

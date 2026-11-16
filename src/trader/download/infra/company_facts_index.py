@@ -56,6 +56,12 @@ class CompanyInputReceipt:
     policy_id: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class CompanyFactsPublication:
+    changed_codes: tuple[str, ...]
+    identity: CompanyPublicationIdentity
+
+
 def ReadCompanyPublicationIdentity(connection: SqliteConnection) -> CompanyPublicationIdentity | None:
     EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA)
     row = connection.run(
@@ -130,7 +136,7 @@ class SQLiteCompanyFactsIndex:
         *,
         receipts: Sequence[CompanyInputReceipt] = (),
         field_results: Sequence[CompanyFieldConclusion] | None = None,
-    ) -> tuple[str, ...]:
+    ) -> CompanyFactsPublication:
         prepared_fields = tuple(field_results) if field_results is not None else tuple(
             CompanyFieldConclusion(
                 item.code, item.event_id, cast(CompanyFieldName, item.field),
@@ -201,8 +207,11 @@ class SQLiteCompanyFactsIndex:
                     receipt_identities, field_identities, at,
                 )))
                 _write_identity(connection, self.extraction_hash, at, identity)
+            committed_identity = ReadCompanyPublicationIdentity(connection)
+            if committed_identity is None:
+                raise RuntimeError("company_publication_identity_missing")
         self.publish_file()
-        return tuple(sorted(changed_codes))
+        return CompanyFactsPublication(tuple(sorted(changed_codes)), committed_identity)
 
     def read_exclusions(self) -> tuple[CompanyExclusion, ...]:
         if not self.path.exists():
@@ -289,4 +298,4 @@ class SQLiteCompanyFactsIndex:
         return inserted
 
 
-__all__ = ["CompanyInputReceipt", "CompanyPublicationIdentity", "ReadCompanyPublicationIdentity", "SQLiteCompanyFactsIndex"]
+__all__ = ["CompanyInputReceipt", "CompanyPublicationIdentity", "CompanyFactsPublication", "ReadCompanyPublicationIdentity", "SQLiteCompanyFactsIndex"]

@@ -74,7 +74,7 @@ def test_latest_progress_links_after_older_plan_arrives_and_survives_three_resta
         receipts = connection.run("SELECT count(*) FROM document_publications").require_one()[0]
     for _ in range(3):
         index.initialize()
-        index.prepare_publication(old.codes, observed)
+        index.prepare_and_publish(old.codes, observed)
         index.publish(old.codes, observed)
         assert not index.pending_documents(old.codes, observed, policies=fixtures._TEST_DOCUMENT_POLICIES)
         assert _read(index).positive_events == facts.positive_events
@@ -111,7 +111,7 @@ def test_number_linked_latest_field_closes_old_repair_and_keeps_original_receipt
     events = _read(index).positive_events
     assert events[0].measurements.actual_ratio_pct == 0.2
     for at in (observed, observed + timedelta(days=1)):
-        index.prepare_publication(old.codes, at)
+        index.prepare_and_publish(old.codes, at)
         index.publish(old.codes, at, changed_only=True)
         assert not index.pending_documents(old.codes, at, policies=fixtures._TEST_DOCUMENT_POLICIES)
         assert _read(index).positive_events == events
