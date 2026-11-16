@@ -214,7 +214,7 @@ class _SyncState:
     failures: tuple[str, ...] = ()
     failed_documents: int = 0
     batch: int = 0
-    annual_income_attempts: set[CompanyAnnualIncomeRequest] = field(default_factory=set)
+    annual_income_attempts: set[tuple[str, date]] = field(default_factory=set)
     annual_income_circuit: CompanySourceCircuit = field(default_factory=lambda: CompanySourceCircuit())
     annual_income_source_stopped: bool = False
     financial_report_attempts: set[CompanyFinancialReportRequest] = field(default_factory=set)
@@ -457,11 +457,11 @@ def _collect_report_inputs(
         return False
     plan = PlanCompanyReportInputs(dependencies, population, observed_at, state)
     changes = CollectCompanyReportInputs(dependencies, plan, state)
-    if CompanyCancelled(dependencies) or not changes:
-        return False
     state.changes += changes
+    if not changes:
+        return False
     MarkCompanyPublicationPending(dependencies, state)
-    return True
+    return not CompanyCancelled(dependencies)
 
 
 def _publish_batch(
@@ -473,7 +473,13 @@ def _publish_batch(
 ) -> int | None:
     ReportCompanyProgress(dependencies, "facts", state, len(population), completed=0)
     if not CompanyCancelled(dependencies):
-        _publish_company_facts(dependencies.index, population, observed_at, state.operations)
+        _publish_company_facts(
+            dependencies.index,
+            population,
+            observed_at,
+            state.operations,
+            cancel_requested=dependencies.cancel_requested,
+        )
         if CompanyCancelled(dependencies):
             return state.published
         state.published = dependencies.index.published_count(population)
@@ -485,15 +491,46 @@ def _publish_batch(
     return None
 
 
-def _publish_company_facts(index: CompanyEvidenceIndex, population: tuple[str, ...], observed_at: datetime, operations: CompanyOperations) -> int:
+def _publish_company_facts(
+    index: CompanyEvidenceIndex,
+    population: tuple[str, ...],
+    observed_at: datetime,
+    operations: CompanyOperations,
+    *,
+    cancel_requested: Callable[[], bool] | None,
+) -> int:
     for attempt in range(3):
+        if cancel_requested is not None and cancel_requested():
+            return 0
+        publication_error: RuntimeError | None = None
+
+        def publish() -> int:
+            nonlocal publication_error
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_sync_cancelled")
+            try:
+                return index.publish(population, observed_at, changed_only=True)
+            except RuntimeError as exc:
+                publication_error = exc
+                raise
+
         try:
-            published, timing = operations.call_observed("publication", partial(index.publish, population, observed_at, changed_only=True),
+            published, timing = operations.call_observed("publication", publish,
                                                        object_id=f"publication:{observed_at.isoformat()}", component="publish", endpoint="sqlite:company_publication")
             operations.result(timing, "accepted", rows=published, component="publish")
             return published
+        except InterruptedError:
+            if cancel_requested is None or not cancel_requested():
+                raise
+            return 0
         except RuntimeError as exc:
-            if attempt == 2 or str(exc) not in {"company_publication_source_changed", "company_publication_parent_changed"}:
+            if exc is not publication_error or str(exc) not in {
+                "company_publication_source_changed", "company_publication_parent_changed",
+            }:
+                raise
+            if cancel_requested is not None and cancel_requested():
+                return 0
+            if attempt == 2:
                 raise
             operations.recover(exc, "retry", str(exc))
     raise RuntimeError("company_publication_retry_exhausted")
@@ -644,6 +681,8 @@ class _AnnouncementRun:
 
     def _source_call(self, operation: Callable[[], _CompanySourceResult]) -> _CompanySourceResult:
         self._source_failure = self._observation_failure = None
+        if CompanyCancelled(self._dependencies):
+            raise InterruptedError("company_sync_cancelled")
         try:
             return operation()
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1004,12 +1043,14 @@ def _news(
             completed += 1
             state.operations.result(checked, "reused", component="news", original_source=dependencies.structured.news_source)
             continue
-        attempted.append(code)
         ReportCompanyProgress(dependencies, "news", state, total - completed, completed=completed)
         source_error: BaseException | None = None
 
         def fetch(code: str = code) -> tuple[Disclosure, ...]:
             nonlocal source_error
+            if CompanyCancelled(dependencies):
+                raise InterruptedError("company_sync_cancelled")
+            attempted.append(code)
             try:
                 return dependencies.structured.news(code, observed_at=observed_at)
             except (OSError, RuntimeError, ValueError) as exc:
@@ -1022,7 +1063,13 @@ def _news(
                                                            component="news", endpoint=dependencies.structured.request_endpoint("news"))
             if CompanyCancelled(dependencies):
                 break
-            changed, committed = state.operations.call_observed("collection_commit", partial(index.commit_news, code, rows, observed_at),
+
+            def commit(code: str = code, rows: tuple[Disclosure, ...] = rows) -> int:
+                if CompanyCancelled(dependencies):
+                    raise InterruptedError("company_sync_cancelled")
+                return index.commit_news(code, rows, observed_at)
+
+            changed, committed = state.operations.call_observed("collection_commit", commit,
                                                                code=code, source=dependencies.structured.news_source, object_id=f"news:{code}",
                                                                component="news", endpoint="sqlite:company_collection")
             state.changes += changed

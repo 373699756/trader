@@ -143,7 +143,7 @@ def test_cancelled_sync_keeps_pending_inventory_unknown_and_does_not_query_after
         assert connection.run("SELECT body_checked FROM disclosures WHERE source_key=?", (item.identity,)).require_one()[0] == 0
 
 
-def test_cancellation_during_document_batch_preserves_commits_without_final_inventory_query(tmp_path, monkeypatch):
+def test_cancellation_during_document_batch_discards_late_result_without_final_inventory_query(tmp_path, monkeypatch):
     index = fixtures._index(tmp_path)
     item = fixtures._disclosure("accepted-case", "关于收到立案告知书的公告")
     partition = DisclosurePartition("sse", item.published_at.date(), item.published_at.date())
@@ -176,11 +176,11 @@ def test_cancellation_during_document_batch_preserves_commits_without_final_inve
     )
     assert result.failures == ("task:cancelled",) and result.published_codes == 1
     assert result.pending_partitions is result.pending_documents is None
-    assert result.changed_rows >= 1
+    assert result.changed_rows == 0
     with SqliteSession(index.path) as connection:
         assert tuple(connection.run(
             "SELECT body_checked,body_retained FROM disclosures WHERE source_key=?", (item.identity,)
-        ).require_one()) == (1, 1)
+        ).require_one()) == (0, 0)
 
 
 def test_cancellation_during_final_inventory_read_returns_unknown_counts_and_keeps_published_count(tmp_path, monkeypatch):

@@ -176,7 +176,8 @@ def test_fill_cancellation_preserves_old_publication(tmp_path):
     class Source(fixtures.Sources):
         def document(self, disclosure, *, route="standard"):
             before_document.append(reader.read(("600001",)))
-            cancelled.set()
+            if len(before_document) == 1:
+                cancelled.set()
             return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     source = Source()
@@ -184,9 +185,12 @@ def test_fill_cancellation_preserves_old_publication(tmp_path):
     dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0.0, cancel_requested=cancelled.is_set)
     assert SyncCompanyEvidence(dependencies, request).needs_retry
     assert reader.read(("600001",)) == before_document[0]
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT body_checked FROM disclosures").require_one()[0] == 0
     cancelled.clear()
-    # The accepted body must publish on resume even though no download remains.
+    # The discarded late result is obtained again through normal continuation.
     SyncCompanyEvidence(dependencies, request)
+    assert len(before_document) == 2
     assert len(reader.read(("600001",))[0].risk_events) == 1
 
 
@@ -266,7 +270,7 @@ def test_text_to_ocr_handoff_counts_one_attempted_document(tmp_path, monkeypatch
     assert max(attempts) == 1
 
 
-def test_two_clients_overlap_and_only_main_thread_writes_accepted_results_on_cancel(tmp_path, monkeypatch):
+def test_two_clients_overlap_and_cancelled_results_are_not_accepted(tmp_path, monkeypatch):
     index = fixtures._index(tmp_path)
     items = _seed(index)
     monkeypatch.setattr(index, "partitions", lambda *_: ())
@@ -311,9 +315,9 @@ def test_two_clients_overlap_and_only_main_thread_writes_accepted_results_on_can
     finally:
         workers.stop(wait=True, cancel_futures=True)
     assert "task:cancelled" in result.failures, (barrier.broken, len(set(worker_threads)), len(write_threads))
-    assert len(set(worker_threads)) == 2 and write_threads == [get_ident(), get_ident()]
+    assert len(set(worker_threads)) == 2 and write_threads == []
     pending = index.pending_documents(("600001",), NOW, policies=fixtures._TEST_DOCUMENT_POLICIES)
-    assert len(pending) == len(items) - 2
+    assert len(pending) == len(items)
     with SqliteSession(index.path) as connection:
         assert connection.run("SELECT COUNT(*) FROM document_retries").require_one()[0] == 0
 

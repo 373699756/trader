@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, Protocol
-from datetime import datetime
+from datetime import date, datetime
 
 from trader.download.application.company_operations import CompanyOperations
 from trader.download.domain.company_evidence import (
@@ -15,7 +15,6 @@ from trader.download.domain.company_evidence import (
 if TYPE_CHECKING:
     from trader.download.application.company_evidence import CompanyEvidenceDependencies
     from trader.download.application.company_failures import CompanySourceCircuit
-    from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
     from trader.download.domain.company_financial_report import CompanyFinancialReportRequest
 
 
@@ -33,7 +32,7 @@ class CompanyProgressState(Protocol):
     failures: tuple[str, ...]
     failed_documents: int
     batch: int
-    annual_income_attempts: set[CompanyAnnualIncomeRequest]
+    annual_income_attempts: set[tuple[str, date]]
     annual_income_circuit: CompanySourceCircuit
     annual_income_source_stopped: bool
     financial_report_attempts: set[CompanyFinancialReportRequest]

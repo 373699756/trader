@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from functools import partial
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from trader.download.application.company_failures import CompanyFailureCode
@@ -35,9 +34,8 @@ def PlanCompanyReportInputs(
     if CompanyCancelled(dependencies) or state.annual_income_source_stopped and state.financial_report_source_stopped:
         return CompanyReportInputPlan(observed_at, (), ())
     plan = dependencies.index.report_input_plan(population, observed_at)
-    annual_income = () if CompanyCancelled(dependencies) or state.annual_income_source_stopped else tuple(
-        request for request in plan.annual_income
-        if request not in state.annual_income_attempts
+    annual_income = () if CompanyCancelled(dependencies) or state.annual_income_source_stopped else _annual_requests(
+        plan.annual_income, state.annual_income_attempts,
     )
     financial_reports = () if CompanyCancelled(dependencies) or state.financial_report_source_stopped else tuple(
         request for request in plan.financial_reports
@@ -71,12 +69,14 @@ def _financial_reports(
             continue
         if CompanyCancelled(dependencies) or state.financial_report_source_stopped:
             break
-        state.financial_report_attempts.add(request)
         component = "annual_income" if request.report_date.month == 12 else "financial"
         source_error: BaseException | None = None
 
         def fetch(request: CompanyFinancialReportRequest = request) -> tuple[Disclosure, ...]:
             nonlocal source_error
+            if CompanyCancelled(dependencies):
+                raise InterruptedError("company_sync_cancelled")
+            state.financial_report_attempts.add(request)
             try:
                 return dependencies.disclosures.financial_reports(request, observed_at=observed_at)
             except (OSError, RuntimeError, ValueError) as exc:
@@ -92,8 +92,14 @@ def _financial_reports(
             )
             if CompanyCancelled(dependencies):
                 break
+
+            def commit(request: CompanyFinancialReportRequest = request, rows: tuple[Disclosure, ...] = rows) -> int:
+                if CompanyCancelled(dependencies):
+                    raise InterruptedError("company_sync_cancelled")
+                return dependencies.index.commit_financial_reports(request, rows, observed_at)
+
             changed, committed = state.operations.call_observed(
-                "collection_commit", partial(dependencies.index.commit_financial_reports, request, rows, observed_at),
+                "collection_commit", commit,
                 code=request.code, source=dependencies.disclosures.source, object_id=identity,
                 component=component, endpoint="sqlite:company_collection",
             )
@@ -123,10 +129,7 @@ def _annual_income(
     if CompanyCancelled(dependencies) or state.annual_income_source_stopped:
         return 0
     observed_at = plan.observed_at
-    requests = tuple(
-        request for request in plan.annual_income
-        if request not in state.annual_income_attempts
-    )
+    requests = _annual_requests(plan.annual_income, state.annual_income_attempts)
     changes = 0
     for completed, request in enumerate(requests):
         if CompanyCancelled(dependencies) or state.annual_income_source_stopped:
@@ -135,11 +138,13 @@ def _annual_income(
         ReportCompanyProgress(dependencies, "annual_income", state, len(requests) - completed, completed=completed)
         if CompanyCancelled(dependencies):
             break
-        state.annual_income_attempts.add(request)
         source_error: BaseException | None = None
 
         def fetch(request: CompanyAnnualIncomeRequest = request) -> tuple[CompanyAnnualIncome, ...]:
             nonlocal source_error
+            if CompanyCancelled(dependencies):
+                raise InterruptedError("company_sync_cancelled")
+            state.annual_income_attempts.update((request.code, day) for day in request.report_dates)
             try:
                 return dependencies.structured.annual_income(request, observed_at=observed_at)
             except (OSError, RuntimeError, ValueError) as exc:
@@ -155,8 +160,14 @@ def _annual_income(
             )
             if CompanyCancelled(dependencies):
                 break
+
+            def commit(request: CompanyAnnualIncomeRequest = request, incomes: tuple[CompanyAnnualIncome, ...] = incomes) -> int:
+                if CompanyCancelled(dependencies):
+                    raise InterruptedError("company_sync_cancelled")
+                return dependencies.index.commit_annual_income(request, incomes, observed_at)
+
             changed, committed = state.operations.call_observed(
-                "collection_commit", partial(dependencies.index.commit_annual_income, request, incomes, observed_at),
+                "collection_commit", commit,
                 code=request.code, source=dependencies.structured.source, object_id=identity,
                 component="annual_income", endpoint="sqlite:company_collection",
             )
@@ -180,6 +191,20 @@ def _annual_income(
                                      fallback=DownloadFailureContext("company_annual_income", supplier=dependencies.structured.source))
             ReportCompanyProgress(dependencies, "annual_income", state, len(requests) - completed, completed=completed, status="deferred")
     return changes
+
+
+def _annual_requests(
+    requests: tuple[CompanyAnnualIncomeRequest, ...],
+    attempted: set[tuple[str, date]],
+) -> tuple[CompanyAnnualIncomeRequest, ...]:
+    selected: list[CompanyAnnualIncomeRequest] = []
+    covered = set(attempted)
+    for request in requests:
+        dates = tuple(day for day in request.report_dates if (request.code, day) not in covered)
+        if dates:
+            selected.append(CompanyAnnualIncomeRequest(request.code, dates))
+            covered.update((request.code, day) for day in dates)
+    return tuple(selected)
 
 
 __all__ = [

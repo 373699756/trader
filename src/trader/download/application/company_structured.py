@@ -47,6 +47,8 @@ def CollectCompanyStructured(
 
     def pledge_day() -> date:
         nonlocal source_error
+        if CompanyCancelled(dependencies):
+            raise InterruptedError("company_sync_cancelled")
         try:
             return dependencies.structured.pledge_day(now)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -67,6 +69,9 @@ def CollectCompanyStructured(
                                                 endpoint=dependencies.structured.request_endpoint("pledge"))
         else:
             start, end = now.date(), now.date() + timedelta(days=180)
+        if CompanyCancelled(dependencies):
+            ReportCompanyProgress(dependencies, component, state, pending, completed=completed, status="deferred")
+            return
         requested = StructuredCompanyQuery(component, start, end)
         query = state.operations.call("inventory", partial(index.structured_cursor, requested), scope=requested,
                                       component=component, endpoint="sqlite:company_structured_cursor")
@@ -85,6 +90,8 @@ def CollectCompanyStructured(
 
             def fetch(query: StructuredCompanyQuery = query) -> StructuredCompanyPage:
                 nonlocal source_error
+                if CompanyCancelled(dependencies):
+                    raise InterruptedError("company_sync_cancelled")
                 try:
                     return dependencies.structured.fetch(query, observed_at=now)
                 except (OSError, RuntimeError, ValueError) as exc:
@@ -96,9 +103,17 @@ def CollectCompanyStructured(
                 source=dependencies.structured.source, scope=query, timeout_seconds=timeout_seconds,
                 endpoint=dependencies.structured.request_endpoint(component),
             )
+            if CompanyCancelled(dependencies):
+                break
             state.pages += 1
+
+            def commit(query: StructuredCompanyQuery = query, page: StructuredCompanyPage = page) -> int:
+                if CompanyCancelled(dependencies):
+                    raise InterruptedError("company_sync_cancelled")
+                return index.commit_structured(query, page, now)
+
             changes, committed = state.operations.call_observed(
-                "collection_commit", partial(index.commit_structured, query, page, now),
+                "collection_commit", commit,
                 scope=query, source=dependencies.structured.source,
                 endpoint="sqlite:company_collection",
             )
@@ -122,6 +137,8 @@ def CollectCompanyStructured(
                 restarted=restarted,
             )
             ReportCompanyProgress(dependencies, component, state, pending, completed=completed, scope=query, structured=detail)
+            if CompanyCancelled(dependencies):
+                break
             if page.page == page.pages:
                 remaining = _remaining_query(index, query, requested, now, state.operations)
                 if remaining is None:

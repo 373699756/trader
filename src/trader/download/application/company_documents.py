@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, Future, wait
-from dataclasses import replace
+from concurrent.futures import FIRST_COMPLETED, Future, TimeoutError as FutureTimeoutError, wait
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Literal, Protocol
@@ -34,6 +34,33 @@ class CompanyDocumentContext(Protocol):
     def started(self) -> float: ...
     @property
     def configuration(self) -> CompanySyncConfiguration: ...
+
+
+@dataclass
+class _DocumentWork:
+    slot: int
+    stage: Literal["download", "text", "ocr"]
+    task: CompanyDocumentTask
+    cancel_requested: Callable[[], bool]
+    failure: BaseException | None = None
+    observation_failure: BaseException | None = None
+
+    def call(self, operation: Callable[[], CompanyDocumentExtraction | None]) -> CompanyDocumentExtraction | None:
+        if self.cancel_requested():
+            raise InterruptedError("company_sync_cancelled")
+        try:
+            return operation()
+        except (OSError, RuntimeError, ValueError) as exc:
+            if exc is not self.observation_failure:
+                self.failure = exc
+            raise
+
+    def observe(self, report: Callable[[int, int], None], completed: int, total: int) -> None:
+        try:
+            report(completed, total)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.observation_failure = exc
+            raise
 
 
 class CompanyDocumentRun:
@@ -75,6 +102,8 @@ class CompanyDocumentRun:
         self.elapsed = 0.0
         self.batch_started: float | None = None
         self.batch_sources: tuple[str, ...] = ()
+        self._pending: dict[Future[CompanyDocumentExtraction | None], _DocumentWork] = {}
+        self._unavailable_local: set[tuple[str, str, str]] = set()
 
     def now(self) -> datetime:
         return self.observed_at + timedelta(seconds=max(0, self.dependencies.monotonic() - self.started))
@@ -95,14 +124,35 @@ class CompanyDocumentRun:
             return False
         if not self.stopped:
             return True
-        self.report(workload, self.completed)
         tasks = self.state.operations.call("inventory", partial(
             self.dependencies.index.pending_documents, self.population, self.now(), limit=1, policies=self.policies,
-            excluded=tuple(self.failed_identities),
+            excluded=tuple(self.failed_identities | self._unavailable_local), local_only=True,
         ), component="risk_documents", endpoint="sqlite:company_collection")
-        return bool(tasks and self.sources[0].document_ready(tasks[0].disclosure))
+        self.report(workload, self.completed, status="deferred")
+        return bool(tasks)
 
     def run_batch(self, *, discovering: bool = False, discover: Callable[[], int | None] | None = None, local_only: bool = False) -> None:
+        try:
+            self._run_batch(discovering=discovering, discover=discover, local_only=local_only)
+        finally:
+            self._drain()
+            if self.batch_started is not None:
+                self.elapsed += max(0.0, self.dependencies.monotonic() - self.batch_started)
+                self.batch_started = None
+
+    def _drain(self) -> None:
+        for future in self._pending:
+            future.cancel()
+        for future in tuple(self._pending):
+            while not future.done():
+                try:
+                    future.exception(timeout=0.1)
+                except FutureTimeoutError:
+                    continue
+            self.state.operations.discard_future(future)
+            self._pending.pop(future)
+
+    def _run_batch(self, *, discovering: bool, discover: Callable[[], int | None] | None, local_only: bool) -> None:
         dependencies, index = self.dependencies, self.dependencies.index
         if self.capacity_blocked or CompanyCancelled(dependencies):
             return
@@ -111,14 +161,16 @@ class CompanyDocumentRun:
         if CompanyCancelled(dependencies):
             return
         self.report(workload, self.completed, discovering=discovering)
+        if CompanyCancelled(dependencies):
+            return
         queue = deque(
             self.state.operations.call("inventory", partial(index.pending_documents,
                 self.population,
                 self.now(),
                 limit=self.configuration.document_batch_size,
                 policies=self.policies,
-                excluded=tuple(self.failed_identities),
-                local_only=local_only,
+                excluded=tuple(self.failed_identities | (self._unavailable_local if local_only or self.stopped else set())),
+                local_only=local_only or self.stopped,
             ), component="risk_documents", endpoint="sqlite:company_collection")
         )
         self.batch_sources = tuple(sorted({task.disclosure.source for task in queue}))
@@ -126,6 +178,8 @@ class CompanyDocumentRun:
         text_queue: deque[CompanyDocumentTask] = deque()
         ocr_queue: deque[CompanyDocumentTask] = deque()
         for task in tuple(queue):
+            if CompanyCancelled(dependencies):
+                return
             raw_ready, checked = self.state.operations.call_observed(
                 "inventory", partial(self.sources[0].document_ready, task.disclosure), document=task.disclosure,
                 component="risk_documents", endpoint="local:company_raw_files",
@@ -134,9 +188,12 @@ class CompanyDocumentRun:
                 self.state.operations.result(checked, "reused", component="risk_documents", original_source=task.disclosure.source)
                 queue.remove(task)
                 (ocr_queue if task.route == "ocr" else text_queue).append(task)
+            elif local_only or self.stopped:
+                item = task.disclosure
+                self._unavailable_local.add((item.source, item.identity, item.digest))
         if local_only or self.stopped:
             queue.clear()
-        pending_documents: dict[Future[CompanyDocumentExtraction | None], tuple[int, Literal["download", "text", "ocr"], CompanyDocumentTask]] = {}
+        pending_documents = self._pending
         available = deque(range(len(self.sources)))
         completed_before = self.completed
         self.batch_started = dependencies.monotonic()
@@ -157,13 +214,18 @@ class CompanyDocumentRun:
                 ("text", text_queue, dependencies.text_executor, self.configuration.text_workers),
             )
             for stage, ready, executor, capacity in stages:
-                inflight = sum(value[1] == stage for value in pending_documents.values())
+                inflight = sum(value.stage == stage for value in pending_documents.values())
                 while ready and inflight < capacity and not CompanyCancelled(dependencies):
                     task = ready.popleft()
                     if not index.document_required(task.disclosure, self.observed_at):
                         continue
+                    if CompanyCancelled(dependencies):
+                        break
                     self._stage(task.disclosure, "analyzing", raw_saved=True)
-                    pending_documents[self._submit(self.sources[0], task, stage, executor)] = (-1, stage, task)
+                    if CompanyCancelled(dependencies):
+                        break
+                    work = _DocumentWork(-1, stage, task, partial(CompanyCancelled, dependencies))
+                    pending_documents[self._submit(self.sources[0], work, executor)] = work
                     inflight += 1
                     self._attempt(task.disclosure)
             while queue and available and not self.stopped and capacity_failure is None and not CompanyCancelled(dependencies):
@@ -178,7 +240,10 @@ class CompanyDocumentRun:
                 if CompanyCancelled(dependencies):
                     break
                 self._stage(item, "downloading")
-                pending_documents[self._submit(self.sources[slot], task, "download", self.executor)] = (slot, "download", task)
+                if CompanyCancelled(dependencies):
+                    break
+                work = _DocumentWork(slot, "download", task, partial(CompanyCancelled, dependencies))
+                pending_documents[self._submit(self.sources[slot], work, self.executor)] = work
                 self._attempt(item)
             if self.stopped or CompanyCancelled(dependencies):
                 queue.clear()
@@ -193,18 +258,31 @@ class CompanyDocumentRun:
                 discover()
             done, _ = wait(pending_documents, timeout=0.1, return_when=FIRST_COMPLETED)
             for future in done:
-                slot, completed_stage, task = pending_documents.pop(future)
+                work = pending_documents[future]
+                slot, completed_stage, task = work.slot, work.stage, work.task
                 if slot >= 0:
                     available.append(slot)
                 if future.cancelled():
                     self.state.operations.discard_future(future)
+                    pending_documents.pop(future)
+                    if not CompanyCancelled(dependencies):
+                        raise WorkerResourceRejectedError("company_document_request_cancelled")
+                    continue
+                if CompanyCancelled(dependencies):
+                    self.state.operations.discard_future(future)
+                    pending_documents.pop(future)
                     continue
                 timing = self.state.operations.take_future(future)
+                pending_documents.pop(future)
                 try:
                     extraction = future.result()
                 except WorkerResourceRejectedError:
                     raise
                 except (OSError, RuntimeError, ValueError) as exc:
+                    if CompanyCancelled(dependencies):
+                        continue
+                    if exc is not work.failure:
+                        raise
                     if isinstance(exc, CompanyDocumentFailure) and exc.reason == "disclosure_document_ocr_required":
                         ocr_queue.append(replace(task, route="ocr"))
                         self._stage(task.disclosure, "ocr_pending", raw_saved=True)
@@ -224,20 +302,38 @@ class CompanyDocumentRun:
                         self.report(workload, completed_before, discovering=discovering,
                                     failure_document=task.disclosure, failure_stage=completed_stage, failure_reason=reason)
                 else:
+                    if CompanyCancelled(dependencies):
+                        continue
                     if completed_stage == "download":
                         self.circuit.success()
                         self.state.operations.result(timing, "downloaded")
                         self._stage(task.disclosure, "downloaded", raw_saved=True)
                         (ocr_queue if task.route == "ocr" else text_queue).append(task)
                     elif extraction is not None:
+                        commit_error: RuntimeError | None = None
+
+                        def commit_document(item: Disclosure = task.disclosure, result: CompanyDocumentExtraction = extraction) -> bool:
+                            nonlocal commit_error
+                            if CompanyCancelled(dependencies):
+                                raise InterruptedError("company_sync_cancelled")
+                            try:
+                                return index.commit_document(item, result, self.now())
+                            except RuntimeError as exc:
+                                commit_error = exc
+                                raise
+
                         try:
                             accepted, committed = self.state.operations.call_observed(
-                                "document_commit", partial(index.commit_document, task.disclosure, extraction, self.now()),
+                                "document_commit", commit_document,
                                 document=task.disclosure, raw_saved=True, text_extracted=True,
                                 endpoint="sqlite:company_collection",
                             )
+                        except InterruptedError:
+                            if CompanyCancelled(dependencies):
+                                continue
+                            raise
                         except RuntimeError as exc:
-                            if str(exc) not in {"company_raw_capacity_exhausted", "company_temporary_space_exhausted"}:
+                            if exc is not commit_error or str(exc) not in {"company_raw_capacity_exhausted", "company_temporary_space_exhausted"}:
                                 raise
                             capacity_failure = str(exc)
                             analysis_blocked = True
@@ -285,7 +381,7 @@ class CompanyDocumentRun:
         self.report(
             final_workload,
             self.completed,
-            status="deferred" if self.stopped or self.capacity_blocked else "complete",
+            status="deferred" if self.stopped or self.capacity_blocked or final_workload.pending else "complete",
             discovering=discovering,
         )
 
@@ -302,11 +398,13 @@ class CompanyDocumentRun:
         )
 
     def _submit(
-        self, source: CompanyDisclosureSource, task: CompanyDocumentTask, stage: Literal["download", "text", "ocr"], executor: WorkerExecutor | None
+        self, source: CompanyDisclosureSource, work: _DocumentWork, executor: WorkerExecutor | None
     ) -> Future[CompanyDocumentExtraction | None]:
+        task, stage = work.task, work.stage
         if stage == "ocr":
             return self.state.operations.submit_pages(
-                lambda report: source.extract_document(task.disclosure, route="ocr", page_progress=report),
+                lambda report: work.call(partial(source.extract_document, task.disclosure, route="ocr",
+                                                page_progress=partial(work.observe, report))),
                 executor, document=task.disclosure,
                 timeout_seconds=self.configuration.document_ocr_timeout_seconds,
                 endpoint=source.request_endpoint("ocr"),
@@ -315,7 +413,7 @@ class CompanyDocumentRun:
             source.download_document if stage == "download" else partial(source.extract_document, route=task.route)
         )
         return self.state.operations.submit(
-            stage, partial(function, task.disclosure), executor, document=task.disclosure,
+            stage, partial(work.call, partial(function, task.disclosure)), executor, document=task.disclosure,
             timeout_seconds=(self.configuration.document_download_timeout_seconds if stage == "download"
                              else self.configuration.document_parse_timeout_seconds),
             raw_saved=True if stage != "download" else None,

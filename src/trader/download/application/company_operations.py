@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager
@@ -20,6 +21,7 @@ from trader.download.domain.download_failure import DownloadFailureContext
 from trader.infra.workers import SubmitOrReject, WorkerExecutor
 
 _Result = TypeVar("_Result")
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -114,14 +116,26 @@ class CompanyOperations:
             self._emit(current)
 
         state: Literal["completed", "failed", "cancelled"] = "failed"
+        primary_error: BaseException | None = None
         try:
             yield page_progress
             state = "completed"
-        except InterruptedError:
-            state = "cancelled"
+        except BaseException as exc:
+            primary_error = exc
+            if isinstance(exc, InterruptedError):
+                state = "cancelled"
             raise
         finally:
-            self._emit(replace(current, state=state, at=self._monotonic()))
+            try:
+                self._emit(replace(current, state=state, at=self._monotonic()))
+            except Exception as observation_error:
+                if primary_error is None:
+                    raise
+                _LOGGER.warning(
+                    "Company operation terminal observation failed: kind=%s category=%s",
+                    event.kind,
+                    type(observation_error).__name__,
+                )
 
     def _prepare(
         self, kind: CompanyOperationKind, *, document: Disclosure | None = None,
