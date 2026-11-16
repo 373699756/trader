@@ -27,6 +27,7 @@ from trader.download.domain.company_event_extraction import (
 )
 from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
+    CompanyInputValidationFailure,
     CompanyDocument,
     IsTransientCompanyDocumentFailure,
     CompanyDocumentPolicies,
@@ -952,7 +953,7 @@ class SQLiteCompanyEvidenceIndex:
                or abs((item.published_at.date() - request.disclosed_at.date()).days) > 1
                or not observed_at.date() - timedelta(days=365) <= item.published_at.date() <= observed_at.date()
                or item.published_at > observed_at for item in rows):
-            raise ValueError("company_annual_report_input_invalid")
+            raise CompanyInputValidationFailure("company_annual_report_input_invalid")
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             if connection.run("SELECT 1 FROM company_population WHERE code=?", (request.code,)).fetchone() is None:
                 raise ValueError("company_annual_report_population_mismatch")
@@ -1030,7 +1031,7 @@ class SQLiteCompanyEvidenceIndex:
             duplicate = len(keys) != len(set(keys)) or bool(existing.intersection(keys))
         if duplicate:
             self._restart_structured(page.component, scope)
-            raise ValueError("structured_duplicate_page_rows")
+            raise CompanyInputValidationFailure("structured_duplicate_page_rows")
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             if page.page == 1:
                 connection.run("DELETE FROM structured_members WHERE component=?", (page.component,))
@@ -1118,17 +1119,17 @@ class SQLiteCompanyEvidenceIndex:
     def _validate_structured_count(self, query: StructuredCompanyQuery, page: StructuredCompanyPage) -> None:
         expected, received, scope = query.expected_rows, query.received_rows, "market"
         if query.component != page.component or query.page != page.page:
-            raise ValueError("structured_query_mismatch")
+            raise CompanyInputValidationFailure("structured_query_mismatch")
         count = page.row_count
         if expected is not None and expected != page.total:
             self._restart_structured(page.component, scope)
-            raise ValueError("structured_count_changed")
+            raise CompanyInputValidationFailure("structured_count_changed")
         if page.page == page.pages and received + count != page.total:
             self._restart_structured(page.component, scope)
-            raise ValueError("structured_pages_incomplete")
+            raise CompanyInputValidationFailure("structured_pages_incomplete")
         if page.page < page.pages and (not count or received + count >= page.total):
             self._restart_structured(page.component, scope)
-            raise ValueError("structured_pages_inconsistent")
+            raise CompanyInputValidationFailure("structured_pages_inconsistent")
 
     def _restart_structured(self, component: str, scope: str) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):

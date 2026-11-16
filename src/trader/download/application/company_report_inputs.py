@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 
 from trader.download.application.company_failures import CompanyFailureCode
 from trader.download.application.company_progress import CompanyCancelled, CompanyProgressState, ReportCompanyProgress
-from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
+from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
+from trader.download.domain.company_evidence import CompanyInputValidationFailure, Disclosure
 from trader.download.domain.company_financial_report import CompanyFinancialReportRequest
 from trader.download.domain.download_failure import DownloadFailureContext
 
@@ -72,10 +73,20 @@ def _financial_reports(
             break
         state.financial_report_attempts.add(request)
         component = "annual_income" if request.report_date.month == 12 else "financial"
+        source_error: BaseException | None = None
+
+        def fetch(request: CompanyFinancialReportRequest = request) -> tuple[Disclosure, ...]:
+            nonlocal source_error
+            try:
+                return dependencies.disclosures.financial_reports(request, observed_at=observed_at)
+            except (OSError, RuntimeError, ValueError) as exc:
+                source_error = exc
+                raise
+
         try:
             identity = f"financial_report:{request.code}:{request.report_date}"
             rows, fetched = state.operations.call_observed(
-                "annual_income" if request.report_date.month == 12 else "directory", partial(dependencies.disclosures.financial_reports, request, observed_at=observed_at),
+                "annual_income" if request.report_date.month == 12 else "directory", fetch,
                 code=request.code, source=dependencies.disclosures.source, object_id=identity,
                 component=component, endpoint=dependencies.disclosures.request_endpoint(component),
             )
@@ -94,6 +105,8 @@ def _financial_reports(
         except (OSError, RuntimeError, ValueError) as exc:
             if CompanyCancelled(dependencies):
                 break
+            if exc is not source_error and not isinstance(exc, CompanyInputValidationFailure):
+                raise
             failure = CompanyFailureCode(exc)
             state.failures += (f"{component}:{failure}",)
             state.financial_report_source_stopped = state.financial_report_circuit.failed(exc, validation=isinstance(exc, ValueError))
@@ -123,10 +136,20 @@ def _annual_income(
         if CompanyCancelled(dependencies):
             break
         state.annual_income_attempts.add(request)
+        source_error: BaseException | None = None
+
+        def fetch(request: CompanyAnnualIncomeRequest = request) -> tuple[CompanyAnnualIncome, ...]:
+            nonlocal source_error
+            try:
+                return dependencies.structured.annual_income(request, observed_at=observed_at)
+            except (OSError, RuntimeError, ValueError) as exc:
+                source_error = exc
+                raise
+
         try:
             identity = f"annual_income:{request.code}:" + ",".join(day.isoformat() for day in request.report_dates)
             incomes, fetched = state.operations.call_observed(
-                "annual_income", partial(dependencies.structured.annual_income, request, observed_at=observed_at),
+                "annual_income", fetch,
                 code=request.code, source=dependencies.structured.source, object_id=identity,
                 component="annual_income", endpoint=dependencies.structured.request_endpoint("annual_income"),
             )
@@ -148,6 +171,8 @@ def _annual_income(
         except (OSError, RuntimeError, ValueError) as exc:
             if CompanyCancelled(dependencies):
                 break
+            if exc is not source_error and not isinstance(exc, CompanyInputValidationFailure):
+                raise
             failure = CompanyFailureCode(exc)
             state.failures += (f"annual_income:{failure}",)
             state.annual_income_source_stopped = state.annual_income_circuit.failed(exc, validation=isinstance(exc, ValueError))

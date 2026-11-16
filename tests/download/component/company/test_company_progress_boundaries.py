@@ -59,7 +59,11 @@ def test_structured_detail_follows_commit_and_filters_only_progress_population(t
         return commit(query, page, observed_at)
 
     monkeypatch.setattr(index, "commit_structured", commit_page)
-    CollectCompanyStructured(dependencies, "financial", NOW, state)
+    if fail_second:
+        with pytest.raises(RuntimeError, match="fixture_commit_failed"):
+            CollectCompanyStructured(dependencies, "financial", NOW, state)
+    else:
+        CollectCompanyStructured(dependencies, "financial", NOW, state)
     persisted = [event.structured for event in events if event.structured is not None and event.structured.page_rows]
     # The final component event repeats the last committed page, not another page commit.
     if not fail_second:
@@ -75,8 +79,8 @@ def test_structured_detail_follows_commit_and_filters_only_progress_population(t
         assert persisted[1].qualified_codes == () and persisted[1].persisted_rows == 2
         assert events[-1].status == "complete"
     else:
-        assert events[-1].status == "deferred" and events[-1].structured.page_rows == 0
-        assert events[-1].structured.persisted_rows == 1
+        assert state.failures == ()
+        assert not any(event.recovery is not None for event in events)
 
 
 def test_directory_dates_keep_each_market_and_deferred_ranges_separate(tmp_path):

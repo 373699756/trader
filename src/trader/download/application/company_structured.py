@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Literal
 
@@ -13,7 +13,7 @@ from trader.download.application.company_progress import (
 from trader.download.application.company_failures import CompanyFailureCode
 from trader.download.application.company_operations import CompanyOperations
 from trader.download.domain.company_evidence import (
-    CompanyStructuredProgress, StructuredCompanyQuery,
+    CompanyInputValidationFailure, CompanyStructuredProgress, StructuredCompanyPage, StructuredCompanyQuery,
 )
 
 if TYPE_CHECKING:
@@ -43,6 +43,16 @@ def CollectCompanyStructured(
     pending: int | None = None
     query: StructuredCompanyQuery | None = None
     detail: CompanyStructuredProgress | None = None
+    source_error: BaseException | None = None
+
+    def pledge_day() -> date:
+        nonlocal source_error
+        try:
+            return dependencies.structured.pledge_day(now)
+        except (OSError, RuntimeError, ValueError) as exc:
+            source_error = exc
+            raise
+
     try:
         if CompanyCancelled(dependencies):
             return
@@ -52,7 +62,7 @@ def CollectCompanyStructured(
                                           endpoint="sqlite:company_structured_coverage")
             end = now.date()
         elif component == "pledge":
-            start = end = state.operations.call("structured", partial(dependencies.structured.pledge_day, now),
+            start = end = state.operations.call("structured", pledge_day,
                                                 source=dependencies.structured.source, component="pledge",
                                                 endpoint=dependencies.structured.request_endpoint("pledge"))
         else:
@@ -71,8 +81,18 @@ def CollectCompanyStructured(
             restarted = False
             if CompanyCancelled(dependencies):
                 break
+            source_error = None
+
+            def fetch(query: StructuredCompanyQuery = query) -> StructuredCompanyPage:
+                nonlocal source_error
+                try:
+                    return dependencies.structured.fetch(query, observed_at=now)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    source_error = exc
+                    raise
+
             page, fetched = state.operations.call_observed(
-                "structured", partial(dependencies.structured.fetch, query, observed_at=now),
+                "structured", fetch,
                 source=dependencies.structured.source, scope=query, timeout_seconds=timeout_seconds,
                 endpoint=dependencies.structured.request_endpoint(component),
             )
@@ -119,6 +139,8 @@ def CollectCompanyStructured(
         if CompanyCancelled(dependencies):
             ReportCompanyProgress(dependencies, component, state, pending, completed=completed, status="deferred", scope=query, structured=detail)
             return
+        if exc is not source_error and not isinstance(exc, CompanyInputValidationFailure):
+            raise
         failure = CompanyFailureCode(exc)
         state.operations.register_failure(exc, partial(index.component_failure, component, "market", failure))
         state.failures += (f"{component}:{failure}",)

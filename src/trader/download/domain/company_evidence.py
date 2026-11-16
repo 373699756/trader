@@ -121,6 +121,10 @@ class CompanySyncConfiguration:
             raise ValueError("company_sync_configuration_invalid")
 
 
+class CompanyInputValidationFailure(ValueError):
+    """A received supplier response violates the requested company input contract."""
+
+
 class CompanySourceFailure(RuntimeError):
     def __init__(
         self, category: Literal["access_denied", "rate_limited", "http_error"], *, status_code: int | None = None
@@ -956,4 +960,5 @@ __all__ = [
     "IsTransientCompanyDocumentFailure",
     "StructuredCompanyPage",
     "CompanySourceFailure",
+    "CompanyInputValidationFailure",
 ]

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 
 from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
+from trader.download.domain.company_evidence import CompanyInputValidationFailure
 from trader.download.domain.company_financial_report import CompanyFinancialReportRequest
 from trader.download.domain.company_events import CompanyPositiveStatus, ContractMeasurements
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -150,10 +151,10 @@ def WriteCompanyAnnualIncome(
     if connection.run("SELECT 1 FROM company_population WHERE code=?", (request.code,)).fetchone() is None:
         raise ValueError("company_annual_income_population_mismatch")
     if {row.report_date for row in incomes} != set(request.report_dates) or len(incomes) != len(request.report_dates):
-        raise ValueError("company_annual_income_reports_mismatch")
+        raise CompanyInputValidationFailure("company_annual_income_reports_mismatch")
     for income in incomes:
         if income.code != request.code or income.observed_at != observed_at:
-            raise ValueError("company_annual_income_identity_mismatch")
+            raise CompanyInputValidationFailure("company_annual_income_identity_mismatch")
         known = connection.run(
             "SELECT 1 FROM financials WHERE code=? AND report_date=? AND published_at>=? AND published_at<=?",
             (income.code, income.report_date.isoformat(), (observed_at.date() - timedelta(days=365)).isoformat(), observed_at.isoformat()),
