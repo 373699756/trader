@@ -8,7 +8,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from functools import partial
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeVar
 
 from trader.download.domain.company_evidence import (
     CompanyDateProgress,
@@ -19,6 +19,7 @@ from trader.download.domain.company_evidence import (
     CompanyOcrDiagnostic,
     CompanyEvidenceRequest,
     CompanyEvidenceSyncResult,
+    CompanyInputValidationFailure,
     CompanyStockProgress,
     CompanySyncConfiguration,
     Disclosure,
@@ -53,6 +54,9 @@ from trader.download.application.company_failures import (
 from trader.download.application.company_progress import (
     ReportCompanyProgress, MarkCompanyPublicationPending, PrepareCompanyStockProgress, CompanyCancelled,
 )
+
+
+_CompanySourceResult = TypeVar("_CompanySourceResult")
 
 
 class CompanyEvidenceIndex(Protocol):
@@ -527,6 +531,8 @@ class _AnnouncementRun:
         self._prefetch: tuple[DisclosurePartition, bool, Future[DisclosurePage]] | None = None
         self._markets: tuple[Market, ...] = ()
         self._fetch_timing: CompanyOperationTiming | None = None
+        self._source_failure: BaseException | None = None
+        self._observation_failure: BaseException | None = None
 
     def prepare(self, population: tuple[str, ...]) -> None:
         self._population = population
@@ -559,6 +565,7 @@ class _AnnouncementRun:
             )
             try:
                 if self._prefetch is None:
+                    self._source_failure = None
                     self._fetch_timing = None
                     self._queue.remove(partition)
                     self._report(partition, include_current=True)
@@ -571,7 +578,7 @@ class _AnnouncementRun:
                     partition, verifying = request
                     if dependencies.directory_executor is None:
                         page, self._fetch_timing = state.operations.call_observed(
-                            "directory", partial(dependencies.disclosures.fetch, partition),
+                            "directory", partial(self._source_call, partial(dependencies.disclosures.fetch, partition)),
                             source=dependencies.disclosures.source, scope=partition,
                             endpoint=dependencies.disclosures.request_endpoint("directory"),
                             timeout_seconds=self._context.configuration.source_timeout_seconds,
@@ -584,7 +591,7 @@ class _AnnouncementRun:
                     self._prefetch = (
                         partition,
                         verifying,
-                        state.operations.submit("directory", partial(dependencies.disclosures.fetch, partition), dependencies.directory_executor,
+                        state.operations.submit("directory", partial(self._source_call, partial(dependencies.disclosures.fetch, partition)), dependencies.directory_executor,
                                                 source=dependencies.disclosures.source, scope=partition,
                                                 endpoint=dependencies.disclosures.request_endpoint("directory"),
                                                 timeout_seconds=self._context.configuration.source_timeout_seconds),
@@ -595,14 +602,15 @@ class _AnnouncementRun:
                         break
                     wait((future,), timeout=0.1, return_when=FIRST_COMPLETED)
                     continue
-                self._prefetch = None
                 if future.cancelled():
                     state.operations.discard_future(future)
+                    self._prefetch = None
                     if not CompanyCancelled(dependencies):
                         raise WorkerResourceRejectedError("company_directory_request_cancelled")
                     self._queue.appendleft(partition)
                     break
                 self._fetch_timing = state.operations.take_future(future)
+                self._prefetch = None
                 page = future.result()
                 if CompanyCancelled(dependencies):
                     self._queue.appendleft(partition)
@@ -612,7 +620,6 @@ class _AnnouncementRun:
                 self._queue.appendleft(partition)
                 raise
             except (OSError, RuntimeError, ValueError) as exc:
-                self._prefetch = None
                 if self._failed(partition, exc):
                     self._stopped = True
                     break
@@ -634,6 +641,18 @@ class _AnnouncementRun:
                 wait((future,), timeout=0.1, return_when=FIRST_COMPLETED)
             self._state.operations.discard_future(future)
             self._prefetch = None
+
+    def _source_call(self, operation: Callable[[], _CompanySourceResult]) -> _CompanySourceResult:
+        self._source_failure = self._observation_failure = None
+        try:
+            return operation()
+        except (OSError, RuntimeError, ValueError) as exc:
+            if exc is not self._observation_failure:
+                self._source_failure = exc
+            raise
+
+    def _recoverable(self, exc: BaseException) -> bool:
+        return exc is self._source_failure or isinstance(exc, (CompanyInputValidationFailure, DisclosureCoverageMismatch))
 
     def _publish_due(self) -> None:
         state, dependencies = self._state, self._dependencies
@@ -720,18 +739,23 @@ class _AnnouncementRun:
                 if exc.missing_rows and self._refresh_queries(partition):
                     self._state.operations.recover(exc, "retry", CompanyFailureCode(exc))
                     return
+                if CompanyCancelled(self._dependencies):
+                    raise InterruptedError("company_sync_cancelled") from exc
                 repairs = (
-                    self._dependencies.disclosures.repair_queries(
+                    self._source_call(partial(
+                        self._dependencies.disclosures.repair_queries,
                         partition,
                         self._index.disclosure_members(partition),
                         missing_rows=exc.missing_rows,
                         report=self._repair_progress,
-                    )
+                    ))
                     if exc.missing_rows
                     else ()
                 )
                 if not repairs:
                     raise
+                if CompanyCancelled(self._dependencies):
+                    raise InterruptedError("company_sync_cancelled") from exc
                 children = self._index.split_query(partition, repairs)
                 self._queue = _replace_query_queue(self._queue, partition, children, self._deferred)
                 self._circuit.success()
@@ -768,10 +792,12 @@ class _AnnouncementRun:
             if CompanyCancelled(self._dependencies):
                 return False
             probe = replace(saved, page=1, received_rows=0)
-            page, fetched = self._state.operations.call_observed("directory", partial(self._dependencies.disclosures.fetch, probe),
+            page, fetched = self._state.operations.call_observed("directory", partial(self._source_call, partial(self._dependencies.disclosures.fetch, probe)),
                                                                  source=self._dependencies.disclosures.source, scope=probe,
                                                                  endpoint=self._dependencies.disclosures.request_endpoint("directory"),
                                                                  timeout_seconds=self._context.configuration.source_timeout_seconds)
+            if CompanyCancelled(self._dependencies):
+                return False
             self._state.pages += 1
             changes, committed = self._state.operations.call_observed("collection_commit", partial(self._index.refresh_disclosure_query, probe, page),
                                                                       source=self._dependencies.disclosures.source, scope=probe,
@@ -793,7 +819,11 @@ class _AnnouncementRun:
 
     def _repair_progress(self, partition: DisclosurePartition) -> None:
         self._state.pages += 1
-        self._report(partition, include_current=True, activity="repair")
+        try:
+            self._report(partition, include_current=True, activity="repair")
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._observation_failure = exc
+            raise
 
     def _advance(self, partition: DisclosurePartition, page: DisclosurePage) -> None:
         if page.has_more:
@@ -815,7 +845,9 @@ class _AnnouncementRun:
             children = self._index.split_partition(partition, self._context.observed_at)
             self._queue = _replace_split_queue(self._queue, partition, children, self._deferred)
         else:
-            queries = self._dependencies.disclosures.split_queries(partition)
+            queries = self._source_call(partial(self._dependencies.disclosures.split_queries, partition))
+            if CompanyCancelled(self._dependencies):
+                raise InterruptedError("company_sync_cancelled")
             children = self._index.split_query(partition, queries)
             self._queue = _replace_query_queue(self._queue, partition, children, self._deferred)
 
@@ -823,6 +855,8 @@ class _AnnouncementRun:
         if CompanyCancelled(self._dependencies):
             self._queue.appendleft(partition)
             return True
+        if not self._recoverable(exc):
+            raise exc
         if CompanyFailureCode(exc) in {"cninfo_duplicate_page_links", "cninfo_page_limit"} or (
             CompanyFailureCode(exc) == "cninfo_partition_changed" and partition.start < partition.end
         ):
@@ -835,7 +869,7 @@ class _AnnouncementRun:
         if CompanyCancelled(self._dependencies):
             self._queue.appendleft(partition)
             return True
-        if str(exc) == "company_evidence_persistence_unavailable":
+        if not self._recoverable(exc):
             raise exc
         failure = CompanyFailureCode(exc)
         fallback = DownloadFailureContext(

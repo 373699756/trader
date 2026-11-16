@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from trader.download.domain.company_evidence import (
+    CompanyInputValidationFailure,
     DisclosureCoverageMismatch,
     DisclosurePage,
     DisclosurePartition,
@@ -91,12 +92,12 @@ def ValidateDisclosureQueryPage(
     connection: SqliteConnection, partition: DisclosurePartition, page: DisclosurePage
 ) -> None:
     if partition.expected_rows is not None and partition.expected_rows != page.total:
-        raise ValueError("cninfo_partition_changed")
+        raise CompanyInputValidationFailure("cninfo_partition_changed")
     received = partition.received_rows + len(page.rows)
     if not page.has_more and received != page.total:
-        raise ValueError("cninfo_page_truncated")
+        raise CompanyInputValidationFailure("cninfo_page_truncated")
     if page.has_more and received >= page.total:
-        raise ValueError("cninfo_page_count_inconsistent")
+        raise CompanyInputValidationFailure("cninfo_page_count_inconsistent")
     links = tuple((item.identity, code) for item in page.rows for code in item.codes)
     if len(links) != len(set(links)) or (
         partition.page > 1
@@ -109,7 +110,7 @@ def ValidateDisclosureQueryPage(
             for identity, code in links
         )
     ):
-        raise ValueError("cninfo_duplicate_page_links")
+        raise CompanyInputValidationFailure("cninfo_duplicate_page_links")
 
 
 def CommitDisclosureQueryPage(

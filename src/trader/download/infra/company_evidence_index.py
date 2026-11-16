@@ -383,7 +383,7 @@ class SQLiteCompanyEvidenceIndex:
                     changes = self._write_disclosures(connection, page.rows)
                     CommitDisclosureQueryPage(connection, partition, page)
                 return changes
-            except ValueError:
+            except CompanyInputValidationFailure:
                 self.restart_partition(partition)
                 raise
         self._validate_page(partition, page)
@@ -478,11 +478,11 @@ class SQLiteCompanyEvidenceIndex:
         self, partition: DisclosurePartition, queries: tuple[DisclosureQuery, ...]
     ) -> tuple[DisclosurePartition, ...]:
         if not queries:
-            raise ValueError("cninfo_query_unsplittable")
+            raise CompanyInputValidationFailure("cninfo_query_unsplittable")
         if len({query.key for query in queries}) != len(queries) or (
             partition.query is not None and any(query.key == partition.query.key for query in queries)
         ):
-            raise ValueError("cninfo_query_split_invalid")
+            raise CompanyInputValidationFailure("cninfo_query_split_invalid")
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             SeedDisclosureQueries(connection, partition, queries)
             pending = ReadDisclosureQueries(connection, replace(partition, query=None))
@@ -544,14 +544,14 @@ class SQLiteCompanyEvidenceIndex:
     def _validate_page(self, partition: DisclosurePartition, page: DisclosurePage) -> None:
         if partition.expected_rows is not None and partition.expected_rows != page.total:
             self.restart_partition(partition)
-            raise ValueError("cninfo_partition_changed")
+            raise CompanyInputValidationFailure("cninfo_partition_changed")
         received = partition.received_rows + len(page.rows)
         if not page.has_more and received != page.total:
             self.restart_partition(partition)
-            raise ValueError("cninfo_page_truncated")
+            raise CompanyInputValidationFailure("cninfo_page_truncated")
         if page.has_more and received >= page.total:
             self.restart_partition(partition)
-            raise ValueError("cninfo_page_count_inconsistent")
+            raise CompanyInputValidationFailure("cninfo_page_count_inconsistent")
         links = tuple((item.identity, code) for item in page.rows for code in item.codes)
         duplicate = len(links) != len(set(links))
         if partition.page > 1:
@@ -566,7 +566,7 @@ class SQLiteCompanyEvidenceIndex:
                 )
         if duplicate:
             self.restart_partition(partition)
-            raise ValueError("cninfo_duplicate_page_links")
+            raise CompanyInputValidationFailure("cninfo_duplicate_page_links")
 
     def restart_partition(self, partition: DisclosurePartition) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):

@@ -20,7 +20,7 @@ from trader.download.application.company_evidence import (
 from trader.download.application.company_operations import CompanyOperations
 from trader.download.application.company_structured import CollectCompanyStructured
 from trader.download.domain.company_evidence import (
-    CompanyDocumentFailure, CompanyDocumentTask, CompanyDocumentWorkload, CompanyFinancial,
+    CompanyDocumentFailure, CompanyDocumentTask, CompanyDocumentWorkload, CompanyFinancial, CompanyInputValidationFailure,
     DisclosureCoverageMismatch, DisclosurePage, DisclosurePartition, StructuredCompanyPage,
 )
 from trader.infra.http_contracts import HttpCancelled
@@ -68,7 +68,7 @@ def test_result_is_caller_confirmed_and_keeps_queue_call_commit_tokens(accepted)
     assert result.text_chars == len(extraction.text) and result.method == "text" and result.run_id == "same-run"
 
 
-def test_unobserved_directory_failure_does_not_borrow_previous_fetch_timing():
+def test_unobserved_local_directory_failure_does_not_borrow_previous_fetch_timing():
     events, failures = [], []
     source = Sources()
 
@@ -90,13 +90,10 @@ def test_unobserved_directory_failure_does_not_borrow_previous_fetch_timing():
     _value, timing = operations.call_observed("directory", lambda: None, source="cninfo", scope=partition)
     run._fetch_timing = replace(timing, call_seconds=99.0)
     failure = sqlite3.OperationalError("untrusted local path")
-    assert not run._failed(partition, failure)
-    assert len(failures) == 1 and failures[0][1] is failure
-    context = failures[0][0]
-    assert context.operation_id is context.elapsed_seconds is None
-    assert context.component == "announcements" and context.window_start == partition.start
-    recovery = [event.recovery for event in events if event.recovery is not None][-1]
-    assert recovery.object_id == context.object_id and recovery.source == context.supplier
+    with pytest.raises(sqlite3.OperationalError) as raised:
+        run._failed(partition, failure)
+    assert raised.value is failure and not failures
+    assert not any(event.recovery is not None for event in events)
 
 
 def test_recovery_registration_failure_preserves_primary_cause_and_material_identity():
@@ -376,7 +373,7 @@ def test_directory_refresh_reports_unchanged_without_claiming_commit(changes, mo
 def test_directory_recovery_reports_retry_after_actual_requeue(branch, monkeypatch):
     events = []
     partition = DisclosurePartition("sh", NOW.date(), NOW.date())
-    failure = ValueError("cninfo_duplicate_page_links") if branch == "split" else DisclosureCoverageMismatch(1)
+    failure = CompanyInputValidationFailure("cninfo_duplicate_page_links") if branch == "split" else DisclosureCoverageMismatch(1)
 
     class Index:
         def commit_query_coverage(self, *args):
