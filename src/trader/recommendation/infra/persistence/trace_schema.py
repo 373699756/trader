@@ -25,7 +25,6 @@ SCHEMA = SqliteSchema(
             trade_date INTEGER NOT NULL,
             observed_at INTEGER NOT NULL,
             freeze_hash BLOB NOT NULL CHECK(length(freeze_hash)=32),
-            schema_version TEXT NOT NULL,
             event_hash BLOB NOT NULL CHECK(length(event_hash)=32),
             event_bytes BLOB NOT NULL
         )
@@ -51,7 +50,6 @@ class TraceIndexSummary:
     retained: int
     retained_bytes: int
     trade_dates: frozenset[date]
-    legacy_retained: int
 
 
 def PartitionDate(path: Path) -> date | None:
@@ -64,9 +62,12 @@ def PartitionDate(path: Path) -> date | None:
 def InitializeDatabase(database: Path, initialized: set[Path], *, sqlite_policy: SqliteIoPolicy) -> None:
     if database in initialized:
         return
+    if database.exists():
+        with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as conn:
+            EnsureSqliteSchema(conn, SCHEMA, exact=True)
     database.parent.mkdir(parents=True, exist_ok=True)
     with SqliteSession(database, SqliteConnectionOptions(journal_mode="WAL"), sqlite_policy=sqlite_policy) as conn:
-        EnsureSqliteSchema(conn, SCHEMA, allow_create=True)
+        EnsureSqliteSchema(conn, SCHEMA, allow_create=True, exact=True)
     initialized.add(database)
 
 

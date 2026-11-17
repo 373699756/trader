@@ -100,7 +100,6 @@ class _GatewayOptionalOptions(TypedDict, total=False):
     cache: BoundedCache[object] | None
     source_contracts: Mapping[str, str] | None
     config_version: str
-    schema_version: str
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
     latency: LatencyWaterfall
@@ -165,7 +164,6 @@ class MarketDataGateway:
             self._source_contracts.get("tencent", "tencent-component"),
         )
         self._config_version = options.get("config_version", "component-default")
-        self._schema_version = options.get("schema_version", "market_snapshot")
         self._monotonic = options.get("monotonic", time.monotonic)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
         self._latency = options.get("latency") or LatencyWaterfall(monotonic=self._monotonic)
@@ -204,7 +202,7 @@ class MarketDataGateway:
                 cache=self._cache,
                 source_contracts=self._source_contracts,
                 config_version=self._config_version,
-                schema_version=self._schema_version,
+
                 monotonic=self._monotonic,
                 wall_clock=self._wall_clock,
                 full_market_primary_timeout_seconds=options.get("full_market_primary_timeout_seconds", 12.0),
@@ -355,7 +353,7 @@ class MarketDataGateway:
             commit_snapshot, columnar = _try_columnar_snapshot(
                 commit_snapshot,
                 config_version=self._config_version,
-                schema_version=self._schema_version,
+
             )
             self._latest_snapshot = commit_snapshot
             if columnar is None:
@@ -1136,13 +1134,13 @@ def _try_columnar_snapshot(
     snapshot: CanonicalMarketSnapshot,
     *,
     config_version: str,
-    schema_version: str,
+
 ) -> tuple[CanonicalMarketSnapshot, ColumnarQuoteBatch | None]:
     try:
         columnar = ColumnarQuoteBatch.from_snapshot(
             snapshot,
             config_version=config_version,
-            schema_version=schema_version,
+
         )
     except (PolarsError, RuntimeError, TypeError, ValueError):
         degraded = _with_snapshot_degradation(snapshot, {"columnar_projection_failed"})

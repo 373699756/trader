@@ -131,7 +131,6 @@ def ProjectTrainingProcessSnapshot(snapshot: TrainingProcessSnapshot) -> dict[st
     """Project the external diagnostic snapshot through an explicit field whitelist."""
     ticks = snapshot.clock_ticks_per_second
     return {
-        "schema_version": "training-external-process-snapshot",
         "pid": snapshot.pid,
         "birth_ticks": snapshot.birth_ticks,
         "state": snapshot.state,

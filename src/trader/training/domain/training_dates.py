@@ -21,7 +21,6 @@ class TrainingLabelContract:
     gate_cost_bps: int = 50
     stress_cost_bps: int = 100
     label_pending_required: bool = True
-    schema_version: str = "pre_cost_next_day_excess_label"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -29,7 +28,7 @@ class TrainingLabelContract:
             raise ValueError("training label formula is fixed")
         if (self.primary_cost_bps, self.gate_cost_bps, self.stress_cost_bps) != (20, 50, 100):
             raise ValueError("training label costs are fixed")
-        if not self.label_pending_required or self.schema_version != "pre_cost_next_day_excess_label":
+        if not self.label_pending_required:
             raise ValueError("training label contract is invalid")
         object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
@@ -55,19 +54,19 @@ class TrainingDateSplit:
     point_in_time_parity: bool = False
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "training_date_split"
+    recent_fit: bool = False
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if _SHA256.fullmatch(self.parent_manifest_hash) is None:
             raise ValueError("training split parent hash is invalid")
+        if type(self.recent_fit) is not bool:
+            raise ValueError("training split recent-fit purpose is invalid")
         _validate_training_split_dates(self)
         if self.training_anchor != "15:00_daily_close" or self.point_in_time_parity:
             raise ValueError("training split must remain a daily-close proxy")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("training split cannot open holdouts or authorize production")
-        if self.schema_version not in {"training_date_split", "v5_recent_training_split"}:
-            raise ValueError("training split schema is invalid")
         object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
@@ -85,7 +84,7 @@ def _validate_training_split_dates(value: TrainingDateSplit) -> None:
     flattened = tuple(day for group in ordered_groups for day in group)
     if flattened != tuple(sorted(set(flattened))):
         raise ValueError("training split dates must be unique and chronological")
-    recent = value.schema_version == "v5_recent_training_split"
+    recent = value.recent_fit
     if (len(value.model_fit_dates) < 61 if recent else len(value.development_dates) < 600) or len(
         value.confirmation_dates
     ) < 200:
@@ -130,6 +129,7 @@ def BuildTrainingDateSplit(
         early_stopping_sessions not in {0, 20}
         or (fit_dates is not None and fit_dates < 1)
         or history_sessions < 1
+        or type(recent_fit) is not bool
         or type(history_excludes_signal) is not bool
     ):
         raise ValueError("training fit window is invalid")
@@ -166,7 +166,7 @@ def BuildTrainingDateSplit(
     warmup = take(warmup_sessions)
     development = model_fit + fit_embargo + early_stopping + calibration_embargo + calibration
     return TrainingDateSplit(
-        schema_version="v5_recent_training_split" if recent_fit else "training_date_split",
+        recent_fit=recent_fit,
         parent_manifest_hash=parent_manifest_hash,
         label_contract=TrainingLabelContract(),
         model_fit_dates=model_fit,

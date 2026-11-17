@@ -14,9 +14,8 @@ from scripts.core.paths import ExternalPath
 from scripts.core.projection_values import ProjectMapping
 
 _MAX_REPORT_BYTES = 1024 * 1024
-_SCHEMA = "company-live-sync-measurement"
 _MEASUREMENT_FIELDS = (
-    "schema_version", "cancelled", "writes_current_company_data", "isolated_sample", "status_basis",
+    "cancelled", "writes_current_company_data", "isolated_sample", "status_basis",
     "field_correctness_verified", "fill_missing", "runtime_configuration_sha256", "cli_exit_code",
     "failure_category", "wall_seconds", "process_cpu_seconds", "operation_timing", "operation_counts",
     "route_classification", "thread_cpu_includes_child_processes", "coverage", "snapshot_interval_seconds",
@@ -38,7 +37,7 @@ def _read_measurement(path: Path) -> dict[str, object]:
     if len(content) > _MAX_REPORT_BYTES:
         raise ValueError("company_live_sync_measurement_too_large")
     raw = json.loads(content)
-    if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA:
+    if not isinstance(raw, dict):
         raise ValueError("company_live_sync_measurement_invalid")
     if (
         raw.get("field_correctness_verified") is not False
@@ -107,7 +106,6 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
         payload = _read_measurement(destination)
     except (OSError, ValueError, UnicodeError):
         return ToolOutcome(code if code != 0 else 1, {
-            "schema_version": _SCHEMA,
             "status": "cancelled" if code == 130 else "failed",
             "cli_exit_code": None,
             "field_correctness_verified": False,

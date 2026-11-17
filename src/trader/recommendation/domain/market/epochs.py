@@ -18,10 +18,6 @@ from trader.recommendation.domain.market.models import LiveQuote, MarketQuote
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 from trader.recommendation.domain.market.research import ResearchObservation
 
-DAILY_FEATURE_PACK_SCHEMA_VERSION = "daily_feature_pack"
-MARKET_EPOCH_SCHEMA_VERSION = "market_epoch"
-CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION = "candidate_quote_epoch"
-RESEARCH_EPOCH_SCHEMA_VERSION = "research_epoch"
 CORE_HISTORY_MIN_SESSIONS = 20
 
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
@@ -86,8 +82,6 @@ class _EpochCoordinates(Protocol):
     @property
     def config_version(self) -> str: ...
 
-    @property
-    def schema_version(self) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -183,7 +177,6 @@ class DailyFeaturePack:
     rows: tuple[DailyFeatureRow, ...]
     source_versions: Mapping[str, str]
     coverage: DataPlaneCoverageEvidence
-    schema_version: str = DAILY_FEATURE_PACK_SCHEMA_VERSION
     version: str = field(init=False)
 
     @cached_property
@@ -201,7 +194,7 @@ class DailyFeaturePack:
         """Integrity material for persistence, never an online revision key."""
         return _content_hash(
             {
-                "schema_version": self.schema_version,
+
                 "trade_date": self.trade_date,
                 "sequence": self.sequence,
                 "observed_at": self.observed_at,
@@ -215,7 +208,7 @@ class DailyFeaturePack:
         )
 
     def __post_init__(self) -> None:
-        _validate_epoch_coordinates(self, DAILY_FEATURE_PACK_SCHEMA_VERSION)
+        _validate_epoch_coordinates(self)
         _require_text(self.calendar_version, "calendar_version")
         rows = tuple(sorted(self.rows, key=lambda row: row.code))
         if not rows:
@@ -258,7 +251,6 @@ class MarketEpoch:
     field_values: Mapping[str, Mapping[str, FieldValue]]
     market_regime: Literal["risk_on", "neutral", "risk_off"] = "neutral"
     degraded_reasons: tuple[str, ...] = ()
-    schema_version: str = MARKET_EPOCH_SCHEMA_VERSION
     version: str = field(init=False)
 
     @cached_property
@@ -266,7 +258,7 @@ class MarketEpoch:
         """Integrity material for persistence, never an online revision key."""
         return _content_hash(
             {
-                "schema_version": self.schema_version,
+
                 "trade_date": self.trade_date,
                 "sequence": self.sequence,
                 "observed_at": self.observed_at,
@@ -282,7 +274,7 @@ class MarketEpoch:
         )
 
     def __post_init__(self) -> None:
-        _validate_epoch_coordinates(self, MARKET_EPOCH_SCHEMA_VERSION)
+        _validate_epoch_coordinates(self)
         _require_text(self.daily_feature_pack_version, "daily_feature_pack_version")
         quotes = tuple(sorted(self.quotes, key=lambda quote: quote.code))
         if not quotes:
@@ -353,7 +345,6 @@ class CandidateQuoteEpoch:
     requested_codes: tuple[str, ...] = ()
     feature_rows: tuple[CandidateFeatureRow, ...] = ()
     degraded_reasons: tuple[str, ...] = ()
-    schema_version: str = CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION
     version: str = field(init=False)
 
     @cached_property
@@ -361,7 +352,7 @@ class CandidateQuoteEpoch:
         """Integrity material for persistence, never an online revision key."""
         return _content_hash(
             {
-                "schema_version": self.schema_version,
+
                 "trade_date": self.trade_date,
                 "sequence": self.sequence,
                 "observed_at": self.observed_at,
@@ -378,7 +369,7 @@ class CandidateQuoteEpoch:
         )
 
     def __post_init__(self) -> None:
-        _validate_epoch_coordinates(self, CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION)
+        _validate_epoch_coordinates(self)
         _require_text(self.market_epoch_version, "market_epoch_version")
         quotes = tuple(sorted(self.quotes, key=lambda quote: quote.code))
         _require_unique_codes(tuple(quote.code for quote in quotes), "candidate quotes")
@@ -431,7 +422,6 @@ class ResearchEpoch:
     source_versions: Mapping[str, str]
     field_values: Mapping[str, Mapping[str, FieldValue]]
     degraded_reasons: tuple[str, ...] = ()
-    schema_version: str = RESEARCH_EPOCH_SCHEMA_VERSION
     version: str = field(init=False)
 
     @cached_property
@@ -443,7 +433,7 @@ class ResearchEpoch:
         """Integrity material for persistence, never an online revision key."""
         return _content_hash(
             {
-                "schema_version": self.schema_version,
+
                 "trade_date": self.trade_date,
                 "sequence": self.sequence,
                 "observed_at": self.observed_at,
@@ -457,7 +447,7 @@ class ResearchEpoch:
         )
 
     def __post_init__(self) -> None:
-        _validate_epoch_coordinates(self, RESEARCH_EPOCH_SCHEMA_VERSION)
+        _validate_epoch_coordinates(self)
         observations = dict(sorted(self.observations.items()))
         for code, observation in observations.items():
             _require_code(code)
@@ -479,7 +469,6 @@ class ResearchEpoch:
 
 def _validate_epoch_coordinates(
     epoch: _EpochCoordinates,
-    expected_schema: str,
 ) -> None:
     if epoch.sequence < 0:
         raise ValueError("epoch sequence cannot be negative")
@@ -490,8 +479,6 @@ def _validate_epoch_coordinates(
     if epoch.observed_at.date() != epoch.trade_date:
         raise ValueError("epoch trade_date must match observed_at in Asia/Shanghai")
     _require_text(epoch.config_version, "config_version")
-    if epoch.schema_version != expected_schema:
-        raise ValueError(f"epoch schema_version must be {expected_schema}")
 
 
 def _validate_market_quote(quote: MarketQuote, observed_at: datetime, received_at: datetime) -> None:
@@ -743,12 +730,12 @@ def _content_hash(payload: Mapping[str, object]) -> str:
 
 
 __all__ = [
-    "CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION",
+
     "CANDIDATE_REALTIME_FEATURES",
     "CORE_HISTORY_MIN_SESSIONS",
-    "DAILY_FEATURE_PACK_SCHEMA_VERSION",
-    "MARKET_EPOCH_SCHEMA_VERSION",
-    "RESEARCH_EPOCH_SCHEMA_VERSION",
+
+
+
     "CandidateFeatureRow",
     "CandidateQuoteEpoch",
     "DataPlaneCoverageEvidence",

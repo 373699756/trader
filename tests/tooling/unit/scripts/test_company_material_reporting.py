@@ -12,7 +12,6 @@ from scripts.core.projections import BuildReport, NormalizeActionResult
 
 def _material(**changes) -> dict[str, object]:
     return {
-        "schema_version": "company-field-material",
         "status": "observed",
         "read_only": True,
         "stable_read": True,
@@ -24,7 +23,7 @@ def _material(**changes) -> dict[str, object]:
 
 
 def test_stable_material_observations_are_degraded_and_normalization_is_idempotent() -> None:
-    original = DiagnosticResult("company_resume", 0, 1.0, _material(), None)
+    original = DiagnosticResult("company_field_material", 0, 1.0, _material(), None)
     normalized = NormalizeActionResult("company-resume", original)
     assert NormalizeActionResult("company-resume", normalized) == normalized
     report = BuildReport("company-resume", (normalized,))
@@ -43,14 +42,14 @@ def test_stable_material_observations_are_degraded_and_normalization_is_idempote
     {"items": {}},
 ))
 def test_material_quality_claims_or_invalid_evidence_never_pass(changes) -> None:
-    result = DiagnosticResult("company_resume", 0, 1.0, _material(**changes), None)
+    result = DiagnosticResult("company_field_material", 0, 1.0, _material(**changes), None)
     report = BuildReport("company-resume", (result,))
     assert report["status"] == "failed"
     assert report["checks"][0]["summary"]["field_correctness_verified"] is False
 
 
 def test_unstable_reads_keep_the_native_degraded_diagnostic() -> None:
-    result = DiagnosticResult("company_resume", 0, 1.0, _material(status="degraded", stable_read=False), None)
+    result = DiagnosticResult("company_field_material", 0, 1.0, _material(status="degraded", stable_read=False), None)
     report = BuildReport("company-resume", (result,))
     assert report["status"] == "degraded"
     assert report["checks"][0]["summary"]["stable_read"] is False
@@ -74,7 +73,7 @@ def test_material_projection_limits_every_document_and_drops_unselected_fields()
         "body": "PRIVATE_FULL_MATERIAL",
     }
     source = _material(items=[item] * 40, missing_source_keys=["x" * 1000] * 10, full_material="PRIVATE_FULL_MATERIAL")
-    report = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 1.0, source, None),))
+    report = BuildReport("company-resume", (DiagnosticResult("company_field_material", 0, 1.0, source, None),))
     summary = report["checks"][0]["summary"]
     assert len(summary["items"]) == 32 and summary["items_truncated"]
     assert len(summary["missing_source_keys"]) == 6 and len(summary["missing_source_keys"][0]) == 240

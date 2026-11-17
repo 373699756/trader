@@ -36,7 +36,7 @@ def Main(arguments: list[str] | None = None) -> int:
     args = parser.parse_args(arguments)
     browser = os.environ.get("TRADER_DIAGNOSTIC_CHROME") or shutil.which("google-chrome") or shutil.which("chromium")
     if browser is None:
-        emit_report({"schema_version": "company-ledger-browser", "status": "failed", "reason": "chrome_missing"})
+        emit_report({ "status": "failed", "reason": "chrome_missing"})
         return 1
     static = TOOL_ROOT / "src/trader/web/static"
     now = datetime(2026, 10, 27, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -156,7 +156,6 @@ result.textContent = JSON.stringify(results.map(({detail, ...rest}) => rest)); d
         ).stdout.strip()
         emit_report(
             {
-                "schema_version": "company-ledger-browser",
                 "status": "passed" if passed else "failed",
                 "summary": {
                     "fixture": True,

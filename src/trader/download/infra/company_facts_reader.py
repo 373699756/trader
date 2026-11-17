@@ -18,11 +18,13 @@ from trader.download.infra.company_document_link_rows import ReadCompanyDocument
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash
+from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.infra.sqlite_connection import (
     SqliteConnection,
+    EnsureSqliteSchema,
     SqliteConnectionOptions,
     SqliteSession,
     SqliteTransaction,
@@ -55,6 +57,7 @@ class SQLiteCompanyEvidenceReader:
     def _publication_version(self, connection: SqliteConnection, *, check: Callable[[], None] | None = None) -> str:
         if check is not None:
             check()
+        EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA, exact=True)
         identity = ReadCompanyPublicationIdentity(connection)
         if check is not None:
             check()
@@ -133,6 +136,7 @@ class SQLiteCompanyEvidenceReader:
             return ""
         try:
             with self._session(cancel_requested=cancel_requested) as connection:
+                EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA, exact=True)
                 identity = ReadCompanyPublicationIdentity(connection)
                 if cancel_requested is not None and cancel_requested():
                     raise InterruptedError("company_observation_cancelled")

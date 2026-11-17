@@ -191,7 +191,6 @@ class BoardPopulation:
     phase: str
     board: Board
     data_version: str
-    schema_version: str
     population_version: str
     sample_size: int
     missing_count: int
@@ -202,7 +201,7 @@ class BoardPopulation:
     status: Literal["current", "fallback", "stale", "insufficient"] = "current"
 
     def __post_init__(self) -> None:
-        if not all((self.trade_date, self.phase, self.data_version, self.schema_version, self.population_version)):
+        if not all((self.trade_date, self.phase, self.data_version,  self.population_version)):
             raise ValueError("board population identity must not be empty")
         if self.board is Board.UNSUPPORTED:
             raise ValueError("board population requires a supported board")

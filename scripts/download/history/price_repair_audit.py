@@ -152,7 +152,7 @@ def Main() -> int:
     from trader.bootstrap import BuildSqlitePolicy
     from trader.infra.settings import LoadRuntimeSettings
     sqlite_policy = BuildSqlitePolicy(LoadRuntimeSettings(args.runtime_config))
-    emit_report({"schema_version": "price-repair-audit", **_profile_repair_year(
+    emit_report({ **_profile_repair_year(
         args.history_root, args.work_root, args.repair_profile_year, args.repair_profile_code,
         sqlite_policy=sqlite_policy,
     )})

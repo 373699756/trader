@@ -121,14 +121,13 @@ def test_schema_accepts_only_current_v4_facts_and_maps_verified_risk() -> None:
     assert review.risk_facts[0].assessment == "high risk"
 
 
-def test_schema_rejects_missing_or_legacy_schema_version() -> None:
+def test_current_response_requires_actual_fields_and_rejects_extra_format_tags() -> None:
     candidate = _candidate_with_evidence()
     payload = _valid_payload(candidate.quote.code)
-    payload.pop("schema_version")
-    with pytest.raises(DeepSeekSchemaError, match="unsupported schema_version"):
-        ParseReviews(json.dumps(payload), [candidate], NOW)
+    assert "schema_version" not in payload
+    assert candidate.quote.code in ParseReviews(json.dumps(payload), [candidate], NOW)
     payload["schema_version"] = "deepseek_review_v3"
-    with pytest.raises(DeepSeekSchemaError, match="unsupported schema_version"):
+    with pytest.raises(DeepSeekSchemaError, match="unknown"):
         ParseReviews(json.dumps(payload), [candidate], NOW)
 
 
@@ -536,11 +535,7 @@ def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
     moved = replace(first, quote=replace(first.quote, data_version="fixture-moved", price=12.2))
     assert ReviewCacheKey(first, model="deepseek-v4-flash") == ReviewCacheKey(moved, model="deepseek-v4-flash")
     assert cache.get_raw(key, moved) is None
-    assert ReviewCacheKey(first, model="deepseek-v4-flash") != ReviewCacheKey(
-        first,
-        model="deepseek-v4-flash",
-        generation="final_review",
-    )
+    assert len(dict(ReviewCacheKey(first, model="deepseek-v4-flash"))["contract_digest"][1]) == 64
     assert ReviewCacheKey(first, model="deepseek-v4-flash", model_role="primary") != ReviewCacheKey(
         first,
         model="deepseek-v4-flash",

@@ -31,10 +31,15 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     Text as _text,
 )
-from trader.recommendation.domain.market.feature_schema import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
+from trader.recommendation.domain.market.feature_schema import FEATURE_SCHEMA_NAMES
 
 
 def ValidateFeatureSchemaContract(settings: StrategySettings) -> None:
+    allowed = {"percentage_unit", "realtime_price_adjustment", "history_price_adjustment", "cross_section_ties",
+               "non_finite", "missing_score", "winsor_lower_quantile", "winsor_upper_quantile", "minimum_history_days",
+               "feature_names", "feature_schema_expected"}
+    if set(settings.factor_contract) - allowed:
+        raise ConfigurationError("factor_contract contains unknown keys")
     _validate_factor_definition(
         settings.factor_index["volume_to_5d_average"],
         {
@@ -45,18 +50,13 @@ def ValidateFeatureSchemaContract(settings: StrategySettings) -> None:
             "minimum_samples": 5,
         },
     )
-    schema_id = settings.factor_contract.get("feature_schema")
-    if not isinstance(schema_id, str):
-        raise ConfigurationError("factor_contract.feature_schema is required")
-    if schema_id != FEATURE_SCHEMA_ID:
-        raise ConfigurationError(
-            f"factor_contract.feature_schema mismatch: expected={FEATURE_SCHEMA_ID}, got={schema_id}"
-        )
     configured_names = settings.factor_contract.get("feature_names")
     if configured_names is not None:
-        if not isinstance(configured_names, list):
+        if not isinstance(configured_names, list) or any(not isinstance(name, str) for name in configured_names):
             raise ConfigurationError("factor_contract.feature_names must be a list")
         configured = set(configured_names)
+        if len(configured) != len(configured_names):
+            raise ConfigurationError("factor_contract.feature_names must be unique")
         required = set(FEATURE_SCHEMA_NAMES)
         missing = sorted(required - configured)
         extra = sorted(configured - required)

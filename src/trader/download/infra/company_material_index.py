@@ -80,8 +80,7 @@ class SQLiteCompanyMaterialIndex:
         self._check_cancelled()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            EnsureSqliteSchema(connection, SCHEMA, allow_create=True,
-                               initialize=_initialize_contract, validate=_validate_contract)
+            EnsureSqliteSchema(connection, SCHEMA, allow_create=True, exact=True)
             if connection.run("PRAGMA journal_mode=WAL").require_one()[0] != "wal":
                 raise RuntimeError("company_material_journal_unavailable")
             with SqliteTransaction(connection, immediate=True):
@@ -95,7 +94,7 @@ class SQLiteCompanyMaterialIndex:
     def validate_existing(self) -> None:
         if self.path.exists():
             with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, SCHEMA, validate=_validate_contract)
+                EnsureSqliteSchema(connection, SCHEMA, exact=True)
 
     def clean_material(self, cutoff: datetime) -> None:
         """Run physical maintenance independently of any formal publication."""
@@ -653,15 +652,6 @@ class SQLiteCompanyMaterialIndex:
 
 def _key(partition: DisclosurePartition) -> tuple[str, str, str]:
     return partition.market, partition.start.isoformat(), partition.end.isoformat()
-
-
-def _initialize_contract(connection: SqliteConnection) -> None:
-    connection.run("INSERT INTO contract VALUES ('company_collection')")
-
-
-def _validate_contract(connection: SqliteConnection) -> None:
-    if tuple(row[0] for row in connection.run("SELECT schema_id FROM contract")) != ("company_collection",):
-        raise ValueError("company_material_contract_mismatch")
 
 
 __all__ = ["SQLiteCompanyMaterialIndex"]

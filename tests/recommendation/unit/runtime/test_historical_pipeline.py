@@ -2,14 +2,19 @@ from __future__ import annotations
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
+import base64
 import json
+import sqlite3
+from pathlib import Path
+from hashlib import sha256
 from dataclasses import replace
 
 import pytest
 
 from tests.helpers.recommendation.publication.freeze_identity import NOW, freeze, pipeline, stage_snapshots
-from trader.http_api.response.freeze_projection import SerializeEvent, SerializeFreezeView
+from trader.http_api.response.freeze_projection import SerializeFreezeView
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.sqlite_codec import EncodeDate, EncodeHash, EncodeTime
 from trader.infra.sqlite_connection import SqliteSession
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
@@ -22,9 +27,12 @@ from trader.recommendation.domain.evidence import pipeline as production_pipelin
 from trader.recommendation.domain.publication import freeze_identity
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord, FormalScoredFreeze
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
+from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
 from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
+from trader.recommendation.infra.persistence.freeze_trace_index import _observation_from_bytes
 
 _HISTORICAL_STAGES = (
     "data_source",
@@ -62,25 +70,33 @@ _HISTORICAL_DIAGNOSTICS = (
 )
 
 
-def _resign(raw, *, legacy_identity=True):
+def _original_fixture():
+    path = Path(__file__).parents[3] / "fixtures/recommendation/history_553e9cc0.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _seal_synthetic_history(raw, *, legacy_identity=True):
+    """Seal a synthetic old-graph input, never rewrite a decoded historical object."""
     raw["freeze_hash"] = CanonicalDigest(raw["freeze"])
-    if legacy_identity:
-        identity = raw["freeze"]
-        raw["freeze_version"] = (
-            f"freeze:{identity['strategy']}:{identity['trade_date']}:{identity['stage']}:"
-            f"{identity['sequence']}:{raw['freeze_hash'][:16]}"
-        )
+    identity = raw["freeze"]
+    coordinates = f"{identity['strategy']}:{identity['trade_date']}:{identity['stage']}:{identity['sequence']}"
+    raw["freeze_version"] = "freeze:" + coordinates + (
+        ":" + raw["freeze_hash"][:16] if legacy_identity else ":formal" if identity.get("is_formal") is True else ""
+    )
     raw["payload_hash"] = CanonicalDigest(
         {key: value for key, value in raw.items() if key not in {"payload_hash", "version"}}
     )
-    if legacy_identity:
-        raw["version"] = f"record:{raw['freeze']['strategy']}:{raw['freeze']['trade_date']}:{raw['payload_hash'][:16]}"
+    raw["version"] = (
+        f"record:{identity['strategy']}:{identity['trade_date']}:{raw['payload_hash'][:16]}"
+        if legacy_identity else "record:" + coordinates
+    )
     return json.dumps(raw, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
 
 
 def _historical_bytes(strategy=Strategy.TOMORROW, *, audit="full", legacy_identity=True):
-    # Persisted literals deliberately do not depend on either audit implementation.
-    raw = json.loads(CommittedRecordBytes(CommittedFreezeRecord(freeze(strategy), NOW, "scheduled")))
+    # Synthetic old graph uses the sealed old shape, independently of the current writer.
+    raw = json.loads(base64.b64decode(_original_fixture()["record_base64"]))
+    raw["freeze"]["strategy"] = strategy.value
     if audit != "none":
         raw["freeze"]["pipeline"] = {
             "current_stage": "concentration",
@@ -131,7 +147,7 @@ def _historical_bytes(strategy=Strategy.TOMORROW, *, audit="full", legacy_identi
             }
             for index, stage in enumerate(_HISTORICAL_STAGES)
         ]
-    return _resign(raw, legacy_identity=legacy_identity)
+    return _seal_synthetic_history(raw, legacy_identity=legacy_identity)
 
 
 def _disable_production_audit(monkeypatch):
@@ -156,9 +172,12 @@ def test_historical_bytes_and_identity_survive_production_pipeline_changes(
     encoded = _historical_bytes(strategy, audit=audit, legacy_identity=legacy_identity)
     before = json.loads(encoded)
     _disable_production_audit(monkeypatch)
-    restored = CommittedRecordFromBytes(encoded)
+    restored = HistoricalRecordFromBytes(encoded)
 
-    assert CommittedRecordBytes(restored) == encoded
+    assert isinstance(restored, HistoricalFreezeRecord)
+    assert restored.record_bytes == encoded
+    with pytest.raises(ValueError):
+        CommittedRecordFromBytes(encoded)
     assert restored.version == before["version"]
     assert restored.payload_hash == before["payload_hash"]
     assert restored.freeze.version == before["freeze_version"]
@@ -173,37 +192,62 @@ def test_historical_bytes_and_identity_survive_production_pipeline_changes(
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
-def test_historical_recovery_preserves_database_bytes_and_get_sse_projection(tmp_path, monkeypatch, strategy):
+def test_historical_file_only_projects_get_and_never_restores_current_or_sse(tmp_path, monkeypatch, strategy):
     class Clock:
         def now(self):
             return NOW
 
     encoded = _historical_bytes(strategy)
-    records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    records.initialize()
-    records.import_record_bytes(encoded)
+    historical = HistoricalRecordFromBytes(encoded)
+    path = tmp_path / "freeze.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(_original_fixture()["freeze_sql_dump"])
+        connection.execute("DELETE FROM freeze_record")
+        connection.execute(
+            "INSERT INTO freeze_record VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (strategy.value, EncodeDate(historical.trade_date), historical.version,
+             EncodeHash(historical.payload_hash), sha256(encoded).digest(), encoded,
+             EncodeTime(historical.committed_at), historical.commit_kind, "committed", None),
+        )
+    before = path.read_bytes()
     _disable_production_audit(monkeypatch)
-    restarted = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
-    assert restarted.recover().quarantined == 0
-    restored = restarted.load(strategy, NOW.date())
-    assert restored is not None
+    records = SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture())
+    restored = records.load_history(strategy, NOW.date())
+    assert restored == historical
     index = UnifiedFreezeIndex()
-    assert index.restore_formal(restored)
-    assert index.restore_formal(restored)
-    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), restarted, Clock())
+    empty = index.snapshot(strategy)
+    queries = UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), records, Clock())
     history = SerializeFreezeView(queries.history(strategy, NOW.date()))
-    current = SerializeFreezeView(queries.current(strategy))
-    event = SerializeEvent(UnifiedFreezeEventStream().publish_committed(BuildFreezeCommitted(restored.freeze)))
-
-    assert history["pipeline"] == current["pipeline"] == event["pipeline"]
-    assert history["freeze_version"] == current["freeze_version"] == restored.freeze.version
+    assert history["freeze_version"] == historical.freeze.version
     assert [item["stage"] for item in history["pipeline"]["stage_snapshots"]] == list(_HISTORICAL_STAGES)
     assert len(history["pipeline"]["stages"]) == 16
-    assert history["input_versions"] == dict(restored.freeze.input_versions)
+    assert history["input_versions"] == dict(historical.freeze.input_versions)
     assert all(item["duration_ms"] is None for item in history["pipeline"]["stages"])
-    with SqliteSession(tmp_path / "freeze.sqlite3") as connection:
-        row = connection.run("SELECT record_bytes,freeze_hash,status FROM freeze_record").require_one()
-        assert bytes(row[0]) == encoded and bytes(row[1]).hex() == restored.payload_hash and row[2] == "committed"
+    assert queries.current(strategy).status == "not_ready"
+    with pytest.raises(FreezeRecordUnavailableError):
+        records.import_record_bytes(encoded)
+    with pytest.raises(ValueError, match="historical|current"):
+        index.restore_formal(historical)
+    with pytest.raises(ValueError, match="historical|current"):
+        index.commit_formal(historical)
+    with pytest.raises(ValueError, match="historical|current"):
+        index.publish(historical.freeze, expected_version=None)
+    with pytest.raises(ValueError, match="historical|current"):
+        BuildFreezeCommitted(historical.freeze)
+    assert index.snapshot(strategy) == empty
+    assert path.read_bytes() == before
+    assert records.load_history(strategy, NOW.date()).record_bytes == encoded
+
+
+def test_original_historical_event_cannot_enter_current_sse_or_batch():
+    fixture = _original_fixture()
+    original = _observation_from_bytes(base64.b64decode(fixture["event_base64"]), fixture["event_hash"])
+    stream = UnifiedFreezeEventStream()
+    with pytest.raises(ValueError, match="historical|current"):
+        stream.publish_committed(original.event)
+    with pytest.raises(ValueError, match="historical|current"):
+        stream.publish_batch(1, (("v2", (original.event, original.event)),))
+    assert stream.last_sequence() == 0
 
 
 @pytest.mark.parametrize(
@@ -252,11 +296,11 @@ def test_historical_audit_validates_frozen_protocol_even_with_consistent_hashes(
     elif damage == "bool_count":
         first["output_count"] = True
     with pytest.raises(ValueError):
-        CommittedRecordFromBytes(_resign(raw))
+        HistoricalRecordFromBytes(_seal_synthetic_history(raw))
 
 
 def test_historical_audit_cannot_enter_production_pipeline_builders():
-    historical = CommittedRecordFromBytes(_historical_bytes()).freeze.pipeline
+    historical = HistoricalRecordFromBytes(_historical_bytes()).freeze.pipeline
     production_audit = pipeline()
     with pytest.raises(ValueError, match="active diagnostic types"):
         production_pipeline.RecommendationPipelineStatus(production_audit.current_stage, historical.stages)
@@ -289,7 +333,7 @@ def test_historical_audit_cannot_enter_production_pipeline_builders():
         )
 
 
-def test_recovery_idempotency_uses_verified_identity_across_production_and_historical_audits():
+def test_current_real_pipeline_roundtrip_and_recovery_keep_verified_identity():
     original = CommittedFreezeRecord(
         FormalScoredFreeze(replace(freeze(), pipeline=replace(pipeline(), stage_snapshots=stage_snapshots()))),
         NOW.replace(hour=15, minute=0),

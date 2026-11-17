@@ -84,6 +84,42 @@ def _prepare(index, facts, documents):
         )
 
 
+def test_actual_rule_content_change_reproves_old_named_proofs_and_attempts_before_reuse(tmp_path, monkeypatch):
+    index = fixtures._index(tmp_path)
+    document = _put(index)
+    index.publish(document.disclosure.codes, _AT)
+    before = _reader(index).read(document.disclosure.codes)[0]
+    old_hash = CompanyFieldProofRulesHash()
+    monkeypatch.setattr(company_field_publication, "COMPANY_FIELD_RULES", tuple(
+        pair for pair in company_field_publication.COMPANY_FIELD_RULES if pair[0] != "end_date"
+    ))
+    current_hash = CompanyFieldProofRulesHash()
+    assert current_hash != old_hash
+    with pytest.raises(ValueError, match="company_field_rules_unreproved"):
+        _reader(index).read_fields(document.disclosure.codes)
+    reads = []
+    files = CompanyDocumentFilesFixture(index.path.parent / "text")
+
+    def read_body(digest):
+        reads.append(digest)
+        return files.read(digest)
+
+    with SqliteSession(index.path, SqliteConnectionOptions(read_only=True)) as collected, SqliteSession(
+        index.facts_path, SqliteConnectionOptions(read_only=True),
+    ) as formal:
+        prepared = PrepareCompanyFieldResults(collected, formal, before, (), observed_at=_AT,
+            extraction_hash=_identity(index).extraction_hash, event_policy=fixtures.CompanyEventPolicy(),
+            read_document=read_body)
+    assert reads and all(item.state == "verified" for item in prepared.results)
+    assert prepared.receipts and all(current_hash.hex() in item.policy_id for item in prepared.receipts)
+    writer = SQLiteCompanyFactsIndexFixture(index.facts_path)
+    writer.publish((), {}, _identity(index), _AT, field_results=prepared.results,
+        field_rules_hash=current_hash, receipts=prepared.receipts)
+    assert _reader(index).read_fields(document.disclosure.codes).results == prepared.results
+    assert _prepare(index, before, ()).receipts == ()
+    assert _reader(index).read(document.disclosure.codes) == (before,)
+
+
 def test_reduction_fields_publish_with_risk_facts_and_reuse_without_reading_body(tmp_path):
     index = fixtures._index(tmp_path)
     document = _put(index, (
@@ -432,7 +468,7 @@ def test_failed_publication_rolls_back_facts_field_conclusions_and_new_receipts(
     changed = replace(facts, checked_at=_AT + timedelta(seconds=1), published_at=_AT + timedelta(seconds=1))
     receipt = CompanyInputReceipt(
         "cninfo", "new-field-attempt", facts.code, "new-field-version", b"f" * 32, b"b" * 32,
-        _AT, "field_attempted", "fixture-field-attempt:1",
+        _AT, "field_attempted", "fixture-field-attempt",
     )
     with pytest.raises(RuntimeError, match="fixture_final_identity_rejected|company_publication_parent_changed"):
         writer.publish(

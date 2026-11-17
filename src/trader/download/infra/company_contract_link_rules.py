@@ -6,6 +6,7 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from trader.download.domain.company_event_extraction import CompanyLinkCandidate
 from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_BINDING_DIGEST
@@ -14,7 +15,11 @@ from trader.download.domain.company_evidence import Disclosure
 from trader.download.infra.company_link_codec import EncodeCompanyLink
 from trader.infra.sqlite_connection import SqliteConnection
 
-_RULE = "contract_link_subject:1:" + COMPANY_CONTRACT_BINDING_DIGEST.hex()
+def _rule() -> str:
+    parser = Path(__file__).resolve().parents[1] / "domain/company_contract_fields.py"
+    return "contract_link_subject:" + hashlib.sha256(
+        COMPANY_CONTRACT_BINDING_DIGEST + Path(__file__).read_bytes() + parser.read_bytes()
+    ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +49,7 @@ def ReadCompanyContractLinkRules(
     return frozenset(CompanyContractLinkRule(*row) for row in connection.run(
         "SELECT source,source_key,code,record_hash,body_hash,extraction_hash,payload_hash "
         f"FROM document_contract_link_rules WHERE code IN ({placeholders}) AND extraction_hash=? AND rule_id=?",
-        (*codes, extraction_hash, _RULE),
+        (*codes, extraction_hash, _rule()),
     ))
 
 
@@ -84,7 +89,7 @@ def WriteCompanyContractLinkRules(
     connection.run_many(
         "INSERT OR REPLACE INTO document_contract_link_rules VALUES(?,?,?,?,?,?,?,?)",
         (
-            (disclosure.source, disclosure.identity, code, disclosure.digest, body_hash, extraction_hash, payload_hash, _RULE)
+            (disclosure.source, disclosure.identity, code, disclosure.digest, body_hash, extraction_hash, payload_hash, _rule())
             for code in disclosure.codes
         ),
     )

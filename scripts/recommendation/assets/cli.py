@@ -15,12 +15,11 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
     argparse.ArgumentParser(description=description).parse_args(arguments)
     from scripts.recommendation.assets import generation
 
-    schema = "asset-consistency" if action_identity == "assets" else "asset-generation"
     try:
         if action_identity == "assets-generate":
             generation.GenerateAsset()
             return ToolOutcome(0, {
-                "schema_version": schema,
+
                 "status": "passed",
                 "state": "generated",
                 "summary": {"asset_generated": True, "read_only": False},
@@ -30,13 +29,13 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
         actual = path.read_text(encoding="utf-8") if path.is_file() else ""
         passed = expected == actual
         return ToolOutcome(0 if passed else 1, {
-            "schema_version": schema,
+
             "status": "passed" if passed else "failed",
             "summary": {"asset_matches_source": passed, "read_only": True},
         })
     except (OSError, ValueError):
         return ToolOutcome(1, {
-            "schema_version": schema,
+
             "status": "failed",
             "state": "failed",
             "error_code": "asset_consistency_failed" if action_identity == "assets" else "asset_generation_failed",

@@ -36,7 +36,6 @@ class HistoricalResidualLedgerTerminal:
     outcome_rows: int = 0
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "historical_prediction_residual_ledger_terminal"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -49,8 +48,6 @@ class HistoricalResidualLedgerTerminal:
             raise ValueError("historical residual terminal requires bounded insufficient reasons")
         if self.prediction_rows or self.outcome_rows or self.terminal_holdout_opened or self.production_authority:
             raise ValueError("historical residual terminal cannot contain rows, open holdout, or authorize production")
-        if self.schema_version != "historical_prediction_residual_ledger_terminal":
-            raise ValueError("historical residual terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
@@ -67,7 +64,6 @@ class TomorrowDailyCloseModelSelectionTerminal:
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     automatic_model_update: bool = False
-    schema_version: str = "tomorrow_daily_close_model_selection_terminal"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -86,8 +82,6 @@ class TomorrowDailyCloseModelSelectionTerminal:
             raise ValueError(
                 "daily-close model selection terminal cannot open holdout, authorize production, or update models"
             )
-        if self.schema_version != "tomorrow_daily_close_model_selection_terminal":
-            raise ValueError("daily-close model selection terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
@@ -102,7 +96,6 @@ class H1ResearchCompletion:
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     automatic_model_update: bool = False
-    schema_version: str = "h1_research_completion"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -124,8 +117,6 @@ class H1ResearchCompletion:
             raise ValueError("H1 research insufficient completion status is invalid")
         if self.terminal_holdout_opened or self.production_authority or self.automatic_model_update:
             raise ValueError("H1 research completion cannot open holdout, authorize production, or update models")
-        if self.schema_version != "h1_research_completion":
-            raise ValueError("H1 research completion schema is invalid")
         object.__setattr__(self, "residual_ledgers", ledgers)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 

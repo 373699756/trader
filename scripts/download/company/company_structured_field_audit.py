@@ -611,7 +611,7 @@ def AuditCompanyAnnualIncome(
         raise ValueError("company_annual_probe_deadline_invalid")
     started = monotonic()
     result: dict[str, object] = {
-        "schema_version": "company-annual-income-source", "status": "degraded", "read_only": True,
+         "status": "degraded", "read_only": True,
         "source": "eastmoney_f10", "code": request.code,
         "requested_periods": [day.isoformat() for day in request.report_dates],
         "field_correctness_verified": False, "full_window_coverage_verified": False,
@@ -732,7 +732,6 @@ def AuditCompanyStructuredSources(
             sample.update({"status": "failed", "failure": type(exc).__name__})
         sample["seconds"] = max(0.0, monotonic() - before)
     return {
-        "schema_version": "company-structured-field-sampling",
         "status": "passed" if all(row["status"] == "sampled" for row in samples) else "degraded",
         "observed_at": observed_at.isoformat(), "read_only": True, "production_adopted": False,
         "field_correctness_verified": False, "full_window_coverage_verified": False,

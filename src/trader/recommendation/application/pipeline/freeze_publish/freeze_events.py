@@ -38,13 +38,37 @@ class FreezeCommitted:
     input_versions: tuple[tuple[str, str], ...]
     config_version: str
     strategy_version: str
-    fusion_version: str
-    schema_version: str
     filter_aggregates: tuple[tuple[str, int], ...]
     degraded_reasons: tuple[str, ...]
     items: tuple[CommittedFreezeItem, ...]
     projection_version: str = field(default="", compare=False, repr=False)
     projection: ScoredFreeze | None = field(default=None, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class HistoricalFreezeCommitted:
+    event_id: str
+    strategy: Strategy
+    trade_date: date
+    observed_at: datetime
+    freeze_version: str
+    freeze_hash: str
+    parent_version: str | None
+    stage: FreezeStage
+    input_versions: tuple[tuple[str, str], ...]
+    config_version: str
+    strategy_version: str
+    filter_aggregates: tuple[tuple[str, int], ...]
+    degraded_reasons: tuple[str, ...]
+    items: tuple[CommittedFreezeItem, ...]
+
+
+@dataclass(frozen=True)
+class HistoricalFreezeObservation:
+    event: HistoricalFreezeCommitted
+    research_audit: ResearchAuditIdentity | None
+    event_bytes: bytes
+    event_hash: str
 
 
 @dataclass(frozen=True)
@@ -76,6 +100,8 @@ def BuildFreezeCommitted(
     *,
     projection_version: str | None = None,
 ) -> FreezeCommitted:
+    if not isinstance(freeze, ScoredFreeze):
+        raise ValueError("historical snapshots are read-only")
     return FreezeCommitted(
         event_id=f"freeze-committed:{freeze.version}",
         strategy=freeze.strategy,
@@ -88,8 +114,8 @@ def BuildFreezeCommitted(
         input_versions=freeze.input_versions,
         config_version=freeze.config_version,
         strategy_version=freeze.strategy_version,
-        fusion_version=freeze.fusion_version,
-        schema_version=freeze.schema_version,
+
+
         filter_aggregates=freeze.filter_aggregates,
         degraded_reasons=freeze.degraded_reasons,
         items=tuple(_event_item(item) for item in freeze.items),
@@ -117,5 +143,7 @@ __all__ = [
     "CommittedFreezeItem",
     "FreezeCommitted",
     "FreezeObservation",
+    "HistoricalFreezeCommitted",
+    "HistoricalFreezeObservation",
     "BuildFreezeCommitted",
 ]

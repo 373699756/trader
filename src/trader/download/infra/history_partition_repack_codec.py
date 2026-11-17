@@ -51,7 +51,6 @@ def WriteHistoryPartitionRepackBuildState(path: Path, state: HistoryPartitionRep
         for item in state.source_files
     ]
     payload: dict[str, object] = {
-        "schema_version": "history_archive_repack_build_state",
         "source_root": state.source_root,
         "target_root": state.target_root,
         "source_snapshot_hash": state.source_snapshot_hash,
@@ -71,11 +70,10 @@ def WriteHistoryPartitionRepackBuildState(path: Path, state: HistoryPartitionRep
 
 
 def ReadHistoryPartitionRepackBuildState(path: Path) -> HistoryPartitionRepackBuildState:
-    payload = _read_verified_json(path, "history_archive_repack_build_state")
+    payload = _read_verified_json(path)
     _require_fields(
         payload,
         {
-            "schema_version",
             "source_root",
             "target_root",
             "source_snapshot_hash",
@@ -126,7 +124,6 @@ def ReadHistoryPartitionRepackBuildState(path: Path) -> HistoryPartitionRepackBu
 
 def WriteHistoryPartitionRepackActivationJournal(path: Path, journal: HistoryPartitionRepackActivationJournal) -> None:
     payload: dict[str, object] = {
-        "schema_version": "history_archive_repack_activation_journal",
         "state": journal.state,
         "source_root": journal.source_root,
         "target_root": journal.target_root,
@@ -138,11 +135,10 @@ def WriteHistoryPartitionRepackActivationJournal(path: Path, journal: HistoryPar
 
 
 def ReadHistoryPartitionRepackActivationJournal(path: Path) -> HistoryPartitionRepackActivationJournal:
-    payload = _read_verified_json(path, "history_archive_repack_activation_journal")
+    payload = _read_verified_json(path)
     _require_fields(
         payload,
         {
-            "schema_version",
             "state",
             "source_root",
             "target_root",
@@ -212,13 +208,13 @@ def _decode_partition(raw: object) -> HistoryPartitionRepackPartitionEvidence:
     )
 
 
-def _read_verified_json(path: Path, schema: str) -> dict[str, object]:
+def _read_verified_json(path: Path) -> dict[str, object]:
     try:
         payload = _object(json.loads(path.read_text(encoding="utf-8")))
         declared = payload.get("content_hash")
         body = {key: value for key, value in payload.items() if key != "content_hash"}
-        if payload.get("schema_version") != schema or not isinstance(declared, str):
-            raise ValueError("schema or hash is invalid")
+        if not isinstance(declared, str):
+            raise ValueError("content hash is invalid")
         if ContentHash(body) != declared:
             raise ValueError("content hash is invalid")
         return payload

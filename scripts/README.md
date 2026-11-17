@@ -95,7 +95,7 @@ repair已移除手动补缺的联网导出／恢复模式和`--repair-codes`参�
 
 业务目录直接位于`scripts/`下，按recommendation、download、training、infra、engineering归属。`core/catalog.py`是选择关系的唯一可执行来源；`core`只持有中立选择、执行、报告和公共类型，不导入业务参数或默认值。各业务的`cli.py`解析和校验输入，`options.py`持有不可变业务类型，`commands.py`构造明确选中的命令；没有包含全部业务字段的全局Options对象。未选worker不导入，根帮助和清单不加载产品、下载或训练实现。
 
-JSON输出为两空格缩进、中文直显，schema为`trader-tools`。顶层selection保存business/module/action，逐项报告passed、degraded、failed、timed_out、cancelled、skipped、empty；超时和取消不能算通过。工程debt只记录退出码及输出字节数；显式transform/skills另保留受限的工具报告文本，供审阅命名清单、预览或评测比较，不转发行情与供应商原文。原生动作的`-- --help`或`-- -h`直接显示参数帮助，不运行业务。单个子进程默认180秒，公共超时上限沿业务校验；原生工程参数路径前使用`--`。捕获输出合计上限20 MiB；脚本与公告文档解析共用`infra.process_family.ProcessFamily`。POSIX在leader仍可等待、PID未回收时保留组身份；超时或取消先发SIGINT并最多留5秒让worker的finally回收session，再强制清理自有进程组并wait，正常完成同样清理后代。缺少WNOWAIT等能力会明确拒绝，不按旧PID发信号；Windows共用Job Object及启动门。平台代码与模拟验证不代表Windows实机已验收。
+JSON输出为两空格缩进、中文直显；按当前字段及既有命令身份解析，不带额外格式版本标签。顶层selection保存business/module/action，逐项报告passed、degraded、failed、timed_out、cancelled、skipped、empty；超时和取消不能算通过。工程debt只记录退出码及输出字节数；显式transform/skills另保留受限的工具报告文本，供审阅命名清单、预览或评测比较，不转发行情与供应商原文。原生动作的`-- --help`或`-- -h`直接显示参数帮助，不运行业务。单个子进程默认180秒，公共超时上限沿业务校验；原生工程参数路径前使用`--`。捕获输出合计上限20 MiB；脚本与公告文档解析共用`infra.process_family.ProcessFamily`。POSIX在leader仍可等待、PID未回收时保留组身份；超时或取消先发SIGINT并最多留5秒让worker的finally回收session，再强制清理自有进程组并wait，正常完成同样清理后代。缺少WNOWAIT等能力会明确拒绝，不按旧PID发信号；Windows共用Job Object及启动门。平台代码与模拟验证不代表Windows实机已验收。
 
 默认公共报告写标准输出，`--report`只接受`-`或显式仓库外绝对路径的新文件；现有文件、目录和链接均拒绝，最终写入也独占创建，避免覆盖配置、输入或旧报告。`--report-format`选择auto/json/text；auto在市场因子检查输出到终端时使用text，保存报告时使用json。业务原有`--output`保留工件含义，不是公共报告别名。公共报告必须与原生工件文件、skills输出目录及维护source/target/backup目录分离；相同路径及任一方向的祖先关系都在执行前拒绝。检查不写活动数据；样本、布局比较和修复演练只使用显式外部副本或既有隔离fixture。网络检查输出聚合计数、阶段耗时、失败类别及来源年龄，不输出行情、证券清单、密钥或供应商原文。磁盘profile是只读盘点，unknown不能当作SSD/HDD性能证据；两种介质分别记录，工具整理的启动耗时也不能充当硬盘吞吐结论。
 
@@ -272,7 +272,7 @@ assets/consistency只读核对，assets/generate显式重建打包JS资源；公
 | `engineering/__init__.py` | Internal checks selected by scripts/tools.py. | 包初始化；导入不执行动作 | 所属包导入 |
 | `engineering/migration/__init__.py` | Repository tool package. | 包初始化；导入不执行动作 | 所属包导入 |
 | `engineering/migration/cli.py` | Explicit inspection, candidate construction and rollback for isolated migration. | 显式外部迁移/回滚；codec无独立入口 | `core/catalog.py`、`tooling/unit/scripts/test_tools_maintenance.py`、`core/cli.py按catalog动态选择` |
-| `engineering/migration/codec.py` | Explicit legacy-format decoding for isolated data migration; never an active read path. | 显式外部迁移/回滚；codec无独立入口 | `engineering/migration/operations.py`、`tooling/unit/scripts/test_migrate_runtime_data.py` |
+| `engineering/migration/candidate_database.py` | 只读核验显式隔离候选的SQLite完整性及外键，不解码或合并旧格式。 | 显式外部候选／完整目录回退；无独立入口 | `engineering/migration/operations.py`、`tooling/unit/scripts/test_migrate_runtime_data.py` |
 | `engineering/migration/operations.py` | Build and verify a data candidate from an external, stopped legacy workspace copy. | 显式外部迁移/回滚；codec无独立入口 | `engineering/migration/cli.py`、`tooling/unit/scripts/test_migrate_runtime_data.py`、`tooling/unit/scripts/test_tools_maintenance.py` |
 | `engineering/packaging/__init__.py` | Repository tool package. | 包初始化；导入不执行动作 | 所属包导入 |
 | `engineering/packaging/cli.py` | Install the built wheel outside the repository and verify public entrypoints and resources. | 显式隔离venv安装；不切换活动环境 | `core/catalog.py`、`core/cli.py按catalog动态选择` |

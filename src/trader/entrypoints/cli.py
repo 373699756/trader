@@ -303,7 +303,7 @@ def _execute_train(args: argparse.Namespace, reports: TrainingReportOutput) -> i
             return 2
         except KeyboardInterrupt:
             output.publish_cancelled()
-            reports.emit({"schema_version": "selected_training_result", "status": "cancelled"})
+            reports.emit({"status": "cancelled"})
             return 130
         output.report_notice("存储检测", "磁盘策略已确定", state="完成")
         output.report_notice("配置检查", "配置准备完成", state="完成")
@@ -329,12 +329,12 @@ def _run_selected_training(
         return code
     except KeyboardInterrupt:
         output.publish_cancelled()
-        reports.emit({"schema_version": "selected_training_result", "status": "cancelled"})
+        reports.emit({"status": "cancelled"})
         return 130
     except (OSError, RuntimeError, ValueError) as exc:
         diagnostic = CaptureTrainingError(exc)
         output.publish_result("failed", TrainingErrorSummary(diagnostic))
-        reports.emit({"schema_version": "selected_training_result", "status": "failed", "category": type(exc).__name__,
+        reports.emit({"status": "failed", "category": type(exc).__name__,
                       "diagnostic": ProjectTrainingError(diagnostic)})
         return 1
 
@@ -434,7 +434,6 @@ def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None, sqlite
     print(
         json.dumps(
             {
-                "schema_version": "issuer_eligibility_list",
                 "as_of": observed_at.isoformat(),
                 "manifest_hash": status.manifest_hash,
                 "integrity_ok": status.integrity_ok,

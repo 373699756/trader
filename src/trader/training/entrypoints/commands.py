@@ -98,7 +98,6 @@ class _TomorrowResearchProgress(TomorrowResearchProgressPort):
         print(
             json.dumps(
                 {
-                    "schema_version": "tomorrow_research_progress",
                     "stage": stage,
                     "status": status,
                     "elapsed_seconds": round(now - started_at, 3),
@@ -149,7 +148,6 @@ def RunResearchCommand(
         print(
             json.dumps(
                 {
-                    "schema_version": "research_readiness",
                     "research_plan": {
                         "content_hash": plan.content_hash,
                         "configuration_hash": plan.configuration_hash,
@@ -237,7 +235,6 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
     audit = BaselineIdentityAuditService(LoadBaselineIdentityEvidence(runtime)).execute()
     payload = {
-        "schema_version": audit.schema_version,
         "status": audit.status,
         "static_status": audit.static_status,
         "production_authority": audit.production_authority,
@@ -326,7 +323,6 @@ def _tomorrow_research_result_payload(
     available_disk_gb: float,
 ) -> dict[str, object]:
     return {
-        "schema_version": result.schema_version,
         "status": result.status,
         "run_id": result.run_id,
         "graph_hash": result.graph_hash,

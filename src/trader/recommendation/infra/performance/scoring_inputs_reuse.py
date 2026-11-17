@@ -77,8 +77,8 @@ class ScoringInputsReuse:
                 population_qualifications=population_qualifications,
             )
         key = CacheIdentity(
-            "quote_factor_inputs", "scoring_inputs_reuse", "complete_population", RequestKey({"input": digest}),
-            identity.trade_date.isoformat(), "local_scoring", "qfq", policy.strategy_version, "qualified_board_inputs",
+            "quote_factor_inputs", "scoring_inputs_reuse", "complete_population", RequestKey({"input": digest, "adjust": "qfq"}),
+            identity.trade_date.isoformat(), "local_scoring", None, policy.strategy_version,
         )
         cached = self._cache.get(key)
         identity_done = time.monotonic()

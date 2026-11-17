@@ -233,7 +233,7 @@ class MarketDataHealth:
                     "history_maintenance_total_units": history.maintenance_total_units,
                     "history_maintenance_elapsed_seconds": history.maintenance_elapsed_seconds,
                     "issuer_eligibility": {
-                        "schema_version": eligibility.schema_version,
+
                         "fact_count": eligibility.fact_count,
                         "excluded_count": eligibility.excluded_count,
                         "reason_counts": {item.reason.value: item.count for item in eligibility.reason_counts},

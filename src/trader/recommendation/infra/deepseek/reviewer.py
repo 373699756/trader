@@ -44,7 +44,6 @@ from trader.recommendation.infra.deepseek.reviewer_selection import (
 )
 from trader.recommendation.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.recommendation.infra.deepseek.schema import (
-    RAW_FACTS_CACHE_GENERATION,
     BuildReviewManifestHash,
     ReviewCacheKey,
 )
@@ -652,7 +651,6 @@ class DeepSeekReviewer:
         return ReviewCacheKey(
             candidate,
             model=self._settings.model,
-            generation=RAW_FACTS_CACHE_GENERATION,
             model_role="primary",
             thinking_mode=execution.thinking_mode,
             reasoning_effort=None,

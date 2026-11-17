@@ -372,7 +372,7 @@ def test_final_heads_fit_latest_raw_features_and_keep_distinct_diagnostic_eviden
         assert head.transformer_means != head.diagnostic.transformer_means
         assert head.ridge_coefficients != head.diagnostic.ridge_coefficients
         metadata = json.loads((root / "v1" / head.strategy.value / "metadata.json").read_text(encoding="utf-8"))
-        assert metadata["schema_version"] == "learned_rank_final_head_metadata"
+        assert "schema_version" not in metadata
         report = metadata["validation_report"]
         assert report["diagnostic_head"] == CanonicalValue(head.diagnostic)
         assert report["diagnostic_head_hash"] == head.diagnostic.content_hash
@@ -443,7 +443,7 @@ def test_old_diagnostic_pair_is_rejected_and_cannot_reuse_as_final(tmp_path, reu
         LoadV1ScoringProfile(model_root)
     for strategy in ("tomorrow", "d25"):
         metadata = json.loads((model_root / "v1" / strategy / "metadata.json").read_text(encoding="utf-8"))
-        assert metadata["schema_version"] == "learned_rank_head_metadata"
+        assert "schema_version" not in metadata
         assert "final_fit" not in metadata["training_input"]
         assert "final_model_unseen_validation_passed" not in metadata["validation_report"]
     assert InspectV1Training(_History(), model_root, _settings()) is None

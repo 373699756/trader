@@ -28,7 +28,7 @@ from trader.training.application.tomorrow_research_evidence import (
     TomorrowResearchTerminalStatus,
 )
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
+from trader.infra.serialization.canonical_codec import CanonicalText, EncodeCanonicalValue
 
 
 class TomorrowResearchEvidenceIndexError(RuntimeError):
@@ -215,11 +215,11 @@ class TomorrowResearchEvidenceIndex:
 
 
 def _encode(value: TomorrowResearchEvidenceGraph | TomorrowResearchStageHandoff) -> str:
-    payload = ResearchValue(value)
+    payload = EncodeCanonicalValue(value)
     if not isinstance(payload, dict):
         raise TypeError("Tomorrow research artifact must encode to an object")
     payload["content_hash"] = value.content_hash
-    return ResearchJson(payload)
+    return CanonicalText(payload)
 
 
 def _available_disk_gb(path: Path) -> float:
@@ -232,7 +232,6 @@ def _decode_graph(encoded: str) -> TomorrowResearchEvidenceGraph:
         raw,
         {
             "artifacts",
-            "schema_version",
             "production_authority",
             "automatic_model_update",
             "content_hash",
@@ -240,7 +239,6 @@ def _decode_graph(encoded: str) -> TomorrowResearchEvidenceGraph:
     )
     graph = TomorrowResearchEvidenceGraph(
         artifacts=tuple(_decode_ref(_object(item)) for item in _array(raw["artifacts"])),
-        schema_version=_string(raw["schema_version"]),
         production_authority=_boolean(raw["production_authority"]),
         automatic_model_update=_boolean(raw["automatic_model_update"]),
     )
@@ -260,7 +258,6 @@ def _decode_handoff(encoded: str) -> TomorrowResearchStageHandoff:
             "resource_probe",
             "outcome",
             "failure_reasons",
-            "schema_version",
             "production_authority",
             "automatic_model_update",
             "content_hash",
@@ -277,7 +274,6 @@ def _decode_handoff(encoded: str) -> TomorrowResearchStageHandoff:
         resource_probe=None if resource_raw is None else _decode_resource_probe(_object(resource_raw)),
         outcome=cast(TomorrowResearchHandoffOutcome, _string(raw["outcome"])),
         failure_reasons=_strings(raw["failure_reasons"]),
-        schema_version=_string(raw["schema_version"]),
         production_authority=_boolean(raw["production_authority"]),
         automatic_model_update=_boolean(raw["automatic_model_update"]),
     )
@@ -295,7 +291,6 @@ def _decode_ref(raw: dict[str, object]) -> TomorrowResearchEvidenceRef:
             "parent_hashes",
             "terminal_status",
             "evidence_markers",
-            "schema_version",
             "production_authority",
         },
     )
@@ -307,7 +302,6 @@ def _decode_ref(raw: dict[str, object]) -> TomorrowResearchEvidenceRef:
         parent_hashes=_strings(raw["parent_hashes"]),
         terminal_status=cast(TomorrowResearchTerminalStatus | None, status),
         evidence_markers=_strings(raw["evidence_markers"]),
-        schema_version=_string(raw["schema_version"]),
         production_authority=_boolean(raw["production_authority"]),
     )
 
@@ -322,7 +316,6 @@ def _decode_resource_probe(raw: dict[str, object]) -> TomorrowResearchResourcePr
             "peak_rss_mb",
             "available_disk_gb",
             "estimated_full_run_hours",
-            "schema_version",
         },
     )
     return TomorrowResearchResourceProbe(
@@ -332,7 +325,6 @@ def _decode_resource_probe(raw: dict[str, object]) -> TomorrowResearchResourcePr
         peak_rss_mb=_integer(raw["peak_rss_mb"]),
         available_disk_gb=_number(raw["available_disk_gb"]),
         estimated_full_run_hours=_number(raw["estimated_full_run_hours"]),
-        schema_version=_string(raw["schema_version"]),
     )
 
 
@@ -347,7 +339,6 @@ def _decode_evidence_partition(raw: dict[str, object]) -> TomorrowResearchEviden
             "first_trade_date",
             "last_trade_date",
             "file_format",
-            "schema_version",
         },
     )
     return TomorrowResearchEvidencePartitionRef(
@@ -358,7 +349,6 @@ def _decode_evidence_partition(raw: dict[str, object]) -> TomorrowResearchEviden
         first_trade_date=_date(raw["first_trade_date"]),
         last_trade_date=_date(raw["last_trade_date"]),
         file_format=cast(Literal["parquet"], _string(raw["file_format"])),
-        schema_version=_string(raw["schema_version"]),
     )
 
 
@@ -373,7 +363,6 @@ def _report(
     readiness = ProductionReadinessAudit(graph, manual_authorization_hash=None)
     publishable = readiness.blockers == ("manual_production_authorization_missing",)
     payload: dict[str, object] = {
-        "schema_version": "tomorrow_research_report",
         "run_id": run_id,
         "status": "terminal" if next_stage is None else "in_progress",
         "graph_hash": graph.content_hash,
@@ -391,7 +380,7 @@ def _report(
         ],
         "completed_stage": handoff.stage,
         "next_stage": next_stage,
-        "resource_probe": ResearchValue(resource_probe),
+        "resource_probe": EncodeCanonicalValue(resource_probe),
         "evidence_partitions": [
             {
                 "relative_path": item.relative_path,
@@ -412,7 +401,7 @@ def _report(
         "automatic_model_update": False,
     }
     payload["content_hash"] = CanonicalResearchHash(payload)
-    return ResearchJson(payload)
+    return CanonicalText(payload)
 
 
 def _read_report_resource_probe(path: Path) -> TomorrowResearchResourceProbe | None:

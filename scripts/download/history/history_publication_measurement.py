@@ -346,7 +346,6 @@ def ProfilePublishedHistory(
                 if VerifySqliteFile(source, sqlite_policy=sqlite_policy, previous=previous) != previous:
                     raise RuntimeError("history_publication_profile_source_changed")
     return {
-        "schema_version": "history-publication-profile",
         "status": "passed" if all(item["counts_and_bytes_equal"] for item in files) else "failed",
         "summary": {
             "fixture": False, "workload": "republication_of_sealed_snapshot_on_isolated_copies",

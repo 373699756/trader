@@ -355,21 +355,18 @@ assert.strictEqual(
   35000,
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.statusPayloadCompatibility({ schema_version: "runtime_status_unsupported" }))),
-  { compatible: false, reason: "status_schema_mismatch" },
+  JSON.parse(JSON.stringify(state.statusPayloadCompatibility({ status: "running", runtime_started: "true" }))),
+  { compatible: false, reason: "status_shape_invalid" },
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.statusPayloadCompatibility({
-    schema_version: "runtime_status",
-    release: {
-      freeze_view_schema: "freeze_view",
-    },
+    status: "running", runtime_started: true, runtime_version: "actual-runtime", strategies: {},
   }))),
   { compatible: true, reason: "" },
 );
 assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.freezePayloadCompatibility({ schema_version: "freeze_view_unsupported" }))),
-  { compatible: false, reason: "freeze_schema_mismatch" },
+  JSON.parse(JSON.stringify(state.freezePayloadCompatibility({ strategy: "tomorrow", items: {} }))),
+  { compatible: false, reason: "freeze_shape_invalid" },
 );
 assert(patchesSource.includes("draft: null,"), "formal recommendation patches must clear observation drafts");
 assert(
@@ -1518,6 +1515,16 @@ const getPayload = sandbox.window.TraderDashboardTest.normalizeFreezePayload(
   { strategy: "tomorrow", status: "ready", trade_date: "2026-07-23", items: [getItem], top_scores: [getItem] },
   "tomorrow", "", "current",
 );
+const savedHistory = sandbox.window.TraderDashboardTest.normalizeFreezePayload(
+  { strategy: "tomorrow", status: "ready", trade_date: "2026-07-23", items: [getItem],
+    coverage: { candidate_count: null, evaluated_count: null, rejected_count: null,
+      selected_count: 1, executable_count: 1, observation_count: 0 }, selection_diagnostics: null },
+  "tomorrow", "2026-07-23", "history",
+);
+assert.strictEqual(savedHistory.selection_diagnostics, null);
+assert.strictEqual(savedHistory.coverage.candidate_count, null);
+assert.strictEqual(savedHistory.coverage.evaluated_count, null);
+assert.strictEqual(savedHistory.coverage.rejected_count, null);
 const patchItem = {
   rank: 2, code: "600001", name: "证据股票", board: "main", industry: "测试行业",
   action: "executable", action_reason: "score_threshold_met", setup: { type: "volume_breakout" },
@@ -1758,7 +1765,6 @@ const payload = {
   items: [{ code: "600001", rank: 1 }, { code: "600002", rank: 2 }],
 };
 const patch = {
-  schema_version: "freeze_event",
   publication_id: "tomorrow-next",
   base_projection_version: "tomorrow-base",
   projection_version: "tomorrow-next",
@@ -1864,7 +1870,7 @@ assert.strictEqual(
   "apply",
 );
 assert.strictEqual(
-  state.recommendationPatchFreeze({ ...patch, schema_version: "freeze_event_unsupported" }, payload, "tomorrow-base", "tomorrow", "live"),
+  state.recommendationPatchFreeze({ ...patch, publication_id: null }, payload, "tomorrow-base", "tomorrow", "live"),
   "schema_mismatch",
 );
 assert.strictEqual(
@@ -1906,7 +1912,6 @@ assert.strictEqual(
   "ignore_late_draft",
 );
 const overlay = {
-  schema_version: "freeze_event",
   publication_id: "tomorrow-freeze",
   projection_version: "tomorrow-next",
   snapshot_id: "tomorrow-freeze",
@@ -2367,7 +2372,7 @@ async function verifyAtomicBatchCache() {
   ui.view = "current";
   ui.payloads.clear();
   const batch = (sequence) => ({
-    schema_version: "freeze_event", round_sequence: sequence,
+    round_sequence: sequence,
     profiles: Object.fromEntries(["v1", "v5"].map((profile) => [profile,
       Object.fromEntries(["tomorrow", "d25"].map((strategy) => {
         const version = `${profile}-${strategy}-${sequence}`;
@@ -2411,10 +2416,9 @@ async function verifyAtomicBatchCache() {
   sandbox.fetch = () => new Promise((resolve) => { resolveResponse = resolve; });
   const request = dashboard.requestRecommendations("d25", "", "current");
   const oldBatch = {
-    schema_version: "freeze_current_batch",
     profiles: Object.fromEntries(["v1", "v5"].map((profile) => [profile,
       Object.fromEntries(["tomorrow", "d25"].map((strategy) => [strategy, {
-        ...ui.payloads.get(`${profile}:${strategy}:current`), schema_version: "freeze_view", view: "current",
+        ...ui.payloads.get(`${profile}:${strategy}:current`), view: "current",
       }])),
     ])),
   };

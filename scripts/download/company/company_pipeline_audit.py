@@ -401,7 +401,7 @@ def AuditCompanyPipeline(
         raise ValueError("company_pipeline_time_invalid")
     target = _directory_sample(path, now, sqlite_policy=sqlite_policy) if compare_pacing else None
     if compare_pacing and target is None:
-        return {"schema_version": "company-resume", "status": "degraded", "findings": ["no_directory_sample"]}
+        return { "status": "degraded", "findings": ["no_directory_sample"]}
     configuration = LoadCompanySyncConfiguration(TOOL_ROOT)
     ocr = DetectCompanyOcr(configuration.document_ocr_languages)
     text = DetectCompanyText()
@@ -541,7 +541,7 @@ def AuditCompanyPipeline(
     same_directory = not compare_pacing or runs[0]["directory"] == runs[1]["directory"] and isinstance(runs[0]["directory"], dict) and runs[0]["directory"].get("complete") is True
     passed = same_documents and same_facts and same_directory and all(
         run["extracted_documents"] == len(items) and not run["failures"] and run["restart_unchanged"] for run in runs)
-    return {"schema_version": "company-resume", "status": "passed" if passed else "degraded",
+    return { "status": "passed" if passed else "degraded",
         "summary": {"pipeline_audit": {"isolated_sample": True, "source_admission_verified": False,
             "production_enabled": False, "performance_accepted": False, "full_sync_verified": False,
             "equivalent_documents": same_documents, "equivalent_facts": same_facts, "runs": runs}},

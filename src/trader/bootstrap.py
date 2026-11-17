@@ -1202,7 +1202,6 @@ def _build_market_data(
             cache=market_cache,
             source_contracts=settings.market_data.source_contracts,
             config_version=settings.config_version,
-            schema_version="market_snapshot",
             wall_clock=now, quote_sessions=context.cadence_policy.sessions,
             latency=context.latency,
             listing_open_dates=calendar.open_dates,
@@ -1213,7 +1212,6 @@ def _build_market_data(
             cache=market_cache,
             source_contracts=settings.market_data.source_contracts,
             config_version=settings.config_version,
-            schema_version="market_snapshot",
             wall_clock=now,
         )
         research = PublishedCompanyResearch(
@@ -1323,7 +1321,7 @@ def _build_publication(
         records,
         clock,
         runtime_identity=freeze_coordinator.FreezeRuntimeIdentity(
-            context.effective_config_version, context.strategy.strategy_version, context.strategy.fusion.version
+            context.effective_config_version, context.strategy.strategy_version
         ),
         publication_io=publication_io,
         production_authority=production_authority,

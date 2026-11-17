@@ -25,6 +25,7 @@ from werkzeug.serving import WSGIRequestHandler, make_server
 
 from scripts.core.reporting import emit_report
 from scripts.recommendation.web.browser_session import ChromeSession
+from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord
 
 PROJECT_ROOT = TOOL_ROOT
 
@@ -70,7 +71,6 @@ from trader.recommendation.application.runtime.supervisor import (  # noqa: E402
 )
 from trader.recommendation.domain.market.models import Board  # noqa: E402
 from trader.recommendation.domain.publication.freeze_identity import (  # noqa: E402
-    CommittedFreezeRecord,
     FreezeIdentity,
     FreezeItem,
     FreezeOverlay,
@@ -112,12 +112,12 @@ class _TradingCalendar:
 
 
 class _History:
-    def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
+    def load_history(self, strategy: Strategy, trade_date: date) -> HistoricalFreezeRecord | None:
         del strategy, trade_date
         return None
 
-    def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
-        del strategy, limit
+    def list_dates(self, strategy: Strategy, *, limit: int = 31, year: int | None = None, month: int | None = None) -> tuple[date, ...]:
+        del strategy, limit, year, month
         return ()
 
 
@@ -352,7 +352,6 @@ def _seed(index: UnifiedFreezeIndex, strategy: Strategy, at: datetime, code: str
         (("market", "seed"),),
         "config:measurement",
         "strategy:measurement",
-        "fusion:measurement",
         (item,),
         (),
     )
@@ -758,7 +757,6 @@ def _run(
         and direct_freeze_patch_passed
     )
     return {
-        "schema_version": "web-refresh-interval",
         "passed": passed,
         "strategy": target_strategy.value,
         "simulated_start": simulated_start.isoformat(),
@@ -967,7 +965,7 @@ def _live_browser(url: str) -> dict[str, object]:
         passed = all(isinstance(row, dict) and row.get("matched") and row.get("browser_errors") == 0
                      and row.get("stream") == "实时" and row.get("requested_view_matched")
                      and row.get("status") == "ready" and row.get("quotes_complete") for row in results)
-        return {"schema_version": "web-live-browser", "passed": passed,
+        return { "passed": passed,
                 "summary": {"fixture": False, "browser": browser_name, "profiles": profiles, "strategies": results}}
 
 
@@ -990,7 +988,6 @@ def Main() -> int:
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": "web-refresh-interval",
             "passed": False,
             "error": type(exc).__name__,
             "message": str(exc)[:300] or "no additional detail",

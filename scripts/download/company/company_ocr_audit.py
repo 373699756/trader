@@ -65,7 +65,7 @@ def AuditCompanyOcr(
             "GROUP BY d.id ORDER BY r.attempted_at,d.id LIMIT 7"
         ).fetchall()
     if not rows:
-        return {"schema_version": "company-resume", "status": "degraded",
+        return { "status": "degraded",
                 "summary": {"ocr_audit": {"sample_size": 0, "active_writes": False, "reason": "no_failed_sample"}}}
     configuration = LoadCompanySyncConfiguration(TOOL_ROOT)
     capability = DetectCompanyOcr(configuration.document_ocr_languages)
@@ -143,7 +143,7 @@ def AuditCompanyOcr(
                 break
     passed = recovered == len(rows) and len(observations) == len(rows)
     return {
-        "schema_version": "company-resume", "status": "passed" if passed else "degraded",
+         "status": "passed" if passed else "degraded",
         "summary": {"ocr_audit": {"sample_size": len(observations), "active_writes": False, "policy": policies.ocr,
                                   "passed": passed, "recovered_documents": recovered,
                                   "seconds": time.monotonic() - started, "samples": observations}},

@@ -87,10 +87,10 @@ def test_material_field_conclusions_bound_members_and_do_not_publish_full_source
     conclusion = {"event_id": "event", "field": "actual_pct", "state": "verified", "value": 0.3,
                   "applicable": True, "reason": "source_field_located", "evidence": [proof] * 20,
                   "raw_body": "PRIVATE_FULL_TEXT"}
-    payload = {"schema_version": "company-field-material", "status": "observed", "read_only": True,
+    payload = { "status": "observed", "read_only": True,
                "stable_read": True, "field_correctness_verified": False, "missing_source_keys": [],
                "items": [{"field_conclusions": [conclusion] * 100}]}
-    report = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
+    report = BuildReport("company-resume", (DiagnosticResult("company_field_material", 0, 0.1, payload, None),))
     item = report["checks"][0]["summary"]["items"][0]
     assert len(item["field_conclusions"]) == 32 and item["field_conclusions_truncated"]
     assert len(item["field_conclusions"][0]["evidence"]) == 4
@@ -106,11 +106,11 @@ def test_material_unverified_fields_and_contract_comparison_keep_bounds_and_publ
                 "amount_basis": "unknown", "contract_amount": 3340000, "annual_revenue": 123,
                 "revenue_disclosed_at": "2026-04-10T00:00:00+08:00", "contract_revenue_pct": None,
                 "positive_level": 0, "raw_body": "PRIVATE_FULL_TEXT", "published": True}
-    payload = {"schema_version": "company-field-material", "status": "observed", "read_only": True,
+    payload = { "status": "observed", "read_only": True,
                "stable_read": True, "items": [{"unverified_fields": [field] * 40,
                                                 "unverified_fields_truncated": True,
                                                 "contracts": [contract] * 20, "reparsed_contract": contract}]}
-    report = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
+    report = BuildReport("company-resume", (DiagnosticResult("company_field_material", 0, 0.1, payload, None),))
     item = report["checks"][0]["summary"]["items"][0]
     assert len(item["unverified_fields"]) == 32 and item["unverified_fields_truncated"]
     assert item["unverified_fields"][0]["code"] == "600001"
@@ -131,7 +131,7 @@ def test_field_replay_projection_bounds_fields_and_keeps_physical_source_change_
     field = {"code": "600001", "event_id": "event", "field": "actual_pct", "value": 0.3,
              "state": "verified", "applicable": True, "evidence": [{"quote": "PRIVATE_RAW"}] * 20}
     payload = {
-        "schema_version": "company-field-replay", "status": "degraded", "read_only_source": True,
+         "status": "degraded", "read_only_source": True,
         "observed_at": "2026-11-13T20:56:36.590084+08:00",
         "isolated_copy": True, "production_authorized": False, "field_correctness_verified": False,
         "full_market_verified": False, "performance_verified": False, "network_requests": 0, "source_data_writes": 0,
@@ -141,7 +141,7 @@ def test_field_replay_projection_bounds_fields_and_keeps_physical_source_change_
         "collection_source_files_sha256_before": ["a" * 64, None, "PRIVATE_RAW"],
         "round_1_publication_material_reads": [{"body_hash": "b" * 64, "reads": 2, "quote": "PRIVATE_RAW"}] * 20,
     }
-    report = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
+    report = BuildReport("company-resume", (DiagnosticResult("company_field_replay", 0, 0.1, payload, None),))
     summary = report["checks"][0]["summary"]
     assert summary["observed_at"] == payload["observed_at"]
     assert len(summary["field_items"]) == 100 and len(summary["field_items"][0]["evidence"]) == 4
@@ -166,7 +166,7 @@ def test_field_replay_projection_bounds_fields_and_keeps_physical_source_change_
 ))
 def test_replay_pass_requires_strict_zero_counts_without_contradictory_evidence(changes):
     payload = {
-        "schema_version": "company-field-replay", "status": "passed", "read_only_source": True,
+         "status": "passed", "read_only_source": True,
         "isolated_copy": True, "production_authorized": False, "field_correctness_verified": False,
         "full_market_verified": False, "performance_verified": False, "network_requests": 0, "source_data_writes": 0,
         "source_input_unchanged": True, "collection_backup_generation_stable": True,
@@ -179,11 +179,11 @@ def test_replay_pass_requires_strict_zero_counts_without_contradictory_evidence(
             "all_old_risks_and_evidence_preserved": True, "missing": [], "changed_requires_review": [],
         } for number in (1, 2)},
     }
-    valid = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
+    valid = BuildReport("company-resume", (DiagnosticResult("company_field_replay", 0, 0.1, payload, None),))
     assert valid["status"] == "passed"
 
     payload.update(changes)
-    rejected = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, payload, None),))
+    rejected = BuildReport("company-resume", (DiagnosticResult("company_field_replay", 0, 0.1, payload, None),))
     assert rejected["status"] == "failed"
     assert rejected["checks"][0]["summary"]["field_correctness_verified"] is False
 
@@ -208,7 +208,7 @@ def test_material_conclusions_are_bound_to_the_exact_current_source_version(tmp_
         results = company_field_audit.ReadCompanyFieldResults(formal, ("600001",))
     proof = CompanyFieldEvidence(
         "sse" if guard == "source" else "cninfo", "contract-income", "old" if guard == "record" else row[0],
-        b"x" * 32 if guard == "body" else row[1], "explicit_cny_contract_amount:3",
+        b"x" * 32 if guard == "body" else row[1], "explicit_cny_contract_amount",
         fixtures.NOW if guard == "time" else datetime.fromisoformat(row[2]),
         1, 1, "合同金额人民币2亿元。", "cny", CompanySubject.ISSUER,
     )

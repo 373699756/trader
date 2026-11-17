@@ -66,7 +66,6 @@ from trader.recommendation.infra.status_projection import InputQualityPayload  #
 from trader.web import CreateApp  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))
-REPORT_SCHEMA = "desktop-browser"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _NOW = datetime(2026, 8, 13, 12, 30, tzinfo=_SHANGHAI)
 
@@ -135,7 +134,6 @@ class _PreviewBrowserFixtures:
                 self._input_versions(profile),
                 "config:browser-preview",
                 "strategy:browser-preview",
-                "fusion:browser-preview",
                 completed_items,
                 (),
                 pipeline=pipeline,
@@ -235,7 +233,7 @@ def main() -> int:
         )
     except Exception as exc:
         report = {
-            "schema_version": REPORT_SCHEMA,
+
             "passed": False,
             "error": type(exc).__name__,
             "message": str(exc)[:500],
@@ -423,7 +421,7 @@ def _run(
             and long_state.get("closed") is True
         )
         return {
-            "schema_version": REPORT_SCHEMA,
+
             "passed": passed,
             "browser": browser_name,
             "browser_version": _execute(base, "return navigator.userAgent;"),
@@ -555,7 +553,7 @@ def _preview_acceptance(
         and errors == []
     )
     return {
-        "schema_version": REPORT_SCHEMA,
+
         "passed": passed,
         "browser": browser_name,
         "preview": {
@@ -600,7 +598,7 @@ def _filter_counts(base: str | ChromeSession, browser_name: str) -> dict[str, ob
             raise RuntimeError("browser filter counts must be an object")
         results.append({"viewport": [width, height], **result})
     return {
-        "schema_version": REPORT_SCHEMA,
+
         "browser": browser_name,
         "passed": all(result["passed"] for result in results),
         "filter_counts": results,
@@ -823,7 +821,6 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
             (("market", "market:browser"),),
             "config:browser",
             "strategy:browser",
-            "fusion:browser",
             items,
             (),
             pipeline=_browser_pipeline(),
@@ -932,7 +929,6 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
             (("market", "market:browser-empty"),),
             "config:browser",
             "strategy:browser",
-            "fusion:browser",
             tuple(
                 replace(
                     _observation_item(code, rank=rank, final_score=score),

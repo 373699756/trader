@@ -64,7 +64,6 @@ def BuildReport(check_id: str, results: Sequence[DiagnosticResult]) -> dict[str,
         "total": len(statuses),
     }
     report: dict[str, object] = {
-        "schema_version": "trader-tools",
         "status": "failed" if summary["failed"] or summary["timed_out"] or summary["cancelled"] else "degraded" if summary["degraded"] or summary["skipped"] else "empty" if all(status == "empty" for status in statuses) else "passed",
         "collected_at": datetime.now(_SHANGHAI).isoformat(),
         "selection": ToolByIdentity(check_id).projection(),
@@ -96,7 +95,6 @@ def _check_payload(result: DiagnosticResult, reporter: _Reporter | None) -> dict
         "status": ResultStatus(result),
         "executed": True,
         "duration_ms": result.duration_ms,
-        "schema_version": result.payload.get("schema_version") if result.payload is not None else None,
     }
     if result.error_code is not None:
         payload["error_code"] = result.error_code

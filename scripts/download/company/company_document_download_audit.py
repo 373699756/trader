@@ -610,7 +610,7 @@ def _audit_company_field_proof_recovery(
     }
     passed = (complete and source_unchanged and not cancelled() and reproved_count == len(targets)
               and all(item.recovered for item in observations))
-    report: dict[str, object] = {"schema_version": "company-resume", "status": "passed" if passed else "degraded",
+    report: dict[str, object] = { "status": "passed" if passed else "degraded",
                                 "summary": {"field_proof_recovery": summary},
                                 "findings": [] if passed else ["company_field_proof_recovery_incomplete"]}
     AtomicWriteJson(directory / "proof-recovery.json", report)
@@ -749,7 +749,7 @@ def AuditCompanyDocumentDownloads(
     corrected = [row for row in observations if row["variant"] == "production_fixed"]
     passed = complete and len(corrected) == len(samples) and all(row["passed"] for row in corrected)
     return {
-        "schema_version": "company-resume", "status": "passed" if passed else "degraded",
+         "status": "passed" if passed else "degraded",
         "summary": {"document_download_audit": {
             "read_only": True, "sample_size": len(samples), "complete": complete,
             "production_passed": passed,
@@ -858,7 +858,7 @@ def _recover_capacity_documents(
     complete = bool(samples) and len(observations) == len(samples) and len(pending) <= len(samples)
     passed = complete and all(row["passed"] for row in observations)
     report: dict[str, object] = {
-        "schema_version": "company-resume", "status": "passed" if passed else "degraded",
+         "status": "passed" if passed else "degraded",
         "summary": {"document_download_audit": {
             "read_only": True, "active_writes": False, "pending_records": len(pending), "sample_size": len(samples),
             "complete": complete, "production_passed": passed, "observations": observations,

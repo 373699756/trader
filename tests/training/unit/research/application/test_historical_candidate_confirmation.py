@@ -97,7 +97,7 @@ def test_batch_returns_two_independent_strategy_terminal_states() -> None:
     )
 
     assert tuple(item.strategy for item in batch.strategies) == ("tomorrow", "d25")
-    assert batch.schema_version == "historical_confirmation_batch_result"
+
     assert all(item.terminal_holdout_status == "terminal_holdout_not_opened" for item in batch.strategies)
     assert batch.production_authority is False
     assert len(batch.content_hash) == 64

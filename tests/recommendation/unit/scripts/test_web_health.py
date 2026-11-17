@@ -16,6 +16,16 @@ _STRATEGY = "tomorrow"
 _TRADE_DATE = "2026-08-25"
 
 
+def test_health_checks_the_real_runtime_identity_without_a_release_format_label():
+    sample = _sample(1)
+    original = analyze_samples((sample,), strategies=(_STRATEGY,))
+    assert not any(item.code == "runtime_identity_missing" for item in original)
+    missing = replace(sample, status=replace(sample.status, runtime_version=None))
+    findings = analyze_samples((missing,), strategies=(_STRATEGY,))
+    assert any(item.code == "runtime_identity_missing" for item in findings)
+    assert sample.status.runtime_version == "runtime-test"
+
+
 def test_runtime_report_retains_preview_failure_and_bounded_stage_timings():
     sample = parse_web_sample(
         1, "2026-10-31T10:00:00+08:00",
@@ -306,8 +316,7 @@ def _sample(
         else None
     )
     status: dict[str, object] = {
-        "schema_version": "runtime_status",
-        "release": {"freeze_view_schema": "freeze_view"},
+        "release": {},
         "status": "running",
         "runtime_started": True,
         "runtime_version": "runtime-test",
@@ -406,7 +415,6 @@ def _sample(
         "recent_errors": recent_errors or [],
     }
     freeze: dict[str, object] = {
-        "schema_version": "freeze_view",
         "status": freeze_status,
         "strategy": _STRATEGY,
         "trade_date": _TRADE_DATE,
@@ -913,7 +921,6 @@ def test_projection_comparison_distinguishes_private_drafts_from_formal_identity
         **status_changes,
     }
     current = {
-        "schema_version": "freeze_view",
         "strategy": _STRATEGY,
         "status": "not_ready",
         "trade_date": _TRADE_DATE,
@@ -1247,7 +1254,7 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     rendered = str(report)
     assert "600000" not in rendered
     assert "items" not in rendered
-    assert report["schema_version"] == "web_recommendation_health"
+    assert "schema_version" not in report
     assert report["status"] == "passed"
     assert report["samples"][0]["market"]["history_archive"]["maintenance_total_units"] == 20
     assert report["samples"][0]["market"]["history_archive"]["state"] == "published"

@@ -62,7 +62,7 @@ def test_shadow_never_checkpoints_freezes_or_enters_official_history(
         index,
         records,
         _Clock(now),
-        runtime_identity=FreezeRuntimeIdentity(shadow.config_version, shadow.strategy_version, shadow.fusion_version),
+        runtime_identity=FreezeRuntimeIdentity(shadow.config_version, shadow.strategy_version),
     )
     assert freezer.restore(now.date()).status == "formal_freeze_unavailable"
     if now.hour < 15:

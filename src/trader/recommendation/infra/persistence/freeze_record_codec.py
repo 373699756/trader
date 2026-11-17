@@ -11,8 +11,6 @@ from trader.infra.serialization.fields import AsSequence
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.research import ResearchComponentCoverage, ResearchComponentStatus
 from trader.recommendation.domain.publication.freeze_identity import (
-    COMMITTED_RECORD_SCHEMA_VERSION,
-    FREEZE_IDENTITY_SCHEMA_VERSION,
     CommitKind,
     CommittedFreezeRecord,
     CommittedRecordIdentityPayload,
@@ -47,7 +45,6 @@ _Json: TypeAlias = str | int | float | bool | None | list["_Json"] | dict[str, "
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _RECORD_FIELDS = frozenset(
     {
-        "schema_version",
         "freeze",
         "freeze_version",
         "freeze_hash",
@@ -59,7 +56,6 @@ _RECORD_FIELDS = frozenset(
 )
 _FREEZE_FIELDS = frozenset(
     {
-        "schema_version",
         "strategy",
         "trade_date",
         "sequence",
@@ -69,7 +65,6 @@ _FREEZE_FIELDS = frozenset(
         "input_versions",
         "config_version",
         "strategy_version",
-        "fusion_version",
         "items",
         "filter_aggregates",
         "degraded_reasons",
@@ -148,8 +143,6 @@ _PIPELINE_REASON_FIELDS = frozenset({"reason", "count"})
 def CommittedRecordBytes(record: CommittedFreezeRecord) -> bytes:
     """Encode one current-schema record using its canonical persisted shape."""
 
-    if record.schema_version != COMMITTED_RECORD_SCHEMA_VERSION:
-        raise ValueError("formal freeze record does not use the current schema")
     payload = CommittedRecordIdentityPayload(record)
     payload["payload_hash"] = record.payload_hash
     payload["version"] = record.version
@@ -161,16 +154,12 @@ def CommittedRecordFromBytes(payload: bytes) -> CommittedFreezeRecord:
 
     raw = json.loads(payload.decode("utf-8"))
     value = _object(raw, "formal freeze payload", required=_RECORD_FIELDS)
-    if _text(value, "schema_version") != COMMITTED_RECORD_SCHEMA_VERSION:
-        raise ValueError("formal freeze record schema is unsupported")
     freeze_raw = _object(
         value.get("freeze"),
         "freeze",
         required=_FREEZE_FIELDS,
         optional=_FREEZE_OPTIONAL_FIELDS,
     )
-    if _text(freeze_raw, "schema_version") != FREEZE_IDENTITY_SCHEMA_VERSION:
-        raise ValueError("formal freeze identity schema is unsupported")
     freeze = ScoredFreeze(
         strategy=Strategy(_text(freeze_raw, "strategy")),
         trade_date=date.fromisoformat(_text(freeze_raw, "trade_date")),
@@ -181,25 +170,18 @@ def CommittedRecordFromBytes(payload: bytes) -> CommittedFreezeRecord:
         input_versions=_pairs(freeze_raw.get("input_versions"), "input_versions"),
         config_version=_text(freeze_raw, "config_version"),
         strategy_version=_text(freeze_raw, "strategy_version"),
-        fusion_version=_text(freeze_raw, "fusion_version"),
-        items=tuple(_freeze_item_from_json(item) for item in _list(freeze_raw.get("items"), "items")),
+        items=tuple(DecodeFreezeItem(item) for item in _list(freeze_raw.get("items"), "items")),
         filter_aggregates=_count_pairs(freeze_raw.get("filter_aggregates")),
         degraded_reasons=tuple(_strings(freeze_raw.get("degraded_reasons"), "degraded_reasons")),
         population_count=_optional_integer(freeze_raw.get("population_count"), "population_count"),
         rejected_count=_optional_integer(freeze_raw.get("rejected_count"), "rejected_count"),
-        selection_diagnostics=_selection_diagnostics_from_json(freeze_raw.get("selection_diagnostics")),
-        pipeline=_pipeline_from_json(freeze_raw.get("pipeline")),
+        selection_diagnostics=DecodeSelectionDiagnostics(freeze_raw.get("selection_diagnostics")),
+        pipeline=DecodeFreezePipeline(freeze_raw.get("pipeline")),
         is_formal=_boolean(freeze_raw, "is_formal") if "is_formal" in freeze_raw else False,
     )
     persisted_version = _text(value, "freeze_version")
-    legacy_version = (
-        f"freeze:{freeze.strategy.value}:{freeze.trade_date.isoformat()}:"
-        f"{freeze.stage}:{freeze.sequence}:{freeze.content_hash[:16]}"
-    )
-    if persisted_version not in {freeze.version, legacy_version}:
+    if persisted_version != freeze.version:
         raise ValueError("formal freeze payload freeze identity mismatch")
-    # Immutable historical identities are restored only after integrity verification.
-    object.__setattr__(freeze, "version", persisted_version)
     record = CommittedFreezeRecord(
         freeze=freeze,
         committed_at=_shanghai_datetime(_text(value, "committed_at")),
@@ -208,17 +190,15 @@ def CommittedRecordFromBytes(payload: bytes) -> CommittedFreezeRecord:
     if value.get("freeze_version") != freeze.version or value.get("freeze_hash") != freeze.content_hash:
         raise ValueError("formal freeze payload freeze identity mismatch")
     persisted_record_version = _text(value, "version")
-    legacy_record_version = f"record:{record.strategy.value}:{record.trade_date.isoformat()}:{record.payload_hash[:16]}"
-    if value.get("payload_hash") != record.payload_hash or persisted_record_version not in {
-        record.version,
-        legacy_record_version,
-    }:
+    if value.get("payload_hash") != record.payload_hash or persisted_record_version != record.version:
         raise ValueError("formal freeze payload identity mismatch")
-    object.__setattr__(record, "version", persisted_record_version)
+    canonical = json.dumps(value, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
+    if canonical != CommittedRecordBytes(record):
+        raise ValueError("formal freeze payload is not the complete canonical structure")
     return record
 
 
-def _freeze_item_from_json(raw: object) -> FreezeItem:
+def DecodeFreezeItem(raw: object) -> FreezeItem:
     value = _object(raw, "freeze item", required=_ITEM_FIELDS, optional=_ITEM_OPTIONAL_FIELDS)
     return FreezeItem(
         code=_text(value, "code"),
@@ -229,7 +209,7 @@ def _freeze_item_from_json(raw: object) -> FreezeItem:
         local_score=_number(value, "local_score"),
         final_score=_number(value, "final_score"),
         score_components=_score_pairs(value.get("score_components")),
-        score_ledger=DecodeScoreLedger(value["score_ledger"]) if "score_ledger" in value else None,
+        score_ledger=DecodeScoreLedger(value["score_ledger"]) if value.get("score_ledger") is not None else None,
         risk_codes=tuple(_strings(value.get("risk_codes"), "risk_codes")),
         risk_details=tuple(_risk_detail_from_json(item) for item in _list(value["risk_details"], "risk details"))
         if "risk_details" in value
@@ -316,7 +296,7 @@ def _model_diagnostics_from_json(raw: object) -> FreezeModelDiagnostics | None:
     )
 
 
-def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None:
+def DecodeSelectionDiagnostics(raw: object) -> SelectionDiagnostics | None:
     if raw is None:
         return None
     value = _object(
@@ -339,7 +319,7 @@ def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None
     )
 
 
-def _pipeline_from_json(raw: object) -> HistoricalPipelineAudit | None:
+def DecodeFreezePipeline(raw: object) -> HistoricalPipelineAudit | None:
     if raw is None:
         return None
     value = _object(

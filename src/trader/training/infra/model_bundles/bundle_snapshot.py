@@ -123,8 +123,8 @@ def ReadPublishedHeadIdentity(
             raise ValueError("metadata cache requires an aware observation time")
         cache_identity = CacheIdentity(
             "model_publication_metadata", "published_models", str(metadata_path.absolute()),
-            RequestKey({"fingerprint": fingerprint, "strategy": strategy.value}), observed_at.date().isoformat(), "all_day",
-            profile.algorithm, profile.profile_id, "head_metadata",
+            RequestKey({"fingerprint": fingerprint, "strategy": strategy.value, "algorithm": profile.algorithm}), observed_at.date().isoformat(), "all_day",
+            None, profile.profile_id,
         )
         cached = metadata_cache.get(cache_identity)
         if cached is not None and cached.state == "fresh" and isinstance(cached.value, _ValidatedMetadataIdentity):

@@ -664,7 +664,6 @@ def run(
             experiments.append(_summary(mode, size, results, (time.monotonic() - started) * 1000.0))
     passed = all(item["failure_count"] == 0 and item["raw_qfq_inconsistencies"] == 0 for item in experiments)
     return {
-        "schema_version": "baostock-concurrency-experiment",
         "status": "passed" if passed else "failed",
         "production_eligible": False,
         "experiments": experiments,
@@ -704,7 +703,6 @@ def run_serial_intervals(
 def _serial_report(experiments: list[dict[str, object]], days: int, sessions: int = 0,
                    production: bool = False) -> dict[str, object]:
     return {
-        "schema_version": "baostock-serial-rate-experiment",
         "status": "passed"
         if all(item["failure_count"] == 0 and item["raw_qfq_inconsistencies"] == 0 for item in experiments)
         else "failed",
@@ -748,7 +746,6 @@ def Main() -> int:
             )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": "baostock-concurrency-experiment",
             "status": "failed",
             "production_eligible": False,
             "error": _error_code(exc),

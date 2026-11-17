@@ -7,11 +7,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from functools import cached_property
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, Protocol
 from zoneinfo import ZoneInfo
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
-from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot, RecommendationPipelineStatus
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, PipelineStageSnapshot, RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
 from trader.recommendation.domain.publication.historical_pipeline import (
@@ -28,10 +28,6 @@ from trader.recommendation.domain.scoring.profile_identity import (
 
 FreezeStage = Literal["local", "hybrid"]
 CommitKind = Literal["scheduled", "close_fallback"]
-FREEZE_IDENTITY_SCHEMA_VERSION = "freeze_identity"
-LONG_PROJECTION_SCHEMA_VERSION = "long_projection"
-OVERLAY_SCHEMA_VERSION = "freeze_overlay"
-COMMITTED_RECORD_SCHEMA_VERSION = "committed_freeze"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _CODE = re.compile(r"^\d{6}$")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:+-]{1,160}$")
@@ -238,7 +234,6 @@ class ScoredFreeze:
     input_versions: tuple[tuple[str, str], ...]
     config_version: str
     strategy_version: str
-    fusion_version: str
     items: tuple[FreezeItem, ...]
     filter_aggregates: tuple[tuple[str, int], ...]
     degraded_reasons: tuple[str, ...] = ()
@@ -246,7 +241,6 @@ class ScoredFreeze:
     rejected_count: int | None = None
     selection_diagnostics: SelectionDiagnostics | None = None
     pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
-    schema_version: str = FREEZE_IDENTITY_SCHEMA_VERSION
     is_formal: bool = field(default=False, kw_only=True)
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
     version: str = field(init=False)
@@ -265,8 +259,9 @@ class ScoredFreeze:
             self.pipeline, (RecommendationPipelineStatus, HistoricalPipelineAudit)
         ):
             raise ValueError("freeze pipeline must be an active status or a historical audit")
+        if self.pipeline is not None and tuple(item.key for item in self.pipeline.stages) != tuple(stage.value for stage in PIPELINE_STAGES):
+            raise ValueError("current freeze requires the complete current pipeline stage graph")
         _validate_coordinates(self.trade_date, self.sequence, self.observed_at)
-        _validate_scored_schema(self.schema_version, self.selection_diagnostics, self.items)
         if self.stage == "local" and self.parent_version is not None:
             raise ValueError("local freeze cannot reference a parent")
         if self.stage == "hybrid" and not self.parent_version:
@@ -276,7 +271,6 @@ class ScoredFreeze:
         versions = _preview_input_versions(self, _normalize_versions(self.input_versions))
         _require_identity(self.config_version, "config version")
         _require_identity(self.strategy_version, "strategy version")
-        _require_identity(self.fusion_version, "fusion version")
         items = tuple(sorted(self.items, key=lambda item: item.code))
         if len({item.code for item in items}) != len(items):
             raise ValueError("freeze items must contain unique codes")
@@ -382,14 +376,11 @@ class LongProjection:
     observed_at: datetime
     input_versions: tuple[tuple[str, str], ...]
     items: tuple[LongProjectionItem, ...]
-    schema_version: str = LONG_PROJECTION_SCHEMA_VERSION
     version: str = field(init=False)
     strategy: Strategy = field(init=False, default=Strategy.LONG)
 
     def __post_init__(self) -> None:
         _validate_coordinates(self.trade_date, self.sequence, self.observed_at)
-        if self.schema_version != LONG_PROJECTION_SCHEMA_VERSION:
-            raise ValueError(f"long schema_version must be {LONG_PROJECTION_SCHEMA_VERSION}")
         versions = _normalize_versions(self.input_versions)
         items = tuple(self.items)
         if len({item.code for item in items}) != len(items):
@@ -416,13 +407,10 @@ class FreezeOverlay:
     parent_version: str
     observed_at: datetime
     quotes: tuple[FreezeQuote, ...]
-    schema_version: str = OVERLAY_SCHEMA_VERSION
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
         _validate_coordinates(self.trade_date, self.sequence, self.observed_at)
-        if self.schema_version != OVERLAY_SCHEMA_VERSION:
-            raise ValueError(f"overlay schema_version must be {OVERLAY_SCHEMA_VERSION}")
         if self.strategy not in set(Strategy):
             raise ValueError("overlay strategy is invalid")
         _require_identity(self.parent_version, "overlay parent version")
@@ -447,7 +435,6 @@ class CommittedFreezeRecord:
     freeze: ScoredFreeze
     committed_at: datetime
     commit_kind: CommitKind
-    schema_version: str = COMMITTED_RECORD_SCHEMA_VERSION
 
     @cached_property
     def payload_hash(self) -> str:
@@ -456,8 +443,8 @@ class CommittedFreezeRecord:
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != COMMITTED_RECORD_SCHEMA_VERSION:
-            raise ValueError(f"record schema_version must be {COMMITTED_RECORD_SCHEMA_VERSION}")
+        if not isinstance(self.freeze, ScoredFreeze):
+            raise ValueError("historical projection cannot become a current formal record")
         if IsPreviewFreeze(self.freeze):
             raise ValueError("preview freezes cannot become formal records")
         if IsShadowFreeze(self.freeze):
@@ -528,12 +515,13 @@ def _preview_input_versions(freeze: ScoredFreeze, versions: tuple[tuple[str, str
     return _normalize_versions(versions)
 
 
-def VisibleScoredSeats(freeze: ScoredFreeze) -> tuple[FreezeItem, ...]:
-    """Read fixed seats; retain the original display contract only for old records."""
-    audit = freeze.pipeline
-    legacy = isinstance(audit, HistoricalPipelineAudit) and audit.stages[0].key != "local_data"
-    if legacy or (freeze.is_formal and audit is None):
-        return tuple(sorted(freeze.items, key=lambda item: (-item.final_score, -item.local_score, item.code))[:6])
+class _SeatProjection(Protocol):
+    @property
+    def items(self) -> tuple[FreezeItem, ...]: ...
+
+
+def VisibleScoredSeats(freeze: _SeatProjection) -> tuple[FreezeItem, ...]:
+    """Read the saved selected seats and ranks without selecting a new population."""
     return tuple(sorted((item for item in freeze.items if item.selected), key=lambda item: item.rank))
 
 
@@ -567,7 +555,7 @@ def FormalScoredFreeze(
         input_versions=(*freeze.input_versions, *input_versions),
         config_version=freeze.config_version,
         strategy_version=freeze.strategy_version,
-        fusion_version=freeze.fusion_version,
+
         items=official_items,
         filter_aggregates=freeze.filter_aggregates,
         degraded_reasons=(*freeze.degraded_reasons, *degraded_reasons),
@@ -575,7 +563,7 @@ def FormalScoredFreeze(
         rejected_count=freeze.rejected_count,
         selection_diagnostics=freeze.selection_diagnostics,
         pipeline=freeze.pipeline,
-        schema_version=freeze.schema_version,
+
         is_formal=True,
     )
 
@@ -588,7 +576,7 @@ def _scored_payload(
     reasons: tuple[str, ...],
 ) -> dict[str, _Json]:
     payload: dict[str, _Json] = {
-        "schema_version": freeze.schema_version,
+
         "strategy": freeze.strategy.value,
         "trade_date": freeze.trade_date.isoformat(),
         "sequence": freeze.sequence,
@@ -598,13 +586,12 @@ def _scored_payload(
         "input_versions": [[name, version] for name, version in versions],
         "config_version": freeze.config_version,
         "strategy_version": freeze.strategy_version,
-        "fusion_version": freeze.fusion_version,
+
         "items": [_freeze_item_payload(item) for item in items],
         "filter_aggregates": [[reason, count] for reason, count in aggregates],
         "degraded_reasons": list(reasons),
     }
-    if freeze.is_formal:
-        payload["is_formal"] = True
+    payload["is_formal"] = freeze.is_formal
     if freeze.preview_context is not None:
         payload["preview_context"] = {
             "run_id": freeze.preview_context.run_id,
@@ -765,7 +752,7 @@ def CommittedRecordIdentityPayload(record: CommittedFreezeRecord) -> dict[str, _
     if IsPreviewFreeze(record.freeze):
         raise ValueError("preview freezes cannot be encoded as formal records")
     return {
-        "schema_version": record.schema_version,
+
         "freeze": _scored_payload(
             record.freeze,
             record.freeze.items,
@@ -795,8 +782,7 @@ def _freeze_item_payload(item: FreezeItem) -> dict[str, _Json]:
         "board": item.board.value,
         "selection_rank": item.selection_rank,
     }
-    if item.score_ledger is not None:
-        payload["score_ledger"] = ScoreLedgerPayload(item.score_ledger)
+    payload["score_ledger"] = ScoreLedgerPayload(item.score_ledger) if item.score_ledger is not None else None
     if item.name:
         payload["name"] = item.name
     if item.industry:
@@ -807,11 +793,10 @@ def _freeze_item_payload(item: FreezeItem) -> dict[str, _Json]:
     payload["downside"] = _downside_payload(item.downside)
     payload["review_outcome"] = item.review_outcome
     payload["research_coverage"] = _research_coverage_payload(item.research_coverage)
-    if item.risk_details:
-        payload["risk_details"] = [
+    payload["risk_details"] = [
             {"risk_code": detail.risk_code, "origin": detail.origin, "veto_applied": detail.veto_applied}
             for detail in item.risk_details
-        ]
+    ]
     if item.model_diagnostics is not None:
         payload["model_diagnostics"] = _model_diagnostics_payload(item.model_diagnostics)
     return payload
@@ -924,16 +909,6 @@ def _validate_coordinates(trade_date: date, sequence: int, observed_at: datetime
         raise ValueError("identity observation must match its trade date")
 
 
-def _validate_scored_schema(
-    schema_version: str,
-    diagnostics: SelectionDiagnostics | None,
-    items: tuple[FreezeItem, ...],
-) -> None:
-    del diagnostics, items
-    if schema_version != FREEZE_IDENTITY_SCHEMA_VERSION:
-        raise ValueError(f"freeze schema_version must be {FREEZE_IDENTITY_SCHEMA_VERSION}")
-
-
 def _validate_score(value: float, label: str) -> None:
     if not math.isfinite(value) or not 0.0 <= value <= 100.0:
         raise ValueError(f"{label} must be finite and in [0, 100]")
@@ -1018,10 +993,10 @@ def _validate_coverage_counts(population_count: int | None, rejected_count: int 
 __all__ = [
     "IsShadowFreeze",
     "IsPreviewFreeze",
-    "COMMITTED_RECORD_SCHEMA_VERSION",
-    "FREEZE_IDENTITY_SCHEMA_VERSION",
-    "LONG_PROJECTION_SCHEMA_VERSION",
-    "OVERLAY_SCHEMA_VERSION",
+
+
+
+
     "CommitKind",
     "CommittedFreezeRecord",
     "FreezeIdentity",

@@ -18,7 +18,6 @@ class FeatureSchema:
 # Feature columns produced by FeatureBuilder._raw_features().
 # All are optional float; missing is left as None and later resolved per
 # the factor index in config/features.json.
-FEATURE_SCHEMA_ID = "market_feature_batch"
 
 RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("amount_median_20d", "float", description="20日成交额中位数"),
@@ -128,7 +127,7 @@ if len(FEATURE_SCHEMA_NAMES) != len(set(FEATURE_SCHEMA_NAMES)):
 
 __all__ = [
     "FeatureSchema",
-    "FEATURE_SCHEMA_ID",
+
     "RAW_FEATURE_SCHEMA",
     "DERIVED_FEATURE_SCHEMA",
     "FEATURE_SCHEMA",

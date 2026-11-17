@@ -36,10 +36,10 @@ def test_training_date_split_binds_current_label_and_partition_identity() -> Non
 
     dates = tuple(date(2020, 1, 1) + timedelta(days=index) for index in range(2000))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
-    assert split.schema_version == "training_date_split"
+    assert not split.recent_fit
     assert len(split.early_stopping_dates) == len(split.calibration_dates) == 20
     assert not split.terminal_holdout_opened and not split.production_authority
-    assert split.content_hash == "d81b2e56f29f2f021f720bf8d3aadaf641a389f66d1d639940e7d180ece55e4a"
+    assert split.content_hash == "9a00a439e8bc0285f1fb88e88e8e22c379ea12330093ef7e24d8b52e280b74e4"
 
 
 def test_download_history_hashes_keep_the_published_identity() -> None:

@@ -76,7 +76,6 @@ class LimitedFactorFamilySpec:
     anchor: Literal["15:00_point_in_time"] = "15:00_point_in_time"
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "limited_factor_family_spec"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -107,7 +106,6 @@ class LimitedFactorFamilySpec:
             or self.anchor != "15:00_point_in_time"
             or self.terminal_holdout_opened
             or self.production_authority
-            or self.schema_version != "limited_factor_family_spec"
         ):
             raise ValueError("limited factor family fixed research boundary is invalid")
         object.__setattr__(self, "control_feature_ids", control_features)
@@ -258,7 +256,6 @@ class LimitedFactorFamilyReport:
     failure_reasons: tuple[str, ...]
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "limited_factor_family_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -268,8 +265,6 @@ class LimitedFactorFamilyReport:
         _validate_report_outcome(self, evidence, reasons)
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("limited factor report cannot open holdout or authorize production")
-        if self.schema_version != "limited_factor_family_report":
-            raise ValueError("limited factor report schema is invalid")
         object.__setattr__(self, "evidence", evidence)
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))

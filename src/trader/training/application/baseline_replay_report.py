@@ -128,14 +128,10 @@ class HistoricalBaselineReport:
     aggregate: BaselineAggregateMetrics
     research_identity: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.research_identity,
-        metadata={"exclude_from_legacy_hash": True},
     )
     research_spec_hash: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.content_hash,
-        metadata={"exclude_from_legacy_hash": True},
     )
-    schema_version: str = "historical_baseline_report"
-    replay_version: str = "production_local_baseline"
     cost_rates: tuple[float, float, float] = _COST_RATES
     report_hash: str = dataclasses.field(init=False)
 
@@ -144,13 +140,6 @@ class HistoricalBaselineReport:
         spec = GetScoreResearchSpec(self.research_identity)
         if self.research_spec_hash != spec.content_hash:
             raise ValueError("Historical replay report research spec hash is invalid")
-        expected_schema = (
-            "historical_candidate_report"
-            if self.research_identity == "preregistered_research"
-            else "historical_baseline_report"
-        )
-        if self.schema_version != expected_schema or self.replay_version != "production_local_baseline":
-            raise ValueError("Historical replay report identity is invalid")
         if self.cost_rates != _COST_RATES:
             raise ValueError("Historical replay costs must remain 20bp, 50bp, and 100bp")
         days = tuple(sorted(self.days, key=lambda item: item.trade_date))

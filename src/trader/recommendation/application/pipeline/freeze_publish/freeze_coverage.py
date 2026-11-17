@@ -38,6 +38,17 @@ class FreezeCoverage:
             raise ValueError("freeze action coverage must partition selected count")
 
 
+@dataclass(frozen=True)
+class HistoricalFreezeCoverage:
+    candidate_count: int | None
+    evaluated_count: int | None
+    rejected_count: int | None
+    selected_count: int
+    executable_count: int
+    observation_count: int
+    unavailable_count: int
+
+
 def ScoredFreezeCoverage(freeze: ScoredFreeze) -> FreezeCoverage:
     rejected = (
         freeze.rejected_count
@@ -63,4 +74,4 @@ def ScoredFreezeCoverage(freeze: ScoredFreeze) -> FreezeCoverage:
     )
 
 
-__all__ = ["FreezeCoverage", "ScoredFreezeCoverage"]
+__all__ = ["FreezeCoverage", "HistoricalFreezeCoverage", "ScoredFreezeCoverage"]

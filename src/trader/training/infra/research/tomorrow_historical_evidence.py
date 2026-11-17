@@ -12,7 +12,7 @@ from trader.training.domain.evaluation.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalModelSnapshot,
 )
-from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
+from trader.infra.serialization.canonical_codec import CanonicalText, EncodeCanonicalValue
 
 
 class TomorrowHistoricalEvidenceConflictError(RuntimeError):
@@ -76,11 +76,11 @@ class TomorrowHistoricalEvidenceIndex:
             if persisted_hash != content_hash:
                 raise TomorrowHistoricalEvidenceConflictError("Tomorrow historical artifact identity conflict")
             return persisted_hash
-        payload = ResearchValue(value)
+        payload = EncodeCanonicalValue(value)
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow historical artifact must be a JSON object")
         payload["content_hash"] = content_hash
-        if PublishImmutable(path, ResearchJson(payload)):
+        if PublishImmutable(path, CanonicalText(payload)):
             return str(content_hash)
         persisted_hash = str(self._read_verified(path, path.stem)["content_hash"])
         if persisted_hash != content_hash:
@@ -99,6 +99,13 @@ class TomorrowHistoricalEvidenceIndex:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("artifact payload is not an object")
+            expected = (
+                {'candidate_id', 'feature_ids', 'transformer_means', 'transformer_scales', 'linear_intercept', 'linear_coefficients', 'lightgbm_model', 'lightgbm_best_iteration', 'training_rows', 'internal_validation_rows'}
+                if path.name == "model-artifact.json" else
+                {'research_spec_hash', 'source_spec_hash', 'source_manifest_hash', 'source_universe_hash', 'source_histories_hash', 'candidate_id', 'status', 'metrics', 'training_evidence_hash', 'validation_evidence_hash', 'model_artifact_hash', 'failure_reasons', 'production_authority'}
+            )
+            if set(raw) != expected | {"content_hash"}:
+                raise ValueError("artifact fields are invalid")
             persisted_hash = raw.pop("content_hash")
             if not isinstance(persisted_hash, str) or CanonicalResearchHash(raw) != persisted_hash:
                 raise ValueError("artifact hash mismatch")

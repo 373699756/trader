@@ -13,10 +13,6 @@ from trader.recommendation.application.ports import market_data_contracts
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot, FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.research import ResearchObservation
 
-_CHANGE_SCHEMA_VERSION = "market_change_set_legacy"
-_QUOTE_SCHEMA_VERSION = "columnar_quote_batch"
-_RESEARCH_SCHEMA_VERSION = "columnar_research_batch"
-_FEATURE_SCHEMA_ID = "columnar_feature_batch"
 _NO_VERSION = "not_applicable"
 _FIELD_FAMILIES: dict[str, str] = {
     "price": "quote_price",
@@ -44,7 +40,6 @@ class ColumnarBatchIdentity:
     board_policy_version: str
     strategy_version: str
     config_version: str
-    schema_version: str
 
 
 @dataclass(frozen=True)
@@ -53,7 +48,6 @@ class NormalizedMarketChangeSet:
     inserted_codes: tuple[str, ...]
     updated_codes: tuple[str, ...]
     removed_codes: tuple[str, ...]
-    schema_version: str = _CHANGE_SCHEMA_VERSION
     previous_merge_epoch: str | None = None
     dirty_boards: tuple[str, ...] = ()
     dirty_industries: tuple[str, ...] = ()
@@ -75,7 +69,7 @@ class NormalizedMarketChangeSet:
         updated_codes = () if self.overlay_only else self.updated_codes
         removed_codes = () if self.overlay_only else self.removed_codes
         return market_data_contracts.MarketChangeSet(
-            schema_version=market_data_contracts.MARKET_CHANGE_SET_VERSION,
+
             merge_epoch=self.merge_epoch,
             previous_merge_epoch=self.previous_merge_epoch,
             inserted_codes=inserted_codes,
@@ -101,13 +95,13 @@ class ColumnarQuoteBatch:
         snapshot: CanonicalMarketSnapshot,
         *,
         config_version: str,
-        schema_version: str,
+
     ) -> ColumnarQuoteBatch:
         return cls.from_quotes(
             snapshot.quotes,
             merge_epoch=snapshot.merge_epoch,
             config_version=config_version,
-            schema_version=schema_version,
+
         )
 
     @classmethod
@@ -117,7 +111,7 @@ class ColumnarQuoteBatch:
         *,
         merge_epoch: str,
         config_version: str,
-        schema_version: str = _QUOTE_SCHEMA_VERSION,
+
     ) -> ColumnarQuoteBatch:
         frame = _strict_frame([_quote_row(quote) for quote in quotes], _QUOTE_SCHEMA).sort("code")
         return cls(
@@ -127,7 +121,7 @@ class ColumnarQuoteBatch:
                 board_policy_version=_NO_VERSION,
                 strategy_version=_NO_VERSION,
                 config_version=config_version,
-                schema_version=schema_version,
+
             ),
             frame,
         )
@@ -145,7 +139,7 @@ class ColumnarResearchBatch:
         *,
         merge_epoch: str,
         config_version: str,
-        schema_version: str = _RESEARCH_SCHEMA_VERSION,
+
     ) -> ColumnarResearchBatch:
         frame = _strict_frame(
             [_research_row(code, observation) for code, observation in observations.items()],
@@ -158,7 +152,7 @@ class ColumnarResearchBatch:
                 board_policy_version=_NO_VERSION,
                 strategy_version=_NO_VERSION,
                 config_version=config_version,
-                schema_version=schema_version,
+
             ),
             frame,
         )
@@ -186,7 +180,7 @@ class ColumnarFeatureBatch:
                 board_policy_version=options.board_policy_version,
                 strategy_version=options.strategy_version,
                 config_version=options.config_version,
-                schema_version=options.feature_schema,
+
             ),
             frame,
         )
@@ -198,16 +192,16 @@ class ColumnarFeatureBatch:
         options: FeatureEnvelopeOptions,
     ) -> market_data_contracts.FeatureSnapshotEnvelope:
         return market_data_contracts.FeatureSnapshotEnvelope(
-            schema_version=market_data_contracts.FEATURE_ENVELOPE_VERSION,
+
             snapshot_version=options.snapshot_version or f"{self.identity.dataset}:{self.identity.merge_epoch}",
-            feature_snapshot_version=options.feature_snapshot_version or self.identity.schema_version,
+            feature_snapshot_version=options.feature_snapshot_version or options.snapshot_version or self.identity.merge_epoch,
             trade_date=options.trade_date,
             phase=options.phase,
             merge_epoch=self.identity.merge_epoch,
             reference_epoch=options.reference_epoch,
             data_version=options.data_version,
             config_version=self.identity.config_version,
-            feature_schema=self.identity.schema_version,
+
             feature_snapshots=tuple(sorted(features, key=lambda snapshot: snapshot.quote.code)),
             market_change_set=change_set.to_public(),
         )
@@ -217,7 +211,6 @@ class ColumnarFeatureBatch:
 class ColumnarFeatureBatchOptions:
     merge_epoch: str
     config_version: str
-    feature_schema: str
     feature_names: tuple[str, ...]
     strategy_version: str = _NO_VERSION
     board_policy_version: str = _NO_VERSION
@@ -268,9 +261,7 @@ def MarketChanges(
     if inserted_codes or removed_codes:
         dirty_families = tuple(sorted(set(_FIELD_FAMILIES.values())))
     full_invalidation_reason = None
-    if previous.identity.schema_version != current.identity.schema_version:
-        full_invalidation_reason = "schema_version_changed"
-    elif previous.identity.config_version != current.identity.config_version:
+    if previous.identity.config_version != current.identity.config_version:
         full_invalidation_reason = "config_version_changed"
     return NormalizedMarketChangeSet(
         current.identity.merge_epoch,

@@ -99,7 +99,7 @@ def _documents(profile, model_text):
         "mean_daily_ndcg_at_6": 0.7,
     }
     if profile == "v1":
-        model = {"schema_version": "learned_rank_final_head_model", "components": {
+        model = {"components": {
             **common,
             "ridge_intercept": 0.02,
             "ridge_coefficients": [0.1, -0.2, 0.3],
@@ -107,7 +107,7 @@ def _documents(profile, model_text):
             "rank_iterations": 4,
         }}
         return model, {
-            "schema_version": "learned_rank_final_head_metadata",
+
             "training_input": {"final_fit": {"fit_dates": ["2026-11-04"]}},
             "validation_report": {"validation": metrics, "diagnostic_head": {
                 **deepcopy(model["components"]), "split": {"label_cutoff": "2026-01-06"},
@@ -138,7 +138,7 @@ def _documents(profile, model_text):
         }}
     model = {"industries": {"main": component, "other": dict(component)}}
     return model, {
-        "schema_version": f"{profile}_head_recent_refit_metadata",
+
         "validation_report": report,
         "final_fit": {
             "diagnostic_model": deepcopy(model), "fit_dates": ["2026-11-04"],

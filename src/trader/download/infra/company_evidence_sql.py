@@ -5,7 +5,6 @@ from trader.download.infra.download_failure_diagnostics import FAILURE_DIAGNOSTI
 
 _BASE_SCHEMA = SqliteSchema(
     (
-        "CREATE TABLE IF NOT EXISTS contract(schema_id TEXT PRIMARY KEY CHECK(schema_id='company_collection'))",
         "CREATE TABLE company_sync_job(singleton INTEGER PRIMARY KEY CHECK(singleton=1),initialized_at TEXT NOT NULL,cutoff TEXT NOT NULL)",
         "CREATE TABLE company_expired_ranges(market TEXT,start_date TEXT,end_date TEXT,expired_at TEXT,PRIMARY KEY(market,start_date,end_date)) WITHOUT ROWID",
         """CREATE TABLE document_supersessions (

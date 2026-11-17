@@ -11,7 +11,6 @@ from trader.infra.cache_contracts import CacheIdentity, RequestKey
 from trader.recommendation.domain.market.history_metrics import DailyBar, HistoryContext
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.models import MarketQuote
-from trader.recommendation.domain.market.feature_schema import FEATURE_SCHEMA_ID
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 
 RAW_FACTOR_REUSE_CANDIDATE = "raw_factor_reuse"
@@ -53,7 +52,6 @@ class RawFactorReuseBuilder(FeatureBuilder):
             "quote_factors",
             "qfq",
             self._base_policy_identity,
-            FEATURE_SCHEMA_ID,
         )
         found = cache.get(identity)
         if found is not None and found.value is not None:

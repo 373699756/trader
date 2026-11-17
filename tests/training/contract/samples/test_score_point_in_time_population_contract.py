@@ -9,8 +9,8 @@ def test_research_audit_keeps_complete_point_in_time_population() -> None:
     source = (ROOT / "src/trader/training/application/research_audit.py").read_text(encoding="utf-8")
 
     for token in (
-        'RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit"',
-        'LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit_legacy"',
+        "class HistoricalResearchAudit:",
+        "def HasCompleteResearchEvidence(",
         "class ResearchPopulationAudit:",
         "point_in_time_population:",
         "point_in_time_population_hash:",
@@ -21,13 +21,14 @@ def test_research_audit_keeps_complete_point_in_time_population() -> None:
         assert token in source
 
 
-def test_research_trace_has_explicit_legacy_codec_and_cutoff_read() -> None:
+def test_research_trace_has_read_only_original_projection_and_cutoff_read() -> None:
     source = (ROOT / "src/trader/training/infra/research/research_trace_index.py").read_text(encoding="utf-8")
     source += (ROOT / "src/trader/recommendation/infra/persistence/freeze_trace_index.py").read_text(encoding="utf-8")
 
     for token in (
-        'RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event"',
-        'LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"',
+        "HistoricalFreezeObservation",
+        "HistoricalResearchAudit",
+        "HasCompleteResearchEvidence",
         "def latest_point_in_time_observation(",
         "cutoff: time = time(hour=15, minute=0)",
         "point_in_time_population_hash",

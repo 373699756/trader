@@ -54,7 +54,7 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert payload["schema_version"] == "issuer_eligibility_list"
+    assert "schema_version" not in payload
     assert payload["manifest_hash"] == eligibility_index.status().manifest_hash
     assert payload["items"] == [
         {

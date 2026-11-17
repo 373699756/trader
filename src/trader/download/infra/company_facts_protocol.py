@@ -8,6 +8,7 @@ import math
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
 from typing import TypeVar
 from zoneinfo import ZoneInfo
 
@@ -26,7 +27,6 @@ _EnumValue = TypeVar("_EnumValue", bound=Enum)
 _EPOCH_DATE = date(1970, 1, 1)
 _EPOCH_TIME = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-COMPANY_EXTRACTION_IDENTITY = "relational_company_facts:2:window365_links_receipts"
 
 DATA_STATES = {CompanyDataState.UNAVAILABLE: 0, CompanyDataState.PARTIAL: 1, CompanyDataState.COMPLETE: 2}
 RISK_TYPES = {
@@ -110,7 +110,9 @@ REVIEW_REASONS = {
 
 def CompanyExtractionHash(policy: CompanyEventPolicy) -> bytes:
     payload = json.dumps(asdict(policy), sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256((COMPANY_EXTRACTION_IDENTITY + ":" + payload).encode()).digest()
+    digest = hashlib.sha256(Path(__file__).read_bytes())
+    digest.update(payload.encode())
+    return digest.digest()
 
 
 def EncodeCompanyDate(value: date | None) -> int | None:
@@ -231,7 +233,6 @@ def EncodeCompanyReason(reason: str) -> int:
 
 
 __all__ = [
-    "COMPANY_EXTRACTION_IDENTITY",
     "DATA_STATES",
     "RISK_TYPES",
     "SUBJECTS",

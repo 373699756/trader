@@ -48,8 +48,7 @@ class SQLiteReferenceIndex:
                     connection,
                     REFERENCE_SCHEMA,
                     allow_create=write,
-                    initialize=_initialize_contract,
-                    validate=_validate_contract,
+                    exact=True,
                 )
                 yield connection
         except sqlite3.Error as exc:
@@ -243,16 +242,6 @@ class SQLiteReferenceIndex:
         if progress is not None:
             progress(EvidenceSyncProgress("calendar", 1, 0, 0, 0, 0, status="complete", sources=(source,) if source is not None else ()))
         return dates
-
-
-def _initialize_contract(connection: SqliteConnection) -> None:
-    connection.run("INSERT INTO schema_contract(schema_id) VALUES('market_reference')")
-
-
-def _validate_contract(connection: SqliteConnection) -> None:
-    rows = connection.run("SELECT schema_id FROM schema_contract").fetchall()
-    if [tuple(row) for row in rows] != [("market_reference",)]:
-        raise ValueError("reference_format_requires_rebuild")
 
 
 def _insert_st(connection: SqliteConnection, evidence: tuple[HistoryStEvidence, ...]) -> None:

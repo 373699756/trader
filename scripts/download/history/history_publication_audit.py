@@ -1001,7 +1001,7 @@ def AuditHistoryPriceFields(
     """Explicit full field scan using the formal snapshot and each month's sequence."""
     plan = _history_plan(root, budget, sqlite_policy)
     fields = AuditPriceFields(plan, budget=budget, sqlite_policy=sqlite_policy, checkpoint=checkpoint, configuration=configuration)
-    return {"schema_version": "history-publication-audit", "status": fields["status"], "summary": {
+    return { "status": fields["status"], "summary": {
         "read_only": True, "source_data_writes": 0, "network_requests": 0,
         "snapshot_hash": plan.identity, "sequence": plan.sequence, "data_cutoff": plan.cutoff,
         "verified_rows": fields["actual_selected_rows"], "field_audit": fields,
@@ -1112,7 +1112,6 @@ def AuditHistoryPublication(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dic
     if receipts["task_members_hash"] != CanonicalDigest(tuple(sorted(codes))):
         pending.append("history_task_membership_mismatch")
     return {
-        "schema_version": "history-publication-audit",
         "status": "failed" if failures else "degraded" if pending else "passed",
         "summary": {
             "read_only": True,
@@ -1180,7 +1179,7 @@ def _main() -> int:
         else:
             report = AuditHistoryPublication(args.history_root, sqlite_policy=policy)
     except PriceAuditInterrupted as exc:
-        report = {"schema_version": "history-publication-audit", "status": "failed", "summary": {
+        report = { "status": "failed", "summary": {
             "percentage_unit_audit" if args.percentage_unit_audit else "field_audit": {
                 "complete": False, "failure": "price_audit_" + str(exc), "phase": budget.phase,
             },
@@ -1197,7 +1196,6 @@ def _main() -> int:
                 "category": type(exc).__name__, "units": [], "actual_selected_rows": 0,
             }
         report = {
-            "schema_version": "history-publication-audit",
             "status": "failed",
             "summary": summary,
         }

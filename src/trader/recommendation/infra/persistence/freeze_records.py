@@ -32,14 +32,15 @@ from trader.recommendation.application.ports.freeze_records import (
     FreezeRecordUnavailableError,
 )
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord, IsPreviewFreeze
+from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
+from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
 
 FaultInjector = Callable[[str], None]
 _MAX_RECOVERY_PAYLOAD_BYTES = 8 * 1024 * 1024
 _SCHEMA = SqliteSchema(
     (
-        "CREATE TABLE schema_contract(schema_id TEXT NOT NULL PRIMARY KEY)",
         "CREATE TABLE freeze_record("
         "strategy TEXT NOT NULL CHECK(strategy IN ('tomorrow','d25')),trade_date INTEGER NOT NULL,"
         "freeze_id TEXT NOT NULL UNIQUE,freeze_hash BLOB NOT NULL CHECK(length(freeze_hash)=32),"
@@ -49,16 +50,6 @@ _SCHEMA = SqliteSchema(
         "PRIMARY KEY(strategy,trade_date))",
     ),
 )
-
-
-def _initialize_schema(connection: SqliteConnection) -> None:
-    connection.run("INSERT INTO schema_contract(schema_id) VALUES ('freeze_record')")
-
-
-def _validate_schema(connection: SqliteConnection) -> None:
-    rows = connection.run("SELECT schema_id FROM schema_contract").fetchall()
-    if [tuple(row) for row in rows] != [("freeze_record",)]:
-        raise sqlite3.DatabaseError("freeze_schema_invalid")
 
 
 @dataclass(frozen=True)
@@ -88,9 +79,11 @@ class SQLiteFreezeRecords:
     def initialize(self) -> None:
         self._database.parent.mkdir(parents=True, exist_ok=True)
         try:
+            if self._database.exists():
+                self._validate_current_structure()
             with SqliteSession(self._database, SqliteConnectionOptions(journal_mode="WAL"), sqlite_policy=self._sqlite_policy) as connection:
                 EnsureSqliteSchema(
-                    connection, _SCHEMA, allow_create=True, initialize=_initialize_schema, validate=_validate_schema
+                    connection, _SCHEMA, allow_create=True, exact=True,
                 )
         except (OSError, sqlite3.Error) as exc:
             raise FreezeRecordUnavailableError("freeze record initialization failed") from exc
@@ -98,6 +91,8 @@ class SQLiteFreezeRecords:
     @contextmanager
     def _connect(self, *, write: bool = False) -> Iterator[SqliteConnection]:
         try:
+            if write:
+                self._validate_current_structure()
             with SqliteSession(
                 self._database,
                 SqliteConnectionOptions(
@@ -105,13 +100,19 @@ class SQLiteFreezeRecords:
                     journal_mode="WAL" if write else None,
                 ), sqlite_policy=self._sqlite_policy,
             ) as connection:
-                EnsureSqliteSchema(connection, _SCHEMA, validate=_validate_schema)
+                EnsureSqliteSchema(connection, _SCHEMA, exact=True)
                 with SqliteTransaction(connection, immediate=write):
                     yield connection
         except (OSError, sqlite3.Error) as exc:
             raise FreezeRecordUnavailableError("freeze database unavailable") from exc
 
+    def _validate_current_structure(self) -> None:
+        with SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            EnsureSqliteSchema(connection, _SCHEMA, exact=True)
+
     def commit(self, record: CommittedFreezeRecord) -> None:
+        if not isinstance(record, CommittedFreezeRecord):
+            raise ValueError("history is read-only and cannot be committed")
         if IsPreviewFreeze(record.freeze):
             raise ValueError("preview freezes cannot be written to formal records")
         self.import_record_bytes(CommittedRecordBytes(record))
@@ -173,6 +174,26 @@ class SQLiteFreezeRecords:
                 self._cache.put(identity, record, data_version=record.version, source_time=record.committed_at)
             return record
 
+    @contextmanager
+    def _history_connection(self) -> Iterator[SqliteConnection]:
+        try:
+            with SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+                EnsureSqliteSchema(connection, _SCHEMA)
+                with SqliteTransaction(connection):
+                    yield connection
+        except (OSError, sqlite3.Error) as exc:
+            raise FreezeRecordUnavailableError("freeze history unavailable") from exc
+
+    def load_history(self, strategy: Strategy, trade_date: date) -> HistoricalFreezeRecord | None:
+        """Project saved bytes; never initialize, recover, rewrite or adopt a record."""
+        with self._lock:
+            if not self._database.exists():
+                return None
+            with self._history_connection() as connection:
+                row = connection.run("SELECT * FROM freeze_record WHERE strategy=? AND trade_date=?",
+                                     (strategy.value, EncodeDate(trade_date))).fetchone()
+            return None if row is None else self._load_history_record(row)
+
     def list_dates(
         self,
         strategy: Strategy,
@@ -198,7 +219,7 @@ class SQLiteFreezeRecords:
                 return cached.value.dates if month_start is not None else cached.value.dates[:limit]
             if not self._database.exists():
                 return ()
-            with self._connect() as connection:
+            with self._history_connection() as connection:
                 if month_start is not None and month_end is not None:
                     rows = connection.run(
                         "SELECT trade_date FROM freeze_record "
@@ -225,9 +246,8 @@ class SQLiteFreezeRecords:
             (),
             trade_date,
             "formal",
-            "2",
+            None,
             "immutable",
-            "2",
         )
 
     def recover(self) -> FreezeRecordRecoverySummary:
@@ -239,7 +259,7 @@ class SQLiteFreezeRecords:
             CheckSqliteIntegrity(connection)
             for row in connection.run("SELECT * FROM freeze_record WHERE status='committed'").fetchall():
                 try:
-                    self._load_record(row)
+                    self._load_history_record(row)
                 except FreezeRecordUnavailableError:
                     connection.run(
                         "UPDATE freeze_record SET status='quarantined',failure_code='payload_invalid' WHERE strategy=? AND trade_date=?",
@@ -249,11 +269,30 @@ class SQLiteFreezeRecords:
         return FreezeRecordRecoverySummary(quarantined=quarantined)
 
     @staticmethod
+    def _load_history_record(row: sqlite3.Row) -> HistoricalFreezeRecord:
+        if row["status"] != "committed":
+            raise FreezeRecordUnavailableError("freeze record quarantined")
+        raw = row["record_bytes"]
+        if not isinstance(raw, bytes) or _bounded_digest(raw) != row["record_hash"]:
+            raise FreezeRecordUnavailableError("freeze payload hash mismatch")
+        try:
+            record = HistoricalRecordFromBytes(raw)
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise FreezeRecordUnavailableError("historical freeze payload invalid") from exc
+        _verify_row_identity(row, record)
+        return record
+
+    @staticmethod
     def _load_record(row: sqlite3.Row) -> CommittedFreezeRecord:
         if row["status"] != "committed":
             raise FreezeRecordUnavailableError("freeze record quarantined")
         record = _decode_payload(row)
-        if (
+        _verify_row_identity(row, record)
+        return record
+
+
+def _verify_row_identity(row: sqlite3.Row, record: CommittedFreezeRecord | HistoricalFreezeRecord) -> None:
+    if (
             record.strategy.value != row["strategy"]
             or EncodeDate(record.trade_date) != row["trade_date"]
             or record.version != row["freeze_id"]
@@ -261,8 +300,7 @@ class SQLiteFreezeRecords:
             or EncodeTime(record.committed_at) != row["committed_at"]
             or record.commit_kind != row["commit_kind"]
         ):
-            raise FreezeRecordUnavailableError("freeze record identity mismatch")
-        return record
+        raise FreezeRecordUnavailableError("freeze record identity mismatch")
 
 
 def _bounded_digest(payload: bytes) -> bytes:

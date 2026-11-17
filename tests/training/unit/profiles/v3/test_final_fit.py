@@ -83,7 +83,7 @@ def test_final_weights_end_at_each_heads_latest_mature_day_and_reuse(trained):
         assert evidence["diagnostic_model"]["content_hash"] == report["model_hash"]
         assert report["model_hash"] != model["content_hash"]
         assert evidence["final_model_unseen_validation_passed"] is False
-        assert metadata["schema_version"] == f"{profile.profile_id}_head_recent_refit_metadata"
+        assert "schema_version" not in metadata
         assert evidence["calibration_policy"] == "frozen_recent_diagnostic_model_transfer"
         assert evidence["diagnostic_contract"] == PRODUCTION_DIAGNOSTIC_CONTRACT
         assert head.diagnostic_plan == BuildProductionDiagnosticDatePlan(
@@ -242,7 +242,7 @@ def test_legacy_research_refit_schema_is_rejected_and_cannot_reuse_as_recent(tra
         report["evaluation_coverage"]["holdout_status"] = "sealed_rows_count_only"
         report["content_hash"] = ContentHash({key: value for key, value in report.items() if key != "content_hash"})
         metadata["content_hash"] = ContentHash({key: value for key, value in metadata.items() if key != "content_hash"})
-        with pytest.raises(ValueError, match="requires current recent-refit publication"):
+        with pytest.raises(ValueError, match="metadata fields"):
             DecodeHeadBundle(model, metadata, head.strategy, profile)
         (path / "metadata.json").write_text(json.dumps(metadata))
     before = {path: path.read_bytes() for path in training.train_root.rglob("*.json")}

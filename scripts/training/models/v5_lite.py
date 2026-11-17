@@ -539,7 +539,6 @@ def Main() -> int:
         raise ValueError("V5 lite output must be independent of source")
     work.mkdir(parents=True)
     report: dict[str, object] = {
-        "schema_version": "v5-lite-diagnostic",
         "status": "degraded",
         "summary": {"full_training": False, "production_authority": False},
     }

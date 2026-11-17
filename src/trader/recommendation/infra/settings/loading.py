@@ -201,7 +201,6 @@ def LoadStrategySettings(
         strategy_version=StrategyContractIdentity(raw),
         scoring_profile=ParseScoringProfile(effective_profile),
         fusion=FusionSettings(
-            version="local_score_structured_review",
             confidence_coverage_min=_number(
                 fusion_raw,
                 "confidence_coverage_min",

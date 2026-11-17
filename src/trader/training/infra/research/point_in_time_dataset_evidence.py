@@ -36,7 +36,7 @@ from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeSourceIdentity,
 )
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.infra.research.identity_codec import ResearchJson
+from trader.infra.serialization.canonical_codec import CanonicalText
 
 
 class PointInTimeDatasetEvidenceConflictError(RuntimeError):
@@ -119,7 +119,7 @@ class PointInTimeDatasetEvidenceIndex:
 
 
 def _write_once(path: Path, payload: dict[str, object]) -> None:
-    rendered = ResearchJson(payload)
+    rendered = CanonicalText(payload)
     if PublishImmutable(path, rendered):
         return
     if path.read_text(encoding="utf-8") != rendered:
@@ -138,7 +138,6 @@ def _encode_report_root(
         "failure_reasons": list(report.failure_reasons),
         "terminal_holdout_opened": report.terminal_holdout_opened,
         "production_authority": report.production_authority,
-        "schema_version": report.schema_version,
         "content_hash": report.content_hash,
     }
 
@@ -154,7 +153,6 @@ def _decode_report_root(
         "failure_reasons",
         "terminal_holdout_opened",
         "production_authority",
-        "schema_version",
         "content_hash",
     }
     if set(raw) != expected:
@@ -170,7 +168,6 @@ def _decode_report_root(
         failure_reasons=_strings(raw["failure_reasons"]),
         terminal_holdout_opened=_bool(raw["terminal_holdout_opened"]),
         production_authority=_bool(raw["production_authority"]),
-        schema_version=_string(raw["schema_version"]),
     )
 
 
@@ -189,7 +186,6 @@ def _encode_manifest(manifest: PointInTimeDatasetManifest) -> dict[str, object]:
         "terminal_holdout_rows": manifest.terminal_holdout_rows,
         "terminal_holdout_opened": manifest.terminal_holdout_opened,
         "production_authority": manifest.production_authority,
-        "schema_version": manifest.schema_version,
     }
 
 
@@ -208,7 +204,6 @@ def _decode_manifest(raw: dict[str, object]) -> PointInTimeDatasetManifest:
         "terminal_holdout_rows",
         "terminal_holdout_opened",
         "production_authority",
-        "schema_version",
     }
     if set(raw) != expected:
         raise ValueError("point-in-time dataset manifest fields are invalid")
@@ -230,7 +225,6 @@ def _decode_manifest(raw: dict[str, object]) -> PointInTimeDatasetManifest:
         terminal_holdout_rows=_int(raw["terminal_holdout_rows"]),
         terminal_holdout_opened=_bool(raw["terminal_holdout_opened"]),
         production_authority=_bool(raw["production_authority"]),
-        schema_version=_string(raw["schema_version"]),
     )
 
 
@@ -254,7 +248,6 @@ def EncodePointInTimeDateSplit(item: PointInTimeDateSplit) -> dict[str, object]:
         "terminal_holdout_dates": _encode_dates(item.terminal_holdout_dates),
         "terminal_holdout_opened": item.terminal_holdout_opened,
         "production_authority": item.production_authority,
-        "schema_version": item.schema_version,
     }
 
 
@@ -269,7 +262,6 @@ def DecodePointInTimeDateSplit(raw: dict[str, object]) -> PointInTimeDateSplit:
         "terminal_holdout_dates",
         "terminal_holdout_opened",
         "production_authority",
-        "schema_version",
     }
     if set(raw) != expected:
         raise ValueError("point-in-time date split fields are invalid")
@@ -283,7 +275,6 @@ def DecodePointInTimeDateSplit(raw: dict[str, object]) -> PointInTimeDateSplit:
         terminal_holdout_dates=_dates(raw["terminal_holdout_dates"]),
         terminal_holdout_opened=_bool(raw["terminal_holdout_opened"]),
         production_authority=_bool(raw["production_authority"]),
-        schema_version=_string(raw["schema_version"]),
     )
 
 
@@ -558,7 +549,6 @@ def _encode_outcome(item: RecommendationOutcome) -> dict[str, object]:
         "mae_atr": item.mae_atr,
         "severe_drawdown": item.severe_drawdown,
         "quality_reason": item.quality_reason,
-        "schema_identity": item.schema_identity,
     }
 
 
@@ -585,7 +575,6 @@ def _decode_outcome(raw: dict[str, object]) -> RecommendationOutcome:
         "mae_atr",
         "severe_drawdown",
         "quality_reason",
-        "schema_identity",
     }
     if set(raw) != expected:
         raise ValueError("point-in-time outcome fields are invalid")
@@ -612,7 +601,6 @@ def _decode_outcome(raw: dict[str, object]) -> RecommendationOutcome:
         mae_atr=_optional_float(raw["mae_atr"]),
         severe_drawdown=_optional_bool(raw["severe_drawdown"]),
         quality_reason=_string(raw["quality_reason"]),
-        schema_identity=_string(raw["schema_identity"]),
     )
 
 

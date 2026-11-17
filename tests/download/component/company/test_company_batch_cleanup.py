@@ -71,9 +71,11 @@ def test_failed_formal_commit_does_not_delete_input_and_retry_cleans_it(tmp_path
     with pytest.raises(sqlite3.IntegrityError, match="fixture"):
         index.publish(item.codes, NOW)
     assert tuple((tmp_path / "text").rglob("*.gz"))
-    assert SQLiteCompanyEvidenceReader(index.facts_path).read(item.codes) == ()
+    with pytest.raises(RuntimeError, match="company_snapshot_unreadable"):
+        SQLiteCompanyEvidenceReader(index.facts_path).read(item.codes)
     with SqliteSession(index.facts_path) as connection:
         connection.run("DROP TRIGGER refuse_commit")
+    assert SQLiteCompanyEvidenceReader(index.facts_path).read(item.codes) == ()
     index.publish(item.codes, NOW)
     index.clean_material(NOW)
     assert not tuple((tmp_path / "text").rglob("*.gz"))

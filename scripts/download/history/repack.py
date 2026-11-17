@@ -82,7 +82,6 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
             )
     except (HistoryPartitionRepackError, OSError, ValueError) as exc:
         return ToolOutcome(1, {
-            "schema_version": "history_archive_repack_status",
             "action": action,
             "status": "failed",
             "state": "failed",
@@ -104,7 +103,6 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
 
 def _project_status(status: HistoryPartitionRepackStatus) -> dict[str, object]:
     return {
-        "schema_version": "history_archive_repack_status",
         "action": status.action,
         "state": status.state,
         "source_snapshot_hash": status.source_snapshot_hash,

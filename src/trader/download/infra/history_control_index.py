@@ -62,7 +62,6 @@ class DiskUsageResult(Protocol):
 
 DiskUsage = Callable[[Path], DiskUsageResult]
 
-_SCHEMA_IDENTITY = "history_catalog"
 
 
 class HistoryControlError(RuntimeError):
@@ -172,7 +171,7 @@ class HistoryControlIndex:
                 EnsureSqliteSchema(
                     connection,
                     SqliteSchema(HISTORY_CONTROL_SCHEMA.statements + HISTORY_DOWNLOAD_SCHEMA.statements),
-                    allow_create=True,
+                    allow_create=True, exact=True,
                     initialize=self._initialize_metadata,
                     validate=self._validate_metadata,
                 )
@@ -188,16 +187,16 @@ class HistoryControlIndex:
             if self._reference_path
             else None
         )
-        connection.run("INSERT INTO schema_contract(singleton,schema_id,reference_file) VALUES(1,?,?)", (_SCHEMA_IDENTITY, relative))
+        connection.run("INSERT INTO schema_contract(singleton,reference_file) VALUES(1,?)", (relative,))
 
     def _validate_metadata(self, connection: SqliteConnection) -> None:
         row = connection.run(
-            "SELECT schema_id,reference_file FROM schema_contract WHERE singleton=1"
+            "SELECT reference_file FROM schema_contract WHERE singleton=1"
         ).fetchone()
-        if row is None or row[0] != _SCHEMA_IDENTITY:
+        if row is None:
             raise HistoryControlError("history_format_requires_rebuild")
         if self._reference_path is not None and (
-            row[1] is None or (self._path.parent / row[1]).resolve() != self._reference_path.resolve()
+            row[0] is None or (self._path.parent / row[0]).resolve() != self._reference_path.resolve()
         ):
             raise HistoryControlError("history_reference_location_conflict")
 

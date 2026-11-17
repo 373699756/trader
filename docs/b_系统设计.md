@@ -50,6 +50,8 @@ domain 不读配置、时间、网络、文件或数据库。application 依赖�
 
 顶层`infra/settings`只持有运行配置与技术解析。荐股策略、Long清单、因子和风险配置由`recommendation/infra/settings`持有，训练资源由`training/infra/resource_settings`解析；旧业务配置路径删除，消费者直接使用各owner。特征schema归`recommendation/domain/market/feature_schema`，配置校验不依赖特征构建实现；下载当前行业准入使用自身domain合同，不构造荐股模型对象。
 
+评分档位仍为V1／V2／V3／V5；配置、HTTP／SSE、诊断、缓存和工件不另设人工格式或提示词版本。当前消费者直接核验实际结构、类型、单位与业务身份；特征布局、规则、配置、模型和提示词的实际内容摘要分别承担完整性及失效职责。供应商协议、依赖版本、真实发布序号／修订、日期及预算保留原业务含义。当前链不试读或升级旧格式；历史冻结和研究仅按原字节与原摘要只读投影，不重新评分或补签。
+
 历史日线值、价格基准和会话类型，以及均线、ATR、波动、回撤、Amihud与历史上下文计算，统一由`recommendation/domain/market/history_metrics.py`持有；供应商、发布历史和缓存adapter只负责事实解析与投影。原公共infra历史算法路径及导出删除，全部消费者直接使用新owner；公式、单位、窗口、完成日和停牌语义不因迁移变化。源码进入domain后纳入原训练实现摘要，复用合同变化须如实保留，不重贴旧模型或冻结身份。
 
 `HttpRequestScope`仅接收显式HTTP工厂，管理单次请求的打开和关闭；`WorkerScope`仅管理root注入的执行器，部分启动失败和正常退出均以同一截止回收已启动资源。资源构造仍由`bootstrap.py`持有。HTTP关闭先取消并拒绝新请求，锁忙显式报告pending，在途调用的finally负责最终关闭；请求关闭与完成关闭分开观察，避免执行器已超时后又无期限等待HTTP锁。

@@ -226,7 +226,7 @@ def test_overlay_event_serializes_row_patch_with_parent_and_projection_identitie
     assert payload["snapshot_id"] == freeze.version
     assert payload["publication_id"] == freeze.version
     assert payload["projection_version"] != freeze.version
-    assert payload["schema_version"] == "freeze_event"
+    assert "schema_version" not in payload
     assert "patch_schema_version" not in payload
     assert payload["quotes"] == [
         {
@@ -271,7 +271,6 @@ def _freeze(strategy: Strategy, sequence: int) -> ScoredFreeze:
         ),
         "config:1",
         "strategy:1",
-        "fusion:1",
         (item,),
         (("hard_filter", 10),),
     )

@@ -18,7 +18,7 @@ _AT = datetime(2026, 11, 6, 10, 15, 30, 123456, tzinfo=timezone.utc)
 
 def _evidence(**changes):
     return replace(CompanyFieldEvidence(
-        "cninfo", "announcement-one", "record-one", b"b" * 32, "implemented_total_capital_ratio:2",
+        "cninfo", "announcement-one", "record-one", b"b" * 32, "implemented_total_capital_ratio",
         _AT, 3, 4, "本公司首次回购股份，占总股本0.10%。", "percent", CompanySubject.ISSUER,
     ), **changes)
 

@@ -150,7 +150,8 @@ def test_cancelled_waiter_is_removed_without_consuming_slots():
 
 def _document():
     return {
-        "schema_version": "training-scheduling-evidence", "source_hash": "a" * 64,
+        "source_hash": "a" * 64,
+
         "configuration_hash": "b" * 64, "implementation_hash": "c" * 64, "medium": "hdd",
         "available_cpus": 4, "cpu_capacity": 3, "native_threads": 1,
         "profiles": [{"profile": profile, "fit_seconds": value} for profile, value in zip(PROFILES, (30, 10, 20), strict=True)],

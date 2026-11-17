@@ -86,7 +86,6 @@ class TomorrowHistoricalReport:
     model_artifact_hash: str | None
     failure_reasons: tuple[str, ...]
     production_authority: bool = False
-    schema_version: str = "score_tomorrow_historical_report"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -113,7 +112,7 @@ class TomorrowHistoricalReport:
                 raise ValueError("Tomorrow historical passing report must satisfy all historical gates")
         elif not reasons:
             raise ValueError("Tomorrow historical rejected report requires bounded failure reasons")
-        if self.production_authority or self.schema_version != "score_tomorrow_historical_report":
+        if self.production_authority:
             raise ValueError("Tomorrow historical report cannot authorize production")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))

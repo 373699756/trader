@@ -14,7 +14,6 @@ from types import MappingProxyType
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from trader.http_api.schemas.status_schema import STATUS_SCHEMA_VERSION as _STATUS_SCHEMA_VERSION
 from trader.infra.http_contracts import HttpConnectionError, HttpResponseTooLarge, HttpStatusError
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
@@ -48,7 +47,6 @@ _MONITORED_PIPELINE_COUNTS = (
 )
 _MAX_RESPONSE_BYTES = 1_048_576
 _QUOTE_MAX_AGE_SECONDS = 30.0
-_REPORT_SCHEMA_VERSION = "web_recommendation_health"
 _EvidenceValue = str | int | float | bool | None
 
 
@@ -140,17 +138,13 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                 {"status": long_current.status, "item_count": long_current.item_count},
             )
         )
-    if status.schema_version != _STATUS_SCHEMA_VERSION:
-        findings.append(
-            _finding("error", "status_schema_mismatch", sample, None, "status schema is missing or unsupported")
-        )
     if not status.runtime_started or status.runtime_status != "running":
         findings.append(_finding("error", "runtime_not_running", sample, None, "runtime is not reported as running"))
     findings.extend(_observer_findings(sample, status.degraded_reasons))
     findings.extend(_input_findings(sample, status.degraded_reasons))
-    if not status.release_freeze_schema:
+    if not status.runtime_version:
         findings.append(
-            _finding("error", "release_identity_missing", sample, None, "status release identity is incomplete")
+            _finding("error", "runtime_identity_missing", sample, None, "status runtime identity is missing")
         )
     if status.phase in _SCORING_PHASES and (
         status.market_feature_rows is None or status.candidate_quote_entries is None
@@ -215,7 +209,6 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                     strategy,
                     strategy_status,
                     freeze,
-                    status.release_freeze_schema,
                 )
             )
             if freeze.pipeline is not None:
@@ -558,7 +551,6 @@ def _freeze_contract_findings(
     strategy: str,
     strategy_status: ProjectionSnapshot | None,
     freeze: ProjectionSnapshot,
-    release_schema: str | None,
 ) -> list[Finding]:
     findings: list[Finding] = []
     comparisons = (
@@ -623,16 +615,6 @@ def _freeze_contract_findings(
     if freeze.strategy != strategy:
         findings.append(
             _finding("error", "current_strategy_mismatch", sample, strategy, "current freeze strategy is incorrect")
-        )
-    if release_schema and freeze.schema_version != release_schema:
-        findings.append(
-            _finding(
-                "error",
-                "release_contract_mismatch",
-                sample,
-                strategy,
-                "current freeze schema does not match the loaded release identity",
-            )
         )
     selected_count = freeze.coverage.selected_count
     if selected_count is None or freeze.item_count is None or freeze.selected_item_count is None:
@@ -1106,7 +1088,6 @@ def build_report(
     error_count = sum(finding.severity == "error" for finding in findings)
     warning_count = sum(finding.severity == "warning" for finding in findings)
     return {
-        "schema_version": _REPORT_SCHEMA_VERSION,
         "status": "failed" if error_count else "degraded" if warning_count else "passed",
         "collected_at": datetime.now(_SHANGHAI).isoformat(),
         "target": base_url,
@@ -1484,7 +1465,6 @@ def Main() -> int:
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": _REPORT_SCHEMA_VERSION,
             "status": "failed",
             "error": type(exc).__name__,
         }

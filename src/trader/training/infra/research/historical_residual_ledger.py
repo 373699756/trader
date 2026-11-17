@@ -213,7 +213,6 @@ def _encode_prediction(record: HistoricalPredictionRecord) -> str:
         "filter_state": record.filter_state,
         "selected": record.selected,
         "selection_reason": record.selection_reason,
-        "schema_version": record.schema_version,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -236,7 +235,6 @@ def _decode_prediction(value: str) -> HistoricalPredictionRecord:
         filter_state=cast(ResidualFilterState, _string(payload["filter_state"])),
         selected=_bool(payload["selected"]),
         selection_reason=_string(payload["selection_reason"]),
-        schema_version=_string(payload["schema_version"]),
     )
 
 
@@ -251,7 +249,6 @@ def _encode_outcome(record: HistoricalOutcomeRecord) -> str:
         "mae_atr20": record.mae_atr20,
         "severe_loss": record.severe_loss,
         "label_status": record.label_status,
-        "schema_version": record.schema_version,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -269,7 +266,6 @@ def _decode_outcome(value: str) -> HistoricalOutcomeRecord:
         mae_atr20=_optional_float(payload["mae_atr20"]),
         severe_loss=_optional_bool(payload["severe_loss"]),
         label_status=cast(ResidualLabelStatus, _string(payload["label_status"])),
-        schema_version=_string(payload["schema_version"]),
     )
 
 
@@ -318,7 +314,6 @@ _PREDICTION_FIELDS = {
     "filter_state",
     "selected",
     "selection_reason",
-    "schema_version",
 }
 _OUTCOME_FIELDS = {
     "key",
@@ -330,7 +325,6 @@ _OUTCOME_FIELDS = {
     "mae_atr20",
     "severe_loss",
     "label_status",
-    "schema_version",
 }
 
 

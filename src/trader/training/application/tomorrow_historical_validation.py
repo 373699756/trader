@@ -39,7 +39,6 @@ class TomorrowHistoricalRiskValidationSpec:
     maximum_expected_calibration_error: float = 0.05
     calibration_bins: int = 10
     production_authority: bool = False
-    schema_version: str = "tomorrow_historical_risk_validation_spec"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -51,7 +50,6 @@ class TomorrowHistoricalRiskValidationSpec:
             or self.maximum_expected_calibration_error != 0.05
             or self.calibration_bins != 10
             or self.production_authority
-            or self.schema_version != "tomorrow_historical_risk_validation_spec"
         ):
             raise ValueError("Tomorrow historical risk validation contract is fixed")
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
@@ -160,7 +158,6 @@ class TomorrowHistoricalRiskModelSnapshot:
     training_evidence_hash: str
     calibration_evidence_hash: str
     production_authority: bool = False
-    schema_version: str = "tomorrow_historical_risk_model"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -186,9 +183,8 @@ class TomorrowHistoricalRiskModelSnapshot:
             )
             or len(self.logistic_coefficients) != len(self.feature_ids)
             or any(not math.isfinite(value) for value in values)
-            or (self.platt_constant is not None and not 0.0 < self.platt_constant < 1.0)
+            or self.platt_constant is not None and not 0.0 < self.platt_constant < 1.0
             or self.production_authority
-            or self.schema_version != "tomorrow_historical_risk_model"
         ):
             raise ValueError("Historical risk model artifact is invalid")
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
@@ -219,7 +215,6 @@ class TomorrowHistoricalRiskValidationReport:
     status: TomorrowHistoricalRiskStatus
     failure_reasons: tuple[str, ...]
     production_authority: bool = False
-    schema_version: str = "tomorrow_historical_risk_validation_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:

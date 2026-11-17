@@ -36,8 +36,6 @@ MaintenanceKind = Literal["due", "reminder_claim", "reminder"]
 MaintenanceRecord = TrainingDueState | TrainingReminderClaim | TrainingReminderState
 _TABLES = {"due": "training_due", "reminder_claim": "training_reminder_claim", "reminder": "training_reminder"}
 _SCHEMA = SqliteSchema((
-    "CREATE TABLE schema_contract(singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
-    "schema_id TEXT NOT NULL CHECK(schema_id='training_maintenance')) WITHOUT ROWID",
     "CREATE TABLE training_due(due_id TEXT PRIMARY KEY, reason TEXT NOT NULL, baseline_date INTEGER, "
     "cutoff_date INTEGER, matured_days INTEGER NOT NULL CHECK(matured_days>=0), "
     "input_revision INTEGER NOT NULL CHECK(input_revision IN (0,1)), observed_at INTEGER NOT NULL, "
@@ -88,7 +86,7 @@ class TrainingMaintenanceIndex:
                 with SqliteSession(
                     self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
                 ) as existing:
-                    HasSqliteSchema(existing, _SCHEMA, _validate_contract)
+                    HasSqliteSchema(existing, _SCHEMA, exact=True)
             if write:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
             lease = ProcessLock(self._path.with_suffix(".lock"), label="training-maintenance") if write else nullcontext()
@@ -102,7 +100,7 @@ class TrainingMaintenanceIndex:
                     if write:
                         EnsureSqliteSchema(
                             connection, _SCHEMA, allow_create=True,
-                            initialize=_initialize_contract, validate=_validate_contract,
+                            exact=True,
                         )
                     yield connection
         except (OSError, sqlite3.Error, TypeError, ValueError, ProcessLockError) as exc:
@@ -115,7 +113,7 @@ class TrainingMaintenanceIndex:
         if self._is_missing():
             return None
         with self._connection() as connection:
-            if not HasSqliteSchema(connection, _SCHEMA, _validate_contract):
+            if not HasSqliteSchema(connection, _SCHEMA, exact=True):
                 return None
             row = connection.run(
                 "SELECT * FROM training_due WHERE due_id=? OR due_id LIKE ? ORDER BY observed_at DESC,due_id DESC LIMIT 1",
@@ -144,7 +142,7 @@ class TrainingMaintenanceIndex:
         if self._is_missing():
             return TrainingMaintenanceState(published_snapshot, (), (), ())
         with self._connection() as connection:
-            if not HasSqliteSchema(connection, _SCHEMA, _validate_contract):
+            if not HasSqliteSchema(connection, _SCHEMA, exact=True):
                 return TrainingMaintenanceState(published_snapshot, (), (), ())
             due = tuple(
                 cast(TrainingDueState, _decode("due", row))
@@ -172,16 +170,6 @@ class TrainingMaintenanceIndex:
                     raise TrainingMaintenanceConflictError("training maintenance immutable identity conflicts")
                 return
             connection.run(f"INSERT INTO {_TABLES[kind]} VALUES({','.join('?' for _ in columns)})", columns)
-
-
-def _initialize_contract(connection: SqliteConnection) -> None:
-    connection.run("INSERT INTO schema_contract VALUES(1,'training_maintenance')")
-
-
-def _validate_contract(connection: SqliteConnection) -> None:
-    contract = connection.run("SELECT singleton,schema_id FROM schema_contract").fetchall()
-    if [tuple(row) for row in contract] != [(1, "training_maintenance")]:
-        raise TrainingMaintenanceError("training maintenance database identity is invalid")
 
 
 def _columns(value: MaintenanceRecord) -> tuple[str | int | bytes | None, ...]:

@@ -249,7 +249,7 @@ def test_historical_schema_is_rejected_without_changing_source_files(tmp_path, m
     model, metadata = _documents(profile, text)
     _write_documents(tmp_path, profile, model, metadata)
     assert alignment._numeric_fingerprints(tmp_path, (profile,))
-    metadata["schema_version"] = "learned_rank_head_metadata" if profile == "v1" else f"{profile}_head_metadata"
+    (metadata["training_input"] if profile == "v1" else metadata).pop("final_fit")
     _write_documents(tmp_path, profile, model, metadata)
     before = {path: path.read_bytes() for path in tmp_path.rglob("*.json")}
     with pytest.raises(ValueError, match="current_final_publication_required"):

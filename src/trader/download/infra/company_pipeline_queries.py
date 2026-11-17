@@ -12,10 +12,13 @@ from trader.download.domain.company_evidence import (
     EvidenceMarket,
     Market,
 )
-from trader.download.infra.company_facts_protocol import COMPANY_EXTRACTION_IDENTITY
+import hashlib
+from pathlib import Path
 from trader.infra.sqlite_connection import SqliteConnection
 
-_COMPANY_WORK_POLICY = COMPANY_EXTRACTION_IDENTITY + ":applicable-subjects:1:repurchase-events:2"
+def _work_policy() -> str:
+    extraction = Path(__file__).resolve().parents[1] / "domain/company_event_extraction.py"
+    return hashlib.sha256(Path(__file__).read_bytes() + extraction.read_bytes()).hexdigest()
 
 
 def PrepareCompanyPipelineQueries(connection: SqliteConnection) -> None:
@@ -25,8 +28,9 @@ def PrepareCompanyPipelineQueries(connection: SqliteConnection) -> None:
     connection.run(
         "INSERT OR IGNORE INTO disclosure_query_contracts SELECT market,start_date,end_date,scope,30,'all_announcements' FROM disclosure_queries"
     )
+    work_policy = _work_policy()
     saved = connection.run("SELECT work_policy_id FROM company_work_policy WHERE singleton=1").fetchone()
-    if saved is not None and saved[0] == _COMPANY_WORK_POLICY:
+    if saved is not None and saved[0] == work_policy:
         return
     connection.run("DELETE FROM company_document_requirements")
     connection.run("DELETE FROM company_document_exclusions")
@@ -41,7 +45,7 @@ def PrepareCompanyPipelineQueries(connection: SqliteConnection) -> None:
             ((row[0],) for row in batch if CompanyDocumentOutsideSubjectScope(row[1])),
         )
     connection.run("INSERT OR IGNORE INTO company_dirty_codes SELECT code FROM company_population")
-    connection.run("INSERT OR REPLACE INTO company_work_policy VALUES(1,?)", (_COMPANY_WORK_POLICY,))
+    connection.run("INSERT OR REPLACE INTO company_work_policy VALUES(1,?)", (work_policy,))
 
 
 def CheckDisclosureQueryContract(connection: SqliteConnection, partition: DisclosurePartition) -> None:

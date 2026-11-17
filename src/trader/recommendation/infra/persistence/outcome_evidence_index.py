@@ -327,7 +327,7 @@ def _summary_net_return(payload: bytes, record_hash: bytes) -> float | None:
 def _outcome_bytes(outcome: RecommendationOutcome) -> bytes:
     return _canonical_bytes(
         {
-            "schema_version": outcome.schema_identity,
+
             "snapshot_id": outcome.snapshot_id,
             "strategy": outcome.strategy.value,
             "recommend_date": outcome.recommend_date,
@@ -356,7 +356,7 @@ def _outcome_bytes(outcome: RecommendationOutcome) -> bytes:
 def _benchmark_bytes(benchmark: BenchmarkReturn) -> bytes:
     return _canonical_bytes(
         {
-            "schema_version": "benchmark_return",
+
             "trade_date": benchmark.trade_date,
             "return_pct": benchmark.return_pct,
         }

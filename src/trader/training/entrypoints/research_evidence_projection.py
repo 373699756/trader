@@ -43,7 +43,6 @@ def ProjectCapability(
     index: CapabilityPublication,
 ) -> dict[str, object]:
     return {
-        "schema_version": "h1_capability_execution",
         "status": completion.status,
         "capability_hash": capability.content_hash,
         "completion_hash": completion.content_hash,
@@ -83,7 +82,6 @@ def ProjectPointInTimeDataQualification(
 ) -> dict[str, object]:
     daily = report.daily_archive
     return {
-        "schema_version": report.schema_version,
         "status": report.state,
         "content_hash": report.content_hash,
         "failure_reasons": list(report.failure_reasons),
@@ -150,7 +148,6 @@ def ProjectHistoricalIndustryReport(
     include_details: bool = False,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": report.schema_version,
         "status": report.status,
         "daily_manifest_hash": report.daily_manifest_hash,
         "dataset_hash": report.dataset_hash,
@@ -221,7 +218,6 @@ def _project_source(source: HistoricalIndustrySourceAudit, *, include_details: b
 def ProjectHoldout(conclusion: CrossStrategyConclusion) -> dict[str, object]:
     reports = (conclusion.tomorrow, conclusion.d25)
     return {
-        "schema_version": "terminal_holdout_execution",
         "status": conclusion.status,
         "conclusion_hash": conclusion.content_hash,
         "report_hashes": [list(item) for item in conclusion.report_hashes],

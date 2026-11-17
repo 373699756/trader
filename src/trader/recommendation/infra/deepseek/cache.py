@@ -28,12 +28,7 @@ from trader.infra.settings.models import DeepSeekSettings
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewEvidenceBinding, ReviewOutcome
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.infra.deepseek.evidence_router import RoutePromptEvidence
-from trader.recommendation.infra.deepseek.schema_constants import (
-    PROMPT_VERSION,
-    RAW_FACTS_CACHE_GENERATION,
-    SCHEMA_VERSION,
-)
-from trader.recommendation.infra.deepseek.schema_prompts import BuildReviewManifestHash
+from trader.recommendation.infra.deepseek.schema_prompts import BuildReviewManifestHash, ReviewContractDigest
 
 
 def BuildSharedReviewCacheIdentity(settings: DeepSeekSettings) -> str:
@@ -43,10 +38,7 @@ def BuildSharedReviewCacheIdentity(settings: DeepSeekSettings) -> str:
             settings.base_url,
             settings.model,
             settings.max_tokens,
-            PROMPT_VERSION,
-            SCHEMA_VERSION,
-            RAW_FACTS_CACHE_GENERATION,
-            "review_binding_evidence_revalidated_600s_price1pct_volume0.3",
+            ReviewContractDigest(),
         )
     )
 
@@ -322,9 +314,9 @@ class ReviewCache:
                 request={"raw_key": key},
                 trade_date=_candidate_trade_date(candidate),
                 phase="review",
-                source_contract_version="deepseek_review",
+                source_contract_version=None,
                 config_version=self._config_version,
-                schema_version="deepseek_cache",
+
             )
         )
 
@@ -337,9 +329,9 @@ class ReviewCache:
                 request={"strategy_key": key},
                 trade_date="embedded",
                 phase="review",
-                source_contract_version="deepseek_review",
+                source_contract_version=None,
                 config_version=self._config_version,
-                schema_version="deepseek_cache",
+
             )
         )
 
@@ -352,9 +344,9 @@ class ReviewCache:
                 request={"code": code},
                 trade_date=trade_date,
                 phase="review",
-                source_contract_version="deepseek_review",
+                source_contract_version=None,
                 config_version=self._config_version,
-                schema_version="deepseek_cache",
+
             )
         )
 

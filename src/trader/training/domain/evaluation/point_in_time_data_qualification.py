@@ -160,7 +160,6 @@ class PointInTimeDataQualificationReport:
     point_in_time_parity: bool = False
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "point_in_time_data_qualification"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -177,7 +176,6 @@ class PointInTimeDataQualificationReport:
             or self.point_in_time_parity != (self.state == "qualified")
             or self.terminal_holdout_opened
             or self.production_authority
-            or self.schema_version != "point_in_time_data_qualification"
         ):
             raise ValueError("point-in-time data qualification report is invalid")
         object.__setattr__(self, "industry_sources", industries)

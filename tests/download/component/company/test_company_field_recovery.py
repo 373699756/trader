@@ -16,6 +16,7 @@ from trader.download.domain.company_events import CompanyPositiveStatus, Company
 
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
 
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -76,7 +77,7 @@ def test_progress_field_recovery_scopes_titles_to_same_stock_announcements(tmp_p
             (code,),
         )
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
-        plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
+        plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path, field_rule_hash=CompanyFieldProofRulesHash())
     actual = tuple(plan for plan in plans if plan.gap.field == "actual_pct")
     assert bool(actual) is expected_actual_gap
     if actual:
@@ -97,7 +98,7 @@ def test_multistock_recovery_does_not_borrow_another_codes_same_id_material(tmp_
         (replace(facts, code="600002"),), {item.identity: item.source}, parent, NOW,
     )
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
-        plans = ReadCompanyFieldRecovery(formal, collected, ("600001", "600002"), NOW, tmp_path)
+        plans = ReadCompanyFieldRecovery(formal, collected, ("600001", "600002"), NOW, tmp_path, field_rule_hash=CompanyFieldProofRulesHash())
     assert {(plan.gap.code, plan.action, plan.reason) for plan in plans} == {
         ("600001", "extract", "local_text_available"),
         ("600002", "verify", "source_metadata_missing"),
@@ -131,7 +132,7 @@ def test_multistock_recovery_keeps_same_id_material_and_event_times_with_their_c
         {item.identity: "exchange_disclosure"}, parent, NOW,
     )
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
-        plans = ReadCompanyFieldRecovery(formal, collected, ("600001", "600002"), NOW, tmp_path)
+        plans = ReadCompanyFieldRecovery(formal, collected, ("600001", "600002"), NOW, tmp_path, field_rule_hash=CompanyFieldProofRulesHash())
     assert {(plan.gap.code, plan.action, plan.reason) for plan in plans} == {
         ("600001", "verify", "earlier_evidence_requires_revision_check"),
         ("600002", "extract", "local_text_available"),
@@ -155,19 +156,19 @@ def test_attempt_on_material_removed_from_code_does_not_suppress_current_same_id
         )
         collected.run(
             "INSERT INTO company_field_repairs SELECT id,'600001',record_hash,?,'planned_pct',"
-            "'reduction_total_capital_ratio:3','attempted' FROM disclosures WHERE source='exchange_disclosure'",
-            (event.event_id,),
+            "?,'attempted' FROM disclosures WHERE source='exchange_disclosure'",
+            (event.event_id, 'reduction_total_capital_ratio:' + CompanyFieldProofRulesHash().hex()),
         )
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
-        plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
+        plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path, field_rule_hash=CompanyFieldProofRulesHash())
         assert [(plan.action, plan.reason) for plan in plans] == [("extract", "local_text_available")]
         with SqliteTransaction(collected):
             collected.run(
                 "INSERT INTO company_field_repairs SELECT id,'600001',record_hash,?,'planned_pct',"
-                "'reduction_total_capital_ratio:3','attempted' FROM disclosures WHERE source=?",
-                (event.event_id, item.source),
+                "?,'attempted' FROM disclosures WHERE source=?",
+                (event.event_id, 'reduction_total_capital_ratio:' + CompanyFieldProofRulesHash().hex(), item.source),
             )
-        plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path)
+        plans = ReadCompanyFieldRecovery(formal, collected, item.codes, NOW, tmp_path, field_rule_hash=CompanyFieldProofRulesHash())
         assert [(plan.action, plan.reason) for plan in plans] == [("verify", "same_rule_already_attempted")]
 
 

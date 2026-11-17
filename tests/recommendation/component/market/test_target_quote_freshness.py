@@ -131,7 +131,7 @@ def _project_and_freeze(quotes, native_type, feature_factory, tmp_path):
     freeze = projection.local
     coordinator = ScoredFreezeCoordinator(
         index, records, _Clock(_OBSERVED_AT.replace(hour=15, minute=0)), strategy=strategy,
-        runtime_identity=FreezeRuntimeIdentity(freeze.config_version, freeze.strategy_version, freeze.fusion_version),
+        runtime_identity=FreezeRuntimeIdentity(freeze.config_version, freeze.strategy_version),
     )
     result = coordinator.freeze_scheduled()
     assert result.status == "frozen" and result.record is not None

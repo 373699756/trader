@@ -295,7 +295,7 @@ def _service(
         cache=cache,
         source_contracts=kwargs.pop("source_contracts", {"tushare": "tushare-component"}),
         config_version=kwargs.pop("config_version", "component-default"),
-        schema_version=kwargs.pop("schema_version", "market_snapshot"),
+
         wall_clock=wall_clock,
     )
     history = kwargs.pop("published_history", None)

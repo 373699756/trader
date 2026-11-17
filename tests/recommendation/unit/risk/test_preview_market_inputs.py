@@ -285,7 +285,7 @@ def test_preview_minute_lane_preserves_real_failure_and_retained_close_qualifica
         cache=None,
         source_contracts={},
         config_version="preview-config",
-        schema_version="preview-schema",
+
         wall_clock=lambda: observed,
     )
     loader = IntradayLoader(

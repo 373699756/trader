@@ -24,6 +24,7 @@ from trader.download.infra.company_facts_protocol import DecodeCompanyDate, Enco
 from trader.download.infra.company_fact_inputs import DecodeCompanyFinancial
 from trader.download.infra.company_financial_publication import ReadCompanyFinancialSourceProofs
 from scripts.core.projection_values import SafeStringList, SafeNonnegativeInt, SafeText, ProjectMapping
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
 from trader.download.infra.company_field_recovery import ReadRequiredCompanyMaterialDependencies
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
@@ -153,7 +154,7 @@ def InspectCompanyFieldMaterial(
         after = (raw.run("PRAGMA data_version").require_one()[0], formal.run("PRAGMA data_version").require_one()[0])
     stable = before == after
     return {
-        "schema_version": "company-field-material", "read_only": True, "stable_read": stable,
+         "read_only": True, "stable_read": stable,
         "status": "observed" if stable else "degraded", "field_correctness_verified": False,
         "missing_source_keys": sorted(set(source_keys) - found), "items": items,
     }
@@ -344,7 +345,7 @@ def AuditCompanyFields(
         findings.append("company_applicable_fields_missing")
     recovery = () if invalid_types or nonfinite_values else ReadCompanyFieldRecovery(
         formal, raw, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),
-        observed_at, raw_path.parent,
+        observed_at, raw_path.parent, field_rule_hash=CompanyFieldProofRulesHash(),
     )
     field_results = () if invalid_types or nonfinite_values else ReadCompanyFieldResults(
         formal, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),

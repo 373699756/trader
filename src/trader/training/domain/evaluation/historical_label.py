@@ -166,7 +166,6 @@ class HistoricalLabelPreregistration:
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     candidate_results_generated: bool = False
     production_authority: bool = False
-    schema_version: str = "historical_label_preregistration"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -193,8 +192,6 @@ class HistoricalLabelPreregistration:
             or self.production_authority
         ):
             raise ValueError("historical label preregistration cannot open holdout or production authority")
-        if self.schema_version != "historical_label_preregistration":
-            raise ValueError("historical label preregistration schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
@@ -202,7 +199,6 @@ class HistoricalLabelPreregistration:
 @dataclass(frozen=True)
 class HistoricalLabelPreregistrationBatch:
     strategies: tuple[HistoricalLabelPreregistration, ...]
-    schema_version: str = "historical_label_preregistration_batch"
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -210,7 +206,7 @@ class HistoricalLabelPreregistrationBatch:
         ordered = tuple(sorted(self.strategies, key=lambda item: _STRATEGY_ORDER[item.strategy]))
         if tuple(item.strategy for item in ordered) != ("tomorrow", "d25"):
             raise ValueError("historical label batch requires each strategy exactly once")
-        if self.schema_version != "historical_label_preregistration_batch" or self.production_authority:
+        if self.production_authority:
             raise ValueError("historical label batch cannot authorize production")
         object.__setattr__(self, "strategies", ordered)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))

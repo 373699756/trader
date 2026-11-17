@@ -29,7 +29,7 @@ from trader.download.infra.company_field_result_rows import ReadCompanyFieldResu
 from trader.infra.sqlite_connection import SqliteConnection
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 
-_PROOF_RULE = "field_source_lines:1"
+_PROOF_RULE = "field_source_lines"
 _RISK_FIELDS = frozenset({"start_date", "end_date", "planned_pct", "completion_disclosed_at"})
 _SUPPORTED_FIELDS = _RISK_FIELDS | {"actual_pct", "repurchase_purpose"} | {field for field, _ in COMPANY_CONTRACT_FIELD_RULES}
 
@@ -42,7 +42,7 @@ def CompanyFieldProofRulesHash() -> bytes:
     for relative in (
         "domain/company_event_extraction.py", "domain/company_repurchase_fields.py", "domain/company_contract_fields.py", "domain/company_annual_report.py",
         "domain/company_reduction_scope.py", "domain/company_field_source.py", "domain/company_field_plan.py",
-        "domain/company_field_results.py", "infra/company_field_publication.py", "infra/company_annual_field_publication.py",
+        "domain/company_field_results.py", "infra/company_field_publication.py", "infra/company_annual_field_publication.py", "infra/company_field_recovery.py",
     ):
         digest.update(relative.encode())
         digest.update(hashlib.sha256((root / relative).read_bytes()).digest())
@@ -73,6 +73,9 @@ def PrepareCompanyFieldResults(
     receipt commits with the facts and conclusions, so interruption cannot make
     a failed attempt complete or force another download of a retained body.
     """
+    rules_hash = CompanyFieldProofRulesHash()
+    saved_rules = formal.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
+    revalidate = revalidate or saved_rules is None or saved_rules[0] != rules_hash
     baseline = tuple(CompanyFieldConclusion(
         item.code, item.event_id, cast(CompanyFieldName, item.field), item.value,
         cast(CompanyFieldConclusionState, item.state), item.applicable, item.reason, (),
@@ -90,7 +93,7 @@ def PrepareCompanyFieldResults(
             and event is not None
             and (all(proof.source_key in event.evidence_ids for proof in existing.evidence)
                  or isinstance(event, CompanyPositiveEvent)
-                 and CanReuseCompanyAnnualFieldResults(collected, formal, facts, event, existing))
+                 and CanReuseCompanyAnnualFieldResults(collected, formal, facts, event, existing, field_rule_hash=rules_hash))
             and all((proof.source_key in event.evidence_ids or isinstance(event, CompanyPositiveEvent)
                      and IsCompanyAnnualFieldEvidence(event, item.field, proof)) and proof.subject is event.subject_type
                     and (item.field, proof.rule_id) in COMPANY_FIELD_RULES
@@ -121,7 +124,7 @@ def PrepareCompanyFieldResults(
             body_hash = row["body_hash"]
             if not isinstance(body_hash, bytes) or len(body_hash) != 32:
                 continue
-            policy = _field_policy(event, item.field)
+            policy = _field_policy(event, item.field, rules_hash)
             if not revalidate and formal.run(
                 "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
                 "AND record_hash=? AND body_hash=? AND extraction_hash=? AND policy_id=? AND outcome='field_attempted'",
@@ -196,6 +199,7 @@ def PrepareCompanyFieldResults(
         extraction_hash=extraction_hash,
         read_document=read_document,
         revalidate=revalidate,
+        field_rule_hash=rules_hash,
     )
     return CompanyFieldPublication(annual.results, (*receipts, *annual.receipts))
 
@@ -240,9 +244,9 @@ def _current_material(
     return len(rows) == 1 and tuple(rows[0]) == (record_hash, body_hash, published_at.isoformat())
 
 
-def _field_policy(event: CompanyPositiveEvent | CompanyRiskEvent, field: str) -> str:
+def _field_policy(event: CompanyPositiveEvent | CompanyRiskEvent, field: str, rules_hash: bytes) -> str:
     rule = next(rule for name, rule in COMPANY_FIELD_RULES if name == field)
-    policy = f"{_PROOF_RULE}:{rule}:{event.event_id}:{field}"
+    policy = f"{_PROOF_RULE}:{rule}:{rules_hash.hex()}:{event.event_id}:{field}"
     if isinstance(event, CompanyRiskEvent) and field in {"start_date", "end_date", "planned_pct"}:
         return policy + ":" + COMPANY_QUALIFIED_REDUCTION_DIGEST.hex()
     if field == "actual_pct" and isinstance(event, CompanyPositiveEvent) and isinstance(event.measurements, RepurchaseMeasurements):

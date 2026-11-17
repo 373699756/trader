@@ -146,7 +146,6 @@ def Main() -> int:
     if args.signal_date is not None:
         emit_report(
             {
-                "schema_version": "training-coverage-diagnostic",
                 "status": "degraded",
                 "summary": _trace_labels(
                     paths.history, paths.samples / "v5/samples.sqlite3", args.signal_date,
@@ -163,7 +162,6 @@ def Main() -> int:
             profiles.append({"profile": profile, **_audit(path, sqlite_policy=sqlite_policy)})
     emit_report(
         {
-            "schema_version": "training-coverage-diagnostic",
             "status": "degraded" if not profiles or any(item["missing"] for item in profiles) else "passed",
             "summary": {"profiles": profiles, "source_data_writes": 0},
         }

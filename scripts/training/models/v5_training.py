@@ -29,6 +29,7 @@ from trader.download.domain.baostock_daily import (
 from trader.download.domain.history_control import HistorySnapshot
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
@@ -77,7 +78,9 @@ class _FrozenSubsetSupplier:
     def load_context(self, _as_of: date, _sessions: int) -> HistorySupplierContext:
         return self._context
 
-    def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+    def fetch_tencent_window(
+        self, security: BaoStockSecurity, dates: tuple[date, ...], *, request_budget: PriceReviewRequestBudget | None = None,
+    ) -> PublishedHistoryWindow:
         rows = self._rows(security.code, dates)
         return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(row.cell) for row in rows))
 
@@ -188,7 +191,6 @@ def _probe(source: Path, work: Path, *, sample_settings: TrainingSampleSettings,
         reloaded = False
     after = HistoryControlIndex(source / "catalog.sqlite3", sqlite_policy=sqlite_policy).load_published_state()
     return {
-        "schema_version": "v5-training-diagnostic",
         "status": "passed" if reloaded and after and after.snapshot == state.snapshot else "degraded",
         "summary": {
             "input_scope": "bounded_real_industry_engineering_probe",
@@ -244,7 +246,6 @@ def Main() -> int:
             report = _probe(args.history_root, args.work_root, sample_settings=sample_settings, sqlite_policy=sqlite_policy)
     except (OSError, RuntimeError, ValueError, AssertionError) as exc:
         report = {
-            "schema_version": "v5-training-diagnostic",
             "status": "failed",
             "summary": {"failure": type(exc).__name__},
         }

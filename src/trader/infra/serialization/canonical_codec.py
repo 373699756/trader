@@ -10,7 +10,6 @@ import dataclasses
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 from typing import TypeAlias
@@ -18,16 +17,7 @@ from typing import TypeAlias
 CanonicalValue: TypeAlias = None | bool | int | float | str | list["CanonicalValue"] | dict[str, "CanonicalValue"]
 
 
-@dataclass(frozen=True)
-class CanonicalExclusion:
-    identity_field: str
-    identity: str
-    metadata_field: str
-
-
-def EncodeCanonicalValue(
-    value: object, *, include_derived: bool = False, exclusion: CanonicalExclusion | None = None
-) -> CanonicalValue:
+def EncodeCanonicalValue(value: object, *, include_derived: bool = False) -> CanonicalValue:
     if value is None or isinstance(value, (str, bool, int, float)):
         return value
     if isinstance(value, date):
@@ -35,23 +25,19 @@ def EncodeCanonicalValue(
     if isinstance(value, Enum):
         return str(value.value)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        excluded = exclusion is not None and getattr(value, exclusion.identity_field, None) == exclusion.identity
         return {
-            field.name: EncodeCanonicalValue(
-                getattr(value, field.name), include_derived=include_derived, exclusion=exclusion
-            )
+            field.name: EncodeCanonicalValue(getattr(value, field.name), include_derived=include_derived)
             for field in dataclasses.fields(value)
             if (include_derived or field.init)
-            and not (excluded and exclusion is not None and field.metadata.get(exclusion.metadata_field, False))
         }
     if isinstance(value, Mapping):
         return {
-            str(key): EncodeCanonicalValue(item, include_derived=include_derived, exclusion=exclusion)
+            str(key): EncodeCanonicalValue(item, include_derived=include_derived)
             for key, item in value.items()
         }
     if isinstance(value, (tuple, list, frozenset, set)):
         ordered = sorted(value) if isinstance(value, (frozenset, set)) else value
-        return [EncodeCanonicalValue(item, include_derived=include_derived, exclusion=exclusion) for item in ordered]
+        return [EncodeCanonicalValue(item, include_derived=include_derived) for item in ordered]
     raise TypeError(f"unsupported canonical identity value: {type(value).__name__}")
 
 
@@ -60,10 +46,9 @@ def CanonicalText(
     *,
     ensure_ascii: bool = True,
     include_derived: bool = False,
-    exclusion: CanonicalExclusion | None = None,
 ) -> str:
     return CanonicalJsonText(
-        EncodeCanonicalValue(value, include_derived=include_derived, exclusion=exclusion), ensure_ascii=ensure_ascii
+        EncodeCanonicalValue(value, include_derived=include_derived), ensure_ascii=ensure_ascii
     )
 
 
@@ -83,17 +68,15 @@ def CanonicalDigest(
     *,
     ensure_ascii: bool = True,
     include_derived: bool = False,
-    exclusion: CanonicalExclusion | None = None,
 ) -> str:
     return hashlib.sha256(
-        CanonicalText(value, ensure_ascii=ensure_ascii, include_derived=include_derived, exclusion=exclusion).encode(
+        CanonicalText(value, ensure_ascii=ensure_ascii, include_derived=include_derived).encode(
             "utf-8"
         )
     ).hexdigest()
 
 
 __all__ = [
-    "CanonicalExclusion",
     "CanonicalValue",
     "EncodeCanonicalValue",
     "CanonicalText",

@@ -116,7 +116,6 @@ def Main(argv: list[str] | None = None) -> int:
         and peak <= budget
     )
     payload: dict[str, object] = {
-        "schema_version": "tomorrow_training_memory_gate",
         "status": "passed" if passed else "failed",
         "training_status": result.status,
         "repeat_training_status": repeated.status,

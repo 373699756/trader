@@ -7,7 +7,6 @@ from trader.training.domain.training_reminder import TrainingReminderStatus
 
 def ProjectTrainingReminderStatus(status: TrainingReminderStatus) -> dict[str, object]:
     return {
-        "schema_version": "history_automation_status",
         "state": status.state,
         "reason": status.reason,
         "history_root": str(status.history_root),

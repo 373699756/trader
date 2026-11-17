@@ -74,13 +74,13 @@ def test_non_scoring_code_and_contracts_use_stable_semantic_names() -> None:
     assert content_violations == []
 
 
-def test_public_release_contract_uses_stable_schema_identities() -> None:
+def test_public_release_contract_has_no_redundant_format_identities() -> None:
     release_contract = source_text(PROJECT_ROOT / "src/trader/web/static/release_contract.js")
     freeze_queries = source_text(PROJECT_ROOT / "src/trader/recommendation/application/pipeline/freeze_publish/read_only_queries.py")
 
-    assert 'const STATUS_SCHEMA = "runtime_status";' in release_contract
-    assert 'const FREEZE_VIEW_SCHEMA = "freeze_view";' in release_contract
-    assert 'FREEZE_VIEW_SCHEMA_VERSION = "freeze_view"' in freeze_queries
+    assert "STATUS_SCHEMA" not in release_contract
+    assert "FREEZE_VIEW_SCHEMA" not in release_contract
+    assert "FREEZE_VIEW_SCHEMA_VERSION" not in freeze_queries
     versioned_freeze_schema = re.compile(r"\bv\d+_freeze_view_v\d+\b", re.IGNORECASE)
     assert versioned_freeze_schema.search(release_contract) is None
     assert versioned_freeze_schema.search(freeze_queries) is None

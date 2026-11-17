@@ -222,14 +222,11 @@ class TerminalHoldoutReport:
     profile_id: ScoringProfileId | None = None
     evidence_hash: str | None = None
     production_authority: bool = False
-    schema_version: str = "historical_terminal_holdout_unified_metrics"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if self.strategy not in {"tomorrow", "d25"} or not self.research_identity:
             raise ValueError("terminal holdout strategy identity is invalid")
-        if self.schema_version != "historical_terminal_holdout_unified_metrics":
-            raise ValueError("terminal holdout schema version is invalid")
         if _SHA256.fullmatch(self.parent_hash) is None or _SHA256.fullmatch(self.candidate_hash) is None:
             raise ValueError("terminal holdout hashes must be SHA-256")
         if self.status not in {"historical_data_insufficient", "historical_rejected", "historical_validated"}:

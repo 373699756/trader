@@ -79,7 +79,6 @@ def _report_payload(report: CostAwareSelectionReport) -> dict[str, object]:
         ],
         "status": report.status,
         "production_authority": report.production_authority,
-        "schema_version": report.schema_version,
         "content_hash": report.content_hash,
     }
 

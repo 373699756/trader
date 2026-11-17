@@ -48,14 +48,12 @@ from trader.infra.sqlite_connection import (
     SqliteTransaction,
 )
 
-_SCHEMA_IDENTITY = "history_annual_prices"
 _CODE = re.compile(r"^[0-9]{6}$")
 HistoryPartitionVerificationPhase = Literal["hash", "integrity", "row_count", "logical"]
 HistoryPartitionVerificationProgress = Callable[[int, int, HistoryPartitionVerificationPhase], None]
 _SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS schema_contract (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    schema_id TEXT NOT NULL,
     calendar_year INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS daily_price_revision (
@@ -327,14 +325,14 @@ class HistoryPricePartition:
 
                 def initialize_metadata(connection: SqliteConnection) -> None:
                     connection.run(
-                        "INSERT OR IGNORE INTO schema_contract(singleton,schema_id,calendar_year) VALUES(1,?,?)",
-                        (_SCHEMA_IDENTITY, self._calendar_year),
+                        "INSERT OR IGNORE INTO schema_contract(singleton,calendar_year) VALUES(1,?)",
+                        (self._calendar_year,),
                     )
 
                 EnsureSqliteSchema(
                     connection,
                     _SCHEMA,
-                    allow_create=True,
+                    allow_create=True, exact=True,
                     initialize=initialize_metadata,
                     validate=self._require_metadata,
                 )
@@ -1059,12 +1057,13 @@ class HistoryPricePartition:
 
     def _require_metadata(self, connection: SqliteConnection) -> None:
         metadata = connection.run(
-            "SELECT schema_id, calendar_year FROM schema_contract WHERE singleton=1"
+            "SELECT calendar_year FROM schema_contract WHERE singleton=1"
         ).fetchone()
-        if metadata is None or tuple(metadata) != (_SCHEMA_IDENTITY, self._calendar_year):
+        if metadata is None or tuple(metadata) != (self._calendar_year,):
             raise HistoryPricePartitionError("history month metadata conflicts")
 
     def _require_schema(self, connection: SqliteConnection) -> None:
+        EnsureSqliteSchema(connection, _SCHEMA, exact=True)
         expected_indexes = {
             "history_price_code_date_idx": (
                 "code",

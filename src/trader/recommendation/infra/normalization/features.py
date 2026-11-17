@@ -27,7 +27,6 @@ from trader.recommendation.domain.market.feature_contracts import (
     CalculateProfileQfqAlpha,
     QfqPriceAnchors,
 )
-from trader.recommendation.domain.market.feature_schema import FEATURE_SCHEMA_ID
 from trader.recommendation.domain.market.models import (
     CrossSectionStats,
     FeatureSnapshot,
@@ -476,7 +475,6 @@ class FeatureBuilder:
                 "quote_factors",
                 "qfq",
                 self._base_policy_identity,
-                FEATURE_SCHEMA_ID,
             )
 
             def build() -> _CachedQuoteFactors:

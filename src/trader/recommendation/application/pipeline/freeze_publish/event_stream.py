@@ -169,6 +169,8 @@ class UnifiedFreezeEventStream:
             return self._publish_locked("batch", payload)
 
     def publish_projection(self, projection: LongProjection) -> UnifiedPublishedEvent:
+        if not isinstance(projection, LongProjection):
+            raise ValueError("historical snapshots are read-only")
         payload = FreezeEventPayload(
             Strategy.LONG,
             projection.trade_date.isoformat(),
@@ -187,6 +189,8 @@ class UnifiedFreezeEventStream:
         parent_version: str,
         profile: str | None = None,
     ) -> UnifiedPublishedEvent:
+        if not isinstance(overlay, FreezeOverlay):
+            raise ValueError("historical snapshots are read-only")
         projection_version = f"{parent_version}+{overlay.version}"
         payload = OverlayEventPayload(
             overlay.strategy,
@@ -271,6 +275,8 @@ class UnifiedFreezeEventStream:
 
 
 def _freeze_payload(event: FreezeCommitted, *, profile: str | None = None) -> FreezeEventPayload:
+    if not isinstance(event, FreezeCommitted):
+        raise ValueError("historical events are read-only")
     freeze = event.projection
     replacement = None
     if freeze is not None:

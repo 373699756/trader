@@ -20,7 +20,7 @@ from trader.training.domain.evaluation.historical_label import (
     HistoricalTemporalSplit,
 )
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.infra.research.identity_codec import ResearchJson
+from trader.infra.serialization.canonical_codec import CanonicalText
 
 
 class HistoricalLabelEvidenceConflictError(RuntimeError):
@@ -41,7 +41,7 @@ class HistoricalLabelEvidenceIndex:
             return existing
         payload = _encode_batch(batch)
         payload["content_hash"] = batch.content_hash
-        if PublishImmutable(path, ResearchJson(payload)):
+        if PublishImmutable(path, CanonicalText(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != batch.content_hash:
@@ -68,7 +68,6 @@ class HistoricalLabelEvidenceIndex:
 def _encode_batch(batch: HistoricalLabelPreregistrationBatch) -> dict[str, object]:
     return {
         "strategies": [_encode_preregistration(item) for item in batch.strategies],
-        "schema_version": batch.schema_version,
         "production_authority": batch.production_authority,
     }
 
@@ -87,7 +86,6 @@ def _encode_preregistration(item: HistoricalLabelPreregistration) -> dict[str, o
         "terminal_holdout_status": item.terminal_holdout_status,
         "candidate_results_generated": item.candidate_results_generated,
         "production_authority": item.production_authority,
-        "schema_version": item.schema_version,
     }
 
 
@@ -126,16 +124,14 @@ def _encode_split(split: HistoricalTemporalSplit) -> dict[str, object]:
 
 
 def _decode_batch(raw: dict[str, object]) -> HistoricalLabelPreregistrationBatch:
-    if set(raw) != {"strategies", "schema_version", "production_authority"}:
+    if set(raw) != {"strategies", "production_authority"}:
         raise ValueError("historical label artifact fields are invalid")
     strategies = raw["strategies"]
     if not isinstance(strategies, list) or not all(isinstance(item, dict) for item in strategies):
         raise TypeError("historical label strategies are invalid")
-    schema = _string(raw["schema_version"])
     authority = _bool(raw["production_authority"])
     return HistoricalLabelPreregistrationBatch(
         tuple(_decode_preregistration(cast(dict[str, object], item)) for item in strategies),
-        schema_version=schema,
         production_authority=authority,
     )
 
@@ -154,7 +150,6 @@ def _decode_preregistration(raw: dict[str, object]) -> HistoricalLabelPreregistr
         "terminal_holdout_status",
         "candidate_results_generated",
         "production_authority",
-        "schema_version",
     }
     if set(raw) != expected:
         raise ValueError("historical label preregistration fields are invalid")
@@ -177,7 +172,6 @@ def _decode_preregistration(raw: dict[str, object]) -> HistoricalLabelPreregistr
         terminal_holdout_status=cast(Literal["terminal_holdout_not_opened"], _string(raw["terminal_holdout_status"])),
         candidate_results_generated=_bool(raw["candidate_results_generated"]),
         production_authority=_bool(raw["production_authority"]),
-        schema_version=_string(raw["schema_version"]),
     )
 
 

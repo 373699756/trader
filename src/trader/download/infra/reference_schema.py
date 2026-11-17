@@ -4,7 +4,6 @@ from trader.infra.sqlite_connection import SqliteSchema
 
 REFERENCE_SCHEMA = SqliteSchema(
     (
-        "CREATE TABLE schema_contract(schema_id TEXT PRIMARY KEY) WITHOUT ROWID",
         """CREATE TABLE security(
             security_id BLOB PRIMARY KEY CHECK(length(security_id)=32),
             code TEXT NOT NULL CHECK(length(code)=6 AND code NOT GLOB '*[^0-9]*'),

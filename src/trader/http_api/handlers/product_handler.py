@@ -12,10 +12,9 @@ from flask import Blueprint, Flask, Response, jsonify, render_template, request
 from trader.http_api.freeze_sse import FreezeEventResponse
 from trader.http_api.response.freeze_projection import SerializeError, SerializeFreezeView
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebServices
-from trader.http_api.schemas.status_schema import STATUS_SCHEMA_VERSION
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedSubscriberLimitError
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
-    FREEZE_VIEW_SCHEMA_VERSION,
+
     FreezeView,
     UnifiedFreezeQueries,
 )
@@ -141,7 +140,7 @@ def _current_batch(services: WebServices | None) -> RouteResponse:
     )
     batch = UnifiedFreezeQueries.current_batch(profiles)
     response = jsonify({
-        "schema_version": "freeze_current_batch",
+
         "profiles": {
             profile: {
                 view.strategy.value: {**SerializeFreezeView(view), "scoring_profile": profile}
@@ -211,7 +210,7 @@ def _dates(services: WebServices | None, strategy_name: str) -> RouteResponse:
     )
     response = jsonify(
         {
-            "schema_version": "freeze_dates",
+
             "strategy": strategy.value,
             "scoring_profile": profile_id,
             "dates": [value.isoformat() for value in dates],
@@ -236,7 +235,7 @@ def _company_documents(services: WebServices | None, code: str) -> RouteResponse
         return _error("company_evidence_unavailable", "company evidence is temporarily unavailable", 503)
     return jsonify(
         {
-            "schema_version": "company_documents",
+
             "code": code,
             "documents": [
                 {
@@ -271,10 +270,7 @@ def _status(services: WebServices | None) -> RouteResponse:
     }
     return jsonify(
         {
-            "schema_version": STATUS_SCHEMA_VERSION,
-            "release": {
-                "freeze_view_schema": FREEZE_VIEW_SCHEMA_VERSION,
-            },
+
             "status": str(runtime.get("status", "running")),
             "phase": runtime.get("phase"),
             **_preview_status(runtime),
@@ -628,7 +624,6 @@ def _issuer_eligibility(raw: object) -> dict[str, object]:
     eligibility = {
         key: raw[key]
         for key in (
-            "schema_version",
             "fact_count",
             "excluded_count",
             "manifest_hash",

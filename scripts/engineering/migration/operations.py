@@ -9,11 +9,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scripts.core.paths import PROJECT_ROOT
-from scripts.engineering.migration.codec import FileDigest, ValidateDatabase
+from scripts.engineering.migration.candidate_database import ValidateCandidateDatabase
+from trader.infra.serialization.canonical import FileSha256
 from trader.infra.process_lock import ProcessLock
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 MANIFEST_NAME = "migration-manifest.json"
+_REGENERATE = (
+    "market_reference", "industry_reference", "market_history", "daily_window", "models", "training_samples",
+    "company_facts", "freeze_records", "publication_sequence", "outcomes", "freeze_traces", "research_experiments",
+)
 
 
 class MigrationError(RuntimeError):
@@ -32,7 +37,6 @@ class MigrationManifest:
 
 def ProjectManifest(value: MigrationManifest) -> dict[str, object]:
     return {
-        "schema_version": "trader_data_layout_migration",
         "source_hash": value.source_hash,
         "candidate_hash": value.candidate_hash,
         "file_count": value.file_count,
@@ -77,20 +81,7 @@ def migrate(source: Path, target: Path, *, default_profile: str, sqlite_policy: 
             digest,
             count,
             size,
-            (
-                "market_reference",
-                "industry_reference",
-                "market_history",
-                "daily_window",
-                "models",
-                "training_samples",
-                "company_facts",
-                "freeze_records",
-                "publication_sequence",
-                "outcomes",
-                "freeze_traces",
-                "research_experiments",
-            ),
+            _REGENERATE,
             cleanup,
         )
         (staging / MANIFEST_NAME).write_text(json.dumps(ProjectManifest(manifest), sort_keys=True, indent=2) + "\n")
@@ -115,11 +106,24 @@ def _flush_candidate(root: Path) -> None:
 def inspect_layout(source: Path, *, sqlite_policy: SqliteIoPolicy) -> MigrationManifest:
     root = _external_path(source)
     raw = json.loads((root / MANIFEST_NAME).read_text())
-    if raw.get("schema_version") != "trader_data_layout_migration":
+    fields = {"source_hash", "candidate_hash", "file_count", "total_bytes", "regenerate", "cleanup_candidates"}
+    if not isinstance(raw, dict) or set(raw) != fields:
         raise MigrationError("migration_manifest_invalid")
+    for name in ("source_hash", "candidate_hash"):
+        value = raw[name]
+        if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise MigrationError("migration_manifest_invalid")
+    if any(type(raw[name]) is not int or raw[name] < 0 for name in ("file_count", "total_bytes")):
+        raise MigrationError("migration_manifest_invalid")
+    for name in ("regenerate", "cleanup_candidates"):
+        values = raw[name]
+        if not isinstance(values, list) or any(not isinstance(value, str) or not value or len(value) > 256 for value in values):
+            raise MigrationError("migration_manifest_invalid")
     digest, count, size = _fingerprint(root, validate=True, sqlite_policy=sqlite_policy)
     if (raw["candidate_hash"], raw["file_count"], raw["total_bytes"]) != (digest, count, size):
         raise MigrationError("migration_candidate_digest_changed")
+    if count or size or tuple(raw["regenerate"]) != _REGENERATE:
+        raise MigrationError("migration_candidate_requires_empty_layout")
     return MigrationManifest(
         raw["source_hash"], digest, count, size, tuple(raw["regenerate"]), tuple(raw["cleanup_candidates"])
     )
@@ -145,11 +149,11 @@ def _fingerprint(root: Path, *, validate: bool, sqlite_policy: SqliteIoPolicy) -
     size = 0
     for path in files:
         if validate and path.suffix == ".sqlite3":
-            ValidateDatabase(path, sqlite_policy=sqlite_policy)
+            ValidateCandidateDatabase(path, sqlite_policy=sqlite_policy)
         length = path.stat().st_size
         digest.update(path.relative_to(root).as_posix().encode())
         digest.update(length.to_bytes(8, "big"))
-        digest.update(FileDigest(path).encode("ascii"))
+        digest.update(FileSha256(path).encode("ascii"))
         size += length
     return digest.hexdigest(), len(files), size
 

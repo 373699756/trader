@@ -158,7 +158,6 @@ class RecommendationOutcome:
     mae_atr: float | None = None
     severe_drawdown: bool | None = None
     quality_reason: str = ""
-    schema_identity: str = "recommendation_outcome_qfq_tradability_cost20bp"
 
     def __post_init__(self) -> None:
         if self.horizon not in OutcomeHorizons(self.strategy):

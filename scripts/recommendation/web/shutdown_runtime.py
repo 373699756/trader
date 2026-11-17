@@ -249,7 +249,7 @@ def ObserveOwnedRuntimeShutdown(options: OwnedShutdownOptions) -> ToolOutcome:
             survivors = tuple(member.native_id for member in ReadLinuxProcessGroupMembers(process.pid))
         except (OSError, RuntimeError, ValueError) as exc:
             outcome = ToolOutcome(1, {
-                "schema_version": "shutdown-observation", "status": "failed", "summary": {},
+                 "status": "failed", "summary": {},
                 "findings": [str(exc) if str(exc).startswith("owned_runtime_") else type(exc).__name__],
             })
         finally:
@@ -290,6 +290,6 @@ def ObserveOwnedRuntimeShutdown(options: OwnedShutdownOptions) -> ToolOutcome:
     if not freeze_complete:
         findings.append("owned_runtime_freeze_records_incomplete")
     return ToolOutcome(0 if accepted else 1, {
-        "schema_version": "shutdown-observation", "status": "passed" if accepted else "failed",
+         "status": "passed" if accepted else "failed",
         "summary": summary, "findings": findings,
     })

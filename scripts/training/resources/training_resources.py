@@ -99,7 +99,6 @@ def ProbeTrainingResources(profiles: tuple[str, ...]) -> dict[str, object]:
     passed = all(item.native_limits_valid and item.calculation_valid for item in results)
     passed = passed and wait_cancelled and released and restored
     return {
-        "schema_version": "training-resources-diagnostic",
         "status": "passed" if passed else "failed",
         "summary": {
             "logical_cpus": os.cpu_count(),
@@ -140,7 +139,6 @@ def Main() -> int:
         report = ProbeTrainingResources(tuple(args.profiles.split(",")))
     except (OSError, RuntimeError, ValueError) as exc:
         report = {
-            "schema_version": "training-resources-diagnostic",
             "status": "failed",
             "summary": {"failure": type(exc).__name__},
         }

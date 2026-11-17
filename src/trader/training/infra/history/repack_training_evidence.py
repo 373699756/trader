@@ -35,11 +35,10 @@ def VerifyHistoryRepackTraining(
 
 
 def ReadTomorrowTrainingMemoryEvidence(path: Path) -> TomorrowTrainingMemoryEvidence:
-    payload = _read_verified_json(path, "tomorrow_training_memory_gate")
+    payload = _read_verified_json(path)
     _require_fields(
         payload,
         {
-            "schema_version",
             "status",
             "training_status",
             "repeat_training_status",
@@ -80,13 +79,13 @@ def ReadTomorrowTrainingMemoryEvidence(path: Path) -> TomorrowTrainingMemoryEvid
         raise TrainingRepackEvidenceError("Tomorrow training memory evidence is invalid") from exc
 
 
-def _read_verified_json(path: Path, schema: str) -> dict[str, object]:
+def _read_verified_json(path: Path) -> dict[str, object]:
     try:
         payload = _object(json.loads(path.read_text(encoding="utf-8")))
         declared = payload.get("content_hash")
         body = {key: value for key, value in payload.items() if key != "content_hash"}
-        if payload.get("schema_version") != schema or not isinstance(declared, str):
-            raise ValueError("schema or hash is invalid")
+        if not isinstance(declared, str):
+            raise ValueError("content hash is invalid")
         if ContentHash(body) != declared:
             raise ValueError("content hash is invalid")
         return payload

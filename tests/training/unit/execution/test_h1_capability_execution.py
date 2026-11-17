@@ -64,7 +64,7 @@ def test_script_seals_sanitized_insufficient_terminal_chain_outside_project(tmp_
 
     payload = json.loads(capsys.readouterr().out)
     assert result == 1
-    assert payload["schema_version"] == "h1_capability_execution"
+    assert "schema_version" not in payload
     assert payload["status"] == "historical_data_insufficient"
     assert payload["oof_generated"] is False
     assert payload["model_generated"] is False
@@ -90,7 +90,7 @@ def test_script_reports_partial_probe_failure_without_discarding_success(tmp_pat
 
     payload = json.loads(capsys.readouterr().out)
     assert result == 1
-    assert payload["schema_version"] == "h1_capability_execution"
+    assert "schema_version" not in payload
     assert payload["status"] == "historical_data_insufficient"
     assert payload["probe_failures"] == ["eastmoney_historical_minute_probe_failed"]
     assert (

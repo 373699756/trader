@@ -80,12 +80,12 @@ def test_every_source_mode_validates_selected_runtime_and_reports_its_identity(t
 
     def collect(args, *, project_root):
         selected_roots.append(project_root)
-        return {"schema_version": "research-source-comparison", "status": "passed"}
+        return { "status": "passed"}
 
     monkeypatch.setattr(worker, "Collect", collect)
     monkeypatch.setattr(worker, "OpenExternalHttp", lambda: nullcontext(object()))
-    monkeypatch.setattr(worker, "AuditCompanyStructuredSources", lambda *args, **kwargs: {"schema_version": "company-structured-field-sampling"})
-    monkeypatch.setattr(worker, "AuditCompanyAnnualIncome", lambda *args, **kwargs: {"schema_version": "company-annual-income-source"})
+    monkeypatch.setattr(worker, "AuditCompanyStructuredSources", lambda *args, **kwargs: {})
+    monkeypatch.setattr(worker, "AuditCompanyAnnualIncome", lambda *args, **kwargs: {})
     monkeypatch.setattr(worker, "AuditCompanyFinancialRevision", lambda *args, **kwargs: {"status": "degraded", "financial_revision_probe": {"read_only": True}})
     arguments = ["research-source-compare", "--config", str(configuration)]
     arguments += ["--field-sources-only"] if mode == "fields" else ["--codes", "600001", "--annual-income-period", "2025-12-31"] if mode == "annual" else []

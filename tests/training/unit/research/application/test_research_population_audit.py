@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import base64
+import json
+from pathlib import Path
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from trader.training.application.research_audit import (
-    LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
+    HistoricalResearchAudit,
+    HasCompleteResearchEvidence,
     PointInTimePopulationHash,
     ResearchFreezeSetAudit,
     ResearchPopulationAudit,
@@ -97,20 +101,30 @@ def test_audit_rejects_population_evidence_after_input_time() -> None:
         )
 
 
-def test_legacy_v1_audit_remains_read_only_constructible() -> None:
-    freeze_set = ResearchFreezeSetAudit("local-freeze", ())
+def test_saved_incomplete_audit_keeps_original_hash_and_missing_evidence() -> None:
+    from trader.recommendation.infra.persistence.freeze_trace_index import _observation_from_bytes
 
-    audit = CommittedResearchAudit(
-        freeze_version="local-freeze",
-        freeze_hash="freeze-hash",
-        input_version="input-initial",
-        hard_filter_aggregates=(("main:st_stock", 1),),
-        passed_candidates=(),
-        production_local=freeze_set,
-        research_shadow=freeze_set,
-        shadow_mode="control_copy",
-        schema_version=LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
-    )
+    path = Path(__file__).parents[4] / "fixtures/recommendation/history_553e9cc0.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    payload = base64.b64decode(saved["legacy_event_base64"])
+    observation = _observation_from_bytes(payload, saved["legacy_event_hash"])
+    audit = observation.research_audit
 
+    assert isinstance(audit, HistoricalResearchAudit)
+    assert not isinstance(audit, CommittedResearchAudit)
     assert audit.input_observed_at is None
-    assert audit.point_in_time_population == ()
+    assert audit.point_in_time_population is None
+    assert audit.point_in_time_population_hash is None
+    assert not HasCompleteResearchEvidence(audit)
+    assert observation.event_bytes == payload
+    assert observation.event_hash == saved["legacy_event_hash"]
+
+
+def test_current_audit_rejects_missing_point_in_time_evidence() -> None:
+    freeze_set = ResearchFreezeSetAudit("local-freeze", ())
+    with pytest.raises(ValueError, match="input_observed_at"):
+        CommittedResearchAudit(
+            freeze_version="local-freeze", freeze_hash="freeze-hash", input_version="input-initial",
+            hard_filter_aggregates=(), passed_candidates=(), production_local=freeze_set,
+            research_shadow=freeze_set, shadow_mode="control_copy",
+        )

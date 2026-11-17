@@ -93,10 +93,6 @@ class CompanySyncRuntime:
                 if str(exc) != "sqlite_schema_unsupported":
                     raise
                 raise CompanyDatabaseIncompatibleError(store) from exc
-            except ValueError as exc:
-                if str(exc) != "company_material_contract_mismatch":
-                    raise
-                raise CompanyDatabaseIncompatibleError(store) from exc
         try:
             self.facts.verify_publication()
         except SqlitePublicationError:

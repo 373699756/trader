@@ -118,7 +118,6 @@ class TomorrowHistoricalModelSnapshot:
     lightgbm_best_iteration: int
     training_rows: int
     internal_validation_rows: int
-    schema_version: str = "tomorrow_historical_model"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -134,7 +133,6 @@ class TomorrowHistoricalModelSnapshot:
             or self.lightgbm_best_iteration < 1
             or self.training_rows < 1
             or not 1 <= self.internal_validation_rows < self.training_rows
-            or self.schema_version != "tomorrow_historical_model"
         ):
             raise ValueError("Tomorrow historical model artifact identity is invalid")
         numeric = (
@@ -242,9 +240,7 @@ class TomorrowHistoricalSpec:
     excluded_evidence_identities: tuple[str, ...] = _EXCLUDED_EVIDENCE_IDENTITIES
     forward_research_identity: None = None
     forward_trade_dates: tuple[date, ...] = ()
-    report_schema_version: str = "score_tomorrow_historical_report"
     production_authority: bool = False
-    schema_version: str = "score_tomorrow_historical_spec"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -293,10 +289,9 @@ class TomorrowHistoricalSpec:
             or self.maximum_board_fraction != 0.60
             or self.historical_industry_constraint != "not_reconstructed_forward_required"
             or self.excluded_evidence_identities != _EXCLUDED_EVIDENCE_IDENTITIES
-            or self.report_schema_version != "score_tomorrow_historical_report"
         ):
             raise ValueError("Tomorrow historical gates are frozen")
-        if self.production_authority or self.schema_version != "score_tomorrow_historical_spec":
+        if self.production_authority:
             raise ValueError("Tomorrow historical spec cannot authorize production")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 

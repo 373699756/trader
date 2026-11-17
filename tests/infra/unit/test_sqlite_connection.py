@@ -77,18 +77,61 @@ def test_concurrent_schema_initializers_share_one_valid_schema(tmp_path):
         assert list(pool.map(lambda _: initialize(), range(8))) == [0] * 8
 
 
-@pytest.mark.parametrize("number", (0, 3, 4, 999))
-def test_schema_checks_structure_without_using_sqlite_user_metadata(tmp_path, number):
+def test_schema_accepts_current_structure_without_setting_a_format_number(tmp_path):
     path = tmp_path / "facts.sqlite3"
     with SqliteSession(path) as connection:
         connection.run("CREATE TABLE facts(value INTEGER NOT NULL)")
-        connection.run(f"PRAGMA user_version={number}")
     before = path.read_bytes()
     with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
         EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value INTEGER NOT NULL)",)))
         with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
             EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value TEXT NOT NULL)",)))
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("number", (3, 4, 999))
+@pytest.mark.parametrize("populated", (False, True))
+def test_schema_rejects_numbered_database_without_ignoring_or_rewriting_metadata(tmp_path, number, populated):
+    path = tmp_path / "numbered.sqlite3"
+    with SqliteSession(path) as connection:
+        if populated:
+            connection.run("CREATE TABLE facts(value INTEGER NOT NULL)")
+        connection.run(f"PRAGMA user_version={number}")
+    before = path.read_bytes()
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
+        with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+            EnsureSqliteSchema(connection, SqliteSchema(("CREATE TABLE facts(value INTEGER NOT NULL)",)), allow_create=True)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("extra", ("CREATE TABLE schema_contract(schema_id TEXT)",
+                                  "CREATE INDEX old_schema_index ON facts(value)",
+                                  "CREATE VIEW old_schema_view AS SELECT value FROM facts"))
+def test_exact_schema_rejects_extra_objects_and_preserves_partial_schema_checks(tmp_path, extra):
+    path = tmp_path / "schema.sqlite3"
+    schema = SqliteSchema(("CREATE TABLE facts(value INTEGER NOT NULL)",))
+    with SqliteSession(path) as connection:
+        EnsureSqliteSchema(connection, schema, allow_create=True, exact=True)
+        connection.run(extra)
+    before = path.read_bytes()
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
+        EnsureSqliteSchema(connection, schema)
+        with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+            EnsureSqliteSchema(connection, schema, exact=True)
+    assert path.read_bytes() == before
+
+
+def test_exact_initialization_rolls_back_an_unexpected_callback_table(tmp_path):
+    schema = SqliteSchema(("CREATE TABLE facts(id INTEGER PRIMARY KEY AUTOINCREMENT,value INTEGER)",))
+    with SqliteSession(tmp_path / "schema.sqlite3") as connection:
+        with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+            EnsureSqliteSchema(connection, schema, allow_create=True, exact=True,
+                               initialize=lambda current: current.run("CREATE TABLE unexpected(value INTEGER)"))
+        assert not connection.run("SELECT name FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'").fetchall()
+        EnsureSqliteSchema(connection, schema, allow_create=True, exact=True)
+        connection.run("INSERT INTO facts(value) VALUES(1)")
+        connection.run("ANALYZE")
+        EnsureSqliteSchema(connection, schema, exact=True)
 
 
 def test_schema_rejects_obsolete_columns_without_converting_them(tmp_path):

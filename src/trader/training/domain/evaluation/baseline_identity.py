@@ -47,7 +47,6 @@ class BaselineIdentityAudit:
 
     claims: tuple[BaselineIdentityClaim, ...]
     live_identity_available: bool = False
-    schema_version: str = "score_current_baseline_consistency_audit"
     production_authority: bool = False
     static_status: Literal["baseline_identity_consistent", "baseline_identity_inconsistent"] = field(init=False)
     status: BaselineIdentityStatus = field(init=False)
@@ -56,7 +55,7 @@ class BaselineIdentityAudit:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.schema_version != "score_current_baseline_consistency_audit" or self.production_authority:
+        if self.production_authority:
             raise ValueError("baseline identity audit contract is fixed and read-only")
         claims = tuple(sorted(self.claims, key=lambda claim: claim.name))
         if not claims or len({claim.name for claim in claims}) != len(claims):
@@ -96,7 +95,6 @@ class BaselineIdentityAudit:
                 for claim in claims
             ],
             "live_identity_available": self.live_identity_available,
-            "schema_version": self.schema_version,
             "production_authority": self.production_authority,
             "static_status": static_status,
             "status": status,

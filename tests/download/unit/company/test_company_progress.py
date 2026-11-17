@@ -53,7 +53,7 @@ def test_sync_failures_explain_recovery_without_polluting_json(monkeypatch, caps
     assert Main(["--config", str(config), "sync", "company"]) == 1
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    assert payload["schema_version"] == "data_sync" and payload["status"] == "failed"
+    assert payload["status"] == "failed"
     assert expected in captured.err and expected not in captured.out
 
 

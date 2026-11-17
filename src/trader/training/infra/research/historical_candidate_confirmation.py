@@ -14,7 +14,7 @@ from trader.training.application.historical_candidate_confirmation import (
 )
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.infra.research.identity_codec import ResearchJson
+from trader.infra.serialization.canonical_codec import CanonicalText
 
 _STRATEGIES: tuple[ResearchStrategy, ...] = ("tomorrow", "d25")
 
@@ -40,7 +40,7 @@ class HistoricalConfirmationReportPublication:
             return existing
         payload = _encode(index)
         payload["content_hash"] = index.content_hash
-        if PublishImmutable(self._path, ResearchJson(payload)):
+        if PublishImmutable(self._path, CanonicalText(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != index.content_hash:
@@ -79,7 +79,6 @@ class HistoricalConfirmationReportIndex:
     status: str = "historical_data_insufficient"
     terminal_holdout_status: str = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_terminal_index"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -98,7 +97,7 @@ class HistoricalConfirmationReportIndex:
             or self.terminal_holdout_status != "terminal_holdout_not_opened"
         ):
             raise ValueError("Historical confirmation terminal index status is invalid")
-        if self.production_authority or self.schema_version != "historical_terminal_index":
+        if self.production_authority:
             raise ValueError("Historical confirmation terminal index cannot authorize production")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
         object.__setattr__(self, "strategy_terminal_hashes", strategies)
@@ -127,7 +126,6 @@ def _encode(index: HistoricalConfirmationReportIndex) -> dict[str, object]:
         "status": index.status,
         "terminal_holdout_status": index.terminal_holdout_status,
         "production_authority": index.production_authority,
-        "schema_version": index.schema_version,
     }
 
 
@@ -142,7 +140,6 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationReportIndex:
         "status",
         "terminal_holdout_status",
         "production_authority",
-        "schema_version",
     }
     if set(raw) != expected:
         raise ValueError("Historical confirmation terminal artifact fields are invalid")
@@ -156,7 +153,6 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationReportIndex:
         status=_string(raw["status"]),
         terminal_holdout_status=_string(raw["terminal_holdout_status"]),
         production_authority=_boolean(raw["production_authority"]),
-        schema_version=_string(raw["schema_version"]),
     )
 
 

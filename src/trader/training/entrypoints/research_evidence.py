@@ -162,7 +162,6 @@ def RunResearchEvidence(args: argparse.Namespace, *, project_root: Path, config_
         from trader.training.application.terminal_holdout_execution import ResearchCancelledError
         schema, status = COMMAND_SCHEMAS[args.command]
         payload = {
-            "schema_version": schema,
             "status": "cancelled" if isinstance(exc, ResearchCancelledError) else status,
             "error_code": _error_code(exc, args.command),
             "production_authority": False,

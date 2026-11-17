@@ -24,7 +24,7 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SSE_URL = "https://query.sse.com.cn/sseQuery/commonQuery.do"
 _SZSE_URL = "https://www.szse.cn/api/report/ShowReport"
 _SOURCE = "exchange_security_master"
-_CONTRACT_VERSION = "exchange-security-master"
+_REVISION_PREFIX = "exchange-security-master"
 _SUPPORTED_BOARDS = frozenset({"main", "chinext", "star"})
 _SUPPORTED_EXCHANGES = frozenset({"SSE", "SZSE"})
 
@@ -73,7 +73,7 @@ class ExchangeSecurityMasterClient:
             raise ValueError("exchange security master timeout must be positive")
         if minimum_rows <= 0:
             raise ValueError("exchange security master minimum rows must be positive")
-        self._revisions = ValueRevision[tuple[observations.ExchangeSecurityMasterListing, ...]](_CONTRACT_VERSION)
+        self._revisions = ValueRevision[tuple[observations.ExchangeSecurityMasterListing, ...]](_REVISION_PREFIX)
         self._timeout_seconds = float(timeout_seconds)
         self._minimum_rows = minimum_rows
         self._sse_fetcher = options["sse_fetcher"]

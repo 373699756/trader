@@ -282,7 +282,6 @@ def test_local_research_insufficiency_is_degraded_but_specialist_stays_strict():
         0,
         0.0,
         {
-            "schema_version": "research_readiness",
             "production_authority": False,
             "history_archive": {
                 "state": "unavailable",
@@ -733,7 +732,6 @@ def test_research_source_compare_projects_bounded_component_errors() -> None:
                 0,
                 4.0,
                 {
-                    "schema_version": "research-source-comparison",
                     "status": "degraded",
                     "required_fields": ["financial", "pledge"],
                     "sources": [
@@ -796,7 +794,6 @@ def test_research_status_projects_target_selection_separately_from_previous_rese
                 0,
                 4.0,
                 {
-                    "schema_version": "research_readiness",
                     "history_archive": {
                         "state": "invalid",
                         "snapshot_hash": "a" * 64,
@@ -874,7 +871,7 @@ def test_research_status_projection_rejects_unsupported_schema() -> None:
                 "research_readiness",
                 0,
                 1.0,
-                {"schema_version": "research_readiness_unsupported", "research_state": "historical_collecting"},
+                { "research_state": "historical_collecting"},
                 None,
             ),
         ),
@@ -902,7 +899,6 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
             0,
             12.5,
             {
-                "schema_version": "web_recommendation_health",
                 "status": "passed",
                 "summary": {"error_count": 0, "warning_count": 0},
                 "findings": [],
@@ -964,7 +960,6 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
             0,
             20.0,
             {
-                "schema_version": "history-source-sampling",
                 "status": "degraded",
                 "summary": {"usable_observations": 2, "error_observations": 1},
                 "observations": [{"code": "600519", "error": "secret vendor payload"}],
@@ -976,7 +971,6 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
             0,
             4.0,
             {
-                "schema_version": "tencent-quote-sampling",
                 "latency": {"p95_ms": 4.0},
                 "source_changed": True,
                 "samples": [{"quotes": [{"code": "600519", "price": 999.0}]}],
@@ -1037,7 +1031,6 @@ def test_daily_history_capability_projection_keeps_only_the_audit_whitelist() ->
                 0,
                 8.0,
                 {
-                    "schema_version": "history-daily-capability-audit",
                     "status": "degraded",
                     "freeze": {"status": "blocked", "efficient_daily_source": None},
                     "baostock_lower_bound": {"minimum_raw_qfq_calls": 10906},
@@ -1086,7 +1079,7 @@ def test_runner_continues_after_a_failed_check_and_preserves_check_order() -> No
             command.name,
             0,
             1.0,
-            {"schema_version": f"{command.name}-diagnostic", "status": "passed"},
+            { "status": "passed"},
             None,
         )
 

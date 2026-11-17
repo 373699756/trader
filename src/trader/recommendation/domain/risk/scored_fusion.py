@@ -42,7 +42,6 @@ from trader.recommendation.domain.risk.fusion import (
     FusionRequest,
 )
 
-FREEZE_EPOCH_SCHEMA_VERSION = "freeze_epoch"
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
 _CanonicalValue: TypeAlias = str | int | float | bool | None | list["_CanonicalValue"] | dict[str, "_CanonicalValue"]
@@ -160,7 +159,6 @@ class FreezeEpoch:
     observed_at: datetime
     config_version: str
     strategy_version: str
-    fusion_version: str
     market_epoch_version: str
     candidate_epoch_version: str | None
     research_epoch_version: str | None
@@ -175,7 +173,6 @@ class FreezeEpoch:
     population_versions: Mapping[str, str]
     selection_limits: FreezeSelectionLimits
     degraded_reasons: tuple[str, ...] = ()
-    schema_version: str = FREEZE_EPOCH_SCHEMA_VERSION
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -208,7 +205,6 @@ class ScoredFreezeRequest:
     sequence: int
     config_version: str
     strategy_version: str
-    fusion_version: str
     market_epoch_version: str
     candidate_epoch_version: str | None
     research_epoch_version: str | None
@@ -283,12 +279,10 @@ def _validate_freeze_coordinates(epoch: FreezeEpoch) -> None:
     for value, name in (
         (epoch.config_version, "config_version"),
         (epoch.strategy_version, "strategy_version"),
-        (epoch.fusion_version, "fusion_version"),
+
         (epoch.market_epoch_version, "market_epoch_version"),
     ):
         _require_text(value, name)
-    if epoch.schema_version != FREEZE_EPOCH_SCHEMA_VERSION:
-        raise ValueError(f"freeze schema_version must be {FREEZE_EPOCH_SCHEMA_VERSION}")
     if epoch.projection_stage == "local" and epoch.parent_freeze_version is not None:
         raise ValueError("local freeze cannot reference a parent freeze")
     if epoch.projection_stage == "hybrid" and not epoch.parent_freeze_version:
@@ -367,13 +361,13 @@ def _freeze_epoch_hash(
 ) -> str:
     return _content_hash(
         {
-            "schema_version": epoch.schema_version,
+
             "trade_date": epoch.trade_date,
             "sequence": epoch.sequence,
             "observed_at": epoch.observed_at,
             "config_version": epoch.config_version,
             "strategy_version": epoch.strategy_version,
-            "fusion_version": epoch.fusion_version,
+
             "market_epoch_version": epoch.market_epoch_version,
             "candidate_epoch_version": epoch.candidate_epoch_version,
             "research_epoch_version": epoch.research_epoch_version,
@@ -443,7 +437,7 @@ def BuildScoredFreezeEpoch(
         observed_at=request.observed_at,
         config_version=request.config_version,
         strategy_version=request.strategy_version,
-        fusion_version=request.fusion_version,
+
         market_epoch_version=request.market_epoch_version,
         candidate_epoch_version=request.candidate_epoch_version,
         research_epoch_version=request.research_epoch_version,
@@ -802,7 +796,7 @@ def _require_text(value: str, name: str) -> None:
 
 
 __all__ = [
-    "FREEZE_EPOCH_SCHEMA_VERSION",
+
     "FreezeEpoch",
     "FreezeSelectionLimits",
     "ScoredFreezeEntry",

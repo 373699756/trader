@@ -15,7 +15,6 @@ from scripts.download.company import live_sync
 
 def _measurement(code: int | None = 0, *, status: str = "passed", cancelled: bool = False) -> dict[str, object]:
     return {
-        "schema_version": "company-live-sync-measurement",
         "status": status,
         "cancelled": cancelled,
         "cli_exit_code": code,
@@ -176,10 +175,10 @@ def test_public_route_keeps_one_json_document_and_the_measurement_evidence(tmp_p
     code = Main(["--business", "download", "--module", "company", "--action", "live-sync", "--", *arguments])
     captured = capsys.readouterr()
     report = json.loads(captured.out)
-    assert code == 0 and report["schema_version"] == "trader-tools"
+    assert code == 0
     assert report["selection"] == {"business": "download", "module": "company", "action": "live-sync"}
     measurement = report["checks"][0]["summary"]
-    assert measurement["schema_version"] == "company-live-sync-measurement"
+    assert "schema_version" not in measurement
     assert measurement["cli_exit_code"] == 0 and measurement["field_correctness_verified"] is False
     assert captured.err == "product progress\n"
 

@@ -181,7 +181,6 @@ def _compare(baseline: Path, runtime_config: Path = TOOL_ROOT / "config/runtime.
         for key in runs["baseline"][0]
     ]
     return {
-        "schema_version": "download-performance",
         "status": "passed",
         "summary": {
             "fixture": True,
@@ -216,7 +215,6 @@ def Main() -> int:
     summary = {key: round(median(float(result[key]) for result in rounds), 6) for key in rounds[0]}
     emit_report(
         {
-            "schema_version": "download-performance",
             "status": "passed",
             "summary": {"fixture": True, "rounds": args.rounds, "medians": summary,
                         "company_measurement_scope": "synthetic_typed_inputs_and_formal_writer_only; no source, PDF or extraction"},

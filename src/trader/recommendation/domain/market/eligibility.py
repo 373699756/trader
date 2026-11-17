@@ -169,7 +169,6 @@ class IssuerEligibilityReasonCount:
 
 @dataclass(frozen=True)
 class IssuerEligibilitySnapshot:
-    schema_version: str
     fact_count: int
     excluded_count: int
     reason_counts: tuple[IssuerEligibilityReasonCount, ...]

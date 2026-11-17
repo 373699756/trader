@@ -124,13 +124,13 @@ def test_all_public_head_decoders_reject_retired_top_level_schemas(tmp_path, pro
     metadata = _hash({"schema_version": f"{profile.profile_id}_{schema}"})
     for decoder, documents in ((DecodeHeadBundle, (model, metadata)),
                                (DecodeHeadPublicationIdentity, (metadata,))):
-        with pytest.raises(ValueError, match="requires current recent-refit publication"):
+        with pytest.raises(ValueError, match="metadata fields"):
             decoder(*documents, contract.strategy, profile)
     directory = tmp_path / contract.strategy.value
     directory.mkdir()
     (directory / "model.json").write_text(json.dumps(model), encoding="utf-8")
     (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    with pytest.raises(ValueError, match="requires current recent-refit publication"):
+    with pytest.raises(ValueError, match="metadata fields"):
         InspectPublishedHeadBundle(directory, contract.strategy, profile)
 
 
@@ -149,14 +149,14 @@ def test_installed_old_pair_cannot_load_observe_recover_or_reuse(tmp_path, legac
     with pytest.raises(ScoringModelsUnavailableError) as caught:
         LoadScoringProfile("v3", training_root=tmp_path)
     assert caught.value.reason == "contract_conflict"
-    with pytest.raises(ValueError, match="requires current recent-refit publication"):
+    with pytest.raises(ValueError, match="metadata fields"):
         ReadPublishedProfileIdentities(root, V3_TRAINING_PROFILE, cancel_requested=lambda: False)
-    with pytest.raises(ValueError, match="requires current recent-refit publication"):
+    with pytest.raises(ValueError, match="metadata fields"):
         InspectPublishedProfileBundles(root, V3_TRAINING_PROFILE)
     # Reuse shares this exact reader; an interrupted old generation must also stay put.
     previous = root.with_name(".v3.previous." + "a" * 32)
     root.rename(previous)
-    with pytest.raises(ValueError, match="requires current recent-refit publication"):
+    with pytest.raises(ValueError, match="metadata fields"):
         RecoverProfileBundles(root, V3_TRAINING_PROFILE)
     assert not root.exists()
     assert {path.relative_to(previous): path.read_bytes() for path in previous.rglob("*.json")} == before
@@ -180,7 +180,7 @@ def test_publisher_rejects_old_staged_models_before_any_directory_write(tmp_path
         if recent:
             assert DecodeHeadBundle(model, metadata, contract.strategy, V3_TRAINING_PROFILE).diagnostic_plan is not None
         else:
-            with pytest.raises(ValueError, match="requires current recent-refit publication"):
+            with pytest.raises(ValueError, match="metadata fields"):
                 DecodeHeadBundle(model, metadata, contract.strategy, V3_TRAINING_PROFILE)
         path = tmp_path / "staged" / contract.strategy.value
         path.mkdir(parents=True)
@@ -190,7 +190,7 @@ def test_publisher_rejects_old_staged_models_before_any_directory_write(tmp_path
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     directories = {path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_dir()}
 
-    with pytest.raises(ValueError, match="requires current recent-refit publication"):
+    with pytest.raises(ValueError, match="metadata fields"):
         PublishProfileBundles(root, V3_TRAINING_PROFILE, tuple(staged))
 
     assert before == {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
@@ -217,7 +217,7 @@ def test_publisher_rechecks_recent_qualification_after_staging_copy(tmp_path, mo
         return copyfile(source, destination)
 
     monkeypatch.setattr(profile_publication.shutil, "copyfile", downgrade_before_copy)
-    with pytest.raises(ValueError, match="requires current recent-refit publication"):
+    with pytest.raises(ValueError, match="metadata fields"):
         PublishProfileBundles(root, V3_TRAINING_PROFILE, staged)
     assert before == {path.relative_to(root): path.read_bytes() for path in root.rglob("*.json")}
     assert not any(path.is_dir() for path in tmp_path.glob(".v3.publication.*"))

@@ -378,7 +378,7 @@ def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, ex
         if task.incompatible_company_store is not None:
             assert projected.pop("incompatible_company_store") == task.incompatible_company_store.value
     assert payload == {
-        "schema_version": "data_sync", "status": status, "failure": result.failure,
+         "status": status, "failure": result.failure,
         "tasks": [{"task": task.task, "status": task.status, "reason": task.reason} for task in result.tasks],
     }
 

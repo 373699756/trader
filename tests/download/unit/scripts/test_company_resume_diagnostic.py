@@ -355,7 +355,6 @@ def test_recovery_report_keeps_counts_and_omits_unrequested_payload():
         0,
         25.0,
         {
-            "schema_version": "company-resume",
             "status": "passed",
             "summary": {
                 "selected_slices": 6,

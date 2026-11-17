@@ -34,7 +34,7 @@ class _Clock:
 
 
 class _FreezeRecords:
-    def load(self, strategy: Strategy, trade_date: date):
+    def load_history(self, strategy: Strategy, trade_date: date):
         return None
 
     def list_dates(
@@ -179,7 +179,6 @@ def _app():
                 "history_tail_codes": ["must-not-leak"],
                 "history_recovery_codes": ["must-not-leak"],
                 "issuer_eligibility": {
-                    "schema_version": "issuer_eligibility_registry",
                     "fact_count": 4,
                     "excluded_count": 3,
                     "reason_counts": {"historical_st": 3, "must-not-leak": "bad"},
@@ -345,7 +344,6 @@ def _freeze() -> ScoredFreeze:
         ),
         "config:1",
         "strategy:1",
-        "fusion:1",
         (
             FreezeItem(
                 "600000",

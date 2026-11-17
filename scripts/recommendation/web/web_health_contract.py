@@ -168,7 +168,6 @@ class CoverageSnapshot:
 
 @dataclass(frozen=True)
 class ProjectionSnapshot:
-    schema_version: str | None
     strategy: str | None
     status: str | None
     trade_date: str | None
@@ -325,8 +324,6 @@ class RuntimeStageTiming:
 
 @dataclass(frozen=True)
 class StatusSnapshot:
-    schema_version: str | None
-    release_freeze_schema: str | None
     runtime_status: str | None
     runtime_started: bool
     runtime_version: str | None
@@ -396,7 +393,6 @@ def parse_web_sample(
 
 
 def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
-    release = _mapping(payload.get("release"))
     market = _mapping(payload.get("market_data"))
     events = _mapping(payload.get("events"))
     scheduler = _mapping(payload.get("scheduler"))
@@ -425,8 +421,6 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
         deepseek_used=_nonnegative_int(budget.get("used")),
         deepseek_remaining=_nonnegative_int(budget.get("remaining")),
         deepseek_error=_text(budget.get("error")),
-        schema_version=_text(payload.get("schema_version")),
-        release_freeze_schema=_text(release.get("freeze_view_schema")),
         runtime_status=_text(payload.get("status")),
         runtime_started=payload.get("runtime_started") is True,
         runtime_version=_text(payload.get("runtime_version")),
@@ -521,7 +515,6 @@ def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> 
     top_score_count, highest_top_score = _top_score_summary(payload.get("top_scores"))
     pipeline_payload = _mapping_or_none(payload.get("pipeline"))
     return ProjectionSnapshot(
-        schema_version=_text(payload.get("schema_version")),
         strategy=_text(payload.get("strategy")),
         status=_text(payload.get("status")),
         trade_date=_text(payload.get("trade_date")),

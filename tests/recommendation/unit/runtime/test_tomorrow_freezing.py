@@ -188,7 +188,7 @@ def test_weight_configuration_hash_participates_in_freeze_runtime_identity(tmp_p
     baseline_identity = FreezeRuntimeIdentity(
         current.config_version,
         baseline.strategy_version,
-        current.fusion_version,
+
     )
     changed_identity = replace(baseline_identity, strategy_version=changed.strategy_version)
 

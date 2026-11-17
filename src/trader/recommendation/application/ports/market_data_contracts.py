@@ -8,8 +8,6 @@ from trader.recommendation.domain.market.models import FeatureSnapshot
 
 LOGICAL_CACHE_LIMIT_BYTES = 512 * 1024 * 1024
 PROCESS_PEAK_RSS_LIMIT_BYTES = 2048 * 1024 * 1024
-MARKET_CHANGE_SET_VERSION = "market_change_set"
-FEATURE_ENVELOPE_VERSION = "feature_snapshot_envelope"
 
 
 class DataPlaneContractError(ValueError):
@@ -18,7 +16,6 @@ class DataPlaneContractError(ValueError):
 
 @dataclass(frozen=True)
 class MarketChangeSet:
-    schema_version: str
     merge_epoch: str
     previous_merge_epoch: str | None
     inserted_codes: tuple[str, ...] = ()
@@ -32,8 +29,6 @@ class MarketChangeSet:
     full_invalidation_reason: str | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version != MARKET_CHANGE_SET_VERSION:
-            raise DataPlaneContractError("market change set schema version is invalid")
         _require_text(self.merge_epoch, "merge_epoch")
         object.__setattr__(self, "inserted_codes", _code_sequence(self.inserted_codes, "inserted_codes"))
         object.__setattr__(self, "updated_codes", _code_sequence(self.updated_codes, "updated_codes"))
@@ -55,7 +50,6 @@ class MarketChangeSet:
 
 @dataclass(frozen=True)
 class FeatureSnapshotEnvelope:
-    schema_version: str
     snapshot_version: str
     feature_snapshot_version: str
     trade_date: str
@@ -64,13 +58,10 @@ class FeatureSnapshotEnvelope:
     reference_epoch: str
     data_version: str
     config_version: str
-    feature_schema: str
     feature_snapshots: tuple[FeatureSnapshot, ...]
     market_change_set: MarketChangeSet
 
     def __post_init__(self) -> None:
-        if self.schema_version != FEATURE_ENVELOPE_VERSION:
-            raise DataPlaneContractError("feature envelope schema version is invalid")
         for name, value in (
             ("snapshot_version", self.snapshot_version),
             ("feature_snapshot_version", self.feature_snapshot_version),
@@ -79,7 +70,7 @@ class FeatureSnapshotEnvelope:
             ("merge_epoch", self.merge_epoch),
             ("data_version", self.data_version),
             ("config_version", self.config_version),
-            ("feature_schema", self.feature_schema),
+
         ):
             _require_text(value, name)
         if self.merge_epoch != self.market_change_set.merge_epoch:
@@ -103,9 +94,9 @@ def _require_text(value: str, name: str) -> None:
 
 
 __all__ = [
-    "FEATURE_ENVELOPE_VERSION",
+
     "LOGICAL_CACHE_LIMIT_BYTES",
-    "MARKET_CHANGE_SET_VERSION",
+
     "PROCESS_PEAK_RSS_LIMIT_BYTES",
     "DataPlaneContractError",
     "FeatureSnapshotEnvelope",

@@ -43,7 +43,6 @@ class HistoricalSplitMetrics:
 
 @dataclass(frozen=True)
 class HistoricalBarBacktestReport:
-    schema_version: str
     research_identity: str
     research_spec_hash: str
     status: Literal["screened", "insufficient_coverage"]
@@ -94,7 +93,6 @@ class HistoricalBarBacktestService:
             and validation.trade_dates >= self._minimum_split_days
         )
         return HistoricalBarBacktestReport(
-            schema_version="score_h0_bar_screening",
             research_identity=spec.research_identity,
             research_spec_hash=spec.content_hash,
             status="screened" if ready else "insufficient_coverage",

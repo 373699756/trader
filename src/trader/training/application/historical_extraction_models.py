@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import json
 import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-from types import MappingProxyType
 from typing import Literal, TypeVar
 
 from trader.training.application.json_values import FreezeJsonObject, JsonObject
@@ -23,6 +20,7 @@ from trader.training.domain.evaluation.historical import (
     ResearchDataLineage,
     ResearchSelectionPool,
 )
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC, GetScoreResearchSpec
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -267,7 +265,7 @@ class HistoricalCandidateProof:
     constrained_frontier: float
     status: HistoricalProofStatus
     reason: Literal["active_set_loaded", "upper_bound_below_frontier", "selection_constraint"]
-    rule_version: str
+    selection_policy_hash: str
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -285,13 +283,13 @@ class HistoricalCandidateProof:
         _validate_finite((self.upper_bound, self.constrained_frontier))
         if not 0.0 <= self.upper_bound <= 100.0 or not 0.0 <= self.constrained_frontier <= 100.0:
             raise ValueError("historical candidate proof scores must be in [0, 100]")
-        if not self.rule_version:
-            raise ValueError("historical candidate proof rule version is required")
+        if _SHA256.fullmatch(self.selection_policy_hash) is None:
+            raise ValueError("historical candidate proof selection policy hash is invalid")
         if self.reason == "upper_bound_below_frontier" and not self.upper_bound < self.constrained_frontier:
             raise ValueError("upper-bound exclusion proof must be strictly below its frontier")
         if self.reason == "selection_constraint" and self.upper_bound < self.constrained_frontier:
             raise ValueError("selection-constraint proof requires an upper bound at or above its frontier")
-        object.__setattr__(self, "content_hash", _canonical_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -338,7 +336,7 @@ class HistoricalExtractedDay:
             raise ValueError("historical proofs must cover every eligible candidate pool")
         object.__setattr__(self, "evaluated", evaluated)
         object.__setattr__(self, "proofs", proofs)
-        object.__setattr__(self, "content_hash", _canonical_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 HistoricalCoverageStatus = Literal["valid", "failed"]
@@ -370,25 +368,15 @@ class HistoricalExtraction:
     days: tuple[HistoricalExtractedDay, ...]
     research_identity: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.research_identity,
-        metadata={"exclude_from_legacy_hash": True},
     )
     research_spec_hash: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.content_hash,
-        metadata={"exclude_from_legacy_hash": True},
     )
-    schema_version: str = "historical_extraction_legacy"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         days = tuple(sorted(self.days, key=lambda item: item.summary.trade_date))
         coverage = tuple(self.coverage)
-        expected_schema = (
-            "historical_extraction"
-            if self.research_identity == "preregistered_research"
-            else "historical_extraction_legacy"
-        )
-        if self.schema_version != expected_schema:
-            raise ValueError("Historical extraction schema is invalid")
         if len(days) > 40 or len({item.summary.trade_date for item in days}) != len(days):
             raise ValueError("Historical extraction accepts at most 40 unique days")
         if len({item.trade_date for item in coverage}) != len(coverage):
@@ -406,33 +394,7 @@ class HistoricalExtraction:
             raise ValueError("Historical extraction coverage must match extracted days")
         object.__setattr__(self, "coverage", coverage)
         object.__setattr__(self, "days", days)
-        object.__setattr__(self, "content_hash", _canonical_hash(self))
-
-
-def _canonical_hash(value: object) -> str:
-    payload = json.dumps(
-        _canonical_value(value), ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
-def _canonical_value(value: object) -> object:
-    if dataclasses.is_dataclass(value):
-        legacy_identity = getattr(value, "research_identity", None) == HISTORICAL_RESEARCH_SPEC.research_identity
-        return {
-            field.name: _canonical_value(getattr(value, field.name))
-            for field in dataclasses.fields(value)
-            if field.init and not (legacy_identity and field.metadata.get("exclude_from_legacy_hash", False))
-        }
-    if isinstance(value, (date, datetime)):
-        return value.isoformat()
-    if isinstance(value, MappingProxyType):
-        return {str(key): _canonical_value(item) for key, item in value.items()}
-    if isinstance(value, dict):
-        return {str(key): _canonical_value(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_canonical_value(item) for item in value]
-    return value
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _validate_full_field_identity(input_hash: str, requested_codes: tuple[str, ...]) -> tuple[str, ...]:

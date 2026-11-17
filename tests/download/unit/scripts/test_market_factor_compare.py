@@ -344,7 +344,6 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
         "CreateCompanyEligibilityReader",
         lambda *args, **kwargs: SimpleNamespace(
             status=lambda: SimpleNamespace(
-                schema_version="fixture",
                 fact_count=0,
                 excluded_count=0,
                 integrity_ok=True,
@@ -495,7 +494,6 @@ def test_compact_result_omits_raw_samples_and_preserves_bounded_findings() -> No
                 0,
                 1,
                 {
-                    "schema_version": "market-factor-comparison",
                     "status": "degraded",
                     "summary": summary,
                     "findings": [{"severity": "warning", "code": "source_inputs_incomplete"}],

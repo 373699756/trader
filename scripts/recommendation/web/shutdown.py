@@ -139,7 +139,7 @@ def _failure(
     error_number: int | None = None,
 ) -> ToolOutcome:
     return ToolOutcome(1, {
-        "schema_version": "shutdown-observation", "status": "failed",
+         "status": "failed",
         "summary": {"read_only": not options.send_sigterm, "runtime_shutdown_acceptance": False,
                     "failure_category": category, "failure_errno": error_number},
         "findings": [code],
@@ -356,5 +356,5 @@ def _outcome(
         "clock_scope": "same_boot_system_monotonic; pidfd_readiness_is_observed_exit_not_exact_kernel_exit_time",
     }
     return ToolOutcome(130 if cancelled else 124 if status == "timed_out" else 1 if status == "failed" else 0, {
-        "schema_version": "shutdown-observation", "status": status, "summary": summary, "findings": findings,
+         "status": status, "summary": summary, "findings": findings,
     })

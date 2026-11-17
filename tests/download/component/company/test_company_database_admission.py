@@ -22,7 +22,7 @@ from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
     ("collection", "DROP TABLE download_failure"),
     ("collection", "DROP INDEX disclosure_query_source_rows"),
     ("collection", "ALTER TABLE document_retries RENAME COLUMN ocr_policy_id TO removed_policy"),
-    ("collection", "DELETE FROM contract"),
+    ("collection", "CREATE TABLE contract(schema_id TEXT)"),
     ("formal", "DROP TABLE company_input_receipt"),
     ("formal", "ALTER TABLE company_facts RENAME COLUMN code TO removed_code"),
 ))

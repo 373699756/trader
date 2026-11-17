@@ -75,7 +75,7 @@ def test_preview_freeze_and_restore_do_not_read_or_write_formal_disk(tmp_path) -
         RejectRecords(root / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture()),
         Clock(),
         runtime_identity=FreezeRuntimeIdentity(
-            current.config_version, current.strategy_version, current.fusion_version
+            current.config_version, current.strategy_version
         ),
     )
     assert coordinator.freeze_scheduled().status == "preview_only"

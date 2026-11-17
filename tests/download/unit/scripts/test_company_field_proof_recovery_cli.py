@@ -15,7 +15,7 @@ def _arguments():
 
 def _report():
     return {
-        "schema_version": "company-resume", "status": "degraded", "findings": ["unreproved"],
+         "status": "degraded", "findings": ["unreproved"],
         "summary": {"field_proof_recovery": {
             "scope": "exact_published_field_proof_materials", "read_only_source": True, "isolated_copy": True,
             "complete": False, "source_data_writes": 0, "network_requests": 2, "network_request_count_complete": True,

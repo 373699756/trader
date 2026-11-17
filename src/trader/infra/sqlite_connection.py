@@ -385,11 +385,12 @@ def _schema_tokens(statement: str) -> tuple[str, ...]:
     return tuple(token if token.startswith(("'", '"')) else token.lower() for token in tokens)
 
 
-def _validate_schema(connection: SqliteConnection, schema: SqliteSchema) -> None:
+def _validate_schema(connection: SqliteConnection, schema: SqliteSchema, *, exact: bool) -> None:
     """Validate the adapter-owned definitions independently of database numbering."""
-    actual = {
-        str(row[0]): str(row[1]) for row in connection.run("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL")
-    }
+    actual = {str(row[0]): str(row[1]) for row in connection.run(
+        "SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT GLOB 'sqlite_*'"
+    )}
+    expected: set[str] = set()
     for statement in schema.statements:
         match = re.match(
             r"\s*CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
@@ -398,20 +399,27 @@ def _validate_schema(connection: SqliteConnection, schema: SqliteSchema) -> None
         )
         if match is None or match[1] not in actual or _schema_tokens(actual[match[1]]) != _schema_tokens(statement):
             raise sqlite3.DatabaseError("sqlite_schema_unsupported")
+        expected.add(match[1])
+    if exact and set(actual) != expected:
+        raise sqlite3.DatabaseError("sqlite_schema_unsupported")
 
 
 def HasSqliteSchema(
     connection: SqliteConnection,
     schema: SqliteSchema,
     validate: Callable[[SqliteConnection], None] | None = None,
+    *,
+    exact: bool = False,
 ) -> bool:
     """Return false only for an uninitialized database; reject incompatible schemas."""
+    if connection.run("PRAGMA user_version").require_one()[0] != 0:
+        raise sqlite3.DatabaseError("sqlite_schema_unsupported")
     populated = connection.run(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name NOT GLOB 'sqlite_*')"
     ).require_one()[0]
     if not populated:
         return False
-    _validate_schema(connection, schema)
+    _validate_schema(connection, schema, exact=exact)
     if validate is not None:
         validate(connection)
     return True
@@ -424,17 +432,18 @@ def EnsureSqliteSchema(
     allow_create: bool = False,
     initialize: Callable[[SqliteConnection], None] | None = None,
     validate: Callable[[SqliteConnection], None] | None = None,
+    exact: bool = False,
 ) -> None:
     """Validate or initialize an empty database inside the caller's transaction when supplied."""
-    if HasSqliteSchema(connection, schema, validate):
+    if HasSqliteSchema(connection, schema, validate, exact=exact):
         return
     if not allow_create:
         raise sqlite3.DatabaseError("sqlite_schema_unsupported")
     if connection.in_transaction:
-        _initialize_schema(connection, schema, initialize, validate)
+        _initialize_schema(connection, schema, initialize, validate, exact=exact)
         return
     with SqliteTransaction(connection, immediate=True):
-        _initialize_schema(connection, schema, initialize, validate)
+        _initialize_schema(connection, schema, initialize, validate, exact=exact)
 
 
 def _initialize_schema(
@@ -442,13 +451,17 @@ def _initialize_schema(
     schema: SqliteSchema,
     initialize: Callable[[SqliteConnection], None] | None,
     validate: Callable[[SqliteConnection], None] | None,
+    *,
+    exact: bool,
 ) -> None:
-    if HasSqliteSchema(connection, schema, validate):
+    if HasSqliteSchema(connection, schema, validate, exact=exact):
         return
     for statement in schema.statements:
         connection.run(statement)
     if initialize is not None:
         initialize(connection)
+    if not HasSqliteSchema(connection, schema, exact=exact):
+        raise sqlite3.DatabaseError("sqlite_schema_unsupported")
     if validate is not None:
         validate(connection)
 

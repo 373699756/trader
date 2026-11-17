@@ -23,7 +23,7 @@ from trader.training.application.factor_diagnostic_report import (
     StratumDimension,
 )
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
+from trader.infra.serialization.canonical_codec import CanonicalText, EncodeCanonicalValue
 
 _REPORT_NAME = "score-factor-diagnostic-report.json"
 
@@ -46,11 +46,11 @@ class JsonFactorDiagnosticReportIndex:
             if existing.report_hash != report.report_hash:
                 raise FactorDiagnosticReportConflictError("factor diagnostic report identity conflict")
             return existing
-        payload = ResearchValue(report)
+        payload = EncodeCanonicalValue(report)
         if not isinstance(payload, dict):
             raise TypeError("factor diagnostic report payload must be an object")
         payload["report_hash"] = report.report_hash
-        if not PublishImmutable(path, ResearchJson(payload)):
+        if not PublishImmutable(path, CanonicalText(payload)):
             existing = self.verify()
             if existing.report_hash != report.report_hash:
                 raise FactorDiagnosticReportConflictError("factor diagnostic report identity conflict")
@@ -87,8 +87,6 @@ def _report_from_payload(raw: dict[str, object]) -> FactorDiagnosticReport:
         str(raw["research_spec_hash"]),
         tuple(_factor(item) for item in _objects(raw["factors"], "factors")),
         _oracle(_object(raw["oracle_recall"], "oracle recall")),
-        schema_version=str(raw["schema_version"]),
-        diagnostic_version=str(raw["diagnostic_version"]),
         cost_rates=_float_triple(raw["cost_rates"]),
         decay_lags=_int_triple(raw["decay_lags"]),
         production_authority=_boolean(raw["production_authority"]),

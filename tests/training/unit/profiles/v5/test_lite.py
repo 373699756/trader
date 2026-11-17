@@ -100,11 +100,13 @@ def test_recent_split_preserves_evaluation_dates_and_supplier_neutral_default_id
     assert new.confirmation_dates == old.confirmation_dates
     assert new.daily_proxy_holdout_dates == old.daily_proxy_holdout_dates
     assert new.point_in_time_holdout_dates == old.point_in_time_holdout_dates
-    assert old.schema_version == "training_date_split"
-    assert new.schema_version == "v5_recent_training_split"
+    assert not old.recent_fit
+    assert new.recent_fit
     assert old.content_hash != new.content_hash
     with pytest.raises(ValueError):
         BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64, fit_dates=61)
+    with pytest.raises(ValueError, match="development or confirmation"):
+        replace(new, recent_fit=False)
     with pytest.raises(ValueError):
         replace(new, calibration_dates=new.model_fit_dates[:20])
 

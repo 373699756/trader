@@ -39,15 +39,15 @@ def test_public_report_refuses_to_overwrite_an_existing_file(tmp_path) -> None:
 
 @pytest.mark.parametrize("indent", (None, 2))
 def test_read_complete_reports_with_nested_objects_and_text_progress(indent):
-    expected = ({"schema_version": "profile_training_result", "heads": [{"message": '中文 {内容} 和 "引号"\n下一行'}]},
-                {"schema_version": "selected_training_result", "history_rows_read": 0})
+    expected = ({ "heads": [{"message": '中文 {内容} 和 "引号"\n下一行'}]},
+                { "history_rows_read": 0})
     output = "正在读取\n" + "\n进度完成\n".join(json.dumps(item, ensure_ascii=False, indent=indent) for item in expected) + "\n"
     assert ReadJsonReports(output) == expected
 
 
 def test_truncated_multiline_report_is_not_silently_ignored():
     with pytest.raises(json.JSONDecodeError):
-        ReadJsonReports('准备完成\n{\n  "schema_version": "profile_training_result",\n')
+        ReadJsonReports('准备完成\n{\n  "profile_id": "v5",\n')
 
 
 def test_readable_diagnostic_file_preserves_default_persistence_encoding(tmp_path):

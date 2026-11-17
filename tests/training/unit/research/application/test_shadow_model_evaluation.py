@@ -31,8 +31,9 @@ def test_shadow_model_evaluation_use_walk_forward_embargo_same_data_and_complete
 
     report = service.build(days)
 
-    assert report.schema_version == "score_tomorrow_shadow_report"
-    assert report.feature_version == "score_tomorrow_point_in_time_features"
+    from trader.recommendation.domain.market.feature_contracts import TOMORROW_RESEARCH_FEATURE_MANIFEST
+
+    assert report.feature_hash == TOMORROW_RESEARCH_FEATURE_MANIFEST.content_hash
     assert report.random_seed == 20260828
     assert report.cost_bps == 20
     assert report.production_authority is False

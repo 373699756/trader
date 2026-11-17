@@ -44,12 +44,11 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
     args = _build_parser(action_identity).parse_args(arguments)
     from scripts.engineering.migration import operations
 
-    schema = "migration-inspection" if action_identity == "migration" else "trader_data_layout_migration"
     result: dict[str, object]
     try:
         if action_identity == "migration":
             manifest = operations.inspect_layout(args.source, sqlite_policy=_sqlite_policy(args.config))
-            result = {"schema_version": schema, "status": "passed", "summary": operations.ProjectManifest(manifest)}
+            result = {"status": "passed", "summary": operations.ProjectManifest(manifest)}
         elif action_identity == "migration-build":
             manifest = operations.migrate(
                 args.source,
@@ -60,10 +59,9 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
             result = {"status": "passed", "state": "candidate_verified", **operations.ProjectManifest(manifest)}
         else:
             operations.rollback(args.target, args.backup)
-            result = {"schema_version": schema, "status": "passed", "state": "rolled_back"}
+            result = {"status": "passed", "state": "rolled_back"}
     except (operations.MigrationError, OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
         return ToolOutcome(1, {
-            "schema_version": schema,
             "status": "failed",
             "state": "failed",
             "error_code": _error_code(exc),

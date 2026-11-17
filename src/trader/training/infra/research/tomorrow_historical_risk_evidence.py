@@ -11,7 +11,7 @@ from trader.training.application.tomorrow_historical_validation import (
     TomorrowHistoricalRiskValidationOutcome,
 )
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
+from trader.infra.serialization.canonical_codec import CanonicalText, EncodeCanonicalValue
 
 
 class TomorrowHistoricalRiskEvidenceConflictError(RuntimeError):
@@ -61,7 +61,7 @@ class TomorrowHistoricalRiskEvidenceIndex:
         }
 
     def _write(self, path: Path, value: object, expected_hash: str) -> None:
-        payload = ResearchValue(value)
+        payload = EncodeCanonicalValue(value)
         if not isinstance(payload, dict):
             raise TypeError("historical risk artifact must serialize to an object")
         payload["content_hash"] = expected_hash
@@ -70,7 +70,7 @@ class TomorrowHistoricalRiskEvidenceIndex:
             if self._read_verified(path).get("content_hash") != expected_hash:
                 raise TomorrowHistoricalRiskEvidenceConflictError("historical risk artifact identity conflict")
             return
-        if PublishImmutable(path, ResearchJson(payload)):
+        if PublishImmutable(path, CanonicalText(payload)):
             return
         if self._read_verified(path).get("content_hash") != expected_hash:
             raise TomorrowHistoricalRiskEvidenceConflictError("historical risk artifact identity conflict")
@@ -81,6 +81,13 @@ class TomorrowHistoricalRiskEvidenceIndex:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise TypeError("historical risk artifact is not an object")
+            expected = (
+                {'spec_hash', 'source_spec_hash', 'parent_model_id', 'parent_model_hash', 'feature_ids', 'logistic_intercept', 'logistic_coefficients', 'platt_intercept', 'platt_slope', 'platt_constant', 'training_evidence_hash', 'calibration_evidence_hash', 'production_authority'}
+                if path.name == "model-artifact.json" else
+                {'spec_hash', 'model_id', 'model_hash', 'evidence_hash', 'training_trade_dates', 'calibration_trade_dates', 'test_trade_dates', 'embargo_trade_dates', 'training_rows', 'calibration_rows', 'test_rows', 'brier_score', 'baseline_brier_score', 'expected_calibration_error', 'model_artifact_hash', 'status', 'failure_reasons', 'production_authority'}
+            )
+            if set(raw) != expected | {"content_hash"}:
+                raise ValueError("artifact fields are invalid")
             persisted = raw.pop("content_hash")
             if not isinstance(persisted, str) or CanonicalResearchHash(raw) != persisted:
                 raise ValueError("historical risk artifact hash mismatch")

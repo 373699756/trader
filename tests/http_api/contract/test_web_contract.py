@@ -17,6 +17,8 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord
+from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes
+from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
@@ -62,7 +64,7 @@ def test_unified_freeze_routes_validate_strategy_date_and_etag() -> None:
     invalid_date = client.get("/api/freezes/tomorrow/history?date=2026-8-8")
 
     assert current.status_code == 200
-    assert current.get_json()["schema_version"] == "freeze_view"
+    assert "schema_version" not in current.get_json()
     assert current.get_json()["draft"] is None
     assert current.get_json()["strategy"] == "tomorrow"
     assert current.get_json()["publication_id"] == current.get_json()["freeze_version"]
@@ -130,9 +132,9 @@ def test_history_etag_tracks_outcome_summary_fields_and_availability(change):
     summary = OutcomeTierSummary("recommend", 1, 2, 1, 1, 1.0)
 
     class History(_FreezeRecords):
-        def load(self, strategy, trade_date):
+        def load_history(self, strategy, trade_date):
             assert strategy is freeze.strategy and trade_date == freeze.trade_date
-            return record
+            return HistoricalRecordFromBytes(CommittedRecordBytes(record))
 
     class Summaries:
         values = (summary,)
@@ -243,7 +245,7 @@ def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
     batch = batch_response.get_json()
     assert batch_response.status_code == 200
     assert batch_response.headers["Cache-Control"] == "no-store"
-    assert batch["schema_version"] == "freeze_current_batch"
+    assert "schema_version" not in batch
     assert set(batch["profiles"]) == {"v2", "v3"}
     for profile, pair in batch["profiles"].items():
         assert set(pair) == {"tomorrow", "d25"}
@@ -367,7 +369,6 @@ def test_long_http_projection_is_current_only_and_has_no_scoring_or_freeze_field
     assert payload["items"][0]["selection_anchor"] == {"date": NOW.date().isoformat(), "price": 10.0}
     assert payload["items"][0]["selection_to_now_pct"] == 23.0
     assert dates.get_json() == {
-        "schema_version": "freeze_dates",
         "strategy": "long",
         "scoring_profile": "v2",
         "dates": [],
@@ -439,10 +440,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     response.close()
     status = client.get("/api/status").get_json()
 
-    assert status["schema_version"] == "runtime_status"
-    assert status["release"] == {
-        "freeze_view_schema": "freeze_view",
-    }
+    assert "schema_version" not in status and "release" not in status
     assert "event: freeze" in event
     freeze_patch = json.loads(event.split("data: ", 1)[1])
     assert freeze_patch["strategy"] == "tomorrow"
@@ -514,7 +512,6 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
             "persistence_error_count": 0,
             "pending_persistence_count": 2,
             "reason_counts": {"historical_st": 3},
-            "schema_version": "issuer_eligibility_registry",
         },
         "market_feature_rows": 5567,
         "market_changes": {

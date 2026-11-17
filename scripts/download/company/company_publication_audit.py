@@ -142,7 +142,6 @@ def AuditCompanyConsumer(
     http_checked = http_audit is not None and http_audit.get("passed") is True
     complete = stable and consumer.get("consistent") is True and not findings and not expired
     return {
-        "schema_version": "company-resume",
         "status": "passed" if complete else "failed" if expired else "degraded",
         "summary": {"consumer_audit": {
             "read_only": True, "scope": "formal_reader_and_document_http" if http_configuration is not None else "formal_reader_consistency_only", "observed_at": now.isoformat(),

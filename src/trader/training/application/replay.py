@@ -48,11 +48,6 @@ class HistoricalBaselineReplayer:
             aggregate,
             extraction.research_identity,
             extraction.research_spec_hash,
-            schema_version=(
-                "historical_candidate_report"
-                if extraction.research_identity == "preregistered_research"
-                else "historical_baseline_report"
-            ),
         )
 
     def _replay_day(self, day: HistoricalExtractedDay) -> BaselineDayMetrics:

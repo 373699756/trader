@@ -54,7 +54,6 @@ class MarketSourceDependencies:
     cache: BoundedCache[object] | None
     source_contracts: Mapping[str, str]
     config_version: str
-    schema_version: str
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
     full_market_primary_timeout_seconds: float
@@ -138,7 +137,6 @@ class MarketSourceCoordinator:
         self._cache = dependencies.cache
         self._source_contracts = dict(dependencies.source_contracts)
         self._config_version = dependencies.config_version
-        self._schema_version = dependencies.schema_version
         self._monotonic = dependencies.monotonic
         self._wall_clock = dependencies.wall_clock
         self._primary_timeout_seconds = dependencies.full_market_primary_timeout_seconds
@@ -453,7 +451,6 @@ class MarketSourceCoordinator:
                     "phase": identity.phase,
                     "contract": identity.source_contract_version,
                     "config": identity.config_version,
-                    "schema": identity.schema_version,
                 }
             )
             self._source_lanes.submit(request.source, refresh_identity, request.observed_at, refresh)
@@ -481,7 +478,6 @@ class MarketSourceCoordinator:
                 "phase": cache_identity.phase,
                 "contract": cache_identity.source_contract_version,
                 "config": cache_identity.config_version,
-                "schema": cache_identity.schema_version,
                 "force": request.force,
                 "deadline": request.deadline,
             }
@@ -507,7 +503,7 @@ class MarketSourceCoordinator:
                 phase=phase,
                 source_contract_version=self._source_contracts[source],
                 config_version=self._config_version,
-                schema_version=self._schema_version,
+
             )
         )
 

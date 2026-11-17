@@ -11,7 +11,7 @@ from tests.helpers.download.company_resources import CompanyDocumentFilesFixture
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_annual_field_publication import CanReuseCompanyAnnualFieldResults
-from trader.download.infra.company_field_publication import PrepareCompanyFieldResults
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, PrepareCompanyFieldResults
 from trader.infra.sqlite_connection import SqliteSession
 from trader.download.infra import company_annual_field_publication
 
@@ -166,7 +166,7 @@ def test_annual_attempt_receipt_cannot_replace_missing_current_valid_receipt(tmp
 
     with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
         publication = ReadCompanyPublicationIdentity(formal)
-        assert all(CanReuseCompanyAnnualFieldResults(collected, formal, facts, facts.positive_events[0], field)
+        assert all(CanReuseCompanyAnnualFieldResults(collected, formal, facts, facts.positive_events[0], field, field_rule_hash=CompanyFieldProofRulesHash())
                    for field in fields)
         before = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source_key,extraction_hash"))
         prepared = PrepareCompanyFieldResults(

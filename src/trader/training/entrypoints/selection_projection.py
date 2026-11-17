@@ -10,7 +10,6 @@ from trader.training.domain.evaluation.selection_statistics import SelectionInfe
 def ProjectSelectionValidation(execution: SelectionResearchExecution) -> dict[str, object]:
     spec, report = execution.specification, execution.report
     return {
-        "schema_version": "full_population_selection_validation",
         "research_identity": spec.research_identity,
         "status": report.status,
         "specification_hash": spec.content_hash,

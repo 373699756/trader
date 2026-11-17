@@ -189,7 +189,7 @@ def _valid_research_status(payload: Mapping[str, object]) -> bool:
         for name in ("input_blockers", "production_blockers")
     ):
         return False
-    return payload.get("schema_version") == "research_readiness"
+    return True
 
 
 _DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {

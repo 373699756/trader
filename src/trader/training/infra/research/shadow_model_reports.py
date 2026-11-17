@@ -54,9 +54,8 @@ def _verify(path: Path, expected_hash: str, expected_payload: dict[str, object])
 
 def _report_payload(report: ShadowModelReport) -> dict[str, object]:
     return {
-        "schema_version": report.schema_version,
         "spec_hash": report.spec_hash,
-        "feature_version": report.feature_version,
+        "feature_hash": report.feature_hash,
         "training_window_start": report.training_window_start.isoformat(),
         "training_window_end": report.training_window_end.isoformat(),
         "random_seed": report.random_seed,

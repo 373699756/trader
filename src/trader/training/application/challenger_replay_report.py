@@ -173,13 +173,10 @@ class ChallengerReport:
     variants: tuple[ChallengerVariantReplay, ...]
     research_identity: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.research_identity,
-        metadata={"exclude_from_legacy_hash": True},
     )
     research_spec_hash: str = dataclasses.field(
         default=HISTORICAL_RESEARCH_SPEC.content_hash,
-        metadata={"exclude_from_legacy_hash": True},
     )
-    schema_version: str = "challenger_replay_baseline"
     deepseek_http_request_delta: Literal[0] = 0
     content_hash: str = dataclasses.field(init=False)
 
@@ -190,12 +187,7 @@ class ChallengerReport:
         spec = GetScoreResearchSpec(self.research_identity)
         if self.research_spec_hash != spec.content_hash:
             raise ValueError("Challenger replay report research spec hash is invalid")
-        expected_schema = (
-            "challenger_replay_candidate"
-            if self.research_identity == "preregistered_research"
-            else "challenger_replay_baseline"
-        )
-        if self.schema_version != expected_schema or self.deepseek_http_request_delta != 0:
+        if self.deepseek_http_request_delta != 0:
             raise ValueError("Challenger replay report identity or DeepSeek isolation is invalid")
         expected_ids = (
             "continuous_entry",

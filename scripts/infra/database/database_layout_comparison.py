@@ -111,7 +111,6 @@ def CompareLayouts(baseline: Path, *, rounds: int, size: int, sessions: int = 20
             }
         )
     return {
-        "schema_version": "database-layout-comparison",
         "status": "passed"
         if all(
             item["within_regression_limit"] and (not item["improvement_required"] or item["improved"])
@@ -194,7 +193,6 @@ def _compare_publications(baseline: Path, current: Path, *, rounds: int, size: i
             }
         )
     return {
-        "schema_version": "database-layout-comparison",
         "status": "passed" if passed else "failed",
         "summary": {
             "fixture": True,

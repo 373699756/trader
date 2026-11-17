@@ -10,17 +10,15 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
+from trader.recommendation.domain.market.feature_contracts import TOMORROW_RESEARCH_FEATURE_MANIFEST
 from trader.training.application.shadow_model_ports import ShadowModelFamily
 from trader.training.application.tomorrow_feature_contracts import (
-    TOMORROW_FEATURE_SCHEMA_ID,
     TomorrowPointInTimeFeatureBatch,
 )
 from trader.training.domain.evaluation.historical import SUPPORTED_RESEARCH_BOARDS, CostSettlementBasis, ResearchBoard
 
 ShadowHorizon = Literal["tomorrow", "d25"]
 ShadowWindowMode = Literal["expanding", "rolling"]
-SHADOW_REPORT_SCHEMA_VERSION = "score_tomorrow_shadow_report"
-SHADOW_IMPLEMENTATION_VERSION = "score_tomorrow_shadow_model_evaluation"
 SHADOW_RANDOM_SEED = 20260828
 SHADOW_COST_BPS = 20
 SHADOW_MIN_TRAIN_DATES = 20
@@ -155,24 +153,22 @@ class ShadowModelReport:
     folds: tuple[ShadowFoldRecord, ...]
     predictions: tuple[ShadowPrediction, ...]
     spec_hash: str = field(default_factory=lambda: ShadowSpecHash())
-    feature_version: str = TOMORROW_FEATURE_SCHEMA_ID
+    feature_hash: str = TOMORROW_RESEARCH_FEATURE_MANIFEST.content_hash
     random_seed: int = SHADOW_RANDOM_SEED
     cost_bps: int = SHADOW_COST_BPS
     status: Literal["exploratory"] = "exploratory"
     production_authority: bool = False
-    schema_version: str = SHADOW_REPORT_SCHEMA_VERSION
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if self.training_window_start > self.training_window_end or self.spec_hash != ShadowSpecHash():
             raise ValueError("shadow report training identity is invalid")
         if (
-            self.feature_version != TOMORROW_FEATURE_SCHEMA_ID
+            self.feature_hash != TOMORROW_RESEARCH_FEATURE_MANIFEST.content_hash
             or self.random_seed != SHADOW_RANDOM_SEED
             or self.cost_bps != SHADOW_COST_BPS
             or self.status != "exploratory"
             or self.production_authority
-            or self.schema_version != SHADOW_REPORT_SCHEMA_VERSION
         ):
             raise ValueError("shadow report fixed contract is invalid")
         folds = tuple(sorted(self.folds, key=_fold_key))
@@ -209,8 +205,7 @@ class ShadowModelReport:
 def ShadowSpecHash() -> str:
     return _canonical_hash(
         {
-            "implementation_version": SHADOW_IMPLEMENTATION_VERSION,
-            "feature_version": TOMORROW_FEATURE_SCHEMA_ID,
+            "feature_hash": TOMORROW_RESEARCH_FEATURE_MANIFEST.content_hash,
             "random_seed": SHADOW_RANDOM_SEED,
             "cost_bps": SHADOW_COST_BPS,
             "window_modes": ("expanding", "rolling_252"),
@@ -236,9 +231,8 @@ def ShadowSpecHash() -> str:
 
 def _shadow_report_payload(report: ShadowModelReport) -> dict[str, object]:
     return {
-        "schema_version": report.schema_version,
         "spec_hash": report.spec_hash,
-        "feature_version": report.feature_version,
+        "feature_hash": report.feature_hash,
         "training_window_start": report.training_window_start.isoformat(),
         "training_window_end": report.training_window_end.isoformat(),
         "random_seed": report.random_seed,
@@ -305,10 +299,8 @@ __all__ = [
     "SHADOW_CALIBRATION_DATES",
     "SHADOW_COST_BPS",
     "SHADOW_EMBARGO_DATES",
-    "SHADOW_IMPLEMENTATION_VERSION",
     "SHADOW_MIN_TRAIN_DATES",
     "SHADOW_RANDOM_SEED",
-    "SHADOW_REPORT_SCHEMA_VERSION",
     "SHADOW_ROLLING_DATES",
     "SHADOW_VALIDATION_DATES",
     "ShadowFoldRecord",

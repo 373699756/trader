@@ -85,7 +85,6 @@ class DailyCloseOutOfFoldPrediction:
     board: str
     predicted_net_excess_return: float
     actual_net_excess_returns: tuple[float, float, float]
-    schema_version: str = "tomorrow_daily_close_oof_prediction"
     production_authority: bool = False
 
     def __post_init__(self) -> None:
@@ -95,7 +94,7 @@ class DailyCloseOutOfFoldPrediction:
             math.isfinite(value) for value in self.actual_net_excess_returns
         ):
             raise ValueError("daily-close model selection OOF values must be finite")
-        if self.schema_version != "tomorrow_daily_close_oof_prediction" or self.production_authority:
+        if self.production_authority:
             raise ValueError("daily-close model selection OOF schema is invalid")
 
 
@@ -151,7 +150,6 @@ class DailyCloseModelSelectionResult:
     temporal_split_hash: str
     candidates: tuple[DailyCloseCandidateEvaluation, ...]
     selected_candidate_id: str
-    schema_version: str = "tomorrow_daily_close_model_selection_result"
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
@@ -163,8 +161,6 @@ class DailyCloseModelSelectionResult:
             raise ValueError("daily-close model selection development requires the fixed five-candidate family")
         if self.selected_candidate_id not in _CANDIDATE_IDS:
             raise ValueError("daily-close model selection selected candidate is invalid")
-        if self.schema_version != "tomorrow_daily_close_model_selection_result":
-            raise ValueError("daily-close model selection development schema is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("daily-close model selection development cannot open holdout or production")
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))

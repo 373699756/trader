@@ -15,7 +15,7 @@ from trader.training.domain.evaluation.terminal_holdout import (
     TerminalHoldoutReport,
     TerminalStrategy,
 )
-from trader.training.infra.research.identity_codec import ResearchJson
+from trader.infra.serialization.canonical_codec import CanonicalText
 
 
 class TerminalHoldoutReportConflictError(RuntimeError):
@@ -38,7 +38,7 @@ class TerminalHoldoutReportIndex:
             return existing
         payload = EncodeTerminalHoldoutReport(report)
         payload["content_hash"] = report.content_hash
-        if not PublishImmutable(path, ResearchJson(payload)):
+        if not PublishImmutable(path, CanonicalText(payload)):
             existing = self.verify()
             if existing.content_hash != report.content_hash:
                 raise TerminalHoldoutReportConflictError("terminal holdout report identity conflict")
@@ -82,7 +82,6 @@ def DecodeTerminalHoldoutReport(raw: dict[str, object]) -> TerminalHoldoutReport
         "failure_reasons",
         "terminal_trade_dates",
         "production_authority",
-        "schema_version",
     }
     if set(raw) != expected:
         raise ValueError("terminal holdout report fields are invalid")
@@ -113,7 +112,6 @@ def DecodeTerminalHoldoutReport(raw: dict[str, object]) -> TerminalHoldoutReport
         failure_reasons=tuple(reasons_raw),
         terminal_trade_dates=tuple(date.fromisoformat(item) for item in dates_raw),
         production_authority=_bool(raw["production_authority"]),
-        schema_version=_string(raw["schema_version"]),
     )
 
 
@@ -133,7 +131,6 @@ def EncodeTerminalHoldoutReport(report: TerminalHoldoutReport) -> dict[str, obje
         "failure_reasons": list(report.failure_reasons),
         "terminal_trade_dates": [item.isoformat() for item in report.terminal_trade_dates],
         "production_authority": report.production_authority,
-        "schema_version": report.schema_version,
     }
 
 

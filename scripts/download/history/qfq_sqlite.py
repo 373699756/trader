@@ -121,7 +121,6 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
         failures.append("price_issues_changed_during_audit")
     status = "failed" if failures else "degraded" if issues or missing or unpaired or unconfirmed or mode != "wal" else "passed"
     return {
-        "schema_version": "qfq-sqlite-diagnostic",
         "status": status,
         "summary": {
             "mode": "shared_daily_window",
@@ -215,7 +214,7 @@ def AuditQfqPriceFields(
     )
     fields = AuditPriceFields(plan, budget=budget, sqlite_policy=sqlite_policy, checkpoint=checkpoint, configuration=configuration)
     status = "failed" if fields["status"] == "failed" else "degraded" if mismatches else fields["status"]
-    return {"schema_version": "qfq-sqlite-diagnostic", "status": status, "summary": {
+    return { "status": status, "summary": {
         "mode": "shared_daily_window", "source_data_writes": 0, "databases": 1,
         "paired_identity_mismatches": mismatches,
         "profiles": [{"profile": unit.name, "codes": len(unit.securities), "sessions": len(unit.dates),
@@ -254,7 +253,7 @@ def Main() -> int:
                 with SqliteTransaction(connection):
                     failures = ReadDownloadFailures(connection, configuration)
             report = {
-                "schema_version": "download-failures-diagnostic", "status": "passed",
+                 "status": "passed",
                 "summary": {"read_only": True, "failure_attempts_are_not_pending_state": True, **failures},
             }
         elif args.price_field_audit:
@@ -266,12 +265,11 @@ def Main() -> int:
         else:
             report = AuditQfqDatabase(path, sqlite_policy=sqlite_policy)
     except PriceAuditInterrupted as exc:
-        report = {"schema_version": "qfq-sqlite-diagnostic", "status": "failed", "summary": {
+        report = { "status": "failed", "summary": {
             "field_audit": {"complete": False, "failure": "price_audit_" + str(exc), "phase": budget.phase},
         }}
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         report = {
-            "schema_version": "qfq-sqlite-diagnostic",
             "status": "failed",
             "error": ClassifyQfqDiagnosticError(exc),
         }

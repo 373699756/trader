@@ -205,7 +205,6 @@ def AuditCompanyQueries(path: Path, *, budget_seconds: float, sqlite_policy: Sql
         and all(not item["failure"] for item in pages)
     )
     return {
-        "schema_version": "company-resume",
         "status": "passed" if passed else "degraded",
         "summary": {"query_audit": {"read_only": True, "pages": pages, "totals": totals}},
         "findings": [] if passed else ["company_query_coverage_inconsistent"],
@@ -240,7 +239,6 @@ def AuditCompanyDatabase(
         if not deadline_cancelled or isinstance(exc, sqlite3.OperationalError) and str(exc) != "interrupted":
             raise
         return {
-            "schema_version": "company-resume",
             "status": "failed",
             "summary": {"database": {
                 "read_only": True,
@@ -492,7 +490,6 @@ def _audit_company_database(
         if not comparison.stable_read or comparison.publication_hash != publication.get("publication_hash"):
             risk_findings.append("company_audit_concurrent_change")
     return {
-        "schema_version": "company-resume",
         "status": "degraded" if partitions or pending or publication_findings or risk_findings else "passed",
         "summary": {
             "database": {

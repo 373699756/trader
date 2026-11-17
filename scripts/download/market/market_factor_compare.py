@@ -1108,7 +1108,6 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
         official_population=len(official_codes),
         eligible_population=len(all_codes),
         eligibility={
-            "schema_version": eligibility_status.schema_version,
             "fact_count": eligibility_status.fact_count,
             "excluded_fact_codes": eligibility_status.excluded_count,
             "integrity_ok": eligibility_status.integrity_ok,
@@ -1177,7 +1176,6 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
             }
         )
     return {
-        "schema_version": "market-factor-comparison",
         "status": "degraded"
         if any(sample["status"] == "measured" for sample in samples)
         or industry_capability is not None
@@ -1237,7 +1235,6 @@ def Main() -> int:
                 report = Collect(args, cpu_profile_dir=args.cpu_profile_dir, sqlite_policy=sqlite_policy)
         except (OSError, RuntimeError, ValueError, TypeError) as exc:
             report = {
-                "schema_version": "market-factor-comparison",
                 "status": "failed",
                 "summary": {"error": type(exc).__name__},
             }

@@ -50,7 +50,7 @@ def _selection_policy() -> RecommendationSelectionSettings:
 def _recommendation_policy() -> RecommendationPolicy:
     return RecommendationPolicy(
         strategy_version="strategy-fixture",
-        fusion_version="fusion-fixture",
+
         fusion=FusionPolicy(25.0),
         selection=_selection_policy(),
         dimension_weights={},

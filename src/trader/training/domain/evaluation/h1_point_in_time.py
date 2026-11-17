@@ -184,7 +184,6 @@ class H1CapabilityStrategyStatus:
 class H1CapabilityAuditReport:
     probes: tuple[H1CapabilityProbe, ...]
     strategies: tuple[H1CapabilityStrategyStatus, ...]
-    schema_version: str = "score_h1_source_capability_audit"
     production_authority: bool = False
     probe_failures: tuple[str, ...] = ()
     content_hash: str = dataclasses.field(init=False)
@@ -199,7 +198,7 @@ class H1CapabilityAuditReport:
         failures = tuple(sorted(set(self.probe_failures)))
         if any(_IDENTITY.fullmatch(value) is None for value in failures):
             raise ValueError("H1 capability probe failure identities are invalid")
-        if self.schema_version != "score_h1_source_capability_audit" or self.production_authority:
+        if self.production_authority:
             raise ValueError("H1 capability report cannot authorize production")
         object.__setattr__(self, "probes", probes)
         object.__setattr__(self, "strategies", strategies)

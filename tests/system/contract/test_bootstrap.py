@@ -56,6 +56,37 @@ from tests.helpers.shared.bootstrap import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _static_bootstrap_models(monkeypatch):
+    """Load a fixed zero-prediction tree; startup tests never fit a model."""
+    import lightgbm as lgb
+
+    from tests.helpers.training.profiles.v3 import profile as model_fixtures
+
+    def model_text(width):
+        leaf = "\n".join((
+            "Tree=0", "num_leaves=1", "num_cat=0", "split_feature=", "split_gain=", "threshold=",
+            "decision_type=", "left_child=", "right_child=", "leaf_value=0", "leaf_weight=12",
+            "leaf_count=12", "internal_value=", "internal_weight=", "internal_count=", "is_linear=0",
+            "shrinkage=1", "", "",
+        ))
+        # version=v4 is LightGBM's actual model-text protocol, not a project format number.
+        header = "\n".join((
+            "tree", "version=v4", "num_class=1", "num_tree_per_iteration=1", "label_index=0",
+            f"max_feature_idx={width - 1}", "objective=regression",
+            "feature_names=" + " ".join(f"Column_{index}" for index in range(width)),
+            "feature_infos=" + " ".join("[0:2]" for _ in range(width)),
+            f"tree_sizes={len(leaf.encode())}", "", "",
+        ))
+        encoded = header + leaf + "end of trees\n\n"
+        booster = lgb.Booster(model_str=encoded)
+        assert booster.num_feature() == width
+        assert booster.num_trees() == 1
+        return encoded
+
+    monkeypatch.setattr(model_fixtures, "_lightgbm_model", model_text)
+
+
 def test_recommendation_pipeline_requires_every_canonical_stage() -> None:
     with pytest.raises(ValueError, match="pipeline stages are invalid"):
         RecommendationPipelineStatus(
@@ -236,8 +267,9 @@ def test_startup_input_preloader_never_downloads_and_keeps_web_readable(
     ready = threading.Event()
     initialize = PublishedTrainingState.initialize
 
-    def initialized(state):
-        initialize(state)
+    def initialized(state, cancel_requested=None):
+        assert callable(cancel_requested)
+        initialize(state, cancel_requested)
         ready.set()
 
     monkeypatch.setattr(PublishedTrainingState, "initialize", initialized)

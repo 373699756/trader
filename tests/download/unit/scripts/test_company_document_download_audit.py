@@ -42,7 +42,7 @@ def test_document_probe_routes_without_replay_directory_and_filters_report_field
         }],
     }}
     result = BuildReport("company-resume", [DiagnosticResult(
-        "company_resume", 0, 1, {"schema_version": "company-resume", "status": "passed", "summary": summary}, None,
+        "company_resume", 0, 1, { "status": "passed", "summary": summary}, None,
     )])
     assert "secret" not in str(result) and "private" not in str(result)
 

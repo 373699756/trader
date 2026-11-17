@@ -172,7 +172,6 @@ class RuleCandidateEvaluationReport:
     selected_candidate_id: str | None
     status: Literal["candidate_family_sealed", "historical_rejected", "historical_data_insufficient"]
     production_authority: bool = False
-    schema_version: str = "rule_candidate_evaluation_report"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -183,7 +182,7 @@ class RuleCandidateEvaluationReport:
             raise ValueError("sealed preregistered rule family requires one registered candidate")
         if self.status != "candidate_family_sealed" and self.selected_candidate_id is not None:
             raise ValueError("rejected preregistered rule family cannot select a candidate")
-        if self.production_authority or self.schema_version != "rule_candidate_evaluation_report":
+        if self.production_authority:
             raise ValueError("preregistered rule candidate report cannot authorize production")
         object.__setattr__(self, "content_hash", RuleCandidateHash(self))
 

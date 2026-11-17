@@ -340,7 +340,7 @@
       if (!response.ok) throw new Error("历史日期接口请求失败");
       if (selectionId !== state.selectionSequence || requestId !== state.calendarRequestSequence || strategy !== state.strategy) return null;
       const profile = deliveryProfile(strategy);
-      if (payload.schema_version !== "freeze_dates" || payload.strategy !== strategy
+      if (payload.strategy !== strategy
         || profile && payload.scoring_profile !== profile || !Array.isArray(payload.dates)) {
         throw new Error("历史日期接口返回格式无效");
       }
@@ -660,7 +660,7 @@
       diagnostics.recommendationRequests += 1;
       const response = await fetch("/api/freezes/current", { cache: "no-store" });
       const raw = await response.json();
-      if (!response.ok || raw.schema_version !== "freeze_current_batch" || !raw.profiles) {
+      if (!response.ok || !raw.profiles) {
         throw new Error("整批推荐快照读取失败");
       }
       const profiles = Object.entries(raw.profiles);
@@ -726,12 +726,12 @@
       published_at: raw.observed_at,
       phase: raw.stage || "current",
       stale: raw.status !== "ready",
-      selection_diagnostics: raw.selection_diagnostics || {
+      selection_diagnostics: raw.selection_diagnostics || (historical ? null : {
         observation_limit: coverage.observation_count || 0,
         executable_limit: coverage.executable_count || 0,
         selected_observation_count: coverage.observation_count || 0,
         selected_executable_count: coverage.executable_count || 0,
-      },
+      }),
       items,
       top_scores: topScores,
       draft,
@@ -1165,7 +1165,7 @@
   function connectStream() { streamController.connect(); }
 
   function applyRecommendationBatch(batch) {
-    if (batch.schema_version !== "freeze_event" || !Number.isInteger(batch.round_sequence)
+    if (!Number.isInteger(batch.round_sequence)
       || batch.round_sequence < 1 || !batch.profiles || typeof batch.profiles !== "object"
       || !completeBatchProfiles(batch.profiles)) {
       requestRecommendationResync("batch_schema_mismatch");

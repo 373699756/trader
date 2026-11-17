@@ -251,7 +251,6 @@ def Main() -> int:
             for item in experiments
         )
         report = {
-            "schema_version": "tencent-download-diagnostic",
             "status": "passed" if complete else "degraded",
             "summary": {
                 "context_elapsed_seconds": round(context_elapsed, 4),
@@ -268,7 +267,7 @@ def Main() -> int:
             },
         }
     except (OSError, RuntimeError, ValueError, HttpError) as exc:
-        report = {"schema_version": "tencent-download-diagnostic", "status": "failed", "error": type(exc).__name__}
+        report = { "status": "failed", "error": type(exc).__name__}
     finally:
         for session in sessions:
             session.close()
@@ -301,7 +300,6 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
             }
             emit_report(
                 {
-                    "schema_version": "tencent-whole-window-probe",
                     "status": "failed",
                     "summary": {
                         "error": type(exc).__name__,
@@ -351,7 +349,6 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
     passed = all(item.get("paired_rows") == 2000 for item in results)
     emit_report(
         {
-            "schema_version": "tencent-whole-window-probe",
             "status": "failed" if failed else "passed" if passed else "degraded",
             "summary": {
                 "requested_rows_per_side": 2000,

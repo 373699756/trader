@@ -7,7 +7,8 @@ from datetime import date
 from tests.helpers.training.research.application.historical_ports import TRADE_DATE, _summary
 
 
-from trader.training.application.extraction import HistoricalExtractor
+from trader.training.application.extraction import HistoricalExtractionPolicy, HistoricalExtractor
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 
 from trader.training.domain.evaluation.historical import ScoreComponent
@@ -31,6 +32,18 @@ def test_extractor_is_deterministic_and_keeps_true_coverage_status() -> None:
     assert tuple(item.summary.trade_date for item in first.days) == (TRADE_DATE,)
     assert first.coverage[-1].trade_date == TRADE_DATE
     assert first.coverage[-1].status == "valid"
+
+
+def test_candidate_proof_identity_binds_actual_selection_limits() -> None:
+    policy = HistoricalExtractionPolicy()
+    changed = replace(policy, top_k=5)
+    original = HistoricalExtractor(_Port(), _Evaluator(), policy=policy).extract().days[0]
+    alternative = HistoricalExtractor(_Port(), _Evaluator(), policy=changed).extract().days[0]
+
+    assert original.full_fields == alternative.full_fields
+    assert {proof.selection_policy_hash for proof in original.proofs} == {CanonicalResearchHash(policy)}
+    assert {proof.selection_policy_hash for proof in alternative.proofs} == {CanonicalResearchHash(changed)}
+    assert tuple(proof.content_hash for proof in original.proofs) != tuple(proof.content_hash for proof in alternative.proofs)
 
 
 def test_candidate_set_starts_from_each_board_top120_and_proves_exclusions() -> None:

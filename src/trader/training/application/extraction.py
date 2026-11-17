@@ -26,8 +26,7 @@ from trader.training.domain.evaluation.historical import (
     ResearchSelectionPool,
 )
 from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC, ScoringResearchSpec
-
-_PROOF_RULE_VERSION = "historical_active_set"
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 
 @dataclass(frozen=True)
@@ -79,11 +78,6 @@ class HistoricalExtractor:
             days=tuple(days),
             research_identity=self._spec.research_identity,
             research_spec_hash=self._spec.content_hash,
-            schema_version=(
-                "historical_extraction"
-                if self._spec.research_identity == "preregistered_research"
-                else "historical_extraction_legacy"
-            ),
         )
 
     def _attempt_date(
@@ -256,6 +250,7 @@ def _proofs(
         )
         for pool in ("formal", "observation")
     }
+    policy_hash = CanonicalResearchHash(policy)
     proofs: list[HistoricalCandidateProof] = []
     for candidate in candidates:
         for pool in candidate.eligible_pools:
@@ -274,7 +269,7 @@ def _proofs(
                     frontiers[pool],
                     "loaded" if loaded else "excluded",
                     reason,
-                    _PROOF_RULE_VERSION,
+                    policy_hash,
                 )
             )
     return tuple(proofs)

@@ -19,7 +19,7 @@ from trader.infra.sqlite_connection import SqliteConnection
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 
-_RULE = "explicit_cny_annual_operating_revenue:1"
+_RULE = "explicit_cny_annual_operating_revenue"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,9 +74,9 @@ def _source_rows(collected: SqliteConnection, facts: CompanyFacts, event: Compan
     return tuple(sources)
 
 
-def _policy(event: CompanyPositiveEvent, item: CompanyFieldConclusion, rows: Sequence[_AnnualSource]) -> str:
+def _policy(event: CompanyPositiveEvent, item: CompanyFieldConclusion, rows: Sequence[_AnnualSource], field_rule_hash: bytes) -> str:
     return "annual_source:" + CanonicalDigest((
-        COMPANY_ANNUAL_REPORT_DIGEST.hex(), event.event_id, event.first_disclosed_at, item.field, item.value,
+        field_rule_hash.hex(), COMPANY_ANNUAL_REPORT_DIGEST.hex(), event.event_id, event.first_disclosed_at, item.field, item.value,
         tuple((row.disclosure, row.body_hash.hex() if row.body_hash is not None else None) for row in rows),
     ))
 
@@ -87,6 +87,7 @@ def CanReuseCompanyAnnualFieldResults(
     facts: CompanyFacts,
     event: CompanyPositiveEvent,
     item: CompanyFieldConclusion,
+    *, field_rule_hash: bytes,
 ) -> bool:
     rows = _source_rows(collected, facts, event)
     if (not rows or len(rows) > 8 or len(item.evidence) != len(rows)
@@ -97,7 +98,7 @@ def CanReuseCompanyAnnualFieldResults(
     if identities != {(proof.source, proof.source_key, proof.record_hash, proof.body_hash, proof.published_at.isoformat())
                       for proof in item.evidence}:
         return False
-    policy = _policy(event, item, rows)
+    policy = _policy(event, item, rows, field_rule_hash)
     return all(formal.run(
         "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? AND record_hash=? "
         "AND body_hash=? AND extraction_hash=? AND outcome='field_attempted' AND policy_id=?",
@@ -117,6 +118,7 @@ def PrepareCompanyAnnualFieldResults(
     extraction_hash: bytes,
     read_document: Callable[[bytes], str],
     revalidate: bool = False,
+    field_rule_hash: bytes,
 ) -> CompanyAnnualFieldPublication:
     prepared = list(results)
     receipts: list[CompanyInputReceipt] = []
@@ -133,7 +135,7 @@ def PrepareCompanyAnnualFieldResults(
             continue
         candidates: list[CompanyFieldEvidence] = []
         conflicting = False
-        policy = _policy(event, item, rows)
+        policy = _policy(event, item, rows, field_rule_hash)
         for row in rows:
             body_hash = row.body_hash
             disclosure = row.disclosure

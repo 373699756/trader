@@ -35,7 +35,7 @@ def BuildRecommendationPolicy(
     return RecommendationPolicy(
         strategy_version=settings.strategy_version,
         company_scoring=settings.company_scoring,
-        fusion_version=settings.fusion.version,
+
         fusion=FusionPolicy(
             local_risk_cap=settings.fusion.local_risk_cap,
         ),

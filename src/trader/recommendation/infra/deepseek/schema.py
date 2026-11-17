@@ -20,9 +20,6 @@ from trader.recommendation.infra.deepseek.schema_constants import (
     MAX_ASSESSMENT_CHARACTERS,
     MAX_PROMPT_EVIDENCE_PER_CANDIDATE,
     MAX_RESPONSE_CHARACTERS,
-    PROMPT_VERSION,
-    RAW_FACTS_CACHE_GENERATION,
-    SCHEMA_VERSION,
 )
 from trader.recommendation.infra.deepseek.schema_prompts import (
     BuildMessages,
@@ -37,9 +34,6 @@ __all__ = [
     "MAX_ASSESSMENT_CHARACTERS",
     "MAX_PROMPT_EVIDENCE_PER_CANDIDATE",
     "MAX_RESPONSE_CHARACTERS",
-    "PROMPT_VERSION",
-    "RAW_FACTS_CACHE_GENERATION",
-    "SCHEMA_VERSION",
     "BuildMessages",
     "BuildRepairMessages",
     "BuildReviewManifestHash",
@@ -87,10 +81,7 @@ def ParseReviews(
     if len(content) > MAX_RESPONSE_CHARACTERS:
         raise DeepSeekSchemaError("DeepSeek response exceeds size limit")
     payload = _parse_json_content(content)
-    _reject_unknown_fields(payload, {"schema_version", "results"}, "response")
-    schema_version = payload.get("schema_version")
-    if schema_version != SCHEMA_VERSION:
-        raise DeepSeekSchemaError(f"unsupported schema_version: {schema_version}")
+    _reject_unknown_fields(payload, {"results"}, "response")
     results = payload.get("results")
     if not isinstance(results, list):
         raise DeepSeekSchemaError("results must be a list")
@@ -482,9 +473,6 @@ def _optional_bounded_number(raw: object, lower: float, upper: float, field: str
 
 __all__ = [
     "DeepSeekSchemaError",
-    "PROMPT_VERSION",
-    "RAW_FACTS_CACHE_GENERATION",
-    "SCHEMA_VERSION",
     "BuildMessages",
     "BuildRepairMessages",
     "ClassifyReview",

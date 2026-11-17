@@ -2089,7 +2089,7 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
     assert cli.Main(["--config", str(config), "sync", "market"]) == exit_code
     captured = capsys.readouterr()
     summary = json.loads(captured.out)
-    assert summary["schema_version"] == "data_sync"
+    assert "schema_version" not in summary
     payload = summary["tasks"][0]
     assert "启动·配置检查" in captured.err and "sync·结果汇总" in captured.err
     assert "qfq fixture progress" in captured.err

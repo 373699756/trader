@@ -40,7 +40,7 @@ def SerializeFreezeView(view: FreezeView) -> dict[str, object]:
     if view.strategy is Strategy.LONG:
         return _serialize_long_view(view)
     return {
-        "schema_version": view.schema_version,
+
         **_preview_fields(view.preview_context, view.observed_at),
         "status": view.status,
         "strategy": view.strategy.value,
@@ -115,7 +115,7 @@ def SerializeFreezeView(view: FreezeView) -> dict[str, object]:
 
 def _serialize_long_view(view: FreezeView) -> dict[str, object]:
     return {
-        "schema_version": view.schema_version,
+
         "status": view.status,
         "strategy": view.strategy.value,
         "trade_date": view.trade_date.isoformat() if view.trade_date is not None else None,
@@ -349,7 +349,7 @@ def SerializeFreezeItem(item: FreezeItemView) -> dict[str, object]:
 
 def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
     payload = event.payload
-    common: dict[str, object] = {"schema_version": "freeze_event"}
+    common: dict[str, object] = {}
     if isinstance(payload, FreezeBatchPayload):
         common.update(
             round_sequence=payload.round_sequence,
@@ -393,7 +393,7 @@ def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
 
 def _serialize_freeze_event(payload: FreezeEventPayload) -> dict[str, object]:
     serialized: dict[str, object] = {
-        "schema_version": "freeze_event",
+
         "strategy": payload.strategy.value,
         "trade_date": payload.trade_date,
         "version": payload.version,
@@ -409,7 +409,7 @@ def _serialize_freeze_event(payload: FreezeEventPayload) -> dict[str, object]:
 
 def SerializeError(code: str, message: str) -> dict[str, object]:
     return {
-        "schema_version": "api_error",
+
         "error": {"code": code, "message": message},
     }
 

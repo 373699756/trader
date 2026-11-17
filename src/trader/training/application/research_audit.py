@@ -15,8 +15,6 @@ from trader.recommendation.domain.publication.freeze_identity import ScoredFreez
 from trader.recommendation.domain.publication.models import ScoredDisposition
 from trader.recommendation.domain.risk.scored_fusion import ScoredFreezeEntry
 
-LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit_legacy"
-RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit"
 ShadowMode = Literal["control_copy", "reused_facts"]
 
 _STRUCTURED_RISK_FIELDS = (
@@ -191,7 +189,6 @@ class CommittedResearchAudit:
     research_shadow: ResearchFreezeSetAudit
     shadow_mode: ShadowMode
     deepseek_request_delta: int = 0
-    schema_version: str = RESEARCH_AUDIT_SCHEMA_VERSION
     input_observed_at: datetime | None = None
     point_in_time_population: tuple[ResearchPopulationAudit, ...] = ()
     point_in_time_population_hash: str = ""
@@ -210,20 +207,53 @@ class CommittedResearchAudit:
         object.__setattr__(self, "content_hash", _sha256(payload))
 
 
-def _validate_audit_identity(audit: CommittedResearchAudit) -> None:
+@dataclass(frozen=True)
+class HistoricalResearchAudit:
+    """Original saved research evidence, with absent evidence explicitly unrecorded."""
+
+    freeze_version: str
+    freeze_hash: str
+    input_version: str
+    hard_filter_aggregates: tuple[tuple[str, int], ...]
+    passed_candidates: tuple[ResearchCandidateAudit, ...]
+    production_local: ResearchFreezeSetAudit
+    research_shadow: ResearchFreezeSetAudit
+    shadow_mode: ShadowMode
+    deepseek_request_delta: int
+    input_observed_at: datetime | None
+    point_in_time_population: tuple[ResearchPopulationAudit, ...] | None
+    point_in_time_population_hash: str | None
+    content_hash: str
+
+
+def HasCompleteResearchEvidence(audit: CommittedResearchAudit | HistoricalResearchAudit) -> bool:
+    """Validate saved point-in-time evidence without rebuilding or signing an audit.
+
+    Historical bytes and their hash are verified by their read codec. Missing
+    evidence stays unavailable; this predicate never upgrades a history object.
+    """
+    if (audit.input_observed_at is None or audit.point_in_time_population is None
+        or audit.point_in_time_population_hash is None):
+        return False
+    try:
+        _validate_audit_identity(audit)
+        aggregates = _normalized_aggregates(audit.hard_filter_aggregates)
+        candidates = _normalized_candidates(audit.passed_candidates)
+        population = _normalized_population(audit.point_in_time_population)
+        _validate_audit_pairing(audit, candidates, population)
+    except ValueError:
+        return False
+    return aggregates == audit.hard_filter_aggregates and candidates == audit.passed_candidates and population == audit.point_in_time_population
+
+
+def _validate_audit_identity(audit: CommittedResearchAudit | HistoricalResearchAudit) -> None:
     if not all((audit.freeze_version, audit.freeze_hash, audit.input_version)):
         raise ValueError("committed research audit identity must not be empty")
-    if audit.schema_version not in {LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION, RESEARCH_AUDIT_SCHEMA_VERSION}:
-        raise ValueError("committed research audit schema is invalid")
     if audit.deepseek_request_delta != 0:
         raise ValueError("research audit cannot add DeepSeek requests")
-    if audit.schema_version == LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION:
-        if audit.input_observed_at is not None or audit.point_in_time_population or audit.point_in_time_population_hash:
-            raise ValueError("legacy research audit cannot contain current population evidence")
-        return
     if audit.input_observed_at is None or audit.input_observed_at.tzinfo is None:
         raise ValueError("research audit input_observed_at must be timezone-aware")
-    if len(audit.point_in_time_population_hash) != 64 or any(
+    if audit.point_in_time_population_hash is None or len(audit.point_in_time_population_hash) != 64 or any(
         character not in "0123456789abcdef" for character in audit.point_in_time_population_hash
     ):
         raise ValueError("research population hash is invalid")
@@ -257,7 +287,7 @@ def _normalized_population(
 
 
 def _validate_audit_pairing(
-    audit: CommittedResearchAudit,
+    audit: CommittedResearchAudit | HistoricalResearchAudit,
     candidates: tuple[ResearchCandidateAudit, ...],
     population: tuple[ResearchPopulationAudit, ...],
 ) -> None:
@@ -267,8 +297,7 @@ def _validate_audit_pairing(
     }
     if not freeze_codes.issubset(passed_codes):
         raise ValueError("research freezes must belong to the hard-filter passed population")
-    if audit.schema_version == RESEARCH_AUDIT_SCHEMA_VERSION:
-        _validate_population_evidence(audit, passed_codes, population)
+    _validate_population_evidence(audit, passed_codes, population)
     if audit.research_shadow.freeze_version != audit.freeze_version:
         raise ValueError("research shadow must match committed freeze identity")
     if audit.shadow_mode == "control_copy" and audit.production_local != audit.research_shadow:
@@ -280,7 +309,7 @@ def _validate_audit_pairing(
 
 
 def _validate_population_evidence(
-    audit: CommittedResearchAudit,
+    audit: CommittedResearchAudit | HistoricalResearchAudit,
     passed_codes: set[str],
     population: tuple[ResearchPopulationAudit, ...],
 ) -> None:
@@ -473,7 +502,6 @@ def _audit_payload(
     population: tuple[ResearchPopulationAudit, ...],
 ) -> bytes:
     payload = {
-        "schema_version": audit.schema_version,
         "freeze_version": audit.freeze_version,
         "freeze_hash": audit.freeze_hash,
         "input_version": audit.input_version,
@@ -484,8 +512,7 @@ def _audit_payload(
         "shadow_mode": audit.shadow_mode,
         "deepseek_request_delta": audit.deepseek_request_delta,
     }
-    if audit.schema_version == RESEARCH_AUDIT_SCHEMA_VERSION:
-        payload.update(
+    payload.update(
             {
                 "input_observed_at": (
                     audit.input_observed_at.isoformat() if audit.input_observed_at is not None else None
@@ -493,7 +520,7 @@ def _audit_payload(
                 "point_in_time_population": [_population_audit_payload(item) for item in population],
                 "point_in_time_population_hash": audit.point_in_time_population_hash,
             }
-        )
+    )
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
 
@@ -629,8 +656,8 @@ def _sha256(payload: bytes) -> str:
 
 
 __all__ = [
-    "LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION",
-    "RESEARCH_AUDIT_SCHEMA_VERSION",
+    "HistoricalResearchAudit",
+    "HasCompleteResearchEvidence",
     "CommittedResearchAudit",
     "ResearchCandidateAudit",
     "ResearchFreezeCandidateAudit",

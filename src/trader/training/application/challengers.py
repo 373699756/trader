@@ -65,11 +65,6 @@ class ChallengerReplayer:
             variants,
             extraction.research_identity,
             extraction.research_spec_hash,
-            schema_version=(
-                "challenger_replay_candidate"
-                if extraction.research_identity == "preregistered_research"
-                else "challenger_replay_baseline"
-            ),
         )
 
     def _replay_variant(

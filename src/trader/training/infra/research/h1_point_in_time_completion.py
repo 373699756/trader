@@ -31,7 +31,6 @@ class H1ResearchCompletionEvidenceIndex:
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     automatic_model_update: bool = False
-    schema_version: str = "h1_terminal_index"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -51,8 +50,6 @@ class H1ResearchCompletionEvidenceIndex:
             raise ValueError("H1 research terminal index status is invalid")
         if self.terminal_holdout_opened or self.production_authority or self.automatic_model_update:
             raise ValueError("H1 research terminal index cannot open holdout or authorize runtime changes")
-        if self.schema_version != "h1_terminal_index":
-            raise ValueError("H1 research terminal index schema is invalid")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
@@ -119,7 +116,6 @@ def _encode(index: H1ResearchCompletionEvidenceIndex) -> dict[str, object]:
         "terminal_holdout_opened": index.terminal_holdout_opened,
         "production_authority": index.production_authority,
         "automatic_model_update": index.automatic_model_update,
-        "schema_version": index.schema_version,
     }
 
 
@@ -134,7 +130,6 @@ def _decode(raw: dict[str, object]) -> H1ResearchCompletionEvidenceIndex:
         "terminal_holdout_opened",
         "production_authority",
         "automatic_model_update",
-        "schema_version",
     }
     if set(raw) != expected:
         raise ValueError("H1 research terminal artifact fields are invalid")
@@ -156,7 +151,6 @@ def _decode(raw: dict[str, object]) -> H1ResearchCompletionEvidenceIndex:
         terminal_holdout_opened=_bool(raw["terminal_holdout_opened"]),
         production_authority=_bool(raw["production_authority"]),
         automatic_model_update=_bool(raw["automatic_model_update"]),
-        schema_version=_string(raw["schema_version"]),
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 import time
 
@@ -74,13 +75,27 @@ def test_cache_identity_is_stable_and_slow_data_reuses_all_day_phase() -> None:
             phase="morning_main",
             source_contract_version="eastmoney-contract",
             config_version="runtime-current",
-            schema_version="market_snapshot",
         )
     )
 
     assert first == second
     assert first.phase == "morning_main"
     assert isinstance(first.request_key, tuple)
+
+
+def test_cache_identity_keeps_real_supplier_contract_and_allows_local_records() -> None:
+    identity = _identity("600001")
+    local = replace(identity, source="local", source_contract_version=None)
+    assert local == replace(local)
+    assert identity != replace(identity, source_contract_version="supplier-new-protocol")
+    assert hash(local) == hash(replace(local))
+
+
+def test_cache_identity_rejects_an_empty_supplier_contract() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="source contract"):
+        replace(_identity("600001"), source_contract_version="")
 
 
 def test_cache_uses_monotonic_ttl_without_changing_business_source_time() -> None:

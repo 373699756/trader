@@ -42,7 +42,6 @@ from trader.recommendation.domain.scoring.scoring_calculations import (
     IsValueMissing,
 )
 
-BOARD_SCHEMA_VERSION = "board_cross_section_score_first"
 
 
 @dataclass(frozen=True)
@@ -58,7 +57,6 @@ class BoardCrossSection:
     trade_date: str
     phase: str
     data_version: str
-    schema_version: str
     population: BoardPopulation
     features: tuple[FeatureSnapshot, ...]
     reference_values: Mapping[str, tuple[float, ...]]
@@ -82,7 +80,6 @@ class BoardCrossSectionRequest:
     trade_date: str
     phase: str
     data_version: str
-    schema_version: str = BOARD_SCHEMA_VERSION
     fallback: BoardCrossSection | None = None
     fallback_age_sessions: int | None = None
     competition_groups: Mapping[str, tuple[str, str, str]] | None = None
@@ -131,7 +128,7 @@ def BuildBoardCrossSection(request: BoardCrossSectionRequest) -> BoardCrossSecti
         trade_date=request.trade_date,
         phase=request.phase,
         data_version=request.data_version,
-        schema_version=request.schema_version,
+
         population=population,
         features=enriched,
         reference_values={name: tuple(values) for name, values in basis.reference_values.items()},
@@ -142,7 +139,7 @@ def BuildBoardCrossSection(request: BoardCrossSectionRequest) -> BoardCrossSecti
 def _validate_request(request: BoardCrossSectionRequest) -> None:
     if request.board is Board.UNSUPPORTED:
         raise ValueError("unsupported board cannot be scored")
-    identity = (request.merge_epoch, request.trade_date, request.phase, request.data_version, request.schema_version)
+    identity = (request.merge_epoch, request.trade_date, request.phase, request.data_version)
     if not all(identity):
         raise ValueError("board cross-section identity must not be empty")
 
@@ -196,7 +193,7 @@ def _build_population(
         trade_date=request.trade_date,
         phase=request.phase,
         data_version=request.data_version,
-        schema_version=request.schema_version,
+
         status=basis.status,
         fallback_date=basis.fallback_date,
         fallback_age=basis.fallback_age,
@@ -211,7 +208,7 @@ def _build_population(
         phase=request.phase,
         board=request.board,
         data_version=request.data_version,
-        schema_version=request.schema_version,
+
         population_version=population_version,
         sample_size=current_sample,
         missing_count=max(0, total_count - current_sample),
@@ -328,7 +325,7 @@ def ProjectBoardPolicy(
         trade_date=cross_section.trade_date,
         phase=cross_section.phase,
         data_version=cross_section.data_version,
-        schema_version=cross_section.schema_version,
+
     )
     enriched = _enrich_features(normalized, cross_section.population, request)
     return ApplyBoardPolicy(replace(cross_section, features=enriched), strategy, policy)
@@ -475,7 +472,7 @@ def _weighted_known(
 
 
 __all__ = [
-    "BOARD_SCHEMA_VERSION",
+
     "BoardCrossSection",
     "BoardCrossSectionRequest",
     "MAX_FALLBACK_SESSIONS",

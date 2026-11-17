@@ -479,7 +479,6 @@ def test_train_reports_local_failure_without_exposing_details(tmp_path, monkeypa
     payload = json.loads(captured.out)
     assert payload.pop("diagnostic")["causes"][0]["error_type"] == error.__name__
     assert payload == {
-        "schema_version": "selected_training_result",
         "status": "failed",
         "category": error.__name__,
     }
@@ -615,7 +614,7 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     assert Main(["--config", str(config), "research-status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "research_readiness"
+    assert "schema_version" not in payload
     assert payload["production_authority"] is False
     assert payload["validation_mode"] == "historical_only"
     assert payload["history_archive"] == {
@@ -824,9 +823,21 @@ def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
     assert "不要删除 server.lock" in message
 
 
-def test_budget_uses_its_own_file_and_never_opens_the_legacy_runtime_name() -> None:
-    bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
+def test_budget_uses_its_own_file_and_never_opens_the_legacy_runtime_name(tmp_path, monkeypatch) -> None:
+    from tests.helpers.shared.cold_start import _empty_config
+    from trader.bootstrap import BuildSystem
+    from trader.recommendation.infra.runtime import publication_persistence
 
-    assert 'settings.runtime_dir / "deepseek/state.json"' in bootstrap
-    assert "BudgetStateFile(budget_path," in bootstrap
-    assert 'settings.runtime_dir / "runtime.sqlite3"' not in bootstrap
+    paths = []
+    state_file = publication_persistence.BudgetStateFile
+
+    def observe(path, *args, **kwargs):
+        paths.append(path)
+        return state_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(publication_persistence, "BudgetStateFile", observe)
+    system = BuildSystem(_empty_config(tmp_path))
+
+    assert paths == [system.settings.runtime_dir / "deepseek/state.json"]
+    assert not paths[0].exists()
+    assert not (system.settings.runtime_dir / "runtime.sqlite3").exists()

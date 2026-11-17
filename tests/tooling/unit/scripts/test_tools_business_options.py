@@ -119,12 +119,14 @@ def test_training_read_worker_loads_explicit_runtime_and_separates_budget_digest
     performance.write_text('{"fixture":"selected budget"}', encoding="utf-8")
     settings = object()
     policy = SqlitePolicyFixture()
+    industry = object()
     selected = []
     monkeypatch.setattr("trader.infra.settings.LoadRuntimeSettings", lambda path: selected.append(path) or settings)
     monkeypatch.setattr("trader.bootstrap.BuildSqlitePolicy", lambda received: policy if received is settings else None)
+    monkeypatch.setattr("trader.bootstrap.ReadIndustrySnapshot", lambda _root, _at, received: industry if received is policy else None)
 
-    def preparation(history, output, mode, *, sqlite_policy):
-        assert sqlite_policy is policy and mode == "sqlite"
+    def preparation(history, output, mode, *, industry_snapshot, sqlite_policy):
+        assert sqlite_policy is policy and industry_snapshot is industry and mode == "sqlite"
         return {"cases": {}, "peak_rss_bytes": 0}
 
     monkeypatch.setattr(training_read_comparison, "MeasurePreparation", preparation)

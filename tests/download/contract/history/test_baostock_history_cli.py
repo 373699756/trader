@@ -113,7 +113,7 @@ def test_train_missing_local_history_fails_without_download(tmp_path, monkeypatc
     assert timing["source_read_seconds"] == timing["peak_cpu_reservations"] == timing["peak_memory_reservations"] == 0
     assert timing["profiles"][0]["profile"] == "v2"
     assert timing["profiles"][0]["started_after_seconds"] is None
-    assert result["schema_version"] == "selected_training_result"
+    assert "schema_version" not in result
     assert result["status"] == "failed" and result["failure"] == "current_industry_not_published"
     assert result["diagnostic"]["causes"][0]["error_type"] == "ValueError"
     assert "./run.sh sync history" in captured.err
@@ -149,7 +149,6 @@ def test_v1_training_dispatch_preserves_its_result(
         print(
             json.dumps(
                 {
-                    "schema_version": "profile_training_result",
                     "profile": "v1",
                     "status": result.status,
                     "production_authority": False,
@@ -251,7 +250,6 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         "efficient_daily_source": None,
         "label_cutoff": "2026-09-09",
         "reason": None,
-        "schema_version": "history_maintenance_status",
         "selected_baseline_source": "baostock",
         "state": "completed",
         "unresolved_price_cells": 0,
@@ -284,7 +282,6 @@ def test_train_resource_setup_interrupt_returns_130(tmp_path, monkeypatch, capsy
     )
     assert Main(["--config", str(config), "train", "--json"]) == 130
     assert json.loads(capsys.readouterr().out) == {
-        "schema_version": "selected_training_result",
         "status": "cancelled",
     }
 

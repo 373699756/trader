@@ -84,7 +84,7 @@ def _diagnostic_documents(
     input_hash = BuildTrainingInputHash("a" * 64, current_industry.content_hash)
     input_document = _hash(
         {
-            "schema_version": f"{profile.profile_id}_head_training_input_manifest",
+
             "profile_id": profile.profile_id,
             "strategy_head": contract.strategy.value,
             "training_input_scope": "complete_manifest",
@@ -133,7 +133,7 @@ def _diagnostic_documents(
     )
     report = _hash(
         {
-            "schema_version": f"{profile.profile_id}_head_validation_report",
+
             "profile_id": profile.profile_id,
             "model_id": contract.model_id,
             "strategy_head": contract.strategy.value,
@@ -175,7 +175,7 @@ def _diagnostic_documents(
     )
     metadata = _hash(
         {
-            "schema_version": f"{profile.profile_id}_head_metadata",
+
             "profile_id": profile.profile_id,
             "model_id": contract.model_id,
             "strategy_head": contract.strategy.value,
@@ -245,7 +245,7 @@ def _documents(
     report.pop("content_hash")
     _hash(report)
     metadata.update(
-        schema_version=f"{profile.profile_id}_head_recent_refit_metadata",
+
         industry_sample_counts={industry: {"training_rows": training_rows, "validation_rows": validation_rows}},
         final_fit={
             "contract": FINAL_FIT_CONTRACT, "source_cutoff": source_cutoff.isoformat(),

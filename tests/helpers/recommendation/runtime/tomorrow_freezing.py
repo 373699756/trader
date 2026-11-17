@@ -40,7 +40,7 @@ def _coordinator(
         index,
         records,
         clock,
-        runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
+        runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current"),
         strategy=strategy,
     )
 

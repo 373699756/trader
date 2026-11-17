@@ -7,7 +7,6 @@ from trader.download.entrypoints.history_maintenance_projection import ProjectHi
 def ProjectSyncResult(result: SyncResult) -> dict[str, object]:
     failed = result.failure is not None or any(task.status == "failed" for task in result.tasks)
     return {
-        "schema_version": "data_sync",
         "status": "cancelled"
         if result.cancelled
         else "failed"

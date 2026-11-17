@@ -126,8 +126,8 @@ def test_volume_only_change_survives_scalar_merge_and_both_dirty_projections() -
     )
     assert first.quotes[0].volume == 1_000.0
     assert second.quotes[0].volume == 2_000.0
-    previous = ColumnarQuoteBatch.from_snapshot(first, config_version="config", schema_version="fixture")
-    current = ColumnarQuoteBatch.from_snapshot(second, config_version="config", schema_version="fixture")
+    previous = ColumnarQuoteBatch.from_snapshot(first, config_version="config")
+    current = ColumnarQuoteBatch.from_snapshot(second, config_version="config")
     full = MarketChanges(previous, current)
     targeted = TargetedMarketChanges(first, second, ("600001",))
     for changes in (full, targeted):
@@ -151,8 +151,8 @@ def test_restriction_only_changes_are_risk_changes_in_both_projections(
     snapshot = MergeMarketObservations((_observation("tencent_market"),), observed_at=NOW, merge_epoch="first")
     first = replace(snapshot, quotes=(replace(snapshot.quotes[0], execution_restrictions=before),))
     second = replace(first, merge_epoch="second", quotes=(replace(first.quotes[0], execution_restrictions=after),))
-    previous = ColumnarQuoteBatch.from_snapshot(first, config_version="config", schema_version="fixture")
-    current = ColumnarQuoteBatch.from_snapshot(second, config_version="config", schema_version="fixture")
+    previous = ColumnarQuoteBatch.from_snapshot(first, config_version="config")
+    current = ColumnarQuoteBatch.from_snapshot(second, config_version="config")
 
     expected_codes = ("600001",) if before != after else ()
     for changes in (MarketChanges(previous, current), TargetedMarketChanges(first, second, ("600001",))):

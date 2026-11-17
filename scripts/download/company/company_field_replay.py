@@ -130,9 +130,7 @@ def BackupCompanyCollection(source_path: Path, target_path: Path, policy: Sqlite
         target_path, sqlite_policy=policy, cancel_requested=lambda: time.monotonic() >= deadline,
     ) as target:
         version = source.run("PRAGMA data_version").require_one()[0]
-        EnsureSqliteSchema(source, SCHEMA)
-        if tuple(row[0] for row in source.run("SELECT schema_id FROM contract")) != ("company_collection",):
-            raise ValueError("company_field_replay_collection_contract_invalid")
+        EnsureSqliteSchema(source, SCHEMA, exact=True)
         source.backup_to(target, deadline=deadline, monotonic=time.monotonic)
         stable = bool(version == source.run("PRAGMA data_version").require_one()[0])
         if tuple(row[0] for row in target.run("PRAGMA integrity_check")) != ("ok",):
@@ -341,7 +339,7 @@ def AuditCompanyFieldReplay(
     deadline = time.monotonic() + budget_seconds
     collection_path, facts_path, directory = _prepare_paths(collection_path, facts_path, directory, protected_roots)
     report: dict[str, object] = {
-        "schema_version": "company-field-replay", "status": "failed", "read_only_source": True,
+         "status": "failed", "read_only_source": True,
         "observed_at": observed_at.isoformat(),
         "isolated_copy": True, "network_requests": 0, "source_data_writes": 0,
         "field_correctness_verified": False, "production_authorized": False,

@@ -48,7 +48,7 @@ def test_structured_field_mode_passes_rows_and_exact_source_budgets(rows):
         "--market-task-seconds", "300", "--command-timeout-seconds", "400",
     ])
     command, = BuildCommands(options, python_executable="/python3")
-    assert command.name == "research_source_compare"
+    assert command.name == "company_structured_field_sampling"
     assert "--field-sources-only" in command.argv
     assert command.argv[command.argv.index("--field-source-rows") + 1] == str(rows)
     assert command.argv[command.argv.index("--timeout-seconds") + 1] == "12.0"

@@ -115,7 +115,6 @@ class HistoricalCandidateConfirmationReport:
     status: ConfirmationStatus
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_candidate_confirmation_report"
     failure_reasons: tuple[str, ...] = ()
     confirmation_evidence: CandidateConfirmationEvidence | None = None
     content_hash: str = dataclasses.field(init=False)

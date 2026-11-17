@@ -356,7 +356,6 @@ class RiskCostUncertaintyReport:
     production_authority: bool = False
     terminal_holdout_opened: bool = False
     automatic_model_update: bool = False
-    schema_version: str = "risk_cost_uncertainty_deepseek_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -388,8 +387,6 @@ def _validate_ablation_cost_metrics(metrics: DeepSeekAblationMetrics) -> None:
 def _validate_report_identity(report: RiskCostUncertaintyReport) -> None:
     if report.status not in {"evaluated", "historical_data_insufficient", "historical_rejected"}:
         raise ValueError("risk-cost report status is invalid")
-    if report.schema_version != "risk_cost_uncertainty_deepseek_report":
-        raise ValueError("risk-cost report schema identity is invalid")
     if _SHA256.fullmatch(report.parent_report_hash) is None:
         raise ValueError("risk-cost report parent hash is invalid")
     if report.model_artifact_hash is not None and _SHA256.fullmatch(report.model_artifact_hash) is None:
@@ -831,7 +828,6 @@ def _cost_sensitivity(
 
 def _content_hash(report: RiskCostUncertaintyReport) -> str:
     payload = {
-        "schema_version": report.schema_version,
         "status": report.status,
         "parent_report_hash": report.parent_report_hash,
         "model_artifact_hash": report.model_artifact_hash,

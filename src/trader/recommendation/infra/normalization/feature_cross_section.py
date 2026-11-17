@@ -117,9 +117,9 @@ def _population_features(
     latest = max(quotes, key=lambda quote: quote.source_time)
     identity = CacheIdentity(
         "market_cross_section", "local_factors", "population",
-        RequestKey({"inputs": ContentHash(inputs), "data_version": data_version}),
+        RequestKey({"inputs": ContentHash(inputs), "data_version": data_version, "adjust": "qfq"}),
         latest.source_time.astimezone(_SHANGHAI).date().isoformat(),
-        "market_factors", "qfq", "percentile_025_975", "market_cross_section",
+        "market_factors", None, "percentile_025_975",
     )
     found = cache.get(identity)
     if found is not None and found.value is not None:

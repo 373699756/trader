@@ -14,7 +14,6 @@ from trader.infra.process_lock import ProcessLock
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
-from trader.recommendation.infra.deepseek.schema import SCHEMA_VERSION
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 
@@ -112,7 +111,7 @@ def _candidate() -> FeatureSnapshot:
 
 def _primary_payload() -> dict[str, object]:
     return {
-        "schema_version": SCHEMA_VERSION,
+
         "results": [
             {
                 "code": "600001",

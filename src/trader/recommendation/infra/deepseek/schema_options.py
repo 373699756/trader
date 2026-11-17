@@ -13,12 +13,9 @@ class ReviewCacheRequiredOptions(TypedDict):
 
 
 class ReviewCacheOptionalOptions(TypedDict, total=False):
-    generation: str
     model_role: str
     thinking_mode: str
     reasoning_effort: str | None
-    schema_version: str
-    prompt_version: str
 
 
 class ReviewCacheOptions(ReviewCacheRequiredOptions, ReviewCacheOptionalOptions):

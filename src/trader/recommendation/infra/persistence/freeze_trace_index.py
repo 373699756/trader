@@ -12,6 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, cast
 
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.process_lock import ProcessLock
 from trader.infra.serialization.research_trace_validation import (
     Boolean as _boolean,
@@ -68,10 +69,11 @@ from trader.infra.sqlite_connection import (
 )
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
     CommittedFreezeItem,
+    HistoricalFreezeCommitted,
+    HistoricalFreezeObservation,
     FreezeCommitted,
     FreezeObservation,
 )
-from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
 from trader.recommendation.domain.publication.freeze_identity import FreezeStage, IsPreviewFreeze
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.infra.persistence.trace_capacity import ResearchTraceCapacityError, TracePhysicalBudget
@@ -90,9 +92,9 @@ from trader.recommendation.infra.persistence.trace_schema import (
     TraceIndexSummary,
 )
 from trader.training.application.research_audit import (
-    LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
-    RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
+    HistoricalResearchAudit,
+    HasCompleteResearchEvidence,
     ResearchCandidateAudit,
     ResearchFreezeCandidateAudit,
     ResearchFreezeSetAudit,
@@ -101,9 +103,6 @@ from trader.training.application.research_audit import (
     ShadowMode,
 )
 
-LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"
-RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event"
-_SCHEMA_VERSION = RESEARCH_EVENT_SCHEMA_VERSION
 
 
 class ResearchTraceConflictError(RuntimeError):
@@ -119,7 +118,6 @@ class ResearchTraceStatus:
     quarantined: int
     trade_dates: int
     trade_date_capacity: int
-    legacy_retained: int
     total_capacity_bytes: int
     remaining_bytes: int
 
@@ -165,6 +163,8 @@ class ResearchTraceLimits:
 
 
 def _require_persistable_observation(observation: FreezeObservation) -> None:
+    if not isinstance(observation.event, FreezeCommitted):
+        raise ValueError("historical events are read-only")
     event = observation.event
     if ("run_mode", "preview") in event.input_versions or (
         event.projection is not None and IsPreviewFreeze(event.projection)
@@ -229,29 +229,26 @@ class SQLiteFreezeTraceIndex:
             self._initialized = True
 
     def record(self, observation: FreezeObservation) -> None:
+        if not isinstance(observation, FreezeObservation):
+            raise ValueError("historical observations are read-only")
         _require_persistable_observation(observation)
-        self.initialize()
         observation = observation.materialize()
         event = observation.event
         if event.freeze_hash is None:
             raise ValueError("freeze event requires a materialized hash")
         if (
             observation.research_audit is not None
-            and observation.research_audit.schema_version != RESEARCH_AUDIT_SCHEMA_VERSION
+            and not isinstance(observation.research_audit, CommittedResearchAudit)
         ):
-            raise ValueError("legacy research audit is read-only")
-        logical_payload = ObservationBytes(
-            observation,
-            schema_version=RESEARCH_EVENT_SCHEMA_VERSION,
-            legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-            current_schema_version=RESEARCH_EVENT_SCHEMA_VERSION,
-        )
+            raise ValueError("historical research audit is read-only")
+        logical_payload = ObservationBytes(observation)
         if len(logical_payload) > self._maximum_decoded_payload_bytes:
             raise ResearchTraceCapacityError("research trace decoded payload capacity exhausted")
         payload = PersistedPayloadBytes(logical_payload)
         payload_hash = Sha256(logical_payload)
         if len(payload) > self._maximum_payload_bytes:
             raise ResearchTraceCapacityError("research trace payload capacity exhausted")
+        self.initialize()
         database = self._database_for(event.trade_date)
         with self._lock, self._writer_lock:
             existing = self._existing_row(event.freeze_version, event.trade_date, database)
@@ -267,14 +264,16 @@ class SQLiteFreezeTraceIndex:
                 ):
                     self._duplicate += 1
                     return
-                persisted = _observation_from_bytes(
-                    existing_payload,
-                    DecodeHash(existing["event_hash"]),
-                    maximum_decoded_bytes=self._maximum_decoded_payload_bytes,
-                )
-                if persisted.event == event and observation.research_audit is None:
-                    self._duplicate += 1
-                    return
+                if observation.research_audit is None:
+                    original = _observation_from_bytes(existing_payload, DecodeHash(existing["event_hash"]),
+                                                       maximum_decoded_bytes=self._maximum_decoded_payload_bytes)
+                    persisted = json.loads(DecodedPayloadBytes(existing_payload, maximum_bytes=self._maximum_decoded_payload_bytes))
+                    proposed = json.loads(logical_payload)
+                    if (original.event.freeze_version == event.freeze_version
+                        and CanonicalDigest({key: value for key, value in persisted.items() if key != "research_audit"})
+                        == CanonicalDigest({key: value for key, value in proposed.items() if key != "research_audit"})):
+                        self._duplicate += 1
+                        return
                 raise ResearchTraceConflictError("research trace identity conflict")
             summary = self._trace_index_summary()
             if event.trade_date not in summary.trade_dates and len(summary.trade_dates) >= self._maximum_trade_dates:
@@ -293,8 +292,8 @@ class SQLiteFreezeTraceIndex:
                     """
                     INSERT INTO committed_events (
                         freeze_id, strategy, trade_date, observed_at,
-                        freeze_hash, schema_version, event_hash, event_bytes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        freeze_hash, event_hash, event_bytes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.freeze_version,
@@ -302,7 +301,6 @@ class SQLiteFreezeTraceIndex:
                         EncodeDate(event.trade_date),
                         EncodeTime(event.observed_at),
                         EncodeHash(event.freeze_hash),
-                        _SCHEMA_VERSION,
                         EncodeHash(payload_hash),
                         payload,
                     ),
@@ -310,11 +308,10 @@ class SQLiteFreezeTraceIndex:
                 self._physical_budget.require_commit(connection, self._source_databases(), database)
             self._recorded += 1
 
-    def get(self, freeze_version: str) -> FreezeObservation | None:
+    def get(self, freeze_version: str) -> HistoricalFreezeObservation | None:
         with self._lock:
             for database in self._source_databases():
                 with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                    EnsureSqliteSchema(connection, SCHEMA)
                     row = connection.run(
                         "SELECT * FROM committed_events WHERE freeze_id = ?",
                         (freeze_version,),
@@ -339,7 +336,6 @@ class SQLiteFreezeTraceIndex:
         with self._lock:
             for database in self._source_databases():
                 with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                    EnsureSqliteSchema(connection, SCHEMA)
                     rows = connection.run("SELECT DISTINCT trade_date FROM committed_events").fetchall()
                 dates.update(DecodeDate(row["trade_date"]) for row in rows)
         return tuple(sorted(dates, reverse=True)[:limit])
@@ -353,7 +349,6 @@ class SQLiteFreezeTraceIndex:
         with self._lock:
             for database in self._source_databases():
                 with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                    EnsureSqliteSchema(connection, SCHEMA)
                     rows = connection.run(
                         """
                         SELECT trade_date, MIN(observed_at) AS observed_at
@@ -373,12 +368,11 @@ class SQLiteFreezeTraceIndex:
             for trade_date in sorted(earliest, reverse=True)[:limit]
         )
 
-    def list_by_trade_date(self, trade_date: date) -> tuple[FreezeObservation, ...]:
-        observations: dict[str, FreezeObservation] = {}
+    def list_by_trade_date(self, trade_date: date) -> tuple[HistoricalFreezeObservation, ...]:
+        observations: dict[str, HistoricalFreezeObservation] = {}
         with self._lock:
             for database in self._source_databases(trade_date):
                 with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                    EnsureSqliteSchema(connection, SCHEMA)
                     rows = connection.run(
                         "SELECT * FROM committed_events WHERE trade_date = ?",
                         (EncodeDate(trade_date),),
@@ -414,7 +408,6 @@ class SQLiteFreezeTraceIndex:
                 self._quarantined,
                 len(summary.trade_dates),
                 self._maximum_trade_dates,
-                summary.legacy_retained,
                 self._maximum_total_bytes,
                 max(0, self._maximum_total_bytes - summary.retained_bytes),
             )
@@ -450,11 +443,11 @@ class SQLiteFreezeTraceIndex:
         return tuple(databases)
 
     def _existing_row(self, freeze_version: str, trade_date: date, database: Path) -> sqlite3.Row | None:
-        for source in dict.fromkeys((*self._source_databases(trade_date), database)):
+        for source in (database,):
             if not source.is_file():
                 continue
             with SqliteSession(source, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, SCHEMA)
+                EnsureSqliteSchema(connection, SCHEMA, exact=True)
                 row = connection.run(
                     "SELECT event_hash, event_bytes FROM committed_events WHERE freeze_id = ?",
                     (freeze_version,),
@@ -466,7 +459,6 @@ class SQLiteFreezeTraceIndex:
     def _trace_index_summary(self) -> TraceIndexSummary:
         retained = 0
         retained_bytes = 0
-        legacy_retained = 0
         dates: set[date] = set()
         databases = self._source_databases()
         self._summaries = {path: value for path, value in self._summaries.items() if path in databases}
@@ -475,16 +467,15 @@ class SQLiteFreezeTraceIndex:
             cached = self._summaries.get(database)
             if cached is None or cached.signature != signature:
                 with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                    EnsureSqliteSchema(connection, SCHEMA)
                     rows = connection.run("SELECT trade_date,COUNT(*),COALESCE(SUM(LENGTH(event_bytes)),0) FROM committed_events GROUP BY trade_date").fetchall()
-                summary = TraceIndexSummary(sum(int(row[1]) for row in rows), sum(int(row[2]) for row in rows), frozenset(DecodeDate(row[0]) for row in rows), 0)
+                summary = TraceIndexSummary(sum(int(row[1]) for row in rows), sum(int(row[2]) for row in rows), frozenset(DecodeDate(row[0]) for row in rows))
                 cached = _PartitionSummary(signature, summary)
                 if signature == _partition_signature(database):
                     self._summaries[database] = cached
             retained += cached.summary.retained
             retained_bytes += cached.summary.retained_bytes
             dates.update(cached.summary.trade_dates)
-        return TraceIndexSummary(retained, retained_bytes, frozenset(dates), legacy_retained)
+        return TraceIndexSummary(retained, retained_bytes, frozenset(dates))
 
     def _quarantine_invalid_rows(self, connection: SqliteConnection) -> int:
         quarantined = 0
@@ -507,15 +498,14 @@ def _verified_event(
     row: sqlite3.Row,
     *,
     maximum_decoded_bytes: int = DEFAULT_DECODED_PAYLOAD_BYTES,
-) -> FreezeObservation:
+) -> HistoricalFreezeObservation:
     persisted_payload = bytes(row["event_bytes"])
     payload = DecodedPayloadBytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
-    row_schema = str(row["schema_version"])
-    if row_schema not in {LEGACY_RESEARCH_EVENT_SCHEMA_VERSION, RESEARCH_EVENT_SCHEMA_VERSION}:
-        raise ValueError("research event row schema is invalid")
     raw = json.loads(payload)
-    if not isinstance(raw, dict) or raw.get("schema_version") != row_schema:
-        raise ValueError("research event row and payload schema mismatch")
+    if not isinstance(raw, dict):
+        raise ValueError("research event must be an object")
+    if "schema_version" in row.keys() and raw.get("schema_version") != row["schema_version"]:
+        raise ValueError("historical row metadata does not match its original payload")
     observation = _observation_from_bytes(
         persisted_payload,
         DecodeHash(row["event_hash"]),
@@ -538,27 +528,21 @@ def _observation_from_bytes(
     payload_hash: str,
     *,
     maximum_decoded_bytes: int = DEFAULT_DECODED_PAYLOAD_BYTES,
-) -> FreezeObservation:
+) -> HistoricalFreezeObservation:
     payload = DecodedPayloadBytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
     if Sha256(payload) != payload_hash:
         raise ValueError("research event payload hash mismatch")
     raw = json.loads(payload)
     if not isinstance(raw, dict):
         raise ValueError("research event payload must be an object")
-    return _observation_from_dict(cast(dict[str, object], raw))
+    return _observation_from_dict(cast(dict[str, object], raw), persisted_payload, payload_hash)
 
 
-def _observation_from_dict(raw: dict[str, object]) -> FreezeObservation:
-    schema_version = raw.get("schema_version")
-    if schema_version not in {
-        LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-        RESEARCH_EVENT_SCHEMA_VERSION,
-    }:
-        raise ValueError("research event schema is invalid")
+def _observation_from_dict(raw: dict[str, object], event_bytes: bytes, event_hash: str) -> HistoricalFreezeObservation:
     stage = _text(raw, "stage")
     if stage not in {"local", "hybrid"}:
         raise ValueError("research event stage is invalid")
-    event = FreezeCommitted(
+    event = HistoricalFreezeCommitted(
         event_id=_text(raw, "event_id"),
         strategy=Strategy(_text(raw, "strategy")),
         trade_date=date.fromisoformat(_text(raw, "trade_date")),
@@ -570,22 +554,15 @@ def _observation_from_dict(raw: dict[str, object]) -> FreezeObservation:
         input_versions=_text_pairs(raw.get("input_versions"), "input_versions"),
         config_version=_text(raw, "config_version"),
         strategy_version=_text(raw, "strategy_version"),
-        fusion_version=_text(raw, "fusion_version"),
-        schema_version=_text(raw, "freeze_schema_version"),
         filter_aggregates=_count_pairs(raw.get("filter_aggregates")),
         degraded_reasons=tuple(_strings(raw.get("degraded_reasons"), "degraded_reasons")),
         items=tuple(_item(_object(item, "item")) for item in _list(raw.get("items"), "items")),
     )
     audit_raw = raw.get("research_audit")
     audit = None if audit_raw is None else _audit(_object(audit_raw, "research_audit"))
-    expected_audit_schema = (
-        LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION
-        if schema_version == LEGACY_RESEARCH_EVENT_SCHEMA_VERSION
-        else RESEARCH_AUDIT_SCHEMA_VERSION
-    )
-    if audit is not None and audit.schema_version != expected_audit_schema:
-        raise ValueError("research event and audit schemas must advance together")
-    return FreezeObservation(event, cast(ResearchAuditIdentity | None, audit))
+    if audit is not None and (audit.freeze_version != event.freeze_version or audit.freeze_hash != event.freeze_hash):
+        raise ValueError("historical research audit identity mismatch")
+    return HistoricalFreezeObservation(event, audit, event_bytes, event_hash)
 
 
 def _item(raw: dict[str, object]) -> CommittedFreezeItem:
@@ -603,38 +580,32 @@ def _item(raw: dict[str, object]) -> CommittedFreezeItem:
     )
 
 
-def _audit(raw: dict[str, object]) -> CommittedResearchAudit:
-    schema_version = _text(raw, "schema_version")
-    is_current_schema = schema_version == RESEARCH_AUDIT_SCHEMA_VERSION
-    if schema_version not in {LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION, RESEARCH_AUDIT_SCHEMA_VERSION}:
-        raise ValueError("research audit schema is invalid")
-    audit = CommittedResearchAudit(
-        freeze_version=_text(raw, "freeze_version"),
-        freeze_hash=_text(raw, "freeze_hash"),
+def _audit(raw: dict[str, object]) -> HistoricalResearchAudit:
+    original_hash = _text(raw, "content_hash")
+    if CanonicalDigest({key: value for key, value in raw.items() if key != "content_hash"}) != original_hash:
+        raise ValueError("historical research audit original hash mismatch")
+    evidence_fields = {"input_observed_at", "point_in_time_population", "point_in_time_population_hash"}
+    recorded = evidence_fields.intersection(raw)
+    if recorded and recorded != evidence_fields:
+        raise ValueError("historical point-in-time evidence is incomplete")
+    audit = HistoricalResearchAudit(
+        freeze_version=_text(raw, "freeze_version"), freeze_hash=_text(raw, "freeze_hash"),
         input_version=_text(raw, "input_version"),
         hard_filter_aggregates=_count_pairs(raw.get("hard_filter_aggregates")),
-        passed_candidates=tuple(
-            _candidate_audit(_object(item, "passed_candidate"))
-            for item in _list(raw.get("passed_candidates"), "passed_candidates")
-        ),
+        passed_candidates=tuple(_candidate_audit(_object(item, "passed_candidate"))
+            for item in _list(raw.get("passed_candidates"), "passed_candidates")),
         production_local=_freeze_set_audit(_object(raw.get("production_local"), "production_local")),
         research_shadow=_freeze_set_audit(_object(raw.get("research_shadow"), "research_shadow")),
         shadow_mode=cast(ShadowMode, _text(raw, "shadow_mode")),
         deepseek_request_delta=_integer(raw, "deepseek_request_delta"),
-        schema_version=schema_version,
-        input_observed_at=(datetime.fromisoformat(_text(raw, "input_observed_at")) if is_current_schema else None),
-        point_in_time_population=(
-            tuple(
-                _population_audit(_object(item, "point_in_time_population"))
-                for item in _list(raw.get("point_in_time_population"), "point_in_time_population")
-            )
-            if is_current_schema
-            else ()
-        ),
-        point_in_time_population_hash=(_text(raw, "point_in_time_population_hash") if is_current_schema else ""),
+        input_observed_at=datetime.fromisoformat(_text(raw, "input_observed_at")) if recorded else None,
+        point_in_time_population=tuple(_population_audit(_object(item, "point_in_time_population"))
+            for item in _list(raw.get("point_in_time_population"), "point_in_time_population")) if recorded else None,
+        point_in_time_population_hash=_text(raw, "point_in_time_population_hash") if recorded else None,
+        content_hash=original_hash,
     )
-    if audit.content_hash != _text(raw, "content_hash"):
-        raise ValueError("research audit content hash mismatch")
+    if audit.deepseek_request_delta != 0 or (recorded and not HasCompleteResearchEvidence(audit)):
+        raise ValueError("historical research evidence is invalid")
     return audit
 
 
@@ -727,8 +698,6 @@ def _freeze_candidate_audit(raw: dict[str, object]) -> ResearchFreezeCandidateAu
 
 
 __all__ = [
-    "LEGACY_RESEARCH_EVENT_SCHEMA_VERSION",
-    "RESEARCH_EVENT_SCHEMA_VERSION",
     "ResearchTraceConflictError",
     "ResearchTraceLimits",
     "SQLiteFreezeTraceIndex",

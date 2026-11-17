@@ -114,7 +114,7 @@ class CachePolicy:
         object.__setattr__(self, "groups", MappingProxyType(group_copy))
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True)
 class CacheIdentity:
     dataset: str
     source: str
@@ -122,9 +122,8 @@ class CacheIdentity:
     request_key: CacheRequestKey
     trade_date: str
     phase: str
-    source_contract_version: str
+    source_contract_version: str | None
     config_version: str
-    schema_version: str
 
     def __post_init__(self) -> None:
         values = (
@@ -133,12 +132,12 @@ class CacheIdentity:
             self.subject_key,
             self.trade_date,
             self.phase,
-            self.source_contract_version,
             self.config_version,
-            self.schema_version,
         )
         if any(not value.strip() for value in values):
             raise ValueError("cache identity fields must not be empty")
+        if self.source_contract_version is not None and not self.source_contract_version.strip():
+            raise ValueError("source contract must be nonempty when supplied")
 
 
 @dataclass(frozen=True)
@@ -149,9 +148,8 @@ class CacheIdentitySpec:
     request: Mapping[str, object]
     trade_date: str
     phase: str
-    source_contract_version: str
+    source_contract_version: str | None
     config_version: str
-    schema_version: str
 
 
 @dataclass(frozen=True)
@@ -232,7 +230,6 @@ def BuildCacheIdentity(spec: CacheIdentitySpec) -> CacheIdentity:
         phase=normalized_phase,
         source_contract_version=spec.source_contract_version,
         config_version=spec.config_version,
-        schema_version=spec.schema_version,
     )
 
 

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
-from dataclasses import replace
+import base64
+import json
+from dataclasses import fields, replace
+from pathlib import Path
 from datetime import date, datetime, timedelta
 from hashlib import sha256
 from zoneinfo import ZoneInfo
@@ -10,7 +13,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.recommendation.publication.freeze_identity import freeze
-from trader.infra.sqlite_codec import EncodeDate, EncodeHash, EncodeTime
 from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
     SqliteSession,
@@ -19,18 +21,21 @@ from trader.infra.sqlite_connection import (
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
     BuildFreezeCommitted,
     FreezeObservation,
+    HistoricalFreezeObservation,
 )
 from trader.recommendation.infra.persistence.freeze_trace_index import (
-    LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
     ResearchTraceConflictError,
     ResearchTraceLimits,
     SQLiteFreezeTraceIndex,
+    _observation_from_bytes,
 )
 from trader.recommendation.infra.persistence.trace_capacity import ResearchTraceCapacityError
 from trader.recommendation.infra.persistence.trace_projection import ObservationBytes
+from trader.recommendation.infra.persistence.trace_codec import DEFAULT_DECODED_PAYLOAD_BYTES, DecodedPayloadBytes, PersistedPayloadBytes
 from trader.training.application.research_audit import (
-    LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
+    HistoricalResearchAudit,
+    HasCompleteResearchEvidence,
     PointInTimePopulationHash,
     ResearchCandidateAudit,
     ResearchFreezeCandidateAudit,
@@ -38,6 +43,32 @@ from trader.training.application.research_audit import (
     ResearchPopulationAudit,
 )
 from trader.training.infra.research.research_trace_index import ResearchTraceIndex
+
+
+def _assert_original_observation(saved, original):
+    assert isinstance(saved, HistoricalFreezeObservation)
+    for field in fields(saved.event):
+        assert getattr(saved.event, field.name) == getattr(original.event, field.name)
+    if original.research_audit is None:
+        assert saved.research_audit is None
+    else:
+        assert isinstance(saved.research_audit, HistoricalResearchAudit)
+        for field in fields(saved.research_audit):
+            assert getattr(saved.research_audit, field.name) == getattr(original.research_audit, field.name)
+    assert saved.event_hash == sha256(ObservationBytes(original)).hexdigest()
+    return saved
+
+
+def _original_historical_observation(key):
+    path = Path(__file__).parents[3] / "fixtures/recommendation/history_553e9cc0.json"
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+    payload = base64.b64decode(fixture[f"{key}_base64"])
+    observation = _observation_from_bytes(payload, fixture[f"{key}_hash"])
+    assert observation.event_bytes == payload
+    assert observation.event_hash == fixture[f"{key}_hash"]
+    original = json.loads(DecodedPayloadBytes(payload, maximum_bytes=DEFAULT_DECODED_PAYLOAD_BYTES))
+    assert observation.research_audit.content_hash == original["research_audit"]["content_hash"]
+    return observation
 
 
 def _persistent_event(value):
@@ -76,7 +107,7 @@ def test_physical_capacity_rejection_preserves_old_audit_and_allows_duplicate(tm
     restricted.record(first)
     with pytest.raises(ResearchTraceCapacityError, match="physical"):
         restricted.record(FreezeObservation(_persistent_event(freeze(sequence=2)), None))
-    assert existing.get(first.event.freeze_version) == first
+    _assert_original_observation(existing.get(first.event.freeze_version), first)
     assert existing.status().retained == 1
 
 
@@ -130,54 +161,38 @@ def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_pat
 
     reopened = SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture())
     reopened.initialize()
-    assert reopened.get(event.freeze_version) == observation
+    saved = _assert_original_observation(reopened.get(event.freeze_version), observation)
     assert reopened.list_trade_dates(limit=4) == (event.trade_date,)
-    assert reopened.list_by_trade_date(event.trade_date) == (observation,)
+    assert reopened.list_by_trade_date(event.trade_date) == (saved,)
     assert reopened.status().retained == 1
     assert first.status().duplicate == 1
 
 
-def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_evidence(tmp_path) -> None:
-    event = _persistent_event(freeze())
-    legacy_audit = _legacy_audit(event.freeze_version, event.freeze_hash)
-    observation = FreezeObservation(event, legacy_audit)
-    evidence = SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture())
-    evidence.initialize()
-
+def test_saved_missing_population_is_read_only_and_ineligible_for_current_training(tmp_path) -> None:
+    historical = _original_historical_observation("legacy_event")
+    audit = historical.research_audit
+    assert isinstance(audit, HistoricalResearchAudit)
+    assert audit.input_observed_at is None
+    assert audit.point_in_time_population is None
+    assert audit.point_in_time_population_hash is None
+    assert not HasCompleteResearchEvidence(audit)
+    assert ResearchTraceIndex(lambda _day: (historical,)).latest_point_in_time_observation(
+        historical.event.trade_date, historical.event.strategy
+    ) is None
     with pytest.raises(ValueError, match="read-only"):
-        evidence.record(observation)
+        SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture()).record(historical)
+    assert not tuple(tmp_path.iterdir())
 
-    payload = ObservationBytes(
-        observation,
-        schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-        legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-        current_schema_version="research_committed_event",
+
+def test_saved_complete_population_is_available_at_its_original_cutoff_and_hash() -> None:
+    historical = _original_historical_observation("event")
+    assert isinstance(historical.research_audit, HistoricalResearchAudit)
+    assert HasCompleteResearchEvidence(historical.research_audit)
+    selected = ResearchTraceIndex(lambda _day: (historical,)).latest_point_in_time_observation(
+        historical.event.trade_date, historical.event.strategy
     )
-    database = tmp_path / "traces" / f"{event.trade_date.isoformat()}.sqlite3"
-    from trader.recommendation.infra.persistence.trace_schema import InitializeDatabase
-
-    InitializeDatabase(database, set(), sqlite_policy=SqlitePolicyFixture())
-    with SqliteSession(database) as connection, SqliteTransaction(connection):
-        connection.run(
-            """
-            INSERT INTO committed_events (
-                freeze_id, strategy, trade_date, observed_at,
-                freeze_hash, schema_version, event_hash, event_bytes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.freeze_version,
-                event.strategy.value,
-                EncodeDate(event.trade_date),
-                EncodeTime(event.observed_at),
-                EncodeHash(event.freeze_hash),
-                LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-                sha256(payload).digest(),
-                payload,
-            ),
-        )
-
-    assert SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture()).get(event.freeze_version) == observation
+    assert selected == historical
+    assert not isinstance(selected, FreezeObservation)
 
 
 def test_point_in_time_population_survives_restart_and_obeys_cutoff(tmp_path) -> None:
@@ -204,12 +219,12 @@ def test_point_in_time_population_survives_restart_and_obeys_cutoff(tmp_path) ->
 
     reopened = SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture())
 
-    assert reopened.get(before_event.freeze_version) == before_observation
+    saved = _assert_original_observation(reopened.get(before_event.freeze_version), before_observation)
     assert (
         ResearchTraceIndex(reopened.list_by_trade_date).latest_point_in_time_observation(
             before.trade_date, before.strategy
         )
-        == before_observation
+        == saved
     )
 
 
@@ -317,19 +332,16 @@ def test_full_market_research_audit_is_compressed_and_survives_restart(tmp_path)
         point_in_time_population_hash=PointInTimePopulationHash(population),
     )
     observation = FreezeObservation(event, expanded_audit)
-    logical_payload = ObservationBytes(
-        observation,
-        schema_version="research_committed_event",
-        legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-        current_schema_version="research_committed_event",
-    )
+    logical_payload = ObservationBytes(observation)
     assert len(logical_payload) > 4 * 1024 * 1024
 
     evidence = SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture())
     evidence.record(observation)
 
     assert 0 < evidence.status().retained_bytes < 4 * 1024 * 1024
-    assert SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture()).get(event.freeze_version) == observation
+    _assert_original_observation(
+        SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture()).get(event.freeze_version), observation
+    )
 
 
 def test_research_trace_rejects_compressed_payload_over_decoded_limit(tmp_path) -> None:
@@ -361,7 +373,7 @@ def test_committed_event_trace_rejects_total_bytes_without_deleting_rows(tmp_pat
     with pytest.raises(RuntimeError, match="capacity"):
         evidence.record(second)
 
-    assert evidence.get(first.event.freeze_version) == first
+    _assert_original_observation(evidence.get(first.event.freeze_version), first)
     assert evidence.status().retained == 1
 
 
@@ -383,67 +395,57 @@ def test_committed_event_trace_rotates_by_trade_date_and_preserves_previous_part
     partitioned.record(second)
 
     assert legacy_path.read_bytes() == legacy_bytes
-    assert partitioned.get(first.event.freeze_version) == first
-    assert partitioned.get(second.event.freeze_version) == second
+    _assert_original_observation(partitioned.get(first.event.freeze_version), first)
+    _assert_original_observation(partitioned.get(second.event.freeze_version), second)
     assert partitioned.list_trade_dates(limit=4) == (second.event.trade_date, first.event.trade_date)
-    assert partitioned.status().legacy_retained == 0
     assert partitioned.status().trade_dates == 2
     assert partitioned.status().trade_date_capacity == 120
 
 
 def test_full_previous_partition_does_not_block_a_new_trade_date(tmp_path) -> None:
     first = FreezeObservation(_persistent_event(freeze(sequence=1)), None)
-    probe = SQLiteFreezeTraceIndex(tmp_path / "probe", sqlite_policy=SqlitePolicyFixture())
-    probe.record(first)
-    payload_bytes = probe.status().retained_bytes
-    legacy = SQLiteFreezeTraceIndex(
-        tmp_path,
-        limits=ResearchTraceLimits(payload_bytes=payload_bytes, trade_date_bytes=payload_bytes), sqlite_policy=SqlitePolicyFixture(),
-    )
-    legacy.record(first)
-
-    next_identity = freeze(sequence=2)
-    next_identity = replace(
-        next_identity,
-        trade_date=next_identity.trade_date + timedelta(days=1),
-        observed_at=next_identity.observed_at + timedelta(days=1),
-    )
-    partitioned = SQLiteFreezeTraceIndex(
-        tmp_path,
-        limits=ResearchTraceLimits(
-            payload_bytes=payload_bytes,
-            trade_date_bytes=payload_bytes,
-            total_bytes=payload_bytes * 3,
-        ), sqlite_policy=SqlitePolicyFixture(),
-    )
-    partitioned.record(FreezeObservation(_persistent_event(next_identity), None))
-
-    assert partitioned.status().retained == 2
-    assert partitioned.status().remaining_bytes > 0
-
-
-def test_evidence_capacity_rejects_a_new_partition_without_creating_an_empty_database(tmp_path) -> None:
-    first = FreezeObservation(_persistent_event(freeze(sequence=1)), None)
-    probe = SQLiteFreezeTraceIndex(tmp_path / "probe", sqlite_policy=SqlitePolicyFixture())
-    probe.record(first)
-    payload_bytes = probe.status().retained_bytes
-    evidence = SQLiteFreezeTraceIndex(
-        tmp_path,
-        limits=ResearchTraceLimits(
-            payload_bytes=payload_bytes + 1,
-            trade_date_bytes=payload_bytes + 1,
-            total_bytes=payload_bytes + 1,
-        ), sqlite_policy=SqlitePolicyFixture(),
-    )
-    evidence.record(first)
     next_identity = replace(
         freeze(sequence=2),
         trade_date=first.event.trade_date + timedelta(days=1),
         observed_at=first.event.observed_at + timedelta(days=1),
     )
+    second = FreezeObservation(_persistent_event(next_identity), None)
+    payload_bytes = max(len(PersistedPayloadBytes(ObservationBytes(item))) for item in (first, second))
+    limits = ResearchTraceLimits(
+        events_per_trade_date=1, payload_bytes=payload_bytes,
+        trade_date_bytes=payload_bytes, total_bytes=payload_bytes * 3,
+    )
+    previous = SQLiteFreezeTraceIndex(tmp_path, limits=limits, sqlite_policy=SqlitePolicyFixture())
+    previous.record(first)
+    partitioned = SQLiteFreezeTraceIndex(tmp_path, limits=limits, sqlite_policy=SqlitePolicyFixture())
+    partitioned.record(second)
+
+    assert partitioned.status().retained == 2
+    assert partitioned.status().remaining_bytes > 0
+    assert partitioned.list_by_trade_date(first.event.trade_date) == (previous.get(first.event.freeze_version),)
+
+
+def test_evidence_capacity_rejects_a_new_partition_without_creating_an_empty_database(tmp_path) -> None:
+    first = FreezeObservation(_persistent_event(freeze(sequence=1)), None)
+    next_identity = replace(
+        freeze(sequence=2),
+        trade_date=first.event.trade_date + timedelta(days=1),
+        observed_at=first.event.observed_at + timedelta(days=1),
+    )
+    second = FreezeObservation(_persistent_event(next_identity), None)
+    sizes = tuple(len(PersistedPayloadBytes(ObservationBytes(item))) for item in (first, second))
+    payload_bytes = max(sizes)
+    assert payload_bytes < sum(sizes)
+    evidence = SQLiteFreezeTraceIndex(
+        tmp_path,
+        limits=ResearchTraceLimits(
+            payload_bytes=payload_bytes, trade_date_bytes=payload_bytes, total_bytes=payload_bytes,
+        ), sqlite_policy=SqlitePolicyFixture(),
+    )
+    evidence.record(first)
 
     with pytest.raises(ResearchTraceCapacityError, match="total capacity"):
-        evidence.record(FreezeObservation(_persistent_event(next_identity), None))
+        evidence.record(second)
 
     rejected_partition = tmp_path / "traces" / f"{next_identity.trade_date.isoformat()}.sqlite3"
     assert not rejected_partition.exists()
@@ -456,10 +458,12 @@ def test_formal_replay_without_audit_preserves_existing_committed_audit(tmp_path
     evidence = SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture())
     evidence.initialize()
     evidence.record(FreezeObservation(event, audit))
+    original = evidence.get(event.freeze_version)
 
     evidence.record(FreezeObservation(event, None))
 
-    assert evidence.get(event.freeze_version) == FreezeObservation(event, audit)
+    _assert_original_observation(evidence.get(event.freeze_version), FreezeObservation(event, audit))
+    assert evidence.get(event.freeze_version) == original
     assert evidence.status().duplicate == 1
 
 
@@ -479,7 +483,7 @@ def _audit(freeze_version: str, freeze_hash: str) -> CommittedResearchAudit:
     )
 
 
-def _legacy_audit(freeze_version: str, freeze_hash: str) -> CommittedResearchAudit:
+def _audit_components(freeze_version: str):
     freeze_set = ResearchFreezeSetAudit(
         freeze_version=freeze_version,
         candidates=(
@@ -504,35 +508,26 @@ def _legacy_audit(freeze_version: str, freeze_hash: str) -> CommittedResearchAud
             ),
         ),
     )
-    return CommittedResearchAudit(
-        freeze_version=freeze_version,
-        freeze_hash=freeze_hash,
-        input_version="native-input",
-        hard_filter_aggregates=(("main:st_or_delisting", 2),),
-        passed_candidates=(
-            ResearchCandidateAudit(
-                code="600001",
-                board="main",
-                industry="equipment",
-                candidate_components=(("liquidity", 80.0),),
-                missing_mask=(),
-                coverage_ratio=1.0,
-                board_reliability=1.0,
-                candidate_score=84.0,
-                candidate_rank=1,
-                production_top120=True,
-                preselection_status="selected_for_full_scoring",
-            ),
+    passed_candidates = (
+        ResearchCandidateAudit(
+            code="600001",
+            board="main",
+            industry="equipment",
+            candidate_components=(("liquidity", 80.0),),
+            missing_mask=(),
+            coverage_ratio=1.0,
+            board_reliability=1.0,
+            candidate_score=84.0,
+            candidate_rank=1,
+            production_top120=True,
+            preselection_status="selected_for_full_scoring",
         ),
-        production_local=freeze_set,
-        research_shadow=freeze_set,
-        shadow_mode="control_copy",
-        schema_version=LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     )
+    return freeze_set, passed_candidates
 
 
 def _point_in_time_audit(freeze_version: str, freeze_hash: str, observed_at: datetime) -> CommittedResearchAudit:
-    legacy = _legacy_audit(freeze_version, freeze_hash)
+    freeze_set, passed_candidates = _audit_components(freeze_version)
     population = (
         ResearchPopulationAudit(
             code="600001",
@@ -569,14 +564,14 @@ def _point_in_time_audit(freeze_version: str, freeze_hash: str, observed_at: dat
         ),
     )
     return CommittedResearchAudit(
-        freeze_version=legacy.freeze_version,
-        freeze_hash=legacy.freeze_hash,
-        input_version=legacy.input_version,
-        hard_filter_aggregates=legacy.hard_filter_aggregates,
-        passed_candidates=legacy.passed_candidates,
-        production_local=legacy.production_local,
-        research_shadow=legacy.research_shadow,
-        shadow_mode=legacy.shadow_mode,
+        freeze_version=freeze_version,
+        freeze_hash=freeze_hash,
+        input_version="native-input",
+        hard_filter_aggregates=(("main:st_or_delisting", 2),),
+        passed_candidates=passed_candidates,
+        production_local=freeze_set,
+        research_shadow=freeze_set,
+        shadow_mode="control_copy",
         input_observed_at=observed_at,
         point_in_time_population=population,
         point_in_time_population_hash=PointInTimePopulationHash(population),

@@ -180,7 +180,6 @@ def Collect(args: argparse.Namespace, *, project_root: Path) -> dict[str, object
                     }
                 )
     return {
-        "schema_version": "research-source-comparison",
         "status": "degraded" if failures else "passed",
         "observed_at": now.isoformat(),
         "required_fields": ["announcements", "financial", "pledge", "unlock"],

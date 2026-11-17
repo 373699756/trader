@@ -2354,7 +2354,6 @@
     }
   },
   "factor_contract": {
-    "feature_schema": "market_feature_batch",
     "percentage_unit": "percentage_points",
     "realtime_price_adjustment": "none",
     "history_price_adjustment": "forward",

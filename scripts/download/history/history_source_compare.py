@@ -25,6 +25,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
@@ -56,9 +57,9 @@ class _ComparisonSupplier:
     def load_context(self, _as_of: date, _sessions: int) -> HistorySupplierContext:
         return self.context
 
-    def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+    def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...], *, request_budget: PriceReviewRequestBudget | None = None) -> PublishedHistoryWindow:
         if self.tencent_first:
-            return FetchTencentHistoryWindow(self.prices, security, dates, self.context.calendar.open_dates)
+            return FetchTencentHistoryWindow(self.prices, security, dates, self.context.calendar.open_dates, request_budget=request_budget)
         batch = self.baseline.fetch_code(security, dates).batch
         return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in batch.cells))
 
@@ -151,7 +152,6 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float, 
             raise ValueError("comparison_source_invalid")
         selected_source = source
     return {
-        "schema_version": "history-source-comparison",
         "status": "passed" if len(qualified) == 2 else "degraded",
         "summary": {
             "code_count": len(codes),
@@ -181,7 +181,6 @@ def Main() -> int:
     except (OSError, RuntimeError, ValueError) as exc:
         emit_report(
             {
-                "schema_version": "history-source-comparison",
                 "status": "failed",
                 "summary": {"failure": type(exc).__name__},
             }

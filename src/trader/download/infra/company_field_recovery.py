@@ -25,14 +25,14 @@ from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EVI
 from trader.infra.sqlite_connection import SqliteConnection
 
 COMPANY_FIELD_RULES = (
-    ("start_date", "explicit_reduction_start_date:2"),
-    ("end_date", "explicit_reduction_end_date:2"),
-    ("planned_pct", "reduction_total_capital_ratio:3"),
-    ("completion_disclosed_at", "explicit_reduction_completion:1"),
-    ("actual_pct", "implemented_total_capital_ratio:3"),
-    ("repurchase_purpose", "explicit_repurchase_purpose:2"),
+    ("start_date", "explicit_reduction_start_date"),
+    ("end_date", "explicit_reduction_end_date"),
+    ("planned_pct", "reduction_total_capital_ratio"),
+    ("completion_disclosed_at", "explicit_reduction_completion"),
+    ("actual_pct", "implemented_total_capital_ratio"),
+    ("repurchase_purpose", "explicit_repurchase_purpose"),
 ) + COMPANY_CONTRACT_FIELD_RULES + (("revenue_disclosed_at", COMPANY_ANNUAL_REPORT_DISCLOSURE_RULE),)
-_REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence:1"
+_REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence"
 _FIELD_SOURCE_PROOF_REQUIRED = "field_source_proof_required"
 _MATERIAL_REVIEW_REASONS = frozenset({
     "subject_unverified", "conclusion_unverified", "case_conclusion_ambiguous",
@@ -374,8 +374,11 @@ def ReadCompanyFieldRecovery(
     codes: Sequence[str],
     observed_at: datetime,
     raw_root: Path,
+    *, field_rule_hash: bytes,
 ) -> tuple[CompanyFieldRecovery, ...]:
     """Read a plan from existing facts and current source versions without writing either DB."""
+    if len(field_rule_hash) != 32:
+        raise ValueError("company_field_rule_hash_invalid")
     recoveries: list[CompanyFieldRecovery] = []
     for offset in range(0, len(codes), 128):
         facts = tuple(replace(fact, risk_events=tuple(
@@ -410,7 +413,7 @@ def ReadCompanyFieldRecovery(
             for item in PlanCompanyFieldRecovery(gaps, tuple(materials), observed_at):
                 # A processed attempt is not proof of non-disclosure, and is not a
                 # reason to request unchanged material again with the same rule.
-                rule = _field_attempt_rule(item.gap)
+                rule = _field_attempt_rule(item.gap) + ":" + field_rule_hash.hex()
                 attempted = collected.run(
                     "SELECT 1 FROM company_field_repairs f JOIN disclosures d ON d.id=f.disclosure_id "
                     "AND d.record_hash=f.record_hash JOIN disclosure_codes c ON c.disclosure_id=d.id AND c.code=f.code "

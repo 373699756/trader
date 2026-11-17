@@ -41,7 +41,7 @@ def _resources() -> dict[str, object]:
 def _payload(number: int = 1, mode: str = "candidate") -> dict[str, object]:
     source = _result(number, mode, (0.8, 1.0, 1.0))
     payload = deepcopy(_mapping(source.payload))
-    payload.update(schema_version="training-alignment-diagnostic", benchmark_mode=mode)
+    payload.update(benchmark_mode=mode)
     summary = _mapping(payload["summary"])
     summary.update(
         input_mode="published_history_read_only",

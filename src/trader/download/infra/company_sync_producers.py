@@ -22,6 +22,7 @@ from trader.download.domain.company_sync import (
     CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult,
 )
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, ReadRequiredCompanyMaterialDependencies
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_raw_files import CompanyRawCapacityError
@@ -202,7 +203,7 @@ class CompanyAnnouncementProducer:
         with self._session(self._material.path) as connection, SqliteTransaction(connection):
             dependencies = ReadRequiredCompanyMaterialDependencies(connection, self._extraction_hash)
             with self._session(self._material.facts_path) as formal, SqliteTransaction(formal):
-                recoveries = ReadCompanyFieldRecovery(formal, connection, scope.codes, scope.cutoff, self._material.path.parent)
+                recoveries = ReadCompanyFieldRecovery(formal, connection, scope.codes, scope.cutoff, self._material.path.parent, field_rule_hash=CompanyFieldProofRulesHash())
                 valid = frozenset((item.code, item.source, item.evidence_id, item.record_hash, item.body_hash) for item in dependencies
                     if item.code in scope.codes and formal.run("SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=? AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='valid'",
                     (item.code, item.source, item.evidence_id, item.record_hash, item.body_hash, self._extraction_hash)).fetchone() is not None)

@@ -102,13 +102,13 @@ class SQLiteCompanyNormalizedIndex:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._session(self.path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection:
-            EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
+            EnsureSqliteSchema(connection, _SCHEMA, allow_create=True, exact=True)
         self._facts.initialize()
 
     def validate_existing(self) -> None:
         if self.path.exists():
             with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, _SCHEMA)
+                EnsureSqliteSchema(connection, _SCHEMA, exact=True)
 
     def seed(self, baseline: CompanyNormalizationBaseline) -> None:
         """Accept an explicit immutable baseline once; never read or migrate its source database."""

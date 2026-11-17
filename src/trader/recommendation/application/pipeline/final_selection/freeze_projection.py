@@ -389,7 +389,7 @@ def BuildScoredLocal(
         sequence=sequence,
         config_version=native_input.config_version,
         strategy_version=policy.strategy_version,
-        fusion_version=policy.fusion_version,
+
         market_epoch_version=f"native-market:{input_version}",
         candidate_epoch_version=(f"native-candidate:{input_version}" if native_input.candidate_features else None),
         research_epoch_version=None,
@@ -600,7 +600,7 @@ def BuildScoredHybrid(
         sequence=projection.local.sequence + 1,
         config_version=projection.native_input.config_version,
         strategy_version=policy.strategy_version,
-        fusion_version=policy.fusion_version,
+
         market_epoch_version=projection.local_epoch.market_epoch_version,
         candidate_epoch_version=projection.local_epoch.candidate_epoch_version,
         research_epoch_version=None,
@@ -677,7 +677,7 @@ def _scored_freeze(
         + tuple((f"board_population:{board}", version) for board, version in sorted(epoch.population_versions.items())),
         config_version=epoch.config_version,
         strategy_version=epoch.strategy_version,
-        fusion_version=epoch.fusion_version,
+
         items=tuple(
             _freeze_item(
                 item,

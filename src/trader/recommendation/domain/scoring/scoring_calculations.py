@@ -212,7 +212,6 @@ class PopulationVersionIdentity:
     trade_date: str
     phase: str
     data_version: str
-    schema_version: str
     status: str
     fallback_date: str | None
     fallback_age: int | None
@@ -228,7 +227,7 @@ def BuildPopulationVersion(
         identity.trade_date,
         identity.phase,
         identity.data_version,
-        identity.schema_version,
+
         identity.status,
         identity.fallback_date,
         identity.fallback_age,

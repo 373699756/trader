@@ -32,7 +32,6 @@ class MarketTaskRunnerOptions(TypedDict):
     cache: BoundedCache[object] | None
     source_contracts: Mapping[str, str]
     config_version: str
-    schema_version: str
     wall_clock: Callable[[], datetime]
 
 
@@ -46,7 +45,6 @@ class MarketTaskRunner:
         self.cache = options["cache"]
         self.source_contracts = dict(options["source_contracts"])
         self.config_version = options["config_version"]
-        self.schema_version = options["schema_version"]
         self.wall_clock = options["wall_clock"]
 
     def run_data_task(
@@ -98,9 +96,9 @@ class MarketTaskRunner:
                 request=request,
                 trade_date=local.date().isoformat(),
                 phase=PhaseAt(local, is_trading_day=True).value,
-                source_contract_version=self.source_contracts.get(source, f"{source}-component"),
+                source_contract_version=self.source_contracts.get(source),
                 config_version=self.config_version,
-                schema_version=self.schema_version,
+
             )
         )
 

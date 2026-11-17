@@ -154,7 +154,7 @@ def test_real_publication_proves_local_fields_and_second_restart_reuses_them(tmp
         report = _run(raw, facts, directory, policy)
 
     assert report["status"] == "passed", report
-    assert report["schema_version"] == "company-field-replay"
+    assert "schema_version" not in report
     assert report["facts_backup_generation_stable"] and report["source_input_unchanged"]
     assert report["network_requests"] == report["source_data_writes"] == 0
     assert not report["production_authorized"] and not report["field_correctness_verified"]

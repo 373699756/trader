@@ -148,9 +148,9 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
             valid = valid and source.get("status") == "failed" and revision.get("update_filter_verified") is False
         revision_status = "degraded" if valid and source.get("status") != "failed" else "failed"
         return replace(result, payload=dict(source, status=revision_status))
-    schema = source.get("schema_version")
+    report_name = result.name
     summary = source.get("summary")
-    if schema == "company-resume" and isinstance(summary, Mapping) and "field_proof_recovery" in summary:
+    if report_name == "company_resume" and isinstance(summary, Mapping) and "field_proof_recovery" in summary:
         recovery = summary["field_proof_recovery"]
         valid = isinstance(recovery, Mapping) and (
             source.get("status") in ("passed", "degraded", "failed")
@@ -186,7 +186,7 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                                    and counts["recovered_objects"] == counts["planned_objects"]
                                    and counts["unreproved_fields"] == 0)
         return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
-    if schema == "company-resume" and isinstance(summary, Mapping) and "field_proof_audit" in summary:
+    if report_name == "company_resume" and isinstance(summary, Mapping) and "field_proof_audit" in summary:
         audit = summary["field_proof_audit"]
         valid = isinstance(audit, Mapping) and (
             source.get("status") in ("passed", "degraded", "failed")
@@ -207,7 +207,7 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                      and all(isinstance(audit.get(key), str) and re.fullmatch(r"[0-9a-f]{64}", audit[key]) is not None
                              for key in ("publication_hash", "extraction_hash", "current_extraction_hash", "field_rule_hash")))
         return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
-    if schema == "company-resume" and isinstance(summary, Mapping) and "consumer_audit" in summary:
+    if report_name == "company_resume" and isinstance(summary, Mapping) and "consumer_audit" in summary:
         audit = summary["consumer_audit"]
         http_requested = isinstance(audit, Mapping) and audit.get("scope") == "formal_reader_and_document_http"
         valid = isinstance(audit, Mapping) and (
@@ -260,7 +260,7 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                     and http.get("source_payload_sha256_before") == http.get("source_payload_sha256_after")
                 )
         return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
-    if schema == "company-field-replay":
+    if report_name == "company_field_replay":
         valid = (
             isinstance(source.get("status"), str) and source.get("status") in ("passed", "degraded", "failed")
             and source.get("read_only_source") is True and source.get("isolated_copy") is True
@@ -286,9 +286,9 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                     and comparison.get("missing") == [] and comparison.get("changed_requires_review") == []
                 )
         return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
-    if schema in ("company-annual-income-source", "company-structured-field-sampling"):
+    if report_name in ("company_annual_income_source", "company_structured_field_sampling"):
         return _normalize_source_probe(result, source)
-    if schema != "company-field-material":
+    if report_name != "company_field_material":
         return result
     status = source.get("status")
     if status in ("failed", "timed_out", "cancelled", "skipped", "empty"):
@@ -311,7 +311,7 @@ def _normalize_source_probe(result: DiagnosticResult, source: Mapping[str, objec
     status = source.get("status")
     if status in ("failed", "timed_out", "cancelled", "skipped", "empty"):
         return result
-    annual = source.get("schema_version") == "company-annual-income-source"
+    annual = result.name == "company_annual_income_source"
     native_statuses = ("decoded", "degraded") if annual else ("passed", "degraded")
     observation = source.get("observation_status", status)
     valid = (
@@ -360,7 +360,7 @@ def _normalize_st_source_probe(result: DiagnosticResult, source: Mapping[str, ob
     valid = (
         observation in ("observed", "degraded", "cancelled", "timed_out", "failed")
         and (status == observation or status == "degraded" and observation == "observed" or status == "failed")
-        and "schema_version" not in source and source.get("read_only") is True
+        and source.get("read_only") is True
         and type(source.get("source_data_writes")) is int and source.get("source_data_writes") == 0
         and all(source.get(name) is False for name in ("production_adopted", "field_correctness_verified", "full_market_verified"))
         and source.get("expectation_role") == "local_reference_not_absolute_truth"
@@ -1076,7 +1076,7 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
     if source.get("probe") == "st_name_history":
         _st_source_details(source, payload)
         return
-    if source.get("schema_version") == "company-field-replay":
+    if result.name == "company_field_replay":
         codes = source.get("codes")
         keys = source.get("source_keys")
         payload["summary"] = {
@@ -1122,13 +1122,13 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
             )},
         }
         return
-    if source.get("schema_version") == "company-field-material":
+    if result.name == "company_field_material":
         _material_details(source, payload)
         return
-    if source.get("schema_version") == "company-annual-income-source":
+    if result.name == "company_annual_income_source":
         _annual_income_details(source, payload)
         return
-    if source.get("schema_version") == "company-structured-field-sampling":
+    if result.name == "company_structured_field_sampling":
         _structured_field_details(source, payload)
         return
     _DETAILS.get(result.name, ProjectSummary)(result, source, payload)

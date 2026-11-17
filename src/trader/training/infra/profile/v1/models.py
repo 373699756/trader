@@ -96,11 +96,10 @@ _SHARED_INPUT_FIELDS = frozenset(
     }
 )
 _MODEL_DOCUMENT_FIELDS = frozenset(
-    {"schema_version", "profile_id", "strategy_head", "pair_content_hash", "head_content_hash", "components"}
+    {"profile_id", "strategy_head", "pair_content_hash", "head_content_hash", "components"}
 )
 _METADATA_DOCUMENT_FIELDS = frozenset(
     {
-        "schema_version",
         "profile_id",
         "strategy_head",
         "model_id",
@@ -196,7 +195,7 @@ class LearnedRankPredictor:
 def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None:
     """Publish only the two validated final-refit heads as one locked profile directory."""
     if not isinstance(pair, LearnedRankFinalPair):
-        raise ValueError("V1 publication requires a final-refit pair; diagnostic schemas are read-only")
+        raise ValueError("V1 publication requires a complete final-refit pair")
     for head in pair.heads:
         LearnedRankPredictor(head)
     model_root.mkdir(parents=True, exist_ok=True)
@@ -212,7 +211,6 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None
             directory = staging / head.strategy.value
             values = _object(CanonicalValue(head))
             model = {
-                "schema_version": "learned_rank_final_head_model",
                 "profile_id": "v1",
                 "strategy_head": head.strategy.value,
                 "pair_content_hash": pair.content_hash,
@@ -221,7 +219,6 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None
             }
             model["content_hash"] = ContentHash(model)
             metadata = {
-                "schema_version": "learned_rank_final_head_metadata",
                 "profile_id": "v1",
                 "strategy_head": head.strategy.value,
                 "model_id": "learned_rank",
@@ -389,7 +386,7 @@ def _validate_metadata_identity(metadata: Mapping[str, object], strategy: Strate
         "feature_ids": list(LEARNED_RANK_FEATURE_IDS),
         "algorithm": "lightgbm_lambdarank_ridge",
     }
-    if metadata["schema_version"] != "learned_rank_final_head_metadata" or any(
+    if any(
         type(metadata[key]) is not type(value) or metadata[key] != value for key, value in expected.items()
     ):
         raise ModelBundleContractError("V1 model identity is invalid")
@@ -468,12 +465,7 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankFinalPair:
         }
         if metadata["model_hash"] != model["content_hash"]:
             raise ModelBundleIntegrityError("V1 model and metadata hash differ")
-        if (
-            (model["schema_version"], metadata["schema_version"]) != (
-                "learned_rank_final_head_model", "learned_rank_final_head_metadata",
-            )
-            or any(model[key] != value or metadata[key] != value for key, value in expected.items())
-        ):
+        if any(model[key] != value or metadata[key] != value for key, value in expected.items()):
             raise ModelBundleContractError("V1 head identity differs")
         documents.append((model, metadata))
     first = documents[0][1]

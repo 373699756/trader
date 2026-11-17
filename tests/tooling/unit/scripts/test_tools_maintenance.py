@@ -216,7 +216,7 @@ def test_migration_build_keeps_candidate_schema_and_failure_code(monkeypatch, tm
 
     outcome = migration_cli.Run("migration-build", arguments)
     assert outcome.exit_code == 0
-    assert outcome.payload["schema_version"] == "trader_data_layout_migration"
+    assert "schema_version" not in outcome.payload
     assert outcome.payload["state"] == "candidate_verified"
     candidate.assert_called_once()
     assert not tuple(tmp_path.iterdir())
@@ -279,7 +279,7 @@ def test_repack_requires_the_selected_action_completion_state(monkeypatch, tmp_p
 
     outcome = repack.Run("history-repack-" + action, arguments)
     assert outcome.exit_code == expected_code
-    assert outcome.payload["schema_version"] == "history_archive_repack_status"
+    assert "schema_version" not in outcome.payload
     assert outcome.payload["state"] == state
     assert outcome.payload["status"] == ("passed" if expected_code == 0 else "failed")
     assert sum(method.call_count for method in (coordinator.build, coordinator.activate, coordinator.rollback, coordinator.finalize)) == 1

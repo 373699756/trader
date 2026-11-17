@@ -125,7 +125,6 @@ def ProbeV5Kernels() -> dict[str, object]:
             }
         )
     return {
-        "schema_version": "v5-kernel-diagnostic",
         "status": "passed" if all(speedup >= 1 for speedup in speedups) else "degraded",
         "summary": {
             "torch_version": torch.__version__,

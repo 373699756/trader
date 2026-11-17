@@ -29,10 +29,6 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CODE = re.compile(r"^[0-9]{6}$")
 _BOARDS: tuple[BaoStockBoard, ...] = ("main", "chinext", "star")
 
-BAOSTOCK_CALENDAR_SCHEMA = "baostock_exchange_calendar"
-BAOSTOCK_DAILY_FACT_SCHEMA = "baostock_daily_fact"
-BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA = "baostock_industry_interval"
-BAOSTOCK_CODE_DOWNLOAD_SCHEMA = "baostock_code_download"
 
 
 class DailyTradingState(Protocol):
@@ -99,7 +95,6 @@ class BaoStockDailySpec:
     source_cutoff: date = BAOSTOCK_SOURCE_CUTOFF
     production_authority: bool = False
     point_in_time_parity: bool = False
-    schema_version: str = "baostock_daily_core"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -107,7 +102,7 @@ class BaoStockDailySpec:
             raise ValueError("BaoStock sessions must be in [1, 2000]")
         if type(self.source_cutoff) is not date:
             raise ValueError("BaoStock source cutoff must be a date")
-        if self.research_identity != BAOSTOCK_RESEARCH_IDENTITY or self.schema_version != "baostock_daily_core":
+        if self.research_identity != BAOSTOCK_RESEARCH_IDENTITY:
             raise ValueError("BaoStock daily identity is invalid")
         if self.production_authority or self.point_in_time_parity:
             raise ValueError("BaoStock daily data cannot authorize production or point-in-time parity")
@@ -148,15 +143,12 @@ class BaoStockSecurity:
 @dataclass(frozen=True)
 class BaoStockCalendar:
     open_dates: tuple[date, ...]
-    schema_version: str = BAOSTOCK_CALENDAR_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         values = tuple(self.open_dates)
         if not values or values != tuple(sorted(set(values))) or len(values) > BAOSTOCK_MAX_SESSIONS:
             raise ValueError("BaoStock open calendar must be non-empty, unique, ordered, and bounded")
-        if self.schema_version != BAOSTOCK_CALENDAR_SCHEMA:
-            raise ValueError("BaoStock calendar schema is invalid")
         object.__setattr__(self, "open_dates", values)
         object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
@@ -264,13 +256,12 @@ class BaoStockDailyFact:
     code: str
     trade_date: date
     is_st: bool
-    schema_version: str = BAOSTOCK_DAILY_FACT_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if _CODE.fullmatch(self.code) is None:
             raise ValueError("BaoStock daily fact identity is invalid")
-        if not isinstance(self.is_st, bool) or self.schema_version != BAOSTOCK_DAILY_FACT_SCHEMA:
+        if not isinstance(self.is_st, bool):
             raise ValueError("BaoStock daily fact payload is invalid")
         object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
@@ -282,7 +273,6 @@ class BaoStockIndustryInterval:
     effective_to: date | None
     industry: str
     classification: str
-    schema_version: str = BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -291,7 +281,6 @@ class BaoStockIndustryInterval:
             or (self.effective_to is not None and self.effective_to <= self.effective_from)
             or not self.industry.strip()
             or not self.classification.strip()
-            or self.schema_version != BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA
         ):
             raise ValueError("BaoStock industry interval is invalid")
         object.__setattr__(self, "industry", self.industry.strip())
@@ -303,7 +292,6 @@ class BaoStockIndustryInterval:
 class BaoStockCodeDownload:
     batch: BaoStockCodeBatch
     daily_facts: tuple[BaoStockDailyFact, ...]
-    schema_version: str = BAOSTOCK_CODE_DOWNLOAD_SCHEMA
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -311,7 +299,6 @@ class BaoStockCodeDownload:
         if (
             any(item.code != self.batch.code for item in facts)
             or tuple(item.trade_date for item in facts) != tuple(item.trade_date for item in self.batch.cells)
-            or self.schema_version != BAOSTOCK_CODE_DOWNLOAD_SCHEMA
         ):
             raise ValueError("BaoStock code download facts do not match its daily batch")
         object.__setattr__(self, "daily_facts", facts)
@@ -448,10 +435,6 @@ class BaoStockSourceVersions:
 
 
 __all__ = [
-    "BAOSTOCK_CALENDAR_SCHEMA",
-    "BAOSTOCK_CODE_DOWNLOAD_SCHEMA",
-    "BAOSTOCK_DAILY_FACT_SCHEMA",
-    "BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA",
     "BAOSTOCK_MAX_SESSIONS",
     "BAOSTOCK_RESEARCH_IDENTITY",
     "BAOSTOCK_SOURCE_CUTOFF",

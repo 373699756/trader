@@ -25,7 +25,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.scoring import (
     ScoreBoardStrategy,
 )
-from trader.recommendation.domain.market.feature_schema import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
+from trader.recommendation.domain.market.feature_schema import  FEATURE_SCHEMA_NAMES
 from trader.recommendation.infra.policy_settings import BuildCadencePolicy, BuildRecommendationPolicy
 from trader.recommendation.application.runtime.cadence import CadencePlanner
 from trader.recommendation.domain.market.quote_freshness import QuoteFreshnessAgeSeconds, QuoteSnapshotTime
@@ -253,7 +253,6 @@ def test_configuration_contract_is_valid() -> None:
         "latest_disclosed_report_loss": 0.0,
         "financial_deterioration": 0.5,
     }
-    assert strategy.fusion.version == "local_score_structured_review"
     assert strategy.fusion.local_risk_cap == pytest.approx(25.0)
     regulatory_rule = next(rule for rule in strategy.risk_rules if rule.risk_code == "regulatory_risk")
     assert regulatory_rule.veto is False
@@ -975,7 +974,7 @@ def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_sc
 
     strategy = LoadStrategySettings(strategy_path)
 
-    assert strategy.factor_contract["feature_schema"] == FEATURE_SCHEMA_ID
+    assert "feature_schema" not in strategy.factor_contract
     assert strategy.factor_contract["feature_schema_expected"] == len(FEATURE_SCHEMA_NAMES)
 
 
@@ -984,7 +983,7 @@ def test_feature_schema_contract_rejects_schema_contract_version_mismatch(tmp_pa
     raw["factor_contract"]["feature_schema"] = "feature_schema_unsupported"
     strategy_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="feature_schema mismatch"):
+    with pytest.raises(ConfigurationError, match="factor_contract contains unknown keys"):
         LoadStrategySettings(strategy_path)
 
 

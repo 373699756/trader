@@ -68,7 +68,6 @@ class CostAwareSelectionReport:
     days: tuple[CostAwareSelectionDay, ...]
     status: Literal["exploratory"] = "exploratory"
     production_authority: bool = False
-    schema_version: str = "score_tomorrow_cost_aware_selection_report"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:

@@ -20,7 +20,6 @@ _AUTHORITATIVE_SESSIONS = 2000
 _PRIMARY_KEY = ("code", "trade_date")
 _RAW_QFQ_LAYOUT = "same_row"
 _ROW_HASH_ALGORITHM = "sha256"
-_INPUT_SCHEMA_VERSION = "frozen_daily_training_input"
 
 TOMORROW_TRAINING_ALPHA_NAMES = TOMORROW_MODEL_FEATURE_MANIFEST.names
 TOMORROW_TRAINING_ALPHA_UNITS = TOMORROW_MODEL_FEATURE_MANIFEST.units
@@ -69,7 +68,6 @@ class FrozenDailyInputDescriptor:
     raw_qfq_layout: str
     row_hash_algorithm: str
     frozen: bool
-    schema_version: str = _INPUT_SCHEMA_VERSION
     production_authority: bool = False
     content_hash: str = dataclasses.field(init=False)
 
@@ -95,7 +93,6 @@ class TomorrowTrainingInputCompatibility:
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     automatic_model_update: bool = False
-    schema_version: str = "tomorrow_training_input"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -119,8 +116,6 @@ class TomorrowTrainingInputCompatibility:
             raise ValueError(
                 "Tomorrow training input compatibility cannot train, open holdout, or authorize production"
             )
-        if self.schema_version != "tomorrow_training_input":
-            raise ValueError("Tomorrow training input compatibility schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
@@ -142,7 +137,6 @@ def EvaluateTomorrowTrainingInput(
     _append_if(descriptor.primary_key != _PRIMARY_KEY, "primary_key_invalid", reasons)
     _append_if(descriptor.raw_qfq_layout != _RAW_QFQ_LAYOUT, "raw_qfq_layout_invalid", reasons)
     _append_if(descriptor.row_hash_algorithm != _ROW_HASH_ALGORITHM, "row_hash_algorithm_invalid", reasons)
-    _append_if(descriptor.schema_version != _INPUT_SCHEMA_VERSION, "input_schema_version_invalid", reasons)
     _append_if(descriptor.manifest_hash != expected_manifest_hash, "manifest_hash_mismatch", reasons)
     _append_if(not descriptor.frozen, "input_not_frozen", reasons)
     _append_if(descriptor.production_authority, "production_authority_forbidden", reasons)

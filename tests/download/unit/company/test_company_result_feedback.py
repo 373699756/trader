@@ -328,7 +328,7 @@ def test_feedback_is_stderr_only_and_cli_json_remains_machine_readable(monkeypat
     assert Main(["--config", str(config), "sync", "company"]) == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    assert payload["schema_version"] == "data_sync"
+    assert "schema_version" not in payload
     assert "cninfo:document-a" in captured.err and "cninfo:document-a" not in captured.out
 
 

@@ -83,7 +83,6 @@ class HistoricalStrategyResearchResult:
     status: Literal["historical_candidate_ready", "historical_rejected", "historical_data_insufficient"]
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_strategy_candidate_result"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -97,7 +96,6 @@ class HistoricalStrategyResearchResult:
         if (
             self.production_authority
             or self.terminal_holdout_status != "terminal_holdout_not_opened"
-            or self.schema_version != "historical_strategy_candidate_result"
         ):
             raise ValueError("historical strategy result cannot authorize production or open holdout")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
@@ -107,13 +105,12 @@ class HistoricalStrategyResearchResult:
 class HistoricalConfirmationBatchResult:
     strategies: tuple[HistoricalStrategyResearchResult, ...]
     production_authority: bool = False
-    schema_version: str = "historical_confirmation_batch_result"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         if tuple(item.strategy for item in self.strategies) != _STRATEGIES:
             raise ValueError("Historical confirmation batch must contain Tomorrow and D25 in fixed order")
-        if self.production_authority or self.schema_version != "historical_confirmation_batch_result":
+        if self.production_authority:
             raise ValueError("Historical confirmation batch cannot authorize production")
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
@@ -137,7 +134,6 @@ class HistoricalConfirmationStrategyTerminal:
     model_artifact_hash: str | None = None
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_confirmation_strategy_terminal"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -167,8 +163,6 @@ class HistoricalConfirmationStrategyTerminal:
             raise ValueError("Historical confirmation terminal cannot claim Holm or outcome rows")
         if self.terminal_holdout_status != "terminal_holdout_not_opened" or self.production_authority:
             raise ValueError("Historical confirmation terminal cannot open holdout or authorize production")
-        if self.schema_version != "historical_confirmation_strategy_terminal":
-            raise ValueError("Historical confirmation terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
@@ -186,7 +180,6 @@ class HistoricalConfirmationTerminalBatch:
     status: Literal["historical_data_insufficient"] = "historical_data_insufficient"
     terminal_holdout_status: Literal["terminal_holdout_not_opened"] = "terminal_holdout_not_opened"
     production_authority: bool = False
-    schema_version: str = "historical_confirmation_terminal_batch"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -195,8 +188,6 @@ class HistoricalConfirmationTerminalBatch:
         _validate_confirmation_batch_outcome(self)
         if self.terminal_holdout_status != "terminal_holdout_not_opened" or self.production_authority:
             raise ValueError("Historical confirmation batch cannot open holdout or authorize production")
-        if self.schema_version != "historical_confirmation_terminal_batch":
-            raise ValueError("Historical confirmation batch schema is invalid")
         residuals = tuple(sorted(self.parent_residual_ledger_hashes, key=lambda item: _STRATEGIES.index(item[0])))
         object.__setattr__(self, "parent_residual_ledger_hashes", residuals)
         object.__setattr__(self, "content_hash", _canonical_hash(self))

@@ -35,7 +35,6 @@ def BuildTrainingContractHash(
             else {"numpy": version("numpy"), "torch": version("torch")}
             if profile.algorithm == "tcn"
             else {"numpy": version("numpy")},
-            "schema_version": f"{profile.profile_id}_head_training_contract",
             "profile_id": profile.profile_id,
             "history_sessions": profile.history_sessions,
             "feature_day_axis": HISTORY_ALIGNMENT_CONTRACT,

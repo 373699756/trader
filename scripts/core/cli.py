@@ -166,8 +166,7 @@ def _foreground(definition: ToolDefinition, args: argparse.Namespace) -> tuple[i
         definition.identity,
         outcome.exit_code,
         (time.monotonic() - started) * 1000,
-        {"status": outcome.payload.get("status"), "summary": outcome.payload,
-         "schema_version": outcome.payload.get("schema_version")},
+        {"status": outcome.payload.get("status"), "summary": outcome.payload},
         None,
     )
     report = BuildReport(definition.identity, (result,))
@@ -227,10 +226,10 @@ def Main(argv: list[str] | None = None) -> int:
             code = 0 if report.get("status") in {"passed", "degraded", "empty"} else 1
     except KeyboardInterrupt:
         code = 130
-        report = {"schema_version": "trader-tools", "selection": definition.projection(), "status": "cancelled"}
+        report = {"selection": definition.projection(), "status": "cancelled"}
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         code = 1
-        report = {"schema_version": "trader-tools", "selection": definition.projection(),
+        report = {"selection": definition.projection(),
                   "status": "failed", "error": type(exc).__name__}
     renderer = ActionTextRenderer(definition.identity) if args.report_format == "text" else None
     try:

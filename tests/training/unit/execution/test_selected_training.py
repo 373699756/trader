@@ -375,11 +375,11 @@ def test_single_profile_projects_actual_scan_evidence(tmp_path, monkeypatch, cap
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
     assert ExecuteSelectedTraining(LoadRuntimeSettings(_empty_config(tmp_path)), ("v1",), report_output=TrainingReportOutput(json_output=True)) == 0
     output = capsys.readouterr().out
-    assert '\n  "schema_version": ' in output
+    assert '"schema_version"' not in output
     reports = ReadJsonReports(output)
     assert len(reports) == 2
     assert reports[0]["reused"] is reused
-    assert reports[1]["schema_version"] == "selected_training_result"
+    assert "schema_version" not in reports[1]
     assert reports[1]["profiles"] == ["v1"]
     assert reports[1]["status"] == "completed"
     assert reports[1]["history_scan_passes"] == scans

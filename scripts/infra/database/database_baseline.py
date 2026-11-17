@@ -674,7 +674,6 @@ def Main() -> int:
         raise RuntimeError("database_baseline_runtime_configuration_changed")
     emit_report(
         {
-            "schema_version": "database-baseline",
             "status": status,
             "summary": {
                 "fixture": True,

@@ -7,7 +7,7 @@ from scripts.core.projections import BuildReport
 
 
 def test_pipeline_public_projection_retains_scope_and_drops_private_payloads():
-    payload = {"schema_version": "company-resume", "status": "degraded", "findings": ["sample_incomplete"],
+    payload = { "status": "degraded", "findings": ["sample_incomplete"],
                "summary": {"pipeline_audit": {
                    "isolated_sample": True, "source_admission_verified": False, "production_enabled": False,
                    "performance_accepted": False, "full_sync_verified": False,

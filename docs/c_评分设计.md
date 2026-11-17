@@ -742,7 +742,6 @@ D25机会标签、固定六槽贡献、入选均值和真实资金收益分别�
 
 | 路径 | 中文作用 | 当前值 |
 | --- | --- | --- |
-| `factor_contract.feature_schema` | 标准化schema标识 | `"market_feature_batch"` |
 | `factor_contract.percentage_unit` | 普通收益单位声明，模型小数收益另列 | `"percentage_points"` |
 | `factor_contract.realtime_price_adjustment` | 实时原始价格口径 | `"none"` |
 | `factor_contract.history_price_adjustment` | 历史复权口径 | `"forward"` |
@@ -1013,17 +1012,13 @@ D25机会标签、固定六槽贡献、入选均值和真实资金收益分别�
 
 ### 16.7 推荐持久化物理字典
 
-以下按源码SqliteSchema/SQL与codec核对，在仅内存SQLite执行DDL读取table_info/index_list，未打开活动业务数据库。路径以data_dir=data为例，profile为v1/v2/v3/v5。四处共8张表、40个列实例（两个schema_contract分别列出），无年度重复字典；全部列默认无DEFAULT，除failure_code外NOT NULL。日为epoch日、时为UTC微秒，由`infra/sqlite_codec`转换；BLOB哈希为32字节。只按当前结构、约束、合同标识和codec校验，不设置数字schema版本，也不忽略旧列或转换旧格式；业务字段及事件类型文本仍须完整。下载资料结构不兼容时删除后重新下载，模型与正式冻结记录保持独立数据边界。
+以下按源码SqliteSchema/SQL与codec核对，在仅内存SQLite执行DDL读取table_info/index_list，未打开活动业务数据库。路径以data_dir=data为例，profile为v1/v2/v3/v5。以下列出当前业务表，不另设格式标记表，无年度重复字典；全部列默认无DEFAULT，除failure_code外NOT NULL。日为epoch日、时为UTC微秒，由`infra/sqlite_codec`转换；BLOB哈希为32字节。现行写入只按完整当前结构、约束与codec校验，不设置数字schema版本，也不忽略旧列或转换旧格式；业务字段及事件类型文本仍须完整。下载资料结构不兼容时删除后重新下载，模型与正式冻结记录保持独立数据边界。
 
 #### `data/recommendation/<profile>/freeze.sqlite3`
 
-来源：`recommendation/infra/persistence/freeze_records.py`。`SQLiteFreezeRecords`创建/提交，first-wins `(strategy,trade_date)`；同字节重入幂等，冲突拒绝。application只读用例加载，冻结日期索引和规范字节codec共同验证；HTTP不自行查库。schema_contract固定标识freeze_record，freeze_id唯一，两项哈希及规范载荷由codec核验，failure_code是唯一可空列。
+历史只读展示仅使用原已保存席位、排名、动作及证据；未保存的总体／已评分／拒绝统计和选席诊断保留为空，页面显示未记录，不按当前规则、过滤合计或名单长度补出。历史原件不进入现行writer、模型恢复或正式评分；同一正式事件的缺审计重放也不得抹去原已提交审计。
 
-表：`schema_contract`。
-
-| 原列 | SQL类型/单位与作用 | 空值/主键 |
-| --- | --- | --- |
-| `schema_id` | TEXT；库的合同标识；非业务股票身份 | 必填；联合主键第1项 |
+来源：`recommendation/infra/persistence/freeze_records.py`。`SQLiteFreezeRecords`创建/提交，first-wins `(strategy,trade_date)`；同字节重入幂等，冲突拒绝。application只读用例加载，冻结日期索引和规范字节codec共同验证；HTTP不自行查库。freeze_id唯一，两项哈希及规范载荷由codec核验；现行writer与不可变历史只读投影独立，历史保留原字节、原hash及原已保存字段，不重签、补值或转成现行评分对象，failure_code是唯一可空列。
 
 表：`freeze_record`。
 
@@ -1042,13 +1037,7 @@ D25机会标签、固定六槽贡献、入选均值和真实资金收益分别�
 
 #### `data/recommendation/<profile>/publication_state.sqlite3`
 
-来源：`recommendation/infra/persistence/publication_sequence.py`。`PublicationSequence.initialize/prepare`在控制路径先持久预留，allocate只用内存；崩溃可跳号不复用。schema_contract固定标识publication_sequence，singleton CHECK=1，reserved_until CHECK≥0；默认块大小是工程参数，不是收益参数。
-
-表：`schema_contract`。
-
-| 原列 | SQL类型/单位与作用 | 空值/主键 |
-| --- | --- | --- |
-| `schema_id` | TEXT；库的合同标识；非业务股票身份 | 必填；联合主键第1项 |
+来源：`recommendation/infra/persistence/publication_sequence.py`。`PublicationSequence.initialize/prepare`在控制路径先持久预留，allocate只用内存；崩溃可跳号不复用。只保存实际预留计数器，singleton CHECK=1，reserved_until CHECK≥0；默认块大小是工程参数，不是收益参数。
 
 表：`publication_sequence`。
 
@@ -1059,7 +1048,7 @@ D25机会标签、固定六槽贡献、入选均值和真实资金收益分别�
 
 #### `data/research/<profile>/traces/<YYYY-MM-DD>.sqlite3`
 
-来源：`recommendation/infra/persistence/trace_schema.py`。`SQLiteFreezeTraceIndex`消费原committed event并分日保留；日期/策略/观察时点索引供研究只读查询，解码失败转quarantine，不改正式freeze。committed_events_trade_date索引为(trade_date DESC,strategy,observed_at DESC)；每个hash约束长度32。
+来源：`recommendation/infra/persistence/trace_schema.py`。`SQLiteFreezeTraceIndex`消费原committed event并分日保留；日期/策略/观察时点索引供研究只读查询，现行写入只接完整当前事件；历史只读投影核验原事件／审计摘要及行绑定，不按人工格式标签选择算法，坏原件不能成为当前输入，不改正式freeze。committed_events_trade_date索引为(trade_date DESC,strategy,observed_at DESC)；每个hash约束长度32。
 
 表：`committed_events`。
 
@@ -1070,7 +1059,6 @@ D25机会标签、固定六槽贡献、入选均值和真实资金收益分别�
 | `trade_date` | INTEGER；交易日期；自1970-01-01起整数天 | 必填 |
 | `observed_at` | INTEGER；原观察时刻；UTC epoch微秒 | 必填 |
 | `freeze_hash` | BLOB；原freeze载荷SHA-256，32字节 | 必填 |
-| `schema_version` | TEXT；schema合同版本；trace此列是事件schema文本 | 必填 |
 | `event_hash` | BLOB；原event_bytes的SHA-256，32字节 | 必填 |
 | `event_bytes` | BLOB；原committed event规范字节，保留当时审计/版本 | 必填 |
 
@@ -1116,9 +1104,9 @@ D25机会标签、固定六槽贡献、入选均值和真实资金收益分别�
 | 唯一owner/缓存 | 命中必须相同 | 必须失效/隔离；年龄与容量 |
 | --- | --- | --- |
 | `StaticMarketCache` | StaticEligibilityInputs：完整reference、historical_st不可变快照、blacklist frozenset | 参考/历史ST/黑名单改变重建；snapshot带原来源时点。由组合根共享并通过reserve记账，不在轮内重读库；初始化后的eligible_codes显式约束共享历史预载，无合格代码时零个股读 |
-| `FeatureBuilder`的quote_factor_inputs | 股票/观察日、辅助权重policy hash、schema；并复核真实_QuoteFactorInputs及FactorHistory等值 | 价/高低/涨幅/量/额/振幅/限幅事实、历史修订或policy变则重算；仅接收时间/模型长窗列变不重算共同基础量。并发coalesce返回后再次核实事实，不能借latest槽消费别人新输入 |
+| `FeatureBuilder`的quote_factor_inputs | 股票/观察日、辅助权重policy hash、实际特征列合同；并复核真实_QuoteFactorInputs及FactorHistory等值 | 价/高低/涨幅/量/额/振幅/限幅事实、历史修订或policy变则重算；仅接收时间/模型长窗列变不重算共同基础量。并发coalesce返回后再次核实事实，不能借latest槽消费别人新输入 |
 | `BuildCrossSectionFeatures` | 全总体代码/顺序、行业/涨速/涨幅/来源日期、所有实际历史基础量、data_version | 成员、实际值/缺失集合或版本变化失效；接收时间/模型专用值不影响算术身份。定向请求投影完整reference，不重算小样本分母；受market_cross_section容量/组预算约束 |
-| 板内cross-section | board、merge_epoch、交易日、phase、data/schema版本、reference_hash；population_version绑定回退日/年龄 | 不同板、阶段、总体、窗口/批次隔离；固定参照可对不同请求子集投影。当前有效样本不足100才考虑≤5交易日旧参照，过龄为stale，不能当当前齐备 |
+| 板内cross-section | board、merge_epoch、交易日、phase、实际data身份与列合同、reference_hash；population_version绑定回退日/年龄 | 不同板、阶段、总体、窗口/批次隔离；固定参照可对不同请求子集投影。当前有效样本不足100才考虑≤5交易日旧参照，过龄为stale，不能当当前齐备 |
 | `SharedModelFeatureCache` | `_ModelRowContract`与每个代码的typed row identity；矩阵按FeatureFactRevision和ExposureContract复用 | horizon/列合同/真实行业/流动性/输入/总体改变失效。只共享相同计算的行/矩阵，不共享不同模型预测；LRU默认1份，真实驻留/峰值由C内部唯一性能后台测量 |
 | 各头ModelScoringService | 模型实例身份、阶段依赖修订、变换输入；预测/成本参考/缺失集合都相同才复用最终batch | 各档各头独立状态。成本参考键含profile/strategy/model/population、成本参数、代码/板/Amihud及merge_epoch，最多留1份；小请求使用原完整参考，V5必需输入先核验 |
 | 分钟内容身份 | `MinuteContentVersion`含排序后的来源时间/source/close/volume内容 | 真实分钟或来源时间改变失效；仅received_time改变不使内容变新；原年龄不刷新。跨档Future等待者取消只结束自己的等待（340） |

@@ -4,6 +4,9 @@ from zoneinfo import ZoneInfo
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord, FreezeItem, FreezeQuote, ScoredFreeze
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord
+from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes
+from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -21,9 +24,9 @@ class _FreezeRecords:
     def __init__(self, record: CommittedFreezeRecord | None = None) -> None:
         self.record = record
 
-    def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
+    def load_history(self, strategy: Strategy, trade_date: date) -> HistoricalFreezeRecord | None:
         if self.record is not None and self.record.strategy is strategy and self.record.trade_date == trade_date:
-            return self.record
+            return HistoricalRecordFromBytes(CommittedRecordBytes(self.record))
         return None
 
     def list_dates(
@@ -91,7 +94,6 @@ def _freeze(*, trade_date: date = TRADE_DATE) -> ScoredFreeze:
         (("market", "market:1"),),
         "config:1",
         "strategy:1",
-        "fusion:1",
         (
             FreezeItem(
                 "600000",

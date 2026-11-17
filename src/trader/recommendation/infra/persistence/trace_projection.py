@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import cast
 
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
     CommittedFreezeItem,
     FreezeObservation,
 )
 from trader.training.application.research_audit import (
-    LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
-    RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
     ResearchCandidateAudit,
     ResearchFreezeCandidateAudit,
@@ -21,26 +18,12 @@ from trader.training.application.research_audit import (
 )
 
 
-def ObservationBytes(
-    observation: FreezeObservation,
-    *,
-    schema_version: str,
-    legacy_schema_version: str,
-    current_schema_version: str,
-) -> bytes:
-    if schema_version not in {legacy_schema_version, current_schema_version}:
-        raise ValueError("research event schema is invalid")
+def ObservationBytes(observation: FreezeObservation) -> bytes:
     audit = observation.research_audit
-    expected_audit_schema = (
-        LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION
-        if schema_version == legacy_schema_version
-        else RESEARCH_AUDIT_SCHEMA_VERSION
-    )
-    if audit is not None and audit.schema_version != expected_audit_schema:
-        raise ValueError("research event and audit schemas must advance together")
+    if audit is not None and not isinstance(audit, CommittedResearchAudit):
+        raise ValueError("historical research is read-only")
     event = observation.event
     payload = {
-        "schema_version": schema_version,
         "event_id": event.event_id,
         "strategy": event.strategy.value,
         "trade_date": event.trade_date.isoformat(),
@@ -52,12 +35,10 @@ def ObservationBytes(
         "input_versions": event.input_versions,
         "config_version": event.config_version,
         "strategy_version": event.strategy_version,
-        "fusion_version": event.fusion_version,
-        "freeze_schema_version": event.schema_version,
         "filter_aggregates": event.filter_aggregates,
         "degraded_reasons": event.degraded_reasons,
         "items": tuple(_item_dict(item) for item in event.items),
-        "research_audit": _audit_dict(cast(CommittedResearchAudit | None, audit)),
+        "research_audit": _audit_dict(audit),
     }
     return json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
 
@@ -81,7 +62,6 @@ def _audit_dict(audit: CommittedResearchAudit | None) -> dict[str, object] | Non
     if audit is None:
         return None
     payload: dict[str, object] = {
-        "schema_version": audit.schema_version,
         "freeze_version": audit.freeze_version,
         "freeze_hash": audit.freeze_hash,
         "input_version": audit.input_version,
@@ -93,18 +73,17 @@ def _audit_dict(audit: CommittedResearchAudit | None) -> dict[str, object] | Non
         "deepseek_request_delta": audit.deepseek_request_delta,
         "content_hash": audit.content_hash,
     }
-    if audit.schema_version == RESEARCH_AUDIT_SCHEMA_VERSION:
-        payload.update(
-            {
-                "input_observed_at": audit.input_observed_at.isoformat()
-                if audit.input_observed_at is not None
-                else None,
-                "point_in_time_population": tuple(
-                    _population_audit_dict(item) for item in audit.point_in_time_population
-                ),
-                "point_in_time_population_hash": audit.point_in_time_population_hash,
-            }
-        )
+    payload.update(
+        {
+            "input_observed_at": audit.input_observed_at.isoformat()
+            if audit.input_observed_at is not None
+            else None,
+            "point_in_time_population": tuple(
+                _population_audit_dict(item) for item in audit.point_in_time_population
+            ),
+            "point_in_time_population_hash": audit.point_in_time_population_hash,
+        }
+    )
     return payload
 
 

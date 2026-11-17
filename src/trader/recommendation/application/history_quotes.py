@@ -57,10 +57,11 @@ class _Watch:
 class HistoryQuotes:
     def __init__(self, records: tuple[FreezeHistoryReader, ...], source: HistoryQuoteSource,
                  now: Callable[[], datetime], open_dates: Callable[[], tuple[date, ...]],
-                 sessions: QuoteSessionTimes, settings: HistoryQuoteSettings = HistoryQuoteSettings(),
+                 sessions: QuoteSessionTimes, settings: HistoryQuoteSettings | None = None,
                  monotonic: Callable[[], float] = time.monotonic) -> None:
         self._records, self._source, self._now = records, source, now
-        self._open_dates, self._sessions, self.settings = open_dates, sessions, settings
+        self._open_dates, self._sessions = open_dates, sessions
+        self.settings = settings if settings is not None else HistoryQuoteSettings()
         self._monotonic = monotonic
         self._lock = threading.RLock()
         self._watches: dict[str, _Watch] = {}
@@ -145,7 +146,7 @@ class HistoryQuotes:
                             return
                         if self._monotonic() >= scan_deadline:
                             raise RuntimeError("history month scan deadline exceeded")
-                        record = reader.load(strategy, day)
+                        record = reader.load_history(strategy, day)
                         if record is not None:
                             monthly.update(item.code for item in VisibleScoredSeats(record.freeze))
             self._month_codes[month] = (self._monotonic() + self.settings.interval_seconds, frozenset(monthly))

@@ -134,7 +134,7 @@ class SQLiteCompanyFactsIndex:
             with self._session(
                 self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
             ) as connection:
-                if HasSqliteSchema(connection, COMPANY_FACTS_SCHEMA):
+                if HasSqliteSchema(connection, COMPANY_FACTS_SCHEMA, exact=True):
                     return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._session(
@@ -142,7 +142,7 @@ class SQLiteCompanyFactsIndex:
             SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True),
             cancel_requested=self._cancel_requested, sqlite_policy=self._sqlite_policy,
         ) as connection:
-            EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA, allow_create=True)
+            EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA, allow_create=True, exact=True)
 
     def publish_file(self) -> None:
         if self.path.is_file():
@@ -152,7 +152,7 @@ class SQLiteCompanyFactsIndex:
     def validate_existing(self) -> None:
         if self.path.exists():
             with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA)
+                EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA, exact=True)
 
     def verify_publication(self) -> None:
         if not self.path.exists():
@@ -265,7 +265,7 @@ class SQLiteCompanyFactsIndex:
                      )) for result in sorted(prepared_fields, key=lambda result: (result.code, result.event_id, result.field))
                 )
                 identity = bytes.fromhex(CanonicalDigest((
-                    "company-publication-generation:1", _parent_identity(parent), self.extraction_hash.hex(),
+                    "company-publication-generation", _parent_identity(parent), self.extraction_hash.hex(),
                     tuple(sorted(facts, key=lambda fact: fact.code)), tuple(sorted(sources.items())),
                     receipt_identities, field_identities, published_links, field_rules_hash.hex() if field_rules_hash else None,
                     tuple(sorted(financial_observations, key=lambda item: item.business_key)), at,
@@ -359,7 +359,7 @@ class SQLiteCompanyFactsIndex:
                     parent.extraction_hash if parent else self.extraction_hash,
                     max(at, parent.published_at) if parent else at,
                     bytes.fromhex(CanonicalDigest((
-                        "company-exclusions-generation:1", _parent_identity(parent),
+                        "company-exclusions-generation", _parent_identity(parent),
                         tuple(sorted((
                             fact.code, int(fact.reason), int(fact.source), fact.source_key,
                             fact.effective_at.isoformat(), fact.evidence_hash.hex(),

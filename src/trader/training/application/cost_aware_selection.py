@@ -114,8 +114,6 @@ def _candidate(
 
 
 def _validate_parent(shadow: ShadowModelReport) -> None:
-    if shadow.schema_version != "score_tomorrow_shadow_report":
-        raise ValueError("cost-aware selection requires the fixed shadow report schema")
     if shadow.status != "exploratory" or shadow.production_authority:
         raise ValueError("cost-aware selection requires an exploratory shadow report")
     prediction_keys = tuple(

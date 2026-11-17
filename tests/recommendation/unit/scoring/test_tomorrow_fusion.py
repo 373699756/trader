@@ -431,7 +431,7 @@ def _request(
         sequence=10 if projection_stage == "local" else 11,
         config_version="runtime-current",
         strategy_version="tomorrow-strategy",
-        fusion_version="local_score_structured_review",
+
         market_epoch_version="market:1",
         candidate_epoch_version=None,
         research_epoch_version="research:1" if projection_stage == "hybrid" else None,

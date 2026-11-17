@@ -16,7 +16,6 @@ from trader.training.entrypoints.report_output import ProjectTrainingError
 
 def ProjectProfileTrainingResult(profile: ScoringProfileId, result: TrainingRunResult) -> dict[str, object]:
     return {
-        "schema_version": "profile_training_result",
         "profile": profile,
         "status": result.status,
         "run_id": result.run_id,
@@ -77,7 +76,6 @@ def ProjectProfileTrainingResult(profile: ScoringProfileId, result: TrainingRunR
 
 def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, object]:
     return {
-        "schema_version": "profile_training_result",
         "profile": "v1",
         "reused": result.reused,
         "status": result.status,

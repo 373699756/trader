@@ -160,7 +160,6 @@ class PairedSelectionSpecification:
     maximum_board_count: int = 4
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "full_population_selection_experiment"
     research_identity: str = field(init=False, default=SELECTION_RESEARCH_IDENTITY)
     pipeline_stages: tuple[str, ...] = field(init=False, default=PIPELINE_STAGE_ORDER)
     bootstrap_block_days: int = field(init=False)
@@ -217,8 +216,6 @@ class PairedSelectionSpecification:
             raise ValueError("pooled selection models require market, board, industry and liquidity exposures")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("paired selection research cannot open terminal data or authorize production")
-        if self.schema_version != "full_population_selection_experiment":
-            raise ValueError("selection research cannot use a retired schema")
         object.__setattr__(self, "research_dates", dates)
         object.__setattr__(self, "bootstrap_block_days", 5 if self.strategy == "tomorrow" else 10)
         object.__setattr__(
@@ -385,7 +382,6 @@ class PairedSelectionExperimentReport:
     research_identity: str = SELECTION_RESEARCH_IDENTITY
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "full_population_selection_experiment_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -428,8 +424,6 @@ class PairedSelectionExperimentReport:
             raise ValueError("selection report profile mismatch")
         if self.research_identity != SELECTION_RESEARCH_IDENTITY:
             raise ValueError("selection report cannot relabel historical research")
-        if self.schema_version != "full_population_selection_experiment_report":
-            raise ValueError("selection report cannot use a retired schema")
         if self.results and (
             len(result_keys) != expected_count
             or len(set(result_keys)) != len(result_keys)

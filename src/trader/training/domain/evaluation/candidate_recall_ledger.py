@@ -365,7 +365,6 @@ class CandidateRecallReport:
     failure_reasons: tuple[str, ...]
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "candidate_recall_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -400,8 +399,6 @@ class CandidateRecallReport:
             raise ValueError("candidate recall report state is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("candidate recall report cannot open holdout or production")
-        if self.schema_version != "candidate_recall_report":
-            raise ValueError("candidate recall report schema is invalid")
         object.__setattr__(self, "days", days)
         object.__setattr__(self, "aggregate_stages", stages)
         object.__setattr__(self, "failure_reasons", reasons)

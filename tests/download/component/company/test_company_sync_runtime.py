@@ -153,6 +153,31 @@ def test_same_scope_manual_run_and_fresh_runtime_are_idempotent_without_source_o
     assert resumed.round_id == first.round_id and resumed.publication_hash == first.publication_hash and not physical
 
 
+def test_actual_local_rule_change_reproves_without_resetting_source_round_or_allowance(tmp_path, monkeypatch):
+    from trader.download.infra import company_field_publication
+    runtime, reader, transport, physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    with transport:
+        first = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0)
+    consumed = sum(item.source_calls for item in first.families)
+    old_hash = company_field_publication.CompanyFieldProofRulesHash()
+    monkeypatch.setattr(company_field_publication, "COMPANY_FIELD_RULES", tuple(
+        pair for pair in company_field_publication.COMPANY_FIELD_RULES if pair[0] != "end_date"
+    ))
+    assert company_field_publication.CompanyFieldProofRulesHash() != old_hash
+    runtime, reader, transport, physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    with transport:
+        final = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 200, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0)
+    assert final.round_id == first.round_id and final.scope == first.scope and not physical
+    assert runtime.journal.active().max_source_calls == 20
+    assert sum(item.source_calls for item in final.families) == consumed
+    with SqliteSession(runtime.facts.path) as formal:
+        assert formal.run("SELECT rules_hash FROM company_field_proof_rule").require_one()[0] == company_field_publication.CompanyFieldProofRulesHash()
+
+
 def test_preflight_ack_before_marker_failure_resumes_local_work_without_blocking_source(tmp_path, monkeypatch):
     runtime, reader, transport, physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)

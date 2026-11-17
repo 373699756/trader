@@ -175,7 +175,7 @@ def test_final_result_follows_shutdown_and_preserves_training_outcome(tmp_path, 
 
     def stop(**options):
         before_shutdown.append(capsys.readouterr().out)
-        assert '"schema_version": "selected_training_result"' not in before_shutdown[-1]
+        assert '"training_status"' not in before_shutdown[-1]
         deadline = options["deadline"]
         stop_deadlines.append(deadline)
         assert deadline is controllers[0].deadline
@@ -204,8 +204,8 @@ def test_final_result_follows_shutdown_and_preserves_training_outcome(tmp_path, 
         )
         reports = ReadJsonReports("".join(before_shutdown) + capsys.readouterr().out)
         summary = reports[-1]
-        assert summary["schema_version"] == "selected_training_result"
-        assert sum(item["schema_version"] == "selected_training_result" for item in reports) == 1
+        assert "schema_version" not in summary
+        assert sum("profiles" in item and "training_status" in item for item in reports) == 1
         assert code == (130 if execution == "cancelled" else int(execution != "ready" or cleanup != "complete" or watchdog_fails))
         assert summary["status"] == ("cancelled" if execution == "cancelled" else "failed" if code else "completed")
         assert summary["training_status"] == ("completed" if execution == "ready" else "cancelled" if execution == "cancelled" else "failed")

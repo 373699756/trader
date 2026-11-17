@@ -260,7 +260,7 @@ def AuditCompanyHttp(
                         raise ValueError("company_http_formal_links_ambiguous")
                     for offset in range(0, len(identities), 32):
                         group = identities[offset:offset + 32]
-                        expected = {"schema_version": "company_documents", "code": code,
+                        expected = { "code": code,
                                     "documents": _expected(snapshot, code, group)}
                         status, payload = _request(server.server_port,
                             f"/api/company/{code}/documents?{urlencode([('evidence_id', item) for item in group])}", guard)

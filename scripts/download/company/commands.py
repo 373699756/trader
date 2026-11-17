@@ -41,7 +41,8 @@ def BuildCommands(
         )
     if options.action_identity == "company-resume":
         commands = (DiagnosticCommand(
-            "company_resume",
+            ("company_field_replay" if options.company_field_replay_keys else
+             "company_field_material" if options.company_material_keys else "company_resume"),
             (
                 python_executable,
                 "-m",
@@ -91,7 +92,8 @@ def BuildCommands(
         elif options.structured_report_date is not None:
             raise ValueError("--structured-report-date requires --structured-page financial")
         commands = (DiagnosticCommand(
-            "research_source_compare",
+            ("company_annual_income_source" if options.annual_income_period is not None else
+             "company_structured_field_sampling" if options.field_sources_only else "research_source_compare"),
             (
                 python_executable,
                 "-m",

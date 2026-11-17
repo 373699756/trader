@@ -281,7 +281,6 @@ class HistoricalIndustryDatasetReport:
     failure_reasons: tuple[str, ...]
     training_authority: bool
     production_authority: bool = False
-    schema_version: str = "historical_industry_dataset"
     dataset_hash: str = field(init=False)
     content_hash: str = field(init=False)
 
@@ -299,7 +298,6 @@ class HistoricalIndustryDatasetReport:
             or (self.status == "qualified") == bool(reasons)
             or self.training_authority != (self.status == "qualified")
             or self.production_authority
-            or self.schema_version != "historical_industry_dataset"
         ):
             raise ValueError("historical industry dataset report is invalid")
         object.__setattr__(self, "sources", sources)

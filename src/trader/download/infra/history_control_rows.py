@@ -34,7 +34,7 @@ _TABLES = {
 HISTORY_CONTROL_SCHEMA = SqliteSchema(
     (
         """CREATE TABLE schema_contract(
-            singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_id TEXT NOT NULL,
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
             reference_file TEXT
         )""",
         """CREATE TABLE reference_binding(

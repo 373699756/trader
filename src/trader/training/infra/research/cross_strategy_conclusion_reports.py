@@ -8,7 +8,7 @@ from pathlib import Path
 from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.infra.research.identity_codec import ResearchJson
+from trader.infra.serialization.canonical_codec import CanonicalText
 from trader.training.infra.research.terminal_holdout_reports import (
     DecodeTerminalHoldoutReport,
     EncodeTerminalHoldoutReport,
@@ -30,7 +30,7 @@ class CrossStrategyConclusionReportIndex:
             return existing
         payload = _encode_conclusion(conclusion)
         payload["content_hash"] = conclusion.content_hash
-        if not PublishImmutable(path, ResearchJson(payload)):
+        if not PublishImmutable(path, CanonicalText(payload)):
             existing = self.verify()
             if existing.content_hash != conclusion.content_hash:
                 raise TerminalHoldoutReportConflictError("cross-strategy conclusion identity conflict")
@@ -61,12 +61,11 @@ def _encode_conclusion(conclusion: CrossStrategyConclusion) -> dict[str, object]
         "status": conclusion.status,
         "report_hashes": [[strategy, report_hash] for strategy, report_hash in conclusion.report_hashes],
         "production_authority": conclusion.production_authority,
-        "schema_version": conclusion.schema_version,
     }
 
 
 def _decode_conclusion(raw: dict[str, object]) -> CrossStrategyConclusion:
-    expected = {"tomorrow", "d25", "status", "report_hashes", "production_authority", "schema_version"}
+    expected = {"tomorrow", "d25", "status", "report_hashes", "production_authority"}
     if set(raw) != expected:
         raise ValueError("cross-strategy conclusion fields are invalid")
     tomorrow_raw, d25_raw = (raw[name] for name in ("tomorrow", "d25"))
@@ -82,16 +81,12 @@ def _decode_conclusion(raw: dict[str, object]) -> CrossStrategyConclusion:
     authority = raw["production_authority"]
     if not isinstance(authority, bool):
         raise TypeError("cross-strategy production authority is invalid")
-    schema = raw["schema_version"]
-    if not isinstance(schema, str):
-        raise TypeError("cross-strategy schema version is invalid")
     return CrossStrategyConclusion(
         tomorrow=DecodeTerminalHoldoutReport(tomorrow_raw),
         d25=DecodeTerminalHoldoutReport(d25_raw),
         status=status,  # type: ignore[arg-type]
         report_hashes=report_hashes,
         production_authority=authority,
-        schema_version=schema,
     )
 
 

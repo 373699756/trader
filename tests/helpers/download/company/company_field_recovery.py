@@ -11,7 +11,6 @@ from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadC
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 from trader.download.domain.company_event_extraction import CompanyLinkCandidate
-from trader.download.infra.company_facts_protocol import COMPANY_EXTRACTION_IDENTITY
 from trader.download.infra.company_link_codec import EncodeCompanyLink
 
 NOW = fixtures.NOW
@@ -120,11 +119,11 @@ def _legacy_repurchase(tmp_path, body):
         collected.run("UPDATE disclosures SET body_checked=1,body_retained=1,body_hash=?", (body_hash,))
         collected.run(
             "INSERT INTO company_field_repairs SELECT id,?,record_hash,?,'repurchase_purpose',"
-            "'required_field_evidence:1','pending' FROM disclosures",
+            "'required_field_evidence','pending' FROM disclosures",
             (item.codes[0], event.event_id),
         )
         old_attempts = (CompanyInputReceipt(item.source, item.identity, item.codes[0], item.digest,
-            formal_index.extraction_hash, body_hash, NOW, "field_attempted", "required_field_evidence:1"),)
+            formal_index.extraction_hash, body_hash, NOW, "field_attempted", "required_field_evidence"),)
     with SqliteSession(index.facts_path) as formal:
         parent = ReadCompanyPublicationIdentity(formal)
     formal_index.publish(
@@ -211,8 +210,8 @@ def _legacy_holder_table(tmp_path, title="关于回购股份事项前十大股�
                                                              (), (), (), legacy, False))))
         collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'attempted')",
                       (disclosure_id, item.codes[0], item.digest, legacy.event_id,
-                       "repurchase_purpose", "explicit_repurchase_purpose:1"))
+                       "repurchase_purpose", "stale_repurchase_purpose"))
         collected.run("INSERT OR IGNORE INTO company_document_requirements VALUES(?)", (disclosure_id,))
         collected.run("UPDATE company_work_policy SET work_policy_id=?",
-                      (COMPANY_EXTRACTION_IDENTITY + ":applicable-subjects:1:repurchase-events:1",))
+                      ("stale_subject_classification",))
     return index, item, legacy

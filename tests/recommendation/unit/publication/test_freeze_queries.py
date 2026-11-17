@@ -344,7 +344,10 @@ def test_frozen_history_exposes_the_persisted_pipeline_without_runtime_status() 
 
     history = queries.history(Strategy.TOMORROW, date(2026, 8, 8))
 
-    assert history.pipeline == freeze.pipeline
+    assert history.pipeline is not None and history.pipeline.current_stage == freeze.pipeline.current_stage
+    assert tuple((stage.key, stage.state, stage.input_count, stage.output_count) for stage in history.pipeline.stages) == tuple(
+        (stage.key, stage.state, stage.input_count, stage.output_count) for stage in freeze.pipeline.stages
+    )
 
 
 def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:

@@ -407,7 +407,7 @@ def test_reminder_cli_reads_training_records_without_calculation_or_writes(
 
     assert Main(["--config", str(config), "history-automation-status"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "history_automation_status"
+    assert "schema_version" not in payload
     assert payload["automatic_model_update"] is False
     if catalog_state == "published":
         assert payload["snapshot_hash"] == _values()[-1].content_hash

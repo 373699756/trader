@@ -14,7 +14,7 @@ from trader.download.application.prepare_reference import ReferenceDatabaseIncom
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.infra.akshare_calendar import AkshareCalendarTimeoutError
 from trader.download.infra.reference_index import SQLiteReferenceIndex
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 _NOW = datetime(2026, 10, 26, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -108,17 +108,23 @@ def test_same_day_republish_keeps_first_publication_time(tmp_path):
     assert index.identity() == first.identity
 
 
-def test_failed_member_insert_rolls_back_publication_and_current_pointer(tmp_path):
+def test_failed_member_insert_rolls_back_publication_and_current_pointer(tmp_path, monkeypatch):
     index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     first = PreparedFixture(_NOW)
     index.publish(first, first.st_evidence)
     second = PreparedFixture(_NOW + timedelta(days=1))
-    with SqliteSession(index.path) as connection:
-        connection.run(
-            "CREATE TRIGGER reject_member BEFORE INSERT ON reference_member BEGIN SELECT RAISE(ABORT,'fixture'); END"
-        )
-    with pytest.raises(ValueError, match="unavailable"):
-        index.publish(second, second.st_evidence)
+    write = SqliteConnection.run_many
+
+    def reject_member(connection, statement, parameters):
+        result = write(connection, statement, parameters)
+        if statement.startswith("INSERT INTO reference_member"):
+            raise sqlite3.IntegrityError("fixture_member_commit_failed")
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SqliteConnection, "run_many", reject_member)
+        with pytest.raises(ValueError, match="unavailable"):
+            index.publish(second, second.st_evidence)
     assert index.read() == first
     with pytest.raises(ValueError, match="missing"):
         index.read(second.identity)

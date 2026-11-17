@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
 from concurrent.futures import ThreadPoolExecutor
@@ -121,7 +123,8 @@ def test_score_ledger_survives_freeze_reload_and_get_sse_without_changing_old_re
     event = SerializeEvent(UnifiedFreezeEventStream().publish_committed(BuildFreezeCommitted(restored.freeze)))
     assert get["items"][0]["scores"]["ledger"] == event["upserts"][0]["scores"]["ledger"] == ScoreLedgerPayload(ledger)
     assert CommittedRecordBytes(restored) == CommittedRecordBytes(new)
-    assert CommittedRecordBytes(old) == old_bytes and b'"score_ledger"' not in old_bytes
+    assert CommittedRecordBytes(old) == old_bytes
+    assert json.loads(old_bytes)["freeze"]["items"][0]["score_ledger"] is None
 
 
 def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_path: Path) -> None:
@@ -209,7 +212,7 @@ def test_formal_records_and_payloads_share_one_database(tmp_path):
     assert SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture()).load(Strategy.D25, NOW.date()) == record(Strategy.D25)
     with SqliteSession(path) as connection:
         tables = {row[0] for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert tables == {"schema_contract", "freeze_record"}
+        assert tables == {"freeze_record"}
         assert connection.run("PRAGMA user_version").require_one()[0] == 0
         persisted = connection.run("SELECT typeof(trade_date), typeof(committed_at), length(freeze_hash), length(record_hash) FROM freeze_record").require_one()
         assert tuple(persisted) == ("integer", "integer", 32, 32)

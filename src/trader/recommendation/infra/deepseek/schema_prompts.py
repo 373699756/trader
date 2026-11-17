@@ -7,6 +7,8 @@ import json
 import math
 from collections.abc import Sequence
 from dataclasses import replace
+from functools import lru_cache
+from pathlib import Path
 
 from typing_extensions import Unpack
 
@@ -17,7 +19,6 @@ from trader.recommendation.infra.deepseek.candidate_feature_evidence import Rend
 from trader.recommendation.infra.deepseek.evidence_router import EventKey as _evidence_event_key
 from trader.recommendation.infra.deepseek.evidence_router import RoutePromptEvidence
 from trader.recommendation.infra.deepseek.evidence_router import SourceTier as _evidence_source_tier
-from trader.recommendation.infra.deepseek.schema_constants import PROMPT_VERSION, SCHEMA_VERSION
 from trader.recommendation.infra.deepseek.schema_options import ReviewCacheOptions, StrategyCacheOptions
 
 
@@ -29,8 +30,6 @@ def BuildMessages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]]
         tuple(_prompt_candidate(candidate) for candidate in ordered_candidates)
     )
     payload = {
-        "schema_version": SCHEMA_VERSION,
-        "prompt_version": PROMPT_VERSION,
         "candidates": [_candidate_payload(candidate) for candidate in ordered_candidates],
     }
     return [
@@ -84,12 +83,9 @@ def ReviewCacheKey(
     **options: Unpack[ReviewCacheOptions],
 ) -> CacheRequestKey:
     model = options["model"]
-    generation = options.get("generation", "regular")
     model_role = options.get("model_role", "primary")
     thinking_mode = options.get("thinking_mode", "standard")
     reasoning_effort = options.get("reasoning_effort")
-    schema_version = options.get("schema_version", SCHEMA_VERSION)
-    prompt_version = options.get("prompt_version", PROMPT_VERSION)
     payload = {
         "code": candidate.quote.code,
         "trade_date": candidate.observed_at.date().isoformat(),
@@ -114,11 +110,23 @@ def ReviewCacheKey(
         "model_role": model_role,
         "thinking_mode": thinking_mode,
         "reasoning_effort": reasoning_effort,
-        "generation": generation,
-        "schema_version": schema_version,
-        "prompt_version": prompt_version,
+        "contract_digest": ReviewContractDigest(),
     }
     return RequestKey(payload)
+
+
+@lru_cache(maxsize=1)
+def ReviewContractDigest() -> str:
+    """Bind the actual prompt, response validator and evidence rendering implementation."""
+    digest = hashlib.sha256()
+    directory = Path(__file__).parent
+    for name in ("schema_prompts.py", "schema.py", "schema_constants.py", "cache.py",
+                 "candidate_feature_evidence.py", "evidence_router.py"):
+        content = (directory / name).read_bytes()
+        digest.update(name.encode())
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
 
 
 def BuildReviewManifestHash(candidate: FeatureSnapshot) -> str:

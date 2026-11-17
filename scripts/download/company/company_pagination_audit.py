@@ -101,7 +101,6 @@ def AuditCompanyPagination(path: Path, *, budget_seconds: float, sqlite_policy: 
                 break
     passed = bool(targets) and len(comparisons) == 3 * len(targets) and all(item["equivalent"] for item in comparisons)
     return {
-        "schema_version": "company-resume",
         "status": "passed" if passed else "degraded",
         "summary": {
             "query_audit": {

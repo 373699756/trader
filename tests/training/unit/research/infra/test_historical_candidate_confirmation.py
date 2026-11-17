@@ -45,8 +45,7 @@ def test_historical_confirmation_evidence_is_idempotent_and_hash_bound(tmp_path)
 
     assert index.completion_hash == batch.parent_completion_hash
     assert index.strategy_terminal_hashes == tuple((item.strategy, item.content_hash) for item in batch.strategies)
-    assert batch.schema_version == "historical_confirmation_terminal_batch"
-    assert {item.schema_version for item in batch.strategies} == {"historical_confirmation_strategy_terminal"}
+
     assert evidence.write(batch) == index
 
     path = tmp_path / "artifacts" / "historical_confirmation_terminal.json"

@@ -138,7 +138,7 @@ def test_formal_record_without_new_disclosures_keeps_original_bytes() -> None:
     record = CommittedFreezeRecord(original, NOW + timedelta(minutes=10), "scheduled")
     encoded = CommittedRecordBytes(record)
 
-    assert b'"risk_details"' not in encoded
+    assert json.loads(encoded)["freeze"]["items"][0]["risk_details"] == []
     assert b'"components"' not in encoded
     assert CommittedRecordBytes(CommittedRecordFromBytes(encoded)) == encoded
 

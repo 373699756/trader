@@ -23,7 +23,7 @@ from trader.training.application.tomorrow_daily_close_training import (
     ValidationReport,
 )
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
+from trader.infra.serialization.canonical_codec import CanonicalText, EncodeCanonicalValue
 
 TomorrowDailyCloseEvidence = DatasetManifest | FeatureDataset | ValidationReport | CandidateModelSnapshot
 
@@ -37,11 +37,11 @@ class TomorrowDailyCloseEvidenceCodec:
 
     @staticmethod
     def encode(evidence: TomorrowDailyCloseEvidence) -> str:
-        payload = ResearchValue(evidence)
+        payload = EncodeCanonicalValue(evidence)
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow daily-close artifact must encode to an object")
         payload["content_hash"] = evidence.content_hash
-        return ResearchJson(payload)
+        return CanonicalText(payload)
 
     @classmethod
     def decode_manifest(cls, encoded: str) -> DatasetManifest:
@@ -66,7 +66,6 @@ class TomorrowDailyCloseEvidenceCodec:
             dataset = FeatureDataset(
                 manifest=manifest,
                 rows=rows,
-                schema_version=_string(raw["schema_version"]),
                 production_authority=_bool(raw["production_authority"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -101,7 +100,6 @@ class TomorrowDailyCloseEvidenceCodec:
                 failure_reasons=_strings(raw["failure_reasons"]),
                 research_identity=_string(raw["research_identity"]),
                 proxy_anchor=_string(raw["proxy_anchor"]),
-                schema_version=_string(raw["schema_version"]),
                 production_authority=_bool(raw["production_authority"]),
                 automatic_model_update=_bool(raw["automatic_model_update"]),
             )
@@ -139,7 +137,6 @@ class TomorrowDailyCloseEvidenceCodec:
                 trained_from=_date(raw["trained_from"]),
                 trained_through=_date(raw["trained_through"]),
                 dependencies=tuple(cls._dependency(_object(item)) for item in _list(raw["dependencies"])),
-                schema_version=_string(raw["schema_version"]),
                 production_authority=_bool(raw["production_authority"]),
                 automatic_model_update=_bool(raw["automatic_model_update"]),
             )
@@ -189,7 +186,6 @@ class TomorrowDailyCloseEvidenceCodec:
             label_id=_string(raw["label_id"]),
             proxy_anchor=_string(raw["proxy_anchor"]),
             cost_rates=cast(tuple[float, float, float], _floats(raw["cost_rates"])),
-            schema_version=_string(raw["schema_version"]),
             production_authority=_bool(raw["production_authority"]),
         )
 
@@ -252,7 +248,6 @@ _MANIFEST_FIELDS = frozenset(
         "label_id",
         "proxy_anchor",
         "cost_rates",
-        "schema_version",
         "production_authority",
         "content_hash",
     }
@@ -269,7 +264,7 @@ _FEATURE_ROW_FIELDS = frozenset(
         "source_row_hash",
     }
 )
-_DATASET_FIELDS = frozenset({"manifest", "rows", "schema_version", "production_authority", "content_hash"})
+_DATASET_FIELDS = frozenset({"manifest", "rows", "production_authority", "content_hash"})
 _METRICS_FIELDS = frozenset(
     {
         "evaluated_trade_dates",
@@ -294,7 +289,6 @@ _REPORT_FIELDS = frozenset(
         "failure_reasons",
         "research_identity",
         "proxy_anchor",
-        "schema_version",
         "production_authority",
         "automatic_model_update",
         "content_hash",
@@ -335,7 +329,6 @@ _MODEL_FIELDS = frozenset(
         "trained_from",
         "trained_through",
         "dependencies",
-        "schema_version",
         "production_authority",
         "automatic_model_update",
         "content_hash",

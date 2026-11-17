@@ -12,7 +12,6 @@ import pytest
 from scripts.engineering.migration.operations import MigrationError
 from scripts.engineering.migration.operations import inspect_layout
 from scripts.engineering.migration.operations import migrate
-from scripts.engineering.migration.codec import MergeDatabase
 from tests.helpers.recommendation.publication.freeze_records import NOW, record
 from tests.helpers.recommendation.runtime.issuer_eligibility_index import _fact
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -113,17 +112,20 @@ def test_old_budget_and_sequences_are_not_imported(tmp_path):
     assert not (target / "recommendation/v2").exists()
 
 
-def test_conflicting_budget_identity_stops_instead_of_resetting(tmp_path):
-    first, second, target = (tmp_path / name for name in ("first.sqlite3", "second.sqlite3", "target.sqlite3"))
-    for path, used in ((first, 1), (second, 2)):
-        with SqliteSession(path) as connection, SqliteTransaction(connection):
-            connection.run("CREATE TABLE calls(identity TEXT PRIMARY KEY,used INTEGER)")
-            connection.run("INSERT INTO calls VALUES('same',?)", (used,))
-    MergeDatabase(first, target, sqlite_policy=SqlitePolicyFixture())
-    before = target.read_bytes()
-    with pytest.raises(ValueError, match="identity_conflict"):
-        MergeDatabase(second, target, sqlite_policy=SqlitePolicyFixture())
-    assert target.read_bytes() == before
+@pytest.mark.parametrize("change", ({"schema_version": "trader_data_layout_migration"}, {"file_count": True},
+                                   {"source_hash": "unknown"}, {"regenerate": "models"}))
+def test_candidate_manifest_rejects_obsolete_markers_and_wrong_types_without_rewriting(tmp_path, change):
+    source = _source(tmp_path)
+    target = tmp_path / "candidate"
+    migrate(source, target, default_profile="v2", sqlite_policy=SqlitePolicyFixture())
+    path = target / "migration-manifest.json"
+    payload = json.loads(path.read_text())
+    payload.update(change)
+    path.write_text(json.dumps(payload))
+    before = _fingerprint(target)
+    with pytest.raises(MigrationError, match="manifest_invalid"):
+        inspect_layout(target, sqlite_policy=SqlitePolicyFixture())
+    assert _fingerprint(target) == before
 
 
 def test_existing_target_and_project_paths_are_rejected(tmp_path):
@@ -136,6 +138,27 @@ def test_existing_target_and_project_paths_are_rejected(tmp_path):
     assert (target / "sentinel").read_bytes() == b"retained"
     with pytest.raises(MigrationError, match="outside_repository"):
         migrate(Path(__file__).resolve().parents[4], tmp_path / "other", default_profile="v2", sqlite_policy=SqlitePolicyFixture())
+
+
+@pytest.mark.parametrize("contents", (b"old model", b"old database"))
+def test_nonempty_candidate_is_rejected_even_with_matching_manifest_hash(tmp_path, contents):
+    source = _source(tmp_path)
+    target = tmp_path / "candidate"
+    migrate(source, target, default_profile="v2", sqlite_policy=SqlitePolicyFixture())
+    path = target / "original.bin"
+    path.write_bytes(contents)
+    manifest_path = target / "migration-manifest.json"
+    payload = json.loads(manifest_path.read_text())
+    digest = hashlib.sha256()
+    digest.update(path.name.encode())
+    digest.update(len(contents).to_bytes(8, "big"))
+    digest.update(hashlib.sha256(contents).hexdigest().encode("ascii"))
+    payload.update(candidate_hash=digest.hexdigest(), file_count=1, total_bytes=len(contents))
+    manifest_path.write_text(json.dumps(payload))
+    before = _fingerprint(target)
+    with pytest.raises(MigrationError, match="requires_empty_layout"):
+        inspect_layout(target, sqlite_policy=SqlitePolicyFixture())
+    assert _fingerprint(target) == before
 
 
 def test_legacy_company_exclusions_are_not_imported(tmp_path):
@@ -167,7 +190,6 @@ def test_legacy_company_exclusions_are_not_imported(tmp_path):
     (reference / "active-manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": "issuer_eligibility_snapshot",
                 "snapshot_id": "fixture",
                 "fact_count": 2,
                 "manifest_hash": digest,

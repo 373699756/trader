@@ -95,7 +95,6 @@ def build_shadow_report(root: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[st
     baseline_calls = len(universe) * 2
     candidate_skips = recent_reusable
     return {
-        "schema_version": "baostock-qfq-shadow",
         "status": "degraded",
         "production_eligible": False,
         "production_eligibility_reason": "no_verified_adjustment_factor_or_corporate_action_source",
@@ -149,7 +148,6 @@ def Main() -> int:
     except (HistorySnapshotInspectionError, OSError, RuntimeError, TypeError, ValueError):
         emit_report(
             {
-                "schema_version": "baostock-qfq-shadow",
                 "status": "failed",
                 "production_eligible": False,
             }

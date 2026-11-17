@@ -1,33 +1,31 @@
 (function () {
   "use strict";
 
-  const STATUS_SCHEMA = "runtime_status";
-  const FREEZE_VIEW_SCHEMA = "freeze_view";
   const ERROR_CODE = "release_contract_mismatch";
 
   function statusPayloadCompatibility(payload) {
-    if (!payload || payload.schema_version !== STATUS_SCHEMA) {
-      return { compatible: false, reason: "status_schema_mismatch" };
-    }
-    const release = payload.release;
-    if (!release || typeof release !== "object") {
-      return { compatible: false, reason: "release_identity_missing" };
-    }
-    if (release.freeze_view_schema !== FREEZE_VIEW_SCHEMA) {
-      return { compatible: false, reason: "freeze_schema_mismatch" };
+    if (!payload || typeof payload.status !== "string"
+      || typeof payload.runtime_started !== "boolean"
+      || typeof payload.runtime_version !== "string" || !payload.runtime_version
+      || !payload.strategies || typeof payload.strategies !== "object"
+      || Array.isArray(payload.strategies)) {
+      return { compatible: false, reason: "status_shape_invalid" };
     }
     return { compatible: true, reason: "" };
   }
 
   function freezePayloadCompatibility(payload) {
-    if (!payload || payload.schema_version !== FREEZE_VIEW_SCHEMA) {
-      return { compatible: false, reason: "freeze_schema_mismatch" };
+    if (!payload || !["tomorrow", "d25", "long"].includes(payload.strategy)
+      || !["ready", "not_ready", "not_applicable"].includes(payload.status)
+      || !["current", "live", "official", "history"].includes(payload.view)
+      || typeof payload.frozen !== "boolean" || !Array.isArray(payload.items)) {
+      return { compatible: false, reason: "freeze_shape_invalid" };
     }
     return { compatible: true, reason: "" };
   }
 
   function mismatchError(reason) {
-    const error = new Error("页面资源与后台服务版本不一致");
+    const error = new Error("后台数据结构与页面要求不一致");
     error.code = ERROR_CODE;
     error.reason = reason || "release_identity_missing";
     return error;

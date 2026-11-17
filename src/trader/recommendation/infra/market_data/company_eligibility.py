@@ -295,7 +295,6 @@ class CompanyEligibility:
         with self._lock:
             facts = self.facts()
             return IssuerEligibilitySnapshot(
-                "company_exclusions",
                 len(facts),
                 self._excluded_count,
                 self._reason_counts,

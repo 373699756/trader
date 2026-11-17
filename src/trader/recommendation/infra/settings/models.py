@@ -19,7 +19,6 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 
 @dataclass(frozen=True)
 class FusionSettings:
-    version: str
     confidence_coverage_min: float
     minimum_known_dimensions: int
     local_risk_cap: float

@@ -55,8 +55,6 @@ def _validate_hard_filters(settings: StrategySettings) -> None:
 
 
 def _validate_fusion(settings: StrategySettings) -> None:
-    if settings.fusion.version != "local_score_structured_review":
-        raise ConfigurationError("unsupported fusion version")
     if settings.fusion.score_decimals != 2:
         raise ConfigurationError("fusion score_decimals must be 2")
     if settings.fusion.rounding != "ROUND_HALF_UP":

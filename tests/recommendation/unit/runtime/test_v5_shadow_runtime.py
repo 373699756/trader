@@ -75,7 +75,7 @@ def _freezer(index, records, clock, strategy, *, production_authority=False):
         index,
         records,
         clock,
-        runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
+        runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current"),
         strategy=strategy,
         production_authority=production_authority,
     )

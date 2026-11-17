@@ -92,7 +92,7 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
             index,
             records,
             clock,
-            runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
+            runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current"),
             strategy=strategy,
         )
         for strategy in (Strategy.TOMORROW, Strategy.D25)
@@ -266,7 +266,7 @@ def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, tr
             index,
             records,
             clock,
-            runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
+            runtime_identity=FreezeRuntimeIdentity("config-current", "strategy-current"),
             strategy=strategy,
         )
         for strategy in (Strategy.TOMORROW, Strategy.D25)

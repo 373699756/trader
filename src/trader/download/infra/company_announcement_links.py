@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime
@@ -11,7 +13,9 @@ from trader.download.domain.company_event_extraction import CompanyLinkCandidate
 from trader.download.infra.company_pipeline_queries import MarkCompanyDirty
 from trader.infra.sqlite_connection import SqliteConnection
 
-_RULE = "issuer_announcement_number:1"
+def _rule() -> str:
+    parser = Path(__file__).resolve().parents[1] / "domain/company_announcement_numbers.py"
+    return "issuer_announcement_number:" + hashlib.sha256(Path(__file__).read_bytes() + parser.read_bytes()).hexdigest()
 
 
 def WriteCompanyAnnouncementNumbers(
@@ -30,7 +34,7 @@ def WriteCompanyAnnouncementNumbers(
         entries = ((numbers.own, 0), *entries)
     if not codes or not set(codes).issubset(numbers.issuer_codes):
         entries = ()
-    values = tuple((record_hash, body_hash, number, role, _RULE) for number, role in entries)
+    values = tuple((record_hash, body_hash, number, role, _rule()) for number, role in entries)
     current = tuple(tuple(row) for row in connection.run(
         "SELECT record_hash,body_hash,number,role,rule_id FROM document_announcement_numbers "
         "WHERE disclosure_id=? ORDER BY role,number", (disclosure_id,),
@@ -61,7 +65,7 @@ def LinkCompanyAnnouncementNumbers(
         "FROM document_announcement_numbers n JOIN disclosures d ON d.id=n.disclosure_id "
         "AND d.record_hash=n.record_hash AND d.body_hash=n.body_hash "
         "JOIN disclosure_codes c ON c.disclosure_id=d.id "
-        "WHERE c.code=? AND n.rule_id=? AND d.body_checked=1", (code, _RULE),
+        "WHERE c.code=? AND n.rule_id=? AND d.body_checked=1", (code, _rule()),
     ):
         if row[4] == 0:
             aliases[(row[0], row[3])].append((row[1], datetime.fromisoformat(row[2])))

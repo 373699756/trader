@@ -55,7 +55,7 @@ def _source(profile: ScoringProfileId, strategy: Strategy, *, restarted: bool = 
         observed_at=at,
         config_version=f"{profile}:config:{generation}",
         strategy_version=f"{profile}:strategy:{generation}",
-        fusion_version=f"{profile}:fusion:{generation}",
+
         input_versions=(("market", f"{profile}:{generation}"), ("daily", "fixture-history")),
         items=(replace(item, quote=replace(item.quote, source_time=at)),),
     )
@@ -78,7 +78,7 @@ def _profiles(
         records.initialize()
         index = UnifiedFreezeIndex(transaction_lock=lock)
         source = _source(name, Strategy.TOMORROW, restarted=restarted)
-        identity = FreezeRuntimeIdentity(source.config_version, source.strategy_version, source.fusion_version)
+        identity = FreezeRuntimeIdentity(source.config_version, source.strategy_version)
         freezers = tuple(
             ScoredFreezeCoordinator(index, records, clock, runtime_identity=identity, strategy=strategy)
             for strategy in _STRATEGIES

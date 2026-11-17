@@ -247,7 +247,6 @@ def build_report(
         and baostock.qfq_rows > 0
     )
     return {
-        "schema_version": "history-daily-capability-audit",
         "status": "degraded",
         "configuration": {
             "universe_size": args.universe_size,
@@ -314,7 +313,6 @@ def Main() -> int:
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": "history-daily-capability-audit",
             "status": "failed",
             "error": type(exc).__name__,
         }

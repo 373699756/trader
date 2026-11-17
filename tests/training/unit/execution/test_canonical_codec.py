@@ -1,4 +1,4 @@
-"""Fixed identities measured from the pre-migration implementations (dd15c15d)."""
+"""Current complete-field identities at the canonical encoding boundary."""
 
 from datetime import date
 
@@ -17,4 +17,4 @@ def test_canonical_codec_has_stable_download_research_and_freeze_identities():
         CanonicalResearchHash(HISTORICAL_RESEARCH_SPEC)
         == "271148e641b6ff6199181de70bd41ab4869477ac52fb97cf348d8a6747142926"
     )
-    assert freeze().content_hash == "2725ee6b66927deeb9dcdffaf9420e077d73656821586bb70b3bb32c08aea7d3"
+    assert freeze().content_hash == "a4813b05800706f94ce9c75b7e26d23ded64faf8d9dfdb5711140baccdaf8443"

@@ -21,6 +21,7 @@ from trader.recommendation.domain.publication.freeze_identity import (
     FreezeOverlay,
     IdentityCodes,
     IsPreviewFreeze,
+    LongProjection,
     ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
@@ -112,6 +113,8 @@ class UnifiedFreezeIndex:
         *,
         expected_version: str | None,
     ) -> UnifiedFreezePublishResult:
+        if not isinstance(identity, (ScoredFreeze, LongProjection)):
+            raise ValueError("historical snapshots are read-only")
         with self._lock:
             current = self._current.get(identity.strategy)
             seal = self._seals.get(identity.strategy)
@@ -142,7 +145,8 @@ class UnifiedFreezeIndex:
         expected_version: str | None,
     ) -> UnifiedFreezePublishResult:
         """Publish a scored identity and its complete same-batch quote view atomically."""
-
+        if not isinstance(freeze, ScoredFreeze) or not isinstance(initial_overlay, FreezeOverlay):
+            raise ValueError("historical snapshots are read-only")
         with self._lock:
             current = self._current.get(freeze.strategy)
             rejection = _scored_rejection(
@@ -177,7 +181,8 @@ class UnifiedFreezeIndex:
         expected_versions: tuple[str | None, str | None],
     ) -> UnifiedPairedPublishResult:
         """Validate both scored currents before changing either strategy."""
-
+        if any(not isinstance(freeze, ScoredFreeze) for freeze in freezes):
+            raise ValueError("historical snapshots are read-only")
         if tuple(freeze.strategy for freeze in freezes) != (Strategy.TOMORROW, Strategy.D25):
             raise ValueError("paired publication requires tomorrow and d25 in order")
         if freezes[0].trade_date != freezes[1].trade_date:
@@ -221,6 +226,8 @@ class UnifiedFreezeIndex:
         overlays: tuple[FreezeOverlay, FreezeOverlay],
         expected_versions: tuple[str | None, str | None],
     ) -> str | None:
+        if any(not isinstance(freeze, ScoredFreeze) for freeze in freezes):
+            raise ValueError("historical snapshots are read-only")
         if tuple(freeze.strategy for freeze in freezes) != (Strategy.TOMORROW, Strategy.D25):
             raise ValueError("paired publication requires tomorrow and d25 in order")
         if freezes[0].trade_date != freezes[1].trade_date:
@@ -260,6 +267,8 @@ class UnifiedFreezeIndex:
         *,
         expected_version: str | None,
     ) -> UnifiedOverlayPublishResult:
+        if not isinstance(overlay, FreezeOverlay):
+            raise ValueError("historical snapshots are read-only")
         with self._lock:
             current = self._current.get(overlay.strategy)
             existing = self._overlays.get(overlay.strategy)
@@ -382,6 +391,8 @@ class UnifiedFreezeIndex:
         boundary_at: datetime,
         official_close_version: str,
     ) -> UnifiedFreezeSealResult:
+        if not isinstance(freeze, ScoredFreeze):
+            raise ValueError("historical snapshots are read-only")
         if IsPreviewFreeze(freeze):
             return UnifiedFreezeSealResult(False, "preview_only")
         with self._lock:
@@ -412,6 +423,8 @@ class UnifiedFreezeIndex:
             )
 
     def commit_formal(self, record: CommittedFreezeRecord) -> bool:
+        if not isinstance(record, CommittedFreezeRecord):
+            raise ValueError("historical records are read-only")
         if IsPreviewFreeze(record.freeze):
             return False
         with self._lock:
@@ -428,6 +441,8 @@ class UnifiedFreezeIndex:
             return True
 
     def restore_formal(self, record: CommittedFreezeRecord) -> bool:
+        if not isinstance(record, CommittedFreezeRecord):
+            raise ValueError("historical records are read-only")
         if IsPreviewFreeze(record.freeze):
             return False
         with self._lock:

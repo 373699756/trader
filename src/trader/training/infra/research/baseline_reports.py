@@ -15,8 +15,7 @@ from trader.training.application.baseline_replay_report import (
     HistoricalBaselineReport,
 )
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC
-from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
+from trader.infra.serialization.canonical_codec import CanonicalText, EncodeCanonicalValue
 
 _REPORT_NAME = "historical-baseline-report.json"
 
@@ -39,11 +38,11 @@ class JsonBaselineReportIndex:
             if existing.report_hash != report.report_hash:
                 raise BaselineReportConflictError("Historical replay report identity conflict")
             return existing
-        payload = ResearchValue(report)
+        payload = EncodeCanonicalValue(report)
         if not isinstance(payload, dict):
             raise TypeError("Historical replay report payload must be an object")
         payload["report_hash"] = report.report_hash
-        if not PublishImmutable(path, ResearchJson(payload)):
+        if not PublishImmutable(path, CanonicalText(payload)):
             existing = self.verify()
             if existing.report_hash != report.report_hash:
                 raise BaselineReportConflictError("Historical replay report identity conflict")
@@ -95,10 +94,8 @@ def _report_from_payload(raw: dict[str, object]) -> HistoricalBaselineReport:
         _extraction_status(raw["extraction_status"]),
         days,
         aggregate,
-        research_identity=str(raw.get("research_identity", HISTORICAL_RESEARCH_SPEC.research_identity)),
-        research_spec_hash=str(raw.get("research_spec_hash", HISTORICAL_RESEARCH_SPEC.content_hash)),
-        schema_version=str(raw["schema_version"]),
-        replay_version=str(raw["replay_version"]),
+        research_identity=str(raw["research_identity"]),
+        research_spec_hash=str(raw["research_spec_hash"]),
         cost_rates=_triple(raw["cost_rates"]),
     )
 

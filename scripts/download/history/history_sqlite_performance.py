@@ -135,12 +135,11 @@ def Main() -> int:
         try:
             return _measure_resume_reads(args.history_root.resolve(), args.resume_samples, sqlite_policy=sqlite_policy)
         except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
-            emit_report({"schema_version": "history_sqlite_performance", "status": "failed"})
+            emit_report({ "status": "failed"})
             return 1
     if args.inventory_only:
         emit_report(
             {
-                "schema_version": "history-space-inventory",
                 "status": "passed",
                 "summary": inspect_history_space(args.history_root.resolve()),
             }
@@ -158,12 +157,11 @@ def Main() -> int:
             args.revision_write_sample_count, sqlite_policy=sqlite_policy,
         )
     except (HistoryControlError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
-        emit_report({"schema_version": "history_sqlite_performance", "status": "failed"})
+        emit_report({ "status": "failed"})
         return 1
     summary = report.physical
     compact = summary.page_sizes == (8192,)
     payload = {
-        "schema_version": "history_sqlite_performance",
         "status": "passed" if compact else "degraded",
         "summary": {
             "partition_count": summary.partition_count,
@@ -325,7 +323,6 @@ def _measure_preload(
     passed = all(state.maintenance_state == "ready" for state in states) and company_error is None
     emit_report(
         {
-            "schema_version": "history_sqlite_performance",
             "status": "passed" if passed else "degraded",
             "summary": {
                 "read_only": True,
@@ -511,7 +508,6 @@ def _measure_resume_reads(root: Path, count: int, *, sqlite_policy: SqliteIoPoli
         status = "failed"
     emit_report(
         {
-            "schema_version": "history_sqlite_performance",
             "status": status,
             "summary": {
                 "resume_reads": measurements,

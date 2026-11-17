@@ -768,7 +768,6 @@ def _report_document(
     )
     document: dict[str, object] = {
         **_common_document(context),
-        "schema_version": f"{context.profile.profile_id}_head_validation_report",
         "profile_id": context.profile.profile_id,
         "model_id": context.contract.model_id,
         "strategy_head": context.contract.strategy.value,
@@ -801,7 +800,6 @@ def _metadata_document(
     report: dict[str, object],
 ) -> dict[str, object]:
     return {
-        "schema_version": f"{context.profile.profile_id}_head_recent_refit_metadata",
         "profile_id": context.profile.profile_id,
         "model_id": context.contract.model_id,
         "strategy_head": context.contract.strategy.value,
@@ -834,7 +832,6 @@ def _training_input_document(context: _TrainingInputDocumentContext) -> dict[str
     snapshot = context.snapshot
     contract = context.contract
     document: dict[str, object] = {
-        "schema_version": f"{profile.profile_id}_head_training_input_manifest",
         "profile_id": profile.profile_id,
         "strategy_head": contract.strategy.value,
         "training_input_scope": snapshot.input_scope,

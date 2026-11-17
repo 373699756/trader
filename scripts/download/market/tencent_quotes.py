@@ -89,7 +89,6 @@ def _collect(codes: tuple[str, ...], args: argparse.Namespace) -> dict[str, obje
             time.sleep(args.interval_seconds)
     distinct_versions = {code: len(set(values)) for code, values in sorted(versions.items())}
     return {
-        "schema_version": "tencent-quote-sampling",
         "collected_at": datetime.now(_SHANGHAI).isoformat(),
         "codes": list(codes),
         "requested_interval_seconds": args.interval_seconds,
@@ -154,7 +153,6 @@ def _audit_transport(args: argparse.Namespace, *, sqlite_policy: SqliteIoPolicy)
         if not workers_stopped.completed or not http_stopped.completed:
             raise RuntimeError("tencent_audit_shutdown_incomplete")
     return {
-        "schema_version": "tencent-transport-audit",
         "status": "degraded" if any(row["error"] or row["returned"] != row["requested"] for row in rows) else "passed",
         "summary": {"measurements": rows},
     }
@@ -172,7 +170,6 @@ def Main() -> int:
         report = _audit_transport(args, sqlite_policy=sqlite_policy) if args.transport_audit else _collect(codes, args)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
-            "schema_version": "tencent-quote-sampling",
             "status": "failed",
             "error": type(exc).__name__,
         }

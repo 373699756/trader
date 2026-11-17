@@ -51,7 +51,6 @@ from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.freeze_identity import (
-    CommittedFreezeRecord,
     FreezeItem,
     FreezeOverlay,
     FreezeQuote,
@@ -267,7 +266,6 @@ def Run(
     if growth > budgets.memory.growth_percent:
         failures.append("process_rss_growth:absolute_budget")
     return {
-        "schema_version": "production_performance",
         "status": "passed" if not failures else "failed",
         "identity": identity,
         "workload": {
@@ -311,7 +309,6 @@ def Run(
         "network_calls": 0,
         "failures": failures,
         "hot_path_baseline": {
-            "schema_version": "scoring_hot_path_efficiency_baseline",
             "status": "unverified",
             "reason": "formal_history_and_equivalence_cases_not_measured",
         },
@@ -345,7 +342,6 @@ def _steady_report(
     if steady.growth_percent > budgets.growth_percent:
         failures.append("process_rss_growth:absolute_budget")
     return {
-        "schema_version": "production_performance",
         "status": "failed" if failures else "passed",
         "identity": {**identity, "measurement_scope": "model_steady_only"},
         "workload": {"profiles": [item.profile.profile_id for item in prepared.workloads],
@@ -443,7 +439,6 @@ def _continuous_report(
             ):
                 failures.append(f"{name}:relative_regression")
     return {
-        "schema_version": "production_performance",
         "status": "failed" if failures else "passed",
         "identity": {**identity, "continuous_contract": replay["contract"]},
         "profile_results": _project_profile_loads(prepared.profiles),
@@ -565,7 +560,6 @@ def Main(argv: list[str] | None = None) -> int:
 
 def _unavailable_report(reason: str) -> dict[str, object]:
     return {
-        "schema_version": "production_performance",
         "status": "failed",
         "workload": {},
         "measurements": {},
@@ -710,7 +704,6 @@ def _operations(
         "canonical_snapshot": lambda: ColumnarQuoteBatch.from_snapshot(
             merged,
             config_version=config_version,
-            schema_version="performance-market",
         ),
         "targeted_overlay_commit": lambda: (
             OverlayCanonicalSnapshot(merged, overlay_snapshot, merge_epoch="performance:overlay"),
@@ -913,7 +906,6 @@ def _performance_freeze(
         (("market", f"performance:{sequence}"),),
         "config:performance",
         "strategy:performance",
-        "fusion:performance",
         tuple(items),
         (("hard_filter", 348),),
         population_count=360,
@@ -1052,7 +1044,7 @@ class _FixedClock:
 
 
 class _EmptyHistory:
-    def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
+    def load_history(self, strategy: Strategy, trade_date: date) -> None:
         del strategy, trade_date
         return None
 

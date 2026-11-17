@@ -13,6 +13,7 @@ from typing import Literal, Protocol
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coverage import (
     FreezeCoverage,
+    HistoricalFreezeCoverage,
     ScoredFreezeCoverage,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (
@@ -39,17 +40,17 @@ from trader.recommendation.domain.publication.freeze_identity import (
     VisibleScoredSeats,
 )
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
+from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord, HistoricalFreezeSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.publication.score_ledger import ScoreLedger
 
 FreezeViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
-FREEZE_VIEW_SCHEMA_VERSION = "freeze_view"
 
 
 class FreezeHistoryReader(Protocol):
-    def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None: ...
+    def load_history(self, strategy: Strategy, trade_date: date) -> HistoricalFreezeRecord | None: ...
 
     def list_dates(
         self,
@@ -181,7 +182,7 @@ class FreezeView:
     frozen_at: datetime | None
     freeze_kind: str | None
     input_versions: tuple[tuple[str, str], ...]
-    coverage: FreezeCoverage
+    coverage: FreezeCoverage | HistoricalFreezeCoverage
     filter_reason_counts: tuple[tuple[str, int], ...]
     degraded_reasons: tuple[str, ...]
     items: tuple[FreezeItemView, ...]
@@ -191,7 +192,6 @@ class FreezeView:
     top_scores: tuple[FreezeItemView, ...] = ()
     pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
     outcome_summaries: tuple[OutcomeTierSummary, ...] = ()
-    schema_version: str = FREEZE_VIEW_SCHEMA_VERSION
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
 
     @property
@@ -291,7 +291,7 @@ class UnifiedFreezeQueries:
         if strategy is Strategy.LONG:
             return _empty_view(strategy, trade_date, "history", "not_applicable", "history_not_applicable")
         try:
-            record = self._history.load(strategy, trade_date)
+            record = self._history.load_history(strategy, trade_date)
         except (FreezeRecordError, OSError):
             return _empty_view(strategy, trade_date, "history", "scored", "history_unavailable")
         if record is None:
@@ -432,11 +432,11 @@ class _ScoredViewInput:
     view: Literal["current", "history"]
     quotes: Mapping[str, FreezeQuote]
     overlay_version: str | None
-    formal: CommittedFreezeRecord | None
+    formal: CommittedFreezeRecord | HistoricalFreezeRecord | None
     classified_industries: Mapping[str, str] = field(default_factory=dict)
 
 
-def _scored_view(freeze: ScoredFreeze, now: datetime, view_input: _ScoredViewInput) -> FreezeView:
+def _scored_view(freeze: ScoredFreeze | HistoricalFreezeSnapshot, now: datetime, view_input: _ScoredViewInput) -> FreezeView:
     overlay_quotes = view_input.quotes
     view = view_input.view
     formal = view_input.formal
@@ -453,7 +453,19 @@ def _scored_view(freeze: ScoredFreeze, now: datetime, view_input: _ScoredViewInp
         for rank, item in enumerate(VisibleScoredSeats(freeze), start=1)
     )
     items = top_scores
-    coverage = ScoredFreezeCoverage(freeze)
+    if isinstance(freeze, HistoricalFreezeSnapshot):
+        selected = tuple(item for item in freeze.items if item.selected)
+        coverage: FreezeCoverage | HistoricalFreezeCoverage = HistoricalFreezeCoverage(
+            freeze.population_count,
+            freeze.selection_diagnostics.evaluated_count if freeze.selection_diagnostics is not None else None,
+            freeze.rejected_count,
+            len(selected),
+            sum(item.action.value == "executable" for item in selected),
+            sum(item.action.value == "observe" for item in selected),
+            sum(item.action.value == "unavailable" for item in selected),
+        )
+    else:
+        coverage = ScoredFreezeCoverage(freeze)
     etag = _classified_etag(_etag(freeze.version, view_input.overlay_version), view_input.classified_industries)
     if view == "history":
         quote_identity = [
@@ -487,7 +499,7 @@ def _scored_view(freeze: ScoredFreeze, now: datetime, view_input: _ScoredViewInp
         selection_diagnostics=freeze.selection_diagnostics,
         top_scores=top_scores,
         pipeline=freeze.pipeline,
-        preview_context=freeze.preview_context,
+        preview_context=freeze.preview_context if isinstance(freeze, ScoredFreeze) else None,
     )
 
 

@@ -7,7 +7,6 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 
 def ProjectHistoryMaintenanceStatus(status: HistoryMaintenanceStatus) -> dict[str, object]:
     return {
-        "schema_version": "history_maintenance_status",
         "state": status.state,
         "reason": status.reason,
         "history_root": str(status.history_root),

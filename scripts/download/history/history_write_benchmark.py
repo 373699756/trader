@@ -356,7 +356,6 @@ def MeasureHistoryWrites(
         ))
         disk_kind = disk_kind or DiskProbe().inspect(root).kind
     return {
-        "schema_version": "history-write-benchmark",
         "status": "passed"
         if all(item["state"] in {"completed", "already_current"} and not item["gaps"] for item in results)
         else "failed",
@@ -415,7 +414,7 @@ def Main() -> int:
                 "history_publication_profile_source_changed",
             }
             emit_report({
-                "schema_version": "history-publication-profile", "status": "failed",
+                 "status": "failed",
                 "summary": {
                     "failure_type": type(exc).__name__,
                     "reason": reason if isinstance(exc, SqlitePublicationError) or reason in safe_reasons

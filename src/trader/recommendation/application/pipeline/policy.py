@@ -48,7 +48,6 @@ class RecommendationSelectionSettings:
 @dataclass(frozen=True)
 class RecommendationPolicy:
     strategy_version: str
-    fusion_version: str
     fusion: FusionPolicy
     selection: RecommendationSelectionSettings
     dimension_weights: Mapping[Strategy, Mapping[str, float]]

@@ -42,17 +42,15 @@ class FreezeOperationResult:
 class FreezeRuntimeIdentity:
     config_version: str
     strategy_version: str
-    fusion_version: str
 
     def __post_init__(self) -> None:
-        if not all((self.config_version, self.strategy_version, self.fusion_version)):
+        if not all((self.config_version, self.strategy_version)):
             raise ValueError("freeze runtime identity must not be empty")
 
     def matches(self, freeze: ScoredFreeze) -> bool:
         return (
             freeze.config_version == self.config_version
             and freeze.strategy_version == self.strategy_version
-            and freeze.fusion_version == self.fusion_version
         )
 
 

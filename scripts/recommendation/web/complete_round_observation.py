@@ -165,8 +165,11 @@ def _head_identity(
 
 
 def _batch_heads(payload: Mapping[str, object], *, event: bool) -> tuple[tuple[_HeadIdentity, Mapping[str, object]], ...]:
-    if payload.get("schema_version") != ("freeze_event" if event else "freeze_current_batch"):
-        raise ValueError("batch_schema_invalid")
+    expected = {"round_sequence", "profiles"} if event else {"profiles"}
+    if set(payload) != expected:
+        raise ValueError("batch_fields_invalid")
+    if event:
+        _integer(payload.get("round_sequence"), "published_round_sequence_missing")
     profiles = _mapping(payload.get("profiles"), "batch_profiles_missing")
     if set(profiles) != set(SCORING_PROFILE_IDS):
         raise ValueError("batch_profiles_incomplete")
@@ -487,7 +490,6 @@ class _Observation:
 
     def report(self) -> dict[str, object]:
         return {
-            "schema_version": "web_recommendation_health",
             "mode": "complete_rounds",
             "status": "passed" if self.stop_reason == "target_reached" else "failed",
             "collected_at": self.wall_clock().isoformat(),

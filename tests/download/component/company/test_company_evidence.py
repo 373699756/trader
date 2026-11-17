@@ -190,7 +190,6 @@ def test_unversioned_collection_rejects_writer_and_formal_links_never_inspect_co
     path = tmp_path / "company_collection.sqlite3"
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run("CREATE TABLE contract(identity TEXT PRIMARY KEY)")
-        connection.run("INSERT INTO contract VALUES('company_collection')")
         connection.run("CREATE TABLE disclosures(source_id TEXT, digest TEXT)")
         connection.run("INSERT INTO disclosures VALUES('first','a')")
     before = path.read_bytes()

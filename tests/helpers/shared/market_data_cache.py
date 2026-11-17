@@ -85,7 +85,6 @@ def _identity(subject: str, *, dataset: str = "daily_history", phase: str = "mor
             phase=phase,
             source_contract_version="eastmoney-contract",
             config_version="runtime-current",
-            schema_version="market_snapshot",
         )
     )
 

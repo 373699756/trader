@@ -12,9 +12,6 @@ from trader.recommendation.domain.market.models import (
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.budget_file import BudgetStateFile
-from trader.recommendation.infra.deepseek.schema import (
-    SCHEMA_VERSION as REVIEW_SCHEMA_VERSION,
-)
 
 NOW = datetime(2026, 7, 16, 6, 30, tzinfo=timezone.utc)
 
@@ -71,7 +68,7 @@ def _candidate(code: str, evidence_id: str) -> FeatureSnapshot:
 
 def _valid_payload(code: str) -> dict[str, object]:
     return {
-        "schema_version": REVIEW_SCHEMA_VERSION,
+
         "results": [
             {
                 "code": code,

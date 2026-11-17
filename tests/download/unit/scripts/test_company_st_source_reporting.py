@@ -77,7 +77,7 @@ def test_repeated_normalization_preserves_the_native_observed_identity():
     ("production_adopted", True), ("field_correctness_verified", True), ("full_market_verified", True),
     ("source_data_writes", 1), ("source_data_writes", False), ("read_only", False),
     ("workers", 5), ("rounds", 6), ("actual_requests", 385), ("status", "passed"),
-    ("schema_version", "private_format"), ("reference_hash", "https://private.invalid/?token=private"),
+    ("request_limit", 0), ("reference_hash", "https://private.invalid/?token=private"),
 ])
 def test_invalid_safety_claims_and_budgets_are_failed(field, value):
     report = _report()

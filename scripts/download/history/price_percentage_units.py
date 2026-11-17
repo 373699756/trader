@@ -265,7 +265,6 @@ def AuditPricePercentageUnits(
     counts = Counter(item.assessment for item in samples)
     incomplete = interrupted is not None or len(unvisited) > 2 or not samples
     return {
-        "schema_version": "history-publication-audit",
         "status": "failed" if failures else "degraded" if incomplete or counts["suspected_shrunk_100x"] or counts["other_mismatch"] or counts["unassessable"] else "passed",
         "summary": {
             "scope": "bounded_baostock_source_evidence_not_full_price_population",

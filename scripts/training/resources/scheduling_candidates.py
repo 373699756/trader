@@ -45,12 +45,11 @@ def LoadSchedulingEvidence(
 ) -> SchedulingEvidence:
     raw = ReadJsonObject(path)
     RequireExactKeys(raw, {
-        "schema_version", "source_hash", "configuration_hash", "implementation_hash", "medium",
+        "source_hash", "configuration_hash", "implementation_hash", "medium",
         "available_cpus", "cpu_capacity", "native_threads", "profiles",
     }, "training_scheduling")
     if (
-        raw["schema_version"] != "training-scheduling-evidence"
-        or raw["source_hash"] != source_hash
+        raw["source_hash"] != source_hash
         or raw["configuration_hash"] != configuration_hash
         or raw["implementation_hash"] != implementation_hash
         or raw["medium"] != medium or medium == "unknown"

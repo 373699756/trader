@@ -50,7 +50,7 @@ def freeze(
         input_versions=(("market", "market-initial"), ("daily", "daily-current")),
         config_version="config-current",
         strategy_version="strategy-current",
-        fusion_version="fusion-current",
+
         items=(
             FreezeItem(
                 code="600001",

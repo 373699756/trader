@@ -18,7 +18,7 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
     source = result.payload
     if (
         result.name == "tencent_quotes" and result.error_code is None and source is not None
-        and source.get("status") is None and source.get("schema_version") == "tencent-quote-sampling"
+        and source.get("status") is None
         and not isinstance(source.get("passed"), bool)
     ):
         return replace(result, payload=dict(source, passed=True))

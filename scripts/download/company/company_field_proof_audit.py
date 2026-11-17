@@ -201,7 +201,7 @@ def AuditCompanyFieldProofs(
         unreproved_basis=dict(unreproved_basis),
         items=items, items_truncated=checked_fields - reproved > len(items),
     )
-    return {"schema_version": "company-resume", "status": "failed" if expired else "passed" if summary["complete"] else "degraded",
+    return { "status": "failed" if expired else "passed" if summary["complete"] else "degraded",
             "summary": {"field_proof_audit": summary}, "findings": findings}
 
 

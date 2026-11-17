@@ -51,7 +51,6 @@ class ModelBundleContractError(ValueError):
 
 _MODEL_FIELDS = {"industries"}
 _METADATA_FIELDS = {
-    "schema_version",
     "profile_id",
     "model_id",
     "strategy_head",
@@ -69,7 +68,6 @@ _REPORT_COMMON_FIELDS = {
     "price_snapshot_hash",
     "industry_policy",
     "industry_content_hash",
-    "schema_version",
     "profile_id",
     "model_id",
     "strategy_head",
@@ -113,7 +111,6 @@ _INPUT_FIELDS = {
     "industry_policy",
     "industry_content_hash",
     "industry_snapshot",
-    "schema_version",
     "profile_id",
     "strategy_head",
     "training_input_scope",
@@ -407,7 +404,7 @@ def DecodeHeadPublicationIdentity(
 def _metadata_payload(
     document: object, profile: TrainedProfileContract
 ) -> tuple[dict[str, object], str]:
-    if not isinstance(document, dict) or document.get("schema_version") != f"{profile.profile_id}_head_recent_refit_metadata":
+    if not isinstance(document, dict):
         raise ModelBundleContractError("trained strategy-head metadata requires current recent-refit publication")
     fields = _METADATA_FIELDS | {"final_fit"}
     if profile.algorithm == "tcn":
@@ -557,14 +554,8 @@ def _decode_group_document(
     payload, declared_hash = _hashed_object(document, fields, "report" if report else "training input")
     ValidateTrainingInputIdentity(payload)
     contract = profile.head_for_strategy(strategy)
-    expected_schema = (
-        f"{profile.profile_id}_head_validation_report"
-        if report
-        else f"{profile.profile_id}_head_training_input_manifest"
-    )
     if (
-        _text(payload, "schema_version") != expected_schema
-        or _text(payload, "profile_id") != profile.profile_id
+        _text(payload, "profile_id") != profile.profile_id
         or _text(payload, "strategy_head") != strategy.value
         or _text(payload, "training_input_scope") != "complete_manifest"
         or _text(payload, "feature_manifest_hash") != contract.feature_manifest.content_hash

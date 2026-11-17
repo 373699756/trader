@@ -626,13 +626,13 @@ A来源证据：既有公开sources固定001232／2025-09-30执行修订探针�
 
 ### 4.8 工程审查全面修复（353）
 
-353／额外版本控制收口计划／planned（2026-11-17，基线5f2d64f1）：用户确认配置profile中的v1／v2／v3／v5属于正常评分档位，要求给出其它版本控制的优化计划，不需要额外版本制度。本批仅完成计划及源码消费者核对，不实施代码、修改运行配置、读取或改写活动资料、联网下载、训练或切换服务；本计划实施仍为planned，不因文档提交改成completed。沿原353统一登记，业务文件仍归A荐股／HTTP／Web、B下载、C训练，前台负责公共契约和串行集成，不建立第二台账或提前启动C作业。
+353／额外版本控制收口／completed（本轮代码、全部消费者和隔离验证；2026-11-17，基线553e9cc0）：用户已明确按原计划一次性实施，六个切片在同一批完成，不新建阶段。A负责荐股／HTTP及历史边界，B负责下载及Web诊断，C专项负责本批训练／工件／研究消费者，前台完成公共primitive、bootstrap、Web、文档及串行集成；未接管或启动C既有拟合／性能作业。实现先在隔离候选验证后整体合入Afuture，用户原runtime修改、data/及进程保留。本记录只关闭额外版本控制清理，不关闭353其余工程欠项、公司来源／质量或性能待验。
 
 目标与保留边界：只有评分档位使用项目vN命名，包括download／training／features／research配置中引用该档位的profile。保留供应商API／模型名、操作系统协议、项目及依赖包版本；保留内容摘要、真实来源／数据批次身份、发布序号／实际修订、日期／窗口和请求预算。它们不承担格式升级职责，不因名称含version就删除，也不为消除字样开展无收益的全仓改名。数据库及模型只接受当前实际结构；不设置格式版本开关、旧编号忽略、缺列补建、升级器、迁移器、双读／双写或静默清空。不把schema_version统一换成schema_id后继续同一套版本控制；URL／固定文件／具体类型已能辨型时直接删除冗余标记，只有真实多态消息需要时复用既有kind等业务判别字段，不增加通用格式管理层。
 
-本轮范围与按顺序实施的完整切片如下；序号仅为本计划施工顺序，不是新增阶段或格式版本。每个切片先列当前owner、全部消费者、必删符号与公开字段，再完成“新owner／当前契约＋全部消费者＋旧路径删除”的原子切换；不留中间兼容桥。
+下表保留553e计划的六个切片，作为本轮已实施范围及验收依据；序号不是新增阶段或格式版本。各切片完成当前契约、全部消费者及旧路径删除的同批切换，不留中间兼容桥。
 
-| 顺序／责任边界 | 已确认的对象与消费者 | 目标改动及验收重点 |
+| 顺序／责任边界 | 清理前的对象与消费者 | 本轮切换目标及验收依据 |
 | --- | --- | --- |
 | 1／B：公司规则身份 | 活动源码15种人工编号，如implemented_total_capital_ratio:3、explicit_repurchase_purpose:2、explicit_cny_contract_amount:3、field_source_lines:1；涉及company_event_extraction／company_contract_fields、announcement_links、field_recovery、field_publication、annual_field_publication及采集任务、正式凭据、正常同步和诊断消费者 | 删除手工递增后缀和对应编号分支，保留可读规则名称；复用唯一CompanyFieldProofRulesHash及已有精确输入／正文摘要，不另建一套规则版本。规则变化须使旧证明与尝试失效，经当前唯一proofer实际重证后才采用；不能只剥后缀而将旧valid／attempted当新证明，也不自动补签、扩大PDF派发或重置来源预算。 |
 | 2／A及前台：荐股、接口与DeepSeek | deepseek/schema_constants、schema_prompts、schema、cache、reviewer和bootstrap；固定PROMPT_VERSION／SCHEMA_VERSION／RAW_FACTS_CACHE_GENERATION与可覆盖版本选项；FusionSettings.version；status_schema、cache_contracts、market epochs／columnar及HTTP／JS／诊断投影 | 删除仅为格式编号、固定版本选择而存在的字段、常量、校验和重复缓存分区；仍按当前真实字段、类型、单位、证券／证据及上限校验。提示词与响应约束需要缓存隔离时绑定真实模板／契约内容摘要，不手工发版。公开生产者、解析器、缓存、HTTP、Web和工具同批切换，旧公开字段明确为不兼容变更，不保留两套响应。DeepSeek仍仅风险veto，168物理预算、独立预算桶及本地降级不变。 |
@@ -645,7 +645,13 @@ A来源证据：既有公开sources固定001232／2025-09-30执行修订探针�
 
 数据与授权：代码简化不等于获准删除或切换资料。不兼容下载库只给出已核实的具体下载文件范围及备份／风险保全条件，不生成通用删除data/、删除company/或自动重下方案；不把模型、冻结／研究历史或请求预算列入删除范围。新模型／样本是否需重新生成须由新实际合同及复用检查判定，保留原件，不自动改写或删除；必要重下、重训、活动资料／服务切换及发布另按原授权边界处理。
 
-计划交付验证：只读核对上述实际定义、解析／校验、缓存／writer／reader、公共投影与历史消费者；文档完整diff Review及git diff --check。仅新增本计划，未改业务代码、权威业务合同、用户runtime或data/，未运行测试／格式／性能／下载／训练／服务／发布；尚未实施上述切片，不声称15项编号、兼容分支或现有字段已删除。
+实际改动：删除15种公司规则人工递增后缀及提取／队列固定generation，规则凭据绑定实际源码、规则白名单和精确输入摘要，变化后重新取证，原请求轮次及额度不重置。删除提示词／响应／fusion／特征／缓存／CLI／HTTP／SSE／工具及训练工件的冗余格式标签和旧导出；纯标记表删除，保留真实reference_file／calendar_year。当前数据库完整DDL、非零旧user_version、模型／样本完整字段及真实摘要严格校验，不补列、不升级、不双读、不静默清空；共享canonical不再为旧研究身份排除真实字段。旧MergeDatabase及纯转发identity_codec路径删除，工程工具只保显式外部空候选与完整目录回退，不能靠重算摘要导入非空旧资料。b／c／d／e及scripts说明随实际行为同步。
+
+历史边界：独立Historical DTO只读核原bytes／hash／身份，缺失总体、评分、拒绝统计及诊断保持None，页面不推算或补动作限额；同事件缺审计重放保原整体字节。Current完整规范shape、当前stage图及发布／恢复／事件／SSE真实类型门均拒绝历史提升。tests/fixtures/recommendation/history_553e9cc0.json由553e原writer／原codec在隔离环境生成，保原SHA；另有明确标注的synthetic旧图用例，不冒充真实生产历史或收益／来源质量证据。
+
+交付验证：最终XML按classname＋name去重4245通过、1条件跳过（当前解释器已提供标准pidfd，缺pidfd用例不适用），所选功能集无未解决失败节点；清单及报告摘要在/tmp/trader-no-versions-functional-evidence-20261117.json。覆盖规则改变重证／同输入恢复与预算、严格当前DDL／字段／模型拒旧、双头恢复、真实Flask历史GET与原件保护、当前六席／冻结／SSE、只读启动和CLI消费者；历史／Current最后防护主树110项通过。337个受影响Python文件严格Ruff、主树795源mypy、Node页面状态合同、A/B/C与前台完整本批diff及旧引用Review通过，源码≤1500行。最终wheel构建、公开wheel-install仓库外安装、五个研究命令及缺历史／选择只读smoke通过，显式使用现有环境pip并实际pip check；wheel载荷与冻结源字节一致，报告/tmp/trader-no-versions-wheel-final-report-20261117.json。完整主树／暂存diff及git diff --check在提交前核对。
+
+未完成项／验收边界：本轮实现无剩余；全仓额外检查仍有两项原有架构失败：原生SQLite连接20处（7文件）和company_http_audit的http.client导入1处，均在未改主基线553e复现、前后文件及数量一致，不扩白名单，不用本轮通过核销。初期中间态、旧断言、sandbox loopback失败及修后成功XML均保留；曾误纳间接命名审计用例，失败保留并从后续执行排除，未运行格式工具。训练回归含小型synthetic测试造数，后续系统组改静态供应商模型；误纳3个real_isolated_fit用例均在行业准入失败，未进入实际拟合，之后排除。未真实联网下载、使用真实数据拟合、启动后台训练／性能、运行真实浏览器／五时段或发布门禁；未删除重下、迁移、改写或切换活动资料、模型和服务。具体不兼容下载文件范围见d第6章，模型、冻结／研究原件和来源／DeepSeek请求预算不随下载资料删除；不声称提速、业务全集或收益验收通过。
 
 状态：in_progress。撤出“十项全部in_progress”旧表，按已有交付核销，仅保留：
 

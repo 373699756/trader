@@ -51,7 +51,6 @@ class PointInTimeDateSplit:
     terminal_holdout_dates: tuple[date, ...]
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "point_in_time_date_split"
     date_set_hash: str = field(init=False)
     content_hash: str = field(init=False)
 
@@ -74,8 +73,6 @@ class PointInTimeDateSplit:
             raise ValueError("point-in-time date split must be ordered and disjoint")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("point-in-time dataset split cannot open holdout or production")
-        if self.schema_version != "point_in_time_date_split":
-            raise ValueError("point-in-time date split schema is invalid")
         for name, group in zip(
             (
                 "training_dates",
@@ -397,7 +394,6 @@ class PointInTimeDatasetManifest:
     terminal_holdout_rows: int = 0
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "point_in_time_dataset_manifest"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -430,8 +426,6 @@ class PointInTimeDatasetManifest:
             raise ValueError("point-in-time dataset row count is invalid")
         if self.terminal_holdout_rows != 0 or self.terminal_holdout_opened or self.production_authority:
             raise ValueError("point-in-time dataset cannot read holdout or authorize production")
-        if self.schema_version != "point_in_time_dataset_manifest":
-            raise ValueError("point-in-time dataset manifest schema is invalid")
         object.__setattr__(self, "partitions", partitions)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
@@ -445,7 +439,6 @@ class PointInTimeDatasetReport:
     failure_reasons: tuple[str, ...]
     terminal_holdout_opened: bool = False
     production_authority: bool = False
-    schema_version: str = "point_in_time_dataset_report"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -485,8 +478,6 @@ class PointInTimeDatasetReport:
             raise ValueError("point-in-time dataset state is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("point-in-time dataset report cannot open holdout or production")
-        if self.schema_version != "point_in_time_dataset_report":
-            raise ValueError("point-in-time dataset report schema is invalid")
         object.__setattr__(self, "days", days)
         object.__setattr__(self, "failure_reasons", reasons)
         object.__setattr__(self, "content_hash", CanonicalResearchHash(self))

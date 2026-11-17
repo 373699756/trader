@@ -20,7 +20,6 @@ from trader.training.application.historical_extraction_models import (
     HistoricalExtraction,
 )
 
-_SCHEMA_VERSION = "historical_partition"
 _MANIFEST_NAME = "manifest.json"
 
 
@@ -41,7 +40,6 @@ class HistoricalPartitionManifest:
     day_hash: str
     files: tuple[HistoricalPartitionFile, ...]
     content_hash: str
-    schema_version: str = _SCHEMA_VERSION
 
 
 class PolarsHistoricalPartitionSnapshot:
@@ -59,8 +57,6 @@ class PolarsHistoricalPartitionSnapshot:
                 raise HistoricalPartitionConflictError("Historical extraction top manifest identity conflict")
         manifests = tuple(self.write_day(day) for day in extraction.days)
         top_payload: dict[str, object] = {
-            "schema_version": _SCHEMA_VERSION,
-            "extraction_schema_version": extraction.schema_version,
             "extraction_hash": extraction.content_hash,
             "research_identity": extraction.research_identity,
             "research_spec_hash": extraction.research_spec_hash,
@@ -85,7 +81,7 @@ class PolarsHistoricalPartitionSnapshot:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise HistoricalPartitionConflictError("Historical extraction top manifest is invalid") from exc
-        if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
+        if not isinstance(raw, dict) or set(raw) != {"extraction_hash", "research_identity", "research_spec_hash", "status", "coverage", "days", "content_hash"}:
             raise HistoricalPartitionConflictError("Historical extraction top manifest schema mismatch")
         declared_hash = raw.get("content_hash")
         identity = {key: value for key, value in raw.items() if key != "content_hash"}
@@ -180,7 +176,6 @@ def _build_manifest(directory: Path, day: HistoricalExtractedDay) -> HistoricalP
         for path in sorted(directory.glob("*.parquet"), key=lambda value: value.name)
     )
     identity: dict[str, object] = {
-        "schema_version": _SCHEMA_VERSION,
         "trade_date": day.summary.trade_date.isoformat(),
         "day_hash": day.content_hash,
         "files": [CanonicalValue(item) for item in files],
@@ -212,7 +207,6 @@ def _manifest_payload(manifest: HistoricalPartitionManifest) -> dict[str, object
 
 def _manifest_identity_payload(manifest: HistoricalPartitionManifest) -> dict[str, object]:
     return {
-        "schema_version": manifest.schema_version,
         "trade_date": manifest.trade_date.isoformat(),
         "day_hash": manifest.day_hash,
         "files": [CanonicalValue(item) for item in manifest.files],
@@ -220,7 +214,7 @@ def _manifest_identity_payload(manifest: HistoricalPartitionManifest) -> dict[st
 
 
 def _manifest_from_payload(raw: object) -> HistoricalPartitionManifest:
-    if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
+    if not isinstance(raw, dict) or set(raw) != {"trade_date", "day_hash", "files", "content_hash"}:
         raise ValueError("Historical extraction partition schema mismatch")
     files_raw = raw["files"]
     if not isinstance(files_raw, list):

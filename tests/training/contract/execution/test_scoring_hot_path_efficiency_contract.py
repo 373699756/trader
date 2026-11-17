@@ -11,9 +11,7 @@ ROOT = Path(__file__).resolve().parents[4]
 def test_scoring_hot_path_baseline_has_explicit_cli_and_fixed_identity() -> None:
     args = BuildParser().parse_args(["research-scoring-hot-path-baseline"])
     assert args.command == "research-scoring-hot-path-baseline"
-    assert ScoringHotPathBaseline.__dataclass_fields__["schema_version"].default == (
-        "scoring_hot_path_efficiency_baseline"
-    )
+    assert "schema_version" not in ScoringHotPathBaseline.__dataclass_fields__
 
 
 def test_strategy_contract_requires_all_hot_path_denominators_and_equivalence_cases() -> None:

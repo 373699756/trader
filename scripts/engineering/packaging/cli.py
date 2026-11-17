@@ -138,7 +138,6 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path, use_environmen
         selection_report = json.loads(selection_smoke.stdout)
         if (
             selection_smoke.returncode != 2
-            or selection_report.get("schema_version") != "full_population_selection_validation"
             or selection_report.get("status") != "execution_failed"
             or selection_report.get("production_authority") is not False
             or missing_selection.exists()
@@ -164,7 +163,6 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path, use_environmen
     if not isinstance(payload, dict):
         raise TypeError("wheel resource probe returned an invalid result")
     return {
-        "schema_version": "trader_wheel_install_verification",
         "status": "passed",
         "wheel": wheel.name,
         "resource_count": payload["resource_count"],

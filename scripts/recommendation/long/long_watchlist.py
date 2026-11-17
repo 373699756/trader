@@ -237,7 +237,7 @@ def Main() -> int:
         )
     emit_report(
         {
-            "schema_version": "long-watchlist-admission",
+
             "summary": summary,
             "status": "degraded" if not results or counts["excluded"] or counts["pending"] else "passed",
         }

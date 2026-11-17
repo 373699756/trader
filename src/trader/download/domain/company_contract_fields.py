@@ -12,12 +12,12 @@ from trader.download.domain.company_field_results import CompanyFieldName, Compa
 
 
 COMPANY_CONTRACT_FIELD_RULES = (
-    ("contract_amount", "explicit_cny_contract_amount:3"),
-    ("annual_revenue", "explicit_cny_annual_operating_revenue:1"),
-    ("revenue_report_date", "explicit_contract_revenue_year:1"),
-    ("revenue_disclosed_at", "explicit_annual_report_disclosure:1"),
-    ("contract_revenue_pct", "comparable_contract_revenue_ratio:1"),
-    ("amount_basis", "explicit_comparable_contract_basis:1"),
+    ("contract_amount", "explicit_cny_contract_amount"),
+    ("annual_revenue", "explicit_cny_annual_operating_revenue"),
+    ("revenue_report_date", "explicit_contract_revenue_year"),
+    ("revenue_disclosed_at", "explicit_annual_report_disclosure"),
+    ("contract_revenue_pct", "comparable_contract_revenue_ratio"),
+    ("amount_basis", "explicit_comparable_contract_basis"),
 )
 _BINDING_PATTERN = r"合同已生效|合同自签署之日起生效|已签[订署]正式合同|已正式签[订署](?:相关)?合同"
 _BINDING_NEGATION = (

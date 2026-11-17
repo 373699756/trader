@@ -12,7 +12,7 @@ from scripts.core.projections import BuildReport, NormalizeActionResult
 
 def _annual(**changes) -> dict[str, object]:
     return {
-        "schema_version": "company-annual-income-source", "status": "decoded", "read_only": True,
+         "status": "decoded", "read_only": True,
         "source": "eastmoney_f10", "code": "600001", "requested_periods": ["2025-12-31"],
         "field_correctness_verified": False, "full_window_coverage_verified": False,
         "records": [{"report_date": "2025-12-31", "operating_revenue": 123.0, "currency": "CNY"}],
@@ -22,7 +22,7 @@ def _annual(**changes) -> dict[str, object]:
 
 def _structured(**changes) -> dict[str, object]:
     return {
-        "schema_version": "company-structured-field-sampling", "status": "passed", "read_only": True,
+         "status": "passed", "read_only": True,
         "production_adopted": False, "field_correctness_verified": False, "full_window_coverage_verified": False,
         "sources": [{"source": "eastmoney", "dataset": "contract", "status": "sampled", "rows": 1}],
         **changes,
@@ -235,48 +235,48 @@ def test_key_template_probe_cannot_claim_a_remote_column_projection_or_a_differe
     assert report["status"] == "failed" and not report["checks"][0]["summary"]["key_filter_probe"]["filter_verified"]
 
 
-@pytest.mark.parametrize("source", (
-    {"schema_version": "research-source-compare", "status": "passed"},
-    _annual(),
-    _structured(),
+@pytest.mark.parametrize(("command_name", "source"), (
+    ("research_source_compare", { "status": "passed"}),
+    ("company_annual_income_source", _annual()),
+    ("company_structured_field_sampling", _structured()),
 ))
 @pytest.mark.parametrize("value,expected", (("a" * 64, "a" * 64), ("PRIVATE_RUNTIME_CONFIGURATION", None)))
-def test_source_reports_keep_only_the_selected_configuration_hash(source, value, expected) -> None:
+def test_source_reports_keep_only_the_selected_configuration_hash(command_name, source, value, expected) -> None:
     payload = dict(source, runtime_configuration_sha256=value)
-    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 1.0, payload, None),))
+    report = BuildReport("research-source-compare", (DiagnosticResult(command_name, 0, 1.0, payload, None),))
     assert report["checks"][0]["summary"]["runtime_configuration_sha256"] == expected
     assert "PRIVATE_RUNTIME_CONFIGURATION" not in json.dumps(report)
 
 
-@pytest.mark.parametrize("source", (_annual(), _annual(status="degraded"), _structured(), _structured(status="degraded")))
-def test_explicit_source_observations_are_degraded_and_keep_native_identity(source) -> None:
-    result = DiagnosticResult("research_source_compare", 0, 1.0, source, None)
+@pytest.mark.parametrize(("command_name", "source"), (("company_annual_income_source", _annual()), ("company_annual_income_source", _annual(status="degraded")), ("company_structured_field_sampling", _structured()), ("company_structured_field_sampling", _structured(status="degraded"))))
+def test_explicit_source_observations_are_degraded_and_keep_native_identity(command_name, source) -> None:
+    result = DiagnosticResult(command_name, 0, 1.0, source, None)
     normalized = NormalizeActionResult("research-source-compare", result)
     assert NormalizeActionResult("research-source-compare", normalized) == normalized
     report = BuildReport("research-source-compare", (normalized,))
     check = report["checks"][0]
     assert report["status"] == "degraded"
-    assert check["schema_version"] == source["schema_version"]
+    assert "schema_version" not in check and "schema_version" not in source
     assert check["summary"]["observation_status"] == source["status"]
     assert check["summary"]["field_correctness_verified"] is False
     assert check["summary"]["full_window_coverage_verified"] is False
-    if source["schema_version"] == "company-annual-income-source":
+    if command_name == "company_annual_income_source":
         assert check["summary"]["records"][0]["operating_revenue"] == 123.0
     else:
         assert check["summary"]["sources"][0]["dataset"] == "contract"
         assert check["summary"]["production_adopted"] is False
 
 
-@pytest.mark.parametrize("source", (
-    _annual(field_correctness_verified=True),
-    _annual(full_window_coverage_verified=True),
-    _annual(read_only=False),
-    _structured(production_adopted=True),
-    _structured(field_correctness_verified=True),
-    _structured(sources={}),
+@pytest.mark.parametrize(("command_name", "source"), (
+    ("company_annual_income_source", _annual(field_correctness_verified=True)),
+    ("company_annual_income_source", _annual(full_window_coverage_verified=True)),
+    ("company_annual_income_source", _annual(read_only=False)),
+    ("company_structured_field_sampling", _structured(production_adopted=True)),
+    ("company_structured_field_sampling", _structured(field_correctness_verified=True)),
+    ("company_structured_field_sampling", _structured(sources={})),
 ))
-def test_invalid_acceptance_claims_fail_closed_without_publishing_true_quality_flags(source) -> None:
-    result = DiagnosticResult("research_source_compare", 0, 1.0, source, None)
+def test_invalid_acceptance_claims_fail_closed_without_publishing_true_quality_flags(command_name, source) -> None:
+    result = DiagnosticResult(command_name, 0, 1.0, source, None)
     report = BuildReport("research-source-compare", (result,))
     assert report["status"] == "failed"
     assert report["checks"][0]["summary"]["field_correctness_verified"] is False
@@ -290,7 +290,7 @@ def test_annual_projection_bounds_records_and_never_forwards_provider_rows() -> 
         "TOTAL_OPERATE_INCOME": "PRIVATE_PROVIDER_PAYLOAD", "raw": "PRIVATE_PROVIDER_PAYLOAD",
     }
     source = _annual(records=[record] * 20, raw="PRIVATE_PROVIDER_PAYLOAD")
-    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 1.0, source, None),))
+    report = BuildReport("research-source-compare", (DiagnosticResult("company_annual_income_source", 0, 1.0, source, None),))
     summary = report["checks"][0]["summary"]
     assert len(summary["records"]) == 8 and summary["records_truncated"]
     assert len(summary["records"][0]["disclosed_at"]) == 64
@@ -307,7 +307,7 @@ def test_structured_projection_bounds_schema_fields_and_explicit_source_identiti
         "identity_samples": [identity] * 12, "raw": "PRIVATE_PROVIDER_PAYLOAD",
     }
     source = _structured(sources=[sample] * 9, raw="PRIVATE_PROVIDER_PAYLOAD")
-    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 0, 1.0, source, None),))
+    report = BuildReport("research-source-compare", (DiagnosticResult("company_structured_field_sampling", 0, 1.0, source, None),))
     summary = report["checks"][0]["summary"]
     assert len(summary["sources"]) == 4
     first = summary["sources"][0]
@@ -333,7 +333,7 @@ def test_structured_projection_bounds_schema_fields_and_explicit_source_identiti
 def test_structured_projection_preserves_type_decoding_and_identity_rejection(typed, expected) -> None:
     sample = {"source": "eastmoney", "dataset": "contract", "status": "sampled", "rows": 5, "typed_fields": typed}
     report = BuildReport("research-source-compare", (
-        DiagnosticResult("research_source_compare", 0, 1.0, _structured(sources=[sample]), None),
+        DiagnosticResult("company_structured_field_sampling", 0, 1.0, _structured(sources=[sample]), None),
     ))
     summary = report["checks"][0]["summary"]
     assert report["status"] == "degraded"
@@ -351,7 +351,7 @@ def test_structured_type_projection_bounds_counts_and_rejects_unselected_payload
     }
     sample = {"source": "eastmoney", "dataset": "contract", "status": "sampled", "typed_fields": typed}
     report = BuildReport("research-source-compare", (
-        DiagnosticResult("research_source_compare", 0, 1.0, _structured(sources=[sample]), None),
+        DiagnosticResult("company_structured_field_sampling", 0, 1.0, _structured(sources=[sample]), None),
     ))
     result = report["checks"][0]["summary"]["sources"][0]["typed_fields"]
     assert result["status"] is None and result["failure"] is None and result["observations"] is None

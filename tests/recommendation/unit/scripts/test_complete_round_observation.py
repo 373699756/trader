@@ -46,8 +46,8 @@ def _pipeline():
 def _batch(sequence, *, elapsed=15, source_age=2, generation=1, mutation=None):
     observed = _START + timedelta(seconds=elapsed)
     sources = observed - timedelta(seconds=source_age)
-    event = {"schema_version": "freeze_event", "round_sequence": sequence, "profiles": {}}
-    atomic = {"schema_version": "freeze_current_batch", "profiles": {}}
+    event = { "round_sequence": sequence, "profiles": {}}
+    atomic = { "profiles": {}}
     for profile in _PROFILES:
         event["profiles"][profile] = {}
         atomic["profiles"][profile] = {}
@@ -295,6 +295,23 @@ def test_runtime_or_session_change_does_not_mix_acceptance_across_identities(cha
     assert report["summary"]["stop_reason"] == ("runtime_identity_changed" if change == "runtime" else "session_generation_changed")
 
 
+@pytest.mark.parametrize("defect", ("retired_tag", "extra_field", "boolean_sequence", "missing_sequence"))
+def test_current_batch_uses_exact_coordinates_and_round_sequence_instead_of_format_tags(defect):
+    event, atomic = _batch(1)
+    assert set(event) == {"profiles", "round_sequence"} and set(atomic) == {"profiles"}
+    if defect == "retired_tag":
+        event["schema_version"] = "freeze_event"
+    elif defect == "extra_field":
+        event["unexpected"] = "invalid"
+    elif defect == "boolean_sequence":
+        event["round_sequence"] = True
+    else:
+        event.pop("round_sequence")
+    report = _Fixture([(15, event, atomic, 11, "batch")]).run()
+    assert report["status"] == "failed" and report["summary"]["complete_published_rounds"] == 0
+    assert report["reasons"] == [{"code": "incomplete_or_invalid_batch", "count": 1}]
+
+
 def test_fast_batches_only_poll_once_per_fifteen_seconds_and_keep_the_latest_candidate():
     first, first_atomic = _batch(1, elapsed=3)
     second, second_atomic = _batch(2, elapsed=5)
@@ -472,8 +489,6 @@ def test_real_requests_batch_poll_and_exit_keep_bound_evidence(outcome, record_p
 
     at = datetime.now(ZoneInfo("Asia/Shanghai"))
     event, atomic = _batch(1, elapsed=(at - _START).total_seconds(), source_age=31 if outcome == "age_unqualified" else 2)
-    if outcome == "gzip_large":
-        event["diagnostic_padding"] = "完整帧" * 50_000
     if outcome == "atomic_advanced":
         atomic = _batch(2, elapsed=(at - _START).total_seconds() + 1)[1]
     offset = [0.0]
@@ -517,7 +532,10 @@ def test_real_requests_batch_poll_and_exit_keep_bound_evidence(outcome, record_p
                     self.wfile.flush()
 
                 try:
-                    write(_frame(event))
+                    frame = _frame(event)
+                    if outcome == "gzip_large":
+                        frame = frame.replace(b"data: {", b"data: {" + b" " * 150_000, 1)
+                    write(frame)
                     while not stopped.wait(0.05):
                         write(b": heartbeat\n\n")
                 except (BrokenPipeError, ConnectionResetError):

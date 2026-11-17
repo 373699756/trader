@@ -58,7 +58,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 def _write_training_memory_evidence(path: Path, training_input_hash: str) -> None:
     payload: dict[str, object] = {
-        "schema_version": "tomorrow_training_memory_gate",
         "status": "passed",
         "training_status": "engineering_ready",
         "repeat_training_status": "engineering_ready",
@@ -184,6 +183,25 @@ def _requirements() -> HistoryPartitionRepackRequirements:
         minimum_reduction_ratio=-1.0,
         reserve_bytes=0,
     )
+
+
+@pytest.mark.parametrize("extra", ("schema_version", "unexpected_field"))
+def test_current_repack_state_rejects_extra_fields_even_with_a_recomputed_valid_hash(tmp_path, extra):
+    from trader.download.infra.history_partition_repack_codec import ReadHistoryPartitionRepackBuildState
+    source, target, _original = _history(tmp_path)
+    HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture()).build()
+    path = source.with_name("history-repack-state.json")
+    assert ReadHistoryPartitionRepackBuildState(path).completed
+    payload = json.loads(path.read_text())
+    assert "schema_version" not in payload
+    payload.pop("content_hash")
+    payload[extra] = "old_format_number"
+    payload["content_hash"] = ContentHash(payload)
+    path.write_text(json.dumps(payload))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="document fields are invalid"):
+        ReadHistoryPartitionRepackBuildState(path)
+    assert path.read_bytes() == before
 
 
 def test_repack_build_is_resumable_and_preserves_revision_replay(tmp_path: Path) -> None:

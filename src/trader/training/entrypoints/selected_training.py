@@ -241,7 +241,6 @@ def _run_selected_training(
             )
         code = 130 if cancelled.is_set() or 130 in codes else int(any(codes))
         summary = {
-            "schema_version": "selected_training_result",
             "industry": ProjectTrainingIndustryCoverage(run.industry_snapshot) if run.industry_snapshot is not None else None,
             "profiles": profiles,
             "worker_capacity": len(profiles),
@@ -290,7 +289,6 @@ def _run_selected_training(
         cancelled.set()
         code = 130
         summary = {
-            "schema_version": "selected_training_result",
             "profiles": profiles,
             "failure": type(exc).__name__,
             "timing": ProjectTrainingExecutionTiming(measurements.snapshot()) if measurements is not None else None,
@@ -301,7 +299,6 @@ def _run_selected_training(
         reason = diagnostic.causes[0].code
         command_output.report_notice("执行错误", TrainingErrorSummary(diagnostic), state="失败")
         summary = {
-            "schema_version": "selected_training_result",
             "profiles": profiles,
             "failure": type(exc).__name__ if reason == "training_operation_failed" else reason,
             "diagnostic": ProjectTrainingError(diagnostic),
@@ -386,7 +383,6 @@ def _project_outcome(outcome: SelectedTrainingOutcome[SelectedProfileResult]) ->
         payload = ProjectLearnedRankTrainingResult(result)
     else:
         payload = {
-            "schema_version": "profile_training_result",
             "profile": outcome.profile,
             "status": "cancelled" if outcome.cancelled else "failed",
             "failure": outcome.failure,

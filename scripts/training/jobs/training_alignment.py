@@ -203,7 +203,6 @@ def _inputs(history: Path, runtime_config: Path, *, sqlite_policy: SqliteIoPolic
     reasons = Counter(item.quality.failure or "ready" for item in inputs)
     status = cache.status()
     return {
-        "schema_version": "model-inputs-diagnostic",
         "status": "passed" if features else "degraded",
         "summary": {
             "profile": "v1",
@@ -358,7 +357,6 @@ def _probe(
     equal = repeat is not None and initial["numeric_fingerprints"] == repeat["numeric_fingerprints"]
     reuse_failures = TrainingReuseFailures(initial, repeat, profiles)
     return {
-        "schema_version": "training-alignment-diagnostic",
         "status": "passed" if complete and equal and sample_reuse is not None
         and not sample_reuse["failures"] and (not require_reuse or not reuse_failures) else "degraded",
         "summary": {
@@ -415,7 +413,6 @@ def _write_workload_checkpoint(
     if path.exists() or path.is_symlink():
         raise FileExistsError("training_workload_checkpoint_output_exists")
     AtomicWriteJson(path, {
-        "schema_version": "training-workload-checkpoint",
         "workload": name,
         "audit_state": "pending_final_source_and_reuse_audit",
         "performance_acceptance": False,
@@ -638,8 +635,8 @@ def _prepare_sample_reuse(
         "exit_code": code,
         "seconds": time.monotonic() - started,
         "resources": measurement.result,
-        "profiles": [item for item in reports if item.get("schema_version") == "profile_training_result"],
-        "execution": next((item for item in reports if item.get("schema_version") == "selected_training_result"), None),
+        "profiles": [item for item in reports if "profile" in item],
+        "execution": next((item for item in reports if "profiles" in item and "training_status" in item), None),
         "cache_conditions": "preparation_scans_history_and_warms_operating_system_cache",
     }
 
@@ -684,7 +681,7 @@ def _train_once(
         )
     seconds = time.monotonic() - started
     reports = ReadJsonReports(captured.getvalue())
-    results = [item for item in reports if item.get("schema_version") == "profile_training_result"]
+    results = [item for item in reports if "profile" in item]
     reloaded_heads = sum(
         len(LoadScoringProfile(profile, training_root=work / "models").heads)
         for profile in profiles
@@ -695,7 +692,7 @@ def _train_once(
         "complete": complete,
         "exit_code": code,
         "profiles": results,
-        "execution": next((item for item in reports if item.get("schema_version") == "selected_training_result"), None),
+        "execution": next((item for item in reports if "profiles" in item and "training_status" in item), None),
         "reloaded_heads": reloaded_heads,
         "seconds": seconds,
         "resources": measurement.result,
@@ -772,11 +769,8 @@ def _numeric_fingerprints(model_root: Path, profiles: tuple[ScoringProfileId, ..
                 value: object = json.loads(path.read_text(encoding="utf-8"))
                 documents.append(_fingerprint_model_object(value))
             model, metadata = documents
-            expected_schema = (
-                "learned_rank_final_head_metadata" if profile == "v1"
-                else f"{profile}_head_recent_refit_metadata"
-            )
-            if metadata.get("schema_version") != expected_schema:
+            training = metadata.get("training_input") if profile == "v1" else metadata
+            if not isinstance(training, dict) or "final_fit" not in training:
                 raise ValueError("training_alignment_current_final_publication_required")
             report = metadata["validation_report"]
             if not isinstance(report, dict):
@@ -914,7 +908,6 @@ def Main() -> int:
             raise ValueError("training_alignment_requires_output")
     except (OSError, RuntimeError, ValueError) as exc:
         report = {
-            "schema_version": "training-alignment-diagnostic",
             "status": "failed",
             "summary": {"failure": type(exc).__name__},
         }

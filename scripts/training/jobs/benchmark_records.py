@@ -21,8 +21,6 @@ _PROFILES = ("v1", "v2", "v3", "v5")
 _STRATEGIES = ("tomorrow", "d25")
 _MODES = ("baseline_before", "candidate", "baseline_after")
 _REPORT_LIMIT = 32 * 1024**2
-_REVIEW_SCHEMA = "training-benchmark-child-review"
-_IDENTITY_SCHEMA = "training-benchmark-input-identity"
 _EXECUTION_FLAGS = (
     "memory_first", "release_cpu_before_publish", "shared_matrix_memory", "shared_validation", "normalized_tcn_batches",
 )
@@ -68,7 +66,6 @@ def ReviewTrainingBenchmarkChild(report: Path, *, identity_path: Path) -> dict[s
         persisted, _identity_file_hash = _read_document(identity_file)
         _require_identity(persisted, reviewed.identity)
         return {
-            "schema_version": _REVIEW_SCHEMA,
             "status": "verified",
             "verified": True,
             "report_path": str(report.absolute()),
@@ -81,7 +78,7 @@ def ReviewTrainingBenchmarkChild(report: Path, *, identity_path: Path) -> dict[s
             "production_authority": False,
         }
     except (OSError, UnicodeError, ValueError) as exc:
-        return _failed("training-benchmark-child-review", _failure_reason(exc))
+        return _failed(_failure_reason(exc))
 
 
 def SummarizeTrainingBenchmarkFiles(entries: tuple[tuple[str, Path], ...]) -> dict[str, object]:
@@ -94,9 +91,13 @@ def SummarizeTrainingBenchmarkFiles(entries: tuple[tuple[str, Path], ...]) -> di
         identities: set[str] = set()
         for name, review_path in entries:
             record, _record_hash = _read_document(review_path)
-            if record.get("schema_version") != _REVIEW_SCHEMA or record.get("status") != "verified" or record.get("verified") is not True:
+            verified_fields = {"status", "verified", "report_path", "report_sha256", "identity_path", "identity_sha256", "identity", "details", "performance_acceptance", "production_authority"}
+            failed_fields = {"status", "failure_reasons", "failure_kind", "performance_acceptance", "production_authority"}
+            if set(record) not in (verified_fields, failed_fields):
+                raise ValueError("training_benchmark_child_not_reviewed")
+            if record.get("status") != "verified" or record.get("verified") is not True:
                 reasons = record.get("failure_reasons")
-                if (record.get("schema_version") == _REVIEW_SCHEMA and isinstance(reasons, list) and reasons
+                if (isinstance(reasons, list) and reasons
                         and all(isinstance(reason, str) and reason.startswith("training_benchmark_") for reason in reasons)):
                     raise ValueError("training_benchmark_child_review_failed:" + ",".join(reasons))
                 raise ValueError("training_benchmark_child_not_reviewed")
@@ -127,7 +128,6 @@ def SummarizeTrainingBenchmarkFiles(entries: tuple[tuple[str, Path], ...]) -> di
         comparable = comparison.get("comparable") is True
         return {
             **comparison,
-            "schema_version": "training-benchmark-file-summary",
             "status": "verified" if comparable else "failed",
             "reviewed_children": len(results),
             "failure_reasons": [] if comparable else ["training_benchmark_children_not_comparable"],
@@ -135,12 +135,15 @@ def SummarizeTrainingBenchmarkFiles(entries: tuple[tuple[str, Path], ...]) -> di
             "production_authority": False,
         }
     except (OSError, UnicodeError, ValueError) as exc:
-        return _failed("training-benchmark-file-summary", _failure_reason(exc))
+        return _failed(_failure_reason(exc))
 
 
 def _review_child(payload: dict[str, object]) -> _ChildReview:
+    required = {"status", "summary", "benchmark_mode"}
+    if not required <= set(payload) <= required | {"product_checkout"}:
+        raise ValueError("training_benchmark_child_fields_invalid")
     status = payload.get("status")
-    if payload.get("schema_version") != "training-alignment-diagnostic" or status not in ("passed", "degraded"):
+    if status not in ("passed", "degraded"):
         raise ValueError("training_benchmark_child_not_passed")
     mode = _text(payload.get("benchmark_mode"), "training_benchmark_mode_missing")
     if mode not in _MODES:
@@ -234,7 +237,6 @@ def _review_child(payload: dict[str, object]) -> _ChildReview:
         (str(head["profile"]), str(head["training_input_hash"])) for head in heads
     })]
     identity: dict[str, object] = {
-        "schema_version": _IDENTITY_SCHEMA,
         "training_configuration_sha256": configuration,
         "inputs": inputs,
         "numeric_fingerprints": fingerprints,
@@ -538,7 +540,7 @@ def _digest(value: dict[str, object]) -> str:
 def _require_identity(
     persisted: dict[str, object], current: dict[str, object], *, compare_numeric: bool = True,
 ) -> None:
-    if set(persisted) != set(current) or persisted.get("schema_version") != _IDENTITY_SCHEMA:
+    if set(persisted) != set(current):
         raise ValueError("training_benchmark_frozen_identity_invalid")
     if persisted["training_configuration_sha256"] != current["training_configuration_sha256"]:
         raise ValueError("training_benchmark_configuration_identity_changed")
@@ -567,7 +569,7 @@ def _failure_reason(exc: OSError | UnicodeError | ValueError) -> str:
     return "training_benchmark_record_" + type(exc).__name__
 
 
-def _failed(schema: str, reason: str) -> dict[str, object]:
+def _failed(reason: str) -> dict[str, object]:
     codes = reason.removeprefix("training_benchmark_child_review_failed:").removeprefix(
         "training_benchmark_evidence_invalid:"
     ).split(",")
@@ -586,7 +588,7 @@ def _failed(schema: str, reason: str) -> dict[str, object]:
     else:
         kind = "evidence"
     return {
-        "schema_version": schema, "status": "failed", "failure_reasons": [reason],
+        "status": "failed", "failure_reasons": [reason],
         "failure_kind": kind,
         "performance_acceptance": False, "production_authority": False,
     }

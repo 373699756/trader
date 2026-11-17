@@ -68,9 +68,8 @@ def test_first_write_creates_current_schema_and_complete_transaction(tmp_path: P
     index.save_due_state(due)
 
     with SqliteSession(path) as connection:
-        assert [tuple(row) for row in connection.run("SELECT * FROM schema_contract")] == [(1, "training_maintenance")]
         tables = {row[0] for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert tables == {"schema_contract", "training_due", "training_reminder_claim", "training_reminder"}
+        assert tables == {"training_due", "training_reminder_claim", "training_reminder"}
     assert index.read_due_state(due.due_identity) == due
     assert not Path(f"{path}.sha256").exists()
 
@@ -273,7 +272,7 @@ def test_tampered_records_fail_hash_validation_without_rewriting(tmp_path: Path,
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("damage", ("unrelated", "missing_table", "corrupt"))
+@pytest.mark.parametrize("damage", ("unrelated", "missing_table", "old_marker", "corrupt"))
 def test_incompatible_maintenance_is_rejected_without_upgrade_or_clear(tmp_path: Path, damage: str) -> None:
     path = tmp_path / "maintenance.sqlite3"
     index = TrainingMaintenanceIndex(path, sqlite_policy=SqlitePolicyFixture())
@@ -284,6 +283,11 @@ def test_incompatible_maintenance_is_rejected_without_upgrade_or_clear(tmp_path:
         _save_records(index)
         with SqliteSession(path) as connection, SqliteTransaction(connection):
             connection.run("DROP TABLE training_reminder")
+    elif damage == "old_marker":
+        _save_records(index)
+        with SqliteSession(path) as connection, SqliteTransaction(connection):
+            connection.run("CREATE TABLE schema_contract(schema_id TEXT)")
+            connection.run("INSERT INTO schema_contract VALUES('training_maintenance')")
     else:
         path.write_bytes(b"invalid database")
     before = _committed_files(tmp_path)

@@ -221,7 +221,7 @@ def ExtractCompanyFieldEvidence(
                 evidence = BuildCompanyFieldEvidence(
                     document,
                     match.statement,
-                    "implemented_total_capital_ratio:3",
+                    "implemented_total_capital_ratio",
                     "percent",
                     verified.subject,
                 )
@@ -229,7 +229,7 @@ def ExtractCompanyFieldEvidence(
                     occurrences = "".join(document.text.split()).count(match.statement)
                     if occurrences > 1 and occurrences == sum(item.statement == match.statement for item in matches):
                         evidence = BuildCompanyFieldEvidence(
-                            document, match.context, "implemented_total_capital_ratio:3", "percent", verified.subject,
+                            document, match.context, "implemented_total_capital_ratio", "percent", verified.subject,
                         )
                 if evidence is not None:
                     results.append(CompanyFieldConclusion(
@@ -245,7 +245,7 @@ def ExtractCompanyFieldEvidence(
         evidence = BuildCompanyFieldEvidence(
             document,
             statement,
-            "explicit_repurchase_purpose:2",
+            "explicit_repurchase_purpose",
             "text",
             verified.subject,
         ) if statement is not None else None
@@ -284,27 +284,27 @@ def _reduction_field_evidence(verified: _VerifiedDocument) -> tuple[CompanyField
     fields: list[tuple[CompanyFieldName, date | datetime | float, str, str, CompanyFieldUnit]] = []
     if qualified is not None:
         fields.extend((
-            ("start_date", qualified.start_date, qualified.statement, "explicit_reduction_start_date:2", "date"),
-            ("end_date", qualified.end_date, qualified.statement, "explicit_reduction_end_date:2", "date"),
+            ("start_date", qualified.start_date, qualified.statement, "explicit_reduction_start_date", "date"),
+            ("end_date", qualified.end_date, qualified.statement, "explicit_reduction_end_date", "date"),
         ))
         if qualified.planned_ratio_pct is not None:
-            fields.append(("planned_pct", qualified.planned_ratio_pct, qualified.statement, "reduction_total_capital_ratio:3", "percent"))
+            fields.append(("planned_pct", qualified.planned_ratio_pct, qualified.statement, "reduction_total_capital_ratio", "percent"))
     if plan is not None:
         for match in _reduction_period_matches(body):
             if plan.planned_start_date is not None and plan.planned_end_date is not None:
                 fields.extend((
-                    ("start_date", plan.planned_start_date, match[0], "explicit_reduction_start_date:2", "date"),
-                    ("end_date", plan.planned_end_date, match[0], "explicit_reduction_end_date:2", "date"),
+                    ("start_date", plan.planned_start_date, match[0], "explicit_reduction_start_date", "date"),
+                    ("end_date", plan.planned_end_date, match[0], "explicit_reduction_end_date", "date"),
                 ))
                 break
         ratio = _planned_reduction_match(body)
         if plan.planned_ratio_pct is not None and ratio is not None:
-            fields.append(("planned_pct", plan.planned_ratio_pct, ratio[0], "reduction_total_capital_ratio:3", "percent"))
+            fields.append(("planned_pct", plan.planned_ratio_pct, ratio[0], "reduction_total_capital_ratio", "percent"))
     if _reduction_closure_is_unambiguous(verified):
         statement = _reduction_closure_statement(body)
         if statement is not None:
             fields.append(("completion_disclosed_at", verified.document.disclosure.published_at,
-                           statement, "explicit_reduction_completion:1", "time"))
+                           statement, "explicit_reduction_completion", "time"))
     results: list[CompanyFieldConclusion] = []
     item = verified.document.disclosure
     for field, value, statement, rule, unit in fields:

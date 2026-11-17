@@ -138,7 +138,6 @@ def _encode(report: H1CapabilityAuditReport) -> dict[str, object]:
     return {
         "probes": [_encode_probe(item) for item in report.probes],
         "strategies": [_encode_strategy(item) for item in report.strategies],
-        "schema_version": report.schema_version,
         "production_authority": report.production_authority,
         "probe_failures": list(report.probe_failures),
         "content_hash": report.content_hash,
@@ -170,7 +169,7 @@ def _encode_strategy(item: H1CapabilityStrategyStatus) -> dict[str, object]:
 
 
 def _decode(raw: dict[str, object]) -> H1CapabilityAuditReport:
-    expected = {"probes", "strategies", "schema_version", "production_authority", "probe_failures"}
+    expected = {"probes", "strategies", "production_authority", "probe_failures"}
     if set(raw) != expected:
         raise ValueError("H1 capability artifact schema is invalid")
     probes_raw = raw["probes"]
@@ -182,14 +181,12 @@ def _decode(raw: dict[str, object]) -> H1CapabilityAuditReport:
         raise TypeError("H1 capability probe failures are invalid")
     probes = tuple(_decode_probe(item) for item in probes_raw)
     strategies = tuple(_decode_strategy(item) for item in strategies_raw)
-    schema = raw["schema_version"]
     authority = raw["production_authority"]
-    if not isinstance(schema, str) or not isinstance(authority, bool):
+    if not isinstance(authority, bool):
         raise TypeError("H1 capability artifact metadata is invalid")
     return H1CapabilityAuditReport(
         probes=probes,
         strategies=strategies,
-        schema_version=schema,
         production_authority=authority,
         probe_failures=tuple(failures),
     )
