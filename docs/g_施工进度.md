@@ -137,6 +137,13 @@
 
 ### 4.3 任务B：字段正式链与真实核验（332、292）
 
+332／362本轮A／B集中接续／completed（2026-11-17，限本批实现、来源样本及只读消费核验；整体仍in_progress）：用户要求后台继续A／B并尽量一次完成剩余任务、前台统一调度。共同基线296b26d8，开工工作树仅用户config/runtime.json与data/；原98路径隔离候选／policy补丁及报告本机仍缺，不重造旧证据。A独占来源及来源诊断，B独占补源规划和本地优先队列，前台独占正文凭据审计、g／d与Git，全部集中Review后一次交付。
+实际改动：A将现财务请求11列与必需列核验统一，缺列拒绝、不再当source_null；显式NULL、0、负值保留，明确未来披露时刻不被日期归零掩盖，观察须带时区、年窗按上海日。批量证券键诊断修正为已证实的双引号协议，未切生产参数。B将报告规划／季度优先与原接纳的前一自然日边界对齐，合法原件重启复用；年度／季度只用允许窗、固定T内的官方单证券目录阻止补查，旧年度版本／未来／多证券不再误压。年度优先先过滤合法材料再取MAX，较新新闻／多证券不遮蔽合法原件；无结构化known时已有本地年度依赖仍优先，不由此新增网络。空或失败请求沿原attempt集合同轮去重，无新持久状态。前台审计补当前非空正文hash的精确valid核验，旧正文／双NULL不再误签已发布或合法释放。原事实、风险、原件及凭证均不删除；d同步实际行为。
+来源实证：既有公开sources以000912／600900、2026Q3、10月25–31日执行batch及排除末键两请求，均HTTP200／code0／true，2行／1行集合精确、子集值一致、八指标两行非空，响应共10768字节；总3次transport含沙箱零字节失败1次及同命令提权2次，静态0次，无追页／PDF／活动库写入。`/tmp/trader-company-batch-double-quote-20261117.json` SHA-256为7bc84967942548e935671c4e53e654b089072d06ec07dd8d47a63a89c982108e，仅key_filter_probe=sample_verified、整体degraded，不签逐股最新／原始披露／正式修订／持续风险全集或市场主源准入。
+验证：A来源247项、前台发布审计49项、B新20例及既有调度／年度字段共44项，三份最终XML按classname／name去重340项全部通过，无失败／跳过，分别为`/tmp/trader-company-source-boundary-current-final-20261117.xml`、`/tmp/trader-company-receipt-complete-final-20261117.xml`、`/tmp/trader-company-report-reuse-final-20261117.xml`。旧码正文hash反例及B五个规划反例失败报告保留；Review发现的年度MAX遮蔽、ready截止T和双NULL误签均已修复并复验。10个受影响Python文件严格Ruff、3个产品源码及2个脚本正常mypy（MYPYPATH=src、无新增skip／ignore／cast）、A／B交叉Review、完整本批diff／新增文件及git diff --check通过。未运行格式、全量、桌面、性能或发布门禁。
+当前消费实证：公开coverage --company-consumer-audit真实通过，报告`/tmp/trader-company-consumer-current-final-20261117.json`核4403股／2798字段与生产reader逐项一致、stable_read=true，正式hash仍e9fc71fcb1dc6649853c54eb02990f08889615b1039772bd53805c0602434740、发布时间11月14日12:34:13；不打开采集库、不规划恢复，field_correctness_verified／full_market_verified／http_checked均false。首次误用其它模式的market-task参数被解析拒绝，第二次命令期限未留30秒余量也被拒绝，均未启动审计；纠正后才取得上述通过。5000端口沙箱内外curl均连接拒绝，未启动服务或补签HTTP。
+未完成项／接续：本批实现无剩余；A完整最新／正式修订／持续风险来源准入、原候选／原件恢复、B来源合格后的完整主链原子采用、353项旧字段证明合法重证、原15事件字段及特殊财务口径／独立留出质量、真实同步稳定终态与服务验收仍保留，不以本次340项fixture及当前reader一致性关闭整体。C性能队列不接管、不签提速比例。用户runtime当前SHA为4e443a82026f8edf6a8d4ff032d782830f52231e5488646b0065c1ffbb341721，与data/均不纳提交；未启动活动sync／训练、操作writer、切换／删除／重建资料或发布。
+
 332／362公司字段与真实核验仍in_progress。359／365及292的history／qfq下载功能已按用户2026-11-10确认completed，不在本节重复排期；功能关闭依据为用户验收，不伪造程序终态或全库逐值报告。
 
 332／362四项收口接续／in_progress：起始基线84d3743f，施工期间其它下载批次独立推进至e6cb97dd，本批仅保留自己的公司年度／财务诊断改动。用户明确要求一并推进17项字段核验、36股37项财务来源空值、真实质量及活动采用／终态；活动增量采用纳入授权，不删除／重建库，不切换模型、冻结记录或启用公司评分。本记录未完成前持续接续，不用旧固定样本代签当前全库终态。

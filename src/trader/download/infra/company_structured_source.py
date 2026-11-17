@@ -31,6 +31,10 @@ from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DATA_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+_FINANCIAL_COLUMNS = (
+    "SECUCODE", "REPORT_DATE", "NOTICE_DATE", "EPSJB", "BPS", "TOTALOPERATEREVETZ", "PARENTNETPROFITTZ",
+    "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR",
+)
 COMPANY_FINANCIAL_SOURCE_COLUMNS = (
     "SECUCODE", "SECURITY_CODE", "REPORT_DATE", "REPORT_TYPE", "NOTICE_DATE", "UPDATE_DATE", "CURRENCY",
     "EPSJB", "BPS", "TOTALOPERATEREVETZ", "PARENTNETPROFITTZ", "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR",
@@ -190,12 +194,14 @@ class EastmoneyCompanySource:
     def fetch(self, query: StructuredCompanyQuery, *, observed_at: datetime) -> StructuredCompanyPage:
         component, start, end, page = query.component, query.start, query.end, query.page
         if component == "financial":
-            start = max(start, observed_at.date() - timedelta(days=365))
+            if observed_at.utcoffset() is None:
+                raise ValueError("company_financial_observation_time_invalid")
+            start = max(start, observed_at.astimezone(_SHANGHAI).date() - timedelta(days=365))
             payload = self._json(
                 "https://datacenter.eastmoney.com/securities/api/data/get",
                 {
                     "type": "RPT_F10_FINANCE_MAINFINADATA",
-                    "sty": "SECUCODE,REPORT_DATE,NOTICE_DATE,EPSJB,BPS,TOTALOPERATEREVETZ,PARENTNETPROFITTZ,KCFJCXSYJLRTZ,ROEJQ,PARENTNETPROFIT,KCFJCXSYJLR",
+                    "sty": ",".join(_FINANCIAL_COLUMNS),
                     "quoteColumns": "",
                     "filter": f"(NOTICE_DATE>='{start.isoformat()}')(NOTICE_DATE<='{end.isoformat()}')",
                     "p": str(page),
@@ -347,13 +353,23 @@ def DecodeCompanyFinancialPage(
     """Decode the production financial page without performing I/O."""
     if query.component != "financial":
         raise ValueError("company_financial_page_component_invalid")
-    start, end = max(query.start, observed_at.date() - timedelta(days=365)), query.end
+    if observed_at.utcoffset() is None:
+        raise ValueError("company_financial_observation_time_invalid")
+    start, end = max(query.start, observed_at.astimezone(_SHANGHAI).date() - timedelta(days=365)), query.end
     rows, pages, total = _page_rows(payload, query.page)
-    reports = tuple(_financial(row) for row in rows if _is_a_share(row))
-    for item in reports:
-        if not start <= item.published_at.date() <= end:
-            raise DownloadValidationFailure("financial_date_filter_ignored", "NOTICE_DATE", f"{start}..{end}", item.published_at.date().isoformat())
-    return StructuredCompanyPage("financial", query.page, pages, total, financials=reports, raw_count=len(rows))
+    reports: list[CompanyFinancial] = []
+    for row in rows:
+        if "SECUCODE" not in row:
+            raise DownloadValidationFailure("financial_source_fields_missing", "columns", "eleven_required_columns", "missing")
+        if not _is_a_share(row):
+            continue
+        if any(field not in row for field in _FINANCIAL_COLUMNS):
+            raise DownloadValidationFailure("financial_source_fields_missing", "columns", "eleven_required_columns", "missing")
+        notice_day = _day(row.get("NOTICE_DATE"))
+        if not start <= notice_day <= end or _income_time(row["NOTICE_DATE"]) > observed_at:
+            raise DownloadValidationFailure("financial_date_filter_ignored", "NOTICE_DATE", f"{start}..{end}_and_cutoff", notice_day.isoformat())
+        reports.append(_financial(row))
+    return StructuredCompanyPage("financial", query.page, pages, total, financials=tuple(reports), raw_count=len(rows))
 
 
 def DecodeCompanyFinancialSourcePage(

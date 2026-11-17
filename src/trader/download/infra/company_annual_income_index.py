@@ -49,21 +49,26 @@ def PlanCompanyAnnualReportRequests(
                 if ((facts.code, event.event_id) not in missing or not isinstance(measurement, ContractMeasurements)
                     or measurement.reference_report_date is None):
                     continue
-                known = collected.run(
-                    "SELECT published_at FROM financials WHERE code=? AND report_date=? "
-                    "AND published_at>=? AND published_at<? ORDER BY published_at DESC LIMIT 1",
-                    (facts.code, measurement.reference_report_date.isoformat(),
-                     (observed_at.date() - timedelta(days=365)).isoformat(), event.first_disclosed_at.date().isoformat()),
-                ).fetchone()
+                known = _known_annual_report(
+                    collected,
+                    facts.code,
+                    measurement.reference_report_date,
+                    event.first_disclosed_at.date(),
+                    observed_at,
+                )
                 if known is None:
                     continue
                 ready = collected.run(
                     "SELECT 1 FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE c.code=? "
-                    "AND d.kind='announcement' AND d.title LIKE ? AND d.published_at<? LIMIT 1",
-                    (facts.code, f"%{measurement.reference_report_date.year}%年度报告%", event.first_disclosed_at.date().isoformat()),
+                    "AND d.kind='announcement' AND d.title LIKE ? AND d.published_at>=? AND d.published_at<? AND d.published_at<=? "
+                    "AND d.source IN ('cninfo','sse','szse','bse') "
+                    "AND (SELECT COUNT(*) FROM disclosure_codes m WHERE m.disclosure_id=d.id)=1 LIMIT 1",
+                    (facts.code, f"%{measurement.reference_report_date.year}%年度报告%",
+                     max(observed_at.date() - timedelta(days=365), known.date() - timedelta(days=1)).isoformat(),
+                     event.first_disclosed_at.date().isoformat(), observed_at.isoformat()),
                 ).fetchone()
                 if ready is None:
-                    requests.add(CompanyFinancialReportRequest(facts.code, measurement.reference_report_date, datetime.fromisoformat(known[0])))
+                    requests.add(CompanyFinancialReportRequest(facts.code, measurement.reference_report_date, known))
     return tuple(sorted(requests, key=lambda item: (item.code, item.report_date, item.disclosed_at)))
 
 
@@ -81,17 +86,44 @@ def PrioritizeCompanyAnnualReportInputs(
                 if ((facts.code, event.event_id) not in missing or not isinstance(measurement, ContractMeasurements)
                     or measurement.reference_report_date is None):
                     continue
-                collected.run(
-                    "INSERT OR IGNORE INTO temp.company_field_inputs SELECT d.id FROM disclosures d "
-                    "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN temp.pending_documents p ON p.id=d.id "
-                    "WHERE c.code=? AND d.kind='announcement' AND d.title LIKE ? AND d.published_at>=? "
-                    "AND d.published_at=(SELECT MAX(n.published_at) FROM disclosures n "
-                    "JOIN disclosure_codes nc ON nc.disclosure_id=n.id WHERE nc.code=c.code "
-                    "AND n.kind=d.kind AND n.title LIKE ? AND n.published_at<?)",
-                    (facts.code, f"%{measurement.reference_report_date.year}%年度报告%",
-                     (observed_at.date() - timedelta(days=365)).isoformat(),
-                     f"%{measurement.reference_report_date.year}%年度报告%", event.first_disclosed_at.date().isoformat()),
+                known = _known_annual_report(
+                    collected,
+                    facts.code,
+                    measurement.reference_report_date,
+                    event.first_disclosed_at.date(),
+                    observed_at,
                 )
+                start = observed_at.date() - timedelta(days=365)
+                if known is not None:
+                    start = max(start, known.date() - timedelta(days=1))
+                collected.run(
+                    "WITH materials AS (SELECT d.id,d.published_at FROM disclosures d "
+                    "JOIN disclosure_codes c ON c.disclosure_id=d.id "
+                    "WHERE c.code=? AND d.kind='announcement' AND d.title LIKE ? AND d.published_at>=? "
+                    "AND d.published_at<? AND d.published_at<=? AND d.source IN ('cninfo','sse','szse','bse') "
+                    "AND (SELECT COUNT(*) FROM disclosure_codes m WHERE m.disclosure_id=d.id)=1) "
+                    "INSERT OR IGNORE INTO temp.company_field_inputs SELECT m.id FROM materials m "
+                    "JOIN temp.pending_documents p ON p.id=m.id "
+                    "WHERE m.published_at=(SELECT MAX(published_at) FROM materials)",
+                    (facts.code, f"%{measurement.reference_report_date.year}%年度报告%",
+                     start.isoformat(), event.first_disclosed_at.date().isoformat(), observed_at.isoformat()),
+                )
+
+
+def _known_annual_report(
+    collected: SqliteConnection,
+    code: str,
+    report_date: date,
+    needed_before: date,
+    observed_at: datetime,
+) -> datetime | None:
+    row = collected.run(
+        "SELECT published_at FROM financials WHERE code=? AND report_date=? "
+        "AND published_at>=? AND published_at<? AND published_at<=? ORDER BY published_at DESC LIMIT 1",
+        (code, report_date.isoformat(), (observed_at.date() - timedelta(days=365)).isoformat(),
+         needed_before.isoformat(), observed_at.isoformat()),
+    ).fetchone()
+    return datetime.fromisoformat(row[0]) if row is not None else None
 
 
 def PlanCompanyAnnualIncomeRequests(

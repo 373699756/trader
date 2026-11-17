@@ -1,5 +1,7 @@
 """Production structured inputs reject rejected, contradictory, or misbound pages."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from tests.helpers.download.company.company_sources import NOW, Session
@@ -104,8 +106,63 @@ def test_financial_row_cross_checks_the_supplied_exchange_and_security_code():
     query = StructuredCompanyQuery("financial", NOW.date(), NOW.date())
     for fields in ({"SECUCODE": "600001.SZ"}, {"SECUCODE": "600001.SH", "SECURITY_CODE": "000001"}):
         with pytest.raises(ValueError, match="company_source_identity_invalid"):
-            DecodeCompanyFinancialPage(_payload([{"REPORT_DATE": "2026-09-30", "NOTICE_DATE": NOW.date().isoformat(), **fields}]),
+            DecodeCompanyFinancialPage(_payload([_financial_row(**fields)]),
                                        query, observed_at=NOW)
+
+
+def _financial_row(**changes):
+    return {
+        "SECUCODE": "600001.SH", "REPORT_DATE": "2026-09-30", "NOTICE_DATE": NOW.date().isoformat(),
+        "EPSJB": 0, "BPS": None, "TOTALOPERATEREVETZ": -1, "PARENTNETPROFITTZ": None,
+        "KCFJCXSYJLRTZ": None, "ROEJQ": None, "PARENTNETPROFIT": -2, "KCFJCXSYJLR": 0, **changes,
+    }
+
+
+@pytest.mark.parametrize("field", (
+    "SECUCODE", "REPORT_DATE", "NOTICE_DATE", "EPSJB", "BPS", "TOTALOPERATEREVETZ", "PARENTNETPROFITTZ",
+    "KCFJCXSYJLRTZ", "ROEJQ", "PARENTNETPROFIT", "KCFJCXSYJLR",
+))
+def test_financial_missing_columns_cannot_become_source_null_or_excluded_rows(field):
+    row = _financial_row()
+    row.pop(field)
+    with pytest.raises(ValueError, match="financial_source_fields_missing"):
+        _fetch(_payload([row]), "financial")
+
+
+@pytest.mark.parametrize("notice", (
+    "2026-10-18", "2026-10-18 09:15:00", "2026-10-18T01:15:00+00:00",
+))
+def test_financial_date_precision_and_accepted_explicit_times_keep_day_projection(notice):
+    page = _fetch(_payload([_financial_row(NOTICE_DATE=notice)]), "financial")
+    report, = page.financials
+    assert report.published_at == NOW.replace(hour=0, minute=0)
+    assert report.basic_eps == report.core_net_profit == 0 and report.book_value_per_share is None
+    assert report.revenue_growth_pct == -1 and report.parent_net_profit == -2
+
+
+@pytest.mark.parametrize("notice", ("2026-10-18 09:15:01", "2026-10-18T01:15:01+00:00"))
+def test_financial_explicit_future_time_is_not_hidden_by_date_projection(notice):
+    with pytest.raises(ValueError, match="financial_date_filter_ignored"):
+        _fetch(_payload([_financial_row(NOTICE_DATE=notice)]), "financial")
+
+
+def test_financial_year_floor_uses_shanghai_date_for_aware_caller():
+    observed_at = datetime(2026, 10, 17, 17, tzinfo=timezone.utc)
+    lower = observed_at.astimezone(NOW.tzinfo).date() - timedelta(days=365)
+    query = StructuredCompanyQuery("financial", lower - timedelta(days=1), NOW.date())
+    session = Session(_payload([_financial_row(NOTICE_DATE=(lower - timedelta(days=1)).isoformat())]))
+    with pytest.raises(ValueError, match="financial_date_filter_ignored"):
+        EastmoneyCompanySource(session, monotonic=lambda: 0, timeout_seconds=8).fetch(query, observed_at=observed_at)
+    assert f"NOTICE_DATE>='{lower}'" in session.requests[0]["params"]["filter"]
+
+
+def test_financial_naive_observation_is_rejected_before_request():
+    session = Session(_payload([_financial_row()]))
+    with pytest.raises(ValueError, match="company_financial_observation_time_invalid"):
+        EastmoneyCompanySource(session, monotonic=lambda: 0, timeout_seconds=8).fetch(
+            StructuredCompanyQuery("financial", NOW.date(), NOW.date()), observed_at=NOW.replace(tzinfo=None),
+        )
+    assert session.requests == []
 
 
 def test_latest_pledge_date_discovery_is_one_row_and_not_a_full_page_request():

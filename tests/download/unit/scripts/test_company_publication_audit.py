@@ -159,18 +159,24 @@ def test_financial_equal_values_with_different_disclosure_identity_are_unconfirm
     assert "company_financial_source_identity_unconfirmed" in audit["findings"]
 
 
-@pytest.mark.parametrize("change", ("delete", "record_hash", "extraction_hash", "new_member"))
+@pytest.mark.parametrize("change", ("delete", "record_hash", "body_hash", "body_missing", "both_body_missing", "extraction_hash", "new_member"))
 def test_released_body_requires_current_version_receipt_for_every_population_member(tmp_path, change):
     index = _published(tmp_path)
     with SqliteSession(index.path) as connection, SqliteTransaction(connection):
         if change == "new_member":
             connection.run("INSERT INTO company_population VALUES('600002')")
             connection.run("INSERT INTO disclosure_codes(code,disclosure_id) SELECT '600002',id FROM disclosures")
+        elif change == "both_body_missing":
+            connection.run("UPDATE disclosures SET body_hash=NULL")
     with SqliteSession(index.facts_path) as connection, SqliteTransaction(connection):
         if change == "delete":
             connection.run("DELETE FROM company_input_receipt")
         elif change == "record_hash":
             connection.run("UPDATE company_input_receipt SET record_hash='old'")
+        elif change == "body_hash":
+            connection.run("UPDATE company_input_receipt SET body_hash=?", (b"b" * 32,))
+        elif change in {"body_missing", "both_body_missing"}:
+            connection.run("UPDATE company_input_receipt SET body_hash=NULL")
         elif change == "extraction_hash":
             connection.run("UPDATE company_input_receipt SET extraction_hash=?", (b"x" * 32,))
     result = _audit(index)

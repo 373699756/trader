@@ -232,7 +232,7 @@ def _financial_key_pages(
         if monotonic() >= deadline:
             raise _FinancialKeyProbeError("company_structured_key_deadline_exhausted")
         identities = tuple(code + "." + {"sse": "SH", "szse": "SZ", "bse": "BJ"}[EvidenceMarket(code)] for code in selected)
-        members = ",".join("'" + identity + "'" for identity in identities)
+        members = ",".join('"' + identity + '"' for identity in identities)
         evidence: dict[str, object] = {
             "query": label, "status": "failed", "selected_codes": list(selected), "request_style": _FINANCIAL_KEY_STYLE,
         }

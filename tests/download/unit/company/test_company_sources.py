@@ -286,6 +286,8 @@ def test_financial_non_a_shares_are_excluded_without_corrupting_raw_page_count()
             "SECUCODE": code,
             "REPORT_DATE": "2026-06-30",
             "NOTICE_DATE": "2026-10-17",
+            "EPSJB": None, "BPS": None, "TOTALOPERATEREVETZ": None,
+            "PARENTNETPROFITTZ": None, "KCFJCXSYJLRTZ": None, "ROEJQ": None,
             "PARENTNETPROFIT": -2,
             "KCFJCXSYJLR": 3,
         }
@@ -305,6 +307,8 @@ def test_financial_date_validation_keeps_the_one_year_floor_when_caller_is_older
     session = Session({"code": 0, "success": True, "result": {"count": 1, "pages": 1, "data": [{
         "SECUCODE": "600001.SH", "REPORT_DATE": "2024-12-31",
         "NOTICE_DATE": (lower - timedelta(days=1)).isoformat(),
+        "EPSJB": None, "BPS": None, "TOTALOPERATEREVETZ": None,
+        "PARENTNETPROFITTZ": None, "KCFJCXSYJLRTZ": None, "ROEJQ": None,
         "PARENTNETPROFIT": 1, "KCFJCXSYJLR": 1,
     }]}})
     source = EastmoneyCompanySource(session, monotonic=lambda: 0)
@@ -318,7 +322,8 @@ def test_financial_date_validation_keeps_the_one_year_floor_when_caller_is_older
 def test_financial_fetch_and_shared_pure_decoder_keep_identical_values_and_raw_membership():
     payload = {"code": 0, "success": True, "result": {"count": 2, "pages": 1, "data": [
         {"SECUCODE": identity, "REPORT_DATE": "2026-06-30", "NOTICE_DATE": "2026-10-17",
-         "EPSJB": 0, "BPS": None, "PARENTNETPROFIT": -2, "KCFJCXSYJLR": 0}
+         "EPSJB": 0, "BPS": None, "TOTALOPERATEREVETZ": None, "PARENTNETPROFITTZ": None,
+         "KCFJCXSYJLRTZ": None, "ROEJQ": None, "PARENTNETPROFIT": -2, "KCFJCXSYJLR": 0}
         for identity in ("600001.SH", "00001.HK")
     ]}}
     query = StructuredCompanyQuery("financial", date(2024, 1, 1), NOW.date())
@@ -333,7 +338,9 @@ def test_financial_fetch_and_shared_pure_decoder_keep_identical_values_and_raw_m
 def test_shared_financial_decoder_preserves_clipped_date_and_page_limit_failures():
     query = StructuredCompanyQuery("financial", date(2024, 1, 1), NOW.date())
     row = {"SECUCODE": "600001.SH", "REPORT_DATE": "2024-12-31",
-           "NOTICE_DATE": (NOW.date() - timedelta(days=366)).isoformat()}
+           "NOTICE_DATE": (NOW.date() - timedelta(days=366)).isoformat(),
+           "EPSJB": None, "BPS": None, "TOTALOPERATEREVETZ": None, "PARENTNETPROFITTZ": None,
+           "KCFJCXSYJLRTZ": None, "ROEJQ": None, "PARENTNETPROFIT": None, "KCFJCXSYJLR": None}
     payload = {"code": 0, "success": True, "result": {"count": 1, "pages": 1, "data": [row]}}
     with pytest.raises(ValueError, match="financial_date_filter_ignored"):
         DecodeCompanyFinancialPage(payload, query, observed_at=NOW)

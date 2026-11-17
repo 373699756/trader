@@ -235,14 +235,14 @@ def AuditCompanyPublication(
                 missing: set[int] = set()
                 released: set[int] = set()
                 for row in raw.run(
-                    "SELECT d.id,d.source,d.source_key,d.record_hash,d.body_retained,c.code FROM disclosures d "
+                    "SELECT d.id,d.source,d.source_key,d.record_hash,d.body_retained,c.code,d.body_hash FROM disclosures d "
                     "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN company_population u ON u.code=c.code "
                     "WHERE d.kind='announcement' AND d.body_checked=1"
                 ):
-                    if formal.run(
+                    if row[6] is None or formal.run(
                         "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? AND record_hash=? "
-                        "AND extraction_hash=? AND outcome='valid'",
-                        (row[1], row[2], row[5], row[3], identity.extraction_hash),
+                        "AND body_hash IS ? AND extraction_hash=? AND outcome='valid'",
+                        (row[1], row[2], row[5], row[3], row[6], identity.extraction_hash),
                     ).fetchone() is None:
                         if row[4] and row[0] in unused:
                             continue

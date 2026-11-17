@@ -32,8 +32,12 @@ def PlanCompanyMissingFinancialReports(
 ) -> tuple[CompanyFinancialReportRequest, ...]:
     return tuple(request for request in _needs(collected, codes, observed_at) if collected.run(
         "SELECT 1 FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE c.code=? "
-        "AND d.kind='announcement' AND d.published_at>=? AND (d.title LIKE ? OR d.title LIKE ? OR d.title LIKE ?) LIMIT 1",
-        (request.code, request.disclosed_at.isoformat(), f"%{request.report_date.year}%第三季度报告%",
+        "AND d.kind='announcement' AND d.published_at>=? AND d.published_at<=? "
+        "AND d.source IN ('cninfo','sse','szse','bse') "
+        "AND (SELECT COUNT(*) FROM disclosure_codes m WHERE m.disclosure_id=d.id)=1 "
+        "AND (d.title LIKE ? OR d.title LIKE ? OR d.title LIKE ?) LIMIT 1",
+        (request.code, max(observed_at.date() - timedelta(days=365), request.disclosed_at.date() - timedelta(days=1)).isoformat(),
+         observed_at.isoformat(), f"%{request.report_date.year}%第三季度报告%",
          f"%{request.report_date.year}%三季度报告%", f"%{request.report_date.year}%三季报告%"),
     ).fetchone() is None)
 
@@ -43,9 +47,12 @@ def PrioritizeCompanyFinancialReportInputs(collected: SqliteConnection, codes: S
         collected.run(
             "INSERT OR IGNORE INTO temp.company_field_inputs SELECT d.id FROM disclosures d "
             "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN temp.pending_documents p ON p.id=d.id "
-            "WHERE c.code=? AND d.published_at>=? AND d.kind='announcement' "
+            "WHERE c.code=? AND d.published_at>=? AND d.published_at<=? AND d.kind='announcement' "
+            "AND d.source IN ('cninfo','sse','szse','bse') "
+            "AND (SELECT COUNT(*) FROM disclosure_codes m WHERE m.disclosure_id=d.id)=1 "
             "AND (d.title LIKE ? OR d.title LIKE ? OR d.title LIKE ?)",
-            (request.code, request.disclosed_at.isoformat(), f"%{request.report_date.year}%第三季度报告%",
+            (request.code, max(observed_at.date() - timedelta(days=365), request.disclosed_at.date() - timedelta(days=1)).isoformat(),
+             observed_at.isoformat(), f"%{request.report_date.year}%第三季度报告%",
              f"%{request.report_date.year}%三季度报告%", f"%{request.report_date.year}%三季报告%"),
         )
 

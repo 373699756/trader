@@ -658,7 +658,7 @@ class _FinancialKeySession:
         self.requests.append((url, kwargs))
         selected = re.search(r"SECUCODE in \(([^)]+)\)", kwargs["params"]["filter"])
         assert selected is not None
-        identities = set(re.findall(r"'([0-9]{6}\.(?:SH|SZ|BJ))'", selected[1]))
+        identities = set(re.findall(r'"([0-9]{6}\.(?:SH|SZ|BJ))"', selected[1]))
         rows = [dict(row) for row in self.rows if row["SECUCODE"] in identities]
         if self.change == "ignored_subset" and len(self.requests) == 2:
             rows = [dict(row) for row in self.rows]
@@ -721,6 +721,7 @@ def test_existing_page_mode_checks_batch_keys_and_exclusion_using_the_shared_pro
         assert parameters["sty"] == "APP_F10_MAINFINADATA"
         assert "NOTICE_DATE>='2026-10-31'" in parameters["filter"] and "NOTICE_DATE<='2026-10-31'" in parameters["filter"]
         assert "REPORT_DATE='2026-09-30'" in parameters["filter"] and "ISNEW" not in parameters["filter"]
+        assert 'SECUCODE in ("600900.SH"' in parameters["filter"]
         assert parameters["p"] == "1" and parameters["ps"] == str(2 - index)
         assert request["max_response_bytes"] == 1024 * 1024 and request["deadline"] == 60
     assert result["fields"][1]["decoded_null_rows"] == 2
@@ -768,5 +769,5 @@ def test_key_filter_binds_the_full_beijing_exchange_identity_before_certifying_t
     )
     assert result["status"] == "decoded" and result["key_filter_probe"]["filter_verified"]
     assert len(session.requests) == 2
-    assert "'920001.BJ','830001.BJ'" in session.requests[0][1]["params"]["filter"]
-    assert "'920001.BJ'" in session.requests[1][1]["params"]["filter"]
+    assert '"920001.BJ","830001.BJ"' in session.requests[0][1]["params"]["filter"]
+    assert '"920001.BJ"' in session.requests[1][1]["params"]["filter"]
