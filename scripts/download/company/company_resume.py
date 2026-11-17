@@ -29,6 +29,7 @@ from scripts.download.company.output_paths import RequireIsolatedReplay
 from scripts.download.company.company_query_audit import AuditCompanyQueries
 from scripts.download.company.company_query_audit import AuditCompanyDatabase
 from scripts.download.company.company_publication_audit import AuditCompanyConsumer
+from scripts.download.company.company_field_proof_audit import AuditCompanyFieldProofs
 from trader.bootstrap import OpenExternalHttp
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_events import CompanyEventPolicy
@@ -285,6 +286,7 @@ def Main() -> int:
     audit.add_argument("--audit-only", action="store_true")
     audit.add_argument("--database-only", action="store_true")
     audit.add_argument("--consumer-only", action="store_true")
+    audit.add_argument("--field-proof-only", action="store_true")
     audit.add_argument("--field-replay-keys", nargs="+")
     parser.add_argument("--recovered-text", type=Path)
     parser.add_argument("--replay-observed-at", type=ParseCompanyReplayObservation)
@@ -305,6 +307,8 @@ def Main() -> int:
         parser.error("--budget-seconds is required")
     if args.consumer_only and (args.facts_database is None or args.directory is not None):
         parser.error("--consumer-only requires --facts-database and does not accept --directory")
+    if args.field_proof_only and (args.facts_database is None or args.directory is not None):
+        parser.error("--field-proof-only requires --facts-database and does not accept --directory")
     if args.database is None and not args.consumer_only:
         parser.error("--database is required")
     from trader.bootstrap import BuildSqlitePolicy
@@ -321,6 +325,7 @@ def Main() -> int:
         "scripts/download/company/company_failure_audit.py",
         "scripts/download/company/company_query_audit.py",
         "scripts/download/company/company_publication_audit.py",
+        "scripts/download/company/company_field_proof_audit.py",
         "src/trader/download/application/company_evidence.py",
         "src/trader/download/infra/company_disclosure_source.py",
         "src/trader/download/infra/company_disclosure_queries.py",
@@ -360,6 +365,15 @@ def Main() -> int:
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
+    if args.field_proof_only:
+        report = AuditCompanyFieldProofs(
+            args.database.resolve(strict=True), args.facts_database.resolve(strict=True),
+            now=datetime.now(ZoneInfo("Asia/Shanghai")), budget_seconds=args.budget_seconds,
+            sqlite_policy=sqlite_policy,
+            event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1 if report["status"] == "failed" else 0
     if args.consumer_only:
         report = AuditCompanyConsumer(
             args.facts_database.resolve(strict=True),

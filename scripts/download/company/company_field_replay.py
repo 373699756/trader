@@ -110,7 +110,7 @@ def _source_files(path: Path, deadline: float) -> tuple[str | None, ...]:
     return tuple(_file_digest(item, deadline) if item.exists() else None for item in files)
 
 
-def _backup_collection(source_path: Path, target_path: Path, policy: SqliteIoPolicy, deadline: float) -> bool:
+def BackupCompanyCollection(source_path: Path, target_path: Path, policy: SqliteIoPolicy, deadline: float) -> bool:
     target_path.parent.mkdir(parents=True)
     with target_path.open("xb"):
         pass
@@ -133,11 +133,12 @@ def _backup_collection(source_path: Path, target_path: Path, policy: SqliteIoPol
     return stable
 
 
-def _backup_facts(
+def BackupCompanyFacts(
     source_path: Path, target_path: Path, policy: SqliteIoPolicy, event_policy: CompanyEventPolicy, deadline: float,
 ) -> bool:
     reader = SQLiteCompanyEvidenceReader(source_path, event_policy=event_policy, sqlite_policy=policy)
-    cancelled = lambda: time.monotonic() >= deadline
+    def cancelled() -> bool:
+        return time.monotonic() >= deadline
     publication = reader.read_fields((), cancel_requested=cancelled).publication_hash
     if not publication:
         raise ValueError("company_field_replay_facts_publication_missing")
@@ -349,11 +350,11 @@ def AuditCompanyFieldReplay(
     try:
         before = (_source_files(collection_path, deadline), _source_files(facts_path, deadline))
         target_facts = directory / "facts" / "company_facts.sqlite3"
-        report["facts_backup_generation_stable"] = _backup_facts(
+        report["facts_backup_generation_stable"] = BackupCompanyFacts(
             facts_path, target_facts, sqlite_policy, event_policy, deadline,
         )
         target_raw = directory / "raw" / "company_collection.sqlite3"
-        stable_backup = _backup_collection(collection_path, target_raw, sqlite_policy, deadline)
+        stable_backup = BackupCompanyCollection(collection_path, target_raw, sqlite_policy, deadline)
         report["collection_backup_generation_stable"] = stable_backup
         configuration = LoadCompanySyncConfiguration(PROJECT_ROOT)
         hashes = _text_hashes(target_raw, sqlite_policy, deadline)
@@ -475,4 +476,4 @@ def AuditCompanyFieldReplay(
     return report
 
 
-__all__ = ["AuditCompanyFieldReplay"]
+__all__ = ["AuditCompanyFieldReplay", "BackupCompanyCollection", "BackupCompanyFacts"]

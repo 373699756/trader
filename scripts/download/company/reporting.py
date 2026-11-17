@@ -150,6 +150,27 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
         return replace(result, payload=dict(source, status=revision_status))
     schema = source.get("schema_version")
     summary = source.get("summary")
+    if schema == "company-resume" and isinstance(summary, Mapping) and "field_proof_audit" in summary:
+        audit = summary["field_proof_audit"]
+        valid = isinstance(audit, Mapping) and (
+            source.get("status") in ("passed", "degraded", "failed")
+            and audit.get("read_only") is True and audit.get("scope") == "current_rules_published_verified_fields"
+            and all(audit.get(name) is False for name in (
+                "production_adopted", "field_correctness_verified", "full_market_verified", "http_checked",
+            ))
+            and all(type(audit.get(name)) is int and audit.get(name) == 0 for name in ("network_requests", "source_data_writes"))
+        )
+        if valid and source.get("status") == "passed" and isinstance(audit, Mapping):
+            count = audit.get("target_fields")
+            valid = (audit.get("complete") is True and audit.get("stable_read") is True
+                     and audit.get("budget_exhausted") is False and source.get("findings") == []
+                     and type(count) is int and count > 0
+                     and all(type(audit.get(key)) is int and audit.get(key) == count for key in ("checked_fields", "reproved_fields"))
+                     and audit.get("current_extraction_hash") == audit.get("extraction_hash")
+                     and type(audit.get("unreproved_fields")) is int and audit.get("unreproved_fields") == 0
+                     and all(isinstance(audit.get(key), str) and re.fullmatch(r"[0-9a-f]{64}", audit[key]) is not None
+                             for key in ("publication_hash", "extraction_hash", "current_extraction_hash", "field_rule_hash")))
+        return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
     if schema == "company-resume" and isinstance(summary, Mapping) and "consumer_audit" in summary:
         audit = summary["consumer_audit"]
         valid = isinstance(audit, Mapping) and (

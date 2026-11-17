@@ -49,6 +49,29 @@ def ProjectCompanyResume(
         )
     }
     consumer_audit = ProjectMapping(summary.get("consumer_audit"))
+    field_proof = ProjectMapping(summary.get("field_proof_audit"))
+    if field_proof:
+        rows = field_proof.get("items")
+        failures = ProjectMapping(field_proof.get("material_failures"))
+        basis = ProjectMapping(field_proof.get("unreproved_basis"))
+        selected["field_proof_audit"] = {
+            **{key: field_proof.get(key) for key in (
+                "read_only", "scope", "observed_at", "complete", "stable_read", "budget_exhausted",
+                "publication_hash", "extraction_hash", "current_extraction_hash", "field_rule_hash", "target_fields", "checked_fields",
+                "reproved_fields", "unreproved_fields", "checked_stocks", "material_reads", "items_truncated",
+                "network_requests", "source_data_writes", "production_adopted", "field_correctness_verified",
+                "full_market_verified", "http_checked",
+            )},
+            "material_failures": {key: value for key, value in failures.items() if key in {
+                "OSError", "FileNotFoundError", "PermissionError", "ValueError", "EOFError", "BadGzipFile", "UnicodeDecodeError",
+            } and type(value) is int and value >= 0},
+            "unreproved_basis": {key: value for key, value in basis.items() if key in {
+                "source_missing_or_ambiguous", "material_identity_changed", "current_valid_receipt_missing",
+                "original_body_released", "released_text_present", "original_body_missing", "current_rule_not_reproduced",
+            } and type(value) is int and value >= 0},
+            "items": [{key: row.get(key) for key in ("code", "event_id", "field", "state", "reason", "basis")}
+                      for row in rows[:100] if isinstance(row, Mapping)] if isinstance(rows, list) else [],
+        }
     if consumer_audit:
         read = ProjectMapping(consumer_audit.get("consumer_read"))
         selected["consumer_audit"] = {

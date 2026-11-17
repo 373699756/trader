@@ -6,6 +6,7 @@ import hashlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 from typing import cast
 
 from trader.download.domain.company_event_extraction import ExtractCompanyFieldEvidence, COMPANY_REPURCHASE_MAINTENANCE_DIGEST, COMPANY_REPURCHASE_ACTUAL_DIGEST
@@ -26,10 +27,26 @@ from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadC
 from trader.download.infra.company_field_recovery import COMPANY_FIELD_RULES
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.infra.sqlite_connection import SqliteConnection
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 _PROOF_RULE = "field_source_lines:1"
 _RISK_FIELDS = frozenset({"start_date", "end_date", "planned_pct", "completion_disclosed_at"})
 _SUPPORTED_FIELDS = _RISK_FIELDS | {"actual_pct", "repurchase_purpose"} | {field for field, _ in COMPANY_CONTRACT_FIELD_RULES}
+
+
+def CompanyFieldProofRulesHash() -> bytes:
+    """Identify actual field-proof code for explicit revalidation and normalized candidates."""
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    digest.update(CanonicalDigest(COMPANY_FIELD_RULES).encode())
+    for relative in (
+        "domain/company_event_extraction.py", "domain/company_contract_fields.py", "domain/company_annual_report.py",
+        "domain/company_reduction_scope.py", "domain/company_field_source.py", "domain/company_field_plan.py",
+        "domain/company_field_results.py", "infra/company_field_publication.py", "infra/company_annual_field_publication.py",
+    ):
+        digest.update(relative.encode())
+        digest.update(hashlib.sha256((root / relative).read_bytes()).digest())
+    return digest.digest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +65,7 @@ def PrepareCompanyFieldResults(
     extraction_hash: bytes,
     event_policy: CompanyEventPolicy,
     read_document: Callable[[bytes], str],
+    revalidate: bool = False,
 ) -> CompanyFieldPublication:
     """Reuse current proofs; inspect an unchanged old input once per field rule.
 
@@ -59,9 +77,9 @@ def PrepareCompanyFieldResults(
         item.code, item.event_id, cast(CompanyFieldName, item.field), item.value,
         cast(CompanyFieldConclusionState, item.state), item.applicable, item.reason, (),
     ) for item in BuildCompanyFieldResults(facts))
-    publication = ReadCompanyPublicationIdentity(formal)
+    publication = None if revalidate else ReadCompanyPublicationIdentity(formal)
     previous = ReadCompanyFieldResults(formal, (facts.code,)) if (
-        publication is not None and publication.extraction_hash == extraction_hash
+        not revalidate and publication is not None and publication.extraction_hash == extraction_hash
     ) else ()
     results = list(baseline)
     for position, item in enumerate(results):
@@ -104,7 +122,7 @@ def PrepareCompanyFieldResults(
             if not isinstance(body_hash, bytes) or len(body_hash) != 32:
                 continue
             policy = _field_policy(event, item.field)
-            if formal.run(
+            if not revalidate and formal.run(
                 "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
                 "AND record_hash=? AND body_hash=? AND extraction_hash=? AND policy_id=? AND outcome='field_attempted'",
                 (row["source"], evidence_id, facts.code, row["record_hash"], body_hash,
@@ -177,6 +195,7 @@ def PrepareCompanyFieldResults(
         observed_at=observed_at,
         extraction_hash=extraction_hash,
         read_document=read_document,
+        revalidate=revalidate,
     )
     return CompanyFieldPublication(annual.results, (*receipts, *annual.receipts))
 
@@ -233,5 +252,6 @@ def _field_policy(event: CompanyPositiveEvent | CompanyRiskEvent, field: str) ->
 
 __all__ = [
     "CompanyFieldPublication",
+    "CompanyFieldProofRulesHash",
     "PrepareCompanyFieldResults",
 ]

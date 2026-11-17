@@ -335,7 +335,7 @@ def test_read_only_empty_wal_creation_remains_an_explicit_physical_change(tmp_pa
 
 def test_external_nonempty_wal_change_cannot_be_reported_unchanged(tmp_path, monkeypatch):
     raw, facts, policy = _sources(tmp_path)
-    backup = replay._backup_collection
+    backup = replay.BackupCompanyCollection
     # This writer represents the independent live producer, after the audit's
     # consistent collection snapshot. It is not a replay-owned write path.
     with SqliteSession(raw, sqlite_policy=_IO) as producer:
@@ -346,7 +346,7 @@ def test_external_nonempty_wal_change_cannot_be_reported_unchanged(tmp_path, mon
             producer.run("INSERT INTO component_checks VALUES('external','after',?,'')", (_AT.isoformat(),))
             return result
 
-        monkeypatch.setattr(replay, "_backup_collection", backup_then_external_commit)
+        monkeypatch.setattr(replay, "BackupCompanyCollection", backup_then_external_commit)
         report = _run(raw, facts, tmp_path / "replay", policy)
     assert report["status"] == "degraded" and not report["source_input_unchanged"]
     before, after = report["collection_source_files_sha256_before"], report["collection_source_files_sha256_after"]

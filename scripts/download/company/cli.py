@@ -45,6 +45,7 @@ def BuildParser(
         company_query_audit=False,
         company_database_audit=False,
         company_consumer_audit=False,
+        company_field_proof_audit=False,
         company_risk_baseline=None,
         company_pagination_audit=False,
         company_pipeline_audit=False,
@@ -91,6 +92,7 @@ def BuildParser(
         modes.add_argument('--company-query-audit', action='store_true', help='read-only bounded CNInfo query coverage audit')
         modes.add_argument('--company-database-audit', action='store_true', help='read-only local company text and retry counts; no network')
         modes.add_argument('--company-consumer-audit', action='store_true', help='read-only formal facts/fields/publication comparison with the production reader; no collection or recovery planning')
+        modes.add_argument('--company-field-proof-audit', action='store_true', help='read-only current-rule reproof of published verified fields; ignores proof/attempt caches and never publishes')
         parser.add_argument('--company-risk-baseline', type=Path, help='bounded prior company risk JSON; requires --company-database-audit and compares business fields and original evidence without writes')
         modes.add_argument('--company-pagination-audit', action='store_true', help='read-only CNInfo page-size comparison')
         modes.add_argument('--company-pipeline-audit', action='store_true', help='isolated same-PDF serial/parallel comparison')
@@ -158,6 +160,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_query_audit=args.company_query_audit,
         company_database_audit=args.company_database_audit,
         company_consumer_audit=args.company_consumer_audit,
+        company_field_proof_audit=args.company_field_proof_audit,
         company_risk_baseline=args.company_risk_baseline.expanduser().absolute() if args.company_risk_baseline is not None else None,
         company_pagination_audit=args.company_pagination_audit,
         company_pipeline_audit=args.company_pipeline_audit,
@@ -204,6 +207,8 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         raise ValueError("--company-risk-baseline requires read-only --company-database-audit without replay output")
     if options.company_consumer_audit and options.company_replay_directory is not None:
         raise ValueError("--company-consumer-audit does not accept a replay directory")
+    if options.company_field_proof_audit and options.company_replay_directory is not None:
+        raise ValueError("--company-field-proof-audit does not accept a replay directory")
     if not math.isfinite(options.source_timeout_seconds) or not 0 < options.source_timeout_seconds <= 30:
         raise ValueError("source timeout must be finite, greater than zero and at most 30 seconds")
     if not math.isfinite(options.market_source_loop_seconds) or not 0 < options.market_source_loop_seconds <= MARKET_SOURCE_LOOP_LIMIT_SECONDS:
@@ -211,14 +216,14 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
     if not math.isfinite(options.market_task_seconds) or not 0 < options.market_task_seconds <= MARKET_TASK_LIMIT_SECONDS:
         raise ValueError("--market-task-seconds must be within 0..600")
     if sum((
-        options.company_query_audit, options.company_database_audit, options.company_consumer_audit, options.company_pagination_audit,
+        options.company_query_audit, options.company_database_audit, options.company_consumer_audit, options.company_field_proof_audit, options.company_pagination_audit,
         options.company_pipeline_audit, options.company_ocr_audit, options.company_document_audit,
         options.company_directory_audit, options.company_pacing_audit, options.company_io_candidates_audit,
         bool(options.company_material_keys), bool(options.company_field_replay_keys),
     )) > 1:
         raise ValueError("company audit modes are mutually exclusive")
     if options.action_identity == "company-resume" and options.company_replay_directory is None and not (
-        options.company_query_audit or options.company_database_audit or options.company_consumer_audit or options.company_pagination_audit
+        options.company_query_audit or options.company_database_audit or options.company_consumer_audit or options.company_field_proof_audit or options.company_pagination_audit
         or options.company_document_audit or options.company_material_keys
     ):
         raise ValueError("company-resume requires --company-replay-directory")

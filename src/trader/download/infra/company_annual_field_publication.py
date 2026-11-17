@@ -116,6 +116,7 @@ def PrepareCompanyAnnualFieldResults(
     observed_at: datetime,
     extraction_hash: bytes,
     read_document: Callable[[bytes], str],
+    revalidate: bool = False,
 ) -> CompanyAnnualFieldPublication:
     prepared = list(results)
     receipts: list[CompanyInputReceipt] = []
@@ -139,7 +140,7 @@ def PrepareCompanyAnnualFieldResults(
             if body_hash is None or not row.body_checked or not row.body_retained:
                 conflicting = True
                 continue
-            if formal.run(
+            if not revalidate and formal.run(
                 "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
                 "AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='field_attempted' AND policy_id=?",
                 (disclosure.source, disclosure.identity, facts.code, disclosure.digest, body_hash,

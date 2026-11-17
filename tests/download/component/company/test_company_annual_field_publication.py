@@ -8,7 +8,7 @@ import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_field_recovery import _facts, _put
-from tests.helpers.download.company_resources import SQLiteCompanyEvidenceReaderFixture
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_annual_field_publication import CanReuseCompanyAnnualFieldResults
@@ -22,6 +22,7 @@ from trader.infra.http_contracts import HttpTimeout
 from scripts.download.company.company_query_audit import AuditCompanyDatabase
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.infra.sqlite_connection import SqliteSession
+from trader.download.infra import company_annual_field_publication
 
 
 _ANNUAL_AT = datetime(2026, 4, 10, tzinfo=fixtures.NOW.tzinfo)
@@ -58,6 +59,37 @@ def _annual(index, *, key="annual", amount="232,728,984.80", when=_ANNUAL_AT, ti
 def _field(index, field="annual_revenue"):
     return next(item for item in SQLiteCompanyEvidenceReaderFixture(index.facts_path).read_fields(("600001",)).results
                 if item.field == field)
+
+
+def test_explicit_annual_revalidation_does_not_reuse_cached_proofs_or_attempts(tmp_path, monkeypatch):
+    index, contract = _setup(tmp_path, disclosed_at=_ANNUAL_AT)
+    annual = _annual(index)
+    index.prepare_and_publish(contract.codes, fixtures.NOW)
+    assert _field(index).state == _field(index, "revenue_disclosed_at").state == "verified"
+    documents = CompanyDocumentFilesFixture(index.path.parent / "text")
+    documents.write(_ANNUAL)
+    with SqliteSession(index.path) as collected:
+        collected.run("UPDATE disclosures SET body_retained=1 WHERE source_key=?", (annual.identity,))
+    facts = _facts(index)
+    before = index.path.read_bytes(), index.facts_path.read_bytes()
+    parsed = []
+
+    def no_longer_supported(document):
+        parsed.append(document.disclosure.identity)
+        return None
+
+    monkeypatch.setattr(company_annual_field_publication, "ExtractCompanyAnnualReportRevenue", no_longer_supported)
+    with SqliteSession(index.path) as collected, SqliteSession(index.facts_path) as formal:
+        result = PrepareCompanyFieldResults(
+            collected, formal, facts, (), observed_at=fixtures.NOW,
+            extraction_hash=ReadCompanyPublicationIdentity(formal).extraction_hash,
+            event_policy=fixtures.CompanyEventPolicy(), read_document=documents.read, revalidate=True,
+        )
+    assert parsed and set(parsed) == {annual.identity}
+    assert all(item.state == "present_unverified" and not item.evidence for item in result.results
+               if item.field in {"annual_revenue", "revenue_disclosed_at"})
+    assert before == (index.path.read_bytes(), index.facts_path.read_bytes())
+    assert _field(index).state == _field(index, "revenue_disclosed_at").state == "verified"
 
 
 @pytest.mark.parametrize("disclosed_at", (None, _ANNUAL_AT, _ANNUAL_AT + timedelta(days=1)))
