@@ -50,6 +50,24 @@ def ProjectCompanyResume(
     }
     consumer_audit = ProjectMapping(summary.get("consumer_audit"))
     field_proof = ProjectMapping(summary.get("field_proof_audit"))
+    recovery = ProjectMapping(summary.get("field_proof_recovery"))
+    if recovery:
+        selected["field_proof_recovery"] = {
+            **{key: recovery.get(key) for key in (
+                "scope", "read_only_source", "isolated_copy", "complete", "observed_at",
+                "source_data_writes", "network_requests", "network_request_count_complete", "source_publication_hash", "field_rule_hash",
+                "planned_objects", "attempted_objects", "exact_text_objects", "recovered_objects",
+                "target_fields", "reproved_fields", "unreproved_fields", "source_unchanged", "budget_exhausted",
+                "production_adopted", "field_correctness_verified", "full_market_verified", "service_http_checked",
+            )},
+            **{name: [
+                {key: row.get(key) for key in fields}
+                for row in rows[:limit] if isinstance(row, Mapping)
+            ] if isinstance(rows := recovery.get(name), list) else [] for name, fields, limit in (
+                ("material_observations", ("source_key", "code", "status", "requests", "failure", "same_pdf", "same_body", "recovered"), 52),
+                ("field_results", ("code", "event_id", "field", "state", "reason", "reproved"), 68),
+            )},
+        }
     if field_proof:
         rows = field_proof.get("items")
         failures = ProjectMapping(field_proof.get("material_failures"))

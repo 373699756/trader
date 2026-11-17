@@ -46,6 +46,8 @@ def BuildParser(
         company_database_audit=False,
         company_consumer_audit=False,
         company_field_proof_audit=False,
+        company_field_proof_recovery=False,
+        company_field_proof_recovery_manifest=None,
         company_risk_baseline=None,
         company_pagination_audit=False,
         company_pipeline_audit=False,
@@ -93,6 +95,8 @@ def BuildParser(
         modes.add_argument('--company-database-audit', action='store_true', help='read-only local company text and retry counts; no network')
         modes.add_argument('--company-consumer-audit', action='store_true', help='read-only formal facts/fields/publication comparison with the production reader; no collection or recovery planning')
         modes.add_argument('--company-field-proof-audit', action='store_true', help='read-only current-rule reproof of published verified fields; ignores proof/attempt caches and never publishes')
+        modes.add_argument('--company-field-proof-recovery', action='store_true', help='recover only frozen, exact field-proof materials in a new isolated directory; bounded network and no source database writes')
+        parser.add_argument('--company-field-proof-recovery-manifest', type=Path, help='frozen exact material recovery plan; requires --company-field-proof-recovery')
         parser.add_argument('--company-risk-baseline', type=Path, help='bounded prior company risk JSON; requires --company-database-audit and compares business fields and original evidence without writes')
         modes.add_argument('--company-pagination-audit', action='store_true', help='read-only CNInfo page-size comparison')
         modes.add_argument('--company-pipeline-audit', action='store_true', help='isolated same-PDF serial/parallel comparison')
@@ -161,6 +165,8 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_database_audit=args.company_database_audit,
         company_consumer_audit=args.company_consumer_audit,
         company_field_proof_audit=args.company_field_proof_audit,
+        company_field_proof_recovery=args.company_field_proof_recovery,
+        company_field_proof_recovery_manifest=args.company_field_proof_recovery_manifest.expanduser().absolute() if args.company_field_proof_recovery_manifest is not None else None,
         company_risk_baseline=args.company_risk_baseline.expanduser().absolute() if args.company_risk_baseline is not None else None,
         company_pagination_audit=args.company_pagination_audit,
         company_pipeline_audit=args.company_pipeline_audit,
@@ -209,6 +215,12 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         raise ValueError("--company-consumer-audit does not accept a replay directory")
     if options.company_field_proof_audit and options.company_replay_directory is not None:
         raise ValueError("--company-field-proof-audit does not accept a replay directory")
+    if options.company_field_proof_recovery and (
+        options.company_replay_directory is None or options.company_field_proof_recovery_manifest is None
+    ):
+        raise ValueError("--company-field-proof-recovery requires a manifest and a new replay directory")
+    if options.company_field_proof_recovery_manifest is not None and not options.company_field_proof_recovery:
+        raise ValueError("--company-field-proof-recovery-manifest requires --company-field-proof-recovery")
     if not math.isfinite(options.source_timeout_seconds) or not 0 < options.source_timeout_seconds <= 30:
         raise ValueError("source timeout must be finite, greater than zero and at most 30 seconds")
     if not math.isfinite(options.market_source_loop_seconds) or not 0 < options.market_source_loop_seconds <= MARKET_SOURCE_LOOP_LIMIT_SECONDS:
@@ -216,7 +228,8 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
     if not math.isfinite(options.market_task_seconds) or not 0 < options.market_task_seconds <= MARKET_TASK_LIMIT_SECONDS:
         raise ValueError("--market-task-seconds must be within 0..600")
     if sum((
-        options.company_query_audit, options.company_database_audit, options.company_consumer_audit, options.company_field_proof_audit, options.company_pagination_audit,
+        options.company_query_audit, options.company_database_audit, options.company_consumer_audit, options.company_field_proof_audit,
+        options.company_field_proof_recovery, options.company_pagination_audit,
         options.company_pipeline_audit, options.company_ocr_audit, options.company_document_audit,
         options.company_directory_audit, options.company_pacing_audit, options.company_io_candidates_audit,
         bool(options.company_material_keys), bool(options.company_field_replay_keys),

@@ -119,6 +119,31 @@ def test_slow_pdf_reaches_existing_expanded_size_route(monkeypatch):
     assert clock.now > 8 and len(transport.calls) == 1
 
 
+def test_explicit_single_pdf_attempt_does_not_use_normal_retry_budget():
+    clock = _Clock()
+    transport = _Transport(clock, [(HttpTimeout("fixture"), 8), (HttpResponse(200, b"%PDF-fixture"), 0)])
+    source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
+    item = Disclosure("cninfo", "single", ("600001",), "风险公告",
+                      datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
+                      "https://static.cninfo.com.cn/finalpage/a.PDF", "a")
+    with pytest.raises(HttpTimeout):
+        source.download_document(item, attempt_limit=1)
+    assert len(transport.calls) == 1 and not clock.waits
+
+
+@pytest.mark.parametrize("limit", (0, 4, True, 1.0))
+def test_invalid_pdf_attempt_limit_rejects_before_transport(limit):
+    clock = _Clock()
+    transport = _Transport(clock, [])
+    source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
+    item = Disclosure("cninfo", "single", ("600001",), "风险公告",
+                      datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
+                      "https://static.cninfo.com.cn/finalpage/a.PDF", "a")
+    with pytest.raises(ValueError, match="attempt_limit_invalid"):
+        source.download_document(item, attempt_limit=limit)
+    assert not transport.calls
+
+
 @pytest.mark.parametrize("recover", [False, True])
 def test_three_attempt_limit_and_increasing_backoff(recover):
     clock = _Clock()

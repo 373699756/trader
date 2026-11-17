@@ -22,6 +22,8 @@ class CompanyOptions:
     company_database_audit: bool = False
     company_consumer_audit: bool = False
     company_field_proof_audit: bool = False
+    company_field_proof_recovery: bool = False
+    company_field_proof_recovery_manifest: Path | None = None
     company_risk_baseline: Path | None = None
     company_pagination_audit: bool = False
     company_pipeline_audit: bool = False

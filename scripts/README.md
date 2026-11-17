@@ -26,6 +26,8 @@
 
 按当前规则重证原正式verified字段时，选择`download/company/coverage --company-field-proof-audit`，可用`--company-collection-database`与`--company-evidence-database`指定当前资料。只读模式跳过旧证明／尝试缓存并沿原字段出证owner重读合法原文，来源时点不刷新、不写事实或凭据、不恢复／下载材料；拒绝其它审计及回放目录。`field_proof_audit`保存原发布／提取与实际规则内容摘要，分列目标、已核、重证、未重证及原文观察，公开待核项最多100条；全部目标重证且读窗稳定才通过，独立质量／覆盖／HTTP／活动采用仍为false。显式预算示例为`--company-audit-budget-seconds 180 --command-timeout-seconds 210`，后者须为收尾预留30秒；失败或预算中断不算通过。
 
+只恢复已冻结原证明所需材料时，使用互斥的`--company-field-proof-recovery --company-field-proof-recovery-manifest <清单> --company-replay-directory <新隔离目录>`。首次必须为空目录；同一manifest可显式接续其检查点，已消耗的对象跳过，包括结果未知的请求，不重复下载。该模式有界联网，逐件核原目录／正文及已有PDF摘要，每个对象最多一次下载，最多52个对象、68字段；仅修改隔离副本，经原材料依赖和恢复owner后再按当前规则重证。下载数、原件吻合、恢复数和重证字段分列；不写活动资料、不补签旧证明，也不代表独立正确性或完整company准入通过。
+
 财务单页可显式加`--financial-source-records`观察同一供应商行的八指标、证券／报告期、NOTICE_DATE、UPDATE_DATE及CURRENCY；须配`--structured-page financial`，不能与代码筛选／报告期键试验或修订过滤试验混用。仅该模式请求15个精确列、最多500行／1MiB，复用现八值decoder；缺元数据拒绝，不回退旧11列模式。NOTICE／UPDATE为供应商时点，observed_at为本地观察时点，业务复合键和内容摘要不冒充供应商记录号／真实更正身份；source_null不签未披露。原始行数与A股观察行数分列，公开最多5条安全身份／缺项摘要，不输出原行；默认生产fetch、正式库和来源准入均不变。
 
 `download/company/sources --official-financial-baseline <已有公司全库审计JSON> --official-financial-directory <仓库外原件目录>`只读查询该报告中最多50股的三季报来源空项，每股目录最多3页、每页30条，复用正式目录、下载、原件校验及解析封装，不写公司数据库。报告保留精确目录／PDF／正常正文摘要、实际提取方式与策略，以及前四页表格版式的独立摘要和有限引文，供逐列标注；不同范围的文本摘要分列，不混作正式字段证据。季度正常文本现沿版式提取，旧报告中的原生文本摘要仍保留原含义。缺页、失败、歧义或未完成标注保持待核，不将0、破折号及未披露混算，也不以此诊断自动替换财务值。

@@ -263,9 +263,9 @@ class CninfoMarketDisclosureSource:
                     break
         return _repair_groups(found)
 
-    def _request(self, send: Callable[[], HttpResponse]) -> HttpResponse:
+    def _request(self, send: Callable[[], HttpResponse], *, attempt_limit: int = 3) -> HttpResponse:
         # Only the read-only CNInfo protocol owns retries; the shared transport remains single-attempt.
-        for attempt in range(3):
+        for attempt in range(attempt_limit):
             self._pace()
             try:
                 response = send()
@@ -282,7 +282,7 @@ class CninfoMarketDisclosureSource:
                 ):
                     raise
                 self._check_cancelled()
-                if attempt == 2:
+                if attempt + 1 == attempt_limit:
                     raise
                 self._next_request = max(self._next_request, self._monotonic() + 2 ** (attempt + 1))
         raise AssertionError("bounded CNInfo attempts must return or raise")
@@ -324,7 +324,9 @@ class CninfoMarketDisclosureSource:
             return _layout_policy(policy.standard), policy.ocr, _layout_policy(policy.limits)
         return policy.standard, policy.ocr, policy.limits
 
-    def download_document(self, item: Disclosure) -> None:
+    def download_document(self, item: Disclosure, *, attempt_limit: int = 3) -> None:
+        if type(attempt_limit) is not int or not 1 <= attempt_limit <= 3:
+            raise ValueError("company_document_attempt_limit_invalid")
         if self._raw_files is None:
             raise RuntimeError("company_raw_files_required")
         if not item.url.startswith("https://static.cninfo.com.cn/finalpage/"):
@@ -335,7 +337,7 @@ class CninfoMarketDisclosureSource:
         directory = self._raw_files.directory(item)
         with self._raw_files.reserve(directory, self._extended_document_limits.max_bytes + 65536):
             try:
-                self._request(partial(self._transfer_document, item, directory))
+                self._request(partial(self._transfer_document, item, directory), attempt_limit=attempt_limit)
             except HttpResponseTooLarge as exc:
                 raise CompanyDocumentFailure("disclosure_document_oversized") from exc
             self._raw_files.complete(item, directory / "download.part", check=self._document_read_check())

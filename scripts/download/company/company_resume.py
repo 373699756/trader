@@ -23,7 +23,7 @@ from scripts.download.company.company_pagination_audit import AuditCompanyPagina
 from scripts.download.company.company_pipeline_audit import AuditCompanyPipeline
 from scripts.download.company.company_pipeline_audit import AuditCompanyIoCandidates
 from scripts.download.company.company_ocr_audit import AuditCompanyOcr
-from scripts.download.company.company_document_download_audit import AuditCompanyDocumentDownloads
+from scripts.download.company.company_document_download_audit import AuditCompanyDocumentDownloads, AuditCompanyFieldProofRecovery
 from scripts.download.company.company_field_audit import InspectCompanyFieldMaterial
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from scripts.download.company.company_query_audit import AuditCompanyQueries
@@ -55,7 +55,7 @@ from trader.download.infra.company_pipeline_queries import ReleaseCompletedCompa
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.company_fact_inputs import CompanyCoverageComplete
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-from trader.infra.http_contracts import HttpTransport
+from trader.infra.http_contracts import HttpAttempt, HttpTransport
 from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
@@ -178,9 +178,9 @@ class _ObservedSource(CninfoMarketDisclosureSource):
         )
         return page
 
-    def download_document(self, item: Disclosure) -> None:
+    def download_document(self, item: Disclosure, *, attempt_limit: int = 3) -> None:
         self.documents += 1
-        super().download_document(item)
+        super().download_document(item, attempt_limit=attempt_limit)
 
 
 def _copy(source: Path, destination: Path, *, deadline: float, sqlite_policy: SqliteIoPolicy) -> None:
@@ -287,6 +287,8 @@ def Main() -> int:
     audit.add_argument("--database-only", action="store_true")
     audit.add_argument("--consumer-only", action="store_true")
     audit.add_argument("--field-proof-only", action="store_true")
+    audit.add_argument("--field-proof-recovery-only", action="store_true")
+    parser.add_argument("--field-proof-recovery-manifest", type=Path)
     audit.add_argument("--field-replay-keys", nargs="+")
     parser.add_argument("--recovered-text", type=Path)
     parser.add_argument("--replay-observed-at", type=ParseCompanyReplayObservation)
@@ -309,6 +311,12 @@ def Main() -> int:
         parser.error("--consumer-only requires --facts-database and does not accept --directory")
     if args.field_proof_only and (args.facts_database is None or args.directory is not None):
         parser.error("--field-proof-only requires --facts-database and does not accept --directory")
+    if args.field_proof_recovery_only and (
+        args.facts_database is None or args.directory is None or args.field_proof_recovery_manifest is None
+    ):
+        parser.error("--field-proof-recovery-only requires --facts-database, --field-proof-recovery-manifest and a new --directory")
+    if args.field_proof_recovery_manifest is not None and not args.field_proof_recovery_only:
+        parser.error("--field-proof-recovery-manifest requires --field-proof-recovery-only")
     if args.database is None and not args.consumer_only:
         parser.error("--database is required")
     from trader.bootstrap import BuildSqlitePolicy
@@ -326,6 +334,7 @@ def Main() -> int:
         "scripts/download/company/company_query_audit.py",
         "scripts/download/company/company_publication_audit.py",
         "scripts/download/company/company_field_proof_audit.py",
+        "scripts/download/company/company_document_download_audit.py",
         "src/trader/download/application/company_evidence.py",
         "src/trader/download/infra/company_disclosure_source.py",
         "src/trader/download/infra/company_disclosure_queries.py",
@@ -365,6 +374,19 @@ def Main() -> int:
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
+    if args.field_proof_recovery_only:
+        attempts: list[HttpAttempt] = []
+        with OpenExternalHttp(observe=attempts.append) as session:
+            report = AuditCompanyFieldProofRecovery(
+                args.database.resolve(strict=True), args.facts_database.resolve(strict=True),
+                args.field_proof_recovery_manifest, args.directory,
+                observed_at=datetime.now(ZoneInfo("Asia/Shanghai")), budget_seconds=args.budget_seconds,
+                sqlite_policy=sqlite_policy,
+                event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
+                session=session, http_attempts=attempts,
+            )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 1 if report["status"] == "failed" else 0
     if args.field_proof_only:
         report = AuditCompanyFieldProofs(
             args.database.resolve(strict=True), args.facts_database.resolve(strict=True),

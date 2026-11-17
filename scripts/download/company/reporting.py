@@ -150,6 +150,42 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
         return replace(result, payload=dict(source, status=revision_status))
     schema = source.get("schema_version")
     summary = source.get("summary")
+    if schema == "company-resume" and isinstance(summary, Mapping) and "field_proof_recovery" in summary:
+        recovery = summary["field_proof_recovery"]
+        valid = isinstance(recovery, Mapping) and (
+            source.get("status") in ("passed", "degraded", "failed")
+            and recovery.get("scope") == "exact_published_field_proof_materials"
+            and recovery.get("read_only_source") is True and recovery.get("isolated_copy") is True
+            and type(recovery.get("network_request_count_complete")) is bool
+            and type(recovery.get("source_data_writes")) is int and recovery.get("source_data_writes") == 0
+            and all(recovery.get(name) is False for name in (
+                "production_adopted", "field_correctness_verified", "full_market_verified", "service_http_checked",
+            ))
+            and all(type(recovery.get(name)) is int and 0 <= recovery[name] <= limit for name, limit in (
+                ("planned_objects", 52), ("attempted_objects", 52), ("network_requests", 52),
+                ("exact_text_objects", 52), ("recovered_objects", 52), ("target_fields", 68),
+                ("reproved_fields", 68), ("unreproved_fields", 68),
+            ))
+            and all(isinstance(recovery.get(name), str) and re.fullmatch(r"[0-9a-f]{64}", recovery[name]) is not None
+                    for name in ("source_publication_hash", "field_rule_hash"))
+        )
+        if valid and isinstance(recovery, Mapping):
+            counts = {name: SafeNonnegativeInt(recovery.get(name)) or 0 for name in (
+                "planned_objects", "target_fields", "attempted_objects", "network_requests",
+                "recovered_objects", "exact_text_objects", "reproved_fields", "unreproved_fields",
+            )}
+            valid = (0 < counts["planned_objects"] and 0 < counts["target_fields"]
+                     and counts["attempted_objects"] <= counts["planned_objects"]
+                     and counts["network_requests"] <= counts["attempted_objects"]
+                     and counts["recovered_objects"] <= counts["exact_text_objects"] <= counts["attempted_objects"]
+                     and counts["reproved_fields"] + counts["unreproved_fields"] == counts["target_fields"])
+            if source.get("status") == "passed":
+                valid = valid and (recovery.get("source_unchanged") is True and recovery.get("budget_exhausted") is False
+                                   and recovery.get("network_request_count_complete") is True
+                                   and recovery.get("complete") is True and source.get("findings") == []
+                                   and counts["recovered_objects"] == counts["planned_objects"]
+                                   and counts["unreproved_fields"] == 0)
+        return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
     if schema == "company-resume" and isinstance(summary, Mapping) and "field_proof_audit" in summary:
         audit = summary["field_proof_audit"]
         valid = isinstance(audit, Mapping) and (
