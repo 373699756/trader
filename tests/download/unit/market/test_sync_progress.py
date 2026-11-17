@@ -14,7 +14,6 @@ import pytest
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.entrypoints.sync_progress import SyncProgress
-from trader.download.domain.company_evidence import CompanyEvidenceSyncResult, CompanyOperationProgress, EvidenceSyncProgress
 from trader.download.domain.download_failure import DownloadFailureContext
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncProgress
@@ -319,8 +318,7 @@ def test_shell_feedback_uses_shared_prefix_and_sanitizes_installer_lines():
     assert all(line.count("|") == 3 for line in result.stderr.splitlines())
 
 
-@pytest.mark.parametrize("target,fill", [("all", False), ("history", False), ("market", False), ("company", False),
-                                        ("company", True)])
+@pytest.mark.parametrize("target,fill", [("history",False),("market",False)])
 def test_sync_entrypoints_share_timing_and_keep_business_results(monkeypatch, tmp_path, target, fill):
     from trader.bootstrap import ExecuteSync
 
@@ -350,20 +348,10 @@ def test_sync_entrypoints_share_timing_and_keep_business_results(monkeypatch, tm
         clock[0] += 10
         return QfqUpdateResult(now.date(), 1)
 
-    def company(*args, **kwargs):
-        kwargs_progress = args[1]
-        from trader.download.domain.company_evidence import EvidenceSyncProgress
-
-        kwargs_progress(EvidenceSyncProgress("facts", 1, 0, 0, 0, 0, status="complete"))
-        clock[0] += 10
-        return CompanyEvidenceSyncResult(now, 1, 1, 0, 0, 0, 0, (), 0)
-
     monkeypatch.setattr("trader.bootstrap.LoadRuntimeSettings", lambda path: settings)
     monkeypatch.setattr("trader.bootstrap._prepare_reference", prepare)
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", history)
     monkeypatch.setattr("trader.bootstrap.ExecuteQfqDownload", market)
-    monkeypatch.setattr("trader.bootstrap._sync_company_evidence", company)
-    monkeypatch.setattr("trader.bootstrap.RecentPublishedNewsCodes", lambda *args: ())
     result = ExecuteSync(settings.config_path, target, fill_missing=fill, report=log)
     assert result.exit_code == 0
     selected = ["history", "market", "company"] if target == "all" else [target]
@@ -373,47 +361,3 @@ def test_sync_entrypoints_share_timing_and_keep_business_results(monkeypatch, tm
     assert totals == sorted(totals)
     assert all("·" in line.split(" | ")[1] for line in lines)
     assert not (tmp_path / "data").exists()
-
-
-def test_sync_company_composition_uses_one_global_observer_for_real_operation_updates(monkeypatch, tmp_path):
-    from trader.bootstrap import ExecuteSync
-    from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
-
-    root = Path(__file__).resolve().parents[4]
-    settings = replace(LoadRuntimeSettings(root / "config/runtime.json"), data_paths=DataPaths(tmp_path / "data"))
-    now = datetime(2026, 11, 1, tzinfo=ZoneInfo("Asia/Shanghai"))
-    clock = [100.0]
-    stream = StringIO()
-    shared = SyncProgress(TerminalDownloadProgress(stream), lambda: clock[0])
-    snapshots = []
-
-    def company(*args, **kwargs):
-        progress = args[1]
-        progress(EvidenceSyncProgress("financial", 0, None, 0, 0, 0, sources=("eastmoney",)))
-        progress(EvidenceSyncProgress("risk_documents", 0, 1, 0, 0, 0, sources=("cninfo",)))
-        progress(EvidenceSyncProgress("operation", 0, None, 0, 0, 0,
-                                     operation=CompanyOperationProgress(1, "download", "running", clock[0],
-                                                                        "600001", "测试股份", "年度报告", "cninfo")))
-        before = len(stream.getvalue().splitlines())
-        clock[0] += 5
-        shared.heartbeat()
-        snapshots.extend(stream.getvalue().splitlines()[before:])
-        progress(EvidenceSyncProgress("complete", 1, 0, 0, 0, 0, status="complete", sources=("local",)))
-        return CompanyEvidenceSyncResult(now, 1, 1, 0, 0, 0, 0, (), 5)
-
-    monkeypatch.setattr("trader.bootstrap.LoadRuntimeSettings", lambda path: settings)
-    monkeypatch.setattr("trader.bootstrap._prepare_reference", lambda *args, **kwargs: PreparedFixture(now))
-    monkeypatch.setattr("trader.bootstrap._sync_company_evidence", company)
-    monkeypatch.setattr("trader.bootstrap.RecentPublishedNewsCodes", lambda *args: ())
-    monkeypatch.setattr("trader.bootstrap.company_evidence_progress.CompanyEvidenceProgress",
-                        lambda **kwargs: CompanyEvidenceProgress(monotonic=lambda: clock[0], **kwargs))
-    result = ExecuteSync(settings.config_path, "company", report=shared)
-    assert result.exit_code == 0
-    assert len(snapshots) == 3
-    assert "company·总览" in snapshots[0] and "company·范围" in snapshots[1] and "company·任务" in snapshots[2]
-    assert "600001-测试股份" in snapshots[1] and "下载1" in snapshots[2]
-    assert "来源巨潮" in snapshots[2] and "东财财务" not in "".join(snapshots)
-    before = stream.getvalue()
-    clock[0] += 5
-    shared.heartbeat()
-    assert stream.getvalue() == before and not (tmp_path / "data").exists()

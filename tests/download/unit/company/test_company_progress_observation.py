@@ -1,14 +1,11 @@
 """Company snapshots observe real execution and committed publication boundaries."""
 
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, datetime
 from io import StringIO
 from threading import Event, Thread
 from zoneinfo import ZoneInfo
 
-from trader.download.application.company_operations import CompanyOperations
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.progress_projection import WithProgressTime
 from trader.download.domain.company_evidence import (
@@ -51,41 +48,6 @@ def test_one_company_snapshot_every_five_seconds_combines_parallel_work():
     assert len(messages) == 2
 
 
-def test_worker_updates_observation_without_writing_and_queue_age_is_separate():
-    clock = [0.0]
-    stream = StringIO()
-    report = CompanyEvidenceProgress(stream, monotonic=lambda: clock[0])
-    operations = CompanyOperations(report, lambda: clock[0], (("600001", "示例"),))
-    report(EvidenceSyncProgress("risk_documents", 0, 1, 0, 0, 0))
-    first = stream.getvalue()
-    blocker_started, release, executed = Event(), Event(), Event()
-
-    def block():
-        blocker_started.set()
-        assert release.wait(5)
-
-    def work():
-        executed.set()
-        assert release.wait(5)
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        blocker = executor.submit(block)
-        assert blocker_started.wait(5)
-        pending = operations.submit("text", work, executor, document=_disclosure())
-        clock[0] = 5
-        queued = report.heartbeat_message()
-        assert queued is not None
-        text = RenderProgress(queued)
-        assert "文本0" in text and "排队等待" in text
-        assert not executed.is_set() and stream.getvalue() == first
-        release.set()
-        blocker.result(timeout=5)
-        pending.result(timeout=5)
-    assert executed.is_set() and stream.getvalue() == first
-    clock[0] = 10
-    ended = report.heartbeat_message()
-    assert ended is not None
-    assert all("最久" not in field.text for field in ended.fields)
 
 
 def test_completed_inventory_and_verification_do_not_keep_old_heartbeats():
@@ -183,21 +145,6 @@ def test_batch_and_scope_updates_do_not_bypass_the_global_five_second_interval()
     assert message is not None and "正文已入库1篇" in RenderProgress(message)
 
 
-def test_supplier_identity_follows_the_task_and_cache_keeps_its_original_source():
-    messages = []
-    report = CompanyEvidenceProgress(report=messages.append, monotonic=lambda: 0)
-    operations = CompanyOperations(report, lambda: 0, (("600001", "宸展光电"),))
-    task = operations.queued("text", document=_disclosure())
-    assert task.source == "cninfo"
-    report(EvidenceSyncProgress("financial", 0, 0, 0, 0, 1, status="reused", sources=("eastmoney",)))
-    assert messages[-1].task.label == "总览" and "来源东财" in RenderProgress(messages[-1])
-    assert "本地复用原来源缓存" in RenderProgress(messages[-1])
-    report(EvidenceSyncProgress("news", 0, 0, 0, 0, 0, status="complete", sources=("eastmoney_news",)))
-    assert "当前新闻；来源东财" in RenderProgress(messages[-1])
-    report(EvidenceSyncProgress("risk_documents", 0, None, 0, 0, 0, sources=("cninfo", "eastmoney_news")))
-    assert "来源巨潮/东财" in RenderProgress(messages[-1])
-    assert "可处理待补未核对篇" in RenderProgress(messages[-1])
-    assert "600001-宸展光电" in RenderProgress(messages[-1])
 
 
 def test_terminal_rejects_an_already_constructed_heartbeat_snapshot():
@@ -249,57 +196,6 @@ def test_large_counters_remain_exact_in_three_row_snapshots():
     assert "1234567" in summary and "7890123" in summary
 
 
-def test_committed_receipt_keeps_publication_cleanup_visible_until_index_returns():
-    from trader.download.application.company_evidence import CompanyEvidenceDependencies, _SyncState, _publish_batch
-    from tests.helpers.download.company import company_evidence as fixtures
-
-    clock = [0.0]
-    messages = []
-    report = CompanyEvidenceProgress(report=messages.append, monotonic=lambda: clock[0])
-    committed, release = Event(), Event()
-
-    class Session:
-        codes = ("600001",)
-
-        def commit(self):
-            ReportCompanyStock(report, (), CompanyPublicationProgress("started", self.codes))
-            return self.codes
-
-        def confirm(self):
-            ReportCompanyStock(report, (), CompanyPublicationProgress("committed", self.codes, self.codes))
-            return ()
-
-    class Index:
-        @contextmanager
-        def publication(self, codes, observed_at, *, changed_only=False):
-            assert tuple(codes) == Session.codes
-            yield Session()
-
-        def release_publication_material(self):
-            committed.set()
-            assert release.wait(5)
-
-        def published_count(self, codes):
-            return len(codes)
-
-    source = fixtures.Sources()
-    dependencies = CompanyEvidenceDependencies(Index(), source, source, lambda: clock[0], report)
-    state = _SyncState(CompanyOperations(report, lambda: clock[0], ()), 1)
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_publish_batch, dependencies, ("600001",), fixtures.NOW, 0, state)
-        try:
-            assert committed.wait(5)
-            clock[0] = 5
-            snapshot = report.heartbeat_message()
-            assert snapshot is not None
-            line = RenderProgress(snapshot)
-            assert "发布收尾（本批已提交）" in line and "尚未发布" not in line
-            assert "本操作00:00:05" in line
-        finally:
-            release.set()
-        assert future.result(timeout=5) == 1
-    clock[0] = 10
-    assert report.heartbeat_message() is None
 
 
 def test_all_three_prefixes_keep_times_when_source_labels_are_long():

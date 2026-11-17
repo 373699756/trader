@@ -29,18 +29,18 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.application.sync_data import SyncData, SyncTarget
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.company_evidence import CompanyEvidenceSyncResult, CompanySyncConfiguration, Disclosure, DisclosurePage
+from trader.download.domain.company_sync import (
+    CompanySyncFamily, CompanySyncFamilyResult, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult,
+)
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QfqUpdateResult
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.download_settings import (
-    LoadCompanySyncConfiguration,
     LoadHistorySyncConfiguration,
     LoadQfqWindowConfiguration,
 )
@@ -55,13 +55,14 @@ from trader.infra.settings.data_paths import DataPaths
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.disk_types import DiskKind
-from trader.infra.sqlite_connection import SqliteConnection
+from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 
 from scripts.infra.database.database_measurement import DatabaseMeasurement
+from scripts.infra.database.company_measurement_inputs import BuildCompanyMeasurementInputs
 from scripts.core.paths import PROJECT_ROOT
 from scripts.download.history.history_write_benchmark import HistoryFixtureSupplier
 from scripts.download.history.history_write_benchmark import MeasureHistoryWrites
@@ -69,15 +70,6 @@ from scripts.core.reporting import emit_report
 
 _Result = TypeVar("_Result")
 _NOW = datetime(2026, 10, 16, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
-
-
-def _company_documents(path: Path, configuration: CompanySyncConfiguration) -> CompanyDocumentFiles:
-    return CompanyDocumentFiles(
-        path,
-        max_text_characters=configuration.extended_document_limits.max_text_characters,
-        max_bytes=configuration.temporary_text_capacity_bytes,
-        reserve_bytes=configuration.temporary_disk_reserve_bytes,
-    )
 
 
 @dataclass(frozen=True)
@@ -124,7 +116,6 @@ class _SyncFixture:
         pipeline = LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json").pipeline
         self.preload_settings = pipeline.history_preload
         self.company_preload_settings = pipeline.company_preload
-        self.company_configuration = LoadCompanySyncConfiguration(PROJECT_ROOT)
         strategy = LoadStrategySettings(PROJECT_ROOT / "config/strategy.json")
         self.company_policy = strategy.company_scoring
         self.financial_max_age_days = strategy.long_research.financial_max_age_days
@@ -202,42 +193,34 @@ class _SyncFixture:
         )
         return self._measure("market", runner.execute)
 
-    def company(self, reference: PreparedReference) -> CompanyEvidenceSyncResult:
+    def company(self, reference: PreparedReference) -> CompanySyncRoundResult:
         if reference is not self.reference:
             raise RuntimeError("database_baseline_reference_not_shared")
 
-        def publish() -> CompanyEvidenceSyncResult:
-            started = time.monotonic()
-            index = SQLiteCompanyEvidenceIndex(
-                self.paths.company_collection,
-                facts_path=self.paths.company,
-                documents=_company_documents(self.paths.company_documents, self.company_configuration),
+        def publish() -> CompanySyncRoundResult:
+            index = SQLiteCompanyFactsIndex(
+                self.paths.company,
                 event_policy=self.company_policy.events, sqlite_policy=self._sqlite_policy,
             )
             index.initialize()
             codes = tuple(item.code for item in reference.eligible_universe)
-            rows = tuple(
-                Disclosure("fixture", f"{code}:{offset}", (code,), "普通公告", _NOW, "", str(offset))
-                for code in codes
-                for offset in range(3)
+            inputs = BuildCompanyMeasurementInputs(codes, _NOW, index.extraction_hash)
+            with SqliteSession(index.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+                parent = ReadCompanyPublicationIdentity(connection)
+            published = index.publish(
+                inputs.facts, dict(inputs.sources), parent, _NOW, receipts=inputs.receipts, field_results=(),
             )
-            partition = index.partitions(("sse",), _NOW)[0]
-            changed = 0
-            for offset in range(0, len(rows), 30):
-                page = DisclosurePage(rows[offset : offset + 30], len(rows), offset + 30 < len(rows))
-                changed += index.commit_page(partition, page, _NOW)
-                partition = replace(
-                    partition,
-                    page=partition.page + 1,
-                    expected_rows=len(rows),
-                    received_rows=partition.received_rows + len(page.rows),
-                )
-            published = index.publish(codes, _NOW)
-            return CompanyEvidenceSyncResult(
-                _NOW, len(codes), published, (len(rows) + 29) // 30, changed, 0, 0, (), time.monotonic() - started
+            scope = CompanySyncRoundScope(codes, _NOW)
+            return CompanySyncRoundResult(
+                CanonicalDigest((scope, published.identity.content_hash, "synthetic_company_inputs_only")), scope,
+                tuple(CompanySyncFamilyResult(family, 1, len(inputs.facts) if family is CompanySyncFamily.FINANCIAL else 0,
+                    0, CompanySyncStepResult(True, False, changed_codes=published.changed_codes
+                        if family is CompanySyncFamily.FINANCIAL else (),
+                        gaps=("synthetic_company_inputs_only",), pending_count=0)) for family in CompanySyncFamily),
+                False, False, published.identity.content_hash.hex(),
             )
 
-        # Include initialization, all page commits and close/checkpoint work in one scope.
+        # This scope now measures typed input construction and the sole formal writer.
         return self._measure("company", publish)
 
     def execute(self, target: SyncTarget) -> dict[str, object]:
@@ -246,7 +229,14 @@ class _SyncFixture:
         started = time.monotonic()
         result = SyncData(self.prepare, self.history, self.market, self.company, lambda: False).execute(target)
         expected = ("history", "market", "company") if target == "all" else (target,)
-        if result.exit_code or tuple(item.task for item in result.tasks) != expected or self.preparations - before != 1:
+        isolated_company_only = all(
+            task.status == "completed" or task.task == "company" and task.status == "pending"
+            and task.company is not None and task.company.processing_complete
+            and all(item.result.gaps == ("synthetic_company_inputs_only",) for item in task.company.families)
+            for task in result.tasks
+        )
+        if (result.failure or result.cancelled or not isolated_company_only
+            or tuple(item.task for item in result.tasks) != expected or self.preparations - before != 1):
             raise RuntimeError(f"database_baseline_sync_failed:{target}")
         return {
             "target": target,
@@ -259,6 +249,7 @@ class _SyncFixture:
             "prepare_calls": self.preparations - before,
             "tasks": [item.task for item in result.tasks],
             "phases": dict(self.phases),
+            "company_measurement_scope": "synthetic_typed_inputs_and_formal_writer_only",
         }
 
     def startup(self) -> _Startup:
@@ -704,7 +695,7 @@ def Main() -> int:
                 **result,
                 "cache_policy": "fresh worker and databases per round; operating-system cache is uncontrolled",
                 "measurement_policy": "scoped public SQLite wrapper instrumentation; statements count submitted run/run_many rows; successful BEGIN/COMMIT counts; WAL sampled every 50 ms; SQL time includes commit and fetch, excludes connection setup/PRAGMAs; RSS is process peak",
-                "scope": "SyncData orchestration, real persistence and startup input projections; synthetic prices and company announcements in 30-row pages; no full service, models, PDF or supplier acceptance",
+                "scope": "SyncData orchestration, real persistence and startup input projections; synthetic prices and typed company inputs; company remains qualification-pending; no full service, models, PDF or supplier acceptance",
             },
         }
     )

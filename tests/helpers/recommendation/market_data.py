@@ -343,6 +343,10 @@ def _service(
         def publication_version(self):
             return ""
 
+        def read_document_links(self, codes, *, cancel_requested=None):
+            from trader.download.domain.company_document_links import CompanyDocumentLinkSnapshot
+            return CompanyDocumentLinkSnapshot("", ())
+
         def visit(self, codes, consume, *, cancel_requested=None):
             return None
 

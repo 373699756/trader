@@ -25,7 +25,6 @@ EXPECTED_DEBT = frozenset(
         ("PLR0911", "download/application/sync_data.py", "SyncData.execute"),
         ("C901", "download/application/update_qfq.py", "UpdateQfqWindows._download_rolling"),
         ("PLR0912", "download/application/update_qfq.py", "UpdateQfqWindows._download_rolling"),
-        ("PLR0913", "download/application/company_evidence.py", "_report"),
         ("C901", "download/infra/baostock_gateway.py", "_reconstruct_unavailable_qfq"),
         ("C901", "download/infra/history_st_source.py", "HistoryStNameSource.fetch"),
         ("C901", "download/infra/qfq_sqlite.py", "SQLiteQfqWindowCache._matches_windows"),

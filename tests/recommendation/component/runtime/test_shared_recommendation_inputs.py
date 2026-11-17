@@ -73,6 +73,18 @@ def test_selected_profiles_share_sources_and_budget_but_isolate_models_and_publi
     assert not (tmp_path / "data").exists()
 
 
+def test_unowned_system_construction_never_publishes_shared_manual_eligibility(tmp_path, monkeypatch):
+    from trader import bootstrap
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("an unowned read-only construction must not publish eligibility")
+
+    monkeypatch.setattr(bootstrap.CompanyEligibility, "record_manual_blacklist", forbidden)
+    system = BuildSystem(_empty_config(tmp_path), owns_shared_runtime=False)
+    assert not (tmp_path / "data").exists()
+    system.stop()
+
+
 def test_company_preload_is_single_and_waits_for_the_complete_publication():
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 

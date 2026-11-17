@@ -18,16 +18,16 @@ from uuid import uuid4
 
 from flask import Flask
 
-from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_ports import HistorySyncDependencies
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
-from trader.download.application.progress_message import ProgressMessage
+from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.progress_projection import ProjectingDownloadProgress, QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
+from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncRoundResult, CompanySyncRoundScope
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain import company_evidence, company_events
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
@@ -37,7 +37,7 @@ from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowConfiguration
 from trader.download.entrypoints import company_evidence_progress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra import company_document_files, company_facts_reader
+from trader.download.infra import company_facts_reader
 from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.cninfo_industry import CninfoIndustryClient
 from trader.download.infra.cninfo_headers import CninfoIndustryHeaders
@@ -45,17 +45,9 @@ from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext
 from trader.download.application.download_failure import DownloadFailurePort
-from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
-from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
-from trader.download.infra.company_document_parser import DetectCompanyText
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
-from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
-from trader.download.infra.company_raw_files import CompanyRawFiles
-from trader.download.infra.company_http import CompanyRequestPacer
 from trader.download.infra.download_settings import (
-    LoadCompanySyncConfiguration,
     LoadDownloadFailureConfiguration,
     LoadHistorySyncConfiguration,
     LoadQfqWindowConfiguration,
@@ -115,7 +107,6 @@ from trader.recommendation.application.pipeline.freeze_publish.event_stream impo
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import FreezeObservation
 from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import AsyncFreezeObserver
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
-from trader.recommendation.application.pipeline.freeze_publish.recent_news_codes import RecentPublishedNewsCodes
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.local_score import local_freeze_builder
@@ -136,7 +127,6 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.infra import policy_settings
-from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import BuildSharedReviewCacheIdentity, ReviewCache
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
@@ -158,7 +148,6 @@ from trader.recommendation.infra.market_data.reference_initialization import Ini
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.trading_calendar import ChinaTradingCalendar
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 from trader.recommendation.infra.persistence.freeze_trace_index import ResearchTraceLimits, SQLiteFreezeTraceIndex
 from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.recommendation.infra.runtime import composition_inputs
@@ -190,13 +179,15 @@ if TYPE_CHECKING:
 def OpenExternalHttp(
     *,
     observe: Callable[[HttpAttempt], None] | None = None,
+    authorize: Callable[[HttpRequest], None] | None = None,
+    deadline_limit: float | None = None,
     inspect_response: Callable[[HttpRequest, HttpResponse], None] | None = None,
     identity_content_encodings: tuple[str, ...] = (),
     execute_request: Callable[[HttpRequest], HttpResponse] | None = None,
 ) -> HttpTransport:
     return RequestsHttpTransport(
         observe=observe, inspect_response=inspect_response, identity_content_encodings=identity_content_encodings,
-        execute_request=execute_request,
+        execute_request=execute_request, authorize=authorize, deadline_limit=deadline_limit,
     )
 
 
@@ -242,7 +233,6 @@ def ExecuteSync(
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
     price_review_budget = TencentRequestBudget(configuration.price_review)
     qfq_configuration = LoadQfqWindowConfiguration(settings.project_root) if target != "company" else None
-    company_configuration = LoadCompanySyncConfiguration(settings.project_root)
     failure_configuration = LoadDownloadFailureConfiguration(settings.project_root)
     market_window = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy, verification_cache=file_verification) if target in ("market", "all") else None
     market_failures = (
@@ -286,27 +276,9 @@ def ExecuteSync(
         ))),
         history=AdaptSyncDatabaseFailures(sync_history),
         market=AdaptSyncDatabaseFailures(sync_market),
-        company=AdaptSyncDatabaseFailures(lambda reference: report.run("company", lambda: _sync_company_evidence(
-            settings.data_paths,
-            progress,
-            company_evidence.CompanyEvidenceRequest.from_reference(
-                reference,
-                clock.now(),
-                company_configuration,
-                LoadStrategySettings(settings.strategy_config_path).company_scoring.events,
-                news_codes=RecentPublishedNewsCodes(
-                    tuple(
-                        SQLiteFreezeRecords(settings.data_paths.recommendation(profile) / "freeze.sqlite3", sqlite_policy=sqlite_policy)
-                        for profile in ("v2", "v3")
-                    ),
-                    clock.now(),
-                ),
-                fill_missing=fill_missing,
-            ),
-            cancel_requested=cancel_requested, sqlite_policy=sqlite_policy,
-            failure_configuration=failure_configuration,
-            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-            report=report,
+        company=AdaptSyncDatabaseFailures(lambda reference: report.run("company", lambda: ExecuteCompanySync(
+            settings, CompanySyncRoundScope(tuple(item.code for item in reference.eligible_universe), clock.now()),
+            cancel_requested=cancel_requested, report=report, fill=fill_missing,
         ))),
         cancelled=cancel_requested,
     ).execute(target)
@@ -319,117 +291,6 @@ def CreateCompanyEligibilityReader(path: Path, event_policy: company_events.Comp
     )
 
 
-def _sync_company_evidence(
-    paths: DataPaths,
-    progress: Callable[[company_evidence.EvidenceSyncProgress], None] | None,
-    request: company_evidence.CompanyEvidenceRequest,
-    *,
-    cancel_requested: Callable[[], bool] | None = None, sqlite_policy: SqliteIoPolicy,
-    failure_configuration: DownloadFailureConfiguration,
-    shutdown_timeout_seconds: float,
-    report: SyncProgress | None = None,
-) -> company_evidence.CompanyEvidenceSyncResult:
-    with ExitStack() as resources:
-        resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
-        configuration = request.configuration
-        ocr_capability = DetectCompanyOcr(configuration.document_ocr_languages)
-        text_capability = DetectCompanyText()
-        document_policies = company_evidence.BuildCompanyDocumentPolicies(
-            configuration,
-            ocr_capability.identity,
-            text_identity=text_capability.identity,
-        )
-        raw_files = CompanyRawFiles(
-            paths.company_collection.parent,
-            capacity=configuration.raw_capacity_bytes,
-            analysis_reserve=configuration.raw_analysis_reserve_bytes,
-            free_reserve=configuration.temporary_disk_reserve_bytes,
-            maximum_document_bytes=configuration.extended_document_limits.max_bytes,
-        )
-        ocr_engine = CompanyOcrEngine(
-            ocr_capability,
-            timeout_seconds=configuration.document_ocr_timeout_seconds,
-            page_timeout_seconds=configuration.document_ocr_page_timeout_seconds,
-            max_pages=configuration.document_ocr_max_pages,
-            dpi=configuration.document_ocr_dpi,
-            cancel_requested=cancel_requested,
-            retry_each_page=True,
-        )
-        source_factory = partial(
-            CninfoMarketDisclosureSource,
-            monotonic=time.monotonic,
-            sleeper=time.sleep,
-            timeout_seconds=configuration.source_timeout_seconds,
-            document_download_timeout_seconds=configuration.document_download_timeout_seconds,
-            document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
-            document_limits=configuration.document_limits,
-            extended_document_limits=configuration.extended_document_limits,
-            document_policies=document_policies,
-            text_capability=text_capability,
-            ocr_engine=ocr_engine,
-            raw_files=raw_files,
-            text_reserve_bytes=configuration.text_task_reserve_bytes,
-            ocr_reserve_bytes=configuration.ocr_task_reserve_bytes,
-            pacer=CompanyRequestPacer(configuration.request_interval_seconds, time.monotonic, time.sleep, cancel_requested),
-            request_interval_seconds=configuration.request_interval_seconds,
-            cancel_requested=cancel_requested,
-        )
-        documents = tuple(
-            source_factory(resources.enter_context(OpenExternalHttp())) for _ in range(configuration.document_workers)
-        )
-        structured = EastmoneyCompanySource(
-            resources.enter_context(OpenExternalHttp()),
-            monotonic=time.monotonic,
-            timeout_seconds=configuration.source_timeout_seconds,
-            cancel_requested=cancel_requested,
-        )
-        workers = BoundedExecutor(
-            worker_count=configuration.document_workers, queue_capacity=0, thread_name_prefix="company-document"
-        )
-        text_workers = BoundedExecutor(worker_count=configuration.text_workers, queue_capacity=0, thread_name_prefix="company-text")
-        ocr_workers = BoundedExecutor(worker_count=configuration.ocr_workers, queue_capacity=0, thread_name_prefix="company-ocr")
-        resources.enter_context(WorkerScope((workers, text_workers, ocr_workers), timeout_seconds=shutdown_timeout_seconds))
-        index = SQLiteCompanyEvidenceIndex(
-            paths.company_collection,
-            raw_files=raw_files,
-            facts_path=paths.company,
-            documents=company_document_files.CompanyDocumentFiles(
-                paths.company_documents,
-                max_text_characters=configuration.extended_document_limits.max_text_characters,
-                max_bytes=configuration.temporary_text_capacity_bytes,
-                reserve_bytes=configuration.temporary_disk_reserve_bytes,
-            ),
-            cancel_requested=cancel_requested,
-            event_policy=request.event_policy,
-            listings=request.listings,
-            stock_progress=partial(company_evidence_progress.ReportCompanyStock, progress, request.stock_names)
-                           if progress is not None else None, sqlite_policy=sqlite_policy,
-        )
-        failures = DownloadFailureDiagnostics(partial(index.record_failure, configuration=failure_configuration),
-            ShanghaiClock(_utc_now).now, report=report, owner="company", observe=partial(company_evidence_progress.ReportCompanyFailure, progress) if progress is not None else None)
-        dependencies = CompanyEvidenceDependencies(
-            index,
-            source_factory(
-                resources.enter_context(OpenExternalHttp()),
-                pacer=CompanyRequestPacer(configuration.request_interval_seconds, time.monotonic, time.sleep, cancel_requested),
-            ),
-            structured,
-            time.monotonic,
-            progress,
-            cancel_requested,
-            request.stock_names,
-            document_sources=documents,
-            document_executor=workers,
-            text_executor=text_workers,
-            ocr_executor=ocr_workers,
-            ocr_identity=ocr_capability.identity,
-            text_identity=text_capability.identity,
-            failures=failures, run_id=failures.run_id,
-        )
-        try:
-            return SyncCompanyEvidence(dependencies, request)
-        finally:
-            index.publish_file()
 
 
 def _prepare_reference(
@@ -900,7 +761,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             monotonic=time.monotonic,
         )
     )
-    if shared_inputs is None:
+    if shared_inputs is None and owns_shared_runtime:
         with suppress(RuntimeError):
             eligibility.record_manual_blacklist(
                 strategy.hard_filters.blacklist_codes, now(), effective_config_version
@@ -1357,7 +1218,7 @@ def _build_market_data(
         )
         research = PublishedCompanyResearch(
             company_facts_reader.SQLiteCompanyEvidenceReader(
-                paths.company, raw_path=paths.company_collection, event_policy=strategy.company_scoring.events,
+                paths.company, event_policy=strategy.company_scoring.events,
                 sqlite_policy=sqlite_policy,
             ),
             wall_clock=now, open_dates=calendar.open_dates, monotonic=time.monotonic,
@@ -1494,3 +1355,123 @@ def _build_publication(
         freezer(strategy=Strategy.D25),
         observer,
     )
+
+
+def ExecuteCompanySync(
+    settings: RuntimeSettings, scope: CompanySyncRoundScope, *,
+    cancel_requested: Callable[[], bool], report: SyncProgress, fill: bool,
+) -> CompanySyncRoundResult:
+    from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncInterrupted
+    from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+    from trader.download.infra.company_document_files import CompanyDocumentFiles
+    from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
+    from trader.download.infra.company_document_parser import DetectCompanyText
+    from trader.download.infra.company_http import CompanyRequestPacer
+    from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
+    from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex
+    from trader.download.infra.company_raw_files import CompanyRawFiles
+    from trader.download.infra.company_structured_source import EastmoneyCompanySource
+    from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
+    from trader.download.infra.company_sync_io import CompanySyncIoBudget
+    from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
+    from trader.download.infra.company_sync_runtime import CompanySyncRuntime
+    from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+
+    if scope.families != tuple(CompanySyncFamily):
+        raise ValueError("company_sync_full_scope_required")
+    configuration = LoadCompanySyncConfiguration(settings.project_root)
+    event_policy = LoadStrategySettings(settings.strategy_config_path).company_scoring.events
+    sqlite_policy, paths = BuildSqlitePolicy(settings), settings.data_paths
+    cutoff = ShanghaiClock(lambda: scope.cutoff).now()
+    deadline = time.monotonic() + configuration.round_timeout_seconds
+    io_budget = CompanySyncIoBudget(deadline=deadline, monotonic=time.monotonic, cancel_requested=cancel_requested)
+    codes = scope.codes
+
+    def paused() -> CompanySyncRoundResult:
+        cancelled = cancel_requested()
+        return CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancelled, not cancelled, "")
+
+    def stopped() -> bool:
+        return cancel_requested() or time.monotonic() >= deadline
+
+    with ExitStack() as resources:
+        resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
+        facts = SQLiteCompanyFactsIndex(paths.company, event_policy=event_policy, sqlite_policy=sqlite_policy,
+                                       cancel_requested=stopped, io_budget=io_budget)
+        reader = company_facts_reader.SQLiteCompanyEvidenceReader(paths.company, event_policy=event_policy,
+            sqlite_policy=sqlite_policy, io_budget=io_budget)
+        journal = SQLiteCompanySyncRoundJournal(paths.company_sync, sqlite_policy=sqlite_policy,
+                                               publication_identity=reader.publication_identity, io_budget=io_budget)
+        documents = CompanyDocumentFiles(paths.company_documents,
+            max_text_characters=configuration.extended_document_limits.max_text_characters,
+            max_bytes=configuration.temporary_text_capacity_bytes, reserve_bytes=configuration.temporary_disk_reserve_bytes)
+
+        def check_document() -> None:
+            if stopped():
+                raise CompanySyncInterrupted("company_sync_local_interrupted")
+
+        def read_document(body_hash: bytes) -> str:
+            return documents.read(body_hash, check=check_document)
+
+        raw_files = CompanyRawFiles(paths.company_collection.parent, capacity=configuration.raw_capacity_bytes,
+            analysis_reserve=configuration.raw_analysis_reserve_bytes, free_reserve=configuration.temporary_disk_reserve_bytes,
+            maximum_document_bytes=configuration.extended_document_limits.max_bytes)
+        material = SQLiteCompanyMaterialIndex(paths.company_collection, facts=facts, documents=documents,
+            event_policy=event_policy, sqlite_policy=sqlite_policy, raw_files=raw_files,
+            cancel_requested=stopped, io_budget=io_budget)
+
+        def clean_material() -> None:
+            active = journal.active()
+            if active is None:
+                raise ValueError("company_sync_cleanup_scope_missing")
+            material.clean_material(active.scope.cutoff)
+
+        normalized = SQLiteCompanyNormalizedIndex(paths.company_normalized, facts, event_policy=event_policy,
+            sqlite_policy=sqlite_policy, clean_material=clean_material, cancel_requested=stopped, io_budget=io_budget)
+        inputs = SQLiteCompanySyncInputStore(paths.company_inputs, sqlite_policy=sqlite_policy, io_budget=io_budget)
+        transport = resources.enter_context(OpenExternalHttp(authorize=journal.authorize_request,
+            observe=journal.observe_attempt, deadline_limit=deadline))
+        structured = EastmoneyCompanySource(transport, monotonic=time.monotonic,
+            timeout_seconds=configuration.source_timeout_seconds, cancel_requested=stopped)
+        try:
+            io_budget.check()
+            ocr = DetectCompanyOcr(configuration.document_ocr_languages,
+                deadline=deadline, monotonic=time.monotonic, check=io_budget.check)
+            text = DetectCompanyText(deadline=deadline, monotonic=time.monotonic, check=io_budget.check)
+            io_budget.check()
+        except CompanySyncInterrupted:
+            return paused()
+        policies = company_evidence.BuildCompanyDocumentPolicies(configuration, ocr.identity, text_identity=text.identity)
+        official = CninfoMarketDisclosureSource(transport, monotonic=time.monotonic, sleeper=time.sleep,
+            timeout_seconds=configuration.source_timeout_seconds,
+            document_download_timeout_seconds=configuration.document_download_timeout_seconds,
+            document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
+            request_interval_seconds=configuration.request_interval_seconds,
+            document_limits=configuration.document_limits, extended_document_limits=configuration.extended_document_limits,
+            document_policies=policies, text_capability=text,
+            ocr_engine=CompanyOcrEngine(ocr, timeout_seconds=configuration.document_ocr_timeout_seconds,
+                page_timeout_seconds=configuration.document_ocr_page_timeout_seconds,
+                max_pages=configuration.document_ocr_max_pages, dpi=configuration.document_ocr_dpi,
+                cancel_requested=stopped, retry_each_page=True),
+            cancel_requested=stopped, raw_files=raw_files,
+            pacer=CompanyRequestPacer(configuration.request_interval_seconds, time.monotonic, time.sleep, stopped),
+            text_reserve_bytes=configuration.text_task_reserve_bytes, ocr_reserve_bytes=configuration.ocr_task_reserve_bytes)
+        runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs=inputs,
+            event_policy=event_policy, sqlite_policy=sqlite_policy, read_document=read_document,
+            financial_source=structured, ratio_source=structured, annual_source=structured,
+            news_source=structured, official_source=official, io_budget=io_budget,
+            document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now)
+        budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
+            min(256, configuration.round_step_limit), deadline)
+        try:
+            runtime.initialize(codes, cutoff)
+            result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic, fill=fill)
+        except CompanySyncInterrupted:
+            return paused()
+        for family in result.families:
+            report(ProgressMessage((ProgressField(
+                f"{family.family.value}：已接纳{family.accepted_inputs}项；请求预算已占用{family.source_calls}，未知{family.unknown_attempts}；"
+                f"缺口{len(family.result.gaps)}项"),),
+                task=ProgressTask("company", family.family.value, "公司资料"),
+                state="完成" if family.result.business_complete else "等待", finished=True))
+        return result

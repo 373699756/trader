@@ -1,6 +1,9 @@
-"""Current company structures are admitted together before either writer runs."""
+"""Each current resource contract rejects incompatible files without mutating another owner."""
 
 import pytest
+import sqlite3
+from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
+from tests.helpers.shared.configuration import SqlitePolicyFixture
 
 from tests.helpers.download.company import company_evidence as fixtures
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -33,10 +36,15 @@ def test_incompatible_pair_is_rejected_before_initialization_or_file_recovery(tm
     def forbidden(*_args, **_kwargs):
         pytest.fail("incompatible pair must be rejected before any writer or material recovery")
 
-    monkeypatch.setattr(index._facts, "initialize", forbidden)
-    monkeypatch.setattr(index, "_repair_pending_files", forbidden)
-    with pytest.raises(ValueError, match="database_contract_mismatch"):
-        index.initialize()
+    material = SQLiteCompanyMaterialIndex(index.path,facts=index._facts,documents=index._documents,
+        event_policy=fixtures.CompanyEventPolicy(),sqlite_policy=SqlitePolicyFixture())
+    monkeypatch.setattr(material, "validate_material", forbidden)
+    if store == "collection":
+        with pytest.raises((RuntimeError,ValueError), match="persistence_unavailable|contract_mismatch"):
+            material.initialize()
+    else:
+        with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
+            index._facts.initialize()
     assert (index.path.read_bytes(), index.facts_path.read_bytes()) == before
 
 
@@ -47,6 +55,8 @@ def test_invalid_collection_does_not_initialize_an_empty_formal_file(tmp_path):
     # Represent an uninitialized file, rather than an older structure to upgrade.
     index.facts_path.write_bytes(b"")
     before = index.path.read_bytes()
-    with pytest.raises(ValueError, match="database_contract_mismatch"):
-        index.initialize()
+    material = SQLiteCompanyMaterialIndex(index.path,facts=index._facts,documents=index._documents,
+        event_policy=fixtures.CompanyEventPolicy(),sqlite_policy=SqlitePolicyFixture())
+    with pytest.raises((RuntimeError,ValueError), match="persistence_unavailable|contract_mismatch"):
+        material.initialize()
     assert index.path.read_bytes() == before and index.facts_path.read_bytes() == b""

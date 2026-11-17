@@ -35,7 +35,7 @@ def _company_arguments(tmp_path: Path, mode: str) -> list[str]:
     ("mode", "native"),
     (
         ("--company-pacing-audit", "--pacing-only"),
-        ("--company-io-candidates-audit", "--io-candidates-only"),
+        ("--company-pipeline-audit", "--pipeline-only"),
     ),
 )
 def test_company_isolated_modes_keep_directory_and_exact_worker_budget(tmp_path, mode, native):
@@ -48,7 +48,7 @@ def test_company_isolated_modes_keep_directory_and_exact_worker_budget(tmp_path,
     assert not (tmp_path / "replay").exists()
 
 
-@pytest.mark.parametrize("mode", ("--company-pacing-audit", "--company-io-candidates-audit"))
+@pytest.mark.parametrize("mode", ("--company-pacing-audit", "--company-pipeline-audit"))
 def test_company_isolated_modes_require_explicit_external_directory(mode):
     with pytest.raises(ValueError, match="company-replay-directory"):
         ParseOptions(BuildParser("company-resume").parse_args([mode]))
@@ -88,7 +88,7 @@ def test_company_material_keys_reject_invalid_source_selections(keys):
 @pytest.mark.parametrize(
     "arguments",
     (
-        ("--company-pacing-audit", "--company-io-candidates-audit"),
+        ("--company-pacing-audit", "--company-pipeline-audit"),
         ("--company-pipeline-audit", "--company-material-keys", "notice"),
     ),
 )

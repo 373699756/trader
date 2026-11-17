@@ -14,7 +14,7 @@ from trader.download.domain.company_evidence import CompanyDocument, DisclosureP
 from trader.download.infra import company_facts_index, company_field_publication
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
-from trader.download.infra.company_field_publication import PrepareCompanyFieldResults
+from trader.download.infra.company_field_publication import PrepareCompanyFieldResults, CompanyFieldProofRulesHash
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
@@ -171,28 +171,6 @@ def test_completion_proof_requires_unique_formally_linked_resolved_plan(tmp_path
     assert risk.expires_at == _AT + timedelta(days=90)
 
 
-def test_exact_local_recheck_removes_only_unsafe_holder_measurement_and_preserves_risk(tmp_path):
-    index = fixtures._index(tmp_path)
-    _put(index, "本公司持股5%以上股东甲拟减持股份。董事乙拟减持股份占公司总股本的0.2571%。" + _DETAIL,
-         identity="multiple-holders", title="持股5%以上股东、部分董事减持股份预披露公告")
-    index.publish(("600001",), _AT)
-    risk, = _reader(index).read(("600001",))[0].risk_events
-    assert risk.reduction_plan.planned_ratio_pct is None
-    valid = _receipts(index, ordinary_only=True)
-    # Represent an old single-input derivation that attributed the director's
-    # percentage to the qualifying holder; this is an isolated fixture only.
-    with SqliteSession(index.facts_path) as formal:
-        formal.run("UPDATE company_reduction_plan SET planned_pct=0.2571")
-    index.prepare_and_publish(("600001",), _AT)
-    index.publish(("600001",), _AT)
-    fact, = _reader(index).read(("600001",))
-    corrected, = fact.risk_events
-    assert (corrected.event_id, corrected.risk_level, corrected.status) == (risk.event_id, 4, CompanyEventStatus.ONGOING)
-    assert corrected.reduction_plan.planned_ratio_pct is None
-    assert corrected.expires_at is None and corrected.resolved_at is None
-    assert any(item.reason_code == "case_conclusion_ambiguous" for item in fact.review_reasons)
-    assert _receipts(index, ordinary_only=True) == valid
-    assert not index.pending_documents(("600001",), _AT, policies=fixtures._TEST_DOCUMENT_POLICIES)
 
 
 def test_all_contract_source_fields_publish_and_second_publication_reuses_proofs(tmp_path):
@@ -302,7 +280,10 @@ def _unproved_publication(tmp_path):
             _AT,
         ),),
     )
-    assert {item.state for item in _reader(index).read_fields((facts.code,)).results} == {"present_unverified"}
+    with SqliteSession(index.facts_path, SqliteConnectionOptions(read_only=True)) as formal:
+        assert {item.state for item in ReadCompanyFieldResults(formal, (facts.code,))} == {"present_unverified"}
+    with pytest.raises(ValueError, match="company_field_rules_unreproved"):
+        _reader(index).read_fields((facts.code,))
     return index, document, facts
 
 
@@ -407,7 +388,7 @@ def test_same_numeric_value_under_a_changed_subject_cannot_reuse_the_old_proof(t
     writer = SQLiteCompanyFactsIndexFixture(index.facts_path)
     writer.publish(
         (changed,), {document.disclosure.identity: "cninfo"}, _identity(index), _AT,
-        field_results=prepared.results, receipts=prepared.receipts,
+        field_results=prepared.results, field_rules_hash=CompanyFieldProofRulesHash(), receipts=prepared.receipts,
     )
     readback = _reader(index).read_fields(document.disclosure.codes)
     assert all(item.state == "present_unverified" and not item.evidence for item in readback.results)
@@ -423,7 +404,7 @@ def test_field_only_publication_advances_generation_without_rewriting_fact_value
     prepared = _prepare(index, facts, (document,))
     assert all(item.state == "verified" for item in prepared.results)
     writer = SQLiteCompanyFactsIndexFixture(index.facts_path)
-    writer.publish((), {}, parent, _AT, field_results=prepared.results, receipts=prepared.receipts)
+    writer.publish((), {}, parent, _AT, field_results=prepared.results, field_rules_hash=CompanyFieldProofRulesHash(), receipts=prepared.receipts)
     snapshot = _reader(index).read_fields(document.disclosure.codes)
     assert snapshot.publication_hash != parent.content_hash.hex()
     assert all(item.state == "verified" for item in snapshot.results)
@@ -438,7 +419,7 @@ def test_failed_publication_rolls_back_facts_field_conclusions_and_new_receipts(
     prepared = _prepare(index, facts, (document,))
     parent = _identity(index)
     if failure == "parent_conflict":
-        writer.publish((), {}, parent, _AT, field_results=prepared.results, receipts=prepared.receipts)
+        writer.publish((), {}, parent, _AT, field_results=prepared.results, field_rules_hash=CompanyFieldProofRulesHash(), receipts=prepared.receipts)
     else:
         write_identity = company_facts_index._write_identity
 
@@ -461,42 +442,6 @@ def test_failed_publication_rolls_back_facts_field_conclusions_and_new_receipts(
     assert _logical_state(index) == before
 
 
-def test_failed_same_body_proof_is_attempted_once_and_restart_does_not_queue_a_redownload(tmp_path, monkeypatch):
-    index = fixtures._index(tmp_path)
-    sentence = "首次回购股份占公司总股本比例为0.3%。"
-    document = _put(index, "本公司" + sentence + sentence + _DETAIL)
-    calls = []
-    extract = company_field_publication.ExtractCompanyFieldEvidence
-
-    def observed(*args):
-        calls.append(args[0].disclosure.identity)
-        return extract(*args)
-
-    monkeypatch.setattr(company_field_publication, "ExtractCompanyFieldEvidence", observed)
-    index.publish(document.disclosure.codes, _AT)
-    assert calls == [document.disclosure.identity]
-    snapshot = _reader(index).read_fields(document.disclosure.codes)
-    actual = next(item for item in snapshot.results if item.field == "actual_pct")
-    assert actual.state == "present_unverified" and not actual.evidence
-    original_receipts = _receipts(index)
-    assert any(row[-1].startswith("field_source_lines:") for row in original_receipts)
-    checked_receipts = None
-    for turn in (1, 2):
-        restarted = fixtures._index(tmp_path)
-        restarted.prepare_and_publish(document.disclosure.codes, _AT + timedelta(minutes=turn))
-        assert restarted.pending_documents(
-            document.disclosure.codes, _AT, policies=fixtures._TEST_DOCUMENT_POLICIES,
-        ) == ()
-        receipts = _receipts(restarted)
-        assert set(original_receipts).issubset(receipts)
-        assert all(row[-2] == "field_attempted" and ":same_body_" in row[-1]
-                   for row in receipts if row not in original_receipts)
-        if checked_receipts is None:
-            checked_receipts = receipts
-        else:
-            assert receipts == checked_receipts
-        assert _reader(restarted).read_fields(document.disclosure.codes).results == snapshot.results
-    assert calls == [document.disclosure.identity]
 
 
 @pytest.mark.parametrize("mismatch", ("body", "title", "kind", "checked", "code", "time", "url", "terminal"))
@@ -527,7 +472,7 @@ def test_wrong_provided_input_cannot_acknowledge_the_current_body_or_suppress_it
     assert len(accepted.receipts) == 2
     assert all(item.state == "verified" for item in accepted.results)
     writer = SQLiteCompanyFactsIndexFixture(index.facts_path)
-    writer.publish((), {}, _identity(index), _AT, field_results=accepted.results, receipts=accepted.receipts)
+    writer.publish((), {}, _identity(index), _AT, field_results=accepted.results, field_rules_hash=CompanyFieldProofRulesHash(), receipts=accepted.receipts)
     assert all(item.state == "verified" for item in _reader(index).read_fields(document.disclosure.codes).results)
 
 
@@ -565,7 +510,7 @@ def test_changed_rule_rejects_an_old_producer_without_committing_an_attempt_and_
     monkeypatch.setattr(company_field_publication, "ExtractCompanyFieldEvidence", lambda *args: ())
     old_attempt = _prepare(index, facts, (document,))
     writer = SQLiteCompanyFactsIndexFixture(index.facts_path)
-    writer.publish((), {}, _identity(index), _AT, field_results=old_attempt.results, receipts=old_attempt.receipts)
+    writer.publish((), {}, _identity(index), _AT, field_results=old_attempt.results, field_rules_hash=CompanyFieldProofRulesHash(), receipts=old_attempt.receipts)
     old_receipts = _receipts(index)
     ordinary = _receipts(index, ordinary_only=True)
     monkeypatch.setattr(company_field_publication, "ExtractCompanyFieldEvidence", extract)

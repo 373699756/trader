@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from trader.download.domain.company_field_results import CompanyFieldConclusion
+
 import gzip
 import hashlib
 import math
@@ -9,29 +11,36 @@ import sqlite3
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from scripts.download.company.company_research_baseline import ReadCompanyResearchBaseline, ReadCompanyResearchIdentity
 from scripts.core.paths import PROJECT_ROOT
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from scripts.download.company.company_risk_comparison import (
     CompareCompanyRisks, ProjectCompanyRiskComparison, WriteCompanyRiskBaseline,
 )
-from trader.download.application.company_publication import PublishCompanyEvidence
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyPositiveEvent, CompanyRiskEvent
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldSnapshot
 from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_evidence_sql import SCHEMA
-from trader.download.infra.company_facts_index import CompanyPublicationIdentity, ReadCompanyPublicationIdentity
+from trader.download.infra.company_facts_index import CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex, CompanyInputReceipt
+from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex, ReadCompanyNormalizationBaseline
+from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, PrepareCompanyFieldResults
+from trader.download.infra.company_field_recovery import RegisterCompanyMaterialDependencies
+from trader.infra.sqlite_connection import SqliteTransaction
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_policy import SqliteIoPolicy
-from trader.infra.sqlite_publication import PublishSqliteFile
+from trader.infra.settings.data_paths import DataPaths
+from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_facts_protocol import RequireCompanyTime
+from trader.infra.sqlite_publication import PublishSqliteFile, VerifySqliteFile
 
 
 _MAX_TEXT_BYTES = 256 * 1024 * 1024
@@ -136,22 +145,19 @@ def BackupCompanyCollection(source_path: Path, target_path: Path, policy: Sqlite
 def BackupCompanyFacts(
     source_path: Path, target_path: Path, policy: SqliteIoPolicy, event_policy: CompanyEventPolicy, deadline: float,
 ) -> bool:
-    reader = SQLiteCompanyEvidenceReader(source_path, event_policy=event_policy, sqlite_policy=policy)
     def cancelled() -> bool:
         return time.monotonic() >= deadline
-    publication = reader.read_fields((), cancel_requested=cancelled).publication_hash
-    if not publication:
-        raise ValueError("company_field_replay_facts_publication_missing")
+    VerifySqliteFile(source_path, sqlite_policy=policy, check=lambda: _check_deadline(deadline), file_only=True)
     target_path.parent.mkdir(parents=True)
     with target_path.open("xb"):
         pass
     with SqliteSession(
         source_path, SqliteConnectionOptions(read_only=True), sqlite_policy=policy, cancel_requested=cancelled,
     ) as source, SqliteSession(target_path, sqlite_policy=policy, cancel_requested=cancelled) as target:
-        identity = ReadCompanyPublicationIdentity(source)
+        identity = ReadCompanyResearchIdentity(source)
         generation = source.run("PRAGMA data_version").require_one()[0]
         source.backup_to(target, deadline=deadline, monotonic=time.monotonic)
-        if ReadCompanyPublicationIdentity(target) != identity:
+        if ReadCompanyResearchIdentity(target) != identity:
             raise ValueError("company_field_replay_facts_identity_changed")
         if tuple(row[0] for row in target.run("PRAGMA integrity_check")) != ("ok",):
             raise ValueError("company_field_replay_facts_integrity_failed")
@@ -159,12 +165,6 @@ def BackupCompanyFacts(
             raise ValueError("company_field_replay_facts_foreign_keys_failed")
         stable = bool(generation == source.run("PRAGMA data_version").require_one()[0])
     PublishSqliteFile(target_path, sqlite_policy=policy, check=lambda: _check_deadline(deadline))
-    copied = SQLiteCompanyEvidenceReader(target_path, event_policy=event_policy, sqlite_policy=policy)
-    if (
-        copied.read_fields((), cancel_requested=cancelled).publication_hash != publication
-        or reader.read_fields((), cancel_requested=cancelled).publication_hash != publication
-    ):
-        raise ValueError("company_field_replay_facts_identity_changed")
     return stable
 
 
@@ -349,10 +349,10 @@ def AuditCompanyFieldReplay(
     }
     try:
         before = (_source_files(collection_path, deadline), _source_files(facts_path, deadline))
+        with SqliteSession(facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as formal:
+            if ReadCompanyPublicationIdentity(formal) is None:
+                raise ValueError("company_field_replay_facts_publication_missing")
         target_facts = directory / "facts" / "company_facts.sqlite3"
-        report["facts_backup_generation_stable"] = BackupCompanyFacts(
-            facts_path, target_facts, sqlite_policy, event_policy, deadline,
-        )
         target_raw = directory / "raw" / "company_collection.sqlite3"
         stable_backup = BackupCompanyCollection(collection_path, target_raw, sqlite_policy, deadline)
         report["collection_backup_generation_stable"] = stable_backup
@@ -364,6 +364,22 @@ def AuditCompanyFieldReplay(
         )
         report.update({"required_texts": len(hashes), "copied_texts": copied, "missing_texts": missing,
                        "compressed_text_bytes": compressed, "expanded_text_bytes": expanded})
+        documents = _CountingDocuments(
+            target_raw.parent / "text", max_text_characters=configuration.extended_document_limits.max_text_characters,
+            max_bytes=configuration.temporary_text_capacity_bytes, reserve_bytes=configuration.temporary_disk_reserve_bytes,
+        )
+        research = ReadCompanyResearchBaseline(target_raw, facts_path, documents,
+            event_policy=event_policy, sqlite_policy=sqlite_policy, check=lambda: _check_deadline(deadline),
+            cancel_requested=lambda: time.monotonic() >= deadline)
+        writer = SQLiteCompanyFactsIndex(target_facts, event_policy=event_policy, sqlite_policy=sqlite_policy)
+        index = SQLiteCompanyNormalizedIndex(directory / "normalized.sqlite3", writer,
+            event_policy=event_policy, sqlite_policy=sqlite_policy, clean_material=lambda: None)
+        index.initialize()
+        index.seed(research.baseline)
+        report["facts_backup_generation_stable"] = True
+        report["baseline_current_rule_reproof_reads"] = research.material_reads
+        report["baseline_original_verified"] = sum(item.state == "verified" for item in research.original_fields)
+        report["baseline_current_verified"] = sum(item.state == "verified" for item in research.baseline.fields)
         reader = SQLiteCompanyEvidenceReader(target_facts, event_policy=event_policy, sqlite_policy=sqlite_policy)
         codes = _selected_codes(target_raw, reader, source_keys, observed_at, sqlite_policy, deadline)
         report["codes"] = codes
@@ -373,48 +389,43 @@ def AuditCompanyFieldReplay(
         states: list[_ReplayState] = []
         risks_preserved = True
         publications_complete = True
+        material = SQLiteCompanyMaterialIndex(target_raw, facts=writer, documents=documents,
+            event_policy=event_policy, sqlite_policy=sqlite_policy)
+        material.initialize()
         for round_number in (1, 2):
             _check_deadline(deadline)
-            documents = _CountingDocuments(
-                target_raw.parent / "text",
-                max_text_characters=configuration.extended_document_limits.max_text_characters,
-                max_bytes=configuration.temporary_text_capacity_bytes,
-                reserve_bytes=configuration.temporary_disk_reserve_bytes,
-            )
-            index = SQLiteCompanyEvidenceIndex(
-                target_raw, facts_path=target_facts, documents=documents, raw_files=None,
-                event_policy=event_policy, sqlite_policy=sqlite_policy,
-                cancel_requested=lambda: time.monotonic() >= deadline,
-            )
-            index.initialize()
             startup_reads = documents.read_calls
-            startup_counts = documents.read_counts.copy()
             if round_number == 1 and recovered_text is not None:
-                _check_deadline(deadline)
+                with SqliteSession(target_raw, sqlite_policy=sqlite_policy) as raw, SqliteTransaction(raw, immediate=True), SqliteSession(
+                    target_facts, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy,
+                ) as formal:
+                    facts = tuple(fact for fact in research.baseline.facts if fact.code in codes)
+                    RegisterCompanyMaterialDependencies(raw, formal, facts, writer.extraction_hash)
                 with recovered_text.open("rb") as stream:
                     payload = stream.read(configuration.extended_document_limits.max_text_characters * 4 + 1)
                 if len(payload) > configuration.extended_document_limits.max_text_characters * 4:
                     raise ValueError("company_field_replay_recovered_text_oversized")
-                report["recovered_required_text"] = index.recover_required_text(
-                    source_keys[0], payload.decode("utf-8").strip(), observed_at,
-                )
-            index.prepare_publication(codes, observed_at)
-            publication = PublishCompanyEvidence(index, codes, observed_at)
-            report[f"round_{round_number}_publication_pending_codes"] = len(publication.pending_codes)
-            publications_complete = publications_complete and not publication.pending_codes
-            index.publish_file()
-            report[f"round_{round_number}_initialize_text_reads"] = startup_reads
+                report["recovered_required_text"] = material.recover_required_text(
+                    source_keys[0], payload.decode("utf-8").strip(), observed_at)
+            prepared_fields: list[CompanyFieldConclusion] = []
+            prepared_receipts: list[CompanyInputReceipt] = []
+            with SqliteSession(target_raw, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as raw, SqliteSession(
+                target_facts, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy,
+            ) as formal, SqliteTransaction(raw), SqliteTransaction(formal):
+                for fact in research.baseline.facts:
+                    if fact.code in codes:
+                        prepared = PrepareCompanyFieldResults(raw, formal, fact, (), observed_at=fact.checked_at,
+                            extraction_hash=writer.extraction_hash, event_policy=event_policy, read_document=documents.read)
+                        prepared_fields.extend(prepared.results)
+                        prepared_receipts.extend(prepared.receipts)
+            index.publish_fields(codes, tuple(prepared_fields), tuple(prepared_receipts), observed_at,
+                                 field_rules_hash=CompanyFieldProofRulesHash())
+            report[f"round_{round_number}_publication_pending_codes"] = 0
+            report[f"round_{round_number}_initialize_text_reads"] = 0
             report[f"round_{round_number}_publication_text_reads"] = documents.read_calls - startup_reads
             report[f"round_{round_number}_total_text_reads"] = documents.read_calls
-            material_reads = documents.read_counts - startup_counts
-            report[f"round_{round_number}_publication_material_reads"] = [
-                {"body_hash": digest.hex(), "reads": count} for digest, count in material_reads.most_common(10)
-            ]
-            report[f"round_{round_number}_read_materials_truncated"] = len(material_reads) > 10
-            comparison = CompareCompanyRisks(
-                target_facts, risk_baseline, deadline=deadline, sqlite_policy=sqlite_policy,
-                cancel_requested=lambda: time.monotonic() >= deadline,
-            )
+            comparison = CompareCompanyRisks(target_facts, risk_baseline, deadline=deadline, sqlite_policy=sqlite_policy,
+                cancel_requested=lambda: time.monotonic() >= deadline)
             report[f"round_{round_number}_risk_comparison"] = ProjectCompanyRiskComparison(comparison)
             risks_preserved = risks_preserved and comparison.all_old_risks_and_evidence_preserved
             states.append(_state(target_facts, reader, codes, sqlite_policy, deadline))
@@ -476,4 +487,93 @@ def AuditCompanyFieldReplay(
     return report
 
 
-__all__ = ["AuditCompanyFieldReplay", "BackupCompanyCollection", "BackupCompanyFacts"]
+def PrepareCompanyNormalNamespace(
+    *, original_facts_path: Path, proven_facts_path: Path, collection_path: Path,
+    documents: tuple[CompanyDocumentFiles, ...], directory: Path,
+    event_policy: CompanyEventPolicy, sqlite_policy: SqliteIoPolicy, budget_seconds: float,
+) -> dict[str, object]:
+    """Explicit isolated typed input, preserving the original financial baseline.
+
+    The original source codec is used only here and by the research replay.
+    This does not migrate a public store, replay an old job, promote the frozen
+    unadmitted financial cohort, or copy/reset an existing request allowance.
+    """
+    if directory.exists() or not 30 <= budget_seconds <= 900 or not documents:
+        raise ValueError("company_normal_namespace_new_directory_required")
+    RequireIsolatedReplay(directory, (PROJECT_ROOT, original_facts_path.parent, proven_facts_path.parent,
+        collection_path.parent, *(owner.root for owner in documents)))
+    deadline = time.monotonic() + budget_seconds
+    def check() -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("company_normal_namespace_deadline_exceeded")
+    for path in (original_facts_path, proven_facts_path):
+        VerifySqliteFile(path, sqlite_policy=sqlite_policy, file_only=True, check=check)
+    options = SqliteConnectionOptions(read_only=True)
+    with (SqliteSession(proven_facts_path, options, sqlite_policy=sqlite_policy) as proven,
+        SqliteSession(original_facts_path, options, sqlite_policy=sqlite_policy) as original,
+        SqliteTransaction(proven), SqliteTransaction(original)):
+        prepared = ReadCompanyNormalizationBaseline(proven)
+        codes = tuple(fact.code for fact in prepared.facts)
+        source_identity = ReadCompanyResearchIdentity(original)
+        old = ReadCompanyFactRows(original, codes)
+        if tuple(fact.code for fact in old) != codes:
+            raise ValueError("company_normal_namespace_source_population_mismatch")
+        # Current parser quality/corrections are retained. The known partial
+        # financial research cohort remains outside normal formal adoption.
+        facts = tuple(replace(current, financial=previous.financial, latest_financial=previous.latest_financial,
+            financial_state=previous.financial_state) for current, previous in zip(prepared.facts, old, strict=True))
+        original_receipts = tuple(CompanyInputReceipt(row[0], row[1], row[2], row[3], row[4], row[5], RequireCompanyTime(row[6]), row[7], row[8])
+            for row in original.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
+        receipts = tuple(item for item in prepared.receipts if item.source != "eastmoney_financial" or item in original_receipts)
+        baseline = replace(prepared, facts=facts, receipts=receipts, identity=source_identity, financial_observations=())
+    paths = DataPaths(directory)
+    stable = BackupCompanyCollection(collection_path, paths.company_collection, sqlite_policy, deadline)
+    target_documents = CompanyDocumentFiles(paths.company_documents, max_text_characters=2_000_000,
+        max_bytes=2 * 1024 * 1024 * 1024, reserve_bytes=1)
+    copied = missing = 0
+    with SqliteSession(paths.company_collection, options, sqlite_policy=sqlite_policy) as raw:
+        hashes = tuple(row[0] for row in raw.run("SELECT DISTINCT body_hash FROM disclosures WHERE body_retained=1 AND body_hash IS NOT NULL ORDER BY body_hash"))
+    for digest in hashes:
+        check()
+        text: str | None = None
+        for owner in documents:
+            try:
+                text = owner.read(digest, check=check)
+                break
+            except FileNotFoundError:
+                continue
+        if text is None:
+            missing += 1
+            continue
+        with target_documents.prepare(text) as actual:
+            if actual != digest:
+                raise ValueError("company_normal_namespace_original_body_hash_mismatch")
+        copied += 1
+    writer = SQLiteCompanyFactsIndex(paths.company, event_policy=event_policy, sqlite_policy=sqlite_policy)
+    normalized = SQLiteCompanyNormalizedIndex(paths.company_normalized, writer, event_policy=event_policy,
+        sqlite_policy=sqlite_policy, clean_material=lambda: None)
+    normalized.initialize()
+    normalized.seed(baseline)
+    material = SQLiteCompanyMaterialIndex(paths.company_collection, facts=writer, documents=target_documents,
+        event_policy=event_policy, sqlite_policy=sqlite_policy)
+    material.initialize()
+    material.validate_material()
+    reader = SQLiteCompanyEvidenceReader(paths.company, event_policy=event_policy, sqlite_policy=sqlite_policy)
+    fields = reader.read_fields(codes)
+    report: dict[str, object] = {
+        "source_data_writes": 0, "network_requests": 0, "source_backup_stable": stable,
+        "original_source_hash": source_identity.content_hash.hex(), "proven_source_hash": prepared.identity.content_hash.hex(),
+        "publication_hash": reader.publication_identity(), "source_rule_hash": prepared.field_rules_hash.hex(),
+        "stocks": len(codes), "fields": len(fields.results), "reader_equal": reader.read(codes) == facts,
+        "original_financials_preserved": all((left.financial, left.latest_financial, left.financial_state) ==
+            (right.financial, right.latest_financial, right.financial_state) for left, right in zip(facts, old, strict=True)),
+        "original_risks_preserved": all(left.risk_events == right.risk_events for left, right in zip(facts, old, strict=True)),
+        "original_valid_receipts_preserved": all(item in receipts for item in original_receipts if item.outcome == "valid"),
+        "unadmitted_financial_metadata": 0, "copied_original_texts": copied, "unavailable_original_texts": missing,
+        "production_adopted": False, "full_sync_verified": False,
+    }
+    AtomicWriteJson(directory.parent / "namespace.json", report)
+    return report
+
+
+__all__ = ["AuditCompanyFieldReplay", "BackupCompanyCollection", "BackupCompanyFacts", "PrepareCompanyNormalNamespace"]

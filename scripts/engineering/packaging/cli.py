@@ -25,10 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=PROJECT_ROOT / "config" / "runtime.json",
     )
+    parser.add_argument("--use-environment-pip", action="store_true",
+                        help="Use the invoking environment's existing pip through the dependency site; do not bootstrap bundled pip.")
     return parser
 
 
-def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, object]:
+def verify_wheel_install(*, dist_dir: Path, runtime_config: Path, use_environment_pip: bool = False) -> dict[str, object]:
     wheels = tuple(sorted(dist_dir.resolve().glob("*.whl"), key=lambda path: path.stat().st_mtime_ns))
     if not wheels:
         raise FileNotFoundError("no wheel exists in the requested dist directory")
@@ -36,7 +38,7 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
     with tempfile.TemporaryDirectory(prefix="trader-wheel-install-") as temporary_name:
         temporary = Path(temporary_name)
         environment = temporary / "venv"
-        venv.EnvBuilder(with_pip=True, system_site_packages=True).create(environment)
+        venv.EnvBuilder(with_pip=not use_environment_pip, system_site_packages=True).create(environment)
         python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         cli = environment / ("Scripts/trader-cli.exe" if os.name == "nt" else "bin/trader-cli")
         dependency_site = Path(sysconfig.get_paths()["purelib"]).resolve()
@@ -170,6 +172,7 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
         "research_evidence_commands_verified": len(evidence_commands),
         "missing_history_read_only_smoke": "passed",
         "missing_selection_read_only_smoke": "passed",
+        "pip_provider": "invoking_environment" if use_environment_pip else "bundled_ensurepip",
     }
 
 
@@ -206,6 +209,7 @@ print(json.dumps({"installed_outside_repository": outside, "resource_count": len
 
 def Main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    result = verify_wheel_install(dist_dir=args.dist_dir, runtime_config=args.runtime_config)
+    result = verify_wheel_install(dist_dir=args.dist_dir, runtime_config=args.runtime_config,
+                                 use_environment_pip=args.use_environment_pip)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
     return 0

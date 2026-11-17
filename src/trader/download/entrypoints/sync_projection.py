@@ -22,6 +22,8 @@ def ProjectSyncResult(result: SyncResult) -> dict[str, object]:
 
 def _task(task: SyncTaskResult) -> dict[str, object]:
     summary: dict[str, object] = {"task": task.task, "status": task.status, "reason": task.reason}
+    if task.incompatible_company_store is not None:
+        summary["incompatible_company_store"] = task.incompatible_company_store.value
     if task.history is not None:
         summary["history"] = ProjectHistoryMaintenanceStatus(task.history)
     if task.market is not None:
@@ -54,28 +56,33 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
         company = task.company
         summary.update(
             {
-                "observed_at": company.observed_at.isoformat(),
-                "window_days": company.window_days,
-                "requested_codes": company.requested_codes,
-                "published_codes": company.published_codes,
-                "fetched_pages": company.fetched_pages,
-                "changed_rows": company.changed_rows,
-                "reused_partitions": company.reused_partitions,
-                "pending_partitions": company.pending_partitions,
-                "pending_documents": company.pending_documents,
-                "ocr_documents": company.ocr_documents,
-                "unextractable_documents": company.unextractable_documents,
-                "pending_counts_checked": all(value is not None for value in (
-                    company.pending_partitions, company.pending_documents, company.ocr_documents,
-                    company.unextractable_documents,
-                )),
-                "next_document_retry_at": company.next_document_retry_at.isoformat()
-                if company.next_document_retry_at
-                else None,
-                "news_population_codes": company.news_population_codes,
-                "news_coverage": company.news_coverage,
-                "failures": company.failures,
-                "elapsed_seconds": round(company.elapsed_seconds, 3),
+                "round_id": company.round_id,
+                "observed_at": company.scope.cutoff.isoformat(),
+                "requested_codes": len(company.scope.codes),
+                "processing_complete": company.processing_complete,
+                "business_complete": company.business_complete,
+                "paused": company.paused,
+                "budget_exhausted": company.budget_exhausted,
+                "publication_hash": company.publication_hash,
+                "families": [
+                    {
+                        "family": item.family.value,
+                        "steps": item.steps,
+                        "accepted_inputs": item.accepted_inputs,
+                        "request_slots_consumed": item.source_calls,
+                        "unknown_attempts": item.unknown_attempts,
+                        "observed_attempts": item.source_calls - item.unknown_attempts
+                        if item.source_calls is not None else None,
+                        "processing_complete": item.result.processed_scope_complete,
+                        "business_complete": item.result.business_complete,
+                        "can_continue": item.result.can_continue,
+                        "pending_count": item.result.pending_count,
+                        "changed_codes": len(item.result.changed_codes),
+                        "gaps": item.result.gaps,
+                        "failure": item.result.failure,
+                    }
+                    for item in company.families
+                ],
             }
         )
     return summary

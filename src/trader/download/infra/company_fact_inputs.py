@@ -1,33 +1,17 @@
-"""Read consistent raw inputs for compact company fact publication."""
+"""Current raw-row codecs and explicit coverage comparisons."""
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from typing import Literal, cast
 
-from trader.download.domain.company_event_extraction import CompanyDocumentRiskRelevant
-from trader.download.domain.company_evidence import (
-    CompanyDocument,
-    CompanyEvidenceInput,
-    CompanyFinancial,
-    CompanyRatio,
-    Disclosure,
-    EvidenceMarket,
-    IsTransientCompanyDocumentFailure,
-)
-from trader.download.infra.company_facts_protocol import REVIEW_REASONS, DecodeCompanyLabel, EncodeCompanyReason
-from trader.infra.sqlite_connection import SqliteConnection
-from trader.download.domain.company_annual_income import CompanyAnnualIncome
-from trader.download.infra.company_annual_income_index import ReadCompanyAnnualIncome
-from trader.download.infra.company_financial_input_use import ReadUnusedCompanyFinancialInputs
+from trader.download.domain.company_evidence import CompanyFinancial, Disclosure
 
 
 def DecodeCompanyFinancial(row: sqlite3.Row) -> CompanyFinancial:
     return CompanyFinancial(row[0], date.fromisoformat(row[1]), datetime.fromisoformat(row[2]), *tuple(row)[3:])
-
 
 def DecodeCompanyDisclosure(row: sqlite3.Row) -> Disclosure:
     return Disclosure(
@@ -41,199 +25,6 @@ def DecodeCompanyDisclosure(row: sqlite3.Row) -> Disclosure:
         cast(Literal["announcement", "news"], row["kind"]),
     )
 
-
-@dataclass(frozen=True)
-class CompanySnapshotRows:
-    disclosures: tuple[sqlite3.Row, ...]
-    financials: tuple[sqlite3.Row, ...]
-    ratios: tuple[sqlite3.Row, ...]
-    checks: tuple[sqlite3.Row, ...]
-    annual_incomes: tuple[CompanyAnnualIncome, ...] = ()
-
-
-@dataclass(frozen=True)
-class CompanySnapshotShared:
-    coverage: tuple[sqlite3.Row, ...]
-    checks: tuple[sqlite3.Row, ...]
-    errors: tuple[sqlite3.Row, ...]
-    pledge_day: str | None
-    unlock_snapshot: sqlite3.Row | None
-
-
-def ReadCompanySnapshotShared(connection: SqliteConnection, now: datetime) -> CompanySnapshotShared:
-    pledge = connection.run("SELECT start_date FROM ratio_snapshots WHERE component='pledge'").fetchone()
-    return CompanySnapshotShared(
-        tuple(connection.run("SELECT start_date,end_date,market,checked_at FROM coverage ORDER BY start_date")),
-        tuple(connection.run("SELECT component,checked_at,failure FROM component_checks WHERE scope='market'")),
-        tuple(
-            connection.run(
-                "SELECT DISTINCT CASE WHEN failure='' THEN 'pending' ELSE failure END AS failure,market,start_date,end_date "
-                "FROM partitions WHERE failure<>'' OR is_complete=0",
-            )
-        ),
-        pledge[0] if pledge else None,
-        connection.run("SELECT checked_at,end_date FROM ratio_snapshots WHERE component='unlock'").fetchone(),
-    )
-
-
-def ReadCompanySnapshotRows(
-    connection: SqliteConnection, formal: SqliteConnection, codes: tuple[str, ...], now: datetime, extraction_hash: bytes,
-    *, cancel_requested: Callable[[], bool] | None,
-) -> dict[str, CompanySnapshotRows]:
-    unused = ReadUnusedCompanyFinancialInputs(
-        connection,
-        formal,
-        codes,
-        now,
-        extraction_hash,
-        cancel_requested=cancel_requested,
-    )
-    placeholders = ",".join("?" for _ in codes)
-    disclosures = connection.run(
-        "SELECT d.*,c.code,r.failure AS document_failure,r.retry_policy_id,r.payload_hash,EXISTS(SELECT 1 FROM document_publications p WHERE p.disclosure_id=d.id "
-        "AND p.code=c.code AND p.record_hash=d.record_hash AND p.extraction_hash=?) AS published_for_code, EXISTS("
-        "SELECT 1 FROM document_supersessions s JOIN disclosures n ON n.id=s.replacement_id "
-        "JOIN document_publications r ON r.disclosure_id=n.id AND r.code=c.code AND r.record_hash=n.record_hash "
-        "AND r.extraction_hash=s.extraction_hash WHERE s.disclosure_id=d.id AND s.code=c.code AND s.record_hash=d.record_hash "
-        "AND s.replacement_hash=n.record_hash AND s.extraction_hash=?) AS superseded_for_code "
-        "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-        "LEFT JOIN document_retries r ON r.disclosure_id=d.id AND r.record_hash=d.record_hash "
-        f"WHERE c.code IN ({placeholders}) AND (d.published_at>=? OR (d.kind='announcement' AND d.body_checked=1)) "
-        "AND d.published_at<=? ORDER BY d.published_at,d.id",
-        (extraction_hash, extraction_hash, *codes, (now.date() - timedelta(days=365)).isoformat(), now.isoformat()),
-    )
-    documents: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in disclosures:
-        if row["id"] not in unused:
-            documents[row["code"]].append(row)
-    financials: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in connection.run(
-        f"SELECT * FROM financials WHERE code IN ({placeholders}) AND report_date>=? AND published_at<=? ORDER BY report_date",
-        (*codes, (now.date() - timedelta(days=550)).isoformat(), now.isoformat()),
-    ):
-        financials[row["code"]].append(row)
-    ratios: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in connection.run(
-        f"SELECT code,as_of_date,ratio_pct,component FROM ratios WHERE code IN ({placeholders}) ORDER BY as_of_date", codes
-    ):
-        ratios[row["code"]].append(row)
-    checks: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in connection.run(
-        f"SELECT component,checked_at,failure,scope FROM component_checks WHERE scope IN ({placeholders})", codes
-    ):
-        checks[row["scope"]].append(row)
-    annual_incomes = ReadCompanyAnnualIncome(connection, codes, now)
-    return {
-        code: CompanySnapshotRows(
-            tuple(documents[code]), tuple(financials[code]), tuple(ratios[code]), tuple(checks[code]),
-            tuple(income for income in annual_incomes if income.code == code),
-        )
-        for code in codes
-    }
-
-
-def BuildCompanySnapshot(
-    code: str,
-    now: datetime,
-    inputs: CompanySnapshotRows,
-    shared: CompanySnapshotShared,
-    *,
-    listed_on: date | None,
-    read_document: Callable[[bytes], str],
-) -> CompanyEvidenceInput:
-    start, end = now.date() - timedelta(days=365), now.date()
-    if listed_on is not None:
-        start = max(start, listed_on)
-    rows = inputs.disclosures
-    documents = tuple(
-        CompanyDocument(
-            DecodeCompanyDisclosure(row),
-            read_document(row["body_hash"]) if row["body_retained"] else "",
-            bool(row["body_checked"]) and bool(row["body_retained"]),
-            bool(row["document_failure"]) and not IsTransientCompanyDocumentFailure(row["document_failure"]),
-        )
-        for row in rows
-        if row["kind"] == "announcement" and not row["published_for_code"] and not row["superseded_for_code"]
-    )
-    ranges = tuple(row for row in shared.coverage if row["market"] == EvidenceMarket(code))
-    complete = CompanyCoverageComplete(ranges, start, end) and all(
-        item.checked or not CompanyDocumentRiskRelevant(item.disclosure.title) for item in documents
-    )
-    financials = tuple(DecodeCompanyFinancial(row) for row in inputs.financials)
-    pledge_rows = tuple(row for row in inputs.ratios if row["component"] == "pledge" and row["as_of_date"] <= end.isoformat())
-    pledge_row = pledge_rows[-1] if pledge_rows else None
-    pledge = CompanyRatio(pledge_row[0], date.fromisoformat(pledge_row[1]), pledge_row[2]) if pledge_row else None
-    if pledge is None and shared.pledge_day:
-        pledge = CompanyRatio(code, date.fromisoformat(shared.pledge_day), 0.0)
-    unlocks = tuple(
-        CompanyRatio(row[0], date.fromisoformat(row[1]), row[2])
-        for row in inputs.ratios
-        if row["component"] == "unlock" and end.isoformat() <= row["as_of_date"] <= (end + timedelta(days=180)).isoformat()
-    )
-    checks = (*shared.checks, *inputs.checks)
-    failures = tuple(f"{row[0]}:{row[2]}" for row in checks if row[2])
-    for component in ("financial", "pledge", "unlock"):
-        if not any(
-            row[0] == component and row[1] and datetime.fromisoformat(row[1]) >= now - timedelta(days=1) and not row[2]
-            for row in checks
-        ):
-            failures += (f"{component}:not_current",)
-    if pledge is not None and pledge.day < end - timedelta(days=10):
-        failures += ("pledge:source_stale",)
-    risk_start = start
-    partition_errors = tuple(row for row in shared.errors if row["market"] == EvidenceMarket(code) and row["end_date"] >= risk_start.isoformat())
-    failures += tuple(f"announcements:{row[0]}" for row in partition_errors)
-    complete = complete and not partition_errors
-    if not complete:
-        failures += ("announcements:window_incomplete",)
-    failures = tuple(
-        sorted(
-            {
-                f"{scope}:{DecodeCompanyLabel(REVIEW_REASONS, EncodeCompanyReason(reason))}"
-                for failure in failures
-                for scope, _, reason in (failure.partition(":"),)
-            }
-        )
-    )
-    news = tuple(
-        DecodeCompanyDisclosure(row)
-        for row in rows
-        if row["kind"] == "news" and datetime.fromisoformat(row["published_at"]) >= now - timedelta(days=7)
-    )
-    snapshot = CompanyEvidenceInput(
-        code,
-        now,
-        start,
-        end,
-        "",
-        documents,
-        complete,
-        financials,
-        pledge,
-        unlocks,
-        not any(item.startswith("unlock:") for item in failures),
-        news,
-        any(
-            row[0] == "news" and row[1] and datetime.fromisoformat(row[1]) >= now - timedelta(days=1) and not row[2]
-            for row in checks
-        ),
-        failures,
-        source_checked_at=max(
-            (
-                datetime.fromisoformat(value)
-                for value in (*(row["checked_at"] for row in ranges), *(row[1] for row in checks))
-                if value
-            ),
-            default=None,
-        ),
-        unlock_checked_at=datetime.fromisoformat(shared.unlock_snapshot[0]) if shared.unlock_snapshot else None,
-        unlock_coverage_end=date.fromisoformat(shared.unlock_snapshot[1]) if shared.unlock_snapshot else None,
-        superseded_evidence_ids=tuple(row["source_key"] for row in rows if row["superseded_for_code"]),
-        annual_incomes=inputs.annual_incomes,
-    )
-    return snapshot
-
-
 def CompanyCoverageComplete(ranges: Sequence[sqlite3.Row], start: date, end: date) -> bool:
     frontier = start
     for row in ranges:
@@ -241,21 +32,10 @@ def CompanyCoverageComplete(ranges: Sequence[sqlite3.Row], start: date, end: dat
             frontier = max(frontier, date.fromisoformat(row[1]) + timedelta(days=1))
     return frontier > end
 
-
 def BindCompanyEvidenceSource(sources: dict[str, str], key: str, source: str) -> None:
     previous = sources.get(key)
     if previous is not None and previous != source:
         raise ValueError("company_evidence_source_ambiguous")
     sources[key] = source
 
-
-__all__ = [
-    "BindCompanyEvidenceSource",
-    "BuildCompanySnapshot",
-    "CompanyCoverageComplete",
-    "CompanySnapshotRows",
-    "CompanySnapshotShared",
-    "DecodeCompanyDisclosure",
-    "ReadCompanySnapshotRows",
-    "ReadCompanySnapshotShared",
-]
+__all__ = ["DecodeCompanyFinancial", "DecodeCompanyDisclosure", "CompanyCoverageComplete", "BindCompanyEvidenceSource"]

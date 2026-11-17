@@ -8,7 +8,6 @@ from trader.download.domain.company_event_extraction import ExtractCompanyEvents
 from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition
 from trader.download.domain.company_events import CompanyEventStatus, CompanyPositiveStatus, CompanyReviewReason, CompanyRiskEvent, CompanyRiskType, CompanySeverityBasis, CompanySubject, ReductionPlan, RepurchasePurpose
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
-from trader.download.infra.company_field_recovery import CompanyFieldRepairReceipts
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 from trader.download.domain.company_event_extraction import CompanyLinkCandidate
@@ -124,7 +123,8 @@ def _legacy_repurchase(tmp_path, body):
             "'required_field_evidence:1','pending' FROM disclosures",
             (item.codes[0], event.event_id),
         )
-        old_attempts = CompanyFieldRepairReceipts(collected, item.codes, NOW)
+        old_attempts = (CompanyInputReceipt(item.source, item.identity, item.codes[0], item.digest,
+            formal_index.extraction_hash, body_hash, NOW, "field_attempted", "required_field_evidence:1"),)
     with SqliteSession(index.facts_path) as formal:
         parent = ReadCompanyPublicationIdentity(formal)
     formal_index.publish(

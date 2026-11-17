@@ -6,20 +6,22 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import VerifiedSqlitePublication, VerifySqliteFile
 
 import sqlite3
-from collections.abc import Callable, Sequence
-from datetime import datetime
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
-from trader.download.domain.company_events import CompanyEventPolicy, CompanyEvidenceLink
+from trader.download.domain.company_document_links import CompanyDocumentLinkSnapshot
+from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldSnapshot
-from trader.download.infra.company_evidence_sql import SCHEMA
+from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
+from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.infra.sqlite_connection import (
-    EnsureSqliteSchema,
     SqliteConnection,
     SqliteConnectionOptions,
     SqliteSession,
@@ -30,13 +32,25 @@ class SQLiteCompanyEvidenceReader:
     """Only the published, indexed projection is visible to recommendation."""
 
     def __init__(
-        self, path: Path, *, event_policy: CompanyEventPolicy, raw_path: Path | None = None, sqlite_policy: SqliteIoPolicy
+        self, path: Path, *, event_policy: CompanyEventPolicy, sqlite_policy: SqliteIoPolicy,
+        io_budget: CompanySyncIoBudget | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
+        self._io_budget = io_budget
         self.path = path
-        self._raw_path = raw_path
         self._extraction_hash = CompanyExtractionHash(event_policy)
         self._file_verification: VerifiedSqlitePublication | None = None
+
+    @contextmanager
+    def _session(self, *, cancel_requested: Callable[[], bool] | None = None) -> Iterator[SqliteConnection]:
+        if self._io_budget is not None:
+            with self._io_budget.session(self.path, SqliteConnectionOptions(read_only=True),
+                sqlite_policy=self._sqlite_policy, cancel_requested=cancel_requested) as connection:
+                yield connection
+        else:
+            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True),
+                sqlite_policy=self._sqlite_policy, cancel_requested=cancel_requested) as connection:
+                yield connection
 
     def _publication_version(self, connection: SqliteConnection, *, check: Callable[[], None] | None = None) -> str:
         if check is not None:
@@ -56,29 +70,27 @@ class SQLiteCompanyEvidenceReader:
             raise ValueError("company_publication_identity_mismatch")
         return identity.content_hash.hex()
 
-    def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyEvidenceLink, ...]:
-        if not evidence_ids:
-            return ()
-        if len(evidence_ids) > 32 or len(code) != 6 or not code.isascii() or not code.isdigit():
-            raise ValueError("company_document_query_invalid")
-        if self._raw_path is None or not self._raw_path.exists():
-            raise RuntimeError("company_evidence_links_unavailable")
+    def read_document_links(
+        self, codes: Sequence[str], *, cancel_requested: Callable[[], bool] | None = None,
+    ) -> CompanyDocumentLinkSnapshot:
+        """Preload links from the same formal owner; never inspect collection state."""
+        def check() -> None:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_document_link_read_cancelled")
+
+        check()
+        if not self.path.exists():
+            return CompanyDocumentLinkSnapshot("", ())
         try:
-            with SqliteSession(
-                self._raw_path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy
-            ) as connection:
-                EnsureSqliteSchema(connection, SCHEMA)
-                rows = connection.run(
-                    "SELECT d.source_key,d.title,d.url,d.published_at,d.body_checked FROM disclosures d "
-                    "JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE c.code=? AND d.kind='announcement' "
-                    f"AND d.source_key IN ({','.join('?' for _ in evidence_ids)}) ORDER BY d.published_at DESC LIMIT 32",
-                    (code, *evidence_ids),
-                ).fetchall()
-                return tuple(
-                    CompanyEvidenceLink(row[0], row[1], row[2], datetime.fromisoformat(row[3]), bool(row[4]))
-                    for row in rows
-                )
-        except (sqlite3.Error, ValueError) as exc:
+            with self._session(cancel_requested=cancel_requested) as connection:
+                with SqliteTransaction(connection):
+                    version = self._publication_version(connection, check=check)
+                    links = ReadCompanyDocumentLinks(connection, codes) if version else ()
+                    check()
+                    return CompanyDocumentLinkSnapshot(version, links)
+        except sqlite3.Error as exc:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_document_link_read_cancelled") from exc
             raise RuntimeError("company_evidence_links_unavailable") from exc
 
     def read(self, codes: Sequence[str]) -> tuple[CompanyFacts, ...]:
@@ -98,13 +110,14 @@ class SQLiteCompanyEvidenceReader:
         if not self.path.exists():
             return CompanyFieldSnapshot("", ())
         try:
-            with SqliteSession(
-                self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
-                cancel_requested=cancel_requested,
-            ) as connection:
+            with self._session(cancel_requested=cancel_requested) as connection:
                 with SqliteTransaction(connection):
                     version = self._publication_version(connection, check=check_cancelled)
                     results = ReadCompanyFieldResults(connection, codes) if version else ()
+                    if results:
+                        marker = connection.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
+                        if marker is None or marker[0] != CompanyFieldProofRulesHash():
+                            raise ValueError("company_field_rules_unreproved")
                     check_cancelled()
                     return CompanyFieldSnapshot(version, results)
         except sqlite3.Error as exc:
@@ -119,12 +132,7 @@ class SQLiteCompanyEvidenceReader:
         if not self.path.exists():
             return ""
         try:
-            with SqliteSession(
-                self.path,
-                SqliteConnectionOptions(read_only=True),
-                cancel_requested=cancel_requested,
-                sqlite_policy=self._sqlite_policy,
-            ) as connection:
+            with self._session(cancel_requested=cancel_requested) as connection:
                 identity = ReadCompanyPublicationIdentity(connection)
                 if cancel_requested is not None and cancel_requested():
                     raise InterruptedError("company_observation_cancelled")
@@ -142,7 +150,7 @@ class SQLiteCompanyEvidenceReader:
         if not self.path.exists():
             return ""
         try:
-            with SqliteSession(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            with self._session() as connection:
                 return self._publication_version(connection)
         except sqlite3.Error as exc:
             raise RuntimeError("company_snapshot_unreadable") from exc
@@ -163,9 +171,7 @@ class SQLiteCompanyEvidenceReader:
             return
         captured: list[CompanyFacts] = []
         try:
-            with SqliteSession(
-                self.path, SqliteConnectionOptions(read_only=True), cancel_requested=cancel_requested, sqlite_policy=self._sqlite_policy
-            ) as connection:
+            with self._session(cancel_requested=cancel_requested) as connection:
                 with SqliteTransaction(connection):
                     if not self._publication_version(connection, check=check_cancelled):
                         return

@@ -5,11 +5,10 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from trader.download.application.company_evidence import SyncCompanyEvidence
-from trader.download.domain.company_evidence import CompanyDocumentExtraction, CompanyDocumentPolicies, CompanyListing, CompanySyncConfiguration, Disclosure, DisclosurePage, DisclosurePartition, StructuredCompanyPage
+from trader.download.domain.company_evidence import CompanyDocumentExtraction, CompanyDocumentPolicies, CompanyListing, Disclosure, DisclosurePage, DisclosurePartition, StructuredCompanyPage
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-from tests.helpers.download.configuration import CompanyEventPolicyFixture, CompanyEvidenceRequestFixture as CompanyEvidenceRequest
-from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex
+from tests.helpers.download.configuration import CompanyEventPolicyFixture
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, CompanyResearchFixture
 
 CompanyEventPolicy = CompanyEventPolicyFixture
 
@@ -25,20 +24,6 @@ _TEST_DOCUMENT_POLICIES = CompanyDocumentPolicies("test-text", "test-ocr", "test
 def _extraction(text: str) -> CompanyDocumentExtraction:
     complete = text if len(text.strip()) >= 80 else (text + "\n") * (80 // max(1, len(text)) + 2)
     return CompanyDocumentExtraction(complete, "text", hashlib.sha256(complete.encode()).digest(), "test-text")
-
-
-def _sync_company_evidence(
-    dependencies,
-    codes,
-    observed_at,
-    *,
-    configuration: CompanySyncConfiguration = _TEST_COMPANY_CONFIGURATION,
-    news_codes=(),
-):
-    return SyncCompanyEvidence(
-        dependencies,
-        CompanyEvidenceRequest(tuple(codes), observed_at, configuration, news_codes=tuple(news_codes)),
-    )
 
 
 class Sources:
@@ -87,7 +72,7 @@ class Sources:
 
 
 def _index(tmp_path):
-    index = SQLiteCompanyEvidenceIndex(
+    index = CompanyResearchFixture(
         tmp_path / "company_evidence.sqlite3",
         facts_path=(tmp_path / "company_evidence.sqlite3").parent / "company_facts.sqlite3",
         documents=CompanyDocumentFiles((tmp_path / "company_evidence.sqlite3").parent / "text"),

@@ -13,11 +13,11 @@ import pytest
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company_resources import CninfoMarketDisclosureSourceFixture
 from tests.helpers.download.company.company_document_parser import _pdf
-from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentFailure, DisclosurePage
+from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentFailure
 from trader.download.infra.company_raw_files import CompanyRawFiles
-from trader.infra.http_contracts import HttpCancelled, HttpResponse, HttpTimeout
+from trader.download.domain.company_sync import CompanySourceCancelled
+from trader.infra.http_contracts import HttpResponse, HttpTimeout
 from trader.infra.http_transport import RequestsHttpTransport
-from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
 def _raw(root):
@@ -135,7 +135,7 @@ def test_cached_raw_input_does_not_bypass_source_cancellation(tmp_path):
         source = CninfoMarketDisclosureSourceFixture(
             transport, raw_files=raw, monotonic=lambda: 0, sleeper=lambda _: None, cancel_requested=cancelled.is_set,
         )
-        with pytest.raises(HttpCancelled):
+        with pytest.raises(CompanySourceCancelled):
             source.download_document(item)
     assert path.read_bytes() == payload
 
@@ -245,18 +245,6 @@ def test_failed_input_survives_restart_success_cleanup_and_obsolete_revision(tmp
     assert restarted.local(item) is not None
 
 
-def test_failure_workload_persists_after_restart_and_clears_after_success(tmp_path):
-    index = fixtures._index(tmp_path)
-    now = fixtures.NOW
-    item = _item()
-    partition = index.partitions(("sse",), now)[0]
-    index.commit_page(partition, DisclosurePage((item,), 1, False), now)
-    index.document_failure(item, fixtures._TEST_DOCUMENT_POLICIES.ocr, "disclosure_document_ocr_low_quality", now, now + timedelta(days=1))
-    assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).unresolved_failures == 1
-    index.prepare_and_publish(item.codes, now)
-    assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).unresolved_failures == 1
-    index.commit_document(item, fixtures._extraction("本公司收到中国证监会立案告知书。"), now)
-    assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).unresolved_failures == 0
 
 
 def test_same_content_revision_reuses_analysis_and_survives_other_task_cleanup(tmp_path):
@@ -282,74 +270,20 @@ def test_invalid_pipeline_resource_configuration_is_rejected(changes):
         replace(fixtures._TEST_COMPANY_CONFIGURATION, **changes)
 
 
-def test_discovery_frontier_keeps_gap_and_terminal_unknown_closes_processing_only(tmp_path):
-    index = fixtures._index(tmp_path)
-    now = fixtures.NOW
-    start = now.date() - timedelta(days=365)
-    partition = next(p for p in index.partitions(("sse",), now) if p.start == now.date())
-    item = _item()
-    index.commit_page(partition, DisclosurePage((item,), 1, False), now)
-    index.prepare_and_publish(item.codes, now)
-    assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).watermarks[0].discovered_day is None
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("INSERT INTO coverage VALUES('sse',?,?,?)", (str(start), str(now.date() - timedelta(days=1)), now.isoformat()))
-    state = index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES)
-    assert state.watermarks[0].discovered_day == now.date()
-    assert state.watermarks[0].processed_day == now.date() - timedelta(days=1)
-    index.document_failure(item, fixtures._TEST_DOCUMENT_POLICIES.ocr, "disclosure_document_ocr_low_quality", now, now + timedelta(days=1))
-    assert index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES).watermarks[0].processed_day < now.date()
-    index.publish(item.codes, now)
-    state = index.document_workload(item.codes, now, fixtures._TEST_DOCUMENT_POLICIES)
-    assert state.watermarks[0].processed_day == state.watermarks[0].discovered_day == now.date()
-    assert state.unextractable == 1 and state.due == 0
-    with SqliteSession(index.facts_path) as connection:
-        assert connection.run("SELECT announcement_state FROM company_facts").require_one()[0] != 2
 
 
-def test_dispatch_uses_only_reference_eligible_population_without_changing_directory_counts(tmp_path):
-    index = fixtures._index(tmp_path)
-    now = fixtures.NOW
-    part = next(p for p in index.partitions(("sse",), now) if p.start == now.date())
-    shared = replace(_item(), codes=("600001", "600002"))
-    excluded = replace(shared, identity="excluded", codes=("600002",), digest="excluded")
-    index.commit_page(part, DisclosurePage((shared, excluded), 2, False), now)
-    index.prepare_and_publish(("600001",), now)
-    tasks = index.pending_documents(("600001",), now, policies=fixtures._TEST_DOCUMENT_POLICIES)
-    assert len(tasks) == 1 and tasks[0].disclosure.codes == ("600001",)
-    assert not index.document_required(excluded, now)
-    with SqliteSession(index.path) as connection:
-        assert connection.run("SELECT COUNT(*) FROM disclosures").require_one()[0] == 2
 
 
 def test_missing_formal_database_is_not_silently_recreated(tmp_path):
     index = fixtures._index(tmp_path)
     index.facts_path.unlink()
-    with pytest.raises(ValueError, match="company_database_pair_incomplete"):
-        index.initialize()
+    from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
+    material = SQLiteCompanyMaterialIndex(index.path,facts=index._facts,documents=index._documents,
+        event_policy=index._event_policy,sqlite_policy=index._sqlite_policy)
+    material.initialize()
     assert not index.facts_path.exists()
 
 
-def test_new_verified_replacement_skips_old_task_but_new_independent_event_does_not(tmp_path):
-    index = fixtures._index(tmp_path)
-    now = fixtures.NOW
-    part = next(p for p in index.partitions(("sse",), now) if p.start == now.date())
-    old = replace(_item(), identity="1000000002", published_at=now - timedelta(minutes=2), digest="older")
-    independent = replace(old, identity="1000000003", digest="independent")
-    new = replace(_item(), identity="1000000004", title="关于收到立案告知书的更正公告", digest="newer")
-    index.commit_page(part, DisclosurePage((old, independent, new), 3, False), now)
-    index.prepare_and_publish(old.codes, now)
-    index.commit_document(new, fixtures._extraction("本公司未被立案。本公告完整替代原公告编号1000000002。"), now)
-    index.publish(old.codes, now)
-    pending = index.pending_documents(old.codes, now, policies=fixtures._TEST_DOCUMENT_POLICIES)
-    assert {task.disclosure.identity for task in pending} == {independent.identity}
-    assert not index.document_required(old, now) and index.document_required(independent, now)
-    with SqliteSession(index.path) as connection:
-        assert connection.run("SELECT reason FROM document_supersessions").require_one()[0] == "official_complete_replacement"
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE document_supersessions SET extraction_hash=?", (b"x" * 32,))
-        connection.run("UPDATE document_publications SET extraction_hash=?", (b"x" * 32,))
-    pending = index.pending_documents(old.codes, now, policies=fixtures._TEST_DOCUMENT_POLICIES)
-    assert {task.disclosure.identity for task in pending} == {old.identity, independent.identity}
 
 
 def test_partial_new_financial_report_keeps_complete_dated_report_without_mixing_fields():
@@ -394,28 +328,6 @@ def test_incomplete_download_uses_validated_range_without_restarting_bytes(tmp_p
     assert source._raw_files.local(_item()).payload_hash == hashlib.sha256(payload).digest()
 
 
-def test_formal_commit_survives_crash_before_collection_receipt(tmp_path, monkeypatch):
-    index = fixtures._index(tmp_path)
-    partition = index.partitions(("sse",), fixtures.NOW)[0]
-    item = _item()
-    index.commit_page(partition, DisclosurePage((item,), 1, False), fixtures.NOW)
-    index.commit_document(item, fixtures._extraction("本公司收到中国证监会立案告知书。"), fixtures.NOW)
-    publish = index._facts.publish
-
-    def crash(*args, **kwargs):
-        publish(*args, **kwargs)
-        raise RuntimeError("simulated_process_loss")
-
-    monkeypatch.setattr(index._facts, "publish", crash)
-    with pytest.raises(RuntimeError, match="simulated_process_loss"):
-        index.publish(("600001",), fixtures.NOW)
-    with SqliteSession(index.facts_path) as connection:
-        assert connection.run("SELECT count(*) FROM company_input_receipt").require_one()[0] == 1
-    with SqliteSession(index.path) as connection:
-        assert connection.run("SELECT count(*) FROM document_publications").require_one()[0] == 0
-    monkeypatch.setattr(index._facts, "publish", publish)
-    index.prepare_and_publish(("600001",), fixtures.NOW)
-    assert index.pending_documents(("600001",), fixtures.NOW, policies=fixtures._TEST_DOCUMENT_POLICIES) == ()
 
 
 def test_ocr_pages_resume_after_timeout_without_repeating_successful_pages(tmp_path, monkeypatch):

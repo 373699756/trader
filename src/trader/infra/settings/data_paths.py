@@ -37,6 +37,18 @@ class DataPaths:
         return self.root / "company/raw/text"
 
     @property
+    def company_normalized(self) -> Path:
+        return self.root / "company/company_normalized.sqlite3"
+
+    @property
+    def company_inputs(self) -> Path:
+        return self.root / "company/company_inputs.sqlite3"
+
+    @property
+    def company_sync(self) -> Path:
+        return self.root / "company/company_sync.sqlite3"
+
+    @property
     def models(self) -> Path:
         return self.root / "training/models"
 

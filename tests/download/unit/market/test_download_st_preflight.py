@@ -6,7 +6,6 @@ from tests.helpers.shared.configuration import SqlitePolicyFixture
 from dataclasses import replace
 from datetime import timedelta
 from functools import partial
-from io import StringIO
 from pathlib import Path
 from threading import enumerate as enumerate_threads
 
@@ -17,11 +16,9 @@ from tests.helpers.download.history.infra.history_sync import NOW
 from tests.helpers.download.history.history_supplier_router import Baseline, _current_universe
 from trader import bootstrap
 from trader.download.domain.baostock_daily import BaoStockCalendar
-from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_reference import HistoryStEvidence
 from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
-from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
-from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadQfqWindowConfiguration
+from trader.download.infra.download_settings import LoadQfqWindowConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
@@ -91,8 +88,6 @@ def st_sources(monkeypatch):
         "LoadHistorySyncConfiguration",
         lambda root, paths: HistorySyncConfiguration(paths.history, paths.reference, minimum_free_bytes=0),
     )
-    company_config = LoadCompanySyncConfiguration(_ROOT)
-    monkeypatch.setattr(bootstrap, "LoadCompanySyncConfiguration", lambda _root: company_config)
     monkeypatch.setattr(bootstrap, "LoadDownloadFailureConfiguration", lambda _root: DownloadFailureConfigurationFixture())
     return calls, sessions
 
@@ -110,53 +105,6 @@ def _seed_st(path):
     )
 
 
-@pytest.mark.parametrize("existing_cache", (False, True))
-def test_risk_commands_refresh_st_then_download_clear_and_unknown_codes(tmp_path, monkeypatch, st_sources, existing_cache, capsys):
-    calls, sessions = st_sources
-    settings = replace(
-        LoadRuntimeSettings(_ROOT / "config/runtime.json"),
-        project_root=tmp_path,
-        runtime_dir=tmp_path / "runtime",
-        data_paths=DataPaths(tmp_path / "data"),
-    )
-    monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: settings)
-    evidence_path = settings.data_paths.reference / "company_st.sqlite3"
-    if existing_cache:
-        _seed_st(evidence_path)
-    events = []
-    expected_queries = {"600004", "600005", "600006", "600007"}
-    if not existing_cache:
-        expected_queries |= {"600001", "600003"}
-
-    def download(root, progress, request, *, cancel_requested, sqlite_policy, failure_configuration, shutdown_timeout_seconds, **_kwargs):
-        assert shutdown_timeout_seconds == settings.pipeline.shutdown_timeout_seconds
-        codes, observed_at = request.codes, request.observed_at
-        assert _kwargs["report"] is not None
-        assert request.configuration.source_timeout_seconds == 8.0
-        assert set(calls) == expected_queries
-        assert all(session.closed for session in sessions)
-        assert codes == ("600001", "600004", "600005", "600007")
-        events.append("business_download")
-        return CompanyEvidenceSyncResult(observed_at, len(codes), 4, 0, 0, 0, 0, (), 0.0)
-
-    monkeypatch.setattr(bootstrap, "_sync_company_evidence", download)
-    stream = StringIO()
-    monkeypatch.setattr(
-        "trader.bootstrap.company_evidence_progress.CompanyEvidenceProgress",
-        lambda **kwargs: CompanyEvidenceProgress(stream, **kwargs),
-    )
-    result = bootstrap.ExecuteSync(Path("unused"), "company")
-    assert result.tasks[0].company.requested_codes == 4
-    assert events == ["business_download"]
-    assert set(calls) == expected_queries
-    assert {item.code for item in SQLiteReferenceIndex(evidence_path, sqlite_policy=SqlitePolicyFixture()).read_st() if item.status == "ever_st"} == {
-        "600002",
-        "600003",
-        "600006",
-    }
-    assert "ST资格" in capsys.readouterr().err
-    assert all(session.closed for session in sessions)
-    assert not any(thread.name.startswith("risk-st-check") for thread in enumerate_threads())
 
 
 @pytest.mark.parametrize("command", ("history", "qfq", "market"))
@@ -248,13 +196,13 @@ def test_corrupt_st_cache_stops_risk_commands_before_business_requests(tmp_path,
     settings.data_paths.reference.mkdir(parents=True)
     (settings.data_paths.reference / "company_st.sqlite3").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: settings)
+    monkeypatch.setattr(bootstrap, "LoadQfqWindowConfiguration", lambda _root: LoadQfqWindowConfiguration(_ROOT))
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("business preparation must wait for valid ST evidence")
 
     monkeypatch.setattr(bootstrap, "ChinaTradingCalendar", forbidden)
-    monkeypatch.setattr(bootstrap, "_sync_company_evidence", forbidden)
-    result = bootstrap.ExecuteSync(Path("unused"), "company")
+    result = bootstrap.ExecuteSync(Path("unused"), "market")
     assert result.exit_code == 1 and not result.tasks
     assert calls == []
     assert all(session.closed for session in sessions)

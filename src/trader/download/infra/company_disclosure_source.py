@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import sys
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo
 from trader.download.domain.company_financial_report import CompanyFinancialReportRequest, IsCompanyFinancialReportTitle
 from trader.download.domain.company_evidence import (
     CompanyDocumentExtraction,
+    CompanyInputValidationFailure,
     CompanyDocumentFailure,
     CompanyDocumentLimits,
     CompanyDocumentPolicies,
@@ -38,7 +40,7 @@ from trader.download.infra.company_document_parser import CompanyTextCapability
 from trader.download.infra.company_document_process import CaptureDocumentTool
 from trader.download.infra.company_raw_files import CompanyLocalDocument, CompanyRawFiles
 from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
-from trader.download.infra.company_http import CheckCompanyResponse, CompanyRequestPacer
+from trader.download.infra.company_http import CompanySourceCancellation, CheckCompanyResponse, CompanyRequestPacer
 from trader.infra.http_contracts import (
     HttpCancelled,
     HttpConnectionError,
@@ -114,9 +116,10 @@ class CninfoMarketDisclosureSource:
         self._text_reserve_bytes = text_reserve_bytes
         self._ocr_reserve_bytes = ocr_reserve_bytes
 
+    @CompanySourceCancellation
     def fetch(self, partition: DisclosurePartition, *, order: Literal["", "asc", "desc"] = "") -> DisclosurePage:
         if partition.page > 100:
-            raise ValueError("cninfo_page_limit")
+            raise CompanyInputValidationFailure("cninfo_page_limit")
         response = self._request(partial(self._fetch_page, partition, order=order))
         return _parse_page(_response_json(response), partition)
 
@@ -157,19 +160,19 @@ class CninfoMarketDisclosureSource:
         queries = self.split_queries(partition)
         members = tuple(member for query in queries for member in query.securities if member.code == request.code)
         if len(members) != 1:
-            raise ValueError("company_annual_report_issuer_unavailable")
+            raise CompanyInputValidationFailure("company_annual_report_issuer_unavailable")
         page = self.fetch(replace(partition, query=DisclosureQuery(_plate(request.code), members)))
         rows = list(page.rows)
         pages = 1
         while page.has_more and request.report_date.month == 9 and pages < 3:
             following = self.fetch(replace(partition, query=DisclosureQuery(_plate(request.code), members), page=pages + 1))
             if following.total != page.total or {row.identity for row in rows}.intersection(row.identity for row in following.rows):
-                raise ValueError("company_financial_report_directory_changed")
+                raise CompanyInputValidationFailure("company_financial_report_directory_changed")
             rows.extend(following.rows)
             page = following
             pages += 1
         if page.has_more:
-            raise ValueError("company_annual_report_directory_limit")
+            raise CompanyInputValidationFailure("company_annual_report_directory_limit")
         return tuple(item for item in rows if item.codes == (request.code,)
                      and item.published_at <= observed_at and IsCompanyFinancialReportTitle(item.title, request.report_date))
 
@@ -182,7 +185,7 @@ class CninfoMarketDisclosureSource:
             )
         if query.securities:
             if len(query.securities) == 1:
-                raise ValueError("cninfo_query_unsplittable")
+                raise CompanyInputValidationFailure("cninfo_query_unsplittable")
             middle = len(query.securities) // 2
             return (
                 DisclosureQuery(query.plate, query.securities[:middle]),
@@ -200,7 +203,7 @@ class CninfoMarketDisclosureSource:
             payload = _response_json(response)
             rows = payload.get("stockList") if isinstance(payload, Mapping) else None
             if not isinstance(rows, list) or not rows:
-                raise ValueError("cninfo_security_list_invalid")
+                raise CompanyInputValidationFailure("cninfo_security_list_invalid")
             parsed = []
             for row in rows:
                 if (
@@ -208,14 +211,19 @@ class CninfoMarketDisclosureSource:
                     or not isinstance(row.get("code"), str)
                     or not isinstance(row.get("orgId"), str)
                 ):
-                    raise ValueError("cninfo_security_list_invalid")
-                parsed.append(DisclosureSecurity(row["code"], row["orgId"]))
+                    raise CompanyInputValidationFailure("cninfo_security_list_invalid")
+                try:
+                    parsed.append(DisclosureSecurity(row["code"], row["orgId"]))
+                except ValueError as exc:
+                    if str(exc) not in {"invalid stock code", "cninfo_security_invalid"}:
+                        raise
+                    raise CompanyInputValidationFailure("cninfo_security_list_invalid") from exc
             if len({s.code for s in parsed}) != len(parsed):
-                raise ValueError("cninfo_security_list_invalid")
+                raise CompanyInputValidationFailure("cninfo_security_list_invalid")
             self._securities = tuple(sorted(parsed, key=lambda s: s.code))
         members = tuple(s for s in self._securities if _plate(s.code) == query.plate)
         if not members:
-            raise ValueError("cninfo_security_list_incomplete")
+            raise CompanyInputValidationFailure("cninfo_security_list_incomplete")
         return tuple(DisclosureQuery(query.plate, members[i : i + 32]) for i in range(0, len(members), 32))
 
     def repair_queries(
@@ -313,10 +321,21 @@ class CninfoMarketDisclosureSource:
         if self._pacer is not None:
             self._pacer.wait()
 
+    @CompanySourceCancellation
     def document_ready(self, item: Disclosure) -> bool:
         if self._raw_files is None:
             raise RuntimeError("company_raw_files_required")
         return self._raw_files.result(item, self._report_policies(item)) is not None or self._raw_files.local(item, check=self._document_read_check()) is not None
+
+    @CompanySourceCancellation
+    def document_payload_hash(self, item: Disclosure) -> bytes | None:
+        if self._raw_files is None:
+            raise RuntimeError("company_raw_files_required")
+        result = self._raw_files.result(item, self._report_policies(item))
+        if result is not None:
+            return result.payload_hash
+        local = self._raw_files.local(item, check=self._document_read_check())
+        return local.payload_hash if local is not None else None
 
     def _report_policies(self, item: Disclosure) -> tuple[str, str, str]:
         policy = self._document_policies
@@ -324,6 +343,7 @@ class CninfoMarketDisclosureSource:
             return _layout_policy(policy.standard), policy.ocr, _layout_policy(policy.limits)
         return policy.standard, policy.ocr, policy.limits
 
+    @CompanySourceCancellation
     def download_document(self, item: Disclosure, *, attempt_limit: int = 3) -> None:
         if type(attempt_limit) is not int or not 1 <= attempt_limit <= 3:
             raise ValueError("company_document_attempt_limit_invalid")
@@ -416,6 +436,7 @@ class CninfoMarketDisclosureSource:
                 raise HttpConnectionError("company_download_incomplete")
         return response
 
+    @CompanySourceCancellation
     def extract_document(
         self, item: Disclosure, *, route: DocumentRoute = "standard",
         page_progress: Callable[[int, int], None] | None = None,
@@ -577,6 +598,8 @@ def _response_json(response: HttpResponse) -> object:
         return response.json()
     except json.JSONDecodeError as exc:
         raise DownloadValidationFailure("cninfo_schema_invalid", "json", "valid_json", f"line_{exc.lineno}_column_{exc.colno}") from exc
+    except ValueError as exc:
+        raise DownloadValidationFailure("cninfo_schema_invalid", "json", "bounded_json_numbers", "invalid") from exc
 
 
 def _parse_page(payload: object, partition: DisclosurePartition) -> DisclosurePage:
@@ -618,16 +641,24 @@ def _parse_disclosure(row: object, partition: DisclosurePartition) -> Disclosure
     title = html.unescape(re.sub(r"<[^>]+>", "", str(row.get("announcementTitle") or ""))).strip()
     stamp = row.get("announcementTime")
     adjunct = str(row.get("adjunctUrl") or "")
+    try:
+        valid_stamp = isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and math.isfinite(stamp)
+    except OverflowError:
+        valid_stamp = False
     if (
         not identity
         or not title
-        or not isinstance(stamp, (int, float))
+        or not valid_stamp
         or any(len(code) != 6 or not code.isdigit() for code in codes)
     ):
-        field = "announcementId" if not identity else "announcementTitle" if not title else "announcementTime" if not isinstance(stamp, (int, float)) else "secCode"
+        field = "announcementId" if not identity else "announcementTitle" if not title else "announcementTime" if not valid_stamp else "secCode"
         actual = "empty" if field in {"announcementId", "announcementTitle"} else type(stamp).__name__ if field == "announcementTime" else "invalid_security_code"
         raise DownloadValidationFailure("cninfo_identity_invalid", field, "valid_announcement_identity", actual)
-    published = datetime.fromtimestamp(stamp / 1000, _SHANGHAI)
+    assert isinstance(stamp, (int, float))
+    try:
+        published = datetime.fromtimestamp(stamp / 1000, _SHANGHAI)
+    except (ValueError, OverflowError, OSError) as exc:
+        raise DownloadValidationFailure("cninfo_timestamp_invalid", "announcementTime", "representable_timestamp", "invalid") from exc
     if not partition.start <= published.date() <= partition.end:
         raise DownloadValidationFailure("cninfo_date_filter_ignored", "announcementTime", f"{partition.start}..{partition.end}", published.date().isoformat())
     if adjunct and (not adjunct.startswith("finalpage/") or ".." in adjunct):

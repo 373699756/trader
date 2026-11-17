@@ -357,7 +357,8 @@ def _recovery_reprove(
             fields.extend(prepared.results)
             receipts.extend(prepared.receipts)
     check()
-    index.publish((), {}, parent, observed_at, receipts=receipts, field_results=fields)
+    index.publish((), {}, parent, observed_at, receipts=receipts, field_results=fields,
+                  field_rules_hash=CompanyFieldProofRulesHash())
     check()
     return facts
 

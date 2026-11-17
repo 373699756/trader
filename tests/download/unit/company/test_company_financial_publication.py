@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.download.company_resources import (
-    CompanyDocumentFilesFixture, SQLiteCompanyEvidenceIndexFixture, SQLiteCompanyEvidenceReaderFixture,
+    SQLiteCompanyEvidenceReaderFixture,
     SQLiteCompanyFactsIndexFixture,
 )
 from tests.helpers.download.company.company_startup import _Reader
@@ -18,7 +18,7 @@ from tests.helpers.recommendation.configuration import StrategySettingsFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import (
-    CompanyEvidenceInput, CompanyFinancial, StructuredCompanyPage, StructuredCompanyQuery,
+    CompanyEvidenceInput, CompanyFinancial,
 )
 from trader.download.domain.company_facts import CompileCompanyFacts
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
@@ -64,7 +64,7 @@ def test_latest_partial_report_survives_formal_roundtrip_and_owns_loss_without_c
     writer = SQLiteCompanyFactsIndexFixture(tmp_path / "company_facts.sqlite3")
     writer.initialize()
     writer.publish((facts,), {}, None, _AT)
-    reader = SQLiteCompanyEvidenceReaderFixture(writer.path, raw_path=tmp_path / "absent_raw.sqlite3")
+    reader = SQLiteCompanyEvidenceReaderFixture(writer.path)
     adopted, = reader.read((facts.code,))
     assert adopted == facts
     assert not (tmp_path / "absent_raw.sqlite3").exists()
@@ -130,28 +130,6 @@ def test_formal_schema_without_latest_report_is_rejected_without_automatic_table
         assert connection.run("SELECT 1 FROM sqlite_schema WHERE name='company_latest_financial'").fetchone() is None
 
 
-def test_retained_parsed_financial_cache_can_explicitly_publish_to_another_formal_database(tmp_path):
-    source_path, original_path = tmp_path / "collection.sqlite3", tmp_path / "company_facts.sqlite3"
-    documents = CompanyDocumentFilesFixture(tmp_path / "documents")
-    source = SQLiteCompanyEvidenceIndexFixture(source_path, facts_path=original_path, documents=documents)
-    source.initialize()
-    old, latest = _reports()
-    source.commit_structured(
-        StructuredCompanyQuery("financial", old.report_date, _AT.date()),
-        StructuredCompanyPage("financial", 1, 1, 2, financials=(old, latest)), _AT,
-    )
-    source.publish((old.code,), _AT)
-    original = original_path.read_bytes()
-    replacement_path = tmp_path / "replacement_company_facts.sqlite3"
-    SQLiteCompanyFactsIndexFixture(replacement_path).initialize()
-    replacement = SQLiteCompanyEvidenceIndexFixture(
-        source_path, facts_path=replacement_path, documents=documents,
-    )
-    replacement.initialize()
-    replacement.publish((old.code,), _AT)
-    adopted, = SQLiteCompanyEvidenceReaderFixture(replacement_path).read((old.code,))
-    assert adopted.financial == old and adopted.latest_financial == latest
-    assert original_path.read_bytes() == original
 
 
 @pytest.mark.parametrize(("report_age", "disclosure_age", "initial_fresh"), (

@@ -33,6 +33,10 @@ from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.domain.company_field_results import CompanyFieldConclusion, CompanyFieldName, CompanyFieldUnit
 from trader.download.domain.company_field_source import BuildCompanyFieldEvidence
 from trader.download.domain.company_reduction_scope import CompanyQualifiedReduction, ExtractCompanyQualifiedReduction, COMPANY_REDUCTION_NONPARTICIPANT_DECLARATION
+from trader.download.domain.company_repurchase_fields import (
+    COMPANY_REPURCHASE_FIELDS_DIGEST, CompanyRepurchaseActionPrefix, CompanyRepurchasePurposeStatement,
+    CompanyRepurchaseTableConflict, ExtractCompanyRepurchaseTable,
+)
 
 _RISK_HINTS = (
     "立案",
@@ -93,12 +97,13 @@ _REPURCHASE_ACTUAL_REJECTION = (
 )
 _REPURCHASE_ACTUAL_BOUNDARY = r"[。；;！？!?]|公告如下[：:]"
 _REPURCHASE_CANCELLATION_TITLE = (
-    r"(?:关于)?(?:注销回购股份(?:、减少注册资本)?(?:暨(?:修订[《<]公司章程[》>]|通知债权人))?|"
-    r"回购股份注销完成(?:暨股份变动)?)(?:的)?公告"
+    r"(?:[\u4e00-\u9fffA-Za-z]{2,60}股份有限公司)?(?:关于)?"
+    r"(?:注销回购股份(?:、减少注册资本)?(?:暨(?:修订[《<]公司章程[》>]|通知债权人))?|"
+    r"回购股份注销完成(?:暨股份变动)?|变更回购股份用途并注销)(?:的)?公告"
 )
 COMPANY_REPURCHASE_ACTUAL_DIGEST = hashlib.sha256(
     "\0".join((_REPURCHASE_ACTUAL_PATTERN, _REPURCHASE_ACTUAL_REJECTION,
-               _REPURCHASE_ACTUAL_BOUNDARY, _REPURCHASE_CANCELLATION_TITLE)).encode("utf-8"),
+               _REPURCHASE_ACTUAL_BOUNDARY, _REPURCHASE_CANCELLATION_TITLE)).encode("utf-8") + COMPANY_REPURCHASE_FIELDS_DIGEST,
 ).digest()
 _REPURCHASE_OPTION = re.compile(
     r"([□☐√✓☑■☒])((?:用于)?减少注册资本|用于注销(?:并减少注册资本)?|"
@@ -234,7 +239,9 @@ def ExtractCompanyFieldEvidence(
                     break
     if isinstance(event.measurements, RepurchaseMeasurements):
         purpose = event.measurements.purpose
-        statement = _repurchase_purpose_statement(body, purpose)
+        statement = CompanyRepurchasePurposeStatement(
+            body, purpose, _REPURCHASE_OPTION, _REPURCHASE_MAINTENANCE_PATTERN, _repurchase_purpose,
+        )
         evidence = BuildCompanyFieldEvidence(
             document,
             statement,
@@ -323,47 +330,6 @@ def _reduction_measurement_subject_is_unique(verified: _VerifiedDocument) -> boo
         or re.search(r"(?:股东|实际控制人)[^。；;，,]{0,60}[、及与和][^。；;，,]{0,40}(?:持有|减持|计划|拟)", body)
         or len({subject for marker, subject in _SUBJECT_MARKERS if marker in body}) != 1
     )
-
-
-def _repurchase_purpose_statement(body: str, purpose: RepurchasePurpose) -> str | None:
-    if purpose is RepurchasePurpose.UNKNOWN:
-        return None
-    options = tuple(_REPURCHASE_OPTION.finditer(body))
-    selected = tuple(match for match in options if match[1] not in {"□", "☐"})
-    normalized = body
-    for match in reversed(options):
-        if match[1] in {"□", "☐"}:
-            normalized = normalized[:match.start()] + normalized[match.end():]
-    signals = (
-        (RepurchasePurpose.CANCELLATION, r"减少注册资本|用于注销"),
-        (RepurchasePurpose.EMPLOYEE_PLAN, r"员工持股"),
-        (RepurchasePurpose.INCENTIVE, r"股权激励"),
-        (RepurchasePurpose.OTHER, r"用于转换公司|维护公司价值"),
-    )
-    if tuple(value for value, expression in signals if re.search(expression, normalized)) != (purpose,):
-        return None
-    if re.search(
-        r"(?:不是|并不|不再|不会|不得|不能|并非|无需|无须|尚未|未|不|非)(?:用于)?"
-        r"(?:注销|减少注册资本|员工持股|股权激励|转换公司|为?维护公司价值)", normalized,
-    ):
-        return None
-    if selected:
-        statement = selected[0][0] if len(selected) == 1 and _repurchase_purpose(selected[0][0]) is purpose else None
-    else:
-        expression = {
-            RepurchasePurpose.CANCELLATION: r"用于注销(?:并减少注册资本)?|注销并减少注册资本",
-            RepurchasePurpose.EMPLOYEE_PLAN: r"用于员工持股(?:计划)?",
-            RepurchasePurpose.INCENTIVE: r"用于股权激励(?:计划)?",
-            RepurchasePurpose.OTHER: r"用于转换公司(?:可转债|发行的可转换为股票的公司债券)|" + _REPURCHASE_MAINTENANCE_PATTERN,
-        }[purpose]
-        statements = tuple(re.finditer(expression, body))
-        statement = statements[0][0] if len(statements) == 1 else None
-    if statement is not None and re.search(
-        r"(?:不是|并不|不再|不会|不得|不能|并非|无需|无须|尚未|未曾|不将|未将)[^。；;]{0,40}$",
-        body[:body.find(statement)],
-    ):
-        return None
-    return statement
 
 
 def ResolveCompanyLinks(
@@ -1193,6 +1159,14 @@ def _share_action_body(verified: _VerifiedDocument) -> str:
 
 def _same_subject_actual_ratio_matches(verified: _VerifiedDocument, verb: str) -> tuple[_ShareRatio, ...]:
     scoped = _actual_ratio_matches(_subject_body(verified), verb)
+    try:
+        table = ExtractCompanyRepurchaseTable(verified.document) if verb == "回购" and verified.subject is CompanySubject.ISSUER else None
+    except CompanyRepurchaseTableConflict:
+        return ()
+    if table is not None:
+        if scoped and {float(match[1]) for match in scoped} != {table.ratio_pct}:
+            return ()
+        return (_ShareRatio(table.ratio_pct, table.statement, ""),)
     if scoped:
         return tuple(_ShareRatio(float(match[1]), match[0], "") for match in scoped)
     aliases = _share_action_aliases(verified)
@@ -1325,13 +1299,14 @@ def _actual_ratio_matches(body: str, verb: str) -> tuple[re.Match[str], ...]:
         and (verb != "回购" or not _repurchase_actual_unconfirmed(body[:match.start()]))
         and not re.search(r"(?:未|不|尚未)$", body[max(0, match.start() - 3) : match.start()])
         and not (match[0].startswith("首次") and re.search(
-            r"(?:拟|计划|预计|将|尚待|尚未|未曾|未|不会|不)[^。；;，,]{0,30}$", body[max(0, match.start() - 40):match.start()]
+            r"(?:拟|计划|预计|将|尚待|尚未|未曾|未|不会|不)[^。；;，,]{0,30}$",
+            CompanyRepurchaseActionPrefix(body[:match.start()]),
         ))
     )
 
 
 def _repurchase_actual_unconfirmed(prefix: str) -> bool:
-    sentence = re.split(_REPURCHASE_ACTUAL_BOUNDARY, prefix)[-1]
+    sentence = CompanyRepurchaseActionPrefix(prefix)
     return _share_action_unconfirmed(sentence) or re.search(_REPURCHASE_ACTUAL_REJECTION, sentence) is not None
 
 

@@ -7,7 +7,14 @@ from scripts.core.projection_values import ProjectMapping
 
 _CONSUMER_READ_FIELDS = (
     "checked", "http_checked", "stocks", "fields", "facts_equal", "fields_equal",
-    "publication_equal", "consistent", "failure",
+    "publication_equal", "document_links", "document_links_equal", "consistent", "failure",
+)
+_COMPANY_HTTP_FIELDS = (
+    "scope", "passed", "complete", "expected_publication_hash", "loaded_identity", "codes", "verified_links",
+    "http_requests", "invalid_queries_rejected", "links_digest", "handler_file_attempts", "handler_sql_attempts",
+    "handler_network_attempts", "external_network_attempts", "business_write_attempts", "source_unchanged",
+    "source_payload_sha256_before", "source_payload_sha256_after", "server_stopped", "resources_stopped",
+    "budget_exhausted", "failure", "source_admission_verified", "production_enabled", "full_sync_verified", "performance_accepted",
 )
 
 def ProjectCompanyRiskComparisonDetails(value: object) -> dict[str, object]:
@@ -99,6 +106,8 @@ def ProjectCompanyResume(
                 "field_correctness_verified", "full_market_verified", "http_checked",
             )},
             "consumer_read": {key: read.get(key) for key in _CONSUMER_READ_FIELDS},
+            **({"http_audit": {key: http.get(key) for key in _COMPANY_HTTP_FIELDS}}
+               if (http := ProjectMapping(consumer_audit.get("http_audit"))) else {}),
         }
     runs = summary.get("runs")
     document_download = ProjectMapping(summary.get("document_download_audit"))
@@ -141,54 +150,34 @@ def ProjectCompanyResume(
             "failure", "diagnostic", "seconds", "reason", "samples", "recovered_documents",
         )}
     pipeline = ProjectMapping(summary.get("pipeline_audit"))
-    io_candidates = ProjectMapping(summary.get("io_candidates"))
-    if io_candidates:
-        selected["io_candidates"] = {key: io_candidates.get(key) for key in (
-            "isolated_sample", "rounds_required", "pairs_completed", "selected_interval_seconds",
-            "production_enabled", "performance_accepted", "full_sync_verified", "directory_prefetch_measured",
-        )}
     if pipeline:
         pipeline_runs = pipeline.get("runs")
         selected["pipeline_audit"] = {
-            "isolated_sample": pipeline.get("isolated_sample"),
-            "equivalent_facts": pipeline.get("equivalent_facts"),
-            "equivalent_documents": pipeline.get("equivalent_documents"),
-            "equivalent_payloads": pipeline.get("equivalent_payloads"),
-            "compare_io": pipeline.get("compare_io"),
-            "input_sample_digest": pipeline.get("input_sample_digest"),
+            **{key: pipeline.get(key) for key in (
+                "isolated_sample", "source_admission_verified", "production_enabled", "performance_accepted",
+                "full_sync_verified", "equivalent_facts", "equivalent_documents",
+            )},
             "runs": [
                 {
                     key: row.get(key)
                     for key in (
-                        "workers",
-                        "io_candidate",
-                        "publication_interval_seconds",
-                        "directory_prefetch_measured",
-                        "sample_documents",
-                        "attempts",
-                        "pending_documents",
-                        "published_codes",
-                        "seconds",
-                        "first_publication_seconds",
-                        "publication_calls",
-                        "resume_changed_rows",
-                        "resume_pending_documents",
-                        "resume_attempts",
-                        "failures",
-                        "facts_digest",
-                        "extracted_documents",
-                        "pending_ocr_documents",
-                        "unextractable_documents",
-                        "documents_digest",
-                        "payloads_digest",
+                        "workers", "pacing", "sample_documents", "seconds", "failures", "facts_digest",
+                        "extracted_documents", "documents_digest", "restart_unchanged",
                     )
                 } | {
-                    name: [
-                        {label: entry.get(label), "documents": entry.get("documents")}
-                        for entry in (row.get(name, [])[:64] if isinstance(row.get(name, []), list) else [])
-                        if isinstance(entry, dict)
-                    ]
-                    for name, label in (("document_failures", "failure"), ("document_extractions", "method"))
+                    "directory": {key: ProjectMapping(row.get("directory")).get(key)
+                                  for key in ("complete", "pages", "rows", "failure", "digest")}
+                                  if row.get("directory") is not None else None,
+                    "operations": [{
+                        **{key: entry.get(key) for key in (
+                            "operation", "calls", "wall_seconds", "thread_cpu_seconds", "inflight_calls",
+                            "oldest_inflight_seconds", "inflight_duration_complete", "untracked_inflight_calls",
+                        )},
+                        "failures": [{key: failure.get(key) for key in ("category", "calls")}
+                                     for failure in operation_failures[:32] if isinstance(failure, Mapping)]
+                                    if isinstance(operation_failures := entry.get("failures"), list) else [],
+                    } for entry in operations[:64] if isinstance(entry, Mapping)]
+                    if isinstance(operations := row.get("operations"), list) else [],
                 }
                 for row in (pipeline_runs[:2] if isinstance(pipeline_runs, list) else [])
                 if isinstance(row, dict)

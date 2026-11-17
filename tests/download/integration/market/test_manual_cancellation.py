@@ -14,7 +14,8 @@ from threading import Event
 import pytest
 
 from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.process_lock import ProcessLock
@@ -92,9 +93,10 @@ def _child_main():
     event_policy = LoadStrategySettings(_ROOT / "config/strategy.json").company_scoring.events
     with ManualCancellation(timeout_seconds=0.8 if scenario == "deadline" else 30) as cancelled:
         with ProcessLock(root / "evidence.lock"):
-            index = SQLiteCompanyEvidenceIndex(
+            index = SQLiteCompanyMaterialIndex(
                 root / "evidence.sqlite3",
-                facts_path=(root / "evidence.sqlite3").parent / "company_facts.sqlite3",
+                facts=SQLiteCompanyFactsIndex(root / "company_facts.sqlite3", event_policy=event_policy,
+                                              sqlite_policy=SqliteIoPolicy(0.1, 7, 3, "PASSIVE")),
                 documents=CompanyDocumentFiles(
                     (root / "evidence.sqlite3").parent / "text",
                     max_text_characters=configuration.extended_document_limits.max_text_characters,

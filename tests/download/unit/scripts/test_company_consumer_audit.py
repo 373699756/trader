@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -13,6 +14,8 @@ from scripts.download.company import company_resume
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.shared.tool_cli import BuildToolCommands, ParseBusinessOptions, ParseToolArguments
+from trader.download.domain.company_document_links import CompanyPublishedEvidenceLink
+from trader.download.domain.company_events import CompanyEvidenceLink
 
 
 def _index(tmp_path):
@@ -62,6 +65,25 @@ def test_concurrent_formal_writer_prevents_a_consistency_pass(tmp_path, monkeypa
     assert report["status"] == "degraded"
     assert not report["summary"]["consumer_audit"]["complete"]
     assert "company_audit_concurrent_change" in report["findings"]
+
+
+def test_reader_link_mismatch_cannot_pass_fact_and_field_consistency(tmp_path, monkeypatch):
+    index = _index(tmp_path)
+    read = audit.SQLiteCompanyEvidenceReader.read_document_links
+
+    def different(reader, codes, **kwargs):
+        snapshot = read(reader, codes, **kwargs)
+        return replace(snapshot, links=(CompanyPublishedEvidenceLink(
+            "600001", "cninfo", "a" * 64,
+            CompanyEvidenceLink("unexpected", "额外链接", "https://example.test", fixtures.NOW, False),
+        ),))
+
+    monkeypatch.setattr(audit.SQLiteCompanyEvidenceReader, "read_document_links", different)
+    report = _audit(index)
+    consumer = report["summary"]["consumer_audit"]["consumer_read"]
+    assert consumer["facts_equal"] and consumer["fields_equal"] and consumer["publication_equal"]
+    assert not consumer["document_links_equal"] and not consumer["consistent"]
+    assert report["status"] == "degraded"
 
 
 @pytest.mark.parametrize("known", (True, False))
@@ -138,6 +160,60 @@ def test_worker_consumer_mode_does_not_resolve_a_collection_database(tmp_path, m
     assert company_resume.Main() == 0
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "passed" and report["summary"]["consumer_audit"]["consumer_read"]["consistent"]
+
+
+def test_http_modifier_requires_consumer_mode_and_reaches_worker(tmp_path):
+    arguments = ["--business", "download", "--module", "company", "--action", "coverage", "--company-consumer-http"]
+    with pytest.raises(ValueError, match="requires --company-consumer-audit"):
+        ParseBusinessOptions(ParseToolArguments(arguments))
+    options = ParseBusinessOptions(ParseToolArguments([
+        *arguments, "--company-consumer-audit", "--company-evidence-database", str(tmp_path / "facts.sqlite3"),
+        "--company-collection-database", str(tmp_path / "collection.sqlite3"),
+    ]))
+    command, = BuildToolCommands(options)
+    assert "--consumer-only" in command.argv and "--consumer-http" in command.argv
+
+
+def _http_evidence(summary):
+    digest = "a" * 64
+    return {
+        "scope": "published_company_document_http", "passed": True, "complete": True,
+        "expected_publication_hash": summary["publication_hash"], "loaded_identity": summary["publication_hash"],
+        "codes": summary["consumer_read"]["stocks"], "verified_links": 1, "http_requests": 6,
+        "invalid_queries_rejected": 5, "links_digest": digest,
+        **{key: 0 for key in ("handler_file_attempts", "handler_sql_attempts", "handler_network_attempts",
+                             "external_network_attempts", "business_write_attempts")},
+        "source_unchanged": True, "source_payload_sha256_before": [digest, None, digest],
+        "source_payload_sha256_after": [digest, None, digest], "server_stopped": True, "resources_stopped": True,
+        "budget_exhausted": False, "failure": None, "source_admission_verified": False,
+        "production_enabled": False, "full_sync_verified": False, "performance_accepted": False,
+    }
+
+
+@pytest.mark.parametrize("change", (None, "identity", "io", "links", "shutdown", "quality", "fingerprint"))
+def test_http_public_evidence_requires_matching_identity_no_io_and_bounded_shutdown(tmp_path, change):
+    report = _audit(_index(tmp_path))
+    summary = report["summary"]["consumer_audit"]
+    summary.update(scope="formal_reader_and_document_http", http_checked=True)
+    summary["consumer_read"]["document_links"] = 1
+    http = _http_evidence(summary)
+    summary["http_audit"] = http
+    http["private_payload"] = "DO_NOT_EXPORT"
+    if change == "identity":
+        http["loaded_identity"] = "b" * 64
+    elif change == "io":
+        http["handler_sql_attempts"] = 1
+    elif change == "links":
+        http["verified_links"] = 0
+    elif change == "shutdown":
+        http["resources_stopped"] = False
+    elif change == "quality":
+        http["source_admission_verified"] = True
+    elif change == "fingerprint":
+        http["source_payload_sha256_after"] = ["b" * 64, None, "a" * 64]
+    projected = BuildReport("company-resume", (DiagnosticResult("company_resume", 0, 0.1, report, None),))
+    assert projected["status"] == ("passed" if change is None else "failed")
+    assert "DO_NOT_EXPORT" not in json.dumps(projected)
 
 
 @pytest.mark.parametrize("change", ("scope", "quality", "stable", "stocks", "identity", "consistency"))

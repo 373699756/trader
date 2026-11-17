@@ -40,6 +40,7 @@ def _scope(tmp_path):
         targets = tuple((field.code, field.event_id, field.field)
                         for field in audit.ReadCompanyFieldResults(formal, ("600001",)) if field.state == "verified")
     assert len(targets) == 3
+    index.clean_material(fixtures.NOW)
     manifest = audit.FreezeCompanyFieldProofRecovery(index.path, index.facts_path, targets,
                                                      observed_at=fixtures.NOW, sqlite_policy=SqlitePolicyFixture())
     path = tmp_path / "manifest.json"

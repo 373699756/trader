@@ -1,4 +1,4 @@
-"""Same-row financial source observations, without issuer revision claims."""
+"""Source-native financial values and official directory metadata, without revision claims."""
 
 import re
 from dataclasses import dataclass, replace
@@ -143,6 +143,47 @@ class CompanyFinancialSourcePage:
             raise ValueError("company_financial_source_page_invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class CompanyOfficialDirectoryQuery:
+    start_day: date
+    end_day: date
+    category: Literal["010301", "010303", "010305", "010307"]
+    page: int = 1
+    page_size: int = 20
+
+    def __post_init__(self) -> None:
+        if (not 0 <= (self.end_day - self.start_day).days < 365
+            or self.category not in {"010301", "010303", "010305", "010307"}
+            or type(self.page) is not int or not 1 <= self.page <= 256
+            or type(self.page_size) is not int or not 1 <= self.page_size <= 50):
+            raise ValueError("company_official_directory_query_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyOfficialDirectoryObservation:
+    """Actual SZSE metadata; an attachment path is not a fetched or qualified original."""
+
+    identity: str
+    announcement_id: int
+    codes: tuple[str, ...]
+    title: str
+    published_at: datetime
+    attachment_path: str
+    attachment_format: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyOfficialDirectoryPage:
+    query: CompanyOfficialDirectoryQuery
+    total: int
+    observations: tuple[CompanyOfficialDirectoryObservation, ...]
+    response_hash: str
+
+    @property
+    def has_more(self) -> bool:
+        return self.query.page * self.query.page_size < self.total
+
+
 __all__ = [
     "CompanyFinancialField",
     "CompanyFinancialUnit",
@@ -151,4 +192,7 @@ __all__ = [
     "CompanyFinancialSourceRecordHash",
     "CompanyFinancialSourceObservation",
     "CompanyFinancialSourcePage",
+    "CompanyOfficialDirectoryQuery",
+    "CompanyOfficialDirectoryObservation",
+    "CompanyOfficialDirectoryPage",
 ]

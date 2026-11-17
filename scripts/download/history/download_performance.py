@@ -19,11 +19,8 @@ from statistics import median
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
 
-from trader.download.domain.company_evidence import Disclosure, DisclosurePage
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
-from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.recommendation.domain.market.history_metrics import BuildHistoryContext, DailyBar, PriceAdjustment
@@ -33,6 +30,7 @@ from trader.infra.settings.models import CompanyPreloadSettings
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
 from scripts.core.reporting import emit_report
+from scripts.infra.database.company_measurement_inputs import BuildCompanyMeasurementInputs
 
 _PROJECT_ROOT = TOOL_ROOT
 
@@ -40,40 +38,21 @@ _PROJECT_ROOT = TOOL_ROOT
 def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy, preload_settings: CompanyPreloadSettings) -> dict[str, float | int]:
     usage_before = resource.getrusage(resource.RUSAGE_SELF)
     now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
-    company_configuration = LoadCompanySyncConfiguration(_PROJECT_ROOT)
     strategy = LoadStrategySettings(_PROJECT_ROOT / "config/strategy.json")
     company_policy = strategy.company_scoring
     codes = tuple(str(600000 + offset) for offset in range(4402))
-    documents = CompanyDocumentFiles(
-        root / "text",
-        max_text_characters=company_configuration.extended_document_limits.max_text_characters,
-        max_bytes=company_configuration.temporary_text_capacity_bytes,
-        reserve_bytes=company_configuration.temporary_disk_reserve_bytes,
-    )
-    index = SQLiteCompanyEvidenceIndex(
-        root / "collection.sqlite3",
-        facts_path=root / "company_facts.sqlite3",
-        documents=documents,
+    index = SQLiteCompanyFactsIndex(
+        root / "company_facts.sqlite3",
         event_policy=company_policy.events, sqlite_policy=sqlite_policy,
     )
     index.initialize()
-    partition = index.partitions(("sse",), now)[0]
-    rows = tuple(
-        Disclosure("cninfo", f"{code}:{offset}", (code,), "收到立案告知书", now, "", str(offset))
-        for code in codes
-        for offset in range(3)
-    )
     started = time.monotonic()
-    index.commit_page(partition, DisclosurePage(rows, len(rows), False), now)
-    # Same bounded synthetic official body for both implementations; no activity database is opened.
-    body = "本公司收到证监会立案告知书。" + "本段为隔离性能样本的事实说明。" * 160
-    with SqliteSession(index.path, sqlite_policy=sqlite_policy) as connection, SqliteTransaction(connection):
-        connection.run("UPDATE disclosures SET body_hash=?,body_checked=1,body_retained=1", (documents.write(body),))
-    write = time.monotonic() - started
+    inputs = BuildCompanyMeasurementInputs(codes, now, index.extraction_hash, include_risks=True)
+    prepare_inputs = time.monotonic() - started
     started = time.monotonic()
-    index.publish(codes, now)
+    head = index.publish(inputs.facts, dict(inputs.sources), None, now, receipts=inputs.receipts, field_results=()).identity
     publish = time.monotonic() - started
-    reader = SQLiteCompanyEvidenceReader(index.facts_path, raw_path=index.path, event_policy=company_policy.events, sqlite_policy=sqlite_policy)
+    reader = SQLiteCompanyEvidenceReader(index.path, event_policy=company_policy.events, sqlite_policy=sqlite_policy)
     started = time.monotonic()
     cold = reader.read(codes)
     cold_read = time.monotonic() - started
@@ -81,10 +60,10 @@ def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy, preload_settings: Com
     assert reader.read(codes) == cold
     warm_read = time.monotonic() - started
     started = time.monotonic()
-    index.publish(codes, now + timedelta(minutes=1))
+    index.publish((), {}, head, now + timedelta(minutes=1), field_results=())
     repeat_publish = time.monotonic() - started
     assert len(reader.read(codes)) == len(cold)
-    with SqliteSession(index.facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
+    with SqliteSession(index.path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
         publication_bytes = connection.run("SELECT SUM(pgsize) FROM dbstat").require_one()[0]
     started = time.monotonic()
     reader.read(codes)
@@ -148,11 +127,11 @@ def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy, preload_settings: Com
     batch = time.monotonic() - started
     assert all_gaps == sum(len(days) for days in batched.values()) == len(codes)
     return {
-        "company_write_seconds": write,
-        "company_publish_seconds": publish,
+        "company_typed_inputs_seconds": prepare_inputs,
+        "company_formal_publish_seconds": publish,
         "company_read_cold_seconds": cold_read,
         "company_read_warm_seconds": warm_read,
-        "company_reuse_publish_seconds": repeat_publish,
+        "company_empty_commit_seconds": repeat_publish,
         "company_decode_seconds": decode,
         "company_startup_preload_seconds": preload,
         "company_memory_read_seconds": memory_read,
@@ -211,6 +190,7 @@ def _compare(baseline: Path, runtime_config: Path = TOOL_ROOT / "config/runtime.
             "runs": runs,
             "cache_policy": "fresh process and synthetic database; warm operating-system cache; alternating order",
             "acceptance": "measurement only; production latency and RSS gates require the production workload",
+            "company_measurement_scope": "synthetic_typed_inputs_and_formal_writer_only; no source, PDF or extraction",
         },
         "findings": [],
     }
@@ -238,7 +218,8 @@ def Main() -> int:
         {
             "schema_version": "download-performance",
             "status": "passed",
-            "summary": {"fixture": True, "rounds": args.rounds, "medians": summary},
+            "summary": {"fixture": True, "rounds": args.rounds, "medians": summary,
+                        "company_measurement_scope": "synthetic_typed_inputs_and_formal_writer_only; no source, PDF or extraction"},
             "findings": [],
         }
     )

@@ -28,24 +28,12 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
-    from trader.download.domain.company_events import CompanyEventPolicy
     from trader.download.domain.history_sync import HistorySyncConfiguration
     from trader.infra.sqlite_policy import SqliteIoPolicy
 
 
 class _SqliteArguments(TypedDict, total=False):
     sqlite_policy: SqliteIoPolicy
-
-
-class _DocumentOptions(TypedDict, total=False):
-    max_text_characters: int
-    max_bytes: int
-    reserve_bytes: int
-
-
-class _CompanyPolicyOptions(TypedDict, total=False):
-    event_policy: CompanyEventPolicy
-
 
 
 class _MeasuredCase(TypedDict):
@@ -136,6 +124,7 @@ def CompareLayouts(baseline: Path, *, rounds: int, size: int, sessions: int = 20
             "stocks": size,
             "history_months": 100,
             "history_sessions": 2000,
+            "company_measurement_scope": "synthetic_typed_inputs_and_formal_writer_only; no source, PDF or extraction",
             "cache_policy": "fresh process, warm operating-system cache; alternating order",
             "python_hash_seed": 0,
             "wal_peak_sampling_seconds": 0.005,
@@ -215,6 +204,7 @@ def _compare_publications(baseline: Path, current: Path, *, rounds: int, size: i
             "sessions": sessions,
             "adapter_stocks": min(size, 1000),
             "adapter_sessions": 20,
+            "company_measurement_scope": "synthetic_typed_inputs_and_formal_writer_only; no source, PDF or extraction",
             "wal_peak_sampling_seconds": 0.005,
             "cache_policy": "fresh process, warm operating-system cache; alternating order",
             "python_hash_seed": 0,
@@ -393,31 +383,15 @@ def _sqlite_adapter_cases(
     """Exercise unchanged adapter contracts against each checkout, using identical typed inputs."""
     sqlite_arguments: _SqliteArguments = {"sqlite_policy": sqlite_policy} if sqlite_policy is not None else {}
     from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-    from trader.download.domain.company_evidence import Disclosure, DisclosurePage
     from trader.download.domain.history_revision import HistoryRevision
-    from trader.download.infra.company_document_files import CompanyDocumentFiles
-    from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
+    from trader.download.infra.company_facts_index import CompanyPublicationIdentity, SQLiteCompanyFactsIndex
     from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
     from trader.download.infra.history_prices import HistoryPricePartition
     from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
     from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
 
-    document_options: _DocumentOptions = {}
-    index_options: _CompanyPolicyOptions = {}
-    reader_options: _CompanyPolicyOptions = {}
-    if checkout == TOOL_ROOT:
-        from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-        from trader.recommendation.infra.settings.loading import LoadStrategySettings
-
-        company_configuration = LoadCompanySyncConfiguration(checkout)
-        event_policy = LoadStrategySettings(checkout / "config/strategy.json").company_scoring.events
-        document_options = {
-            "max_text_characters": company_configuration.extended_document_limits.max_text_characters,
-            "max_bytes": company_configuration.temporary_text_capacity_bytes,
-            "reserve_bytes": company_configuration.temporary_disk_reserve_bytes,
-        }
-        index_options = {"event_policy": event_policy}
-        reader_options = {"event_policy": event_policy}
+    from trader.recommendation.infra.settings.loading import LoadStrategySettings
+    from scripts.infra.database.company_measurement_inputs import BuildCompanyMeasurementInputs
 
     codes = tuple(f"600{number:03d}" for number in range(size))
     days = tuple(date(2026, 1, day) for day in range(1, 21))
@@ -480,25 +454,22 @@ def _sqlite_adapter_cases(
     measure("training_sample_write", build_samples)
     measure("training_sample_read", read_samples)
     now = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
-    company = SQLiteCompanyEvidenceIndex(
-        root / "company.sqlite3",
-        facts_path=root / "company_facts.sqlite3",
-        documents=CompanyDocumentFiles(root / "text", **document_options),
-        **index_options, **sqlite_arguments,
-    )
+    if sqlite_policy is None:
+        raise ValueError("company_typed_measurement_requires_current_sqlite_policy")
+    event_policy = LoadStrategySettings(checkout / "config/strategy.json").company_scoring.events
+    company = SQLiteCompanyFactsIndex(root / "company_facts.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
     company.initialize()
-    disclosure_partition = company.partitions(("sse",), now)[0]
-    disclosures = tuple(
-        Disclosure("fixture", f"{code}:{offset}", (code,), "普通公告", now, "", str(offset))
-        for code in codes
-        for offset in range(3)
-    )
-    measure(
-        "company_page_write",
-        lambda: company.commit_page(disclosure_partition, DisclosurePage(disclosures, len(disclosures), False), now),
-    )
-    measure("company_publish", lambda: company.publish(codes, now))
-    reader = SQLiteCompanyEvidenceReader(company.facts_path, raw_path=company.path, **reader_options, **sqlite_arguments)
+    inputs = BuildCompanyMeasurementInputs(codes, now, company.extraction_hash)
+    head: CompanyPublicationIdentity | None = None
+
+    def publish_company() -> object:
+        nonlocal head
+        result = company.publish(inputs.facts, dict(inputs.sources), head, now, receipts=inputs.receipts, field_results=())
+        head = result.identity
+        return result
+
+    measure("company_typed_formal_publish", publish_company)
+    reader = SQLiteCompanyEvidenceReader(company.path, event_policy=event_policy, sqlite_policy=sqlite_policy)
     expected = reader.read(codes)
 
     def read_company() -> None:

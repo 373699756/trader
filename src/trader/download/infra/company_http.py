@@ -4,9 +4,28 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from threading import Lock
+from functools import wraps
+from typing import ParamSpec, TypeVar
+
+from trader.download.domain.company_sync import CompanySourceCancelled
 
 from trader.download.domain.company_evidence import CompanySourceFailure
 from trader.infra.http_contracts import HttpCancelled, HttpResponse, HttpStatusError
+
+
+_SourceParameters = ParamSpec("_SourceParameters")
+_SourceResult = TypeVar("_SourceResult")
+
+
+def CompanySourceCancellation(operation: Callable[_SourceParameters, _SourceResult]) -> Callable[_SourceParameters, _SourceResult]:
+    """Translate only the transport cancellation at the supplier adapter boundary."""
+    @wraps(operation)
+    def run(*args: _SourceParameters.args, **kwargs: _SourceParameters.kwargs) -> _SourceResult:
+        try:
+            return operation(*args, **kwargs)
+        except HttpCancelled as exc:
+            raise CompanySourceCancelled(str(exc)) from exc
+    return run
 
 
 class CompanyRequestPacer:
@@ -43,4 +62,4 @@ def CheckCompanyResponse(response: HttpResponse) -> None:
         raise CompanySourceFailure("http_error", status_code=exc.status_code) from exc
 
 
-__all__ = ["CheckCompanyResponse", "CompanyRequestPacer"]
+__all__ = ["CheckCompanyResponse", "CompanyRequestPacer", "CompanySourceCancellation"]

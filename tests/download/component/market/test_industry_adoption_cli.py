@@ -20,11 +20,7 @@ import pytest
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader import bootstrap
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.company_evidence import (
-    CompanyEvidenceRequest,
-    CompanyEvidenceSyncResult,
-    EvidenceSyncProgress,
-)
+from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.current_industry_publication import CurrentIndustryCache
 from trader.download.infra.industry_query_index import IndustrySourceDocument, SQLiteIndustryQueryIndex
 from trader.download.infra.reference_index import SQLiteReferenceIndex
@@ -110,7 +106,7 @@ def test_normal_sync_cli_commits_hdd_64_plus_one_and_reuses_the_complete_publica
     industry_path = runtime.data_paths.reference / "industry.sqlite3"
     batches: list[tuple[str, ...]] = []
     supplier_calls: list[tuple[str, str]] = []
-    company_calls: list[tuple[str, ...]] = []
+    market_calls: list[tuple[str, ...]] = []
     save_documents = SQLiteIndustryQueryIndex.save_source_documents
 
     def respond(request: HttpRequest) -> HttpResponse:
@@ -147,18 +143,13 @@ def test_normal_sync_cli_commits_hdd_64_plus_one_and_reuses_the_complete_publica
         save_documents(self, documents)
         batches.append(tuple(document.request_key for document in documents))
 
-    def company(
-        paths: DataPaths,
-        _progress: Callable[[EvidenceSyncProgress], None] | None,
-        request: CompanyEvidenceRequest,
-        **_options: object,
-    ) -> CompanyEvidenceSyncResult:
-        assert paths == runtime.data_paths and request.codes == codes
+    def market(paths: DataPaths,*_args: object,reference: PreparedFixture,**_options: object) -> QfqUpdateResult:
+        assert paths == runtime.data_paths and tuple(item.code for item in reference.eligible_universe) == codes
         published = SQLiteReferenceIndex(paths.reference_database, sqlite_policy=sqlite_policy).read()
         assert published is not None and published.industry_version is not None
         assert tuple(security.code for security in published.eligible_universe) == codes
-        company_calls.append(request.codes)
-        return CompanyEvidenceSyncResult(_AT, len(codes), len(codes), 0, 0, 0, 0, (), 0.0)
+        market_calls.append(codes)
+        return QfqUpdateResult(_AT.date(),len(codes))
 
     monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: runtime)
     monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: runtime)
@@ -167,16 +158,15 @@ def test_normal_sync_cli_commits_hdd_64_plus_one_and_reuses_the_complete_publica
     monkeypatch.setattr(bootstrap.HistoryStNameSource, "fetch", lambda *_args: reference.st_evidence)
     monkeypatch.setattr(bootstrap, "FetchAkshareCalendar", lambda *_args, **_kwargs: reference.open_dates)
     monkeypatch.setattr(bootstrap, "OpenExternalHttp", open_http)
-    monkeypatch.setattr(bootstrap, "RecentPublishedNewsCodes", lambda *_args, **_kwargs: ())
-    monkeypatch.setattr(bootstrap, "_sync_company_evidence", company)
+    monkeypatch.setattr(bootstrap, "ExecuteQfqDownload", market)
     monkeypatch.setattr(SQLiteIndustryQueryIndex, "save_source_documents", save)
 
-    arguments = ["--config", str(runtime.config_path), "sync", "company"]
+    arguments = ["--config", str(runtime.config_path), "sync", "market"]
     assert cli.Main(arguments) == 0
     first = capsys.readouterr()
     result = json.loads(first.out)
     assert result["status"] == "completed" and result["failure"] is None
-    assert result["tasks"][0]["task"] == "company" and result["tasks"][0]["status"] == "completed"
+    assert result["tasks"][0]["task"] == "market" and result["tasks"][0]["status"] == "completed"
     assert "有效单批上限 64股" in first.err
     assert "正文合计上限 2097152字节" in first.err
     assert "参考·参考发布" in first.err and "sync·结果汇总" in first.err
@@ -217,5 +207,5 @@ def test_normal_sync_cli_commits_hdd_64_plus_one_and_reuses_the_complete_publica
     assert supplier_calls == [] and batches == []
     assert CurrentIndustryCache(industry_path, sqlite_policy=sqlite_policy).load(_AT) == observations
     assert SQLiteReferenceIndex(runtime.data_paths.reference_database, sqlite_policy=sqlite_policy).read() == published_reference
-    assert company_calls == [codes, codes]
+    assert market_calls == [codes, codes]
     assert not runtime.data_paths.company.exists()

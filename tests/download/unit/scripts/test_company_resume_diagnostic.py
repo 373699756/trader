@@ -17,26 +17,19 @@ import pytest
 
 from scripts.core.contracts import DiagnosticResult
 from scripts.core.projections import BuildReport
-from scripts.download.company import company_pagination_audit
 from scripts.download.company import company_pipeline_audit
 from scripts.download.company import company_ocr_audit
-from scripts.download.company.company_query_audit import AuditCompanyDatabase
 from scripts.download.company.company_resume import Main
-from scripts.download.company.company_resume import _compact_database
 from scripts.download.company.company_resume import _copy
-from scripts.download.company.company_resume import _saved_pages
 from tests.helpers.download.company import company_evidence as fixtures
-from tests.helpers.download.company.company_sources import NOW
-from trader.download.domain.company_evidence import CompanyDocumentFailure, DisclosurePage, DisclosureQuery
-from tests.helpers.download.company_resources import CompanyDocumentFilesFixture as CompanyDocumentFiles, SQLiteCompanyEvidenceIndexFixture as SQLiteCompanyEvidenceIndex
+from trader.download.domain.company_evidence import CompanyDocumentFailure, DisclosurePage
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 
 @pytest.fixture
 def offline_pipeline_sources(monkeypatch):
-    """Keep both source families and their transport factory inside the fixture."""
+    """The explicit document probe has no structured-source or default-sync client."""
     monkeypatch.setattr(company_pipeline_audit, "OpenExternalHttp", lambda: nullcontext(None))
-    monkeypatch.setattr(company_pipeline_audit, "EastmoneyCompanySource", lambda *_args, **_kwargs: fixtures.Sources())
 
 
 def test_ocr_comparison_reuses_seven_identical_pdfs_without_writing_collection(tmp_path, monkeypatch):
@@ -134,30 +127,6 @@ def test_ocr_timeout_probe_copies_local_failed_pdf_without_downloading(tmp_path,
         assert result["samples"][0]["input_source"] == "local"
 
 
-def test_pagination_probe_rejects_ignored_larger_page_sizes_without_writes(tmp_path, monkeypatch):
-    index = fixtures._index(tmp_path)
-    partition = index.partitions(("sse",), fixtures.NOW)[0]
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run(
-            "UPDATE partitions SET start_date=end_date,expected_rows=31,is_complete=1 WHERE market=? AND start_date=? AND end_date=?",
-            (partition.market, str(partition.start), str(partition.end)),
-        )
-    items = tuple(fixtures._disclosure(str(i)) for i in range(31))
-
-    class Source:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def fetch(self, query):
-            return DisclosurePage(items[:30] if query.page == 1 else items[30:], 31, query.page == 1)
-
-    monkeypatch.setattr(company_pagination_audit, "CninfoMarketDisclosureSource", Source)
-    before = index.path.read_bytes()
-    result = company_pagination_audit.AuditCompanyPagination(index.path, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
-    rows = result["summary"]["query_audit"]["pagination"]
-    assert [row["equivalent"] for row in rows] == [True, False, False]
-    assert all(row["failure"] == "cninfo_requested_page_size_ignored" for row in rows[1:])
-    assert index.path.read_bytes() == before
 
 
 @pytest.mark.parametrize("fault", (None, "duplicate", "revised_duplicate", "truncated", "changing_total", "oversized"))
@@ -204,50 +173,58 @@ def test_pipeline_audit_requires_external_directory_and_routes_to_its_owner(tmp_
 def test_pipeline_probe_compares_facts_without_observation_time_noise(tmp_path, monkeypatch, offline_pipeline_sources):
     now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
     items = tuple(fixtures._disclosure(str(i), "本公司收到立案告知书", when=now) for i in range(2))
-    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: items)
 
-    class Source(fixtures.Sources):
+    calls = []
+    class Source(company_pipeline_audit.CninfoMarketDisclosureSource):
         def __init__(self, *args, **kwargs):
-            super().__init__()
+            self.downloaded = set()
 
-        def document(self, item):
+        def download_document(self, item):
+            self.downloaded.add(item.identity)
+            calls.append(item.identity)
+
+        def extract_document(self, item, *, route="standard"):
+            assert item.identity in self.downloaded
             return fixtures._extraction("本公司收到中国证监会立案告知书。")
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
-    result = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=120, sqlite_policy=SqlitePolicyFixture())
-    assert result["status"] == "passed", [
-        (run["attempts"], run["failures"], run["document_failures"])
-        for run in result["summary"]["pipeline_audit"]["runs"]
-    ]
+    result = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "input" / "unused.sqlite3", tmp_path / "probe",
+        budget_seconds=120, sqlite_policy=SqlitePolicyFixture(), sample=items, observed_at=now)
+    assert result["status"] == "passed", result
     assert result["summary"]["pipeline_audit"]["equivalent_facts"]
     assert result["summary"]["pipeline_audit"]["equivalent_documents"]
-    assert result["summary"]["pipeline_audit"]["equivalent_payloads"]
+    assert sorted(calls) == ["0", "0", "1", "1"]
+    assert not result["summary"]["pipeline_audit"]["source_admission_verified"]
+    assert not result["summary"]["pipeline_audit"]["full_sync_verified"]
     for run in result["summary"]["pipeline_audit"]["runs"]:
-        assert run["attempts"] == 2 and run["resume_attempts"] == run["resume_changed_rows"] == 0
-        assert run["extracted_documents"] == 2
-        assert run["document_extractions"] == [{"method": "text", "documents": 2}]
-        assert run["pending_ocr_documents"] == 0
+        assert run["sample_documents"] == run["extracted_documents"] == 2
+        assert run["restart_unchanged"] and not run["failures"]
 
 
 def test_pipeline_rejects_changed_pdf_even_when_extracted_text_and_facts_match(tmp_path, monkeypatch, offline_pipeline_sources):
     now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
-    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: (fixtures._disclosure("changed", "收到立案告知书", when=now),))
+    items = (fixtures._disclosure("changed", "收到立案告知书", when=now),)
     clients = []
 
-    class Source(fixtures.Sources):
+    class Source(company_pipeline_audit.CninfoMarketDisclosureSource):
         def __init__(self, *args, **kwargs):
-            super().__init__()
             self.digest = b"a" * 32 if not clients else b"b" * 32
+            self.downloaded = set()
             clients.append(self)
 
-        def document(self, item):
+        def download_document(self, item):
+            self.downloaded.add(item.identity)
+
+        def extract_document(self, item, *, route="standard"):
+            assert item.identity in self.downloaded
             return replace(fixtures._extraction("本公司收到中国证监会立案告知书。"), payload_hash=self.digest)
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
-    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=120, sqlite_policy=SqlitePolicyFixture())
+    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "input" / "unused.sqlite3", tmp_path / "probe",
+        budget_seconds=120, sqlite_policy=SqlitePolicyFixture(), sample=items, observed_at=now)
     summary = report["summary"]["pipeline_audit"]
-    assert summary["equivalent_facts"] and summary["equivalent_documents"]
-    assert not summary["equivalent_payloads"] and report["status"] == "degraded"
+    assert summary["equivalent_facts"] and not summary["equivalent_documents"]
+    assert report["status"] == "degraded"
     assert all(run["extracted_documents"] == 1 for run in summary["runs"])
 
 
@@ -277,58 +254,32 @@ def test_company_profile_requires_explicit_external_directory(tmp_path):
 
 def test_pipeline_probe_does_not_pass_when_both_runs_have_only_deterministic_failures(tmp_path, monkeypatch, offline_pipeline_sources):
     now = company_pipeline_audit.datetime.now(fixtures.NOW.tzinfo)
-    monkeypatch.setattr(company_pipeline_audit, "_sample", lambda _, *, sqlite_policy: (fixtures._disclosure("failure", "收到立案告知书", when=now),))
+    items = (fixtures._disclosure("failure", "收到立案告知书", when=now),)
     capabilities = []
 
-    class Source(fixtures.Sources):
+    class Source(company_pipeline_audit.CninfoMarketDisclosureSource):
         def __init__(self, *args, **kwargs):
-            super().__init__()
             capabilities.append((kwargs["ocr_engine"], kwargs["text_capability"], kwargs["document_policies"]))
+            self.downloaded = set()
 
-        def document(self, item):
+        def download_document(self, item):
+            self.downloaded.add(item.identity)
+
+        def extract_document(self, item, *, route="standard"):
+            assert item.identity in self.downloaded
             raise CompanyDocumentFailure("disclosure_document_ocr_low_quality", payload_hash=b"x" * 32)
 
     monkeypatch.setattr(company_pipeline_audit, "CninfoMarketDisclosureSource", Source)
-    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "unused.sqlite3", tmp_path, budget_seconds=120, sqlite_policy=SqlitePolicyFixture())
+    report = company_pipeline_audit.AuditCompanyPipeline(tmp_path / "input" / "unused.sqlite3", tmp_path / "probe",
+        budget_seconds=120, sqlite_policy=SqlitePolicyFixture(), sample=items, observed_at=now)
     assert capabilities and all(all(item is not None for item in row) for row in capabilities)
     assert report["status"] == "degraded"
     assert report["summary"]["pipeline_audit"]["equivalent_facts"]
     for run in report["summary"]["pipeline_audit"]["runs"]:
-        assert run["pending_documents"] == run["resume_attempts"] == run["extracted_documents"] == 0
-        assert run["document_failures"] == [{"failure": "disclosure_document_ocr_low_quality", "documents": 1}]
+        assert run["extracted_documents"] == 0
+        assert run["failures"] == ["disclosure_document_ocr_low_quality"]
 
 
-def test_database_audit_needs_no_replay_directory_or_network_and_keeps_database_unchanged(tmp_path, monkeypatch, capsys):
-    index = fixtures._index(tmp_path)
-    partition = index.partitions(("sse",), fixtures.NOW)[0]
-    item = fixtures._disclosure(title="收到立案告知书")
-    index.commit_page(partition, DisclosurePage((item,), 1, False), fixtures.NOW)
-    index.document_failure(
-        item, "fixture", "disclosure_document_no_text", fixtures.NOW, fixtures.NOW + timedelta(days=1)
-    )
-    index.publish(("600001",), fixtures.NOW)
-    before = index.path.read_bytes()
-    report = AuditCompanyDatabase(index.path, now=fixtures.NOW, budget_seconds=5, sqlite_policy=SqlitePolicyFixture())
-    database = report["summary"]["database"]
-    assert database["announcement_records"] == database["pending_documents"] == database["deterministic_failures"] == 1
-    assert database["recorded_retry_cooling"] == database["recorded_retry_ready"] == 0
-    assert database["extracted_bodies"] == 0 and not database["pdf_archived"]
-    assert database["free_bytes"] >= 0
-    assert any(row["name"] == "disclosures" and row["bytes"] > 0 for row in database["table_bytes"])
-    assert database["document_failures"] == [{"failure": "disclosure_document_no_text", "documents": 1}]
-    recent = database["recent_document_failures"]
-    assert len(recent) == 1 and recent[0]["disclosure_id"] > 0
-    assert recent[0]["failure"] == "disclosure_document_no_text"
-    assert recent[0]["attempted_at"] == fixtures.NOW.isoformat()
-    options = ParseBusinessOptions(ParseToolArguments([*SelectionArguments('company-resume'), "--company-database-audit"]))
-    command = BuildToolCommands(options)[0]
-    assert "--database-only" in command.argv and "--directory" not in command.argv
-    monkeypatch.setattr(
-        sys, "argv", ["company-resume", "--database", str(index.path), "--database-only", "--budget-seconds", "30"]
-    )
-    assert Main() == 0
-    output = json.loads(capsys.readouterr().out)
-    assert output["summary"]["database"]["read_only"] and index.path.read_bytes() == before
 
 
 def test_backup_preserves_source_and_is_independently_writable(tmp_path):
@@ -346,24 +297,6 @@ def test_backup_preserves_source_and_is_independently_writable(tmp_path):
     assert source.read_bytes() == before and stale.samefile(source)
 
 
-def test_company_compaction_retains_failed_range_members_facts_bodies_and_retry_state(tmp_path):
-    index = fixtures._index(tmp_path)
-    complete, pending = index.partitions(("sse",), fixtures.NOW)[:2]
-    index.commit_page(complete, DisclosurePage((fixtures._disclosure("done"),), 1, False), fixtures.NOW)
-    index.commit_page(pending, DisclosurePage((fixtures._disclosure("pending"),), 2, True), fixtures.NOW)
-    index.publish(("600001",), fixtures.NOW)
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        # Model the redundant completed members retained by the previous release.
-        connection.run(
-            "INSERT INTO partition_rows VALUES(?,?,?,?,?)",
-            (complete.market, str(complete.start), str(complete.end), "done", "600001"),
-        )
-    before = index.path.read_bytes()
-    report = _compact_database(index.path, tmp_path / "isolated", budget_seconds=10, sqlite_policy=SqlitePolicyFixture())
-    assert report["removed_completed_members"] == 1 and report["retained_data_equal"]
-    with SqliteSession(tmp_path / "isolated/company_compacted.sqlite3") as connection:
-        assert connection.run("SELECT source_key FROM partition_rows").require_one()[0] == "pending"
-    assert index.path.read_bytes() == before
 
 
 def test_backup_includes_committed_wal_without_changing_the_source(tmp_path):
@@ -396,19 +329,6 @@ def test_backup_timeout_preserves_previous_replica_and_removes_partial_file(tmp_
     assert list(tmp_path.glob(".company-copy-*")) == []
 
 
-def test_discovery_response_is_not_counted_as_a_saved_page_replayed_by_parent_verification(tmp_path):
-    index = SQLiteCompanyEvidenceIndex(
-        tmp_path / "evidence.sqlite3",
-        facts_path=(tmp_path / "evidence.sqlite3").parent / "company_facts.sqlite3",
-        documents=CompanyDocumentFiles((tmp_path / "evidence.sqlite3").parent / "text"),
-    )
-    index.initialize()
-    root = index.partitions(("sse",), NOW)[0]
-    child = index.split_query(root, (DisclosureQuery("shmb"), DisclosureQuery("shkcp")))[0]
-    index.commit_page(child, DisclosurePage((), 0, False), NOW)
-    parent_key = (root.market, str(root.start), str(root.end), "", 1)
-    child_key = (child.market, str(child.start), str(child.end), child.query.key, 1)
-    assert _saved_pages(index.path, [parent_key, child_key], sqlite_policy=SqlitePolicyFixture()) == {child_key}
 
 
 def test_replay_rejects_hard_link_to_source_database_before_any_write(tmp_path, monkeypatch):

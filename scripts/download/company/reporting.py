@@ -209,12 +209,14 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
         return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
     if schema == "company-resume" and isinstance(summary, Mapping) and "consumer_audit" in summary:
         audit = summary["consumer_audit"]
+        http_requested = isinstance(audit, Mapping) and audit.get("scope") == "formal_reader_and_document_http"
         valid = isinstance(audit, Mapping) and (
             source.get("status") in ("passed", "degraded", "failed")
-            and audit.get("read_only") is True and audit.get("scope") == "formal_reader_consistency_only"
+            and audit.get("read_only") is True and audit.get("scope") in ("formal_reader_consistency_only", "formal_reader_and_document_http")
             and all(audit.get(name) is False for name in (
-                "collection_checked", "recovery_planned", "field_correctness_verified", "full_market_verified", "http_checked",
+                "collection_checked", "recovery_planned", "field_correctness_verified", "full_market_verified",
             ))
+            and (http_requested or audit.get("http_checked") is False)
         )
         if valid and source.get("status") == "passed" and isinstance(audit, Mapping):
             read = audit.get("consumer_read")
@@ -226,11 +228,37 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
                 and isinstance(audit.get("published_at"), str)
                 and isinstance(read, Mapping) and read.get("http_checked") is False
                 and all(read.get(name) is True for name in (
-                    "checked", "facts_equal", "fields_equal", "publication_equal", "consistent",
+                    "checked", "facts_equal", "fields_equal", "publication_equal", "document_links_equal", "consistent",
                 ))
                 and type(read.get("stocks")) is int and 0 < read["stocks"] <= 12000
                 and type(read.get("fields")) is int and read["fields"] >= 0
+                and type(read.get("document_links")) is int and 0 <= read["document_links"] <= 120_000
             )
+            if valid and http_requested and isinstance(read, Mapping):
+                http = audit.get("http_audit")
+                valid = (
+                    audit.get("http_checked") is True and isinstance(http, Mapping)
+                    and http.get("scope") == "published_company_document_http"
+                    and http.get("expected_publication_hash") == http.get("loaded_identity") == audit.get("publication_hash")
+                    and http.get("codes") == read.get("stocks") and type(http.get("codes")) is int
+                    and http.get("verified_links") == read.get("document_links") and type(http.get("verified_links")) is int
+                    and http["verified_links"] > 0 and type(http.get("http_requests")) is int and http["http_requests"] > 0
+                    and type(http.get("invalid_queries_rejected")) is int and http["invalid_queries_rejected"] == 5
+                    and all(http.get(key) is True for key in ("passed", "complete", "source_unchanged", "server_stopped", "resources_stopped"))
+                    and all(type(http.get(key)) is int and http[key] == 0 for key in (
+                        "handler_file_attempts", "handler_sql_attempts", "handler_network_attempts", "external_network_attempts", "business_write_attempts",
+                    ))
+                    and all(http.get(key) is False for key in (
+                        "budget_exhausted", "source_admission_verified", "production_enabled", "full_sync_verified", "performance_accepted",
+                    ))
+                    and http.get("failure") is None and isinstance(http.get("links_digest"), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", http["links_digest"]) is not None
+                    and isinstance(http.get("source_payload_sha256_before"), list)
+                    and len(http["source_payload_sha256_before"]) == 3
+                    and all(item is None or isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item) is not None
+                            for item in http["source_payload_sha256_before"])
+                    and http.get("source_payload_sha256_before") == http.get("source_payload_sha256_after")
+                )
         return replace(result, payload=dict(source, status=source.get("status") if valid else "failed"))
     if schema == "company-field-replay":
         valid = (
@@ -949,7 +977,7 @@ def _research_source_compare_details(
                 "company_financial_revision_filter_ignored", "company_financial_revision_identity_mismatch",
                 "company_financial_revision_time_invalid", "company_financial_revision_number_invalid",
                 "OSError", "RuntimeError", "TypeError", "ValueError", "CompanySourceFailure", "HttpError",
-                "HttpTimeout", "HttpConnectionError", "HttpCancelled", "HttpResponseTooLarge", "JSONDecodeError",
+                "HttpTimeout", "HttpConnectionError", "HttpCancelled", "CompanySourceCancelled", "HttpResponseTooLarge", "JSONDecodeError",
         )
         failure = revision.get("failure")
         failure = failure if isinstance(failure, str) and failure in allowed_failures else None

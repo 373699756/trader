@@ -419,6 +419,17 @@ def _revision_probe():
     }
 
 
+def test_revision_source_cancellation_retains_only_the_typed_failure() -> None:
+    probe = dict(_revision_probe(), support_status="not_verified", update_filter_verified=False,
+                 failure="CompanySourceCancelled", private_payload="DO_NOT_EXPORT")
+    source = {"status": "failed", "financial_revision_probe": probe}
+    report = BuildReport("research-source-compare", (DiagnosticResult("research_source_compare", 1, 0.1, source, None),))
+    projected = report["checks"][0]["financial_revision_probe"]
+    assert report["status"] == "failed" and projected["failure"] == "CompanySourceCancelled"
+    assert not projected["issuer_revision_verified"] and not projected["production_adopted"]
+    assert "DO_NOT_EXPORT" not in json.dumps(report)
+
+
 def test_revision_sample_filter_success_is_at_most_degraded_even_if_input_claims_passed() -> None:
     source = {"status": "passed", "financial_revision_probe": _revision_probe()}
     result = DiagnosticResult("research_source_compare", 0, 1.0, source, None)

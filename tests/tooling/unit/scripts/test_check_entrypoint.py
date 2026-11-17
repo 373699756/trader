@@ -345,6 +345,14 @@ def test_native_reports_keep_their_public_evidence(identity: str, field: str) ->
     assert report["checks"][0]["summary"] == {field: 10}
 
 
+@pytest.mark.parametrize("provider", ("invoking_environment", "bundled_ensurepip", "PRIVATE_ENVIRONMENT_PAYLOAD"))
+def test_wheel_report_identifies_only_an_explicit_pip_provider(provider: str) -> None:
+    result = DiagnosticResult("wheel-install", 0, 1, {"status": "passed", "pip_provider": provider}, None)
+    report = BuildReport("wheel-install", (result,))
+    summary = report["checks"][0]["summary"]
+    assert summary == ({} if provider == "PRIVATE_ENVIRONMENT_PAYLOAD" else {"pip_provider": provider})
+
+
 
 @pytest.mark.parametrize("status", ("failed", "timed_out", "empty"))
 def test_invalid_configuration_skips_the_dependent_snapshot_checks(status: str) -> None:

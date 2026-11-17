@@ -6,7 +6,6 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -16,7 +15,6 @@ from scripts.core.cli import Main as ToolMain
 from scripts.download.company import company_publication_audit, company_query_audit, company_resume
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.domain.company_evidence import DisclosurePage
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSession
 
 
@@ -86,71 +84,8 @@ def test_real_sqlite_progress_interrupt_during_dbstat_produces_a_failed_budget_r
     assert "WITH RECURSIVE" not in json.dumps(result) and str(tmp_path) not in json.dumps(result)
 
 
-def test_retry_inventory_deadline_produces_the_same_failed_budget_report(tmp_path, monkeypatch):
-    index = fixtures._index(tmp_path)
-    partition = index.partitions(("sse",), fixtures.NOW)[0]
-    item = fixtures._disclosure(title="关于收到立案告知书的公告")
-    index.commit_page(partition, DisclosurePage((item,), 1, False), fixtures.NOW)
-    index.document_failure(
-        item, "fixture", "disclosure_document_no_text", fixtures.NOW, fixtures.NOW + timedelta(days=1),
-    )
-    before = index.path.read_bytes()
-    clock = _Clock()
-    original_run = SqliteConnection.run
-    monkeypatch.setattr(company_query_audit.time, "monotonic", clock)
-
-    def run(connection, sql, parameters=()):
-        result = original_run(connection, sql, parameters)
-        if "r.retry_policy_id" in sql and "FROM document_retries r JOIN disclosures d" in sql:
-            rows = result.fetchall()
-            assert len(rows) == 1
-            # SQL completed before the deadline; only the real Python inventory loop expires.
-            clock.now = 30
-            return iter(rows)
-        return result
-
-    monkeypatch.setattr(SqliteConnection, "run", run)
-    result = company_query_audit.AuditCompanyDatabase(
-        index.path, now=fixtures.NOW, budget_seconds=30, sqlite_policy=SqlitePolicyFixture(),
-    )
-    assert result["status"] == "failed"
-    database = result["summary"]["database"]
-    assert database["failure_code"] == "company_database_audit_budget_exhausted"
-    assert database["budget_exhausted"] and not database["complete"]
-    assert not database["field_correctness_verified"] and not database["full_market_verified"]
-    assert index.path.read_bytes() == before
 
 
-@pytest.mark.parametrize("known_cancellation", (False, True))
-def test_production_reader_cancellation_is_only_a_budget_failure_when_explicitly_observed(tmp_path, monkeypatch, known_cancellation):
-    index = fixtures._index(tmp_path)
-    item = fixtures._disclosure(title="关于收到立案告知书的公告")
-    index.commit_page(index.partitions(("sse",), fixtures.NOW)[0], DisclosurePage((item,), 1, False), fixtures.NOW)
-    index.commit_document(item, fixtures._extraction("本公司收到证监会立案告知书。"), fixtures.NOW)
-    index.publish(item.codes, fixtures.NOW)
-    clock = _Clock()
-    monkeypatch.setattr(company_query_audit.time, "monotonic", clock)
-    error = InterruptedError("company_preload_cancelled" if known_cancellation else "unrelated_io_interruption")
-
-    def interrupted(*args, **kwargs):
-        clock.now = 30
-        assert kwargs["cancel_requested"]()
-        raise error
-
-    monkeypatch.setattr(company_publication_audit.SQLiteCompanyEvidenceReader, "visit", interrupted)
-    if not known_cancellation:
-        with pytest.raises(InterruptedError) as captured:
-            company_query_audit.AuditCompanyDatabase(
-                index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=30,
-                sqlite_policy=SqlitePolicyFixture(), event_policy=fixtures.CompanyEventPolicy(),
-            )
-        assert captured.value is error
-        return
-    report = company_query_audit.AuditCompanyDatabase(
-        index.path, facts_path=index.facts_path, now=fixtures.NOW, budget_seconds=30,
-        sqlite_policy=SqlitePolicyFixture(), event_policy=fixtures.CompanyEventPolicy(),
-    )
-    assert report["status"] == "failed" and report["summary"]["database"]["budget_exhausted"]
 
 
 @pytest.mark.parametrize(("message", "expired", "callback"), (

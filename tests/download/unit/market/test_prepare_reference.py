@@ -12,7 +12,7 @@ from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.prepare_reference import IndustryDatabaseIncompatibleError, PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
 from trader.download.application.sync_data import SyncData
 from trader.download.application.progress_message import ProgressLevel
-from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
+from tests.helpers.download.company_round import CompanySyncRoundFixture
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.reference_index import SQLiteReferenceIndex
@@ -162,17 +162,7 @@ def test_mixed_population_uses_one_st_cut_and_keeps_original_supplier_check_date
 
     def company(reference):
         record(reference)
-        return CompanyEvidenceSyncResult(
-            _NOW,
-            3,
-            3,
-            0,
-            0,
-            0,
-            0,
-            (),
-            0,
-        )
+        return CompanySyncRoundFixture(_NOW, tuple(item.code for item in reference.official_universe))
 
     dependencies = ReferencePreparationDependencies(
         st_evidence,

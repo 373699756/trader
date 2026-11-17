@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import subprocess
 from collections.abc import Callable
 from queue import Empty, Full, Queue
@@ -10,6 +11,24 @@ from threading import Event, Thread
 from typing import IO
 
 from trader.infra.process_family import ProcessFamily
+
+
+def CompanyDocumentProbeTimeout(
+    deadline: float | None, monotonic: Callable[[], float], check: Callable[[], None] | None,
+) -> float:
+    """Bound each local capability probe by the caller's remaining total time."""
+    if check is not None:
+        check()
+    if deadline is None:
+        return 5.0
+    if not math.isfinite(deadline):
+        raise ValueError("company_document_probe_deadline_invalid")
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        if check is not None:
+            check()
+        raise TimeoutError("company_document_capability_deadline")
+    return min(5.0, remaining)
 
 
 def CaptureDocumentTool(

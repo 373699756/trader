@@ -438,7 +438,12 @@ def test_company_risk_expiry_and_coverage_are_evaluated_from_same_startup_memory
         visits = 0
 
         def publication_version(self):
-            return snapshot.version
+            from hashlib import sha256
+            return sha256(snapshot.version.encode()).hexdigest()
+
+        def read_document_links(self, codes, *, cancel_requested=None):
+            from trader.download.domain.company_document_links import CompanyDocumentLinkSnapshot
+            return CompanyDocumentLinkSnapshot(self.publication_version(), ())
 
         def visit(self, codes, consume, *, cancel_requested=None):
             self.visits += 1

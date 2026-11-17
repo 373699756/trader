@@ -8,7 +8,8 @@ import pytest
 
 from trader.download.domain.company_evidence import CompanySourceFailure, Disclosure, DisclosurePartition
 from tests.helpers.download.company_resources import CninfoMarketDisclosureSourceFixture as CninfoMarketDisclosureSource
-from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpError, HttpResponse, HttpTimeout
+from trader.download.domain.company_sync import CompanySourceCancelled
+from trader.infra.http_contracts import HttpConnectionError, HttpError, HttpResponse, HttpTimeout
 
 _DAY = date(2026, 10, 18)
 _EMPTY = HttpResponse(200, json.dumps({"totalRecordNum": 0, "hasMore": False, "announcements": []}).encode())
@@ -197,8 +198,10 @@ def test_cancellation_before_request_or_during_backoff_stops_new_attempts(cancel
         return clock.now >= cancel_at
 
     source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep, cancel_requested=cancel)
-    with pytest.raises(HttpCancelled):
+    with pytest.raises(CompanySourceCancelled) as interrupted:
         source.fetch(DisclosurePartition("sse", _DAY, _DAY))
+    from trader.infra.http_contracts import HttpCancelled
+    assert isinstance(interrupted.value.__cause__, HttpCancelled)
     assert len(transport.calls) == requests and clock.now == cancel_at
     if requests:
         assert transport.calls[0][1]["cancel_requested"] is cancel

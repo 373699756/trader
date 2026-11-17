@@ -14,7 +14,6 @@ from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.domain.company_evidence import (
     CompanyDateProgress,
-    CompanyEvidenceSyncResult,
     CompanyPublicationProgress,
     CompanyStockProgress,
     DisclosurePartition,
@@ -24,6 +23,8 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportCompanyStock
 from trader.entrypoints.cli import Main
+from trader.download.domain.company_sync import CompanySyncFamily
+from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 
 
 def _messages(text: str) -> list[str]:
@@ -213,17 +214,15 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
     assert "原始资料变更 2589 条（非每股发布行）" in output
     assert "下次 sync company 从已提交断点续传" in output
     assert "100.00%" not in output and "待续传" in output
-    result = CompanyEvidenceSyncResult(
+    result = CompanySyncRoundFixture(
         datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
-        4402,
-        4402,
-        127,
-        2589,
-        2,
-        26,
-        ("announcements:timeout",),
-        314.09,
-        3,
+        tuple(f"{code:06d}" for code in range(4402)),
+        families=tuple(CompanySyncFamilyFixture(
+            family, complete=False, can_continue=True,
+            pending_count=26 if family is CompanySyncFamily.ANNOUNCEMENTS else 3,
+            failure="timeout" if family is CompanySyncFamily.ANNOUNCEMENTS else None,
+        ) if family in {CompanySyncFamily.ANNOUNCEMENTS, CompanySyncFamily.FIELDS}
+            else CompanySyncFamilyFixture(family) for family in CompanySyncFamily),
     )
     monkeypatch.setattr(
         bootstrap,
@@ -233,9 +232,10 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
     config = Path(__file__).resolve().parents[4] / "config/runtime.json"
     assert Main(["--config", str(config), "sync", "company"]) == 1
     payload = json.loads(capsys.readouterr().out)["tasks"][0]
-    assert payload["pending_documents"] == 3 and payload["pending_partitions"] == 26
-    assert payload["pending_counts_checked"] is True
-    assert payload["elapsed_seconds"] == 314.09
+    families = {item["family"]: item for item in payload["families"]}
+    assert families["fields"]["pending_count"] == 3 and families["announcements"]["pending_count"] == 26
+    assert payload["requested_codes"] == 4402 and not payload["processing_complete"]
+    assert not payload["business_complete"]
 
 
 def test_cancelled_terminal_and_json_report_unknown_counts_without_claiming_zero_pending(monkeypatch, capsys):
@@ -250,12 +250,13 @@ def test_cancelled_terminal_and_json_report_unknown_counts_without_claiming_zero
     assert "公告待补数量未核对" in output and "可重试正文数量未核对" in output
     assert "中断后未重新核对待处理数，不表示无剩余任务" in output
     assert "可重试正文 0" not in output and "公告待补 0" not in output
-    result = CompanyEvidenceSyncResult(
-        datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
-        2, 1, 8, 3, 0, None, ("task:cancelled",), 42.0,
-        pending_documents=None, ocr_documents=None, unextractable_documents=None,
+    result = CompanySyncRoundFixture(
+        datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")), ("600001", "600002"),
+        families=(CompanySyncFamilyFixture(
+            CompanySyncFamily.FINANCIAL, complete=False, pending_count=None, accepted_inputs=1, source_calls=None,
+        ),), cancelled=True,
     )
-    assert result.needs_retry and replace(result, failures=()).needs_retry
+    assert result.needs_retry and replace(result, cancelled=False).needs_retry
     monkeypatch.setattr(
         bootstrap, "ExecuteSync",
         lambda *args, **kwargs: SyncResult((SyncTaskResult("company", "cancelled", company=result),), cancelled=True),
@@ -265,10 +266,11 @@ def test_cancelled_terminal_and_json_report_unknown_counts_without_claiming_zero
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "cancelled"
     company = payload["tasks"][0]
-    assert company["published_codes"] == 1 and company["fetched_pages"] == 8
-    assert company["pending_partitions"] is company["pending_documents"] is None
-    assert company["ocr_documents"] is company["unextractable_documents"] is None
-    assert company["pending_counts_checked"] is False
+    assert len(company["families"]) == 1
+    family, = company["families"]
+    assert family["accepted_inputs"] == 1 and family["request_slots_consumed"] is None and family["pending_count"] is None
+    assert family["observed_attempts"] is None
+    assert company["paused"] and not company["processing_complete"] and not company["business_complete"]
 
 
 def test_last_stock_closes_verification_without_claiming_a_publication():

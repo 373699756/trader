@@ -45,6 +45,7 @@ def BuildParser(
         company_query_audit=False,
         company_database_audit=False,
         company_consumer_audit=False,
+        company_consumer_http=False,
         company_field_proof_audit=False,
         company_field_proof_recovery=False,
         company_field_proof_recovery_manifest=None,
@@ -52,7 +53,6 @@ def BuildParser(
         company_pagination_audit=False,
         company_pipeline_audit=False,
         company_pacing_audit=False,
-        company_io_candidates_audit=False,
         company_material_keys=(),
         company_field_replay_keys=(),
         company_replay_observed_at=None,
@@ -94,6 +94,7 @@ def BuildParser(
         modes.add_argument('--company-query-audit', action='store_true', help='read-only bounded CNInfo query coverage audit')
         modes.add_argument('--company-database-audit', action='store_true', help='read-only local company text and retry counts; no network')
         modes.add_argument('--company-consumer-audit', action='store_true', help='read-only formal facts/fields/publication comparison with the production reader; no collection or recovery planning')
+        parser.add_argument('--company-consumer-http', action='store_true', help='also verify published document links through a bounded loopback HTTP server using the supplied runtime configuration; requires --company-consumer-audit')
         modes.add_argument('--company-field-proof-audit', action='store_true', help='read-only current-rule reproof of published verified fields; ignores proof/attempt caches and never publishes')
         modes.add_argument('--company-field-proof-recovery', action='store_true', help='recover only frozen, exact field-proof materials in a new isolated directory; bounded network and no source database writes')
         parser.add_argument('--company-field-proof-recovery-manifest', type=Path, help='frozen exact material recovery plan; requires --company-field-proof-recovery')
@@ -101,7 +102,6 @@ def BuildParser(
         modes.add_argument('--company-pagination-audit', action='store_true', help='read-only CNInfo page-size comparison')
         modes.add_argument('--company-pipeline-audit', action='store_true', help='isolated same-PDF serial/parallel comparison')
         modes.add_argument('--company-pacing-audit', action='store_true', help='isolated same-PDF shared/per-host pacing comparison')
-        modes.add_argument('--company-io-candidates-audit', action='store_true', help='paired isolated publication candidates; never enables production settings')
         modes.add_argument('--company-material-keys', nargs='+', help='read-only source excerpts for one to six distinct source keys; requires published facts')
         modes.add_argument('--company-field-replay-keys', nargs='+', help='replay one to six source keys through real field publication only in a new external copy; no network')
         parser.add_argument('--company-replay-observed-at', type=ParseCompanyReplayObservation, help='explicit ISO timestamp with timezone for a frozen field replay; defaults to current time and never changes source coverage')
@@ -164,6 +164,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_query_audit=args.company_query_audit,
         company_database_audit=args.company_database_audit,
         company_consumer_audit=args.company_consumer_audit,
+        company_consumer_http=args.company_consumer_http,
         company_field_proof_audit=args.company_field_proof_audit,
         company_field_proof_recovery=args.company_field_proof_recovery,
         company_field_proof_recovery_manifest=args.company_field_proof_recovery_manifest.expanduser().absolute() if args.company_field_proof_recovery_manifest is not None else None,
@@ -171,7 +172,6 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_pagination_audit=args.company_pagination_audit,
         company_pipeline_audit=args.company_pipeline_audit,
         company_pacing_audit=args.company_pacing_audit,
-        company_io_candidates_audit=args.company_io_candidates_audit,
         company_material_keys=tuple(args.company_material_keys),
         company_field_replay_keys=tuple(args.company_field_replay_keys),
         company_replay_observed_at=args.company_replay_observed_at,
@@ -213,6 +213,8 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         raise ValueError("--company-risk-baseline requires read-only --company-database-audit without replay output")
     if options.company_consumer_audit and options.company_replay_directory is not None:
         raise ValueError("--company-consumer-audit does not accept a replay directory")
+    if options.company_consumer_http and not options.company_consumer_audit:
+        raise ValueError("--company-consumer-http requires --company-consumer-audit")
     if options.company_field_proof_audit and options.company_replay_directory is not None:
         raise ValueError("--company-field-proof-audit does not accept a replay directory")
     if options.company_field_proof_recovery and (
@@ -231,7 +233,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         options.company_query_audit, options.company_database_audit, options.company_consumer_audit, options.company_field_proof_audit,
         options.company_field_proof_recovery, options.company_pagination_audit,
         options.company_pipeline_audit, options.company_ocr_audit, options.company_document_audit,
-        options.company_directory_audit, options.company_pacing_audit, options.company_io_candidates_audit,
+        options.company_directory_audit, options.company_pacing_audit,
         bool(options.company_material_keys), bool(options.company_field_replay_keys),
     )) > 1:
         raise ValueError("company audit modes are mutually exclusive")

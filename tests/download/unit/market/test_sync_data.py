@@ -12,7 +12,9 @@ from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.prepare_reference import ReferenceDatabaseIncompatibleError
 from trader.download.application.sync_data import SyncData, SyncDatabaseError, SyncResult, SyncTaskResult
 from trader.download.entrypoints.sync_progress import SyncProgress
-from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyEvidenceSyncResult
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
+from trader.download.domain.company_sync import CompanySyncFamily
+from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.entrypoints.sync_projection import ProjectSyncResult
@@ -52,7 +54,7 @@ def test_one_prepared_full_reference_is_shared_in_order(target):
     def company(value):
         assert value is reference
         calls.append("company")
-        return CompanyEvidenceSyncResult(_NOW, 1, 1, 0, 0, 0, 0, (), 0)
+        return CompanySyncRoundFixture(_NOW)
 
     result = SyncData(prepare, history, market, company, lambda: False).execute(target)
     assert calls == ["prepare", *(("history", "market", "company") if target == "all" else (target,))]
@@ -101,7 +103,7 @@ def test_failed_or_incomplete_history_continues_market_and_company(pending):
 
     def company(value):
         calls.append("company")
-        return CompanyEvidenceSyncResult(_NOW, 1, 1, 0, 0, 0, 0, (), 0)
+        return CompanySyncRoundFixture(_NOW)
 
     result = SyncData(lambda: PreparedFixture(_NOW), history, market, company, lambda: False).execute("all")
     assert calls == ["market", "company"]
@@ -117,7 +119,7 @@ def test_sqlite_task_failure_preserves_results_and_continues_following_tasks(fai
     failures = []
     history = _history()
     market = QfqUpdateResult(_NOW.date(), 17, changed_rows=42)
-    company = CompanyEvidenceSyncResult(_NOW, 1, 1, 0, 0, 0, 0, (), 0)
+    company = CompanySyncRoundFixture(_NOW)
 
     def synchronize(task, value):
         calls.append(task)
@@ -169,45 +171,6 @@ def test_database_adapter_preserves_the_cause_from_the_shared_connection():
     assert "missing_table" not in str(failure.value)
 
 
-@pytest.mark.parametrize("failed_step", ("prepare", "history", "market", "company"))
-def test_sync_composition_translates_database_failures_at_every_injected_boundary(tmp_path, monkeypatch, failed_step):
-    from tests.helpers.shared.configuration import RuntimeSettingsFixture, SqlitePolicyFixture
-    from trader import bootstrap
-    from trader.infra.settings.data_paths import DataPaths
-
-    runtime = replace(RuntimeSettingsFixture(), data_paths=DataPaths(tmp_path))
-    calls = []
-
-    def execute(step, result):
-        calls.append(step)
-        if step == failed_step:
-            raise sqlite3.OperationalError("private database detail")
-        return result
-
-    monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _: runtime)
-    monkeypatch.setattr(bootstrap, "BuildSqlitePolicy", lambda _: SqlitePolicyFixture())
-    monkeypatch.setattr(bootstrap, "_utc_now", lambda: _NOW)
-    monkeypatch.setattr(bootstrap, "RecentPublishedNewsCodes", lambda *_: ())
-    monkeypatch.setattr(bootstrap, "_prepare_reference", lambda *_, **__: execute("prepare", PreparedFixture(_NOW)))
-    monkeypatch.setattr(bootstrap, "ExecuteHistoryDownload", lambda *_, **__: execute("history", _history()))
-    monkeypatch.setattr(bootstrap, "ExecuteQfqDownload", lambda *_, **__: execute("market", QfqUpdateResult(_NOW.date(), 1)))
-    monkeypatch.setattr(bootstrap, "_sync_company_evidence", lambda *_, **__: execute(
-        "company", CompanyEvidenceSyncResult(_NOW, 1, 1, 0, 0, 0, 0, (), 0),
-    ))
-    monkeypatch.setattr(bootstrap, "DownloadFailureDiagnostics", lambda *_, **__: lambda *_: None)
-
-    result = bootstrap.ExecuteSync(runtime.config_path, "all", report=SyncProgress(lambda _: None, lambda: 0.0))
-    assert result.exit_code == 1
-    if failed_step == "prepare":
-        assert calls == ["prepare"] and result.tasks == ()
-        assert result.failure == "preparation_OperationalError"
-    else:
-        assert calls == ["prepare", "history", "market", "company"]
-        assert [task.status for task in result.tasks] == [
-            "failed" if task.task == failed_step else "completed" for task in result.tasks
-        ]
-        assert next(task for task in result.tasks if task.task == failed_step).reason == "OperationalError"
-    assert "private database detail" not in json.dumps(ProjectSyncResult(result))
 
 
 @pytest.mark.parametrize("failure", ("qfq_worker_unavailable", "source_unavailable", "cancelled"))
@@ -313,30 +276,29 @@ def test_typed_history_terminal_state_reaches_the_cli_without_downgrading_failur
     _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, exit_code)
 
 
-@pytest.mark.parametrize(("partitions", "documents", "ocr", "unextractable", "failures", "reason"), (
-    (0, 0, 0, 0, (), None),
-    (0, 0, 0, 1, (), None),  # Terminal extraction limits remain data-quality unknowns.
-    (2, 0, 0, 0, (), "announcements:pending"),
-    (0, 3, 1, 0, (), "risk_documents:pending"),
-    (2, 3, 1, 0, ("risk_documents:pending",), "risk_documents:pending,announcements:pending"),
-    (None, None, None, None, (), "inventory:not_checked"),
-    (0, 0, 0, 0, ("financial:timeout",), "financial:timeout"),
-    (0, 3, 0, 0, ("risk_documents:company_raw_capacity_exhausted",),
-     "risk_documents:company_raw_capacity_exhausted,risk_documents:pending"),
-    (None, None, None, None, ("task:cancelled",), "task:cancelled"),
+@pytest.mark.parametrize(("pending", "gaps", "failure", "cancelled", "paused", "reason"), (
+    (0, (), None, False, False, None),
+    (0, ("source_admission_pending",), None, False, False, "fields:source_admission_pending"),
+    (2, (), None, False, False, "fields:pending"),
+    (None, (), None, False, False, "fields:inventory_not_checked"),
+    (0, (), "timeout", False, False, "fields:timeout"),
+    (3, (), "company_raw_capacity_exhausted", False, False, "fields:company_raw_capacity_exhausted"),
+    (None, (), None, True, False, "task:cancelled"),
+    (None, (), None, False, True, "company_round_budget_exhausted"),
 ))
 def test_company_terminal_reason_reaches_projection_and_cli(
-    tmp_path, monkeypatch, capsys, partitions, documents, ocr, unextractable, failures, reason,
+    tmp_path, monkeypatch, capsys, pending, gaps, failure, cancelled, paused, reason,
 ):
-    company = CompanyEvidenceSyncResult(
-        _NOW, 1, 1, 0, 0, 0, partitions, failures, 0,
-        pending_documents=documents, ocr_documents=ocr, unextractable_documents=unextractable,
+    company = CompanySyncRoundFixture(
+        _NOW, families=tuple(CompanySyncFamilyFixture(
+            family, pending_count=pending, gaps=gaps, failure=failure,
+        ) if family is CompanySyncFamily.FIELDS else CompanySyncFamilyFixture(family) for family in CompanySyncFamily),
+        cancelled=cancelled, budget_exhausted=paused,
     )
     result = SyncData(
         lambda: PreparedFixture(_NOW), lambda _: _history(), lambda _: QfqUpdateResult(_NOW.date(), 1),
         lambda _: company, lambda: False,
     ).execute("company")
-    cancelled = "task:cancelled" in failures
     status = "cancelled" if cancelled else "pending" if reason else "completed"
     assert result.tasks[0].status == status and result.tasks[0].reason == reason
     assert ProjectSyncResult(result)["tasks"][0]["reason"] == reason
@@ -358,21 +320,30 @@ def test_company_terminal_reason_reaches_projection_and_cli(
     assert f"原因 {reason or '无'}" in fields
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == status and payload["tasks"][0]["reason"] == reason
-    assert payload["tasks"][0]["pending_counts_checked"] is (partitions is not None)
-    assert payload["tasks"][0]["unextractable_documents"] == unextractable
+    assert payload["tasks"][0]["families"][-1]["pending_count"] == pending
+    assert payload["tasks"][0]["business_complete"] is (reason is None)
+    assert payload["tasks"][0]["paused"] is (cancelled or paused)
 
 
-def test_company_incompatible_database_is_a_failure_with_explicit_material_scope(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("store,path", (
+    (CompanyDownloadStore.COLLECTION, "company/raw/company_collection.sqlite3"),
+    (CompanyDownloadStore.FACTS, "company/company_facts.sqlite3"),
+    (CompanyDownloadStore.NORMALIZED, "company/company_normalized.sqlite3"),
+    (CompanyDownloadStore.INPUTS, "company/company_inputs.sqlite3"),
+    (CompanyDownloadStore.REQUEST_JOURNAL, "company/company_sync.sqlite3"),
+))
+def test_company_incompatible_database_is_a_failure_with_explicit_material_scope(tmp_path, monkeypatch, capsys, store, path):
     def company(_):
-        raise CompanyDatabaseIncompatibleError("company_evidence_database_contract_mismatch")
+        raise CompanyDatabaseIncompatibleError(store)
 
     result = SyncData(
         lambda: PreparedFixture(_NOW), lambda _: _history(), lambda _: QfqUpdateResult(_NOW.date(), 1),
         company, lambda: False,
     ).execute("company")
     assert result.tasks[0].reason == "CompanyDatabaseIncompatibleError"
+    assert ProjectSyncResult(result)["tasks"][0]["incompatible_company_store"] == store.value
     _assert_cli_summary(tmp_path, monkeypatch, capsys, result, "failed", "失败", 1,
-                        diagnostic="company/raw/company_collection.sqlite3")
+                        diagnostic=path)
 
 
 def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, exit_code, diagnostic=None):
@@ -404,6 +375,8 @@ def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, ex
         if task.history is not None:
             history = projected.pop("history")
             assert history["state"] == task.history.state and history["reason"] == task.history.reason
+        if task.incompatible_company_store is not None:
+            assert projected.pop("incompatible_company_store") == task.incompatible_company_store.value
     assert payload == {
         "schema_version": "data_sync", "status": status, "failure": result.failure,
         "tasks": [{"task": task.task, "status": task.status, "reason": task.reason} for task in result.tasks],

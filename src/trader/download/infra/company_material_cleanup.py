@@ -11,27 +11,32 @@ from trader.download.domain.company_evidence import IsTransientCompanyDocumentFa
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
+from trader.download.infra.company_field_recovery import RestoreCompanyMaterialDependencies
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EVIDENCE_SOURCES
 from trader.download.infra.company_pipeline_queries import ReleaseUnusedCompanyDisclosures
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_publication import VerifySqliteFile
 
 
-def ReleasePublishedCompanyMaterial(connection: SqliteConnection, extraction_hash: bytes) -> None:
-    """Commit the release decision before physical deletion; recovery can repeat it."""
-    connection.run(
-        "UPDATE disclosures SET body_retained=0 WHERE body_retained=1 AND NOT EXISTS("
-        "SELECT 1 FROM company_field_repairs f WHERE f.disclosure_id=disclosures.id "
-        "AND f.record_hash=disclosures.record_hash AND f.state<>'complete') AND NOT EXISTS("
-        "SELECT 1 FROM company_material_dependencies m WHERE m.disclosure_id=disclosures.id "
-        "AND m.record_hash=disclosures.record_hash AND m.body_hash=disclosures.body_hash) "
-        "AND NOT EXISTS(SELECT 1 FROM disclosure_codes c JOIN company_population u ON u.code=c.code "
-        "WHERE c.disclosure_id=disclosures.id AND NOT EXISTS("
-        "SELECT 1 FROM document_publications p WHERE p.disclosure_id=disclosures.id "
-        "AND p.code=c.code AND p.record_hash=disclosures.record_hash AND p.extraction_hash=?))",
-        (extraction_hash,),
-    )
+def _release_published_material(connection: SqliteConnection, formal: SqliteConnection, extraction_hash: bytes) -> None:
+    """Only the exact formal receipt can release a current body; raw job markers are not proof."""
+    rows = connection.run(
+        "SELECT d.id,d.source,d.source_key,d.record_hash,d.body_hash FROM disclosures d WHERE d.body_retained=1 "
+        "AND NOT EXISTS(SELECT 1 FROM company_field_repairs f WHERE f.disclosure_id=d.id AND f.record_hash=d.record_hash AND f.state<>'complete') "
+        "AND NOT EXISTS(SELECT 1 FROM company_material_dependencies m WHERE m.disclosure_id=d.id AND m.record_hash=d.record_hash AND m.body_hash=d.body_hash)"
+    ).fetchall()
+    for row in rows:
+        codes = tuple(item[0] for item in connection.run("SELECT code FROM disclosure_codes WHERE disclosure_id=?", (row[0],)))
+        if codes and all(formal.run(
+            "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? AND record_hash=? "
+            "AND body_hash=? AND extraction_hash=? AND outcome='valid'",
+            (row[1], row[2], code, row[3], row[4], extraction_hash),
+        ).fetchone() is not None for code in codes):
+            connection.run("UPDATE disclosures SET body_retained=0 WHERE id=?", (row[0],))
 
 
 def ReleaseCompanyMaterialFiles(
@@ -44,11 +49,19 @@ def ReleaseCompanyMaterialFiles(
     sqlite_policy: SqliteIoPolicy,
 ) -> None:
     """Own the physical release transaction so deletion cannot race raw acceptance."""
+    VerifySqliteFile(facts.path, sqlite_policy=sqlite_policy)
     with (
         connect() as connection,
         SqliteTransaction(connection, immediate=True),
         SqliteSession(facts.path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as formal,
+        SqliteTransaction(formal),
     ):
+        identity = ReadCompanyPublicationIdentity(formal)
+        rules = formal.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
+        if identity is None or identity.extraction_hash != facts.extraction_hash or rules is None or rules[0] != CompanyFieldProofRulesHash():
+            raise ValueError("company_material_current_proof_required")
+        RestoreCompanyMaterialDependencies(connection, formal)
+        _release_published_material(connection, formal, facts.extraction_hash)
         if raw_files is not None:
             _release_obsolete(connection, raw_files, cutoff)
             rows = connection.run(
@@ -140,6 +153,5 @@ def _release_terminal_failures(
 
 
 __all__ = [
-    "ReleasePublishedCompanyMaterial",
     "ReleaseCompanyMaterialFiles",
 ]

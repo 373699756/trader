@@ -18,11 +18,11 @@ if TYPE_CHECKING:
 
 from trader.download.domain.company_events import (
     CompanyDataState,
-    CompanyEvidenceLink,
     CompanyPositiveEvent,
     CompanyRiskEvent,
     CompanyRiskType,
 )
+from trader.download.domain.company_document_links import CompanyDocumentLinkSnapshot
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_evidence import CompanyFinancial
 from trader.infra.settings.models import CompanyPreloadSettings
@@ -153,7 +153,9 @@ class CompanyEvidenceReadPort(Protocol):
         cancel_requested: Callable[[], bool] | None = None,
     ) -> None: ...
 
-    def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyEvidenceLink, ...]: ...
+    def read_document_links(
+        self, codes: Sequence[str], *, cancel_requested: Callable[[], bool] | None = None,
+    ) -> CompanyDocumentLinkSnapshot: ...
 
 
 class _CompanyInputOptions(TypedDict, total=False):
@@ -195,18 +197,18 @@ class PublishedCompanyResearch:
         self._disk_version = ""
         self._publication_observation_failure: str | None = None
         self._initialized = False
+        self._document_links: Mapping[str, tuple[CompanyDocumentReference, ...]] = MappingProxyType({})
 
     def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyDocumentReference, ...]:
-        return tuple(
-            CompanyDocumentReference(
-                item.evidence_id,
-                item.title,
-                item.url if item.url.startswith(("https://", "http://")) else None,
-                item.published_at,
-                "extracted" if item.body_checked else "pending",
-            )
-            for item in self._reader.document_links(code, evidence_ids)
-        )
+        if (
+            len(code) != 6 or not code.isascii() or not code.isdigit() or not 1 <= len(evidence_ids) <= 32
+            or any(not identity or len(identity) > 200 for identity in evidence_ids)
+        ):
+            raise ValueError("company_document_query_invalid")
+        requested = frozenset(evidence_ids)
+        with self._lock:
+            links = self._document_links.get(code, ())
+        return tuple(item for item in links if item.evidence_id in requested)
 
     def initialize(self, codes: Sequence[str], *, cancelled: Callable[[], bool]) -> None:
         with self._initialization_lock:
@@ -241,7 +243,21 @@ class PublishedCompanyResearch:
                 return
             if before != after:
                 continue
-            self._adopt_projection(rows, observed_at, after, cancelled, deadline)
+            try:
+                links = _observe_snapshot_read(
+                    "visit", lambda: self._reader.read_document_links(
+                        requested, cancel_requested=lambda: cancelled() or self._monotonic() >= deadline,
+                    ),
+                )
+            except InterruptedError:
+                self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
+                return
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                self._last_error = _company_snapshot_failure(exc)
+                return
+            if links.publication_hash != after:
+                continue
+            self._adopt_projection(rows, links, observed_at, after, cancelled, deadline)
             return
         self._last_error = "company_publication_changed"
 
@@ -272,6 +288,7 @@ class PublishedCompanyResearch:
     def _adopt_projection(
         self,
         rows: Mapping[str, ResearchObservation],
+        links: CompanyDocumentLinkSnapshot,
         observed_at: datetime,
         publication: str,
         cancelled: Callable[[], bool],
@@ -286,6 +303,25 @@ class PublishedCompanyResearch:
         )
         # Conservative retained-size reservation: fixed observations/lineage plus bounded event strings.
         size_bytes = sum(8192 + _event_reservation(row) for row in rows.values())
+        documents: dict[str, list[CompanyDocumentReference]] = {}
+        seen: set[tuple[str, str]] = set()
+        for item in links.links:
+            if cancelled() or self._monotonic() >= deadline:
+                self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
+                return
+            if item.code not in rows or item.link.published_at > observed_at:
+                continue
+            key = (item.code, item.link.evidence_id)
+            if key in seen:
+                self._last_error = "company_document_link_identity_ambiguous"
+                return
+            seen.add(key)
+            link = item.link
+            documents.setdefault(item.code, []).append(CompanyDocumentReference(
+                link.evidence_id, link.title, link.url if link.url.startswith(("https://", "http://")) else None,
+                link.published_at, "extracted" if link.body_checked else "pending",
+            ))
+            size_bytes += 1024 + 4 * (len(link.evidence_id) + len(link.title) + len(link.url))
         if cancelled() or self._monotonic() >= deadline:
             self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
             return
@@ -294,6 +330,10 @@ class PublishedCompanyResearch:
             return
         with self._lock:
             self._epoch = epoch
+            self._document_links = MappingProxyType({
+                code: tuple(sorted(items, key=lambda item: (item.disclosed_at, item.evidence_id), reverse=True))
+                for code, items in documents.items()
+            })
             self._publication_version = self._disk_version = publication
             self._last_error = "" if rows else "company_snapshot:missing"
 

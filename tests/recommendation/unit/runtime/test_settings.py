@@ -996,6 +996,9 @@ def test_company_sync_request_and_document_limits(tmp_path) -> None:
     assert settings.document_limits.max_pages == 200
     assert settings.document_failure_retry_seconds == 86400
     assert settings.document_transient_retry_seconds == 900
+    assert settings.round_request_limit == 512
+    assert settings.round_step_limit == 1024
+    assert settings.round_timeout_seconds == 1800.0
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1015,6 +1018,17 @@ def test_company_sync_request_and_document_limits(tmp_path) -> None:
     document["company"]["document_limits"]["max_bytes"] = 64 * 1024 * 1024 + 1
     (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ConfigurationError, match="max_bytes must be at most"):
+        LoadCompanySyncConfiguration(tmp_path)
+
+
+@pytest.mark.parametrize("key,value", (("round_request_limit", True), ("round_timeout_seconds", 0)))
+def test_company_round_budget_rejects_boolean_requests_and_unbounded_duration(tmp_path, key, value):
+    directory = tmp_path / "config"
+    directory.mkdir()
+    document = json.loads((PROJECT_ROOT / "config/download.json").read_text(encoding="utf-8"))
+    document["company"][key] = value
+    (directory / "download.json").write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match=key):
         LoadCompanySyncConfiguration(tmp_path)
 
 

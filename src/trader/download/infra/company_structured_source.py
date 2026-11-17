@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_evidence import (
     CompanyFinancial,
+    CompanyInputValidationFailure,
     CompanyRatio,
     Disclosure,
     StructuredCompanyPage,
@@ -25,7 +26,7 @@ from trader.download.domain.company_source_records import (
     CompanyFinancialSourceRecordHash,
 )
 from trader.download.domain.download_failure import DownloadValidationFailure
-from trader.download.infra.company_http import CheckCompanyResponse
+from trader.download.infra.company_http import CompanySourceCancellation, CheckCompanyResponse
 from trader.infra.http_contracts import HttpCancelled, HttpTransport
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 
@@ -92,6 +93,8 @@ class EastmoneyCompanySource:
             payload = response.json()
         except json.JSONDecodeError as exc:
             raise DownloadValidationFailure("company_source_json_invalid", "json", "valid_json", f"line_{exc.lineno}_column_{exc.colno}") from exc
+        except ValueError as exc:
+            raise DownloadValidationFailure("company_source_json_invalid", "json", "bounded_json_numbers", "invalid") from exc
         if not isinstance(payload, Mapping):
             raise DownloadValidationFailure("company_source_schema_invalid", "root", "mapping", type(payload).__name__)
         return payload, response.content
@@ -100,6 +103,7 @@ class EastmoneyCompanySource:
         if self._cancel_requested is not None and self._cancel_requested():
             raise HttpCancelled("http_cancelled")
 
+    @CompanySourceCancellation
     def annual_income(
         self, request: CompanyAnnualIncomeRequest, *, observed_at: datetime
     ) -> tuple[CompanyAnnualIncome, ...]:
@@ -123,7 +127,7 @@ class EastmoneyCompanySource:
             re.IGNORECASE,
         )
         if company_type is None:
-            raise ValueError("company_annual_income_company_type_missing")
+            raise CompanyInputValidationFailure("company_annual_income_company_type_missing")
         payload = self._json(
             "https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/lrbAjaxNew",
             {
@@ -134,35 +138,42 @@ class EastmoneyCompanySource:
         )
         rows = payload.get("data")
         if not isinstance(rows, list) or len(rows) != len(request.report_dates):
-            raise ValueError("company_annual_income_reports_missing")
+            raise CompanyInputValidationFailure("company_annual_income_reports_missing")
         incomes: list[CompanyAnnualIncome] = []
         for row in rows:
             if not isinstance(row, Mapping) or row.get("SECUCODE") != f"{request.code}.{market}" or row.get("REPORT_TYPE") != "年报":
-                raise ValueError("company_annual_income_report_identity_invalid")
+                raise CompanyInputValidationFailure("company_annual_income_report_identity_invalid")
             report_date = _day(row.get("REPORT_DATE"))
             currency = row.get("CURRENCY")
             if report_date not in request.report_dates or not isinstance(currency, str) or not currency:
-                raise ValueError("company_annual_income_report_identity_invalid")
+                raise CompanyInputValidationFailure("company_annual_income_report_identity_invalid")
             disclosed = _income_time(row.get("NOTICE_DATE"))
             updated = _income_time(row.get("UPDATE_DATE"))
             if updated.date() < observed_at.date() - timedelta(days=365):
-                raise ValueError("company_annual_income_outside_window")
+                raise CompanyInputValidationFailure("company_annual_income_outside_window")
             revenue = _number(row.get("OPERATE_INCOME"), field="OPERATE_INCOME")
             version = CanonicalDigest((request.code, report_date, disclosed, updated, currency, revenue))
-            incomes.append(CompanyAnnualIncome(
-                request.code,
-                report_date,
-                disclosed,
-                updated,
-                observed_at,
-                currency,
-                revenue,
-                version,
-            ))
+            try:
+                incomes.append(CompanyAnnualIncome(
+                    request.code,
+                    report_date,
+                    disclosed,
+                    updated,
+                    observed_at,
+                    currency,
+                    revenue,
+                    version,
+                ))
+            except ValueError as exc:
+                if str(exc)!="company_annual_income_invalid":
+                    raise
+                raise CompanyInputValidationFailure("company_annual_income_record_invalid") from exc
+
         if {row.report_date for row in incomes} != set(request.report_dates):
-            raise ValueError("company_annual_income_reports_missing")
+            raise CompanyInputValidationFailure("company_annual_income_reports_missing")
         return tuple(incomes)
 
+    @CompanySourceCancellation
     def pledge_day(self, observed_at: datetime) -> date:
         window_start = observed_at.date() - timedelta(days=365)
         payload = self._json(
@@ -181,7 +192,7 @@ class EastmoneyCompanySource:
         )
         rows, _, _ = _result(payload)
         if not rows:
-            raise ValueError("pledge_snapshot_unavailable")
+            raise CompanyInputValidationFailure("pledge_snapshot_unavailable")
         if len(rows) != 1:
             raise DownloadValidationFailure("pledge_snapshot_rows_invalid", "data.length", "one_row", len(rows))
         day = _day(rows[0].get("TRADE_DATE"))
@@ -191,6 +202,7 @@ class EastmoneyCompanySource:
             raise DownloadValidationFailure("pledge_snapshot_outside_window", "TRADE_DATE", f"{window_start}..{observed_at.date()}", day.isoformat())
         return day
 
+    @CompanySourceCancellation
     def fetch(self, query: StructuredCompanyQuery, *, observed_at: datetime) -> StructuredCompanyPage:
         component, start, end, page = query.component, query.start, query.end, query.page
         if component == "financial":
@@ -257,6 +269,7 @@ class EastmoneyCompanySource:
             ratios.append(CompanyRatio(code, day, ratio))
         return StructuredCompanyPage(component, page, pages, total, ratios=tuple(ratios))
 
+    @CompanySourceCancellation
     def financial_observations(
         self, query: StructuredCompanyQuery, *, observed_at: datetime,
     ) -> CompanyFinancialSourcePage:
@@ -276,6 +289,7 @@ class EastmoneyCompanySource:
             payload, query, observed_at=observed_at, response_hash=hashlib.sha256(content).hexdigest(),
         )
 
+    @CompanySourceCancellation
     def news(self, code: str, *, observed_at: datetime) -> tuple[Disclosure, ...]:
         # Ordinary news is bounded candidate context, not an exhaustive regulatory feed.
         parameter = {
@@ -309,26 +323,32 @@ class EastmoneyCompanySource:
         CheckCompanyResponse(response)
         text = response.text.strip()
         if not text.startswith("company("):
-            raise ValueError("news_schema_invalid")
+            raise CompanyInputValidationFailure("news_schema_invalid")
         try:
             raw = json.loads(text[len("company(") :].rstrip(";)").strip())
         except json.JSONDecodeError as exc:
             raise DownloadValidationFailure("news_schema_invalid", "json", "valid_json", f"line_{exc.lineno}_column_{exc.colno}") from exc
+        except ValueError as exc:
+            raise DownloadValidationFailure("news_schema_invalid", "json", "bounded_json_numbers", "invalid") from exc
         if not isinstance(raw, Mapping):
-            raise ValueError("news_schema_invalid")
+            raise CompanyInputValidationFailure("news_schema_invalid")
         result = raw.get("result")
         rows = result.get("cmsArticleWebOld") if isinstance(result, Mapping) else None
-        if not isinstance(rows, list):
-            raise ValueError("news_rows_invalid")
+        if not isinstance(rows, list) or len(rows)>50:
+            raise CompanyInputValidationFailure("news_rows_invalid")
         evidence: list[Disclosure] = []
         for row in rows:
+            self._check_cancelled()
             if (
                 not isinstance(row, Mapping)
                 or not isinstance(row.get("date"), str)
                 or not isinstance(row.get("title"), str)
             ):
-                raise ValueError("news_row_invalid")
-            published = datetime.fromisoformat(row["date"])
+                raise CompanyInputValidationFailure("news_row_invalid")
+            try:
+                published = datetime.fromisoformat(row["date"])
+            except ValueError as exc:
+                raise DownloadValidationFailure("news_date_invalid", "date", "ISO_timestamp", "invalid") from exc
             published = (
                 published.replace(tzinfo=_SHANGHAI)
                 if published.utcoffset() is None
@@ -337,7 +357,10 @@ class EastmoneyCompanySource:
             if not observed_at - timedelta(days=7) <= published <= observed_at:
                 continue
             title = html.unescape(re.sub(r"<[^>]+>", "", str(row["title"]))).strip()
-            url = str(row.get("url") or row.get("uniqueUrl") or "")
+            raw_url = row.get("url") or row.get("uniqueUrl") or ""
+            if not isinstance(raw_url,str) or len(raw_url)>8192 or not title or len(title)>4000:
+                raise CompanyInputValidationFailure("news_row_invalid")
+            url = raw_url
             identity = hashlib.sha256((url or f"{title}\n{published.isoformat()}").encode()).hexdigest()
             digest = hashlib.sha256(f"{title}\n{published.isoformat()}\n{url}".encode()).hexdigest()
             evidence.append(Disclosure("eastmoney_news", identity, (code,), title, published, url, digest, "news"))
@@ -486,15 +509,18 @@ def _day(value: object) -> date:
             return date.fromisoformat(value)
         parsed = datetime.fromisoformat(value)
         return parsed.date() if parsed.utcoffset() is None else parsed.astimezone(_SHANGHAI).date()
-    except ValueError as exc:
+    except (ValueError, OverflowError) as exc:
         raise DownloadValidationFailure("company_source_date_invalid", "date", "ISO_date", type(value).__name__) from exc
 
 
 def _income_time(value: object) -> datetime:
     if not isinstance(value, str):
-        raise ValueError("company_annual_income_time_missing")
-    parsed = datetime.fromisoformat(value)
-    return parsed.replace(tzinfo=_SHANGHAI) if parsed.utcoffset() is None else parsed.astimezone(_SHANGHAI)
+        raise CompanyInputValidationFailure("company_annual_income_time_missing")
+    try:
+        parsed = datetime.fromisoformat(value)
+        return parsed.replace(tzinfo=_SHANGHAI) if parsed.utcoffset() is None else parsed.astimezone(_SHANGHAI)
+    except (ValueError, OverflowError) as exc:
+        raise DownloadValidationFailure("company_annual_income_time_invalid", "date", "ISO_timestamp", "invalid") from exc
 
 
 def _code(row: Mapping[str, object]) -> str:

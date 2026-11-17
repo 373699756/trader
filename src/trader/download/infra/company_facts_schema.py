@@ -1,9 +1,13 @@
 """Relational company publication, separate from collection and retry state."""
 
 from trader.infra.sqlite_connection import SqliteSchema
+from trader.download.infra.company_document_link_rows import COMPANY_DOCUMENT_LINK_SCHEMA
+from trader.download.infra.company_financial_observations import COMPANY_FINANCIAL_OBSERVATIONS_SCHEMA
 
 COMPANY_FACTS_SCHEMA = SqliteSchema(
     (
+        *COMPANY_DOCUMENT_LINK_SCHEMA,
+        "CREATE TABLE company_field_proof_rule(singleton INTEGER PRIMARY KEY CHECK(singleton=1),rules_hash BLOB NOT NULL)",
         """CREATE TABLE company_input_receipt (
           source TEXT NOT NULL,source_key TEXT NOT NULL,code TEXT NOT NULL,record_hash TEXT NOT NULL,
           extraction_hash BLOB NOT NULL,body_hash BLOB,published_at INTEGER NOT NULL,
@@ -155,6 +159,11 @@ COMPANY_FACTS_SCHEMA = SqliteSchema(
           subject_type INTEGER NOT NULL CHECK(subject_type BETWEEN 1 AND 4),
           PRIMARY KEY(code,event_key,field,position),
           FOREIGN KEY(code,event_key,field) REFERENCES company_field_result(code,event_key,field) ON DELETE CASCADE
+        ) WITHOUT ROWID""",
+        *COMPANY_FINANCIAL_OBSERVATIONS_SCHEMA.statements,
+        """CREATE TABLE company_normalization_commit (
+          scope TEXT PRIMARY KEY,generation BLOB NOT NULL,content_hash BLOB NOT NULL,
+          extraction_hash BLOB NOT NULL,published_at INTEGER NOT NULL
         ) WITHOUT ROWID""",
     ),
 )

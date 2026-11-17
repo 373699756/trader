@@ -4,21 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import time
 from collections import Counter
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+from scripts.download.company.company_research_baseline import ReadCompanyResearchBaseline, ReadCompanyResearchIdentity
 from scripts.core.paths import PROJECT_ROOT
 from scripts.download.company.output_paths import RequireIsolatedReplay
-from trader.download.application.company_publication import PublishCompanyEvidence
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_facts import CompanyFacts
-from trader.download.domain.company_evidence import CompanyFinancial, CompanySyncConfiguration, Disclosure, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyFinancial, StructuredCompanyQuery
 from trader.download.domain.company_financial_report import (
     COMPANY_FINANCIAL_REPORT_DIGEST, ExtractCompanyFinancialReport,
     CompanyFinancialReportField, CompanyFinancialReportRequest, CompanyFinancialReportState,
@@ -26,17 +25,27 @@ from trader.download.domain.company_financial_report import (
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_fact_inputs import DecodeCompanyFinancial
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_financial_publication import CompanyFinancialReportValue, ReadCompanyFinancialSourceProofs
-from trader.download.infra.company_raw_files import CompanyRawFiles
+from trader.download.application.company_financial_producer import CompanyFinancialProducer
+from trader.download.application.company_sync import RunCompanySyncRound
+from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncRoundScope
+from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
+from trader.download.domain.company_source_records import CompanyFinancialSourcePage
+from trader.download.infra.company_facts_index import CompanyInputReceipt, SQLiteCompanyFactsIndex
+from trader.download.infra.company_facts_protocol import RequireCompanyTime, DecodeCompanyLabel, EVIDENCE_SOURCES
+from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
+from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, CompanyNormalizationBaselineDigest, SQLiteCompanyNormalizedIndex
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
+from trader.download.infra.company_financial_observations import ReadCompanyFinancialObservations
+from trader.download.infra.company_structured_source import DecodeCompanyFinancialSourcePage
 from trader.infra.atomic_files import AtomicWriteJson
-from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_publication import VerifySqliteFile
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,133 +119,6 @@ def _financials(path: Path, codes: tuple[str, ...], observed_at: datetime, polic
         ))
 
 
-def AuditCompanyFinancialReplay(
-    *,
-    collection_path: Path,
-    sources_report: Path,
-    annotations: Path,
-    materials: CompanyRawFiles,
-    directory: Path,
-    observed_at: datetime,
-    configuration: CompanySyncConfiguration,
-    event_policy: CompanyEventPolicy,
-    sqlite_policy: SqliteIoPolicy,
-    create_source: Callable[[CompanyRawFiles], CninfoMarketDisclosureSource],
-    budget_seconds: float,
-) -> dict[str, object]:
-    """Exercise the normal writer with real financial records; no active database writes."""
-    RequireIsolatedReplay(directory, (PROJECT_ROOT, collection_path.parent, materials.root))
-    if directory.exists() or observed_at.utcoffset() is None or not 30 <= budget_seconds <= 3600:
-        raise ValueError("company_financial_replay_new_directory_and_budget_required")
-    deadline = time.monotonic() + budget_seconds
-
-    def check() -> None:
-        if time.monotonic() >= deadline:
-            raise TimeoutError("company_financial_replay_deadline_exceeded")
-
-    expected = _expectations(annotations)
-    codes = tuple(sorted({cell.code for cell in expected}))
-    inputs = _financials(collection_path, codes, observed_at, sqlite_policy)
-    for cell in expected:
-        report = next((report for report in inputs if report.code == cell.code and report.report_date == cell.period), None)
-        if report is None or report.published_at != cell.disclosed_at or CompanyFinancialReportValue(report, cell.field) is not None:
-            raise ValueError("company_financial_replay_source_identity_changed")
-    payload = _json(sources_report)
-    if not isinstance(payload, dict):
-        raise ValueError("company_financial_replay_sources_invalid")
-    catalog = payload["checks"][0]["official_financial_probe"]["items"]
-    directory.mkdir(parents=True)
-    raw_root = directory / "raw"
-    raw_files = CompanyRawFiles(raw_root, capacity=configuration.raw_capacity_bytes,
-        analysis_reserve=configuration.raw_analysis_reserve_bytes, free_reserve=configuration.temporary_disk_reserve_bytes,
-        maximum_document_bytes=configuration.extended_document_limits.max_bytes)
-    documents = _CountingText(raw_root / "text", max_text_characters=configuration.extended_document_limits.max_text_characters,
-        max_bytes=configuration.temporary_text_capacity_bytes, reserve_bytes=configuration.temporary_disk_reserve_bytes)
-    path, facts_path = raw_root / "company_collection.sqlite3", directory / "company_facts.sqlite3"
-
-    def build() -> SQLiteCompanyEvidenceIndex:
-        return SQLiteCompanyEvidenceIndex(path, facts_path=facts_path, documents=documents, event_policy=event_policy,
-                                           sqlite_policy=sqlite_policy, raw_files=raw_files)
-
-    def commit_structured(index: SQLiteCompanyEvidenceIndex) -> None:
-        index.commit_structured(StructuredCompanyQuery("financial", observed_at.date() - timedelta(days=365), observed_at.date()),
-                                StructuredCompanyPage("financial", 1, 1, len(inputs), financials=inputs), observed_at)
-
-    index = build()
-    index.initialize()
-    commit_structured(index)
-    PublishCompanyEvidence(index, codes, observed_at)
-    source = create_source(raw_files)
-    for item in catalog:
-        if item["code"] not in codes:
-            continue
-        for metadata in item["sources"]:
-            check()
-            disclosure = Disclosure(metadata["source"], metadata["source_key"], (item["code"],), metadata["title"],
-                                    datetime.fromisoformat(metadata["published_at"]), metadata["url"], metadata["record_hash"])
-            wanted = tuple(cell for cell in expected if cell.code == item["code"] and cell.source_key == disclosure.identity)
-            local = materials.local(disclosure, check=check)
-            if not wanted or local is None or any(cell.record_hash != disclosure.digest or cell.pdf_hash != local.payload_hash.hex() for cell in wanted):
-                raise ValueError("company_financial_replay_exact_pdf_unavailable")
-            request = CompanyFinancialReportRequest(disclosure.codes[0], wanted[0].period, wanted[0].disclosed_at)
-            index.commit_financial_reports(request, (disclosure,), observed_at)
-            destination = raw_files.directory(disclosure) / "download.part"
-            with raw_files.reserve(destination.parent, local.size + 65536):
-                shutil.copyfile(local.path, destination)
-                raw_files.complete(disclosure, destination, check=check)
-            source.download_document(disclosure)
-            extraction = source.extract_document(disclosure)
-            if not index.commit_document(disclosure, extraction, observed_at):
-                raise ValueError("company_financial_replay_document_not_accepted")
-    publication = PublishCompanyEvidence(index, codes, observed_at)
-    if publication.pending_codes:
-        raise ValueError("company_financial_replay_publication_pending")
-    reader = SQLiteCompanyEvidenceReader(facts_path, event_policy=event_policy, sqlite_policy=sqlite_policy)
-    facts = reader.read(codes)
-    observations: list[dict[str, object]] = []
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as collected, SqliteSession(
-        facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy,
-    ) as formal:
-        for cell in expected:
-            current = next(fact.latest_financial for fact in facts if fact.code == cell.code)
-            original = next(report for report in inputs if report.code == cell.code and report.report_date == cell.period)
-            proofs = ReadCompanyFinancialSourceProofs(collected, formal, original, current, observed_at)
-            proof = next((proof for proof in proofs if proof.field == cell.field), None)
-            actual = CompanyFinancialReportValue(current, cell.field) if current is not None else None
-            matched = proof is not None and proof.state == cell.state and actual == cell.value and cell.source_key in proof.source_keys
-            observations.append({"code": cell.code, "field": cell.field, "expected": cell.value, "actual": actual,
-                                 "state": proof.state if proof is not None else "unproved", "matched": matched,
-                                 "source_key": cell.source_key, "record_hash": cell.record_hash, "pdf_sha256": cell.pdf_hash})
-        first_identity = ReadCompanyPublicationIdentity(formal)
-        valid = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid' ORDER BY code,source_key"))
-        attempts = formal.run("SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted'").require_one()[0]
-    restarted = build()
-    restarted.initialize()
-    commit_structured(restarted)
-    reads_before = documents.reads
-    restarted.prepare_publication(codes, observed_at)
-    second_facts = reader.read(codes)
-    with SqliteSession(facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as formal:
-        second_identity = ReadCompanyPublicationIdentity(formal)
-        same_valid = valid == tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt WHERE outcome='valid' ORDER BY code,source_key"))
-        second_attempts = formal.run("SELECT COUNT(*) FROM company_input_receipt WHERE outcome='field_attempted'").require_one()[0]
-    publication_reads = documents.reads - reads_before
-    source_unchanged = _financials(collection_path, codes, observed_at, sqlite_policy) == inputs
-    preserved = first_identity == second_identity and facts == second_facts and same_valid and attempts == second_attempts
-    passed = all(item["matched"] is True for item in observations) and preserved and publication_reads == 0 and source_unchanged
-    result: dict[str, object] = {"status": "passed" if passed else "degraded", "isolated": True, "production_adopted": False,
-              "historical_edition_availability_verified": False, "risk_preservation_verified": False,
-              "read_only_source": True, "stocks": len(codes), "fields": len(expected), "matched": sum(item["matched"] is True for item in observations),
-              "input_digest": CanonicalDigest(inputs), "annotations_sha256": hashlib.sha256(annotations.read_bytes()).hexdigest(),
-              "source_financial_inputs_unchanged": source_unchanged, "restart_facts_and_identity_preserved": preserved,
-              "old_valid_preserved": same_valid, "second_new_attempts": second_attempts - attempts,
-              "second_publication_text_reads": publication_reads, "counts": dict(Counter(item["state"] for item in observations)),
-              "publication_hash": second_identity.content_hash.hex() if second_identity is not None else None,
-              "items": observations}
-    AtomicWriteJson(directory / "financial-replay.json", result)
-    return result
-
-
 def AuditCompanyFinancialHoldout(
     source: CninfoMarketDisclosureSource,
     requests: tuple[CompanyFinancialReportRequest, ...],
@@ -294,7 +176,8 @@ def AuditCompanyFinancialAdoption(
     if not 30 <= budget_seconds <= 900 or observed_at.utcoffset() is None:
         raise ValueError("company_financial_adoption_budget_or_time_invalid")
     deadline = time.monotonic() + budget_seconds
-    cancel = lambda: time.monotonic() >= deadline
+    def cancel() -> bool:
+        return time.monotonic() >= deadline
     expected = _expectations(annotations)
     codes = tuple(sorted({cell.code for cell in expected}))
     observations: list[dict[str, object]] = []
@@ -342,4 +225,267 @@ def AuditCompanyFinancialAdoption(
             "counts": dict(Counter(item["state"] for item in observations)), "items": observations}
 
 
-__all__ = ["AuditCompanyFinancialReplay", "AuditCompanyFinancialHoldout", "AuditCompanyFinancialAdoption"]
+class _FrozenFinancialPages:
+    def __init__(self, pages: tuple[CompanyFinancialSourcePage, ...]) -> None:
+        self.pages, self.calls = pages, 0
+
+    def financial_observations(self, query: StructuredCompanyQuery, *, observed_at: datetime) -> CompanyFinancialSourcePage:
+        self.calls += 1
+        selected = next((page for page in self.pages if page.page == query.page), None)
+        if selected is None or any(item.observed_at != observed_at for item in selected.observations):
+            raise ValueError("company_normalized_replay_frozen_page_missing")
+        return selected
+
+
+def _source_file_identity(path: Path) -> tuple[tuple[int, int, int] | None, ...]:
+    result: list[tuple[int, int, int] | None] = []
+    for item in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+        try:
+            metadata = item.stat()
+            result.append((metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns))
+        except FileNotFoundError:
+            result.append(None)
+    return tuple(result)
+
+
+def _decode_frozen_page(path: Path, query: StructuredCompanyQuery, observed_at: datetime) -> CompanyFinancialSourcePage:
+    with path.open("rb") as stream:
+        content = stream.read(16 * 1024 * 1024 + 1)
+    if len(content) > 16 * 1024 * 1024:
+        raise ValueError("company_normalized_replay_page_too_large")
+    payload: object = json.loads(content)
+    if not isinstance(payload, Mapping):
+        raise ValueError("company_normalized_replay_page_invalid")
+    return DecodeCompanyFinancialSourcePage(payload, query, observed_at=observed_at, response_hash=hashlib.sha256(content).hexdigest())
+
+
+def AuditCompanyNormalizedRound(
+    *,
+    collection_path: Path,
+    facts_path: Path,
+    documents: CompanyDocumentFiles,
+    page_paths: tuple[Path, ...],
+    query: StructuredCompanyQuery,
+    observed_at: datetime,
+    directory: Path,
+    event_policy: CompanyEventPolicy,
+    sqlite_policy: SqliteIoPolicy,
+    budget_seconds: float,
+    document_overlays: tuple[CompanyDocumentFiles, ...] = (),
+) -> dict[str, object]:
+    """Use typed reproof plus frozen real pages; never write or migrate either input database."""
+    RequireIsolatedReplay(directory, (PROJECT_ROOT, collection_path.parent, facts_path.parent, documents.root, *(owner.root for owner in document_overlays)))
+    if directory.exists() or not 1 <= len(page_paths) <= 256 or not 30 <= budget_seconds <= 900:
+        raise ValueError("company_normalized_replay_new_directory_required")
+    deadline = time.monotonic() + budget_seconds
+
+    def check() -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("company_normalized_replay_deadline_exceeded")
+
+    before = (_source_file_identity(collection_path), _source_file_identity(facts_path))
+    VerifySqliteFile(facts_path, sqlite_policy=sqlite_policy, check=check, file_only=True)
+    research = ReadCompanyResearchBaseline(collection_path, facts_path, documents,
+        event_policy=event_policy, sqlite_policy=sqlite_policy, check=check,
+        cancel_requested=lambda: time.monotonic() >= deadline, document_overlays=document_overlays, cutoff=observed_at)
+    baseline, original_fields, material_reads = research.baseline, research.original_fields, research.material_reads
+    original_facts, original_identity, receipts = baseline.facts, baseline.identity, baseline.receipts
+    codes = tuple(fact.code for fact in original_facts)
+    options = SqliteConnectionOptions(read_only=True)
+    pages = tuple(_decode_frozen_page(path, replace(query, page=position), observed_at)
+                  for position, path in enumerate(page_paths, 1))
+    source = _FrozenFinancialPages(pages)
+    directory.mkdir(parents=True)
+    formal_writer = SQLiteCompanyFactsIndex(directory / "facts.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
+    index = SQLiteCompanyNormalizedIndex(directory / "normalized.sqlite3", formal_writer,
+                                         event_policy=event_policy, sqlite_policy=sqlite_policy, clean_material=lambda: None)
+    index.initialize()
+    index.seed(baseline)
+    reader = SQLiteCompanyEvidenceReader(formal_writer.path, event_policy=event_policy, sqlite_policy=sqlite_policy)
+    seeded_facts: list[CompanyFacts] = []
+    reader.visit(codes, seeded_facts.append)
+    seed_consumer_equal = tuple(seeded_facts) == original_facts
+    failed: str | None = None
+    result = None
+    try:
+        journal = SQLiteCompanySyncRoundJournal(directory / "requests.sqlite3", sqlite_policy=sqlite_policy, publication_identity=reader.publication_identity)
+        journal.initialize()
+        result = RunCompanySyncRound(journal, (CompanyFinancialProducer(index, source, query,
+            qualification_gaps=("latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"), publication_scope="isolated_candidate"),),
+            CompanySyncRoundScope(codes, observed_at, (CompanySyncFamily.FINANCIAL,)), CompanySyncBudget(512, 2048, 256, deadline),
+            monotonic=time.monotonic, cancel_requested=lambda: time.monotonic() >= deadline)
+        failed = result.families[0].result.failure if result.families else None
+    except ValueError as exc:
+        if str(exc) != "company_normalization_revision_unproven":
+            raise
+        failed = str(exc)
+    with SqliteSession(formal_writer.path, options, sqlite_policy=sqlite_policy) as formal:
+        current_facts = ReadCompanyFactRows(formal, codes)
+        current_fields = ReadCompanyFieldResults(formal, codes)
+        identity = ReadCompanyPublicationIdentity(formal)
+        current_receipts = tuple(CompanyInputReceipt(row[0], row[1], row[2], row[3], row[4], row[5], RequireCompanyTime(row[6]), row[7], row[8])
+                                 for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
+    final_facts: list[CompanyFacts] = []
+    reader.visit(codes, final_facts.append)
+    old_verified = tuple(item for item in original_fields if item.state == "verified")
+    reproved = sum(any((item.code, item.event_id, item.field, item.value, item.state) ==
+                      (old.code, old.event_id, old.field, old.value, "verified") for item in current_fields) for old in old_verified)
+    risk_preserved = tuple((item.code, item.risk_events) for item in original_facts) == tuple((item.code, item.risk_events) for item in current_facts)
+    receipt_preserved = set(receipts).issubset(current_receipts)
+    original_fields_preserved = original_fields == current_fields
+    stable = before == (_source_file_identity(collection_path), _source_file_identity(facts_path))
+    summary: dict[str, object] = {
+        "status": "failed_revision_unproven" if failed and "revision_unproven" in failed else "failed_financial_input" if failed else "candidate_completed_pending_source_admission",
+        "failure": failed, "source_data_writes": 0, "network_requests": 0, "source_unchanged": stable,
+        "source_publication_hash": original_identity.content_hash.hex(), "field_rules_hash": baseline.field_rules_hash.hex(),
+        "source_pages": len(pages), "source_raw_rows": sum(page.raw_count for page in pages),
+        "source_observations": sum(len(page.observations) for page in pages), "frozen_source_calls": source.calls,
+        "stocks": len(codes), "fields": len(original_fields), "old_verified": len(old_verified),
+        "current_rule_reproved": reproved, "current_rule_unreproved": len(old_verified) - reproved,
+        "material_reads": material_reads, "seed_consumer_equal": seed_consumer_equal,
+        "consumer_equal": tuple(final_facts) == current_facts,
+        "publication_hash": identity.content_hash.hex() if identity else None,
+        "original_risks_preserved": risk_preserved, "original_receipts_preserved": receipt_preserved,
+        "original_fields_preserved": original_fields_preserved,
+        "preservation_status": "passed" if risk_preserved and receipt_preserved and original_fields_preserved and stable else "failed_preservation",
+        "completed_financial_scope": result.families[0].result.processed_scope_complete if result and result.families else False,
+        "needs_retry": True, "source_admission_verified": False, "production_adopted": False,
+        "field_correctness_verified": False, "http_checked": False,
+    }
+    AtomicWriteJson(directory / "replay.json", summary)
+    return summary
+
+
+def AuditCompanyNormalizedRestart(
+    *,
+    directory: Path,
+    query: StructuredCompanyQuery,
+    observed_at: datetime,
+    event_policy: CompanyEventPolicy,
+    sqlite_policy: SqliteIoPolicy,
+    budget_seconds: float,
+) -> dict[str, object]:
+    """Resume exactly the existing isolated cohort without reseeding or reproving text."""
+    RequireIsolatedReplay(directory, (PROJECT_ROOT,))
+    if not 10 <= budget_seconds <= 120:
+        raise ValueError("company_normalized_restart_budget_invalid")
+    deadline = time.monotonic() + budget_seconds
+    def cancel() -> bool:
+        return time.monotonic() >= deadline
+    facts = SQLiteCompanyFactsIndex(directory / "facts.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
+    index = SQLiteCompanyNormalizedIndex(directory / "normalized.sqlite3", facts, event_policy=event_policy,
+                                         sqlite_policy=sqlite_policy, clean_material=lambda: None)
+    index.initialize()
+    options = SqliteConnectionOptions(read_only=True)
+    with SqliteSession(facts.path, options, sqlite_policy=sqlite_policy, cancel_requested=cancel) as formal, SqliteTransaction(formal):
+        codes = tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code"))
+        before_head = ReadCompanyPublicationIdentity(formal)
+        before_fields = ReadCompanyFieldResults(formal, codes)
+        before_metadata = ReadCompanyFinancialObservations(formal, codes)
+        before_receipts = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
+    source = _FrozenFinancialPages(())
+    reader = SQLiteCompanyEvidenceReader(facts.path, event_policy=event_policy, sqlite_policy=sqlite_policy)
+    journal = SQLiteCompanySyncRoundJournal(directory / "requests.sqlite3", sqlite_policy=sqlite_policy, publication_identity=reader.publication_identity)
+    journal.initialize()
+    result = RunCompanySyncRound(journal, (CompanyFinancialProducer(index, source, query,
+        qualification_gaps=("latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"), publication_scope="isolated_candidate"),),
+        CompanySyncRoundScope(codes, observed_at, (CompanySyncFamily.FINANCIAL,)), CompanySyncBudget(512, 2048, 256, deadline),
+        monotonic=time.monotonic, cancel_requested=cancel)
+    with SqliteSession(facts.path, options, sqlite_policy=sqlite_policy, cancel_requested=cancel) as formal, SqliteTransaction(formal):
+        after_head = ReadCompanyPublicationIdentity(formal)
+        fields_equal = before_fields == ReadCompanyFieldResults(formal, codes)
+        metadata_equal = before_metadata == ReadCompanyFinancialObservations(formal, codes)
+        receipts_equal = before_receipts == tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
+    summary: dict[str, object] = {
+        "completed_financial_scope": result.families[0].result.processed_scope_complete, "frozen_source_calls": source.calls,
+        "changed_codes": [] if before_head == after_head else list(result.families[0].result.changed_codes), "publication_unchanged": before_head == after_head,
+        "fields_unchanged": fields_equal, "metadata_unchanged": metadata_equal, "receipts_unchanged": receipts_equal,
+        "publication_hash": after_head.content_hash.hex() if after_head else None,
+        "network_requests": 0, "reproof_reads": 0, "needs_retry": result.needs_retry,
+    }
+    AtomicWriteJson(directory / "restart.json", summary)
+    return summary
+
+
+def AuditCompanyNormalizedSourceStability(
+    *,
+    collection_path: Path,
+    facts_path: Path,
+    directory: Path,
+    sqlite_policy: SqliteIoPolicy,
+    budget_seconds: float,
+) -> dict[str, object]:
+    """Audit current payloads and bind the explicit source codec to the existing typed seed.
+
+    Keep the original round's physical-stat result. SQLite reader SHM metadata
+    is measured separately; actual DB, WAL and seal bytes must remain identical.
+    No proof text is read, no seed is replaced and no HTTP is issued.
+    """
+    RequireIsolatedReplay(directory, (PROJECT_ROOT, collection_path.parent, facts_path.parent))
+    if not 10 <= budget_seconds <= 180:
+        raise ValueError("company_normalized_source_audit_budget_invalid")
+    deadline = time.monotonic() + budget_seconds
+    def cancelled() -> bool:
+        return time.monotonic() >= deadline
+    def check() -> None:
+        if cancelled():
+            raise TimeoutError("company_normalized_source_audit_deadline_exceeded")
+    def payload(path: Path) -> tuple[str | None, ...]:
+        values: list[str | None] = []
+        for suffix in ("", "-wal", ".sha256"):
+            target = Path(str(path)+suffix)
+            if not target.exists():
+                values.append(None)
+                continue
+            digest = hashlib.sha256()
+            with target.open("rb") as stream:
+                while block := stream.read(1024*1024):
+                    check()
+                    digest.update(block)
+            values.append(digest.hexdigest())
+        return tuple(values)
+    before_stat = (_source_file_identity(collection_path),_source_file_identity(facts_path))
+    before_payload = (payload(collection_path),payload(facts_path))
+    VerifySqliteFile(facts_path, sqlite_policy=sqlite_policy, file_only=True, check=check)
+    options = SqliteConnectionOptions(read_only=True)
+    with (
+        SqliteSession(collection_path,options,sqlite_policy=sqlite_policy,cancel_requested=cancelled) as raw,
+        SqliteSession(facts_path,options,sqlite_policy=sqlite_policy,cancel_requested=cancelled) as formal,
+        SqliteSession(directory/"normalized.sqlite3",options,sqlite_policy=sqlite_policy,cancel_requested=cancelled) as normalized,
+    ):
+        versions = tuple(connection.run("PRAGMA data_version").require_one()[0] for connection in (raw,formal,normalized))
+        with SqliteTransaction(raw),SqliteTransaction(formal),SqliteTransaction(normalized):
+            source_identity = ReadCompanyResearchIdentity(formal)
+            codes = tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code"))
+            source_facts = ReadCompanyFactRows(formal,codes)
+            source_fields = ReadCompanyFieldResults(formal,codes)
+            normalized_fields = ReadCompanyFieldResults(normalized,codes)
+            receipts = tuple(CompanyInputReceipt(row[0],row[1],row[2],row[3],row[4],row[5],RequireCompanyTime(row[6]),row[7],row[8])
+                for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
+            sources = tuple((row[0],DecodeCompanyLabel(EVIDENCE_SOURCES,row[1])) for row in formal.run("SELECT source_key,source FROM company_evidence_ref ORDER BY source_key"))
+            seed = normalized.run("SELECT baseline_digest,source_content_hash,field_rules_hash,complete FROM company_normalization_seed WHERE singleton=1").require_one()
+            baseline = CompanyNormalizationBaseline(source_facts,normalized_fields,receipts,sources,source_identity,CompanyFieldProofRulesHash())
+            bound = seed[0] == CompanyNormalizationBaselineDigest(baseline) and seed[1] == source_identity.content_hash and seed[2] == baseline.field_rules_hash and seed[3] == 1
+            values_equal = tuple((item.code,item.event_id,item.field,item.value) for item in source_fields) == tuple((item.code,item.event_id,item.field,item.value) for item in normalized_fields)
+        stable_view = versions == tuple(connection.run("PRAGMA data_version").require_one()[0] for connection in (raw,formal,normalized))
+    VerifySqliteFile(facts_path, sqlite_policy=sqlite_policy, file_only=True, check=check)
+    after_payload = (payload(collection_path),payload(facts_path))
+    after_stat = (_source_file_identity(collection_path),_source_file_identity(facts_path))
+    original = directory/"replay.json"
+    report: dict[str,object] = {
+        "source_payload_unchanged":before_payload==after_payload,"stable_read_view":stable_view,
+        "typed_seed_source_binding":bound,"source_field_values_preserved":values_equal,
+        "source_publication_hash":source_identity.content_hash.hex(),"seed_baseline_digest":seed[0],
+        "field_rules_hash":baseline.field_rules_hash.hex(),"stocks":len(codes),"fields":len(source_fields),
+        "payload_suffixes":["database","wal","seal"],"payload_sha256_before":before_payload,"payload_sha256_after":after_payload,
+        "physical_stat_suffixes":["database","wal","shm"],"physical_stat_before":before_stat,"physical_stat_after":after_stat,
+        "physical_stat_unchanged":before_stat==after_stat,"shm_metadata_changed":tuple(item[2] for item in before_stat)!=tuple(item[2] for item in after_stat),
+        "original_replay_sha256":hashlib.sha256(original.read_bytes()).hexdigest(),"original_replay_retained":True,
+        "reproof_reads":0,"network_requests":0,"source_data_writes":0,
+    }
+    report["status"] = "passed" if before_payload==after_payload and stable_view and bound and values_equal else "failed"
+    AtomicWriteJson(directory/"source-stability.json",report)
+    return report
+
+
+__all__ = ["AuditCompanyFinancialHoldout", "AuditCompanyFinancialAdoption", "AuditCompanyNormalizedRound", "AuditCompanyNormalizedRestart", "AuditCompanyNormalizedSourceStability"]

@@ -1,29 +1,20 @@
-"""Resolve official quarterly cells through the existing fact and input-receipt owners."""
+"""Read historical financial source proofs without producing PDF financial replacements."""
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, Disclosure
-from trader.download.domain.company_financial_report import (
-    COMPANY_FINANCIAL_REPORT_DIGEST,
-    COMPANY_FINANCIAL_REPORT_FIELDS,
-    CompanyFinancialReportField,
-    CompanyFinancialReportState,
-    ExtractCompanyFinancialReport,
-)
+from trader.download.domain.company_evidence import CompanyFinancial, Disclosure
+from trader.download.domain.company_financial_report import COMPANY_FINANCIAL_REPORT_DIGEST, COMPANY_FINANCIAL_REPORT_FIELDS, CompanyFinancialReportField, CompanyFinancialReportState
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
-from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteConnection
 
-
-_STATES: tuple[CompanyFinancialReportState, ...] = (
-    "numeric", "not_applicable", "not_disclosed", "not_meaningful", "unquantified", "unsupported",
-)
+_STATES: tuple[CompanyFinancialReportState, ...] = ("numeric", "not_applicable", "not_disclosed", "not_meaningful", "unquantified", "unsupported")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,28 +24,17 @@ class CompanyFinancialSourceProof:
     state: CompanyFinancialReportState
     source_keys: tuple[str, ...]
 
-
-@dataclass(frozen=True, slots=True)
-class CompanyFinancialPublication:
-    financials: tuple[CompanyFinancial, ...]
-    receipts: tuple[CompanyInputReceipt, ...]
-    proofs: tuple[CompanyFinancialSourceProof, ...]
-    failures: tuple[str, ...] = ()
-
-
 @dataclass(frozen=True, slots=True)
 class _ReportSource:
     disclosure: Disclosure
     body_hash: bytes | None
     ready: bool
 
-
 @dataclass(frozen=True, slots=True)
 class CompanyFinancialMaterial:
     code: str
     source_key: str
     report_date: date
-
 
 def ReadCompanyFinancialMaterials(formal: SqliteConnection, codes: Sequence[str]) -> tuple[CompanyFinancialMaterial, ...]:
     if not codes:
@@ -71,7 +51,6 @@ def ReadCompanyFinancialMaterials(formal: SqliteConnection, codes: Sequence[str]
         materials.append(CompanyFinancialMaterial(row[0], row[1], date.fromisoformat(parts[1])))
     return tuple(materials)
 
-
 def CompanyFinancialReportValue(report: CompanyFinancial, field: CompanyFinancialReportField) -> float | None:
     if field == "basic_eps":
         return report.basic_eps
@@ -80,17 +59,6 @@ def CompanyFinancialReportValue(report: CompanyFinancial, field: CompanyFinancia
     if field == "core_profit_growth_pct":
         return report.core_profit_growth_pct
     return report.revenue_growth_pct
-
-
-def _with_value(report: CompanyFinancial, field: CompanyFinancialReportField, value: float) -> CompanyFinancial:
-    if field == "basic_eps":
-        return replace(report, basic_eps=value)
-    if field == "roe_pct":
-        return replace(report, roe_pct=value)
-    if field == "core_profit_growth_pct":
-        return replace(report, core_profit_growth_pct=value)
-    return replace(report, revenue_growth_pct=value)
-
 
 def _sources(collected: SqliteConnection, report: CompanyFinancial, observed_at: datetime) -> tuple[_ReportSource, ...]:
     rows = collected.run(
@@ -113,7 +81,6 @@ def _sources(collected: SqliteConnection, report: CompanyFinancial, observed_at:
         sources.append(_ReportSource(DecodeCompanyDisclosure(row), digest, bool(row["body_checked"] and row["body_retained"])))
     return tuple(sources)
 
-
 def _prefix(report: CompanyFinancial, sources: Sequence[_ReportSource], field: CompanyFinancialReportField) -> str:
     digest = CanonicalDigest((
         COMPANY_FINANCIAL_REPORT_DIGEST.hex(), report,
@@ -121,11 +88,9 @@ def _prefix(report: CompanyFinancial, sources: Sequence[_ReportSource], field: C
     ))
     return f"financial_source:{report.report_date}:{digest}:{field}:"
 
-
 def _policy(prefix: str, state: CompanyFinancialReportState, value: float | None) -> str:
     normalized = 0.0 if value == 0 else value
     return prefix + state + ":" + CanonicalDigest((state, normalized))
-
 
 def ReadCompanyFinancialSourceProofs(
     collected: SqliteConnection,
@@ -171,87 +136,4 @@ def ReadCompanyFinancialSourceProofs(
                 break
     return tuple(proofs)
 
-
-def PrepareCompanyFinancialReports(
-    collected: SqliteConnection,
-    formal: SqliteConnection,
-    financials: tuple[CompanyFinancial, ...],
-    previous: CompanyFinancial | None,
-    documents: Sequence[CompanyDocument],
-    *,
-    observed_at: datetime,
-    extraction_hash: bytes,
-    read_document: Callable[[bytes], str],
-) -> CompanyFinancialPublication:
-    eligible = tuple(report for report in financials if report.published_at <= observed_at and report.report_date <= observed_at.date())
-    if not eligible:
-        return CompanyFinancialPublication(financials, (), ())
-    latest = max(eligible, key=lambda report: (report.report_date, report.published_at))
-    missing = tuple(field for field in COMPANY_FINANCIAL_REPORT_FIELDS if CompanyFinancialReportValue(latest, field) is None)
-    if (not missing or (latest.report_date.month, latest.report_date.day) != (9, 30)):
-        return CompanyFinancialPublication(financials, (), ())
-    sources = _sources(collected, latest, observed_at)
-    if not sources or len(sources) > 4:
-        return CompanyFinancialPublication(financials, (), ())
-    if any(source.disclosure.published_at != latest.published_at for source in sources):
-        return CompanyFinancialPublication(financials, (), (), ("financial:revision_pending",))
-    reused = ReadCompanyFinancialSourceProofs(collected, formal, latest, previous, observed_at)
-    updated = latest
-    for proof in reused:
-        if proof.value is not None:
-            updated = _with_value(updated, proof.field, proof.value)
-    remaining = tuple(field for field in missing if not any(proof.field == field for proof in reused))
-    if not remaining:
-        return CompanyFinancialPublication(tuple(updated if report is latest else report for report in financials), (), reused)
-    parsed = []
-    for source in sources:
-        digest = source.body_hash
-        if digest is None or not source.ready:
-            return CompanyFinancialPublication(financials, (), ())
-        document = next((item for item in documents if item.disclosure == source.disclosure and item.checked and not item.terminal_failure), None)
-        if document is None:
-            if formal.run(
-                "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? AND record_hash=? "
-                "AND body_hash=? AND extraction_hash=? AND outcome='valid'",
-                (source.disclosure.source, source.disclosure.identity, latest.code, source.disclosure.digest, digest, extraction_hash),
-            ).fetchone() is None:
-                return CompanyFinancialPublication(financials, (), ())
-            try:
-                document = CompanyDocument(source.disclosure, read_document(digest), True)
-            except InterruptedError:
-                raise
-            except (OSError, ValueError, EOFError):
-                return CompanyFinancialPublication(financials, (), ())
-        if hashlib.sha256(document.text.encode()).digest() != digest:
-            return CompanyFinancialPublication(financials, (), ())
-        parsed.append(ExtractCompanyFinancialReport(document))
-    receipts: list[CompanyInputReceipt] = []
-    proofs = list(reused)
-    for field in remaining:
-        cells = tuple(next((cell for cell in item.cells if cell.field == field), None) if item is not None
-                      and item.report_date == latest.report_date else None for item in parsed)
-        first = cells[0]
-        state: CompanyFinancialReportState = "unsupported"
-        value = None
-        if first is not None and all(cell is not None and (cell.state, cell.value) == (first.state, first.value) for cell in cells):
-            state, value = first.state, first.value
-        if value is not None:
-            updated = _with_value(updated, field, value)
-        policy = _policy(_prefix(latest, sources, field), state, value)
-        proofs.append(CompanyFinancialSourceProof(field, value, state, tuple(source.disclosure.identity for source in sources)))
-        receipts.extend(CompanyInputReceipt(
-            source.disclosure.source, source.disclosure.identity, latest.code, source.disclosure.digest,
-            hashlib.sha256(policy.encode()).digest(), source.body_hash, observed_at, "field_attempted", policy,
-        ) for source in sources)
-    return CompanyFinancialPublication(tuple(updated if report is latest else report for report in financials), tuple(receipts), tuple(proofs))
-
-
-__all__ = [
-    "CompanyFinancialMaterial",
-    "ReadCompanyFinancialMaterials",
-    "CompanyFinancialSourceProof",
-    "CompanyFinancialPublication",
-    "CompanyFinancialReportValue",
-    "ReadCompanyFinancialSourceProofs",
-    "PrepareCompanyFinancialReports",
-]
+__all__ = ["CompanyFinancialSourceProof", "CompanyFinancialMaterial", "ReadCompanyFinancialMaterials", "CompanyFinancialReportValue", "ReadCompanyFinancialSourceProofs"]

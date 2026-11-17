@@ -21,6 +21,7 @@ class CompanyOptions:
     company_query_audit: bool = False
     company_database_audit: bool = False
     company_consumer_audit: bool = False
+    company_consumer_http: bool = False
     company_field_proof_audit: bool = False
     company_field_proof_recovery: bool = False
     company_field_proof_recovery_manifest: Path | None = None
@@ -28,7 +29,6 @@ class CompanyOptions:
     company_pagination_audit: bool = False
     company_pipeline_audit: bool = False
     company_pacing_audit: bool = False
-    company_io_candidates_audit: bool = False
     company_material_keys: tuple[str, ...] = ()
     company_field_replay_keys: tuple[str, ...] = ()
     company_replay_observed_at: datetime | None = None

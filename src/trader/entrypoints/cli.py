@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from trader.download.application.sync_data import SyncResult
+from trader.download.domain.company_evidence import CompanyDownloadStore
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
@@ -61,7 +62,7 @@ def BuildParser() -> argparse.ArgumentParser:
     training.add_argument("--diagnostics", type=Path, help="Write full diagnostics to a new file; never overwrite.")
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
-    sync.add_argument("operation", nargs="?", choices=("fill",), help="仅company：补历史公告及正文，自动OCR/扩限。")
+    sync.add_argument("operation", nargs="?", choices=("fill",), help="仅company：恢复本地缺证和已知原件；不按字段空值扩大逐股PDF下载。")
     subparsers.add_parser(
         "history-automation-status",
         help="Read the persisted history due and reminder state without recalculation.",
@@ -208,10 +209,22 @@ def _report_sync_failure(result: SyncResult, progress: SyncProgress) -> None:
         )
     for task in result.tasks:
         if task.task == "company" and task.reason == "CompanyDatabaseIncompatibleError":
+            store = task.incompatible_company_store
+            if store is CompanyDownloadStore.REQUEST_JOURNAL:
+                detail = "仅company/company_sync.sqlite3请求预算账本不兼容；保留已消费和未知请求记录，需核实处理，不作为资料删除重下范围。"
+            elif store is not None:
+                path = {
+                    CompanyDownloadStore.COLLECTION: "company/raw/company_collection.sqlite3",
+                    CompanyDownloadStore.FACTS: "company/company_facts.sqlite3",
+                    CompanyDownloadStore.NORMALIZED: "company/company_normalized.sqlite3",
+                    CompanyDownloadStore.INPUTS: "company/company_inputs.sqlite3",
+                }[store]
+                detail = f"已确认不兼容的下载资料仅为{path}；明确该文件的重下处理后再继续，不连带删除原件、模型、冻结记录或请求预算。"
+            else:
+                detail = "具体不兼容资料范围尚未核实，不执行删除或重建。"
             _sync_error(progress,
-                "sync company: 公司下载数据库结构不兼容，本次未启动公司资料写入。"
-                "重下范围为下载目录 company/raw/company_collection.sqlite3 与 company/company_facts.sqlite3 "
-                "及其配套公司原件、正文资料；程序不会自动删除或迁移。",
+                "sync company: 公司下载存储结构不兼容，本次未启动公司资料写入。"
+                + detail + "程序不会自动删除或迁移。",
             )
         if task.task == "company" and task.reason == "ProcessLockError":
             _sync_error(progress,

@@ -5,7 +5,8 @@ from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
+from trader.download.domain.company_sync import CompanySyncRoundResult
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.qfq_window import QfqUpdateResult
@@ -35,8 +36,9 @@ class SyncTaskResult:
     status: Literal["completed", "pending", "failed", "cancelled"]
     reason: str | None = None
     market: QfqUpdateResult | None = None
-    company: CompanyEvidenceSyncResult | None = None
+    company: CompanySyncRoundResult | None = None
     history: HistoryMaintenanceStatus | None = None
+    incompatible_company_store: CompanyDownloadStore | None = None
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,7 @@ class SyncData:
     prepare: Callable[[], PreparedReference]
     history: Callable[[PreparedReference], HistoryMaintenanceStatus]
     market: Callable[[PreparedReference], QfqUpdateResult]
-    company: Callable[[PreparedReference], CompanyEvidenceSyncResult]
+    company: Callable[[PreparedReference], CompanySyncRoundResult]
     cancelled: Callable[[], bool]
     failures: DownloadFailurePort | None = None
 
@@ -89,6 +91,12 @@ class SyncData:
                     tasks.append(result)
                     if result.status == "cancelled":
                         return SyncResult(tuple(tasks), cancelled=True)
+                except CompanyDatabaseIncompatibleError as exc:
+                    if self.cancelled():
+                        tasks.append(SyncTaskResult(task, "cancelled", incompatible_company_store=exc.store))
+                        return SyncResult(tuple(tasks), cancelled=True)
+                    tasks.append(SyncTaskResult(task, "failed", "CompanyDatabaseIncompatibleError",
+                                               incompatible_company_store=exc.store))
                 except (CancelledError, OSError, RuntimeError, ValueError) as exc:
                     if self.cancelled():
                         tasks.append(SyncTaskResult(task, "cancelled"))
@@ -120,11 +128,30 @@ class SyncData:
                 reason=market.shutdown_failure or market.failure_reason, market=market,
             )
         company = self.company(reference)
-        stopped = self.cancelled() or "task:cancelled" in company.failures
+        stopped = self.cancelled() or company.cancelled
         return SyncTaskResult(
             task, "cancelled" if stopped else "pending" if company.needs_retry else "completed",
-            reason="task:cancelled" if stopped else company.retry_reason, company=company,
+            reason="task:cancelled" if stopped else _company_reason(company), company=company,
         )
+
+
+def _company_reason(result: CompanySyncRoundResult) -> str | None:
+    if result.business_complete:
+        return None
+    if result.budget_exhausted:
+        return "company_round_budget_exhausted"
+    for family in result.families:
+        if family.result.failure is not None:
+            return f"{family.family.value}:{family.result.failure}"
+        if family.result.gaps:
+            return f"{family.family.value}:{family.result.gaps[0]}"
+        if family.result.pending_count is None:
+            return f"{family.family.value}:inventory_not_checked"
+        if family.result.pending_count:
+            return f"{family.family.value}:pending"
+        if not family.result.processed_scope_complete:
+            return f"{family.family.value}:incomplete"
+    return "company_round_incomplete"
 
 
 __all__ = ["SyncData", "SyncDatabaseError", "SyncResult", "SyncTarget", "SyncTaskResult"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as json_codec
+import math
 import re
 import threading
 import time
@@ -60,10 +61,14 @@ class RequestsHttpTransport:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         observe: Callable[[HttpAttempt], None] | None = None,
+        authorize: Callable[[HttpRequest], None] | None = None,
+        deadline_limit: float | None = None,
         inspect_response: Callable[[HttpRequest, HttpResponse], None] | None = None,
         execute_request: Callable[[HttpRequest], HttpResponse] | None = None,
         identity_content_encodings: tuple[str, ...] = (),
     ) -> None:
+        if deadline_limit is not None and (type(deadline_limit) not in {int, float} or not math.isfinite(deadline_limit)):
+            raise ValueError("http_deadline_limit_invalid")
         if not isinstance(identity_content_encodings, tuple) or any(
             not isinstance(encoding, str)
             or re.fullmatch(r"[!#$%&'*+.^_`|~0-9a-z-]+", encoding) is None
@@ -73,6 +78,8 @@ class RequestsHttpTransport:
             raise ValueError("http_identity_content_encodings_invalid")
         self._monotonic = monotonic
         self._observe = observe
+        self._authorize = authorize
+        self._deadline_limit = deadline_limit
         self._inspect_response = inspect_response
         self._execute_request = execute_request
         self._identity_content_encodings = frozenset(identity_content_encodings)
@@ -171,6 +178,10 @@ class RequestsHttpTransport:
 
     def execute(self, request: HttpRequest) -> HttpResponse:
         started = self._monotonic()
+        if self._deadline_limit is not None:
+            request = replace(request, deadline=min(
+                self._deadline_limit, request.deadline if request.deadline is not None else started + request.timeout_seconds,
+            ))
         deadline = (
             min(request.deadline, started + request.timeout_seconds)
             if request.deadline is not None
@@ -180,6 +191,9 @@ class RequestsHttpTransport:
         self._acquire_connection(request, deadline)
         try:
             self._check(request, deadline)
+            if self._authorize is not None:
+                self._authorize(request)
+                self._check(request, deadline)
             if self._execute_request is not None:
                 return self._injected_attempt(request, started, deadline)
             if self._session is None:

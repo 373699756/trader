@@ -13,7 +13,6 @@ from trader.download.domain.company_evidence import (
     Market,
 )
 from trader.download.infra.company_facts_protocol import COMPANY_EXTRACTION_IDENTITY
-from trader.download.infra.company_financial_report_index import IndexCompanyFinancialReportInputs
 from trader.infra.sqlite_connection import SqliteConnection
 
 _COMPANY_WORK_POLICY = COMPANY_EXTRACTION_IDENTITY + ":applicable-subjects:1:repurchase-events:2"
@@ -132,10 +131,11 @@ def IndexCompanyDocument(connection: SqliteConnection, rows: Sequence[Disclosure
             )
         ),
     )
-    IndexCompanyFinancialReportInputs(connection, rows)
 
 
-def PrepareCompanyPublication(connection: SqliteConnection, codes: tuple[str, ...]) -> None:
+def ReplaceCompanyMaterialPopulation(connection: SqliteConnection, codes: tuple[str, ...]) -> None:
+    if tuple(row[0] for row in connection.run("SELECT code FROM company_population ORDER BY code")) == codes:
+        return
     connection.run("DELETE FROM company_population")
     connection.run_many("INSERT OR IGNORE INTO company_population VALUES(?)", ((code,) for code in codes))
     MarkCompanyDirty(connection, codes)
@@ -149,5 +149,5 @@ __all__ = [
     "ReleaseUnusedCompanyDisclosures",
     "MarkCompanyMarketDirty",
     "IndexCompanyDocument",
-    "PrepareCompanyPublication",
+    "ReplaceCompanyMaterialPopulation",
 ]

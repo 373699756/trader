@@ -1,6 +1,7 @@
 """Company facts keep disclosure time separate from risk coverage and load time."""
 
 import time
+import hashlib
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -13,6 +14,7 @@ from trader.download.domain.company_evidence import (
     Disclosure,
 )
 from trader.download.domain.company_facts import CompileCompanyFacts
+from trader.download.domain.company_document_links import CompanyDocumentLinkSnapshot
 from tests.helpers.recommendation.company_research import PublishedCompanyResearchFixture as PublishedCompanyResearch
 
 _AT = datetime(2026, 9, 30, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -51,7 +53,10 @@ class _Reader:
         self.visits = 0
 
     def publication_version(self):
-        return self.snapshot.version
+        return hashlib.sha256(self.snapshot.version.encode()).hexdigest()
+
+    def read_document_links(self, codes, *, cancel_requested=None):
+        return CompanyDocumentLinkSnapshot(self.publication_version(), ())
 
     def visit(self, codes, consume, *, cancel_requested=None):
         self.visits += 1

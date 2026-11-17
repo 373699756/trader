@@ -14,15 +14,21 @@
 
 公司资料重下后的旧风险对照沿同一`download/company/coverage`动作，显式组合`--company-database-audit --company-risk-baseline /external/baseline-risks.json`，并用`--company-collection-database`、`--company-evidence-database`选定采集库和正式库。基线只读，上限4MiB、10000条风险、50000条证据及50000条匹配凭证；保存固定发布的摘要／提取身份／时点、全风险业务字段，以及每个来源依据对应的全部valid输入修订／正文hash／原提交时间／策略。当前结构必须包含publication、risks、evidence及每条依据的receipts，旧基线须重新显式导出，不提供兼容或迁移。比较忽略自增ID，分别报告精确保留、缺失及变化待审；同公告编号但原凭证丢失不能签保全，缺valid或正文hash则保留evidence_identity_confirmed=false。比较与原数据库审计共用总期限，公开报告只含发布身份、变更字段名和证据保全状态，不含凭证明细、案件正文或原字段值。缺失不等于解除，快照变化或无正式发布不能签稳定完成；匹配凭证保留不证明具体事件与修订的语义绑定、供应商原值、其它附表或全市场资料正确。此参数不能与隔离回放目录组合，也不会启动同步或初始化数据库。
 
+普通`trader-cli sync company`现由同一有限轮次用例推进七族资料及本地字段，来源未准入时按族留缺口并保留最近有效事实，不再整条拒绝本地处理。CLI的`processing_complete/business_complete/paused`各有独立含义；族结果分别给出真实待处理数、缺证、失败以及`request_slots_consumed/unknown_attempts/observed_attempts`，未知不按零。固定来源额度跨恢复保留，纯本地规则及输入水位变化不重置请求；具体存储不兼容按文件报告，请求账本不属于资料删除重下范围。配置及恢复合同见下载设计5.15／第9章。显式live-sync计量仍受其自身来源与性能准入约束，普通有限轮次可运行不表示性能或来源全集验收通过。
+
 公司正文错误复验仍用`download/company/coverage`：`--company-ocr-audit --company-replay-directory /external/new-ocr`覆盖低质量、超时及耗尽，优先复制hash一致的本地失败PDF，缺原件才下载。`--company-document-audit`不加目录仍只做请求对照；显式加`--company-replay-directory /external/new-documents`改为复验容量失败的未核验正文，核对最近50条记录的当前来源版本，至多2篇走正常下载、解析及必要OCR。容量复验须用隔离新目录，报告只含有限身份、字符数及状态，不改活动公司库；超过抽样上限、未提取正文或版本失配不能签完整恢复。两种模式互斥，预算通过`--company-audit-budget-seconds`和更大的`--command-timeout-seconds`显式限制。
 
 同入口`--company-database-audit`的`failure_objects`报告按当前object_id／revision去重的正文错误恢复状态，附总体、正式发布／提取及下载配置摘要；全部证券和当前正文的精确valid回执齐备才记published。缺失、修订、未处理、待发布和并发变化分别保留，未识别事件不被当作成功；仅在公开对象列表超过50条时截断列表，状态计数仍覆盖本次已保留的全部失败记录。`company_failure_audit.py`唯一负责该身份及精确回执核验，由库存与容量恢复诊断共同调用；不写活动库或清除错误历史。
 
 同入口`field_audit.financial_sources`分别核对保留与最新报告八项、报告期及精确披露时点。`source_null`表示当前采集依据为空，`publication_missing`表示依据有值而正式值丢失，`source_revision_changed`另列未确认；不将来源空值认证为发行人未披露。汇总覆盖全部正式行，逐股缺项列表最多50条、每条最多8项；旧完整报告不能遮蔽最新报告缺项。`--company-field-replay-keys`也可选择减持依据，在隔离副本中核验正式字段证据及第二轮复用；来源并发变化、缺原文或仍有重复正文读取时保持degraded，不借用局部出证数签全库或性能通过。
 
-同一`--company-database-audit`入口按实际配置的事件规则调用生产`SQLiteCompanyEvidenceReader`，将全部正式股票事实、事件字段结论／证据和发布身份与固定SQL快照逐值比较，输出`publication.consumer_read`；未读完、规则不匹配或预算到期不能计为一致。`http_checked=false`明确表示未验HTTP接口；并发变更、未完成库存及来源质量继续独立报告。
+同一`--company-database-audit`入口按实际配置的事件规则调用生产`SQLiteCompanyEvidenceReader`，将全部正式股票事实、事件字段结论／证据、正式公告链接和发布身份与固定SQL快照逐值比较，输出`publication.consumer_read`；`document_links/document_links_equal`分别记录实际链接数量和逐值一致性。未读完、规则不匹配、链接或发布身份不一致及预算到期不能计为一致。`http_checked=false`明确表示该审计未验HTTP接口；并发变更、未完成库存及来源质量继续独立报告。
 
-只核正式库与生产reader一致性时，选择`download/company/coverage --company-consumer-audit`，可用`--company-evidence-database`指定正式库。该模式不打开采集库、不做dbstat或字段恢复规划，不需要回放目录；与其它company审计模式互斥，并拒绝回放目录和旧风险对照参数。输出`consumer_audit.scope=formal_reader_consistency_only`，事实、字段和发布身份逐值一致且读窗未变、预算未耗尽才通过；`collection_checked/recovery_planned/field_correctness_verified/full_market_verified/http_checked`均为false。通过只表示这个只读合同，不证明来源正确、覆盖齐全、同步终态或HTTP采用；预算、字段恢复和源质量欠项保留各自验收范围。
+只核正式库与生产reader一致性时，选择`download/company/coverage --company-consumer-audit`，可用`--company-evidence-database`指定正式库。该模式不打开采集库、不做dbstat或字段恢复规划，不需要回放目录；与其它company审计模式互斥，并拒绝回放目录和旧风险对照参数。输出`consumer_audit.scope=formal_reader_consistency_only`，事实、字段、正式链接和发布身份逐值一致且读窗未变、预算未耗尽才通过；`collection_checked/recovery_planned/field_correctness_verified/full_market_verified/http_checked`均为false。
+
+同时核对真实HTTP文档链接时，增加`--company-consumer-http`并以`--runtime-config`指定待验收资料目录的真实配置；正式库必须与配置路径一致。唯一组合根按非运行owner构建，只初始化正式参考和公司研究预载，不启动调度器；仅绑定127.0.0.1临时端口，逐值核对全部正式链接及非法请求拒绝，随后停止服务器和资源。handler文件／SQL／网络尝试、任何外网或业务写尝试、身份漂移、资料变化、超时或未能停止均不得通过。公开输出仅白名单摘要，scope为`formal_reader_and_document_http`；HTTP通过仍不代表来源准入、同步全业务终态、生产采用、质量或性能通过。
+
+仓库外wheel安装核验沿用`engineering/packaging/install`。若明确选择调用环境已有pip，可在原生参数中传`--use-environment-pip`；临时venv从既有依赖site读取该pip，不联网安装另一版本，依然执行实际wheel安装、配置／入口／资源核验和`pip check`，没有跳过检查或自动fallback。默认仍使用ensurepip；失败与不同pip提供者的结果分别保留，不相互改签。
 
 按当前规则重证原正式verified字段时，选择`download/company/coverage --company-field-proof-audit`，可用`--company-collection-database`与`--company-evidence-database`指定当前资料。只读模式跳过旧证明／尝试缓存并沿原字段出证owner重读合法原文，来源时点不刷新、不写事实或凭据、不恢复／下载材料；拒绝其它审计及回放目录。`field_proof_audit`保存原发布／提取与实际规则内容摘要，分列目标、已核、重证、未重证及原文观察，公开待核项最多100条；全部目标重证且读窗稳定才通过，独立质量／覆盖／HTTP／活动采用仍为false。显式预算示例为`--company-audit-budget-seconds 180 --command-timeout-seconds 210`，后者须为收尾预留30秒；失败或预算中断不算通过。
 

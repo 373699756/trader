@@ -288,7 +288,7 @@ def _measure_preload(
         company_started = time.monotonic()
         policy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=selected[0])
         research = PublishedCompanyResearch(
-            SQLiteCompanyEvidenceReader(settings.data_paths.company, raw_path=settings.data_paths.company_collection, event_policy=policy.company_scoring.events, sqlite_policy=sqlite_policy),
+            SQLiteCompanyEvidenceReader(settings.data_paths.company, event_policy=policy.company_scoring.events, sqlite_policy=sqlite_policy),
             wall_clock=lambda: observed,
             open_dates=lambda: calendar_dates,
             monotonic=time.monotonic,

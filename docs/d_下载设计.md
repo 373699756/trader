@@ -130,8 +130,8 @@ ST进度分别显示已核验和真正已保存的数量，64股检查点的持�
 | `application/prepare_reference.py` | 先取ST证据并核对完整性，无合格者不取日历/行业、不发布完整参考 | 参考库结构不兼容返回`preparation_ReferenceDatabaseIncompatibleError`，CLI明确提示清理`market/reference/company_st.sqlite3`及配套文件后重下；锁定或其它数据库异常不归为结构不兼容 |
 | `infra/history_supplier_router.py` | `load_context`将`eligible_universe`交给价格准备，沿同一参考绑定日历和资格 | 价格截止日可以是恢复的旧日，资格仍来自本次准备的参考；不再准备历史行业区间 |
 | 组合根中的market供应商构造 | 既有`load_universe`回调返回`reference.eligible_universe`，日历沿同一参考 | 普通与补缺共用；公共组合根仍由A拥有，B不另建入口 |
-| `domain/company_evidence.py` | `CompanyEvidenceRequest.from_reference`只由合格者形成代码、名称和上市日 | 新闻名单随后与合格总体求交；`fill_missing`不扩大资格 |
-| `application/company_evidence.py`、`infra/company_evidence_index.py` | 恢复、正文工作量、待处理任务、下载/文本/OCR和发布使用当前人口；旧目录条目可保留 | 全市场批量结构化来源和目录的被动返回不等于逐股请求，单独计量 |
+| `bootstrap.ExecuteCompanySync`、`domain/company_sync.py` | 从已准备参考的合格证券形成固定代码／截止时点的类型化轮次 | 新闻及逐股任务与当前合格总体求交；`fill`不扩大资格 |
+| `infra/company_sync_runtime.py`、`infra/company_material_index.py` | 恢复、精确材料下载／文本／OCR使用固定轮次与当前资格的交集；旧目录、事实和风险保留 | 新成员等待新轮次，退出者不再派发；全市场批量结构化来源和目录被动返回不等于逐股请求，单独计量 |
 
 ### 2.4 参考门与完整恢复合同之间的现有差距
 
@@ -312,7 +312,7 @@ company先ST过滤，再查合格股票的财务、质押、解禁、公告目�
 
 业务分为两条输入路径：财务、质押、解禁沿已具名的结构化来源；公告事件沿“必要公告→正文/表格→字段候选→单位/主体/时点核验→正式事实”。接口字段填充率不能拿来证明公告结构化成功。一篇公告可以产生多项事件或字段，一个字段也可以依赖同事件多篇公告；不能只存一个“已分析”布尔值。
 
-当前已确认的偏差来自`domain/company_event_extraction.py`、`infra/company_fact_rows.py`和`infra/company_evidence_index.py`：减持比例只有领域/SQL字段，没有正文提取逻辑；回购/增持比例和合同数值主要依赖有限句式；合同营收基数只尝试从同篇文字取得，没有完整的时点依据关联；成功输入凭证的生成不以全部适用字段取得值为条件。只读空值统计是上述问题的线索，尚未逐篇核对原文，不能把全部NULL都定性为漏提，也不能把文字提取成功数当字段召回率。
+旧事件提取、事实codec及默认采集／发布链曾存在减持比例未提取、回购／增持及合同仅有限句式、合同营收依据关联不足等偏差；旧默认owner现已退役，当前逐字段出证由`company_field_publication.py`及年度字段owner统一承担。有效输入凭证仍只证明该输入被接纳，不等于全部适用字段取得值；当前规则未证、材料缺失及原文／修订冲突必须分别保留。只读空值统计不能把全部NULL都定性为漏提，文字提取成功数也不是字段召回率；实际字段质量与剩余差距只按g的具名原文证据核验。
 
 先把“原文明确披露但未取得”“当前解析器不支持”“来源确未披露”“该事件不适用”分清。解析器未命中不能直接写成来源未披露；暂不支持的字段必须显示为实现缺口，并阻止以该字段为目的继续扩大自动下载，已有事实和其它独立任务继续保留。
 
@@ -388,7 +388,7 @@ company先ST过滤，再查合格股票的财务、质押、解禁、公告目�
 | `checked_at` | 资料实际检查时点 | 采集 | 来源年龄，不被重新读取刷新 |
 | `published_at` | 本地事实快照发布时间 | 正式发布 | 版本追踪，不替代原披露时间 |
 
-SQL类型、可空性、键／索引、codec、写入者和读取者统一见[第8.6节](#86-company正式事实字段结论与凭据)，本表只维护列的业务意义和使用规则。当前财务解析器为 `company_structured_source.py::_financial`：报告期／原披露分别取REPORT_DATE／NOTICE_DATE，八个值依次取EPSJB、BPS、TOTALOPERATEREVETZ、PARENTNETPROFITTZ、KCFJCXSYJLRTZ、ROEJQ、PARENTNETPROFIT、KCFJCXSYJLR；金额原值经有限数值校验直接进入采集对象，没有据字段名增加倍率换算。质押取TRADE_DATE／PLEDGE_RATIO，解禁取FREE_DATE／TOTAL_RATIO；正式写入与时间／状态转换由company_fact_rows完成。供应商原金额单位、修订和逐值正确性仍须真实证据核验，不能用字典补齐代替P36验收。
+SQL类型、可空性、键／索引、codec、写入者和读取者统一见[第8.6节](#86-company正式事实字段结论与凭据)，本表只维护列的业务意义和使用规则。财务来源codec在`company_structured_source.py`：报告期／原披露分别取REPORT_DATE／NOTICE_DATE，八个值依次取EPSJB、BPS、TOTALOPERATEREVETZ、PARENTNETPROFITTZ、KCFJCXSYJLRTZ、ROEJQ、PARENTNETPROFIT、KCFJCXSYJLR；金额原值经有限数值校验进入类型化观察，没有据字段名增加倍率换算。质押取TRADE_DATE／PLEDGE_RATIO，解禁取FREE_DATE／TOTAL_RATIO。普通有限同步只保存尚未准入的观察，不调用正式财务／比例发布；只有具名隔离研究可显式构造候选。供应商原金额单位、最新总体、修订和逐值正确性仍须真实证据核验，不能用字典补齐代替P36验收。
 
 生产财务页须含证券、报告期、披露日期及八指标全部11列；显式NULL与缺列分别处理，缺列拒绝整页，合法NULL、零及负值保留。观察时点必须带时区，365日下界按上海自然日计算；来源明确给出的披露时刻晚于本轮截止时拒绝，不以归零日期掩盖未来时刻。已接纳记录仍沿原上海披露日投影，不据此补签首次披露或正式修订。
 
@@ -721,7 +721,7 @@ Tushare作为补充候选：[利润表](https://tushare.pro/document/2?doc_id=33
 
 统一来源报告保留有界类型解码状态、观察数和固定身份拒绝原因，采用/质量标志保持false；解码成功与官方同案、点时核实分别报告，不能用列存在或非空升级正式采用。实时同步计量明确保留`disclosure_document_ocr_required`内部转路身份；它不属于持久终态失败，不能把OCR转路计数与未解决正文失败混为一类。
 
-HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒发布及下载/文本/OCR并发2/2/1。候选包括跨批次计时与合批、可能结束旧补缺时立即发布、单页目录HTTP预取、每次预留只扫描一次和链接候选分块读取；最终发布、原子回执与文件封存不省略。既有company worker的`--io-candidates-only`在仓库外隔离样本中对15/30/60秒各做5组与现有5秒的配对，输入、PDF和事实摘要须一致；总耗时中位数差距不足5%时取更短间隔，只输出候选、不修改生产配置。该PDF样本不包含目录预取性能验收，完整目录、全作业及CPU/RSS/I/O由C后台按原队列测量，未测不启用。
+旧递归发布及其间隔对照worker已退出，`--io-candidates-only`不再提供；旧5／15／30／60秒报告仅保留历史身份，不能用已退役workload证明当前有限同步的性能。当前正式提交、原子回执与文件封存不省略；可复用的下载／文本／OCR能力沿各自owner保留，配置上限不代表实测吞吐。完整目录、全作业及CPU/RSS/I/O仍由C后台按g原队列对冻结实现实测，未测不启用性能候选，本次功能回归和隔离HTTP不代签。
 
 ### 5.14 逐字段正式结论与发布复查
 
@@ -763,6 +763,8 @@ HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒�
 
 正式只读入口`read_fields`与事实共用固定读事务，返回发布hash及类型化字段结论，实际值从同一事实列读取；支持取消。诊断读取这些正式结论，不另推导一份持久状态；具名材料按公开白名单展示有限行段、来源身份与字段状态，全市场汇总仍不把规则出证数当独立留出质量或召回率。
 
+公告链接由同一个正式事实writer保存为类型化元数据：证券、来源、精确记录摘要及公告编号、标题、地址、披露时点和正文核验状态，与当前正式事实／字段的证据关联及输入凭证一起核对，纳入同一发布摘要。未传新链接的普通事实／字段提交只保留仍有正式关联和精确凭证的原链接；失去正式关联的链接清退。`read_document_links`只读正式库的固定事务，返回该发布身份和链接快照，不读采集库；不提供旧采集库查询或兼容路径。推荐预加载先核事实读窗，再核链接发布身份相同，将两者在容量和deadline内原子采用；HTTP查询只访问这份内存快照，按公开白名单输出，未采用、未引用或未知编号返回空列表。失败、取消、身份变化或容量不足不接受混合发布；原文已经合法释放或采集库不可用也不影响已采用的正式链接。只读消费者审计同时逐值对照正式链接和发布身份；通过仍不代表原件、源覆盖或完整服务已通过验收。
+
 具名原文对照的`field_conclusions`仅展示来源、目录版本、正文hash及披露时点均匹配该篇材料的正式证明；`unverified_fields`另列该材料所属事件的适用待核项，每篇最多32项并标截断，不能将事件关联当成该篇已出证。两者保留证券代码和原正式状态，正文暂不可读仍显示既有待核项，不把未知改成未披露。合同对照同时列正式值与`reparsed_contract`；后者只用当前原文重解析、固定`published=false`，不把另一路年度收入混入同篇提取，也不写事实。公开投影继续限字段、条数和原文行段，不输出完整正文。
 
 旧字段格式升级工具及`--company-field-migration-audit`入口已删除。不再为旧库生成补齐候选或提供双格式reader；新的正式库由正常下载writer按当前完整结构创建。
@@ -775,11 +777,25 @@ HDD性能候选通过显式依赖或构造参数选择，生产默认仍为5秒�
 
 独立正式读取验收使用`--company-consumer-audit`：仅固定正式SQL读视图，对照真实reader的全部事实、字段及发布身份，读窗前后核data_version；不打开采集库、不规划字段恢复，也不判断源质量。预算和其它模式／回放目录独立，缺失库不创建；已知reader取消沿本轮期限归类，未知中断保留原异常，收尾超时不抹去此前已知读取失败。仅当一致性完整且未发生并发变化才签`formal_reader_consistency_only`范围通过，HTTP、原值正确性、全市场覆盖和活动采用继续另验。
 
+同一模式可显式增加`--company-consumer-http`，以真实runtime配置对应的正式资料目录验收HTTP，拒绝与配置不同的正式库。仅经唯一组合根构建非运行owner、预载参考和公司研究，绑定127.0.0.1临时端口，核对全部正式文档链接与非法参数拒绝；不启动调度器或发布名单。handler文件／SQL／网络尝试、外网或业务写尝试、head与原资料变化、超时及资源未停止都拒绝通过。此时scope为`formal_reader_and_document_http`，白名单输出`http_audit`安全摘要；不升级为来源准入、全业务终态、生产采用或质量／性能结论。
+
 显式当前规则重证使用同一coverage动作的`--company-field-proof-audit`，与其它审计模式互斥、不接受回放目录；可分别指定当前采集库与正式库。固定只读视图中，仅以原正式verified字段为验收目标，复用原字段准备owner的`revalidate=True`跳过旧证明及普通／年度尝试缓存；仍核原目录、证券、正文hash和精确valid，以原事实checked_at为可见截止，不更新来源年龄。正常同步默认继续复用合法缓存。重证结果和拟写凭据均不提交，缺原文、旧依据失配或当前规则不复现时保留未重证状态；报告区分重证数、未重证数及旧正文已释放／仍有同名文字文件、当前依据失配和规则未复现等观察，不自动恢复或下载材料。
 
-重证报告绑定原发布、原／当前提取身份及字段规则内容摘要；后者由唯一字段出证owner计算实际允许规则白名单和九个提取／定位／出证源码的内容，不是自定义版本号。目标全部读完并重证、读窗稳定且预算未耗尽才签该范围通过；布尔冒充计数、提取身份不一致或矛盾质量声明拒绝。原文读取有界且可取消，预算中断不得记成正文缺失；公开最多100条待核字段与有界原因，不输出原文。该结果仍不签独立字段正确性、全市场源覆盖、HTTP、性能或活动采用。
+重证报告绑定原发布、原／当前提取身份及字段规则内容摘要；后者由唯一字段出证owner计算实际允许规则白名单及参与提取／定位／出证的源码内容，包含回购正文与表格判据依赖，不是自定义版本号。目标全部读完并重证、读窗稳定且预算未耗尽才签该范围通过；布尔冒充计数、提取身份不一致或矛盾质量声明拒绝。原文读取有界且可取消，预算中断不得记成正文缺失；公开最多100条待核字段与有界原因，不输出原文。该结果仍不签独立字段正确性、全市场源覆盖、HTTP、性能或活动采用。
 
 缺失原件的显式恢复使用互斥的`--company-field-proof-recovery`，必须另给`--company-field-proof-recovery-manifest`及新隔离目录。先从原正式证明冻结精确证券、目录记录、原正文／PDF摘要和披露时点，再通过既有单文档下载与解析owner逐件尝试；上限52个原件、68项目标字段，每件最多一次物理HTTP、15秒，沿原资源限额。仅在隔离副本登记真实材料依赖和执行恢复，不写活动采集／正式库，不把补件成功直接当作字段重证成功。报告分别记录原件身份吻合、实际恢复、当前规则重证及仍未重证的字段；旧值、原风险及正式身份不因报告改变。恢复后的字段仍须依原出证owner核原证券、原正文和精确valid，不扩大PDF提取句式或补签证明；该显式模式不恢复默认逐股PDF补洞。
+
+### 5.15 完整公司轮次与来源准入
+
+普通`sync company`经唯一bootstrap将已准备资格总体和上海时点交给`ExecuteCompanySync`，由同一个有限轮次用例推进财务、质押、解禁、公告、年度收入、新闻和本地字段七族。源资格缺证按族保留，不用整条入口guard阻断合法本地处理。未准入的财务／比率只保存规范观察，不写成正式完整事实；已有事实、风险、原有效凭证与原来源年龄保留。财务隔离推导仅在已校验的研究目录显式选择，不成为普通入口的隐藏发布开关。首次空目标创建明确UNAVAILABLE投影，不生成无风险或已核字段。
+
+规范财务输入、其它类型化观察、材料、正式事实及请求账本各有唯一owner，分别位于`company_normalized.sqlite3`、`company_inputs.sqlite3`、`raw/company_collection.sqlite3`、`company_facts.sqlite3`和`company_sync.sqlite3`；最后一项是消耗／未知请求的恢复证据，不属于资料删除重下范围。所有已有结构先只读核对，不兼容则指出具体文件；不自动迁移、补表、清库或删除原件。已发布正式内容先核完整性，合法未封签提交也须由精确持久意图和类型化内容一致性证明恢复，不能无条件重新封签坏内容。
+
+原scope、来源请求计划与总额度跨进程固定，HTTP前持久预占，失败和未知不返还；0次实际预占的取消与已经预占但结果未确认分开恢复。当前资格移出者停止新请求／提取并保留原事实；新加入者待安全新观察。纯本地规则变化、必要输入水位变化只重开本地字段，不重置来源预算；旧／缺全局规则证明须完整当前键集重证，不借局部证明签全局marker。只读`read_fields`对非空字段拒绝缺失／旧规则marker，原字段记录不改写；独立有效的既有风险事实仍可交付。
+
+请求额度、步骤及总期限各按第9章配置，单族推进最多取本次步骤上限与256的较小值，不把目录页数当财务或全轮配额。`directory_batch_pages`仍服务已有目录诊断，新普通公告owner是精确单步cursor，未据此实现目录批次效果。来源额度耗尽时，本地族在剩余总时间内继续；HTTP、SQL、原文读取及工具探测使用同一单调期限，实际重试冷却用注入的当前上海墙钟，不用固定scope.T代替失败时间。清理是独立显式操作，不藏在publisher或run中；维护失败不抹去已发布结果。
+
+公开结果分别报告有限处理是否结束、业务是否完整、是否暂停和各族缺证／失败／待处理数；已消费请求槽位、已观察尝试和未知尝试分列。空来源、目录HTTP200、一次迭代结束或只读一致性通过均不证明来源已准入、最新资料齐全或持续风险全集完整。隔离实测、安装包、HTTP与重启分别记录实际范围，不升级为活动资料切换、性能、收益或发布通过。
 
 ## 6. 统一的中断、错误和完整性规则
 
@@ -981,6 +997,11 @@ Tencent原始日线响应若含同证券、同目标日15:00之后的qt报价，
 | company_positive_evidence（WR） | positive_id/evidence_id/position INTEGER | PK(positive_id,evidence_id)，UQ(positive_id,position)；positive FK→company_positive_event且级联，evidence FK→company_evidence_ref，position≥0；保持利好证据顺序 |
 | company_exclusion | id/reason/source INTEGER；code/source_key TEXT；effective_at T；evidence_hash H | PK(id)，UQ(code,reason,source,source_key)；code六位数字、reason1/2、source1–3、摘要须为32字节；公共资格准备与正式排除reader消费，不与ST参考另建重复状态源 |
 | company_publication | singleton INTEGER；extraction_hash/content_hash H；published_at T | PK(singleton=1)；两hash须为32字节；正式发布身份和当前提取规则摘要，父版本冲突／失败不推进 |
+| company_latest_financial（WR） | code TEXT；report_date D；disclosed_at T；eps/bps/revenue_growth_pct/profit_growth_pct/core_profit_growth_pct/roe_pct/parent_profit/core_profit REAL? | PK／FK(code)→company_facts且级联；保留真实最新报告快照，禁止用未准入来源观察覆盖 |
+| company_field_proof_rule | singleton INTEGER；rules_hash H | PK(singleton=1)；实际当前出证源码摘要，只有全范围当前规则重证后推进；普通写入撤签而非继承旧证明，正式字段reader拒绝缺／旧摘要 |
+| company_document_link（WR） | code/source/evidence_id/record_hash/title/url TEXT；published_at T；body_checked INTEGER | PK(code,source,evidence_id)，code FK→company_facts且级联，body_checked为0/1；与精确凭证和正式证据关联核对，同正式事务保存、纳入发布摘要，HTTP仅用按同head预载的快照 |
+| company_financial_observation（WR） | code/report_date/disclosed_at/security_identity/notice_at/observed_at/currency/record_hash TEXT；updated_at TEXT?；八财务值REAL? | PK(code,report_date)；供应商观察与正式财务分开，普通未准入同步的观察只在规范输入库保存，不借字段发布写入本表或正式财务回执 |
+| company_normalization_commit（WR） | scope TEXT；generation/content_hash/extraction_hash H；published_at T | PK(scope)；正式提交与精确规范输入意图绑定，崩溃恢复须比较实际类型化内容，不能无条件重封坏内容 |
 | company_field_result（WR） | code/event_key/field/state/reason TEXT；applicable INTEGER | PK(code,event_key,field)，code FK→company_facts且级联；applicable为0/1，state=not_applicable等价于applicable=0；reason有界。12类字段及状态业务含义只在5.14定义，由字段发布器／正式reader共用 |
 | company_field_evidence（WR） | code/event_key/field/source/source_key/record_hash/rule_id/quote/unit TEXT；position/start_line/end_line/subject_type INTEGER；body_hash H；published_at T | PK(code,event_key,field,position)，前三列FK→company_field_result且级联；position≥0，行号≥1且有序，quote为1–1000字符，unit=percent/cny/date/time/text，subject1–4，body_hash32字节。绑定当前原文行段及规则；不是仅凭hash签字段正确 |
 
@@ -1031,7 +1052,7 @@ company整数协议由 `company_facts_protocol.py`唯一维护，不是自定义
 | company_field_repairs（WR）；company_field_recovery.py | disclosure_id INTEGER；code/record_hash/event_id/field/rule_id/state TEXT；前六列联合PK；均非空，disclosure FK→disclosures且级联 | QueueCompanyFieldRepairs／RegisterCompanyFieldAttempts写，CompleteCompanyFieldRepairs／RestoreCompanyFieldRepairs及材料恢复消费；state=pending/attempted/complete，只表达字段恢复任务，不替代正式字段值 |
 | company_material_dependencies（WR）；同上 | disclosure_id INTEGER；code/record_hash/scope/reason_code TEXT；body_hash/extraction_hash H；七列联合PK；均非空，两hash32字节，disclosure FK→disclosures且级联；索引 company_material_dependency_codes(code,disclosure_id) | RegisterCompanyMaterialDependencies写；字段review及材料清理按精确原有效回执读取；无原文只报告缺口，不自动重下 |
 | document_contract_link_rules（WR）；company_contract_link_rules.py | source/source_key/code/record_hash/rule_id TEXT；body_hash/extraction_hash/payload_hash H；PK(source,source_key,code,record_hash,extraction_hash)；均非空，body/payload hash32字节 | WriteCompanyContractLinkRules写，ReadCompanyContractLinkRules／ReadCompanyPublicationLinks核当前候选及局部主体／签署规则；不能绕过同案／主体守卫 |
-| annual_income（WR）；company_annual_income_index.py | code/report_date/disclosed_at/updated_at/observed_at/currency/record_hash TEXT；operating_revenue REAL?；PK(code,report_date,disclosed_at,updated_at,record_hash) | WriteCompanyAnnualIncome写，PlanCompanyAnnualIncomeRequests／ReadCompanyAnnualIncome和合同编译消费；原披露／修订／收到时间分开，经营收入元，缺值不以营业总收入替代 |
+| 年度结构化观察已由`company_inputs.sqlite3`的`company_annual_income_observation`承担 | scope/code/report_date/disclosed_at/updated_at/observed_at/currency/record_hash TEXT；revenue REAL?；PK(scope,code,report_date,disclosed_at,updated_at) | `SQLiteCompanySyncInputStore`保存逐请求观察与完成回执；尚未准入时不写正式合同营收依据，不以营业总收入补值。旧年度逐股索引owner已退役 |
 
 采集库还安装8.5的 download_failure。材料原件、压缩文字及OCR页是 `CompanyRawFiles`／`CompanyDocumentFiles` 管理的文件，不是遗漏在本表的SQLite列；容量、引用保护及清理前提见5.11–5.14。
 
@@ -1039,7 +1060,15 @@ company整数协议由 `company_facts_protocol.py`唯一维护，不是自定义
 
 本章替代旧稿DB编号及历史字段改名对照作为当前查询入口；不把旧schema2／3计数或字段别名带入新合同。下载数据库不兼容时仅按第6章明确的下载资料范围拒绝并提示人工删除后重下，本次字典整理没有初始化、补表、补列、迁移或删除任何资料，不涉及模型、冻结记录和预算。
 
-需要保留的源码边界：reference、catalog和market在原owner的完整schema中核对；company正式表由 COMPANY_FACTS_SCHEMA 核对，采集核心表由 SCHEMA 核对。采集附属工作表仍分散在 initialize 调用的 EnsureCompany*、DOCUMENT_* 和 DISCLOSURE_QUERY_SCHEMA 中，部分只读派生查询会在表不存在时返回“没有当前证明”。这是当前静态代码的安装／读取方式，不能由字典反推其已通过全部缺表反例，也不将它写成允许旧库兼容的产品要求；统一结构收口或删除这些分支如需实施，仍沿原业务owner和台账另行核对。
+reference、catalog和market在原owner的完整schema中核对；company正式表由 COMPANY_FACTS_SCHEMA 核对，材料owner核对完整采集结构及当前附属工作表。有限同步先只读核对所有已存在库及正式封签，再创建缺失的全新库；旧／缺列结构明确拒绝，不执行兼容初始化或补列。规范输入、源观察及请求恢复的实际DDL分别由`company_normalized_index.py`、`company_sync_inputs.py`和`company_sync_journal.py`唯一维护，状态不由HTTP读写。
+
+| 当前资料库／表 | 当前owner及恢复语义 |
+| --- | --- |
+| company_normalized.sqlite3；正式类型表及company_normalization_seed／company_round_page／company_round_member／company_round_intent／company_round_generation | 规范输入、原始分页计数／业务键及持久提交意图；尚未准入的财务观察只保存在此库，隔离候选角色与普通观察角色参与真实身份，不串用 |
+| company_inputs.sqlite3；company_source_page／company_ratio_observation／company_pledge_day | 分页观察与单轮冻结质押快照日；人口覆盖与总股本分母仍需证据，不把空观察当无质押／解禁 |
+| 同库；company_annual_income_observation／company_source_task／company_recovered_input | 年度观察、实际输入完成回执及原来源／证券／记录／正文hash绑定的精确恢复结果；本地字段输入水位不包含其自身完成回执，不形成循环重刷 |
+| company_sync.sqlite3；company_sync_round／company_sync_code／company_sync_plan／company_sync_local_plan | 固定代码／截止时点、来源计划和不可重置的来源请求限额；本地规则及实际输入变化独立记录，不另开来源预算 |
+| 同库；company_sync_step／company_sync_request | 执行意图、已确认步骤、物理HTTP预占及观察结果；unknown不退还预算，不因进程重启重发。该库是恢复／消耗证据，不在资料删除重下范围内 |
 
 CHECK、codec验证、外键启用及发布凭据检查是不同层次；本章列的是该已提交基线的物理定义及消费者，不证明活动库实际具有这些表、来源逐值正确、公司全字段覆盖、历史公开时点齐备或性能达标。阶段358的最新行业只读快照及正常history退出历史行业准备不新增物理表，当前消费合同见第2.5节；阶段355／359的日志和ST重试也不能反推数据库已改变或真实资料已验收。后续仅核对实际DDL／codec／消费者差集，不重复复制年度表、另建一份字典或第二进度记录。
 
@@ -1103,7 +1132,7 @@ CHECK、codec验证、外键启用及发布凭据检查是不同层次；本章�
 | document_download_timeout_seconds | 120.0 | number，秒，0.1–120，且≥source_timeout_seconds | 巨潮正文下载总期限 |
 | document_parse_timeout_seconds | 10.0 | number，秒，0.1–30 | 标准／扩限解析及BuildCompanyDocumentPolicies |
 | request_interval_seconds | 1.0 | number，秒，≥1 | CompanyRequestPacer；目录与文件host分别限速，同host共用时间线 |
-| directory_batch_pages | 20 | int，页，1–100 | SyncCompanyEvidence的目录批次 |
+| directory_batch_pages | 20 | int，页，1–100 | 已有目录诊断的有界批次；新普通公告owner为精确单步cursor，不消费此项 |
 | document_batch_size | 50 | int，篇，1–128，且≤document_queue_limit | pending_documents(limit=...)本批任务数 |
 | document_workers | 2 | int，worker，1–8 | bootstrap创建文档来源／会话和文档executor，流水线核对数量 |
 | text_workers | 2 | int，worker，1–8 | 文本executor及在途派发 |
@@ -1111,6 +1140,9 @@ CHECK、codec验证、外键启用及发布凭据检查是不同层次；本章�
 | document_queue_limit | 128 | int，篇，1–128 | 当前只约束document／publication批次合法性，未找到运行队列独立读取此值 |
 | publication_batch_size | 50 | int，篇，1–128，且≤document_queue_limit | 已完成待发布量达到阈值时触发正式发布 |
 | publication_interval_seconds | 5.0 | number，秒，0.1–60 | 正式发布等待阈值，与批次阈值共同判断 |
+| round_request_limit | 512 | int，槽位，0–2048 | 固定company轮次的物理请求预算；HTTP前原子预占，失败／未知仍消费，恢复不重置，不共用DeepSeek或价格复核预算 |
+| round_step_limit | 1024 | int，步骤，1–4096 | 本次调用的全轮推进上限；不解释成HTTP数或扩大源资格 |
+| round_timeout_seconds | 1800.0 | number，秒，1–28800 | 本次调用的可取消单调总期限；耗尽保留固定轮次及已接纳输入，来源预算耗尽仍允许其它本地步骤在总期限内推进 |
 | text_task_reserve_bytes | 16777216 | int，字节，≥1，另受并行约束 | CompanyRawFiles分析预约及正文来源文本任务 |
 | ocr_task_reserve_bytes | 314572800 | int，字节，≥300MiB，另受并行约束 | OCR任务分析预约 |
 | document_failure_retry_seconds | 86400.0 | number，秒，≥1 | 一般失败的冷却／下次尝试 |

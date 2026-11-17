@@ -42,6 +42,46 @@ def test_injected_attempt_inherits_absolute_deadline_and_reports_observation():
         transport.get("https://example.invalid", timeout=5)
 
 
+@pytest.mark.parametrize("requested,expected", ((None, 22.0), (24.0, 22.0), (21.0, 21.0)))
+def test_instance_deadline_bounds_authorization_and_the_real_attempt_request(requested, expected):
+    authorized = []
+    attempted = []
+
+    def execute(request):
+        attempted.append(request)
+        return HttpResponse(200, b"ok")
+
+    with driver.RequestsHttpTransport(
+        monotonic=lambda: 20.0, deadline_limit=22.0, authorize=authorized.append, execute_request=execute,
+    ) as transport:
+        transport.get("https://example.invalid", timeout=120, deadline=requested)
+    assert len(authorized) == len(attempted) == 1
+    assert authorized[0].deadline == attempted[0].deadline == expected
+
+
+def test_expired_instance_deadline_never_authorizes_or_attempts_http():
+    authorized, attempted = [], []
+    with driver.RequestsHttpTransport(
+        monotonic=lambda: 20.0, deadline_limit=19.0, authorize=authorized.append, execute_request=attempted.append,
+    ) as transport, pytest.raises(HttpTimeout):
+        transport.get("https://example.invalid", timeout=120)
+    assert authorized == attempted == []
+
+
+def test_authorization_crossing_deadline_keeps_reservation_without_attempting_http():
+    clock, authorized, attempted = [20.0], [], []
+
+    def authorize(request):
+        authorized.append(request)
+        clock[0] = 23.0
+
+    with driver.RequestsHttpTransport(
+        monotonic=lambda: clock[0], deadline_limit=22.0, authorize=authorize, execute_request=attempted.append,
+    ) as transport, pytest.raises(HttpTimeout):
+        transport.get("https://example.invalid", timeout=120)
+    assert len(authorized) == 1 and attempted == []
+
+
 @pytest.mark.parametrize("method", ["get", "post"])
 @pytest.mark.parametrize("fail", [False, True])
 def test_request_scope_releases_only_its_injected_transport_on_success_and_failure(method, fail):

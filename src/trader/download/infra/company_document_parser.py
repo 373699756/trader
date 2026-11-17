@@ -8,11 +8,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 
 from trader.download.domain.company_evidence import CompanyDocumentLimits
+from trader.download.infra.company_document_process import CompanyDocumentProbeTimeout
 
 
 @dataclass(frozen=True)
@@ -27,7 +30,12 @@ class CompanyTextCapability:
         return self.failure is None
 
 
-def DetectCompanyText() -> CompanyTextCapability:
+def DetectCompanyText(
+    *, deadline: float | None = None, monotonic: Callable[[], float] = time.monotonic,
+    check: Callable[[], None] | None = None,
+) -> CompanyTextCapability:
+    if check is not None:
+        check()
     pdftotext = shutil.which("pdftotext")
     pdfinfo = shutil.which("pdfinfo")
     if pdftotext is None or pdfinfo is None:
@@ -35,8 +43,12 @@ def DetectCompanyText() -> CompanyTextCapability:
             "unavailable", pdftotext, pdfinfo, "disclosure_document_text_unavailable"
         )
     try:
-        text_version = subprocess.run((pdftotext, "-v"), capture_output=True, timeout=5, check=False)
-        info_version = subprocess.run((pdfinfo, "-v"), capture_output=True, timeout=5, check=False)
+        text_version = subprocess.run((pdftotext, "-v"), capture_output=True,
+            timeout=CompanyDocumentProbeTimeout(deadline, monotonic, check), check=False)
+        info_version = subprocess.run((pdfinfo, "-v"), capture_output=True,
+            timeout=CompanyDocumentProbeTimeout(deadline, monotonic, check), check=False)
+    except InterruptedError:
+        raise
     except (OSError, subprocess.TimeoutExpired):
         return CompanyTextCapability(
             "unavailable", pdftotext, pdfinfo, "disclosure_document_text_unavailable"

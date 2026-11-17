@@ -18,7 +18,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
 
 from trader.download.domain.company_evidence import CompanyDocumentFailure, CompanyOcrDiagnostic
-from trader.download.infra.company_document_process import CaptureDocumentTool
+from trader.download.infra.company_document_process import CaptureDocumentTool, CompanyDocumentProbeTimeout
 from trader.infra.http_contracts import HttpCancelled
 from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
 
@@ -44,7 +44,12 @@ class CompanyOcrCapability:
         return self.failure is None
 
 
-def DetectCompanyOcr(languages: str) -> CompanyOcrCapability:
+def DetectCompanyOcr(
+    languages: str, *, deadline: float | None = None, monotonic: Callable[[], float] = time.monotonic,
+    check: Callable[[], None] | None = None,
+) -> CompanyOcrCapability:
+    if check is not None:
+        check()
     tesseract = shutil.which("tesseract")
     pdftoppm = shutil.which("pdftoppm")
     pdfinfo = shutil.which("pdfinfo")
@@ -52,14 +57,16 @@ def DetectCompanyOcr(languages: str) -> CompanyOcrCapability:
         return CompanyOcrCapability("unavailable", tesseract, pdftoppm, languages, "disclosure_document_ocr_unavailable")
     try:
         version = subprocess.run(
-            (tesseract, "--version"), capture_output=True, timeout=5, check=False
+            (tesseract, "--version"), capture_output=True, timeout=CompanyDocumentProbeTimeout(deadline, monotonic, check), check=False
         )
         listed = subprocess.run(
-            (tesseract, "--list-langs"), capture_output=True, timeout=5, check=False
+            (tesseract, "--list-langs"), capture_output=True, timeout=CompanyDocumentProbeTimeout(deadline, monotonic, check), check=False
         )
         renderer = subprocess.run(
-            (pdftoppm, "-v"), capture_output=True, timeout=5, check=False
+            (pdftoppm, "-v"), capture_output=True, timeout=CompanyDocumentProbeTimeout(deadline, monotonic, check), check=False
         )
+    except InterruptedError:
+        raise
     except (OSError, subprocess.TimeoutExpired):
         return CompanyOcrCapability("unavailable", tesseract, pdftoppm, languages, "disclosure_document_ocr_unavailable")
     installed = {

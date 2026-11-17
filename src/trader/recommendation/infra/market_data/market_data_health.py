@@ -28,6 +28,7 @@ _COMPANY_ERROR_CODES = frozenset({
     "company_preload_deadline",
     "company_preload_capacity",
     "company_publication_changed",
+    "company_document_link_identity_ambiguous",
     "company_snapshot:missing",
     "company_snapshot:OSError",
     "company_snapshot:RuntimeError",

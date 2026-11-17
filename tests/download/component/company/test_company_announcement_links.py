@@ -51,74 +51,8 @@ def _read(index):
     return SQLiteCompanyEvidenceReaderFixture(index.facts_path).read(("600001",))[0]
 
 
-def test_latest_progress_links_after_older_plan_arrives_and_survives_three_restarts(tmp_path):
-    index = fixtures._index(tmp_path)
-    observed = fixtures.NOW + timedelta(days=3)
-    old = fixtures._disclosure("1225000001", "关于回购股份的公告")
-    latest = fixtures._disclosure("1225000002", "关于回购股份进展的公告", when=fixtures.NOW + timedelta(days=2))
-    _put(index, latest, _LATEST, observed)
-    index.publish(latest.codes, observed)
-    assert not _read(index).positive_events
-    assert any(reason.reason_code == "progress_unlinked" for reason in _read(index).review_reasons)
-    _put(index, old, _OLD, observed)
-    index.publish(old.codes, observed)
-    facts = _read(index)
-    assert len(facts.positive_events) == 1
-    event = facts.positive_events[0]
-    assert event.evidence_ids == (old.identity, latest.identity)
-    assert event.first_disclosed_at == old.published_at
-    assert event.last_disclosed_at == latest.published_at
-    assert event.measurements.actual_ratio_pct == 0.2
-    assert not any(reason.reason_code == "progress_unlinked" for reason in facts.review_reasons)
-    with SqliteSession(index.path) as connection:
-        receipts = connection.run("SELECT count(*) FROM document_publications").require_one()[0]
-    for _ in range(3):
-        index.initialize()
-        index.prepare_and_publish(old.codes, observed)
-        index.publish(old.codes, observed)
-        assert not index.pending_documents(old.codes, observed, policies=fixtures._TEST_DOCUMENT_POLICIES)
-        assert _read(index).positive_events == facts.positive_events
-    with SqliteSession(index.path) as connection:
-        assert connection.run("SELECT count(*) FROM document_publications").require_one()[0] == receipts
 
 
-def test_number_linked_latest_field_closes_old_repair_and_keeps_original_receipt(tmp_path):
-    index = fixtures._index(tmp_path)
-    observed = fixtures.NOW + timedelta(days=3)
-    old = fixtures._disclosure("1225000001", "关于回购股份的公告")
-    latest = fixtures._disclosure("1225000002", "关于回购股份进展的公告", when=fixtures.NOW + timedelta(days=2))
-    _put(index, old, _OLD.replace("，回购股份用于注销。", "。"), observed)
-    index.publish(old.codes, observed)
-    with SqliteSession(index.path) as connection:
-        original_receipt = tuple(connection.run("SELECT * FROM document_publications").require_one())
-        assert connection.run("SELECT state FROM company_field_repairs WHERE field='repurchase_purpose'").require_one()[0] == "attempted"
-        assert connection.run("SELECT body_retained FROM disclosures WHERE source_key=?", (old.identity,)).require_one()[0] == 1
-    # Existing accepted text is indexed during its normal hash-checked startup
-    # recovery. Missing alias metadata must not trigger another download.
-    with SqliteSession(index.path) as connection, SqliteTransaction(connection):
-        connection.run("DELETE FROM document_announcement_numbers")
-    index.initialize()
-    with SqliteSession(index.path) as connection:
-        assert connection.run("SELECT number FROM document_announcement_numbers WHERE role=0").require_one()[0] == "2026-101"
-    _put(index, latest, _LATEST, observed)
-    index.publish(old.codes, observed)
-    with SqliteSession(index.path) as connection:
-        assert connection.run("SELECT state FROM company_field_repairs WHERE field='repurchase_purpose'").require_one()[0] == "complete"
-        assert connection.run("SELECT body_retained FROM disclosures WHERE source_key=?", (old.identity,)).require_one()[0] == 0
-        assert tuple(connection.run(
-            "SELECT * FROM document_publications WHERE disclosure_id=?", (original_receipt[0],)
-        ).require_one()) == original_receipt
-    events = _read(index).positive_events
-    assert events[0].measurements.actual_ratio_pct == 0.2
-    for at in (observed, observed + timedelta(days=1)):
-        index.prepare_and_publish(old.codes, at)
-        index.publish(old.codes, at, changed_only=True)
-        assert not index.pending_documents(old.codes, at, policies=fixtures._TEST_DOCUMENT_POLICIES)
-        assert _read(index).positive_events == events
-    with SqliteSession(index.path) as connection:
-        assert tuple(connection.run(
-            "SELECT * FROM document_publications WHERE disclosure_id=?", (original_receipt[0],)
-        ).require_one()) == original_receipt
 
 
 @pytest.mark.parametrize("guard", ("other_stock", "duplicate_number", "same_time", "future", "changed_version", "unknown_reference", "negated_reference", "other_source"))

@@ -1,61 +1,29 @@
-"""Field repair tasks belong to the collection ledger, never to a second facts source."""
+"""Explicit material protection/recovery and read-only field needs; no automatic dispatch."""
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
-from datetime import datetime, timedelta
-from itertools import groupby
-from pathlib import Path
 from dataclasses import dataclass, replace
-import hashlib
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
-from trader.download.domain.company_annual_income import ApplyCompanyAnnualIncome
 from trader.download.domain.company_annual_report import COMPANY_ANNUAL_REPORT_DISCLOSURE_RULE
-from trader.download.domain.company_events import (
-    CompanyEventPolicy, CompanyEventStatus, CompanyPositiveEvent, CompanyPositiveStatus, CompanyPositiveType, CompanyReviewReason, CompanyRiskEvent, CompanyRiskType, CompanySubject, IncreaseMeasurements,
-    RepurchaseMeasurements, RepurchasePurpose, ContractMeasurements,
-)
-from trader.download.domain.company_evidence import CompanyDocument, CompanyDocumentFailureRules, Disclosure
-from trader.download.domain.company_event_extraction import (
-    COMPANY_REPURCHASE_DECISION_PATTERN,
-    COMPANY_REPURCHASE_ACTUAL_DIGEST,
-    COMPANY_REPURCHASE_MAINTENANCE_DIGEST,
-    ExtractCompanyEvents, ExtractCompanyLinkCandidate, IsCompanyRepurchasePlaceholder, IsCompanyRepurchaseShareholderTable,
-    IsCompanyRepurchaseCancellationOnly,
-)
-from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_contract_fields import COMPANY_CONTRACT_FIELD_RULES
-from trader.download.domain.company_reduction_scope import COMPANY_QUALIFIED_REDUCTION_DIGEST
-from trader.download.domain.company_field_plan import (
-    BuildCompanyFieldGaps,
-    CompanyFieldGap,
-    CompanyFieldMaterial,
-    CompanyFieldRecovery,
-    CompanyFieldIsAvailable,
-    PlanCompanyFieldRecovery,
-)
+from trader.download.domain.company_events import CompanyPositiveEvent, CompanyPositiveStatus, CompanyRiskEvent, IncreaseMeasurements, RepurchaseMeasurements
+from trader.download.domain.company_evidence import CompanyDocumentFailureRules
+from trader.download.domain.company_facts import CompanyFacts
+from trader.download.domain.company_field_plan import BuildCompanyFieldGaps, CompanyFieldGap, CompanyFieldMaterial, CompanyFieldRecovery, PlanCompanyFieldRecovery
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
-from trader.download.infra.company_fact_inputs import DecodeCompanyFinancial, ReadCompanySnapshotRows
-from trader.download.infra.company_link_codec import DecodeCompanyLink, EncodeCompanyLink
-from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
-from trader.download.infra.company_field_attempts import CompanyFieldAttempt
-from trader.download.infra.company_financial_publication import ReadCompanyFinancialMaterials
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
+from trader.download.infra.company_financial_publication import ReadCompanyFinancialMaterials
 from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_publication_reads import ReadCompanyPublicationLinks
-from trader.download.infra.company_facts_protocol import (
-    DecodeCompanyLabel,
-    EVIDENCE_SOURCES,
-    REVIEW_REASONS,
-    REVIEW_SCOPES,
-    RequireCompanyTime,
-)
+from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EVIDENCE_SOURCES, REVIEW_REASONS, REVIEW_SCOPES
 from trader.infra.sqlite_connection import SqliteConnection
 
-# These rules change measurements only; old document receipts keep their identity.
-# Unknown dependencies/subjects still require verification and are not download jobs.
 COMPANY_FIELD_RULES = (
     ("start_date", "explicit_reduction_start_date:2"),
     ("end_date", "explicit_reduction_end_date:2"),
@@ -65,20 +33,6 @@ COMPANY_FIELD_RULES = (
     ("repurchase_purpose", "explicit_repurchase_purpose:2"),
 ) + COMPANY_CONTRACT_FIELD_RULES + (("revenue_disclosed_at", COMPANY_ANNUAL_REPORT_DISCLOSURE_RULE),)
 _REQUIRED_FIELD_EVIDENCE_RULE = "required_field_evidence:1"
-_REPURCHASE_RECHECK_RULE = "same_body_repurchase_fields:1"
-_REPURCHASE_RECHECK_DIGEST = hashlib.sha256(
-    COMPANY_REPURCHASE_MAINTENANCE_DIGEST + COMPANY_REPURCHASE_ACTUAL_DIGEST,
-).digest()
-_CURRENT_REPURCHASE_RECHECK_RULE = _REPURCHASE_RECHECK_RULE + ":" + _REPURCHASE_RECHECK_DIGEST.hex()
-_INCREASE_RECHECK_RULE = "same_body_increase_fields:1"
-_SHARE_LINK_RECHECK_RULE_PREFIX = "same_body_share_link:"
-_REDUCTION_RECHECK_RULE_PREFIX = "same_body_reduction:"
-_REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX = "same_body_repurchase_subject:"
-_SAME_BODY_RECHECK_PREFIXES = (
-    _SHARE_LINK_RECHECK_RULE_PREFIX, _REDUCTION_RECHECK_RULE_PREFIX, _REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX,
-    _REPURCHASE_RECHECK_RULE + ":",
-)
-_REPURCHASE_PLAN_RULE = "issuer_repurchase_plan:1"
 _FIELD_SOURCE_PROOF_REQUIRED = "field_source_proof_required"
 _MATERIAL_REVIEW_REASONS = frozenset({
     "subject_unverified", "conclusion_unverified", "case_conclusion_ambiguous",
@@ -110,7 +64,6 @@ class CompanyMaterialDependency:
             and self.body_hash == self.current_body_hash
             and self.extraction_hash == self.current_extraction_hash
         )
-
 
 def RegisterCompanyMaterialDependencies(
     collected: SqliteConnection,
@@ -195,7 +148,6 @@ def RegisterCompanyMaterialDependencies(
                 (row[0], fact.code, row[1], row[2], row[3], row[4], row[5]),
             )
 
-
 def _field_material_requirements(
     formal: SqliteConnection,
     codes: Sequence[str],
@@ -243,7 +195,6 @@ def _field_material_requirements(
         {code: frozenset(items) for code, items in settled.items()},
     )
 
-
 def _field_material_source(formal: SqliteConnection, code: str, scope: str, evidence_id: str, source: str) -> bool:
     if scope == "financial" and source in EVIDENCE_SOURCES:
         return formal.run(
@@ -263,7 +214,6 @@ def _field_material_source(formal: SqliteConnection, code: str, scope: str, evid
         "AND field IN ('annual_revenue','revenue_report_date','revenue_disclosed_at') LIMIT 1",
         (code, evidence_id, source),
     ).fetchone() is not None
-
 
 def RestoreCompanyMaterialDependencies(collected: SqliteConnection, formal: SqliteConnection) -> None:
     """Pin exact review and field inputs before startup can discard an older version.
@@ -338,7 +288,6 @@ def RestoreCompanyMaterialDependencies(collected: SqliteConnection, formal: Sqli
                              for receipt in inputs),
                         )
 
-
 def RecoverRequiredCompanyText(
     collected: SqliteConnection,
     formal: SqliteConnection,
@@ -391,7 +340,6 @@ def RecoverRequiredCompanyText(
         collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (row[5],))
     return True
 
-
 def ReadRequiredCompanyMaterialDependencies(
     collected: SqliteConnection,
     extraction_hash: bytes,
@@ -404,7 +352,6 @@ def ReadRequiredCompanyMaterialDependencies(
         "ORDER BY m.code,d.source,d.source_key,m.scope,m.reason_code,m.record_hash,m.body_hash,m.extraction_hash",
         (extraction_hash,),
     ))
-
 
 def _has_valid_material_receipt(
     formal: SqliteConnection,
@@ -421,7 +368,6 @@ def _has_valid_material_receipt(
         (source, evidence_id, code, record_hash, body_hash, extraction_hash),
     ).fetchone() is not None
 
-
 def ReadCompanyFieldRecovery(
     formal: SqliteConnection,
     collected: SqliteConnection,
@@ -435,7 +381,6 @@ def ReadCompanyFieldRecovery(
         facts = tuple(replace(fact, risk_events=tuple(
             risk for risk in fact.risk_events if risk.expires_at is None or risk.expires_at > observed_at
         )) for fact in ReadCompanyFactRows(formal, codes[offset:offset + 128]))
-        has_repairs = _has_repairs(collected)
         for fact in facts:
             events: tuple[CompanyRiskEvent | CompanyPositiveEvent, ...] = (*fact.risk_events, *fact.positive_events)
             gaps = _field_gaps(fact, collected)
@@ -472,7 +417,7 @@ def ReadCompanyFieldRecovery(
                     "WHERE d.source_key=? AND f.code=? AND d.kind='announcement' "
                     "AND f.event_id=? AND f.field=? AND f.rule_id=? AND f.state='attempted'",
                     (item.gap.evidence_id, item.gap.code, item.gap.event_id, item.gap.field, rule),
-                ).fetchone() if has_repairs else None
+                ).fetchone()
                 material = next((m for m in materials if m.evidence_id == item.gap.evidence_id), None)
                 event_time = next((event.last_disclosed_at for event in events if event.event_id == item.gap.event_id), None)
                 if material is not None and event_time is not None and material.published_at < event_time:
@@ -489,933 +434,6 @@ def ReadCompanyFieldRecovery(
                 recoveries.append(item)
     return tuple(recoveries)
 
-
-def QueueCompanyFieldRepairs(
-    collected: SqliteConnection,
-    formal: SqliteConnection,
-    codes: Sequence[str],
-    observed_at: datetime,
-    raw_root: Path,
-) -> None:
-    """Reopen only affected, supported field inputs, once per source version and rule."""
-    for item in ReadCompanyFieldRecovery(formal, collected, codes, observed_at, raw_root):
-        rule = next((rule for field, rule in COMPANY_FIELD_RULES if field == item.gap.field), None)
-        if rule is None or item.action not in {"extract", "ocr", "download"}:
-            continue
-        row = collected.run(
-            "SELECT d.id,d.record_hash,d.body_retained FROM disclosures d "
-            "JOIN disclosure_codes c ON c.disclosure_id=d.id "
-            "WHERE d.source_key=? AND c.code=? AND d.kind='announcement' "
-            "AND (d.published_at>=? OR d.body_retained=1) AND d.published_at<=?",
-            (item.gap.evidence_id, item.gap.code,
-             (observed_at.date() - timedelta(days=365)).isoformat(), observed_at.isoformat()),
-        ).fetchone()
-        if row is None:
-            continue
-        inserted = collected.run(
-            "INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
-            (row[0], item.gap.code, row[1], item.gap.event_id, item.gap.field, rule),
-        ).rowcount
-        if not inserted:
-            continue
-        collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], item.gap.code))
-        if not row[2]:
-            collected.run("UPDATE disclosures SET body_checked=0 WHERE id=?", (row[0],))
-        collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (item.gap.code,))
-
-
-def PlanCompanyFieldAttempts(
-    connection: SqliteConnection,
-    facts: Sequence[CompanyFacts],
-    accepted: Sequence[CompanyInputReceipt],
-    extraction_hash: bytes,
-    observed_at: datetime,
-) -> tuple[CompanyFieldAttempt, ...]:
-    """Bind first-pass gaps only to newly accepted, matching source and body versions.
-
-    An evidence-only rule records an unresolved requirement, not a successful
-    extraction or non-disclosure. It never authorizes an automatic retry.
-    No collection rows are written during preparation. The exact formal field
-    receipts recover acknowledgement after a formal commit/collection rollback.
-    """
-    inputs = frozenset(
-        (receipt.source, receipt.source_key, receipt.code, receipt.record_hash, receipt.body_hash)
-        for receipt in accepted
-        if receipt.outcome == "valid" and receipt.body_hash is not None and receipt.extraction_hash == extraction_hash
-    )
-    if not inputs:
-        return ()
-    attempts: dict[tuple[int, str, str, str, str, str], CompanyFieldAttempt] = {}
-    for fact in facts:
-        for gap in _field_gaps(fact, connection):
-            for row in connection.run(
-                "SELECT d.source,d.source_key,c.code,d.record_hash,d.body_hash,d.id FROM disclosures d "
-                "JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                "WHERE d.source_key=? AND c.code=? AND d.kind='announcement' "
-                "AND d.body_checked=1 AND d.body_retained=1",
-                (gap.evidence_id, gap.code),
-            ).fetchall():
-                if tuple(row[:5]) not in inputs:
-                    continue
-                rule = _field_attempt_rule(gap)
-                key = (row[5], gap.code, row[3], gap.event_id, gap.field, rule)
-                if connection.run("SELECT 1 FROM company_field_repairs WHERE disclosure_id=? AND code=? "
-                                  "AND record_hash=? AND event_id=? AND field=? AND rule_id=?", key).fetchone() is not None:
-                    continue
-                policy = _repair_policy(gap.event_id, gap.field, rule)
-                attempts[key] = CompanyFieldAttempt(*key, CompanyInputReceipt(
-                    row[0], row[1], gap.code, row[3], hashlib.sha256(policy.encode()).digest(), row[4],
-                    observed_at, "field_attempted", policy,
-                ))
-    return tuple(attempts.values())
-
-
-def QueueCompanyContractSigningRechecks(
-    collected: SqliteConnection,
-    formal: SqliteConnection,
-    codes: Sequence[str],
-    observed_at: datetime,
-    extraction_hash: bytes,
-    event_policy: CompanyEventPolicy,
-    read_document: Callable[[bytes], str],
-    *, cancel_requested: Callable[[], bool] | None,
-) -> None:
-    """Recompile only a retained latest contract whose signing fact was missed."""
-    for offset in range(0, len(codes), 128):
-        batch = codes[offset:offset + 128]
-        facts = {fact.code: fact for fact in ReadCompanyFactRows(formal, batch)}
-        inputs = ReadCompanySnapshotRows(collected, formal, tuple(batch), observed_at, extraction_hash,
-                                        cancel_requested=cancel_requested)
-        for links in ReadCompanyPublicationLinks(
-            collected, batch, extraction_hash, observed_at=observed_at,
-            event_policy=event_policy, read_document=read_document,
-        ):
-            fact = facts.get(links.code)
-            if fact is None:
-                continue
-            for refresh in links.refreshes:
-                binding, candidate = refresh.binding, refresh.candidate
-                if (candidate is None or candidate.positive is None or candidate.cancellation
-                    or not isinstance(candidate.positive.measurements, ContractMeasurements)
-                    or not candidate.positive.measurements.binding_confirmed
-                    or any(review.evidence_id == binding.source_key for review in links.reviews)):
-                    continue
-                events = tuple(event for event in fact.positive_events if binding.source_key in event.evidence_ids)
-                if len(events) != 1:
-                    continue
-                event = events[0]
-                before = event.measurements
-                recovered, = ApplyCompanyAnnualIncome(
-                    links.code,
-                    (replace(candidate.positive, first_disclosed_at=event.first_disclosed_at),),
-                    inputs[links.code].annual_incomes, observed_at,
-                    financials=tuple(DecodeCompanyFinancial(row) for row in inputs[links.code].financials),
-                )
-                after = recovered.measurements
-                if (event.event_type is not CompanyPositiveType.OPERATING_CONTRACT
-                    or event.status is CompanyPositiveStatus.CANCELLED or event.subject_type is not candidate.subject
-                    or event.evidence_ids[-1] != binding.source_key or event.last_disclosed_at != candidate.published_at
-                    or not isinstance(before, ContractMeasurements) or not isinstance(after, ContractMeasurements)
-                    or before.binding_confirmed or before.amount_basis == "comparable" and after.amount_basis != "comparable"
-                    or any(old is not None and old != new for old, new in (
-                        (before.contract_amount_cny, after.contract_amount_cny),
-                        (before.reference_annual_revenue_cny, after.reference_annual_revenue_cny),
-                        (before.reference_report_date, after.reference_report_date),
-                        (before.reference_disclosed_at, after.reference_disclosed_at),
-                        (before.amount_to_revenue_pct, after.amount_to_revenue_pct),
-                    )) or not _has_valid_material_receipt(
-                        formal, binding.source, binding.source_key, links.code,
-                        binding.record_hash, binding.body_hash, extraction_hash,
-                    )):
-                    continue
-                rows = collected.run(
-                    "SELECT d.id FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                    "WHERE d.source=? AND d.source_key=? AND c.code=? AND d.record_hash=? AND d.body_hash=? "
-                    "AND d.kind='announcement' AND d.body_checked=1 AND d.body_retained=1 "
-                    "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
-                    (binding.source, binding.source_key, links.code, binding.record_hash, binding.body_hash),
-                ).fetchall()
-                if len(rows) == 1:
-                    collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?",
-                                  (rows[0][0], links.code))
-
-
-def QueueCompanyShareActionRechecks(
-    collected: SqliteConnection,
-    formal: SqliteConnection,
-    codes: Sequence[str],
-    observed_at: datetime,
-    extraction_hash: bytes,
-    event_policy: CompanyEventPolicy,
-    read_document: Callable[[bytes], str],
-) -> None:
-    """Correct retained same-body derivations without resetting document identity.
-
-    Existing fields replay only their latest, exactly receipted input. Verified
-    issuer plans and empty holder-list placeholders use that same material
-    boundary. Missing material never creates a download task; field receipts
-    prevent repeated field replay after publication or a collection rollback.
-    """
-    _queue_unverified_repurchase_inputs(collected, formal, codes, observed_at, extraction_hash, event_policy, read_document)
-    _refresh_repurchase_link_candidates(collected, formal, codes, observed_at, extraction_hash, event_policy, read_document)
-    for offset in range(0, len(codes), 128):
-        for fact in ReadCompanyFactRows(formal, codes[offset:offset + 128]):
-            for event in fact.positive_events:
-                before = event.measurements
-                if not isinstance(before, (RepurchaseMeasurements, IncreaseMeasurements)) or event.status is CompanyPositiveStatus.CANCELLED:
-                    continue
-                evidence_id = event.evidence_ids[-1]
-                if sum(isinstance(other.measurements, (RepurchaseMeasurements, IncreaseMeasurements)) and evidence_id in other.evidence_ids
-                       for other in fact.positive_events) != 1:
-                    continue
-                rows = collected.run(
-                    "SELECT d.id,d.source,d.source_key,d.record_hash,d.body_hash,d.title,d.published_at,d.url "
-                    "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                    "WHERE c.code=? AND d.source_key=? AND d.kind='announcement' "
-                    "AND d.body_checked=1 AND d.body_retained=1 "
-                    "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1", (fact.code, evidence_id),
-                ).fetchall()
-                if len(rows) != 1:
-                    continue
-                row = rows[0]
-                body_hash = row[4]
-                if (not isinstance(body_hash, bytes) or len(body_hash) != 32
-                    or datetime.fromisoformat(row[6]) != event.last_disclosed_at
-                    or event.last_disclosed_at > observed_at
-                    or not _has_valid_material_receipt(formal, row[1], evidence_id, fact.code,
-                                                       row[3], body_hash, extraction_hash)):
-                    continue
-                rule = _CURRENT_REPURCHASE_RECHECK_RULE if isinstance(before, RepurchaseMeasurements) else _INCREASE_RECHECK_RULE
-                supported = ("actual_pct", "repurchase_purpose") if isinstance(before, RepurchaseMeasurements) else ("actual_pct",)
-                policies = tuple(_repair_policy(event.event_id, field, rule) for field in supported)
-                conditions = " OR ".join("(policy_id=? AND extraction_hash=?)" for _ in policies)
-                if formal.run(
-                    "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
-                    "AND record_hash=? AND body_hash=? AND outcome='field_attempted' "
-                    f"AND ({conditions})",
-                    (row[1], evidence_id, fact.code, row[3], body_hash,
-                     *(value for policy in policies for value in (policy, hashlib.sha256(policy.encode()).digest()))),
-                ).fetchone() is not None:
-                    continue
-                try:
-                    text = read_document(body_hash)
-                except InterruptedError:
-                    raise
-                except (OSError, ValueError, EOFError):
-                    continue
-                if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
-                    continue
-                document = CompanyDocument(
-                    Disclosure(row[1], evidence_id, (fact.code,), row[5], event.last_disclosed_at, row[7], row[3]),
-                    text, True,
-                )
-                if IsCompanyRepurchaseShareholderTable(row[5]):
-                    if IsCompanyRepurchasePlaceholder(event) and not ExtractCompanyEvents(
-                        (document,), observed_at, event_policy, previous_positives=(event,),
-                    ).positives:
-                        collected.run(
-                            "DELETE FROM document_link_candidates WHERE source=? AND source_key=? "
-                            "AND record_hash=? AND extraction_hash=?", (row[1], evidence_id, row[3], extraction_hash),
-                        )
-                        collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], fact.code))
-                        collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (fact.code,))
-                    continue
-                candidate = ExtractCompanyLinkCandidate(document, observed_at, event_policy)
-                if (candidate is None or candidate.positive is None or candidate.subject is not event.subject_type
-                    or candidate.positive.event_type is not event.event_type):
-                    continue
-                after = candidate.positive.measurements
-                if not isinstance(after, (RepurchaseMeasurements, IncreaseMeasurements)) or type(before) is not type(after):
-                    continue
-                isolated_cancellation = (
-                    isinstance(before, RepurchaseMeasurements) and IsCompanyRepurchaseCancellationOnly(row[5])
-                    and event.event_id == f"{evidence_id}:share_repurchase" and event.evidence_ids == (evidence_id,)
-                    and event.first_disclosed_at == event.last_disclosed_at
-                    and not any(evidence_id in other.evidence_ids for other in fact.risk_events)
-                    and ExtractCompanyAnnouncementNumbers(text).issuer_codes == (fact.code,)
-                )
-                fields = tuple(field for field, needed in (
-                    ("actual_pct", before.actual_ratio_pct is None and after.actual_ratio_pct is not None
-                     or isolated_cancellation and (before.actual_ratio_pct is not None
-                         or event.status is not candidate.positive.status or event.positive_level != 0 or bool(event.level_milestones))),
-                    ("repurchase_purpose", isinstance(before, RepurchaseMeasurements) and isinstance(after, RepurchaseMeasurements)
-                     and after.purpose is not RepurchasePurpose.UNKNOWN and before.purpose is not after.purpose),
-                ) if needed)
-                # A hash-verified unchanged derivation is still a completed
-                # attempt, including a planned event's inapplicable ratio.
-                # Publish its receipt with the facts rather than rereading it
-                # on every restart or declaring the missing value verified.
-                for field in fields or supported:
-                    collected.run(
-                        "INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
-                        (row[0], fact.code, row[3], event.event_id, field, rule),
-                    )
-                collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (fact.code,))
-                if fields:
-                    collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], fact.code))
-
-
-def _has_recheck_attempt(
-    formal: SqliteConnection,
-    source: str,
-    evidence_id: str,
-    code: str,
-    record_hash: str,
-    body_hash: bytes,
-    policy: str,
-) -> bool:
-    return formal.run(
-        "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
-        "AND record_hash=? AND body_hash=? AND extraction_hash=? AND policy_id=? AND outcome='field_attempted'",
-        (source, evidence_id, code, record_hash, body_hash, hashlib.sha256(policy.encode()).digest(), policy),
-    ).fetchone() is not None
-
-
-def PrepareCompanyShareRecheckReceipts(
-    collected: SqliteConnection,
-    formal: SqliteConnection,
-    facts: CompanyFacts,
-    previous: CompanyFacts | None,
-    *,
-    observed_at: datetime,
-    extraction_hash: bytes,
-    event_policy: CompanyEventPolicy,
-    read_document: Callable[[bytes], str],
-) -> tuple[CompanyInputReceipt, ...]:
-    """Check a newly identified or relinked event before the formal write lock.
-
-    This covers the final linked evidence, which can differ from the plan that
-    opened the event. Receipts commit with the prepared facts; unreadable or
-    contradictory inputs never certify this check or replace existing values.
-    """
-    previous_inputs = frozenset(
-        (event.event_id, event.evidence_ids[-1], event.last_disclosed_at)
-        for event in previous.positive_events
-    ) if previous is not None else frozenset()
-    receipts: list[CompanyInputReceipt] = []
-    for event in facts.positive_events:
-        before = event.measurements
-        evidence_id = event.evidence_ids[-1]
-        if (not isinstance(before, (RepurchaseMeasurements, IncreaseMeasurements))
-            or event.status is CompanyPositiveStatus.CANCELLED or event.last_disclosed_at > observed_at
-            or (event.event_id, evidence_id, event.last_disclosed_at) in previous_inputs
-            or sum(evidence_id in other.evidence_ids for other in facts.positive_events) != 1):
-            continue
-        rows = collected.run(
-            "SELECT d.source,d.record_hash,d.body_hash,d.title,d.published_at,d.url "
-            "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-            "WHERE c.code=? AND d.source_key=? AND d.kind='announcement' AND d.body_checked=1 AND d.body_retained=1 "
-            "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
-            (facts.code, evidence_id),
-        ).fetchall()
-        if len(rows) != 1:
-            continue
-        row = rows[0]
-        body_hash = row[2]
-        if (not isinstance(body_hash, bytes) or len(body_hash) != 32
-            or datetime.fromisoformat(row[4]) != event.last_disclosed_at
-            or not _has_valid_material_receipt(formal, row[0], evidence_id, facts.code, row[1], body_hash, extraction_hash)):
-            continue
-        try:
-            text = read_document(body_hash)
-        except InterruptedError:
-            raise
-        except (OSError, ValueError, EOFError):
-            continue
-        if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
-            continue
-        issuer_codes = ExtractCompanyAnnouncementNumbers(text).issuer_codes
-        if issuer_codes and facts.code not in issuer_codes:
-            continue
-        candidate = ExtractCompanyLinkCandidate(CompanyDocument(
-            Disclosure(row[0], evidence_id, (facts.code,), row[3], event.last_disclosed_at, row[5], row[1]), text, True,
-        ), observed_at, event_policy)
-        if (candidate is None or candidate.positive is None or candidate.subject is not event.subject_type
-            or candidate.positive.event_type is not event.event_type or candidate.positive.status is not event.status):
-            continue
-        after = candidate.positive.measurements
-        if (not isinstance(after, (RepurchaseMeasurements, IncreaseMeasurements)) or type(before) is not type(after)
-            or (after.actual_ratio_pct is not None and after.actual_ratio_pct != before.actual_ratio_pct)
-            or (isinstance(after, RepurchaseMeasurements) and isinstance(before, RepurchaseMeasurements)
-                and after.purpose is not RepurchasePurpose.UNKNOWN and after.purpose is not before.purpose)):
-            continue
-        fields = ("actual_pct", "repurchase_purpose") if isinstance(before, RepurchaseMeasurements) else ("actual_pct",)
-        rule = _CURRENT_REPURCHASE_RECHECK_RULE if isinstance(before, RepurchaseMeasurements) else _INCREASE_RECHECK_RULE
-        field_rules = [(field, rule) for field in fields]
-        field_rules.extend(
-            (gap.field, _field_attempt_rule(gap)) for gap in _field_gaps(facts, collected)
-            if gap.event_id == event.event_id and gap.evidence_id == evidence_id
-            and gap.field in fields and gap.reason == "measurement_missing"
-        )
-        for field, rule in field_rules:
-            policy = _repair_policy(event.event_id, field, rule)
-            receipts.append(CompanyInputReceipt(
-                row[0], evidence_id, facts.code, row[1], hashlib.sha256(policy.encode()).digest(),
-                body_hash, observed_at, "field_attempted", policy,
-            ))
-    return tuple(receipts)
-
-
-def QueueCompanyReductionRechecks(
-    collected: SqliteConnection,
-    formal: SqliteConnection,
-    codes: Sequence[str],
-    observed_at: datetime,
-    extraction_hash: bytes,
-    event_policy: CompanyEventPolicy,
-    read_document: Callable[[bytes], str],
-) -> None:
-    """Recompile a receipted unsafe single-input measurement or mistaken closure.
-
-    Only its exact retained input can retire that single-evidence derivation.
-    Existing linked plans and shared evidence remain untouched; the normal
-    compiler owns both the resulting review and any verified original closure.
-    """
-    for offset in range(0, len(codes), 128):
-        for fact in ReadCompanyFactRows(formal, codes[offset:offset + 128]):
-            for event in fact.risk_events:
-                if (event.risk_type is not CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION
-                    or event.status is not CompanyEventStatus.ONGOING or event.resolved_at is not None
-                    or event.first_disclosed_at != event.last_disclosed_at or len(event.evidence_ids) != 1
-                    or event.last_disclosed_at > observed_at):
-                    continue
-                evidence_id = event.evidence_ids[0]
-                reference_count = sum(evidence_id in other.evidence_ids for other in fact.risk_events)
-                reference_count += sum(evidence_id in other.evidence_ids for other in fact.positive_events)
-                if reference_count != 1:
-                    continue
-                rows = collected.run(
-                    "SELECT d.id,d.source,d.record_hash,d.body_hash,d.title,d.published_at,d.url "
-                    "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                    "WHERE c.code=? AND d.source_key=? AND d.kind='announcement' "
-                    "AND d.body_checked=1 AND d.body_retained=1 "
-                    "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
-                    (fact.code, evidence_id),
-                ).fetchall()
-                if len(rows) != 1:
-                    continue
-                row = rows[0]
-                body_hash = row[3]
-                if (not isinstance(body_hash, bytes) or len(body_hash) != 32
-                    or datetime.fromisoformat(row[5]) != event.last_disclosed_at
-                    or not _has_valid_material_receipt(
-                        formal, row[1], evidence_id, fact.code, row[2], body_hash, extraction_hash,
-                    )):
-                    continue
-                rule = _REDUCTION_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + COMPANY_QUALIFIED_REDUCTION_DIGEST).hexdigest()
-                if _has_recheck_attempt(
-                    formal,
-                    row[1],
-                    evidence_id,
-                    fact.code,
-                    row[2],
-                    body_hash,
-                    _repair_policy(event.event_id, "planned_pct", rule),
-                ):
-                    continue
-                try:
-                    text = read_document(body_hash)
-                except InterruptedError:
-                    raise
-                except (OSError, ValueError, EOFError):
-                    continue
-                if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
-                    continue
-                issuer_codes = ExtractCompanyAnnouncementNumbers(text).issuer_codes
-                if issuer_codes and fact.code not in issuer_codes:
-                    continue
-                document = CompanyDocument(
-                    Disclosure(row[1], evidence_id, (fact.code,), row[4], event.last_disclosed_at, row[6], row[2]),
-                    text, True,
-                )
-                parsed = ExtractCompanyEvents((document,), observed_at, event_policy, previous_risks=(event,))
-                changed_measurements = any(
-                    item.event_id == event.event_id and item.reduction_plan != event.reduction_plan
-                    for item in parsed.risks
-                )
-                mistaken_closure = (
-                    not any(item.event_id == event.event_id for item in parsed.risks)
-                    and any(review.evidence_id == evidence_id and review.reason_code == "resolution_unlinked"
-                            for review in parsed.reviews)
-                )
-                for field in ("start_date", "end_date", "planned_pct"):
-                    collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
-                                  (row[0], fact.code, row[2], event.event_id, field, rule))
-                collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (fact.code,))
-                if not changed_measurements and not mistaken_closure:
-                    continue
-                collected.run(
-                    "DELETE FROM document_link_candidates WHERE source=? AND source_key=? "
-                    "AND record_hash=? AND extraction_hash=?", (row[1], evidence_id, row[2], extraction_hash),
-                )
-                candidate = ExtractCompanyLinkCandidate(document, observed_at, event_policy)
-                if candidate is not None:
-                    collected.run(
-                        "INSERT OR REPLACE INTO document_link_candidates VALUES(?,?,?,?,?)",
-                        (row[1], evidence_id, row[2], extraction_hash, EncodeCompanyLink(candidate)),
-                    )
-                collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], fact.code))
-                collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (fact.code,))
-
-
-def _queue_unverified_repurchase_inputs(
-    collected: SqliteConnection,
-    formal: SqliteConnection,
-    codes: Sequence[str],
-    observed_at: datetime,
-    extraction_hash: bytes,
-    event_policy: CompanyEventPolicy,
-    read_document: Callable[[bytes], str],
-) -> None:
-    for offset in range(0, len(codes), 128):
-        batch = codes[offset:offset + 128]
-        placeholders = ",".join("?" for _code in batch)
-        reviewed = formal.run(
-            "SELECT r.code,e.source_key FROM company_review r JOIN company_evidence_ref e ON e.id=r.evidence_id "
-            f"WHERE r.code IN ({placeholders}) AND r.scope=? AND r.reason=?",
-            (*batch, REVIEW_SCOPES["positive"], REVIEW_REASONS["subject_unverified"]),
-        ).fetchall()
-        facts = {fact.code: fact for fact in ReadCompanyFactRows(formal, batch)}
-        for code, evidence_id in reviewed:
-            if any(evidence_id in event.evidence_ids for event in facts[code].positive_events):
-                continue
-            rows = collected.run(
-                "SELECT d.id,d.source,d.record_hash,d.body_hash,d.title,d.published_at,d.url "
-                "FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                "WHERE c.code=? AND d.source_key=? AND d.kind='announcement' AND d.body_checked=1 AND d.body_retained=1 "
-                "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1 "
-                "AND NOT EXISTS(SELECT 1 FROM company_field_repairs f WHERE f.disclosure_id=d.id "
-                "AND f.code=c.code AND f.record_hash=d.record_hash AND f.rule_id=?)",
-                (code, evidence_id, _REPURCHASE_PLAN_RULE),
-            ).fetchall()
-            if len(rows) != 1:
-                continue
-            row = rows[0]
-            table = IsCompanyRepurchaseShareholderTable(row[4])
-            if not table and not any(marker in row[4] for marker in (
-                "回购报告书", "回购股份方案", "回购公司股份方案",
-            )):
-                continue
-            body_hash, published = row[3], datetime.fromisoformat(row[5])
-            if (not isinstance(body_hash, bytes) or len(body_hash) != 32 or published > observed_at
-                or not _has_valid_material_receipt(formal, row[1], evidence_id, code, row[2], body_hash, extraction_hash)):
-                continue
-            rule = _REPURCHASE_SUBJECT_RECHECK_RULE_PREFIX + hashlib.sha256(
-                extraction_hash + COMPANY_REPURCHASE_DECISION_PATTERN.encode("utf-8") + COMPANY_REPURCHASE_MAINTENANCE_DIGEST,
-            ).hexdigest()
-            event_id = f"{evidence_id}:{CompanyPositiveType.SHARE_REPURCHASE.value}"
-            if _has_recheck_attempt(
-                formal,
-                row[1],
-                evidence_id,
-                code,
-                row[2],
-                body_hash,
-                _repair_policy(event_id, "repurchase_purpose", rule),
-            ):
-                continue
-            try:
-                text = read_document(body_hash)
-            except InterruptedError:
-                raise
-            except (OSError, ValueError, EOFError):
-                continue
-            if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
-                continue
-            issuer_codes = ExtractCompanyAnnouncementNumbers(text).issuer_codes
-            if issuer_codes and code not in issuer_codes:
-                continue
-            document = CompanyDocument(
-                Disclosure(row[1], evidence_id, (code,), row[4], published, row[6], row[2]), text, True,
-            )
-            if table:
-                review = CompanyReviewReason("positive", "subject_unverified", evidence_id, published, "旧主体待核")
-                if not ExtractCompanyEvents((document,), observed_at, event_policy, previous_reviews=(review,)).reviews:
-                    collected.run(
-                        "DELETE FROM document_link_candidates WHERE source=? AND source_key=? "
-                        "AND record_hash=? AND extraction_hash=?", (row[1], evidence_id, row[2], extraction_hash),
-                    )
-                    collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], code))
-                    collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (code,))
-            else:
-                candidate = ExtractCompanyLinkCandidate(document, observed_at, event_policy)
-                if (candidate is not None and candidate.positive is not None and not candidate.cancellation
-                    and candidate.subject is CompanySubject.ISSUER
-                    and candidate.positive.event_type is CompanyPositiveType.SHARE_REPURCHASE):
-                    collected.run("INSERT OR REPLACE INTO document_link_candidates VALUES(?,?,?,?,?)",
-                                  (row[1], evidence_id, row[2], extraction_hash, EncodeCompanyLink(candidate)))
-                    collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
-                                  (row[0], code, row[2], candidate.positive.event_id, "repurchase_purpose", _REPURCHASE_PLAN_RULE))
-                    collected.run("DELETE FROM document_publications WHERE disclosure_id=? AND code=?", (row[0], code))
-            # A material check can finish while its subject remains unknown.
-            # Only publish the attempt; never invent a positive event or value.
-            collected.run("INSERT OR IGNORE INTO company_field_repairs VALUES(?,?,?,?,?,?,'pending')",
-                          (row[0], code, row[2], event_id, "repurchase_purpose", rule))
-            collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (code,))
-
-
-def _refresh_repurchase_link_candidates(
-    collected: SqliteConnection,
-    formal: SqliteConnection,
-    codes: Sequence[str],
-    observed_at: datetime,
-    extraction_hash: bytes,
-    event_policy: CompanyEventPolicy,
-    read_document: Callable[[bytes], str],
-) -> None:
-    # An unlinked progress input may have no formal event yet. Refresh its
-    # derived candidate too, or it would later reintroduce the old measurement.
-    for offset in range(0, len(codes), 128):
-        batch = codes[offset:offset + 128]
-        placeholders = ",".join("?" for _code in batch)
-        rows = collected.run(
-            "SELECT d.source,d.source_key,c.code,d.record_hash,d.body_hash,d.title,d.published_at,d.url,l.payload "
-            "FROM document_link_candidates l JOIN disclosures d ON d.source=l.source AND d.source_key=l.source_key "
-            "AND d.record_hash=l.record_hash JOIN disclosure_codes c ON c.disclosure_id=d.id "
-            f"WHERE c.code IN ({placeholders}) AND l.extraction_hash=? AND d.body_checked=1 AND d.body_retained=1 "
-            "AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1",
-            (*batch, extraction_hash),
-        ).fetchall()
-        for row in rows:
-            old = DecodeCompanyLink(row[8])
-            if old.positive is None or not isinstance(old.positive.measurements, (RepurchaseMeasurements, IncreaseMeasurements)):
-                continue
-            body_hash = row[4]
-            published = datetime.fromisoformat(row[6])
-            if (not isinstance(body_hash, bytes) or len(body_hash) != 32 or published > observed_at
-                or old.evidence_id != row[1] or old.published_at != published
-                or not _has_valid_material_receipt(formal, row[0], row[1], row[2], row[3], body_hash, extraction_hash)):
-                continue
-            # A formal-event attempt does not prove this cached candidate.
-            # Bind the link check to its exact payload and extraction policy.
-            repurchase_rule = _REPURCHASE_RECHECK_DIGEST if isinstance(old.positive.measurements, RepurchaseMeasurements) else b""
-            rule = _SHARE_LINK_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + repurchase_rule + row[8].encode()).hexdigest()
-            policy = _repair_policy(old.positive.event_id, "actual_pct", rule)
-            if formal.run(
-                "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
-                "AND record_hash=? AND body_hash=? AND extraction_hash=? AND policy_id=? AND outcome='field_attempted'",
-                (row[0], row[1], row[2], row[3], body_hash, hashlib.sha256(policy.encode()).digest(), policy),
-            ).fetchone() is not None:
-                continue
-            try:
-                text = read_document(body_hash)
-            except InterruptedError:
-                raise
-            except (OSError, ValueError, EOFError):
-                continue
-            if hashlib.sha256(text.encode("utf-8")).digest() != body_hash:
-                continue
-            current = ExtractCompanyLinkCandidate(CompanyDocument(
-                Disclosure(row[0], row[1], (row[2],), row[5], published, row[7], row[3]), text, True,
-            ), observed_at, event_policy)
-            if (current is None or current.positive is None or current.subject is not old.subject
-                or type(current.positive.measurements) is not type(old.positive.measurements)
-                or current.references != old.references or current.cancellation != old.cancellation):
-                continue
-            status_recheck = (
-                current.positive.status in {CompanyPositiveStatus.IMPLEMENTING, CompanyPositiveStatus.COMPLETED}
-                and old.positive.status in {CompanyPositiveStatus.PLANNED, current.positive.status}
-                and old.positive.measurements.actual_ratio_pct is None
-                and isinstance(current.positive.measurements, (RepurchaseMeasurements, IncreaseMeasurements))
-                and current.positive.measurements.actual_ratio_pct is None
-            )
-            if isinstance(old.positive.measurements, IncreaseMeasurements) and not status_recheck and current != old:
-                continue
-            if status_recheck:
-                matches = tuple(event for fact in ReadCompanyFactRows(formal, (row[2],)) for event in fact.positive_events
-                                if row[1] in event.evidence_ids)
-                if matches:
-                    if len(matches) != 1:
-                        continue
-                    event = matches[0]
-                    if (event.event_type is not current.positive.event_type or event.subject_type is not current.subject
-                        or event.status not in {CompanyPositiveStatus.PLANNED, current.positive.status}
-                        or event.evidence_ids[-1] != row[1]
-                        or event.last_disclosed_at != published
-                        or not isinstance(event.measurements, (RepurchaseMeasurements, IncreaseMeasurements))
-                        or event.measurements.actual_ratio_pct is not None):
-                        continue
-                    if event.status is CompanyPositiveStatus.PLANNED:
-                        # A prior interruption may have updated the cache before the formal fact.
-                        # Replay collection confirmation; the exact formal valid receipt stays immutable.
-                        collected.run(
-                            "DELETE FROM document_publications WHERE code=? AND disclosure_id IN "
-                            "(SELECT id FROM disclosures WHERE source=? AND source_key=? AND record_hash=?)",
-                            (row[2], row[0], row[1], row[3]),
-                        )
-            payload = EncodeCompanyLink(current)
-            rule = _SHARE_LINK_RECHECK_RULE_PREFIX + hashlib.sha256(extraction_hash + repurchase_rule + payload.encode()).hexdigest()
-            collected.run(
-                "INSERT OR IGNORE INTO company_field_repairs "
-                "SELECT id,?,record_hash,?,'actual_pct',?,'pending' FROM disclosures "
-                "WHERE source=? AND source_key=? AND record_hash=?",
-                (row[2], current.positive.event_id, rule, row[0], row[1], row[3]),
-            )
-            collected.run("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", (row[2],))
-            if payload != row[8]:
-                collected.run(
-                    "UPDATE document_link_candidates SET payload=? WHERE source=? AND source_key=? "
-                    "AND record_hash=? AND extraction_hash=? AND payload=?",
-                    (payload, row[0], row[1], row[3], extraction_hash, row[8]),
-                )
-
-
-def PrioritizeCompanyRepurchaseInputs(
-    collected: SqliteConnection,
-    formal: SqliteConnection,
-    codes: Sequence[str],
-    observed_at: datetime,
-    extraction_hash: bytes,
-) -> None:
-    """Rank prerequisite candidates; this proves neither their identity nor a value.
-
-    A receipted, unlinked progress report may need an older plan already in the
-    pending inventory. Download it first, then let the existing official-number
-    and event-link owners decide the relationship. No new request is created.
-    """
-    collected.run("CREATE TEMP TABLE IF NOT EXISTS company_field_inputs(id INTEGER PRIMARY KEY)")
-    collected.run("DELETE FROM temp.company_field_inputs")
-    parent = ReadCompanyPublicationIdentity(formal)
-    if parent is None or parent.extraction_hash != extraction_hash:
-        return
-    for offset in range(0, len(codes), 128):
-        batch = codes[offset:offset + 128]
-        placeholders = ",".join("?" for _code in batch)
-        sources = formal.run(
-            "SELECT r.code,e.source_key FROM company_review r JOIN company_evidence_ref e ON e.id=r.evidence_id "
-            f"WHERE r.code IN ({placeholders}) AND r.scope=? AND r.reason=?",
-            (*batch, REVIEW_SCOPES["positive"], REVIEW_REASONS["progress_unlinked"]),
-        ).fetchall()
-        for code, evidence_id in sources:
-            rows = collected.run(
-                "SELECT d.source,d.record_hash,d.body_hash,d.published_at,l.payload FROM disclosures d "
-                "JOIN disclosure_codes c ON c.disclosure_id=d.id JOIN document_link_candidates l "
-                "ON l.source=d.source AND l.source_key=d.source_key AND l.record_hash=d.record_hash "
-                "WHERE c.code=? AND d.source_key=? AND d.body_checked=1 AND l.extraction_hash=?",
-                (code, evidence_id, extraction_hash),
-            ).fetchall()
-            if len(rows) != 1:
-                continue
-            row = rows[0]
-            candidate = DecodeCompanyLink(row[4])
-            if (candidate.positive is None or not isinstance(candidate.positive.measurements, RepurchaseMeasurements)
-                or candidate.evidence_id != evidence_id or candidate.published_at != datetime.fromisoformat(row[3])
-                or candidate.published_at > observed_at or not isinstance(row[2], bytes)
-                or not _has_valid_material_receipt(formal, row[0], evidence_id, code, row[1], row[2], extraction_hash)):
-                continue
-            for pending in collected.run(
-                "SELECT d.id,d.title FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                "JOIN temp.pending_documents p ON p.id=d.id "
-                "WHERE c.code=? AND d.source=? AND d.published_at<? AND d.kind='announcement'",
-                (code, row[0], row[3]),
-            ):
-                title = "".join(pending[1].split())
-                if (any(word in title for word in ("回购报告书", "回购股份方案", "回购公司股份方案", "回购股份的预案", "回购股份预案"))
-                    and not any(word in title for word in ("进展", "前十", "核查", "意见"))):
-                    collected.run("INSERT OR IGNORE INTO temp.company_field_inputs VALUES(?)", (pending[0],))
-
-
-def CompleteCompanyFieldRepairs(
-    connection: SqliteConnection,
-    formal: SqliteConnection,
-    facts: Sequence[CompanyFacts],
-    extraction_hash: bytes,
-    *,
-    finish_attempts: bool = True,
-) -> tuple[str, ...]:
-    """Retire satisfied fields after commit, including older queued material.
-
-    Restoring the collection projection requires the original formal document
-    receipt. Field completion never creates a document or extraction receipt.
-    """
-    changed: set[str] = set()
-    for fact in facts:
-        gaps = _field_gaps(fact, connection)
-        rows = connection.run(
-            "SELECT f.disclosure_id,f.record_hash,f.field,f.rule_id,f.event_id,d.body_checked,"
-            "d.source,d.source_key,d.body_hash "
-            "FROM company_field_repairs f "
-            "JOIN disclosures d ON d.id=f.disclosure_id AND d.record_hash=f.record_hash "
-            "WHERE f.code=? AND f.state<>'complete'", (fact.code,),
-        ).fetchall()
-        for row in rows:
-            if (row[3] in {_REPURCHASE_RECHECK_RULE, _INCREASE_RECHECK_RULE}
-                or row[3].startswith(_SAME_BODY_RECHECK_PREFIXES)) and not finish_attempts:
-                # The old non-null value is precisely what this task must
-                # revalidate. Only its new formal field receipt can restore it.
-                continue
-            available = CompanyFieldIsAvailable(fact, row[4], row[2])
-            if not available and (not row[5] or not finish_attempts):
-                continue
-            missing = any(gap.event_id == row[4] and gap.field == row[2] for gap in gaps)
-            if not available and not missing:
-                checked_same_body = (
-                    row[3] in {_REPURCHASE_RECHECK_RULE, _INCREASE_RECHECK_RULE}
-                    or row[3].startswith(_SAME_BODY_RECHECK_PREFIXES)
-                )
-                retired_reduction = (
-                    row[4] == f"{row[7]}:{CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION.value}"
-                    and row[2] in {"start_date", "end_date", "planned_pct"}
-                    and not any(event.event_id == row[4] for event in fact.risk_events)
-                    and (
-                        any(review.evidence_id == row[7] and review.reason_code == "resolution_unlinked"
-                            for review in fact.review_reasons)
-                        or any(event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION
-                               and event.status is CompanyEventStatus.RESOLVED and row[7] in event.evidence_ids
-                               for event in fact.risk_events)
-                    )
-                )
-                if not retired_reduction and not checked_same_body:
-                    continue
-                policy = _repair_policy(row[4], row[2], row[3])
-                if formal.run(
-                    "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
-                    "AND record_hash=? AND extraction_hash=? AND outcome='field_attempted' AND policy_id=? AND body_hash=?",
-                    (row[6], row[7], fact.code, row[1], hashlib.sha256(policy.encode()).digest(), policy, row[8]),
-                ).fetchone() is None:
-                    continue
-                # A checked inapplicable field or reclassified notice gains
-                # no value: the exact committed attempt only retires the work.
-            connection.run(
-                "UPDATE company_field_repairs SET state=? WHERE disclosure_id=? AND code=? "
-                "AND record_hash=? AND field=? AND rule_id=? AND event_id=?",
-                ("complete" if available else "attempted",
-                 row[0], fact.code, row[1], row[2], row[3], row[4]),
-            )
-            if not row[5] and available:
-                changed.update(_restore_satisfied_document(connection, formal, row[0], extraction_hash))
-    return tuple(sorted(changed))
-
-
-def _restore_satisfied_document(
-    connection: SqliteConnection, formal: SqliteConnection, disclosure_id: int, extraction_hash: bytes
-) -> tuple[str, ...]:
-    document = connection.run(
-        "SELECT source,source_key,record_hash,body_hash FROM disclosures WHERE id=?", (disclosure_id,),
-    ).require_one()
-    changed: list[str] = []
-    for row in connection.run(
-        "SELECT c.code FROM disclosure_codes c JOIN company_population u ON u.code=c.code "
-        "WHERE c.disclosure_id=? AND NOT EXISTS(SELECT 1 FROM company_field_repairs f "
-        "WHERE f.disclosure_id=c.disclosure_id AND f.code=c.code AND f.record_hash=? AND f.state<>'complete') "
-        "AND NOT EXISTS(SELECT 1 FROM document_publications p WHERE p.disclosure_id=c.disclosure_id "
-        "AND p.code=c.code AND p.record_hash=? AND p.extraction_hash=?)",
-        (disclosure_id, document[2], document[2], extraction_hash),
-    ).fetchall():
-        receipt = formal.run(
-            "SELECT published_at FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
-            "AND record_hash=? AND extraction_hash=? AND body_hash=? AND outcome='valid'",
-            (document[0], document[1], row[0], document[2], extraction_hash, document[3]),
-        ).fetchone()
-        if receipt is None:
-            continue
-        connection.run("INSERT OR REPLACE INTO document_publications VALUES(?,?,?,?,?)",
-                       (disclosure_id, row[0], document[2], extraction_hash, receipt[0]))
-        changed.append(row[0])
-    connection.run(
-        "UPDATE disclosures SET body_checked=1 WHERE id=? AND EXISTS(SELECT 1 FROM document_publications p "
-        "WHERE p.disclosure_id=disclosures.id AND p.record_hash=disclosures.record_hash AND p.extraction_hash=?) "
-        "AND NOT EXISTS(SELECT 1 FROM disclosure_codes c JOIN company_population u ON u.code=c.code "
-        "WHERE c.disclosure_id=disclosures.id AND NOT EXISTS(SELECT 1 FROM document_publications p "
-        "WHERE p.disclosure_id=c.disclosure_id AND p.code=c.code AND p.record_hash=disclosures.record_hash "
-        "AND p.extraction_hash=?))", (disclosure_id, extraction_hash, extraction_hash),
-    )
-    return tuple(changed)
-
-
-def CompanyFieldRepairReceipts(
-    connection: SqliteConnection, codes: Sequence[str], at: datetime
-) -> tuple[CompanyInputReceipt, ...]:
-    receipts: list[CompanyInputReceipt] = []
-    for code in codes:
-        for row in connection.run(
-            "SELECT d.source,d.source_key,d.record_hash,d.body_hash,f.field,f.rule_id,f.event_id "
-            "FROM company_field_repairs f JOIN disclosures d ON d.id=f.disclosure_id "
-            "AND d.record_hash=f.record_hash WHERE f.code=? AND f.state='pending' "
-            "AND d.body_checked=1 AND d.body_retained=1", (code,),
-        ):
-            policy = _repair_policy(row[6], row[4], row[5])
-            receipts.append(CompanyInputReceipt(
-                row[0], row[1], code, row[2], hashlib.sha256(policy.encode()).digest(), row[3], at,
-                "field_attempted", policy,
-            ))
-    return tuple(receipts)
-
-
-def RestoreCompanyFieldRepairs(collected: SqliteConnection, formal: SqliteConnection) -> None:
-    # A first-pass task can roll back after its formal receipt has committed.
-    # Reconstruct only a still-missing requirement with the exact current body;
-    # a legacy document-level valid receipt is never a field attempt.
-    _restore_first_field_attempts(collected, formal)
-    for row in collected.run(
-        "SELECT f.disclosure_id,f.code,f.record_hash,f.event_id,f.field,f.rule_id,d.source,d.source_key,d.body_hash "
-        "FROM company_field_repairs f JOIN disclosures d ON d.id=f.disclosure_id "
-        "AND d.record_hash=f.record_hash WHERE f.state='pending'",
-    ).fetchall():
-        policy = _repair_policy(row[3], row[4], row[5])
-        receipt = formal.run(
-            "SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? "
-            "AND record_hash=? AND extraction_hash=? AND outcome='field_attempted' AND policy_id=? AND body_hash=?",
-            (row[6], row[7], row[1], row[2], hashlib.sha256(policy.encode()).digest(), policy, row[8]),
-        ).fetchone()
-        if receipt is not None:
-            available = any(
-                CompanyFieldIsAvailable(fact, row[3], row[4]) for fact in ReadCompanyFactRows(formal, (row[1],))
-            )
-            collected.run(
-                "UPDATE company_field_repairs SET state=? WHERE disclosure_id=? AND code=? "
-                "AND record_hash=? AND event_id=? AND field=? AND rule_id=?",
-                ("complete" if available else "attempted", *row[:6]),
-            )
-    parent = formal.run("SELECT extraction_hash FROM company_publication WHERE singleton=1").fetchone()
-    if parent is not None:
-        codes = tuple(row[0] for row in collected.run(
-            "SELECT DISTINCT code FROM company_field_repairs WHERE state='pending'"
-        ))
-        for offset in range(0, len(codes), 128):
-            changed = CompleteCompanyFieldRepairs(
-                collected, formal, ReadCompanyFactRows(formal, codes[offset:offset + 128]), parent[0],
-                finish_attempts=False,
-            )
-            collected.run_many("INSERT OR IGNORE INTO company_dirty_codes VALUES(?)", ((code,) for code in changed))
-
-
-def _restore_first_field_attempts(collected: SqliteConnection, formal: SqliteConnection) -> None:
-    receipts = (
-        CompanyInputReceipt(
-            row[0], row[1], row[2], row[3], row[4], row[5], RequireCompanyTime(row[6]), row[7], row[8]
-        )
-        for row in formal.run(
-            "SELECT source,source_key,code,record_hash,extraction_hash,body_hash,published_at,outcome,policy_id "
-            "FROM company_input_receipt WHERE outcome='field_attempted' ORDER BY code"
-        )
-    )
-    for code, inputs in groupby(receipts, key=lambda receipt: receipt.code):
-        gaps = tuple(gap for fact in ReadCompanyFactRows(formal, (code,)) for gap in _field_gaps(fact, collected))
-        for receipt in inputs:
-            if receipt.body_hash is None:
-                continue
-            for gap in gaps:
-                rule = _field_attempt_rule(gap)
-                policy = _repair_policy(gap.event_id, gap.field, rule)
-                if (
-                    receipt.source_key != gap.evidence_id or receipt.policy_id != policy
-                    or receipt.extraction_hash != hashlib.sha256(policy.encode()).digest()
-                ):
-                    continue
-                collected.run(
-                    "INSERT OR IGNORE INTO company_field_repairs "
-                    "SELECT d.id,?,d.record_hash,?,?,?,'attempted' FROM disclosures d "
-                    "JOIN disclosure_codes c ON c.disclosure_id=d.id "
-                    "WHERE d.source=? AND d.source_key=? AND c.code=? AND d.record_hash=? "
-                    "AND d.body_hash=? AND d.body_checked=1 AND d.body_retained=1",
-                    (
-                        code, gap.event_id, gap.field, rule, receipt.source, receipt.source_key, code,
-                        receipt.record_hash, receipt.body_hash,
-                    ),
-                )
-
-
 def _field_attempt_rule(gap: CompanyFieldGap) -> str:
     if gap.reason == "measurement_missing":
         for field, rule in COMPANY_FIELD_RULES:
@@ -1425,21 +443,11 @@ def _field_attempt_rule(gap: CompanyFieldGap) -> str:
         return _REQUIRED_FIELD_EVIDENCE_RULE
     raise ValueError("company_field_attempt_not_applicable")
 
-
-def _repair_policy(event_id: str, field: str, rule: str) -> str:
-    return "field:" + hashlib.sha256(event_id.encode()).hexdigest() + ":" + field + ":" + rule
-
-
 def _local_file(root: Path, relative: object) -> bool:
     if not isinstance(relative, str):
         return False
     candidate = (root / relative).resolve()
     return candidate.is_relative_to(root.resolve()) and candidate.is_file()
-
-
-def _has_repairs(connection: SqliteConnection) -> bool:
-    return connection.run("SELECT 1 FROM sqlite_master WHERE name='company_field_repairs'").fetchone() is not None
-
 
 def _field_gaps(fact: CompanyFacts, connection: SqliteConnection) -> tuple[CompanyFieldGap, ...]:
     gaps = list(BuildCompanyFieldGaps(fact))
@@ -1459,23 +467,4 @@ def _field_gaps(fact: CompanyFacts, connection: SqliteConnection) -> tuple[Compa
             gaps.append(CompanyFieldGap(fact.code, event.event_id, event.evidence_ids[-1], "actual_pct", "measurement_missing"))
     return tuple(gaps)
 
-
-__all__ = [
-    "COMPANY_FIELD_RULES",
-    "ReadCompanyFieldRecovery",
-    "QueueCompanyFieldRepairs",
-    "QueueCompanyShareActionRechecks",
-    "QueueCompanyContractSigningRechecks",
-    "QueueCompanyReductionRechecks",
-    "PrioritizeCompanyRepurchaseInputs",
-    "PlanCompanyFieldAttempts",
-    "CompleteCompanyFieldRepairs",
-    "CompanyFieldRepairReceipts",
-    "PrepareCompanyShareRecheckReceipts",
-    "RestoreCompanyFieldRepairs",
-    "CompanyMaterialDependency",
-    "RegisterCompanyMaterialDependencies",
-    "RestoreCompanyMaterialDependencies",
-    "ReadRequiredCompanyMaterialDependencies",
-    "RecoverRequiredCompanyText",
-]
+__all__ = ["COMPANY_FIELD_RULES", "CompanyMaterialDependency", "ReadCompanyFieldRecovery", "RegisterCompanyMaterialDependencies", "RestoreCompanyMaterialDependencies", "RecoverRequiredCompanyText", "ReadRequiredCompanyMaterialDependencies"]

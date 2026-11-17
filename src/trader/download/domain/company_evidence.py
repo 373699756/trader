@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from enum import Enum
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -22,8 +23,22 @@ DocumentRepairMode = Literal["ocr", "limits"]
 DocumentRoute = Literal["standard", "ocr", "limits"]
 
 
+class CompanyDownloadStore(str, Enum):
+    COLLECTION = "collection"
+    FACTS = "facts"
+    NORMALIZED = "normalized"
+    INPUTS = "inputs"
+    REQUEST_JOURNAL = "request_journal"
+
+
 class CompanyDatabaseIncompatibleError(ValueError):
-    """Company download material has a structure that the current writer rejects."""
+    """The rejected store is explicit; request allowances are never a re-download target."""
+
+    def __init__(self, store: CompanyDownloadStore) -> None:
+        if not isinstance(store, CompanyDownloadStore):
+            raise ValueError("company_download_store_invalid")
+        self.store = store
+        super().__init__(f"company_download_structure_incompatible:{store.value}")
 
 
 @dataclass(frozen=True)
@@ -70,6 +85,9 @@ class CompanySyncConfiguration:
     publication_interval_seconds: float
     text_task_reserve_bytes: int
     ocr_task_reserve_bytes: int
+    round_request_limit: int
+    round_step_limit: int
+    round_timeout_seconds: float
 
     def __post_init__(self) -> None:
         values = (
@@ -82,6 +100,7 @@ class CompanySyncConfiguration:
             self.document_ocr_timeout_seconds,
             self.document_ocr_page_timeout_seconds,
             self.publication_interval_seconds,
+            self.round_timeout_seconds,
         )
         if (
             not 1 <= self.directory_batch_pages <= 100
@@ -109,6 +128,12 @@ class CompanySyncConfiguration:
             or self.extended_document_limits.max_text_characters < self.document_limits.max_text_characters
         ):
             raise ValueError("company_batch_configuration_invalid")
+        if (
+            type(self.round_request_limit) is not int or not 0 <= self.round_request_limit <= 2048
+            or type(self.round_step_limit) is not int or not 1 <= self.round_step_limit <= 4096
+            or type(self.round_timeout_seconds) not in {int, float} or not 1 <= self.round_timeout_seconds <= 28_800
+        ):
+            raise ValueError("company_round_configuration_invalid")
         if (
             any(not math.isfinite(value) for value in values)
             or not 0 < self.source_timeout_seconds <= 8
@@ -755,49 +780,6 @@ class EvidenceSyncProgress:
             raise ValueError("company_progress_scope_invalid")
 
 
-@dataclass(frozen=True)
-class CompanyEvidenceSyncResult:
-    """Durable outcomes; null pending counts mean the final inventory was not checked."""
-
-    observed_at: datetime
-    requested_codes: int
-    published_codes: int
-    fetched_pages: int
-    changed_rows: int
-    reused_partitions: int
-    pending_partitions: int | None
-    failures: tuple[str, ...]
-    elapsed_seconds: float
-    pending_documents: int | None = 0
-    news_population_codes: int = 0
-    news_coverage: Literal["published_population", "uncovered"] = "uncovered"
-    ocr_documents: int | None = 0
-    unextractable_documents: int | None = 0
-    next_document_retry_at: datetime | None = None
-    window_days: int = 365
-
-    @property
-    def needs_retry(self) -> bool:
-        return bool(
-            self.failures or self.pending_partitions is None or self.pending_documents is None
-            or self.ocr_documents is None or self.unextractable_documents is None
-            or self.pending_partitions or self.pending_documents
-        )
-
-    @property
-    def retry_reason(self) -> str | None:
-        reasons = list(self.failures)
-        if any(value is None for value in (
-            self.pending_partitions, self.pending_documents, self.ocr_documents, self.unextractable_documents,
-        )):
-            reasons.append("inventory:not_checked")
-        if self.pending_partitions:
-            reasons.append("announcements:pending")
-        if self.pending_documents:
-            reasons.append("risk_documents:pending")
-        return ",".join(dict.fromkeys(reasons)) or None
-
-
 _OCR_FAILURES = frozenset(
     {
         "disclosure_document_no_text",
@@ -943,8 +925,8 @@ __all__ = [
     "DocumentRepairMode",
     "DocumentRoute",
     "CompanyEvidenceInput",
-    "CompanyEvidenceSyncResult",
     "CompanyDatabaseIncompatibleError",
+    "CompanyDownloadStore",
     "CompanyFinancial",
     "CompanyRatio",
     "Component",

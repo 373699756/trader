@@ -19,6 +19,7 @@ from trader.download.infra.company_financial_input_use import ReadUnusedCompanyF
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
+from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.infra.company_facts_protocol import (
@@ -44,6 +45,7 @@ def AuditCompanyConsumer(
     budget_seconds: float,
     sqlite_policy: SqliteIoPolicy,
     event_policy: CompanyEventPolicy,
+    http_configuration: Path | None = None,
 ) -> dict[str, object]:
     """Verify only the formal read contract; never plan repairs or inspect collection data."""
     if (
@@ -52,6 +54,11 @@ def AuditCompanyConsumer(
     ):
         raise ValueError("company_consumer_audit_budget_or_time_invalid")
     deadline = time.monotonic() + budget_seconds
+    if http_configuration is not None:
+        from trader.infra.settings import LoadRuntimeSettings
+
+        if LoadRuntimeSettings(http_configuration).data_paths.company.resolve(strict=True) != facts_path.resolve(strict=True):
+            raise ValueError("company_consumer_http_database_mismatch")
     expired = False
 
     def cancel() -> bool:
@@ -70,6 +77,8 @@ def AuditCompanyConsumer(
     consumer: dict[str, object] = {"checked": False, "http_checked": False}
     stable = False
     findings: list[str] = []
+    codes: list[str] = []
+    http_audit: dict[str, object] | None = None
     try:
         check()
         remaining = deadline - time.monotonic()
@@ -89,7 +98,6 @@ def AuditCompanyConsumer(
                     publication_hash = identity.content_hash.hex()
                     extraction_hash = identity.extraction_hash.hex()
                     published_at = identity.published_at.isoformat()
-                    codes: list[str] = []
                     for row in formal.run("SELECT code FROM company_facts ORDER BY code"):
                         check()
                         if len(codes) >= 12_000:
@@ -111,16 +119,38 @@ def AuditCompanyConsumer(
         else:
             consumer = {"checked": False, "http_checked": False}
         stable = False
-    complete = stable and consumer.get("consistent") is True and not findings
+    if http_configuration is not None and stable and consumer.get("consistent") is True and not findings:
+        from scripts.download.company.company_http_audit import AuditCompanyHttp
+
+        if cancel():
+            findings.append("company_consumer_audit_budget_exhausted")
+            stable = False
+        else:
+            if publication_hash is None:
+                raise ValueError("company_consumer_publication_missing")
+            try:
+                http_audit = AuditCompanyHttp(http_configuration, expected_publication_hash=publication_hash,
+                    codes=tuple(codes), budget_seconds=deadline - time.monotonic())
+            except TimeoutError:
+                if not cancel():
+                    raise
+                findings.append("company_consumer_audit_budget_exhausted")
+            else:
+                if http_audit.get("passed") is not True:
+                    findings.append("company_consumer_http_not_verified")
+            expired = cancel()
+    http_checked = http_audit is not None and http_audit.get("passed") is True
+    complete = stable and consumer.get("consistent") is True and not findings and not expired
     return {
         "schema_version": "company-resume",
         "status": "passed" if complete else "failed" if expired else "degraded",
         "summary": {"consumer_audit": {
-            "read_only": True, "scope": "formal_reader_consistency_only", "observed_at": now.isoformat(),
+            "read_only": True, "scope": "formal_reader_and_document_http" if http_configuration is not None else "formal_reader_consistency_only", "observed_at": now.isoformat(),
             "complete": complete, "budget_exhausted": expired, "stable_read": stable,
             "publication_hash": publication_hash, "extraction_hash": extraction_hash, "published_at": published_at,
             "consumer_read": consumer, "collection_checked": False, "recovery_planned": False,
-            "field_correctness_verified": False, "full_market_verified": False, "http_checked": False,
+            "field_correctness_verified": False, "full_market_verified": False, "http_checked": http_checked,
+            **({"http_audit": http_audit} if http_configuration is not None else {}),
         }},
         "findings": findings,
     }
@@ -140,11 +170,13 @@ def _consumer_read(
         return {"checked": False, "http_checked": False, "failure": "company_consumer_population_or_publication_missing"}
     expected_facts = ReadCompanyFactRows(formal, codes)
     expected_fields = ReadCompanyFieldResults(formal, codes)
+    expected_links = ReadCompanyDocumentLinks(formal, codes)
     reader = SQLiteCompanyEvidenceReader(facts_path, event_policy=event_policy, sqlite_policy=sqlite_policy)
     actual_facts: list[CompanyFacts] = []
     try:
         reader.visit(codes, actual_facts.append, cancel_requested=cancel_requested)
         actual_fields = reader.read_fields(codes, cancel_requested=cancel_requested)
+        actual_links = reader.read_document_links(codes, cancel_requested=cancel_requested)
         actual_identity = reader.publication_identity(cancel_requested=cancel_requested)
         if cancel_requested():
             raise InterruptedError("company_consumer_audit_cancelled")
@@ -152,6 +184,7 @@ def _consumer_read(
         if str(exc) in {
             "company_preload_cancelled", "company_field_read_cancelled", "company_observation_cancelled",
             "company_consumer_audit_cancelled",
+            "company_document_link_read_cancelled",
         } and cancel_requested():
             raise CompanyConsumerAuditBudgetExceeded("company_consumer_audit_budget_exhausted") from exc
         raise
@@ -159,11 +192,13 @@ def _consumer_read(
         return {"checked": False, "http_checked": False, "failure": "company_consumer_unreadable"}
     same_facts = tuple(actual_facts) == expected_facts
     same_fields = actual_fields.results == expected_fields
-    same_identity = actual_fields.publication_hash == identity.content_hash.hex() == actual_identity
+    same_links = actual_links.links == expected_links
+    same_identity = actual_fields.publication_hash == identity.content_hash.hex() == actual_identity == actual_links.publication_hash
     return {
         "checked": True, "http_checked": False, "stocks": len(actual_facts), "fields": len(actual_fields.results),
         "facts_equal": same_facts, "fields_equal": same_fields, "publication_equal": same_identity,
-        "consistent": same_facts and same_fields and same_identity,
+        "document_links": len(actual_links.links), "document_links_equal": same_links,
+        "consistent": same_facts and same_fields and same_links and same_identity,
     }
 
 

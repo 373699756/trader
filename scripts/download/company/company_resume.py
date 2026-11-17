@@ -11,17 +11,13 @@ import hashlib
 import json
 import tempfile
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import replace
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
-from typing import Literal
 from zoneinfo import ZoneInfo
 
 from scripts.download.company.cli import ParseCompanyReplayObservation
 from scripts.download.company.company_pagination_audit import AuditCompanyPagination
 from scripts.download.company.company_pipeline_audit import AuditCompanyPipeline
-from scripts.download.company.company_pipeline_audit import AuditCompanyIoCandidates
 from scripts.download.company.company_ocr_audit import AuditCompanyOcr
 from scripts.download.company.company_document_download_audit import AuditCompanyDocumentDownloads, AuditCompanyFieldProofRecovery
 from scripts.download.company.company_field_audit import InspectCompanyFieldMaterial
@@ -31,156 +27,12 @@ from scripts.download.company.company_query_audit import AuditCompanyDatabase
 from scripts.download.company.company_publication_audit import AuditCompanyConsumer
 from scripts.download.company.company_field_proof_audit import AuditCompanyFieldProofs
 from trader.bootstrap import OpenExternalHttp
-from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
-from trader.download.domain.company_events import CompanyEventPolicy
-from trader.download.domain.company_evidence import (
-    BuildCompanyDocumentPolicies,
-    CompanyDocumentPolicies,
-    CompanyDocumentTask,
-    CompanyDocumentWorkload,
-    CompanyEvidenceRequest,
-    CompanySyncConfiguration,
-    Disclosure,
-    DisclosurePage,
-    DisclosurePartition,
-    Market,
-)
-from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
-from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
-from trader.download.infra.company_document_parser import CompanyTextCapability, DetectCompanyText
-from trader.download.infra.company_raw_files import CompanyRawFiles
-from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.download.infra.company_pipeline_queries import ReleaseCompletedCompanyQueryRows
-from trader.download.infra.company_structured_source import EastmoneyCompanySource
-from trader.download.infra.company_fact_inputs import CompanyCoverageComplete
-from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-from trader.infra.http_contracts import HttpAttempt, HttpTransport
+from trader.infra.http_contracts import HttpAttempt
 from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 _ROOT = TOOL_ROOT
-
-
-class _ReplayIndex(SQLiteCompanyEvidenceIndex):
-    def __init__(
-        self,
-        path: Path,
-        selection: frozenset[tuple[str, str, str]],
-        configuration: CompanySyncConfiguration,
-        *,
-        facts_path: Path,
-        event_policy: CompanyEventPolicy,
-        sqlite_policy: SqliteIoPolicy,
-        raw_files: CompanyRawFiles,
-        directory_only: bool = False,
-    ) -> None:
-        super().__init__(
-            path,
-            facts_path=facts_path,
-            raw_files=raw_files,
-            documents=CompanyDocumentFiles(
-                path.parent / "text",
-                max_text_characters=configuration.extended_document_limits.max_text_characters,
-                max_bytes=configuration.temporary_text_capacity_bytes,
-                reserve_bytes=configuration.temporary_disk_reserve_bytes,
-            ),
-            event_policy=event_policy,
-            sqlite_policy=sqlite_policy,
-        )
-        self._selection = selection
-        self._directory_only = directory_only
-
-    def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
-        return tuple(
-            p
-            for p in super().partitions(markets, observed_at)
-            if any(p.market == market and start <= str(p.start) <= str(p.end) <= end for market, start, end in self._selection)
-        )
-
-    def component_due(self, component: str, scope: str, observed_at: datetime) -> bool:
-        # This diagnostic measures announcement recovery, not another full structured-source download.
-        return False
-
-    def pending_documents(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        limit: int | None = None,
-        policies: CompanyDocumentPolicies,
-        excluded: Sequence[tuple[str, str, str]] = (),
-        repair: Literal["ocr", "limits"] | None = None,
-        local_only: bool = False,
-    ) -> tuple[CompanyDocumentTask, ...]:
-        if self._directory_only:
-            return ()
-        return tuple(super().pending_documents(
-            codes,
-            observed_at,
-            limit=min(limit or 32, 32),
-            policies=policies,
-            excluded=excluded,
-            repair=repair,
-            local_only=local_only,
-        ))
-
-    def document_workload(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        policies: CompanyDocumentPolicies,
-        *,
-        excluded: Sequence[tuple[str, str, str]] = (),
-        repair: Literal["ocr", "limits"] | None = None,
-    ) -> CompanyDocumentWorkload:
-        if self._directory_only:
-            return CompanyDocumentWorkload(0, 0)
-        return super().document_workload(codes, observed_at, policies, excluded=excluded, repair=repair)
-
-
-class _ObservedSource(CninfoMarketDisclosureSource):
-    def __init__(
-        self, session: HttpTransport, configuration: CompanySyncConfiguration, *, cancel_requested: Callable[[], bool],
-        raw_files: CompanyRawFiles, engine: CompanyOcrEngine, policies: CompanyDocumentPolicies, text_capability: CompanyTextCapability,
-    ) -> None:
-        super().__init__(
-            session,
-            monotonic=time.monotonic,
-            sleeper=time.sleep,
-            timeout_seconds=configuration.source_timeout_seconds,
-            document_download_timeout_seconds=configuration.document_download_timeout_seconds,
-            document_parse_timeout_seconds=configuration.document_parse_timeout_seconds,
-            document_limits=configuration.document_limits,
-            extended_document_limits=configuration.extended_document_limits,
-            request_interval_seconds=configuration.request_interval_seconds,
-            cancel_requested=cancel_requested,
-            raw_files=raw_files,
-            ocr_engine=engine,
-            document_policies=policies,
-            text_capability=text_capability,
-            text_reserve_bytes=configuration.text_task_reserve_bytes,
-            ocr_reserve_bytes=configuration.ocr_task_reserve_bytes,
-        )
-        self.pages: list[tuple[str, str, str, str, int]] = []
-        self.documents = 0
-
-    def fetch(self, partition: DisclosurePartition, *, order: Literal["", "asc", "desc"] = "") -> DisclosurePage:
-        page = super().fetch(partition, order=order)
-        self.pages.append(
-            (
-                partition.market,
-                str(partition.start),
-                str(partition.end),
-                partition.query.key if partition.query else "",
-                partition.page,
-            )
-        )
-        return page
-
-    def download_document(self, item: Disclosure, *, attempt_limit: int = 3) -> None:
-        self.documents += 1
-        super().download_document(item, attempt_limit=attempt_limit)
 
 
 def _copy(source: Path, destination: Path, *, deadline: float, sqlite_policy: SqliteIoPolicy) -> None:
@@ -195,25 +47,6 @@ def _copy(source: Path, destination: Path, *, deadline: float, sqlite_policy: Sq
         pending.replace(destination)
     finally:
         pending.unlink(missing_ok=True)
-
-
-def _saved_pages(path: Path, pages: list[tuple[str, str, str, str, int]], *, sqlite_policy: SqliteIoPolicy) -> set[tuple[str, str, str, str, int]]:
-    saved = set()
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as c:
-        for market, start, end, scope, page in pages:
-            if scope:
-                row = c.run(
-                    "SELECT next_page FROM disclosure_queries WHERE market=? AND start_date=? AND end_date=? AND scope=?",
-                    (market, start, end, scope),
-                ).fetchone()
-            else:
-                row = c.run(
-                    "SELECT next_page FROM partitions p WHERE market=? AND start_date=? AND end_date=? AND NOT EXISTS(SELECT 1 FROM disclosure_queries q WHERE q.market=p.market AND q.start_date=p.start_date AND q.end_date=p.end_date)",
-                    (market, start, end),
-                ).fetchone()
-            if row is not None and row[0] > page:
-                saved.add((market, start, end, scope, page))
-    return saved
 
 
 def _retained_digest(path: Path, deadline: float, *, sqlite_policy: SqliteIoPolicy) -> str:
@@ -286,6 +119,7 @@ def Main() -> int:
     audit.add_argument("--audit-only", action="store_true")
     audit.add_argument("--database-only", action="store_true")
     audit.add_argument("--consumer-only", action="store_true")
+    parser.add_argument("--consumer-http", action="store_true")
     audit.add_argument("--field-proof-only", action="store_true")
     audit.add_argument("--field-proof-recovery-only", action="store_true")
     parser.add_argument("--field-proof-recovery-manifest", type=Path)
@@ -295,12 +129,18 @@ def Main() -> int:
     audit.add_argument("--pagination-only", action="store_true")
     audit.add_argument("--pipeline-only", action="store_true")
     audit.add_argument("--pacing-only", action="store_true", help="Compare shared/per-host pacing with identical real PDFs and one complete directory sample in isolation.")
-    audit.add_argument("--io-candidates-only", action="store_true", help="Five paired isolated samples per 15/30/60-second publication candidate; never enables production changes.")
     audit.add_argument("--material-keys", nargs="+", help="Inspect bounded local source excerpts and contract facts for 1..6 source keys; requires --facts-database.")
     audit.add_argument("--ocr-only", action="store_true")
     audit.add_argument("--document-only", action="store_true")
     audit.add_argument("--directory-only", action="store_true")
     args = parser.parse_args()
+    if args.directory_only or not any((
+        args.audit_only, args.database_only, args.consumer_only, args.field_proof_only,
+        args.field_replay_keys, args.field_proof_recovery_only, args.pagination_only,
+        args.pipeline_only, args.pacing_only, args.material_keys,
+        args.ocr_only, args.document_only,
+    )):
+        parser.error("company_structured_source_admission_pending")
     if args.risk_baseline is not None and (
         not args.database_only or args.directory is not None or args.facts_database is None
     ):
@@ -309,6 +149,8 @@ def Main() -> int:
         parser.error("--budget-seconds is required")
     if args.consumer_only and (args.facts_database is None or args.directory is not None):
         parser.error("--consumer-only requires --facts-database and does not accept --directory")
+    if args.consumer_http and not args.consumer_only:
+        parser.error("--consumer-http requires --consumer-only")
     if args.field_proof_only and (args.facts_database is None or args.directory is not None):
         parser.error("--field-proof-only requires --facts-database and does not accept --directory")
     if args.field_proof_recovery_only and (
@@ -335,20 +177,18 @@ def Main() -> int:
         "scripts/download/company/company_publication_audit.py",
         "scripts/download/company/company_field_proof_audit.py",
         "scripts/download/company/company_document_download_audit.py",
-        "src/trader/download/application/company_evidence.py",
         "src/trader/download/infra/company_disclosure_source.py",
         "src/trader/download/infra/company_disclosure_queries.py",
-        "src/trader/download/infra/company_evidence_index.py",
         "src/trader/download/infra/company_document_parser.py",
         "src/trader/download/domain/company_annual_report.py",
         "src/trader/download/domain/company_financial_report.py",
         "src/trader/download/domain/company_announcement_numbers.py",
         "src/trader/download/domain/company_event_extraction.py",
         "src/trader/download/domain/company_reduction_scope.py",
-        "src/trader/download/infra/company_annual_income_index.py",
         "src/trader/download/infra/company_annual_field_publication.py",
         "src/trader/download/infra/company_financial_publication.py",
-        "src/trader/download/infra/company_financial_report_index.py",
+        "src/trader/download/infra/company_material_index.py",
+        "src/trader/download/infra/company_normalized_index.py",
         "src/trader/download/infra/company_field_publication.py",
         "src/trader/download/infra/company_field_recovery.py",
         "src/trader/download/infra/company_pipeline_queries.py",
@@ -397,12 +237,15 @@ def Main() -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 1 if report["status"] == "failed" else 0
     if args.consumer_only:
+        if args.consumer_http and args.facts_database.resolve(strict=True) != runtime.data_paths.company.resolve(strict=True):
+            parser.error("--consumer-http requires the configured formal company database")
         report = AuditCompanyConsumer(
             args.facts_database.resolve(strict=True),
             now=datetime.now(ZoneInfo("Asia/Shanghai")),
             budget_seconds=min(180.0, args.budget_seconds),
             sqlite_policy=sqlite_policy,
             event_policy=LoadStrategySettings(runtime.strategy_config_path).company_scoring.events,
+            http_configuration=runtime.config_path if args.consumer_http else None,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 1 if report["status"] == "failed" else 0
@@ -471,155 +314,4 @@ def Main() -> int:
             )
         )
         return 0
-    if args.io_candidates_only:
-        print(json.dumps(AuditCompanyIoCandidates(
-            source_path,
-            directory,
-            budget_seconds=args.budget_seconds,
-            sqlite_policy=sqlite_policy,
-        ), ensure_ascii=False, indent=2))
-        return 0
-    destination = directory / "evidence.sqlite3"
-    if destination.resolve() == source_path or (destination.exists() and destination.samefile(source_path)):
-        parser.error("source and replay database must differ")
-    started = time.monotonic()
-    if not destination.exists():
-        _copy(source_path, destination, deadline=started + args.budget_seconds, sqlite_policy=sqlite_policy)
-    selection_path = directory / "selection.json"
-    with SqliteSession(destination, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as c:
-        codes = tuple(row[0] for row in c.run("SELECT code FROM company_population ORDER BY code"))
-        if selection_path.exists():
-            selection = _selection(json.loads(selection_path.read_text(encoding="utf-8")))
-        else:
-            selection = frozenset(
-                tuple(row)
-                for row in c.run(
-                    "SELECT market,start_date,end_date FROM partitions WHERE is_complete=0 AND (failure<>'' OR next_page>1)"
-                )
-            )
-            selection_path.write_text(json.dumps(sorted(selection)), encoding="utf-8")
-    if not selection or not codes:
-        parser.error("backup needs failed slices and a published population")
-    if args.facts_database is None:
-        parser.error("replay requires --facts-database")
-    facts_path = directory / "company_facts.sqlite3"
-    if not facts_path.exists():
-        _copy(args.facts_database, facts_path, deadline=started + args.budget_seconds, sqlite_policy=sqlite_policy)
-    configuration = replace(LoadCompanySyncConfiguration(_ROOT), document_workers=1)
-    raw_files = CompanyRawFiles(directory, capacity=configuration.raw_capacity_bytes,
-                               analysis_reserve=configuration.raw_analysis_reserve_bytes,
-                               free_reserve=configuration.temporary_disk_reserve_bytes,
-                               maximum_document_bytes=configuration.extended_document_limits.max_bytes)
-    ocr_capability = DetectCompanyOcr(configuration.document_ocr_languages)
-    text_capability = DetectCompanyText()
-    policies = BuildCompanyDocumentPolicies(configuration, ocr_capability.identity, text_identity=text_capability.identity)
-    engine = CompanyOcrEngine(ocr_capability, timeout_seconds=configuration.document_ocr_timeout_seconds,
-                              page_timeout_seconds=configuration.document_ocr_page_timeout_seconds,
-                              max_pages=configuration.document_ocr_max_pages, dpi=configuration.document_ocr_dpi,
-                              cancel_requested=lambda: time.monotonic() >= started + args.budget_seconds)
-    event_policy = LoadStrategySettings(_ROOT / "config" / "strategy.json").company_scoring.events
-    index = _ReplayIndex(
-        destination,
-        selection,
-        configuration,
-        facts_path=facts_path,
-        raw_files=raw_files,
-        event_policy=event_policy, sqlite_policy=sqlite_policy,
-        directory_only=args.directory_only,
-    )
-    if args.directory_only:
-        with SqliteSession(destination, sqlite_policy=sqlite_policy) as c, SqliteTransaction(c, immediate=True):
-            for key in selection:
-                c.run("DELETE FROM partition_retries WHERE market=? AND start_date=? AND end_date=?", key)
-    now = datetime.now(ZoneInfo("Asia/Shanghai"))
-    runs = []
-    saved: set[tuple[str, str, str, str, int]] = set()
-    replayed = 0
-    for number in range(3):
-        remaining = args.budget_seconds - (time.monotonic() - started)
-        if remaining < 15:
-            break
-        with OpenExternalHttp() as session:
-            source = _ObservedSource(
-                session, configuration, cancel_requested=lambda: time.monotonic() >= started + args.budget_seconds,
-                raw_files=raw_files, engine=engine, policies=policies, text_capability=text_capability,
-            )
-
-            def interrupt(number: int = number, source: _ObservedSource = source) -> bool:
-                return time.monotonic() >= started + args.budget_seconds or (number == 0 and len(source.pages) >= 2)
-
-            result = SyncCompanyEvidence(
-                CompanyEvidenceDependencies(
-                    index,
-                    source,
-                    EastmoneyCompanySource(
-                        session,
-                        monotonic=time.monotonic,
-                        timeout_seconds=configuration.source_timeout_seconds,
-                        cancel_requested=interrupt,
-                    ),
-                    time.monotonic,
-                    cancel_requested=interrupt,
-                    ocr_identity=ocr_capability.identity,
-                    text_identity=text_capability.identity,
-                ),
-                CompanyEvidenceRequest(codes, now, configuration, event_policy),
-            )
-            if number == 0:
-                saved = _saved_pages(destination, source.pages, sqlite_policy=sqlite_policy)
-            else:
-                replayed += len(saved.intersection(source.pages))
-            runs.append(
-                {
-                    "interrupted": "task:cancelled" in result.failures,
-                    "pages": len(source.pages),
-                    "document_attempts": source.documents,
-                    "pending_slices": result.pending_partitions,
-                    "sampled_pending_documents": result.pending_documents,
-                    "failures": result.failures,
-                    "elapsed_seconds": round(result.elapsed_seconds, 3),
-                }
-            )
-        time.sleep(configuration.request_interval_seconds)
-    with SqliteSession(destination, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as c:
-        completed = sum(
-            not c.run("SELECT 1 FROM partitions WHERE market=? AND start_date>=? AND end_date<=? AND is_complete=0 LIMIT 1", key).fetchone()
-            for key in selection
-        )
-        covered = sum(
-            CompanyCoverageComplete(tuple(c.run("SELECT start_date,end_date FROM coverage WHERE market=?", (key[0],))), date.fromisoformat(key[1]), date.fromisoformat(key[2]))
-            for key in selection
-        )
-    passed = completed == covered == len(selection) and (args.directory_only or replayed == 0)
-    report = {
-        "schema_version": "company-resume",
-        "status": "passed" if passed else "degraded",
-        "summary": {
-            "isolated_backup": True,
-            "implementation_digest": implementation.hexdigest(),
-            "selected_slices": len(selection),
-            "completed_slices": completed,
-            "covered_slices": covered,
-            "saved_pages_replayed": replayed,
-            "document_sample_limit": 32,
-            "directory_only": args.directory_only,
-            "runs": runs,
-        },
-        "findings": [] if passed else ["company_resume_incomplete"],
-    }
-    (directory / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0
-
-
-def _selection(payload: object) -> frozenset[tuple[str, str, str]]:
-    if not isinstance(payload, list):
-        raise ValueError("company_replay_selection_invalid")
-    keys = []
-    for row in payload:
-        if not isinstance(row, list) or len(row) != 3 or not all(isinstance(s, str) for s in row):
-            raise ValueError("company_replay_selection_invalid")
-        if row[0] not in {"sse", "szse", "bse"}:
-            raise ValueError("company_replay_selection_invalid")
-        keys.append((row[0], row[1], row[2]))
-    return frozenset(keys)
+    raise ValueError("company_structured_source_admission_pending")

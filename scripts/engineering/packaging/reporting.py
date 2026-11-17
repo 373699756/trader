@@ -20,4 +20,7 @@ def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], paylo
         "wheel", "resource_count", "installed_outside_repository", "research_evidence_commands_verified",
         "missing_history_read_only_smoke", "missing_selection_read_only_smoke",
     )
-    payload["summary"] = {name: source[name] for name in fields if name in source}
+    summary = {name: source[name] for name in fields if name in source}
+    if source.get("pip_provider") in ("invoking_environment", "bundled_ensurepip"):
+        summary["pip_provider"] = source["pip_provider"]
+    payload["summary"] = summary
