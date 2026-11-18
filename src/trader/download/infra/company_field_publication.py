@@ -40,6 +40,7 @@ def CompanyFieldProofRulesHash() -> bytes:
     digest = hashlib.sha256()
     digest.update(CanonicalDigest(COMPANY_FIELD_RULES).encode())
     for relative in (
+        "domain/company_annual_income.py", "infra/company_sync_preparation.py",
         "domain/company_announcement_normalization.py", "domain/company_announcement_numbers.py", "infra/company_announcement_preparation.py",
         "domain/company_event_extraction.py", "domain/company_repurchase_fields.py", "domain/company_contract_fields.py", "domain/company_annual_report.py",
         "domain/company_reduction_scope.py", "domain/company_field_source.py", "domain/company_field_plan.py",

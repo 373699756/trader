@@ -172,7 +172,8 @@ class CompanySyncResume:
 
 def CompanySyncRoundIdentity(scope: CompanySyncRoundScope, plans: tuple[CompanySyncPhasePlan, ...]) -> str:
     """Bind frozen source plans while allowing local proof rules to advance."""
-    return CanonicalDigest((scope, tuple((plan.family, plan.request_hash) for plan in plans if not plan.refresh_on_input_change)))
+    return CanonicalDigest((scope, tuple((plan.family, plan.request_hash) for plan in plans
+        if not plan.refresh_on_input_change or plan.family is not CompanySyncFamily.FIELDS)))
 
 
 def CompanyFinancialRequestIdentity(query: StructuredCompanyQuery, publication_scope: str) -> str:

@@ -2,10 +2,11 @@
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from trader.download.domain.company_document_links import CompanyPublishedEvidenceLink
+from trader.download.domain.company_annual_income import CompanyAnnualIncome, ApplyCompanyAnnualIncome, SelectCompanyAnnualIncome
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyEvidenceLink, CompanyPositiveType, RepurchaseMeasurements
 from trader.download.domain.company_event_extraction import IsCompanyRepurchaseCancellationOnly
 from trader.download.domain.company_evidence import CompanyDocument
@@ -36,6 +37,7 @@ def PrepareCompanyIssuerInputs(
     check: Callable[[], None], revalidate: bool, include_new_announcements: bool, correct_measurements: bool = True,
     published_links: tuple[CompanyPublishedEvidenceLink, ...] = (),
     recovered: tuple[CompanyRecoveredInput, ...] = (),
+    annual_incomes: tuple[CompanyAnnualIncome, ...] = (),
 ) -> CompanyIssuerPreparation:
     """Use the sole field proofer and only valid-backed exact bodies for corrections."""
     original = previous
@@ -43,11 +45,32 @@ def PrepareCompanyIssuerInputs(
         rule_identity=CompanyFieldProofRulesHash(), event_policy=event_policy, read_document=read_document, check=check) if include_new_announcements and correct_measurements else None
     if announcement is not None:
         previous = announcement.facts
+    annual_receipts: list[CompanyInputReceipt] = []
+    if correct_measurements and annual_incomes:
+        annual_incomes = tuple(income for income in annual_incomes if formal.run(
+            """SELECT 1 FROM company_input_receipt WHERE source='eastmoney_annual_income'
+            AND source_key=? AND code=? AND record_hash<>? AND outcome='valid' LIMIT 1""",
+            (income.source_key, previous.code, income.record_hash)).fetchone() is None)
+        financials = tuple(row for row in (previous.financial, previous.latest_financial)
+            if row is not None and row.published_at <= cutoff)
+        events = ApplyCompanyAnnualIncome(previous.code, previous.positive_events, annual_incomes, cutoff, financials=financials)
+        for event, updated in zip(previous.positive_events, events, strict=True):
+            if event.measurements == updated.measurements:
+                continue
+            income = SelectCompanyAnnualIncome(previous.code, event, annual_incomes, cutoff, financials=financials)
+            if income is None:
+                raise ValueError("company_annual_income_selection_missing")
+            receipt = CompanyInputReceipt("eastmoney_annual_income", income.source_key, previous.code,
+                income.record_hash, extraction_hash, None, cutoff, "valid", "annual_income_point_in_time")
+            if receipt not in annual_receipts:
+                annual_receipts.append(receipt)
+        if events != previous.positive_events:
+            previous = replace(previous, positive_events=events, published_at=cutoff)
     identities = tuple(sorted({identity for event in previous.risk_events + previous.positive_events for identity in event.evidence_ids}
                               | {review.evidence_id for review in previous.review_reasons if review.evidence_id is not None}))
     documents: list[CompanyDocument] = list(announcement.documents) if announcement is not None else []
     links: list[CompanyPublishedEvidenceLink] = list(announcement.links) if announcement is not None else []
-    directory_receipts: list[CompanyInputReceipt] = list(announcement.receipts) if announcement is not None else []
+    directory_receipts: list[CompanyInputReceipt] = [*annual_receipts, *(announcement.receipts if announcement is not None else ())]
     recovered_ids = frozenset(item.source_key for item in recovered if item.code == previous.code)
     correction_ids = frozenset(identity for event in previous.positive_events
         if correct_measurements and event.event_type is CompanyPositiveType.SHARE_REPURCHASE

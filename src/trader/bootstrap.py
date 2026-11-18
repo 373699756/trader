@@ -22,7 +22,7 @@ from trader.download.application.company_exclusions import PublishCompanyExclusi
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_ports import HistorySyncDependencies
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
-from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
+from trader.download.application.progress_message import ProgressMessage
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.progress_projection import ProjectingDownloadProgress, QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -1395,6 +1395,8 @@ def ExecuteCompanySync(
     def stopped() -> bool:
         return cancel_requested() or time.monotonic() >= deadline
 
+    company_evidence_progress.ReportCompanySyncStart(report, len(codes))
+
     with ExitStack() as resources:
         resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
         facts = SQLiteCompanyFactsIndex(paths.company, event_policy=event_policy, sqlite_policy=sqlite_policy,
@@ -1477,9 +1479,5 @@ def ExecuteCompanySync(
         except CompanySyncInterrupted:
             return paused()
         for family in result.families:
-            report(ProgressMessage((ProgressField(
-                f"{family.family.value}：已接纳{family.accepted_inputs}项；请求预算已占用{family.source_calls}，未知{family.unknown_attempts}；"
-                f"缺口{len(family.result.gaps)}项"),),
-                task=ProgressTask("company", family.family.value, "公司资料"),
-                state="完成" if family.result.business_complete else "等待", finished=True))
+            company_evidence_progress.ReportCompanySyncFamily(report, family)
         return result

@@ -137,6 +137,18 @@
 
 ### 4.3 任务B：字段正式链与真实核验（332、292）
 
+本次接续／2026-11-18，接d9ace804：本批年度普通链、恢复及终端状态实现completed；332／362整体仍in_progress，正式下载已尝试但在参考准备被旧库结构阻断。按用户“按计划进行”集中实施原范围，不新建阶段，不接管C性能或其它并行任务。保留用户config/runtime.json与data/已有修改，不纳入提交。
+
+实际改动：年度producer移至company_sync_annual_income唯一owner，全部消费者切换并删除旧类；从启动时旧事实转为当前正式合同需求，同轮新合同可触发后续年度步。只按明确报告期及已知正式披露规划，逐证券／报告期去重，原任务表持久精确意图、逐期完成及已知失败；未知物理请求不重发，零HTTP取消可续，已接纳输入可供同轮新增合同复用。原本地准备读取年度观察，复用纯选择器并在原事务提交事实／结构化凭据，原文逐字段出证独立；取消／非发行人、晚修订、币种／空值和跨轮同版本内容冲突均不补值，旧事实与评分保留。来源协议仍绑定轮次，仅本地字段规则独立重核；没有新增数据库结构、版本、迁移或Tushare调用。终端投影归原entrypoint adapter，轮次开始与有界心跳显式可见，未确认计数显示“未核对”，不填0。
+
+真实完整CLI参考准备及有限同步：新增PrepareCompanySyncCliAudit只在全新仓库外根复制配置并缩小额度，不带旧资料／总体或重置原账本。`/tmp/trader-company-cli-normal-20261118`通过实际run.sh sync company执行交易所总体、ST、日历、行业后进入七族，资格总体4403股；ST unknown保留且放行。首轮公司期限120秒，7槽截止；只将隔离期限恢复到原1800秒后续跑，仍同一轮7923677ff99f0a6f5f290f7a586f2396a6e8bf954d20075cd86289941b618b7b及原12槽上限。末次业务代码及稳定重跑累计财务4／质押4／解禁2／公告2，unknown=0；1706／1501／734为采集观察，公告60为目录输入，年度0，不冒充年度真实字段覆盖。最终processing_complete=true、business_complete=false、退出1及company_round_budget_exhausted；final／stable两次发布efc4fdc893c56019a1504dfe5f091107696f7c5db2ccea008ea3a715f77f25b7相同、零新增公司HTTP。首次行业4403股真实准备，后续当前缓存4403股复用、行业接口0；不将功能耗时算作C性能验收。最后心跳observer细化仅运行定向回归，不将此前CLI日志签作该细化后的长等待实测。
+
+正式命令实际结果：已运行无覆盖配置的`./run.sh sync company`，6秒后退出1；交易所总体5224股取得，随后ST参考库company_st.sqlite3结构不兼容，结果preparation_ReferenceDatabaseIncompatibleError、tasks=[]，尚未进入company下载。原始结果／日志为`/tmp/trader-company-active-sync-20261118.stdout.json`及同名stderr.log；data/company复核无文件。未自动补表、迁移、清空或绕过资格准备；此前仅删除data/company的授权不覆盖data/market/reference/company_st.sqlite3及其-wal／-shm／-journal。待用户明确授权该具体参考下载资料删除重下后，才能重新执行正式命令；不扩大至行情、其它参考库、模型、冻结或请求预算。
+
+验证：公司unit／component、三组公司脚本及直接推荐消费者2009项通过，XML`/tmp/trader-company-annual-delivery-regression-20261118.xml`；末次公共observer与心跳细化后40项定向通过（节点与前者重叠，不累加），XML`/tmp/trader-company-annual-final-feedback-20261118.xml`。另扩展recommendation筛选1612项有22失败，均在d9ace804仓库外只读归档源码上原样复现，XML`/tmp/trader-company-annual-{consolidated,parent-failures}-20261118.xml`：21项旧HTTP健康投影fixture／合同不符，1项旧ST启动fixture缺read_document_links；留给原A消费者任务，不改签通过或接管。新增年度与进度测试早期工厂／事务接口错误已修，原失败报告保留。受影响13个Python文件Ruff E/F/B/UP通过，10生产源码与1脚本mypy通过（脚本显式包根），末次2源码类型复核通过。最终wheel SHA96ca77dd68be007b0b3f68deb777c39a40c176be1d8fd5cde944b3e406a60268，10个改动源码与wheel逐字一致；仓库外安装、pip check、4资源、5公开研究入口及缺输入只读smoke passed，报告`/tmp/trader-company-annual-delivery-install-20261118.json`。完整diff、新删文件、owner／旧路径／消费者及git diff --check核对；未运行格式脚本、C性能、训练、浏览器／五时段或完整发布门禁。
+
+未完成项：正式下载的具体参考资料重建授权如上；免费来源的首次披露／完整修订、财务正式总体、质押／解禁分母与无记录语义、持续风险初态及同案解除仍未获得完整准入证据。真实完整公告年窗、真实次日增量、12类全量独立原文／留出质量、已删除旧风险基线及服务采用仍欠；本批隔离额度只证明普通CLI控制流与恢复，不签上述业务完成。性能继续仅归4.5原C队列；22项原A跨模块回归欠项独立保留。
+
 本次接续／2026-11-18，接a27f5a03：本批用途定位修复completed，332／362整体仍in_progress。宽泛已选“员工持股计划或股权激励”遮蔽同篇明确员工持股正文时，沿原字段owner核独立、唯一且肯定的说明，并以其原标点区分选框中的文字前缀；宽泛选项及反向并列说明本身继续待核。条件／否定前缀、重复正文、独立激励及混合用途不出证，事实枚举、原事件等级与评分资格不变。实际内容摘要驱动原字段重核，不改全局提取身份、格式或valid凭据。
 
 真实原文与正式读回：603486／1225675224按正文第40行取得employee_plan逐字段证明，原实际比例0.0258%及第56行证明保留，利好等级仍0；最终隔离发布1a31e846a9328c7cb2f8421daf8988b73b8497033f33987f01615683c298e13c。601089／1225675251的选框及第38行仍为并列用途，保留present_unverified，不将事实枚举当具体用途。两例沿普通ExecuteCompanySync重核及不变重跑均无新请求，仍各累计12槽；第二次发布不变，公告PARTIAL和business_complete=false不变。`/tmp/trader-company-purpose-exact-reproof-20261118.json` SHA92124a20ba252bd88e8591f627c8fba87e2dea9cfbc8eb91467b5e67687d7007。

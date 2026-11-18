@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
-from trader.download.domain.company_events import CompanyPositiveEvent, ContractMeasurements
+from trader.download.domain.company_events import CompanyPositiveEvent, CompanyPositiveStatus, CompanySubject, ContractMeasurements
 from trader.download.domain.company_evidence import CompanyFinancial, EvidenceMarket
 
 
@@ -58,6 +58,50 @@ class CompanyAnnualIncome:
         return f"{self.code}:{self.report_date.isoformat()}:{self.disclosed_at.isoformat()}:{self.updated_at.isoformat()}"
 
 
+@dataclass(frozen=True, slots=True)
+class CompanyAnnualIncomePlan:
+    report_dates: tuple[date, ...]
+    pending_count: int
+    gaps: tuple[str, ...]
+
+
+def PlanCompanyAnnualIncome(
+    code: str,
+    events: tuple[CompanyPositiveEvent, ...],
+    observed_at: datetime,
+    *,
+    financials: tuple[CompanyFinancial, ...],
+) -> CompanyAnnualIncomePlan:
+    """Request only an explicitly referenced annual period with a known visible disclosure."""
+    if observed_at.utcoffset() is None:
+        raise ValueError("company_annual_income_plan_time_invalid")
+    periods: set[date] = set()
+    gaps: set[str] = set()
+    pending = 0
+    for event in events:
+        value = event.measurements
+        if (not isinstance(value, ContractMeasurements) or event.status is CompanyPositiveStatus.CANCELLED
+            or event.subject_type is not CompanySubject.ISSUER or event.first_disclosed_at > observed_at):
+            continue
+        missing = int(value.reference_annual_revenue_cny is None) + int(value.reference_disclosed_at is None)
+        pending += missing
+        if not missing:
+            continue
+        if value.reference_report_date is None:
+            gaps.add("annual_income_reference_year_unverified")
+            continue
+        known = tuple(row for row in financials if row.code == code and row.report_date == value.reference_report_date
+            and row.published_at.date() < event.first_disclosed_at.date() and row.published_at <= observed_at)
+        if not known:
+            gaps.add("annual_income_disclosure_unverified")
+            continue
+        if max(row.published_at.date() for row in known) < observed_at.date() - timedelta(days=365):
+            gaps.add("annual_income_outside_window")
+            continue
+        periods.add(value.reference_report_date)
+    return CompanyAnnualIncomePlan(tuple(sorted(periods)), pending, tuple(sorted(gaps)))
+
+
 def SelectCompanyAnnualIncome(
     code: str,
     event: CompanyPositiveEvent,
@@ -73,7 +117,8 @@ def SelectCompanyAnnualIncome(
     remain unknown rather than selecting a more convenient older value.
     """
     measurement = event.measurements
-    if not isinstance(measurement, ContractMeasurements) or measurement.reference_report_date is None:
+    if (not isinstance(measurement, ContractMeasurements) or measurement.reference_report_date is None
+        or event.status is CompanyPositiveStatus.CANCELLED or event.subject_type is not CompanySubject.ISSUER):
         return None
     known = tuple(
         row.published_at for row in financials
@@ -138,5 +183,7 @@ __all__ = [
     "ApplyCompanyAnnualIncome",
     "CompanyAnnualIncome",
     "CompanyAnnualIncomeRequest",
+    "CompanyAnnualIncomePlan",
+    "PlanCompanyAnnualIncome",
     "SelectCompanyAnnualIncome",
 ]

@@ -34,8 +34,11 @@ from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_preparation import PrepareCompanyIssuerInputs
 from trader.download.infra.company_sync_producers import (
-    CompanyAnnouncementProducer, CompanyAnnualIncomeProducer, CompanyNewsProducer, CompanyRatioProducer,
+    CompanyAnnouncementProducer, CompanyNewsProducer, CompanyRatioProducer,
 )
+from trader.download.infra.company_sync_annual_income import CompanyAnnualIncomeProducer
+from trader.download.infra.company_facts_protocol import POSITIVE_TYPES
+from trader.download.domain.company_events import CompanyPositiveType
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
@@ -169,8 +172,12 @@ class CompanySyncRuntime:
             if cancel_requested() or monotonic() >= budget.deadline:
                 raise CompanySyncInterrupted("company_sync_step_interrupted")
         check()
-        with self._session(self.facts.path, check=check, read_only=True) as formal, SqliteTransaction(formal):
-            previous = ReadCompanyFactRows(formal, scope.codes)
+        def annual_facts() -> tuple[CompanyFacts, ...]:
+            with self._session(self.facts.path, check=check, read_only=True) as formal, SqliteTransaction(formal):
+                selected = tuple(row[0] for row in formal.run(
+                    "SELECT DISTINCT code FROM company_positive_event WHERE event_type=? ORDER BY code",
+                    (POSITIVE_TYPES[CompanyPositiveType.OPERATING_CONTRACT],)) if row[0] in eligible_codes)
+                return ReadCompanyFactRows(formal, selected)
         query = financial_query or StructuredCompanyQuery("financial", scope.cutoff.date() - timedelta(days=365), scope.cutoff.date())
         fields = _FieldProducer(self, monotonic, eligible_codes)
         producers: tuple[CompanySyncProducer, ...] = (
@@ -181,7 +188,7 @@ class CompanySyncRuntime:
             CompanyAnnouncementProducer(self.inputs, self.material, self._official_source, scope, sqlite_policy=self._sqlite_policy,
                 extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget, current_codes=eligible_codes,
                 configuration=self._document_configuration, policies=self._document_policies, wall_clock=self._wall_clock),
-            CompanyAnnualIncomeProducer(self.inputs, self._annual_source, previous, current_codes=eligible_codes),
+            CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts, current_codes=eligible_codes),
             CompanyNewsProducer(self.inputs, self.material, self._news_source, news_codes=news_codes, fill=fill, current_codes=eligible_codes),
             fields,
         )
@@ -282,6 +289,7 @@ class CompanySyncRuntime:
             return CompanySyncStepResult(True, False, pending_count=None, gaps=("population_members_became_ineligible",))
         rules_hash = CompanyFieldProofRulesHash()
         recovered = self.inputs.pending_recovered(scope.identity)
+        annuals = self.inputs.annuals(scope.identity)
         with (
             self._session(self.material.path, check=check, read_only=True) as raw,
             self._session(self.facts.path, check=check, read_only=True) as formal,
@@ -302,7 +310,8 @@ class CompanySyncRuntime:
                 prepared.append(PrepareCompanyIssuerInputs(raw, formal, fact, cutoff=scope.cutoff,
                     extraction_hash=self.facts.extraction_hash, event_policy=self._event_policy,
                     read_document=self._read_document, check=check, revalidate=revalidate or needs_recovery_reproof, correct_measurements=fact.code in eligible_codes,
-                    include_new_announcements=True, published_links=ReadCompanyDocumentLinks(formal, (fact.code,)), recovered=recovered))
+                    include_new_announcements=True, published_links=ReadCompanyDocumentLinks(formal, (fact.code,)), recovered=recovered,
+                    annual_incomes=annuals))
         changed = self.normalized.publish_prepared(all_codes, tuple(item.facts for item in prepared),
             tuple(field for item in prepared for field in item.fields), tuple(receipt for item in prepared for receipt in item.receipts),
             tuple(link for item in prepared for link in item.links), scope.cutoff, field_rules_hash=rules_hash,

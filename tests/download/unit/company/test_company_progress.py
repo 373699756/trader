@@ -21,10 +21,38 @@ from trader.download.domain.company_evidence import (
     DisclosureSecurity,
     EvidenceSyncProgress,
 )
-from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportCompanyStock
+from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportCompanyStock, ReportCompanySyncStart, ReportCompanySyncFamily
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.entrypoints.cli import Main
-from trader.download.domain.company_sync import CompanySyncFamily
+from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
+
+
+def test_company_round_start_has_heartbeat_and_finishes_with_owner():
+    messages = []
+    clock = [0.0]
+    progress = SyncProgress(messages.append, lambda: clock[0])
+    CompanyEvidenceProgress(report=progress, observe=progress.register_observer)
+    def operation():
+        ReportCompanySyncStart(progress, 4403)
+        clock[0] = 10
+        progress.heartbeat()
+
+    progress.run("company", operation)
+    assert len(messages) == 2 and messages[0].state == "开始" and messages[1].state == "等待"
+    assert any("4403" in field.text for field in messages[0].fields)
+    clock[0] = 100
+    progress.heartbeat()
+    assert len(messages) == 2
+
+
+def test_company_round_unconfirmed_counts_are_not_none_or_zero():
+    messages = []
+    family = CompanySyncFamilyResult(CompanySyncFamily.FIELDS, 1, None, None,
+        CompanySyncStepResult(True, False, None, 0, (), ()))
+    ReportCompanySyncFamily(messages.append, family)
+    text = messages[0].fields[0].text
+    assert "已接纳未核对项" in text and "预算已占用未核对" in text and "None" not in text
 
 
 def _messages(text: str) -> list[str]:

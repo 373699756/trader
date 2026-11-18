@@ -5,19 +5,16 @@ from collections.abc import Callable
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import timedelta
 
 from trader.download.application.company_source_ports import (
-    CompanyAnnualIncomeSource, CompanyNewsSource, CompanyOfficialDocumentSource, CompanyRatioSource,
+    CompanyNewsSource, CompanyOfficialDocumentSource, CompanyRatioSource,
 )
-from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
-from trader.download.domain.company_events import ContractMeasurements
 from trader.download.domain.company_evidence import (
     CompanyInputValidationFailure, CompanyDocumentFailure, CompanyDocumentFailureRules, CompanyDocumentPolicies,
     CompanySyncConfiguration, CompanyDocumentRouteForFailure, Disclosure, DisclosurePartition, EvidenceMarket, StructuredCompanyQuery,
 )
 from datetime import datetime
-from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_sync import (
     CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult,
 )
@@ -73,46 +70,6 @@ class CompanyRatioProducer:
         # These decoded values lack a proven total-share denominator and
         # absence/coverage contract. Retain them as observations, not facts.
         return CompanySyncStepResult(True, False, pending_count=0)
-
-
-class CompanyAnnualIncomeProducer:
-    def __init__(self, inputs: SQLiteCompanySyncInputStore, source: CompanyAnnualIncomeSource, facts: tuple[CompanyFacts, ...], *, current_codes: tuple[str, ...] | None = None) -> None:
-        self._inputs, self._source = inputs, source
-        self._current_codes = current_codes
-        requests: list[CompanyAnnualIncomeRequest] = []
-        for fact in facts:
-            years = tuple(sorted({year for event in fact.positive_events if isinstance(event.measurements, ContractMeasurements)
-                and event.measurements.reference_annual_revenue_cny is None
-                for year in range(event.first_disclosed_at.year - 2, event.first_disclosed_at.year)}))
-            if years:
-                requests.append(CompanyAnnualIncomeRequest(fact.code, tuple(date(year, 12, 31) for year in years[-5:])))
-        self._requests = tuple(requests)
-        self._plan = CompanySyncPhasePlan(CompanySyncFamily.ANNUAL_INCOME, CanonicalDigest(self._requests),
-            ("annual_income_first_disclosure_revision_unverified",) if requests else ())
-
-    @property
-    def plan(self) -> CompanySyncPhasePlan:
-        return self._plan
-
-    def _next(self, scope: CompanySyncRoundScope) -> CompanyAnnualIncomeRequest | None:
-        return next((request for request in self._requests if not self._inputs.task_done(scope.identity, "annual_income", CanonicalDigest(request))), None)
-
-    def state(self, scope: CompanySyncRoundScope) -> CompanySyncPhaseState:
-        request = self._next(scope)
-        return CompanySyncPhaseState(CanonicalDigest(request), request is not None and (self._current_codes is None or request.code in self._current_codes))
-
-    def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
-        request = self._next(scope)
-        if request is None:
-            return CompanySyncStepResult(True, False, pending_count=0)
-        if self._current_codes is not None and request.code not in self._current_codes:
-            self._inputs.complete_task(scope.identity, "annual_income", CanonicalDigest(request), 0, CanonicalDigest(("ineligible", request)))
-            return CompanySyncStepResult(False, True, gaps=("population_members_became_ineligible",))
-        rows = self._source.annual_income(request, observed_at=scope.cutoff)
-        if any(item.code != request.code or item.report_date not in request.report_dates for item in rows):
-            raise CompanyInputValidationFailure("company_annual_income_response_scope_mismatch")
-        self._inputs.accept_annual(scope.identity, CanonicalDigest(request), rows, scope.cutoff)
-        return CompanySyncStepResult(False, True, len(rows), 1)
 
 
 class CompanyNewsProducer:
@@ -413,7 +370,7 @@ class CompanyAnnouncementProducer:
         return CompanySyncStepResult(False, True, accepted_inputs=1, source_calls=int(called))
 
 
-__all__ = ["CompanyRatioProducer", "CompanyAnnualIncomeProducer", "CompanyNewsProducer", "CompanyAnnouncementProducer"]
+__all__ = ["CompanyRatioProducer", "CompanyNewsProducer", "CompanyAnnouncementProducer"]
 
 
 def _required_identity(document: _RequiredDocument | None) -> str:

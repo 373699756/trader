@@ -29,6 +29,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.history_sync import HistoryStCheckFailure, HistoryStCheckProgress
 from trader.download.domain.company_events import CompanyDataState
+from trader.download.domain.company_sync import CompanySyncFamilyResult
 from trader.download.domain.download_failure import DownloadFailureObservation
 from trader.download.entrypoints.company_result_feedback import CompanyResultFeedback
 
@@ -146,6 +147,23 @@ def _source_label(sources: tuple[str, ...]) -> str:
 
 def _quantity(value: int | None) -> str:
     return "未核对" if value is None else str(value)
+
+
+def ReportCompanySyncStart(report: SyncProgress, requested: int) -> None:
+    message = ProgressMessage((ProgressField(f"本次请求总体 {requested}股"),
+        ProgressField("核对固定轮次、资料完整性及必要本地恢复；请求额度不重置")),
+        task=ProgressTask("company", "prepare", "公司轮次"), state="开始")
+    report.register_observer("company", lambda: replace(message, state="等待"), task_key="prepare")
+    report(message)
+
+
+def ReportCompanySyncFamily(report: Callable[[ProgressMessage], None], family: CompanySyncFamilyResult) -> None:
+    report(ProgressMessage((ProgressField(
+        f"{family.family.value}：已接纳{_quantity(family.accepted_inputs)}项；"
+        f"请求预算已占用{_quantity(family.source_calls)}，未知{family.unknown_attempts}；"
+        f"缺口{len(family.result.gaps)}项"),),
+        task=ProgressTask("company", family.family.value, "公司资料"),
+        state="完成" if family.result.business_complete else "等待", finished=True))
 
 
 def _market_label(market: str) -> str:
@@ -701,4 +719,5 @@ def _recovery(progress: EvidenceSyncProgress) -> str:
     return result
 
 
-__all__ = ["CompanyEvidenceProgress", "ReportCompanyStock", "ReportCompanyFailure", "ReportStPreparation"]
+__all__ = ["CompanyEvidenceProgress", "ReportCompanyStock", "ReportCompanyFailure", "ReportStPreparation",
+    "ReportCompanySyncStart", "ReportCompanySyncFamily"]

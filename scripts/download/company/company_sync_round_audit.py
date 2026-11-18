@@ -22,6 +22,43 @@ from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession
 
 
+def PrepareCompanySyncCliAudit(
+    settings: RuntimeSettings,
+    directory: Path,
+    *,
+    request_limit: int,
+    round_seconds: float,
+) -> Path:
+    """Prepare only a new external config/data root for the real CLI and reference preparation."""
+    if (not directory.is_absolute() or directory.is_symlink()
+        or type(request_limit) is not int or not 0 <= request_limit <= 512
+        or not math.isfinite(round_seconds) or not 5 <= round_seconds <= 1800):
+        raise ValueError("company_cli_audit_options_invalid")
+    RequireIsolatedReplay(directory, (settings.project_root, settings.data_paths.root, settings.runtime_dir))
+    if directory.exists():
+        raise ValueError("company_cli_audit_target_exists")
+    configurations = tuple(sorted(settings.config_path.parent.glob("*.json")))
+    if not 1 <= len(configurations) <= 128:
+        raise ValueError("company_cli_audit_configuration_count_invalid")
+    for path in configurations:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
+            raise ValueError("company_cli_audit_configuration_file_invalid")
+    root = directory / "config"
+    root.mkdir(parents=True)
+    for path in configurations:
+        (root / path.name).write_bytes(path.read_bytes())
+    runtime = json.loads(settings.config_path.read_bytes())
+    runtime["data_dir"], runtime["runtime_dir"] = str(directory / "data"), str(directory / "runtime")
+    path = root / settings.config_path.name
+    path.write_text(json.dumps(runtime, ensure_ascii=False), encoding="utf-8")
+    download_path = root / "download.json"
+    download = json.loads(download_path.read_bytes())
+    download["company"]["round_request_limit"] = min(request_limit, download["company"]["round_request_limit"])
+    download["company"]["round_timeout_seconds"] = min(round_seconds, download["company"]["round_timeout_seconds"])
+    download_path.write_text(json.dumps(download, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def AuditCompanySyncRounds(
     settings: RuntimeSettings, directory: Path, codes: tuple[str, ...], *, seconds_per_round: float,
     collection_snapshot: Path | None = None, request_limit: int | None = None,

@@ -682,11 +682,11 @@ local_only候选的持久路径若已失效，仅从本轮本地选择中排除�
 
 接入顺序为批量结构化测量、按事件核对缺项及证据、仅为剩余必要事项读取正文。现有资料发现、必要正文及持续风险覆盖在正式切换前仍按已实施合同执行；来源/字段验收沿g阶段332，冻结候选的完整作业成本及8小时目标证据沿第4.5节CodexC后台和原授权真实同步登记，不以缩窗、漏字段或排除恢复时间达标。
 
-年度营业收入已增加独立的按需链路：合同正文须明确引用唯一年度，且现有财务采集账本已确认该年报在一年窗口内、早于合同披露；只为仍缺营收或原披露日期的合同请求对应公司、对应年度。采用Eastmoney F10的公司类型页和`lrbAjaxNew`年度利润表，每组最多5个已知报告期，沿现有注入的HTTP客户端、超时、取消和熔断边界执行。采集账本`annual_income`按公司、年度、原披露、更新时间及选定字段hash保留版本；正式事实与`eastmoney_annual_income`输入凭证同事务发布，重启复用已落库输入。该路径不取`TOTAL_OPERATE_INCOME`代替`OPERATE_INCOME`，不猜未注明的年度；同日或合同之后修订、早于财务账本已知版本、冲突版本、非CNY和空值均不能补为可用依据。补齐营收不会自行计算合同占比或改变税口径、资格、分数及历史等级里程碑。没有可用依据仍显式缺项，来源失败保留本地已发布事实。
+年度营业收入由普通七族同步中的`CompanyAnnualIncomeProducer`按当前正式合同事实规划：正文须明确引用唯一年度，且已有正式财务事实确认该年报在一年窗口内、早于合同披露；只为发行人未取消且仍缺营收或原披露日期的合同请求对应公司、对应年度。采用Eastmoney F10的公司类型页和`lrbAjaxNew`年度利润表，每组最多5个已知报告期，沿注入HTTP、超时、取消及全轮物理请求预算执行。输入由`company_annual_income_observation`保留版本，原`company_source_task`保存精确请求意图、逐期完成和已知失败；正式合同事实与`eastmoney_annual_income`输入凭证同事务发布。该路径不取`TOTAL_OPERATE_INCOME`代替`OPERATE_INCOME`，不猜未注明的年度；同日或合同之后修订、早于已知财务版本、同版本冲突、非CNY和空值均不能补为可用依据。已发布同源同版本出现不同记录hash，也不用于补新合同，旧事实保留。补齐营收不会自行计算占比或改变税口径、资格、分数及历史等级；结构化输入凭证不等于原文逐字段出证，缺原文仍待核。
 
-年度营收和官方报告输入由`company_report_inputs`统一规划与执行。唯一`report_input_plan`端口在采集、正式库各自固定的读事务中构建`CompanyReportInputPlan`，保存本轮固定截止和两类既有请求tuple；两库不假称跨库原子。应用只扣除同轮已尝试和已熔断来源，再按年度营收、官方报告顺序执行冻结计划，不在执行中重查需求或递归扩单；attempts在实际来源callback进入前登记，表示需求尝试，不等于物理HTTP次数，失败和空结果本轮不循环，成功输入沿既有持久凭据跨轮复用。
+年度producer在每个有限调度步读取当前正式合同需求，同轮新公告形成的合同可以进入后续年度步；本地准备读取已落库年度观察并复用原纯选择器，避免启动时旧事实快照漏单。年度来源协议仍绑定原轮次身份，本地字段规则变化独立重核，不借更新本地规则重置来源预算。旧`company_report_inputs`及`report_input_plan`不再是活动入口；官方原文仍沿普通公告和既有本地字段出证边界处理，不恢复逐股PDF财务自动补值。
 
-年度营收同轮按证券及报告期去重，而非按整个1–5期组合：已请求A／B期后出现A／B／C的新计划，只请求尚未尝试的C期；来源失败或空值也不使A／B同轮重发。实际来源callback前再次核取消，排队观察触发取消时不请求、不占用attempt；结构化页面或质押日期返回后取消也不提交迟到结果或继续游标工作。已实际完成的采集提交仍计入changed_rows，取消只阻止后续采集／发布，不抹去真实提交数。
+年度营收同轮按证券及报告期去重，而非整个1–5期组合：已尝试A／B后出现A／B／C，只请求C；已知失败或空值不使A／B同轮重发。跨进程优先恢复精确未确认意图，已经预占且未知的物理请求不重发；未发HTTP的取消可安全继续，返回后取消不接纳迟到数据。已提交观察与任务完成回执原子保存，正式提交后确认前中断由既有发布恢复处理，不重复来源请求。命令进入公司轮次即报告本地核验／恢复并沿公共心跳观察，结束时未确认计数展示“未核对”，不改写为0或业务完成。
 
 官方报告补查及本地优先处理共同核对当前允许窗、固定截止T、官方来源与单证券目录。已有接纳规则允许已知财务披露日前一自然日的报告，规划和季度优先队列按同一边界复用，避免重启后重复补查；旧年度版本、未来、新闻或多证券同名目录不能压住当前缺证请求。年度本地优先先筛合法材料再选最新披露，较新非法目录不能遮蔽合法原件；没有结构化已知披露时，本地现有年度依赖仍可优先，但不据此发起网络请求。该选择不删除旧事实、原文或凭据，也不据目录存在签字段已核实。
 
@@ -1076,7 +1076,7 @@ company整数协议由 `company_facts_protocol.py`唯一维护，不是自定义
 | company_field_repairs（WR）；company_field_recovery.py | disclosure_id INTEGER；code/record_hash/event_id/field/rule_id/state TEXT；前六列联合PK；均非空，disclosure FK→disclosures且级联 | QueueCompanyFieldRepairs／RegisterCompanyFieldAttempts写，CompleteCompanyFieldRepairs／RestoreCompanyFieldRepairs及材料恢复消费；state=pending/attempted/complete，只表达字段恢复任务，不替代正式字段值 |
 | company_material_dependencies（WR）；同上 | disclosure_id INTEGER；code/record_hash/scope/reason_code TEXT；body_hash/extraction_hash H；七列联合PK；均非空，两hash32字节，disclosure FK→disclosures且级联；索引 company_material_dependency_codes(code,disclosure_id) | RegisterCompanyMaterialDependencies写；字段review及材料清理按精确原有效回执读取；无原文只报告缺口，不自动重下 |
 | document_contract_link_rules（WR）；company_contract_link_rules.py | source/source_key/code/record_hash/rule_id TEXT；body_hash/extraction_hash/payload_hash H；PK(source,source_key,code,record_hash,extraction_hash)；均非空，body/payload hash32字节 | WriteCompanyContractLinkRules写，ReadCompanyContractLinkRules／ReadCompanyPublicationLinks核当前候选及局部主体／签署规则；不能绕过同案／主体守卫 |
-| 年度结构化观察已由`company_inputs.sqlite3`的`company_annual_income_observation`承担 | scope/code/report_date/disclosed_at/updated_at/observed_at/currency/record_hash TEXT；revenue REAL?；PK(scope,code,report_date,disclosed_at,updated_at) | `SQLiteCompanySyncInputStore`保存逐请求观察与完成回执；尚未准入时不写正式合同营收依据，不以营业总收入补值。旧年度逐股索引owner已退役 |
+| 年度结构化观察已由`company_inputs.sqlite3`的`company_annual_income_observation`承担 | scope/code/report_date/disclosed_at/updated_at/observed_at/currency/record_hash TEXT；revenue REAL?；PK(scope,code,report_date,disclosed_at,updated_at) | `SQLiteCompanySyncInputStore`保存精确意图、逐期观察与完成回执；满足明确年度、正式披露和版本／币种条件才补合同事实，原文出证独立，不以营业总收入补值。旧年度逐股索引owner已退役 |
 
 采集库还安装8.5的 download_failure。材料原件、压缩文字及OCR页是 `CompanyRawFiles`／`CompanyDocumentFiles` 管理的文件，不是遗漏在本表的SQLite列；容量、引用保护及清理前提见5.11–5.14。
 

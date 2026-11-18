@@ -8,7 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
-from trader.download.domain.company_annual_income import CompanyAnnualIncome
+from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
 from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanyRatio, EvidenceMarket, StructuredCompanyPage, StructuredCompanyQuery
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import (
@@ -183,14 +183,53 @@ class SQLiteCompanySyncInputStore:
                 raise ValueError("company_sync_source_task_changed")
             connection.run("INSERT OR IGNORE INTO company_source_task VALUES(?,?,?,?,?)", (scope, family, task, accepted, input_hash))
 
-    def accept_annual(self, scope: str, task: str, rows: tuple[CompanyAnnualIncome, ...], cutoff: datetime) -> None:
-        if any(item.observed_at != cutoff for item in rows):
+    def pending_annual_request(self, scope: str) -> CompanyAnnualIncomeRequest | None:
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            rows = connection.run("""SELECT task FROM company_source_task request
+                WHERE scope=? AND family='annual_income_request' AND NOT EXISTS(
+                    SELECT 1 FROM company_source_task done WHERE done.scope=request.scope
+                    AND done.family='annual_income' AND done.task=request.task)""", (scope,)).fetchall()
+        if len(rows) > 1:
+            raise ValueError("company_annual_income_multiple_pending_requests")
+        return _annual_request(rows[0][0]) if rows else None
+
+    def begin_annual_request(self, scope: str, request: CompanyAnnualIncomeRequest) -> None:
+        pending = self.pending_annual_request(scope)
+        if pending is not None and pending != request:
+            raise ValueError("company_annual_income_request_changed")
+        self.complete_task(scope, "annual_income_request", _annual_task(request), 0, CanonicalDigest(request))
+
+    def attempted_annual_periods(self, scope: str, code: str) -> tuple[date, ...]:
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            requests = tuple(_annual_request(row[0]) for row in connection.run(
+                "SELECT task FROM company_source_task WHERE scope=? AND family='annual_income' ORDER BY task", (scope,)))
+        return tuple(sorted({day for request in requests if request.code == code for day in request.report_dates}))
+
+    def annual_failures(self, scope: str) -> tuple[str, ...]:
+        prefix = "annual_income_failed:"
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            return tuple(sorted({row[0][len(prefix):] for row in connection.run(
+                "SELECT family FROM company_source_task WHERE scope=? AND family LIKE 'annual_income_failed:%'", (scope,))}))
+
+    def reject_annual(self, scope: str, request: CompanyAnnualIncomeRequest, failure: str) -> None:
+        if not failure or len(failure) > 160:
+            raise ValueError("company_annual_income_failure_invalid")
+        task = _annual_task(request)
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+            connection.run("INSERT INTO company_source_task VALUES(?,?,?,?,?)",
+                (scope, "annual_income_failed:" + failure, task, 0, CanonicalDigest(failure)))
+            connection.run("INSERT INTO company_source_task VALUES(?,?,?,?,?)",
+                (scope, "annual_income", task, 0, CanonicalDigest((request, failure))))
+
+    def accept_annual(self, scope: str, request: CompanyAnnualIncomeRequest, rows: tuple[CompanyAnnualIncome, ...], cutoff: datetime) -> None:
+        if (any(item.observed_at != cutoff or item.code != request.code for item in rows)
+            or tuple(sorted(item.report_date for item in rows)) != request.report_dates):
             raise ValueError("company_annual_income_observation_time_mismatch")
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
             connection.run_many("INSERT INTO company_annual_income_observation VALUES(?,?,?,?,?,?,?,?,?)", (
                 (scope, item.code, item.report_date.isoformat(), item.disclosed_at.isoformat(), item.updated_at.isoformat(), item.observed_at.isoformat(), item.currency, item.operating_revenue, item.record_hash) for item in rows
             ))
-            connection.run("INSERT INTO company_source_task VALUES(?,?,?,?,?)", (scope, "annual_income", task, len(rows), CanonicalDigest(rows)))
+            connection.run("INSERT INTO company_source_task VALUES(?,?,?,?,?)", (scope, "annual_income", _annual_task(request), len(rows), CanonicalDigest(rows)))
 
     def annuals(self, scope: str) -> tuple[CompanyAnnualIncome, ...]:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
@@ -206,6 +245,17 @@ def _query(query: StructuredCompanyQuery, cutoff: datetime) -> None:
         or query.component == "pledge" and query.end > today
         or query.component == "unlock" and (query.start < today or query.end > today + timedelta(days=180))):
         raise ValueError("company_ratio_source_query_invalid")
+
+
+def _annual_task(request: CompanyAnnualIncomeRequest) -> str:
+    return request.code + ":" + ",".join(day.isoformat() for day in request.report_dates)
+
+
+def _annual_request(task: str) -> CompanyAnnualIncomeRequest:
+    code, separator, days = task.partition(":")
+    if not separator:
+        raise ValueError("company_annual_income_task_invalid")
+    return CompanyAnnualIncomeRequest(code, tuple(date.fromisoformat(day) for day in days.split(",")))
 
 
 __all__ = ["CompanyRecoveredInput", "SQLiteCompanySyncInputStore"]
