@@ -14,8 +14,9 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_http import CheckCompanyResponse
+from trader.download.application.company_failures import CompanyFailureCode
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
-from trader.download.domain.company_evidence import EvidenceMarket, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanySourceFailure, EvidenceMarket, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.infra.company_structured_source import (
     COMPANY_FINANCIAL_SOURCE_COLUMNS, DecodeCompanyFinancialPage, EastmoneyCompanySource,
 )
@@ -199,7 +200,9 @@ def AuditCompanyStructuredPage(
                                 "decoded_null_rows": sum(value is None for value in values)} for field, values in measurements],
                 })
         except (OSError, RuntimeError, ValueError) as exc:
-            report.update(status="failed", failure=str(exc) if isinstance(exc, _FinancialKeyProbeError) else type(exc).__name__)
+            failure = CompanyFailureCode(exc) if isinstance(exc, CompanySourceFailure) else (
+                str(exc) if isinstance(exc, _FinancialKeyProbeError) else type(exc).__name__)
+            report.update(status="failed", failure=failure)
     if http_attempts is not None:
         report["physical_http_attempts"] = len(http_attempts)
         report["response_bytes"] = sum(attempt.response_bytes for attempt in http_attempts)

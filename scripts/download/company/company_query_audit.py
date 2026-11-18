@@ -34,12 +34,14 @@ from trader.download.infra.company_disclosure_source import CninfoMarketDisclosu
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_financial_input_use import ReadUnusedCompanyFinancialInputs
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash
+from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
+from trader.download.infra.company_evidence_sql import SCHEMA as COMPANY_COLLECTION_SCHEMA
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.download_failure_diagnostics import ReadDownloadFailures
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadDownloadFailureConfiguration
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.infra.http_contracts import HttpRequest, HttpResponse
-from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
+from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSchema, SqliteSession, SqliteTransaction
 
 
 class _CompanyDatabaseAuditBudgetExceeded(TimeoutError):
@@ -264,6 +266,35 @@ def _audit_company_database(
     risk_baseline: Path | None,
     event_policy: CompanyEventPolicy | None,
 ) -> dict[str, object]:
+    incompatible: list[str] = []
+    stores: tuple[tuple[Path, str, SqliteSchema], ...] = ((path, "collection", COMPANY_COLLECTION_SCHEMA),)
+    if facts_path is not None:
+        stores += ((facts_path, "facts", COMPANY_FACTS_SCHEMA),)
+    for database_path, store, schema in stores:
+        if cancel_requested():
+            raise _CompanyDatabaseAuditBudgetExceeded("company_database_audit_budget_exhausted")
+        with SqliteSession(database_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5),
+            cancel_requested=cancel_requested, sqlite_policy=sqlite_policy) as connection:
+            try:
+                EnsureSqliteSchema(connection, schema, exact=True)
+            except sqlite3.DatabaseError as exc:
+                if str(exc) != "sqlite_schema_unsupported":
+                    raise
+                incompatible.append(store)
+        if cancel_requested():
+            raise _CompanyDatabaseAuditBudgetExceeded("company_database_audit_budget_exhausted")
+    if incompatible:
+        return {
+            "status": "failed",
+            "summary": {"database": {
+                "read_only": True, "complete": False, "budget_exhausted": False,
+                "failure_category": "incompatible_download_store",
+                "failure_code": "company_download_structure_incompatible",
+                "incompatible_stores": incompatible,
+                "field_correctness_verified": False, "full_market_verified": False,
+            }},
+            "findings": ["company_download_structure_incompatible"],
+        }
     cutoff = (now.date() - timedelta(days=365)).isoformat()
     pending = cooling = ready = deterministic = 0
     failures: dict[str, int] = {}

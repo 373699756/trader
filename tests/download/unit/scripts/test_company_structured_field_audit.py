@@ -641,7 +641,7 @@ def test_structured_sample_failure_is_bounded_and_never_exposes_remote_exception
             raise HttpConnectionError("private-provider-data")
 
     result = _page_run(Session(), StructuredCompanyQuery("financial", _NOW.date(), _NOW.date()))
-    assert result["status"] == "failed" and result["failure"] == "HttpConnectionError"
+    assert result["status"] == "failed" and result["failure"] == "http_transport_error"
     assert result["fetch_invocations"] == 1 and "private-provider-data" not in json.dumps(result)
 
 

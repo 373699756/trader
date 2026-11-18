@@ -54,6 +54,10 @@ def test_real_sqlite_progress_interrupt_during_dbstat_produces_a_failed_budget_r
     def memory_session(path, options, *, cancel_requested, sqlite_policy):
         assert options.read_only
         with SqliteSession(":memory:", cancel_requested=cancel_requested, sqlite_policy=sqlite_policy) as connection:
+            from trader.download.infra.company_evidence_sql import SCHEMA
+            from trader.infra.sqlite_connection import EnsureSqliteSchema
+
+            EnsureSqliteSchema(connection, SCHEMA, allow_create=True, exact=True)
             yield connection
 
     def run(connection, sql, parameters=()):

@@ -134,8 +134,6 @@ def _invoke_step(producer:CompanySyncProducer,scope:CompanySyncRoundScope,budget
         raise CompanySyncInterrupted("company_sync_source_interrupted") from exc
     except (CompanyInputValidationFailure,CompanySourceFailure,DownloadValidationFailure) as exc:
         return CompanySyncStepResult(False,False,failure=CompanyFailureCode(exc),gaps=("supplier_input_rejected",))
-    except OSError as exc:
-        return CompanySyncStepResult(False,False,failure=CompanyFailureCode(exc))
 
 
 def ResumeCompanySyncPendingStep(journal:CompanySyncRoundJournal,producers:tuple[CompanySyncProducer,...],

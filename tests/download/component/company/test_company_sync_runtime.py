@@ -94,6 +94,52 @@ def test_real_empty_target_initializes_unavailable_and_runs_finite_families_with
     assert runtime.journal.can_refresh(result.round_id)
 
 
+def test_news_only_requests_selected_published_codes_and_resume_keeps_original_selection(tmp_path):
+    runtime, reader, transport, physical = _runtime(tmp_path)
+    codes = ("600001", "600002", "600003")
+    runtime.initialize(codes, _SCOPE.cutoff)
+    selected = []
+
+    def news(code, *, observed_at):
+        selected.append(code)
+        transport.get("https://example.test/news", timeout=1)
+        return ()
+
+    runtime._news_source.news = news
+    with transport:
+        first = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(1, 20, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=("600001", "600009"))
+        assert first.paused and not selected
+        result = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=("600002",))
+    assert result.processing_complete and selected == ["600001"]
+    assert physical.count("https://example.test/news") == 1
+    assert runtime.inputs.freeze_news_codes(result.scope.identity, ()) == ("600001",)
+
+
+@pytest.mark.parametrize("rows,days", ((51, 0), (1, 8)))
+def test_news_rejects_excess_rows_or_old_items_before_registering_material(tmp_path, rows, days):
+    from trader.download.domain.company_evidence import Disclosure
+    from trader.download.domain.company_sync import CompanySyncFamily
+
+    runtime, reader, transport, physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+
+    def news(code, *, observed_at):
+        transport.get("https://example.test/news", timeout=1)
+        return tuple(Disclosure("eastmoney_news", str(index), (code,), "消息", observed_at - timedelta(days=days),
+            "https://example.test/item", "a" * 64, "news") for index in range(rows))
+
+    runtime._news_source.news = news
+    with transport:
+        result = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=_SCOPE.codes)
+    family = next(item for item in result.families if item.family is CompanySyncFamily.NEWS)
+    assert family.result.failure == "company_news_response_scope_mismatch"
+    with SqliteSession(runtime.material.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM disclosures WHERE kind='news'").require_one()[0] == 0
+
+
 def test_unfinished_round_resumes_original_time_and_does_not_refill_request_allowance(tmp_path):
     runtime, reader, transport, physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)

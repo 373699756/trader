@@ -26,7 +26,7 @@ from trader.download.domain.company_source_records import (
     CompanyFinancialSourceRecordHash,
 )
 from trader.download.domain.download_failure import DownloadValidationFailure
-from trader.download.infra.company_http import CompanySourceCancellation, CheckCompanyResponse
+from trader.download.infra.company_http import CompanySourceOperation, CheckCompanyResponse
 from trader.infra.http_contracts import HttpCancelled, HttpTransport
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 
@@ -103,7 +103,7 @@ class EastmoneyCompanySource:
         if self._cancel_requested is not None and self._cancel_requested():
             raise HttpCancelled("http_cancelled")
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def annual_income(
         self, request: CompanyAnnualIncomeRequest, *, observed_at: datetime
     ) -> tuple[CompanyAnnualIncome, ...]:
@@ -173,7 +173,7 @@ class EastmoneyCompanySource:
             raise CompanyInputValidationFailure("company_annual_income_reports_missing")
         return tuple(incomes)
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def pledge_day(self, observed_at: datetime) -> date:
         window_start = observed_at.date() - timedelta(days=365)
         payload = self._json(
@@ -202,7 +202,7 @@ class EastmoneyCompanySource:
             raise DownloadValidationFailure("pledge_snapshot_outside_window", "TRADE_DATE", f"{window_start}..{observed_at.date()}", day.isoformat())
         return day
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def fetch(self, query: StructuredCompanyQuery, *, observed_at: datetime) -> StructuredCompanyPage:
         component, start, end, page = query.component, query.start, query.end, query.page
         if component == "financial":
@@ -269,7 +269,7 @@ class EastmoneyCompanySource:
             ratios.append(CompanyRatio(code, day, ratio))
         return StructuredCompanyPage(component, page, pages, total, ratios=tuple(ratios))
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def financial_observations(
         self, query: StructuredCompanyQuery, *, observed_at: datetime,
     ) -> CompanyFinancialSourcePage:
@@ -289,7 +289,7 @@ class EastmoneyCompanySource:
             payload, query, observed_at=observed_at, response_hash=hashlib.sha256(content).hexdigest(),
         )
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def news(self, code: str, *, observed_at: datetime) -> tuple[Disclosure, ...]:
         # Ordinary news is bounded candidate context, not an exhaustive regulatory feed.
         parameter = {

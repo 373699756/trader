@@ -123,11 +123,12 @@ class CompanySyncRuntime:
         self, codes: tuple[str, ...], cutoff: datetime, budget: CompanySyncBudget, *,
         cancel_requested: Callable[[], bool], monotonic: Callable[[], float],
         financial_query: StructuredCompanyQuery | None = None, fill: bool = False, new_refresh: bool = True,
+        news_codes: tuple[str, ...] = (),
     ) -> CompanySyncRoundResult:
         self._execution_scope, self._execution_round_id = None, ""
         try:
             return self._run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=monotonic,
-                financial_query=financial_query, fill=fill, new_refresh=new_refresh)
+                financial_query=financial_query, fill=fill, new_refresh=new_refresh, news_codes=news_codes)
         except (CompanySyncInterrupted, CompanySourceCancelled) as exc:
             if isinstance(exc, CompanySourceCancelled) and not cancel_requested() and monotonic() < budget.deadline:
                 raise
@@ -138,6 +139,7 @@ class CompanySyncRuntime:
         self, codes: tuple[str, ...], cutoff: datetime, budget: CompanySyncBudget, *,
         cancel_requested: Callable[[], bool], monotonic: Callable[[], float],
         financial_query: StructuredCompanyQuery | None = None, fill: bool = False, new_refresh: bool = True,
+        news_codes: tuple[str, ...] = (),
     ) -> CompanySyncRoundResult:
         if cancel_requested() or monotonic() >= budget.deadline:
             return CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancel_requested(), not cancel_requested(), "")
@@ -154,6 +156,7 @@ class CompanySyncRuntime:
             scope = CompanySyncRoundScope(codes, cutoff)
         self._execution_scope = scope
         eligible_codes = tuple(code for code in scope.codes if code in codes)
+        news_codes = self.inputs.freeze_news_codes(scope.identity, tuple(code for code in news_codes if code in scope.codes))
         population_gaps = tuple(reason for changed, reason in (
             (eligible_codes != scope.codes, "population_members_became_ineligible"),
             (any(code not in scope.codes for code in codes), "new_population_members_wait_for_refresh"),
@@ -175,7 +178,7 @@ class CompanySyncRuntime:
                 extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget, current_codes=eligible_codes,
                 configuration=self._document_configuration, policies=self._document_policies, wall_clock=self._wall_clock),
             CompanyAnnualIncomeProducer(self.inputs, self._annual_source, previous, current_codes=eligible_codes),
-            CompanyNewsProducer(self.inputs, self.material, self._news_source, fill=fill, current_codes=eligible_codes),
+            CompanyNewsProducer(self.inputs, self.material, self._news_source, news_codes=news_codes, fill=fill, current_codes=eligible_codes),
             fields,
         )
         plans = tuple(producer.plan for producer in producers)

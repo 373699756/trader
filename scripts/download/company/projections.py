@@ -205,6 +205,7 @@ def ProjectCompanyResume(
                 "budget_exhausted",
                 "failure_category",
                 "failure_code",
+                "incompatible_stores",
                 "field_correctness_verified",
                 "full_market_verified",
                 "pdf_archived",

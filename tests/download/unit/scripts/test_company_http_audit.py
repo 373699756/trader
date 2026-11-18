@@ -92,3 +92,31 @@ def test_writable_sqlite_uri_is_refused_without_reinterpreting_the_location(tmp_
 def test_invalid_scope_is_rejected_before_building_a_system(tmp_path):
     with pytest.raises(ValueError, match="arguments_invalid"):
         audit.AuditCompanyHttp(Path("absent"), expected_publication_hash="a" * 64, codes=(), budget_seconds=1)
+
+
+def test_loopback_request_uses_bounded_shared_transport_and_preserves_non_success_json(tmp_path):
+    import json
+    import threading
+    import time
+
+    from werkzeug.serving import make_server
+
+    from trader.bootstrap import OpenExternalHttp
+
+    def application(environ, start_response):
+        start_response("400 Bad Request", [("Content-Type", "application/json")])
+        return [json.dumps({"query": environ["QUERY_STRING"]}).encode()]
+
+    server = make_server("127.0.0.1", 0, application, request_handler=audit._QuietHandler)
+    server.timeout = 1
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    try:
+        guard = audit._IoGuard((tmp_path.resolve(),), time.monotonic() + 5)
+        with OpenExternalHttp(deadline_limit=guard.deadline) as transport:
+            status, payload = audit._request(server.server_port, "/?evidence_id=one", guard, transport)
+        assert status == 400 and payload == {"query": "evidence_id=one"}
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+    assert not thread.is_alive()

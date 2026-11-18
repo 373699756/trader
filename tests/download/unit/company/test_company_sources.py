@@ -28,6 +28,35 @@ from tests.helpers.download.company.company_sources import (
 )
 
 
+@pytest.mark.parametrize("kind,category", (("connection", "http_transport_error"), ("timeout", "timeout")))
+def test_source_transport_failures_are_translated_at_adapter_with_cause(kind, category):
+    from trader.infra.http_contracts import HttpConnectionError, HttpTimeout
+
+    error = HttpConnectionError("private transport detail") if kind == "connection" else HttpTimeout("private timeout")
+
+    class FailedSession(Session):
+        def get(self, url, **kwargs):
+            raise error
+
+    source = EastmoneyCompanySource(FailedSession({}), monotonic=lambda: 0)
+    with pytest.raises(CompanySourceFailure) as caught:
+        source.pledge_day(NOW)
+    assert caught.value.category == category and caught.value.__cause__ is error
+
+
+def test_source_boundary_does_not_translate_local_file_failure():
+    error = FileNotFoundError("local file")
+
+    class FailedSession(Session):
+        def get(self, url, **kwargs):
+            raise error
+
+    source = EastmoneyCompanySource(FailedSession({}), monotonic=lambda: 0)
+    with pytest.raises(FileNotFoundError) as caught:
+        source.pledge_day(NOW)
+    assert caught.value is error
+
+
 def test_cninfo_uses_market_dates_default_sort_and_actual_more_flag():
     session = Session(
         {

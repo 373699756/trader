@@ -116,10 +116,11 @@ class CompanyAnnualIncomeProducer:
 
 
 class CompanyNewsProducer:
-    def __init__(self, inputs: SQLiteCompanySyncInputStore, material: SQLiteCompanyMaterialIndex, source: CompanyNewsSource, *, fill: bool, current_codes: tuple[str, ...] | None = None) -> None:
+    def __init__(self, inputs: SQLiteCompanySyncInputStore, material: SQLiteCompanyMaterialIndex, source: CompanyNewsSource, *, news_codes: tuple[str, ...], fill: bool, current_codes: tuple[str, ...] | None = None) -> None:
         self._inputs, self._material, self._source, self._fill = inputs, material, source, fill
         self._current_codes = current_codes
-        self._plan = CompanySyncPhasePlan(CompanySyncFamily.NEWS, CanonicalDigest(("news", fill)),
+        self._news_codes = tuple(sorted(set(news_codes)))
+        self._plan = CompanySyncPhasePlan(CompanySyncFamily.NEWS, CanonicalDigest(("news", fill, self._news_codes)),
             ("news_skipped_by_fill",) if fill else ("news_metadata_does_not_verify_issuer_risk",))
 
     @property
@@ -127,7 +128,8 @@ class CompanyNewsProducer:
         return self._plan
 
     def _next(self, scope: CompanySyncRoundScope) -> str | None:
-        return None if self._fill else next((code for code in scope.codes if not self._inputs.task_done(scope.identity, "news", code)), None)
+        return None if self._fill else next((code for code in self._news_codes if code in scope.codes
+            and not self._inputs.task_done(scope.identity, "news", code)), None)
 
     def state(self, scope: CompanySyncRoundScope) -> CompanySyncPhaseState:
         code = self._next(scope)
@@ -136,13 +138,13 @@ class CompanyNewsProducer:
     def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
         code = self._next(scope)
         if code is None:
-            return CompanySyncStepResult(True, False, pending_count=len(scope.codes) if self._fill else 0)
+            return CompanySyncStepResult(True, False, pending_count=sum(code in scope.codes for code in self._news_codes) if self._fill else 0)
         if self._current_codes is not None and code not in self._current_codes:
             self._inputs.complete_task(scope.identity, "news", code, 0, CanonicalDigest(("ineligible", code)))
             return CompanySyncStepResult(False, True, gaps=("population_members_became_ineligible",))
         rows = self._source.news(code, observed_at=scope.cutoff)
-        if (len(rows) > 500 or any(row.kind != "news" or row.codes != (code,) or row.published_at > scope.cutoff
-            or row.published_at.date() < scope.cutoff.date() - timedelta(days=365) for row in rows)):
+        if (len(rows) > 50 or any(row.kind != "news" or row.codes != (code,) or row.published_at > scope.cutoff
+            or row.published_at < scope.cutoff - timedelta(days=7) for row in rows)):
             raise CompanyInputValidationFailure("company_news_response_scope_mismatch")
         if rows:
             self._material.register_disclosures(rows)

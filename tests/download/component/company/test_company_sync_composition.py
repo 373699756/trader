@@ -55,6 +55,29 @@ def test_normal_composition_runs_local_fields_with_zero_source_allowance(tmp_pat
     assert reader.publication_identity() == company.publication_hash
 
 
+def test_normal_composition_uses_recent_published_news_population_without_creating_freezes(tmp_path, monkeypatch):
+    settings, physical = _settings(tmp_path, monkeypatch)
+    observed = []
+
+    def selected(records, observed_at, *, check):
+        check()
+        assert len(records) == 4
+        observed.append(observed_at)
+        return ("600001", "600009")
+
+    monkeypatch.setattr("trader.recommendation.application.pipeline.freeze_publish.recent_news_codes.RecentPublishedNewsCodes", selected)
+    result = bootstrap.ExecuteSync(settings.config_path, "company")
+    assert observed == [NOW] and not physical
+    scope = result.tasks[0].company.scope
+    with SqliteSession(settings.data_paths.company_inputs) as connection:
+        selected_codes = tuple(row[0] for row in connection.run(
+            "SELECT task FROM company_source_task WHERE scope=? AND family='news_scope' AND task<>'initialized' ORDER BY task",
+            (scope.identity,)))
+    assert selected_codes == ("600001",)
+    assert all(not (settings.data_paths.recommendation(profile) / "freeze.sqlite3").exists()
+        for profile in ("v1", "v2", "v3", "v5"))
+
+
 def test_old_formal_schema_is_identified_before_other_company_stores_are_created(tmp_path, monkeypatch):
     settings, physical = _settings(tmp_path, monkeypatch)
     path = settings.data_paths.company

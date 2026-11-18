@@ -1374,6 +1374,9 @@ def ExecuteCompanySync(
     from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
     from trader.download.infra.company_sync_runtime import CompanySyncRuntime
     from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+    from trader.recommendation.application.pipeline.freeze_publish.recent_news_codes import RecentPublishedNewsCodes
+    from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+    from trader.infra.sqlite_connection import SqliteConnectionOptions
 
     if scope.families != tuple(CompanySyncFamily):
         raise ValueError("company_sync_full_scope_required")
@@ -1463,7 +1466,14 @@ def ExecuteCompanySync(
             min(256, configuration.round_step_limit), deadline)
         try:
             runtime.initialize(codes, cutoff)
-            result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic, fill=fill)
+            active = journal.active()
+            news_cutoff = cutoff if active is None else active.scope.cutoff
+            news_records = tuple(SQLiteFreezeRecords(paths.recommendation(profile) / "freeze.sqlite3", sqlite_policy=sqlite_policy,
+                read_session=lambda path: io_budget.session(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy))
+                for profile in SCORING_PROFILE_IDS)
+            news_codes = () if fill else RecentPublishedNewsCodes(news_records, news_cutoff, check=io_budget.check)
+            result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic, fill=fill,
+                news_codes=news_codes)
         except CompanySyncInterrupted:
             return paused()
         for family in result.families:

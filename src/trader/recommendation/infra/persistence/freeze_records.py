@@ -9,7 +9,7 @@ import sqlite3
 import threading
 from calendar import monthrange
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -67,8 +67,10 @@ class SQLiteFreezeRecords:
         fault_injector: FaultInjector | None = None,
         cache: BoundedLruCache[object] | None = None,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), sqlite_policy: SqliteIoPolicy,
+        read_session: Callable[[Path], AbstractContextManager[SqliteConnection]] | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
+        self._read_session = read_session
         self._database = path
         self._fault_injector = fault_injector or (lambda _stage: None)
         self._lock = threading.RLock()
@@ -93,16 +95,19 @@ class SQLiteFreezeRecords:
         try:
             if write:
                 self._validate_current_structure()
-            with SqliteSession(
+            session = self._read_session(self._database) if not write and self._read_session is not None else SqliteSession(
                 self._database,
                 SqliteConnectionOptions(
                     read_only=not write,
                     journal_mode="WAL" if write else None,
                 ), sqlite_policy=self._sqlite_policy,
-            ) as connection:
+            )
+            with session as connection:
                 EnsureSqliteSchema(connection, _SCHEMA, exact=True)
                 with SqliteTransaction(connection, immediate=write):
                     yield connection
+        except InterruptedError:
+            raise
         except (OSError, sqlite3.Error) as exc:
             raise FreezeRecordUnavailableError("freeze database unavailable") from exc
 
@@ -177,10 +182,14 @@ class SQLiteFreezeRecords:
     @contextmanager
     def _history_connection(self) -> Iterator[SqliteConnection]:
         try:
-            with SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            session = self._read_session(self._database) if self._read_session is not None else SqliteSession(
+                self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy)
+            with session as connection:
                 EnsureSqliteSchema(connection, _SCHEMA)
                 with SqliteTransaction(connection):
                     yield connection
+        except InterruptedError:
+            raise
         except (OSError, sqlite3.Error) as exc:
             raise FreezeRecordUnavailableError("freeze history unavailable") from exc
 

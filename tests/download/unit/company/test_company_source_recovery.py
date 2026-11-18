@@ -127,8 +127,9 @@ def test_explicit_single_pdf_attempt_does_not_use_normal_retry_budget():
     item = Disclosure("cninfo", "single", ("600001",), "风险公告",
                       datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")),
                       "https://static.cninfo.com.cn/finalpage/a.PDF", "a")
-    with pytest.raises(HttpTimeout):
+    with pytest.raises(CompanySourceFailure, match="timeout") as caught:
         source.download_document(item, attempt_limit=1)
+    assert isinstance(caught.value.__cause__, HttpTimeout)
     assert len(transport.calls) == 1 and not clock.waits
 
 
@@ -154,8 +155,9 @@ def test_three_attempt_limit_and_increasing_backoff(recover):
     if recover:
         assert not source.fetch(DisclosurePartition("sse", _DAY, _DAY)).has_more
     else:
-        with pytest.raises(HttpTimeout):
+        with pytest.raises(CompanySourceFailure, match="timeout") as caught:
             source.fetch(DisclosurePartition("sse", _DAY, _DAY))
+        assert caught.value.__cause__ is failure
     assert [stamp for stamp, _ in transport.calls] == [0, 10, 22]
     assert sum(clock.waits) == 6
 
@@ -175,8 +177,9 @@ def test_unsupported_encoding_is_not_retried():
     clock = _Clock()
     transport = _Transport(clock, [(HttpError("http_content_encoding_unsupported"), 0.1)])
     source = CninfoMarketDisclosureSource(transport, monotonic=clock, sleeper=clock.sleep)
-    with pytest.raises(HttpError, match="http_content_encoding_unsupported"):
+    with pytest.raises(CompanySourceFailure, match="http_content_encoding_unsupported") as caught:
         source.fetch(DisclosurePartition("sse", _DAY, _DAY))
+    assert isinstance(caught.value.__cause__, HttpError)
     assert len(transport.calls) == 1 and not clock.waits
 
 

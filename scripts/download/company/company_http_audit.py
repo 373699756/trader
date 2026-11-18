@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import http.client
 import json
 import math
 import os
@@ -26,6 +25,7 @@ from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceRead
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.sqlite_connection import SqliteConnection
+from trader.infra.http_contracts import HttpTransport
 
 if TYPE_CHECKING:
     from _typeshed.wsgi import StartResponse, WSGIEnvironment
@@ -147,19 +147,13 @@ def _expected(snapshot: CompanyDocumentLinkSnapshot, code: str, identities: tupl
              "published_at": item.published_at.isoformat(), "body_checked": item.body_checked} for item in selected]
 
 
-def _request(port: int, path: str, guard: _IoGuard) -> tuple[int, object]:
+def _request(port: int, path: str, guard: _IoGuard, transport: HttpTransport) -> tuple[int, object]:
     guard.check()
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=min(5.0, guard.deadline - time.monotonic()))
-    try:
-        connection.request("GET", path)
-        response = connection.getresponse()
-        content = response.read(1024 * 1024 + 1)
-        guard.check()
-        if len(content) > 1024 * 1024:
-            raise ValueError("company_http_response_too_large")
-        return response.status, json.loads(content)
-    finally:
-        connection.close()
+    response = transport.get(f"http://127.0.0.1:{port}{path}", timeout=min(5.0, guard.deadline - time.monotonic()),
+        deadline=guard.deadline, max_response_bytes=1024 * 1024,
+        cancel_requested=lambda: time.monotonic() >= guard.deadline)
+    guard.check()
+    return response.status_code, response.json()
 
 
 def AuditCompanyHttp(
@@ -238,6 +232,7 @@ def AuditCompanyHttp(
             return invoke
 
         with ExitStack() as checks:
+            transport = checks.enter_context(bootstrap.OpenExternalHttp(deadline_limit=deadline))
             checks.enter_context(patch.object(system.app, "wsgi_app", guarded_application))
             for name in ("stat", "lstat", "access", "readlink"):
                 checks.enter_context(patch.object(os, name, checked_stat(getattr(os, name))))
@@ -263,7 +258,7 @@ def AuditCompanyHttp(
                         expected = { "code": code,
                                     "documents": _expected(snapshot, code, group)}
                         status, payload = _request(server.server_port,
-                            f"/api/company/{code}/documents?{urlencode([('evidence_id', item) for item in group])}", guard)
+                            f"/api/company/{code}/documents?{urlencode([('evidence_id', item) for item in group])}", guard, transport)
                         requests += 1
                         if status != 200 or json.dumps(payload, sort_keys=True) != json.dumps(expected, sort_keys=True):
                             raise ValueError("company_http_published_link_mismatch")
@@ -273,7 +268,7 @@ def AuditCompanyHttp(
                              f"/api/company/{codes[0]}/documents?evidence_id=",
                              f"/api/company/{codes[0]}/documents?{urlencode([('evidence_id', str(i)) for i in range(33)])}",
                              f"/api/company/{codes[0]}/documents?evidence_id={'x' * 201}"):
-                    status, _ = _request(server.server_port, path, guard)
+                    status, _ = _request(server.server_port, path, guard, transport)
                     requests += 1
                     if status != 400:
                         raise ValueError("company_http_invalid_query_not_rejected")
@@ -287,7 +282,7 @@ def AuditCompanyHttp(
             raise ValueError("company_http_no_published_links")
     except InterruptedError:
         raise
-    except (OSError, RuntimeError, ValueError, http.client.HTTPException) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         failure = type(exc).__name__
     finally:
         try:

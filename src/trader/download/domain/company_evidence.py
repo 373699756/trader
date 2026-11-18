@@ -152,7 +152,10 @@ class CompanyInputValidationFailure(ValueError):
 
 class CompanySourceFailure(RuntimeError):
     def __init__(
-        self, category: Literal["access_denied", "rate_limited", "http_error"], *, status_code: int | None = None
+        self, category: Literal[
+            "access_denied", "rate_limited", "http_error", "http_transport_error", "timeout",
+            "http_compressed_body_invalid", "http_content_encoding_unsupported", "http_response_too_large",
+        ], *, status_code: int | None = None
     ) -> None:
         self.category = category
         self.status_code = status_code

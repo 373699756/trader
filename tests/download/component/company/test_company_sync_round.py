@@ -217,3 +217,18 @@ def test_new_local_rules_and_input_watermark_reopen_only_fields_and_clear_resolv
     assert final.families[-1].result.changed_codes == ("600001",)
     assert final.families[-1].result.pending_count == 0 and not final.families[-1].result.gaps
     assert journal.active().max_source_calls == budget.max_source_calls
+
+
+@pytest.mark.parametrize("error_type", (OSError, PermissionError, FileNotFoundError))
+def test_local_acceptance_failure_stops_every_later_family_and_keeps_request_intent(tmp_path, error_type):
+    journal, producers, budget, physical, calls, transport = _resources(tmp_path)
+    error = error_type("local_input_commit_failed")
+
+    def failed_commit(*args):
+        raise error
+
+    producers[0].inputs.complete_task = failed_commit
+    with transport, pytest.raises(error_type) as caught:
+        RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert caught.value is error and len(physical) == 1 and not calls
+    assert journal.outstanding_family(journal.active().round_id) is CompanySyncFamily.FINANCIAL

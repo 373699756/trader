@@ -45,3 +45,23 @@ def test_absent_published_lists_remain_empty_without_creating_database(tmp_path)
     path = tmp_path / "missing/freeze.sqlite3"
     assert RecentPublishedNewsCodes((SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture()),), NOW) == ()
     assert not path.parent.exists()
+
+
+def test_company_news_read_budget_cancellation_is_not_treated_as_unavailable_freeze(tmp_path):
+    from contextlib import contextmanager
+
+    import pytest
+
+    path = tmp_path / "freeze.sqlite3"
+    SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture()).initialize()
+    error = InterruptedError("company read budget")
+
+    @contextmanager
+    def stopped(_path):
+        raise error
+        yield
+
+    source = SQLiteFreezeRecords(path, sqlite_policy=SqlitePolicyFixture(), read_session=stopped)
+    with pytest.raises(InterruptedError) as caught:
+        RecentPublishedNewsCodes((source,), NOW)
+    assert caught.value is error

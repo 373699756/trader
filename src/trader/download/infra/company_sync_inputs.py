@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.domain.company_annual_income import CompanyAnnualIncome
-from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanyRatio, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanyRatio, EvidenceMarket, StructuredCompanyPage, StructuredCompanyQuery
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema, SqliteConnection, SqliteConnectionOptions, SqliteSchema, SqliteSession, SqliteTransaction,
@@ -134,6 +134,20 @@ class SQLiteCompanySyncInputStore:
     def task_done(self, scope: str, family: str, task: str) -> bool:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             return connection.run("SELECT 1 FROM company_source_task WHERE scope=? AND family=? AND task=?", (scope, family, task)).fetchone() is not None
+
+    def freeze_news_codes(self, scope: str, codes: tuple[str, ...]) -> tuple[str, ...]:
+        """Keep the authorized published population fixed for this request scope."""
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+            initialized = connection.run("SELECT 1 FROM company_source_task WHERE scope=? AND family='news_scope' AND task='initialized'", (scope,)).fetchone()
+            if initialized is None:
+                for code in codes:
+                    EvidenceMarket(code)
+                connection.run_many("INSERT INTO company_source_task VALUES(?,?,?,?,?)",
+                    ((scope, "news_scope", code, 0, CanonicalDigest(code)) for code in sorted(set(codes))))
+                connection.run("INSERT INTO company_source_task VALUES(?,?,?,?,?)",
+                    (scope, "news_scope", "initialized", 0, CanonicalDigest(tuple(sorted(set(codes))))))
+            return tuple(row[0] for row in connection.run(
+                "SELECT task FROM company_source_task WHERE scope=? AND family='news_scope' AND task<>'initialized' ORDER BY task", (scope,)))
 
     def watermark(self, scope: str) -> str:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):

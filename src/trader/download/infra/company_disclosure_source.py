@@ -40,7 +40,7 @@ from trader.download.infra.company_document_parser import CompanyTextCapability
 from trader.download.infra.company_document_process import CaptureDocumentTool
 from trader.download.infra.company_raw_files import CompanyLocalDocument, CompanyRawFiles
 from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
-from trader.download.infra.company_http import CompanySourceCancellation, CheckCompanyResponse, CompanyRequestPacer
+from trader.download.infra.company_http import CompanySourceOperation, CheckCompanyResponse, CompanyRequestPacer
 from trader.infra.http_contracts import (
     HttpCancelled,
     HttpConnectionError,
@@ -116,7 +116,7 @@ class CninfoMarketDisclosureSource:
         self._text_reserve_bytes = text_reserve_bytes
         self._ocr_reserve_bytes = ocr_reserve_bytes
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def fetch(self, partition: DisclosurePartition, *, order: Literal["", "asc", "desc"] = "") -> DisclosurePage:
         if partition.page > 100:
             raise CompanyInputValidationFailure("cninfo_page_limit")
@@ -321,13 +321,13 @@ class CninfoMarketDisclosureSource:
         if self._pacer is not None:
             self._pacer.wait()
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def document_ready(self, item: Disclosure) -> bool:
         if self._raw_files is None:
             raise RuntimeError("company_raw_files_required")
         return self._raw_files.result(item, self._report_policies(item)) is not None or self._raw_files.local(item, check=self._document_read_check()) is not None
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def document_payload_hash(self, item: Disclosure) -> bytes | None:
         if self._raw_files is None:
             raise RuntimeError("company_raw_files_required")
@@ -343,7 +343,7 @@ class CninfoMarketDisclosureSource:
             return _layout_policy(policy.standard), policy.ocr, _layout_policy(policy.limits)
         return policy.standard, policy.ocr, policy.limits
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def download_document(self, item: Disclosure, *, attempt_limit: int = 3) -> None:
         if type(attempt_limit) is not int or not 1 <= attempt_limit <= 3:
             raise ValueError("company_document_attempt_limit_invalid")
@@ -436,7 +436,7 @@ class CninfoMarketDisclosureSource:
                 raise HttpConnectionError("company_download_incomplete")
         return response
 
-    @CompanySourceCancellation
+    @CompanySourceOperation
     def extract_document(
         self, item: Disclosure, *, route: DocumentRoute = "standard",
         page_progress: Callable[[int, int], None] | None = None,
