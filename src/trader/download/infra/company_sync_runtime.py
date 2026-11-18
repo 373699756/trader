@@ -18,7 +18,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_sync import (
-    CompanySyncBudget, CompanySyncFamily, CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
+    CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
     CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -57,6 +57,7 @@ class CompanySyncRuntime:
         io_budget: CompanySyncIoBudget | None = None,
         document_configuration: CompanySyncConfiguration | None = None, document_policies: CompanyDocumentPolicies | None = None,
         wall_clock: Callable[[], datetime] | None = None,
+        observe: Callable[[CompanySyncFamilyResult], None] | None = None,
     ) -> None:
         paths = (normalized.path, facts.path, material.path, journal.path, inputs.path)
         if any(path.is_symlink() for path in paths) or any(
@@ -71,6 +72,7 @@ class CompanySyncRuntime:
         self._io_budget = io_budget
         self._document_configuration, self._document_policies = document_configuration, document_policies
         self._wall_clock = wall_clock
+        self._observe = observe
         self._execution_scope: CompanySyncRoundScope | None = None
         self._execution_round_id = ""
 
@@ -201,7 +203,7 @@ class CompanySyncRuntime:
         preflight_task = "preflight:" + fields.plan.request_hash
         if not self.inputs.task_done(scope.identity, "fields", preflight_task):
             recovered = ResumeCompanySyncPendingStep(self.journal, producers, scope, round_id, budget,
-                monotonic=monotonic, cancel_requested=cancel_requested)
+                monotonic=monotonic, cancel_requested=cancel_requested, observe=self._observe)
             if recovered:
                 if budget.max_steps == 1:
                     return CompanySyncRoundResult(round_id, scope, (), False, True, "")
@@ -215,12 +217,17 @@ class CompanySyncRuntime:
                 return CompanySyncRoundResult(round_id, scope, (), cancel_requested(), not cancel_requested(), "")
             self.journal.finish(round_id, CompanySyncFamily.FIELDS, replace(prepared, processed_scope_complete=False, can_continue=True, deferred=True))
             self.inputs.complete_task(scope.identity, "fields", preflight_task, prepared.accepted_inputs or 0, CanonicalDigest((prepared.changed_codes, fields.plan)))
+            if self._observe is not None:
+                confirmed = self.journal.family(round_id, CompanySyncFamily.FIELDS)
+                if confirmed is not None:
+                    self._observe(confirmed)
             if budget.max_steps == 1:
                 current = self.journal.family(round_id, CompanySyncFamily.FIELDS)
                 return CompanySyncRoundResult(round_id, scope, (current,) if current is not None else (), False, True, "")
             budget = replace(budget, max_steps=budget.max_steps - 1)
         try:
-            result = RunCompanySyncRound(self.journal, producers, scope, budget, monotonic=monotonic, cancel_requested=cancel_requested)
+            result = RunCompanySyncRound(self.journal, producers, scope, budget, monotonic=monotonic,
+                cancel_requested=cancel_requested, observe=self._observe)
         except CompanySyncInterrupted:
             return CompanySyncRoundResult(round_id, scope, (), cancel_requested(), not cancel_requested(), "")
         if population_gaps:

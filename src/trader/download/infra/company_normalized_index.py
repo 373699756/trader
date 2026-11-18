@@ -180,9 +180,14 @@ class SQLiteCompanyNormalizedIndex:
 
     def accept(self, query: StructuredCompanyQuery, page: CompanyFinancialSourcePage, codes: tuple[str, ...], cutoff: datetime, *, eligible_codes: tuple[str, ...] | None = None) -> None:
         scope = self._scope(query, codes, cutoff)
-        if (query.page != page.page or query.expected_rows is not None and page.total != query.expected_rows
-            or any(item.observed_at != cutoff or not query.start <= item.source_notice_at.date() <= query.end for item in page.observations)):
-            raise CompanyInputValidationFailure("company_round_page_identity_mismatch")
+        if query.page != page.page:
+            raise CompanyInputValidationFailure("company_round_page_number_mismatch")
+        if query.expected_rows is not None and page.total != query.expected_rows:
+            raise CompanyInputValidationFailure("company_round_total_changed")
+        if any(item.observed_at != cutoff for item in page.observations):
+            raise CompanyInputValidationFailure("company_round_observation_time_mismatch")
+        if any(not query.start <= item.source_notice_at.date() <= query.end for item in page.observations):
+            raise CompanyInputValidationFailure("company_round_notice_outside_window")
         self._check_cancelled()
         with self._session(self.path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
             previous = connection.run("SELECT MAX(page),pages,total FROM company_round_page WHERE scope=?", (scope,)).require_one()

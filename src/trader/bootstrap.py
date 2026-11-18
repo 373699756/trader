@@ -1463,7 +1463,8 @@ def ExecuteCompanySync(
             event_policy=event_policy, sqlite_policy=sqlite_policy, read_document=read_document,
             financial_source=structured, ratio_source=structured, annual_source=structured,
             news_source=structured, official_source=official, io_budget=io_budget,
-            document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now)
+            document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
+            observe=partial(company_evidence_progress.ReportCompanySyncAdvance, report))
         budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
             min(256, configuration.round_step_limit), deadline)
         try:

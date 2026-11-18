@@ -15,6 +15,7 @@ from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_transport import RequestsHttpTransport
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_connection import SqliteSession
+from trader.download.entrypoints.sync_progress import SyncProgress
 
 
 def _settings(tmp_path, monkeypatch):
@@ -53,6 +54,19 @@ def test_normal_composition_runs_local_fields_with_zero_source_allowance(tmp_pat
     facts = reader.read(company.scope.codes)
     assert len(facts) == len(company.scope.codes) and all(item.financial is None for item in facts)
     assert reader.publication_identity() == company.publication_hash
+
+
+def test_normal_composition_projects_confirmed_step_progress_without_http(tmp_path, monkeypatch):
+    settings, physical = _settings(tmp_path, monkeypatch)
+    messages = []
+    clock = iter(range(10000))
+    progress = SyncProgress(messages.append, lambda: float(next(clock)))
+    result = bootstrap.ExecuteSync(settings.config_path, "company", report=progress)
+    assert result.tasks[0].company is not None and physical == []
+    assert any(field.text == "最近确认调度步" for message in messages for field in message.fields)
+    before = len(messages)
+    progress.heartbeat()
+    assert len(messages) == before
 
 
 def test_normal_composition_uses_recent_published_news_population_without_creating_freezes(tmp_path, monkeypatch):

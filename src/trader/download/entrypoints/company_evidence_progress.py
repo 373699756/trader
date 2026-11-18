@@ -158,12 +158,24 @@ def ReportCompanySyncStart(report: SyncProgress, requested: int) -> None:
 
 
 def ReportCompanySyncFamily(report: Callable[[ProgressMessage], None], family: CompanySyncFamilyResult) -> None:
-    report(ProgressMessage((ProgressField(
-        f"{family.family.value}：已接纳{_quantity(family.accepted_inputs)}项；"
-        f"请求预算已占用{_quantity(family.source_calls)}，未知{family.unknown_attempts}；"
-        f"缺口{len(family.result.gaps)}项"),),
+    report(ProgressMessage(_family_fields(family),
         task=ProgressTask("company", family.family.value, "公司资料"),
         state="完成" if family.result.business_complete else "等待", finished=True))
+
+
+def ReportCompanySyncAdvance(report: SyncProgress, family: CompanySyncFamilyResult) -> None:
+    """Expose only acknowledged journal facts; the heartbeat performs no I/O."""
+    message = ProgressMessage((ProgressField("最近确认调度步"), *_family_fields(family)),
+        task=ProgressTask("company", "prepare", "公司轮次"), state="处理中")
+    report.register_observer("company", lambda: replace(message, state="等待"), task_key="prepare")
+    report(message)
+
+
+def _family_fields(family: CompanySyncFamilyResult) -> tuple[ProgressField, ...]:
+    return (ProgressField(
+        f"{family.family.value}：已接纳{_quantity(family.accepted_inputs)}项；"
+        f"请求预算已占用{_quantity(family.source_calls)}，未知{_quantity(family.unknown_attempts)}；"
+        f"缺口{len(family.result.gaps)}项"),)
 
 
 def _market_label(market: str) -> str:
@@ -720,4 +732,4 @@ def _recovery(progress: EvidenceSyncProgress) -> str:
 
 
 __all__ = ["CompanyEvidenceProgress", "ReportCompanyStock", "ReportCompanyFailure", "ReportStPreparation",
-    "ReportCompanySyncStart", "ReportCompanySyncFamily"]
+    "ReportCompanySyncStart", "ReportCompanySyncFamily", "ReportCompanySyncAdvance"]

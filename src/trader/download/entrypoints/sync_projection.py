@@ -71,7 +71,7 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
                         "request_slots_consumed": item.source_calls,
                         "unknown_attempts": item.unknown_attempts,
                         "observed_attempts": item.source_calls - item.unknown_attempts
-                        if item.source_calls is not None else None,
+                        if item.source_calls is not None and item.unknown_attempts is not None else None,
                         "processing_complete": item.result.processed_scope_complete,
                         "business_complete": item.result.business_complete,
                         "can_continue": item.result.can_continue,

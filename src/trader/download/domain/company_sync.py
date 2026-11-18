@@ -117,14 +117,14 @@ class CompanySyncFamilyResult:
     accepted_inputs:int|None
     source_calls:int|None
     result:CompanySyncStepResult
-    unknown_attempts:int=0
+    unknown_attempts:int|None=0
 
     def __post_init__(self)->None:
         if (type(self.steps) is not int or self.steps < 0
             or self.accepted_inputs is not None and (type(self.accepted_inputs) is not int or self.accepted_inputs < 0)
             or self.source_calls is not None and (type(self.source_calls) is not int or self.source_calls < 0)
-            or type(self.unknown_attempts) is not int or self.unknown_attempts < 0
-            or self.source_calls is not None and self.unknown_attempts > self.source_calls):
+            or self.unknown_attempts is not None and (type(self.unknown_attempts) is not int or self.unknown_attempts < 0)
+            or self.source_calls is not None and self.unknown_attempts is not None and self.unknown_attempts > self.source_calls):
             raise ValueError("company_sync_family_counts_invalid")
 
 

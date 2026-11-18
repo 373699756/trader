@@ -96,12 +96,49 @@ def test_accept_before_ack_crash_reconciles_old_step_before_authorizing_next_pag
     assert result.families[0].source_calls == 2
 
 
+def test_progress_observes_only_durable_step_results_without_extra_requests(tmp_path):
+    journal, producers, budget, physical, _, transport = _resources(tmp_path)
+    observations = []
+
+    def observe(family):
+        assert journal.outstanding(journal.active().round_id, family.family) is None
+        assert journal.family(journal.active().round_id, family.family) == family
+        observations.append(family)
+
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0,
+            cancel_requested=lambda: False, observe=observe)
+    latest = {item.family: item for item in observations}
+    assert tuple(latest[family.family] for family in result.families) == result.families
+    assert len(physical) == 2 and result.business_complete
+
+
+def test_progress_failure_keeps_acknowledged_page_and_restarts_without_refetch(tmp_path):
+    journal, producers, budget, physical, _, transport = _resources(tmp_path)
+
+    def fail(family):
+        raise RuntimeError("fixture_progress_unavailable")
+
+    with transport, pytest.raises(RuntimeError, match="fixture_progress_unavailable"):
+        RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0,
+            cancel_requested=lambda: False, observe=fail)
+    assert len(physical) == 1 and journal.outstanding_family(journal.active().round_id) is None
+    journal, producers, budget, physical, _, transport = _resources(tmp_path)
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0,
+            cancel_requested=lambda: False)
+    assert physical == ["https://example.test/2"] and result.business_complete
+
+
 def test_unknown_response_acceptance_never_repeats_source_but_later_local_families_finish(tmp_path):
     cancelled = [False]
     journal, producers, budget, physical, calls, transport = _resources(tmp_path, cancel=cancelled)
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: cancelled[0])
     assert result.cancelled and len(physical) == 1
+    interrupted=result.families[0]
+    assert interrupted.source_calls is None and interrupted.unknown_attempts is None
+    assert interrupted.accepted_inputs is None and "request_counts_unconfirmed" in interrupted.result.gaps
     journal, producers, budget, physical, calls, transport = _resources(tmp_path)
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
@@ -214,6 +251,55 @@ def test_unknown_interrupted_error_is_not_hidden_even_when_deadline_expires(tmp_
     with transport, pytest.raises(InterruptedError, match="unrelated_local_failure"):
         RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: clock[0], cancel_requested=lambda: False)
     assert not physical
+
+
+def test_source_deadline_marks_counters_unknown_without_post_deadline_sql(tmp_path):
+    from trader.download.infra.company_sync_io import CompanySyncIoBudget
+    journal, producers, budget, physical, _, transport = _resources(tmp_path)
+    clock = [0.0]
+    journal._io_budget = CompanySyncIoBudget(deadline=10, monotonic=lambda: clock[0], cancel_requested=lambda: False)
+    original = producers[0].advance
+
+    def expires(scope, *, cancel_requested, deadline):
+        original(scope, cancel_requested=cancel_requested, deadline=deadline)
+        clock[0] = 11
+        raise CompanySyncInterrupted("fixture_deadline_after_request")
+
+    producers[0].advance = expires
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget,
+            monotonic=lambda: clock[0], cancel_requested=lambda: False)
+    assert result.budget_exhausted and not result.cancelled and len(physical) == 1
+    family, = result.families
+    assert family.source_calls is None and family.unknown_attempts is None
+    assert family.accepted_inputs is None and not family.result.business_complete
+    with pytest.raises(CompanySyncInterrupted):
+        journal.source_calls(result.round_id)
+
+
+def test_source_interruption_preserves_a_previous_confirmed_failure(tmp_path):
+    journal, producers, budget, _, _, transport = _resources(tmp_path)
+    annual = next(item for item in producers if item.plan.family is CompanySyncFamily.ANNUAL_INCOME)
+    clock, attempts = [0.0], [0]
+    annual.state = lambda scope: CompanySyncPhaseState(CanonicalDigest(attempts[0]), True)
+
+    def advance(scope, *, cancel_requested, deadline):
+        attempts[0] += 1
+        if attempts[0] == 1:
+            return CompanySyncStepResult(False, True, failure="annual_fixture_rejected",
+                gaps=("annual_income_source_failed",))
+        transport.get("https://example.test/annual-next", timeout=1)
+        clock[0] = 11
+        raise CompanySyncInterrupted("fixture_later_period_deadline")
+
+    annual.advance = advance
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget,
+            monotonic=lambda: clock[0], cancel_requested=lambda: False)
+    family = next(item for item in result.families if item.family is CompanySyncFamily.ANNUAL_INCOME)
+    assert family.result.failure == "annual_fixture_rejected"
+    assert "annual_income_source_failed" in family.result.gaps
+    assert family.source_calls is None and family.unknown_attempts is None
 
 
 @pytest.mark.parametrize("failure", ("supplier_validation", "supplier_access", "source_scope"))

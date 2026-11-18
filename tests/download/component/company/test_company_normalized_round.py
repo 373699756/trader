@@ -14,7 +14,7 @@ from trader.download.application.company_financial_producer import CompanyFinanc
 from trader.download.application.company_sync import RunCompanySyncRound
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncRoundScope
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
-from trader.download.domain.company_evidence import CompanyFinancial, DisclosurePage, DisclosurePartition, StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyFinancial, CompanyInputValidationFailure, DisclosurePage, DisclosurePartition, StructuredCompanyQuery
 from trader.download.domain.company_source_records import (
     CompanyFinancialMissingField, CompanyFinancialSourceObservation, CompanyFinancialSourcePage,
     CompanyFinancialSourceRecordHash, CompanyFinancialSourceValues,
@@ -80,6 +80,31 @@ def _observation(*, code="600001", at=_NOTICE, cutoff=_CUTOFF, eps=2.0, parent=1
 
 def _page(*observations, page=1, pages=1, total=None):
     return CompanyFinancialSourcePage(page, pages, len(observations) if total is None else total, len(observations), tuple(observations), "a" * 64)
+
+
+@pytest.mark.parametrize("reason", (
+    "company_round_page_number_mismatch", "company_round_total_changed",
+    "company_round_observation_time_mismatch", "company_round_notice_outside_window",
+))
+def test_rejected_page_reports_precise_identity_failure_without_acceptance(tmp_path, reason):
+    index, facts = _index(tmp_path, _baseline(tmp_path / "baseline"))
+    reader = SQLiteCompanyEvidenceReaderFixture(facts.path)
+    before = reader.publication_identity()
+    query, observation = _QUERY, _observation()
+    page = _page(observation)
+    if reason == "company_round_page_number_mismatch":
+        page = _page(observation, page=2, pages=2, total=2)
+    elif reason == "company_round_total_changed":
+        query = replace(query, expected_rows=2)
+    elif reason == "company_round_observation_time_mismatch":
+        page = _page(_observation(cutoff=_CUTOFF - timedelta(seconds=1)))
+    else:
+        query = replace(query, start=query.start - timedelta(days=2), end=query.end - timedelta(days=1))
+    with pytest.raises(CompanyInputValidationFailure, match=reason):
+        index.accept(query, page, _CODES, _CUTOFF)
+    assert reader.publication_identity() == before
+    with SqliteSession(index.path) as normalized:
+        assert normalized.run("SELECT COUNT(*) FROM company_round_page").require_one()[0] == 0
 
 
 class _Source:

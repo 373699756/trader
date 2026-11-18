@@ -49,6 +49,7 @@ def RunCompanySyncRound(
     *,
     monotonic:Callable[[],float],
     cancel_requested:Callable[[],bool],
+    observe:Callable[[CompanySyncFamilyResult],None]|None=None,
 )->CompanySyncRoundResult:
     """Run bounded steps, retain accepted work and never reissue an unconfirmed request.
 
@@ -108,6 +109,7 @@ def RunCompanySyncRound(
                     try:
                         result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
                     except CompanySyncInterrupted:
+                        item.result=_interrupted_family(item.result,producer.plan,state.source_required)
                         exhausted=not cancel_requested()
                         stopped=True
                         break
@@ -119,6 +121,8 @@ def RunCompanySyncRound(
             current=journal.family(round_id,family)
             if current is not None:
                 item.result=current
+                if observe is not None:
+                    observe(current)
             if result.deferred and not reconciled:
                 item.deferred=True
             if cancel_requested():
@@ -139,6 +143,22 @@ def _with_plan_gaps(result:CompanySyncStepResult,plan:CompanySyncPhasePlan)->Com
     return replace(result,gaps=gaps)
 
 
+def _interrupted_family(
+    previous:CompanySyncFamilyResult|None,plan:CompanySyncPhasePlan,source_required:bool,
+)->CompanySyncFamilyResult:
+    calls=0 if previous is None else previous.source_calls
+    unknown=0 if previous is None else previous.unknown_attempts
+    gaps=(() if previous is None else previous.result.gaps)+("step_interrupted",)
+    if source_required:
+        calls,unknown=None,None
+        gaps+=("request_counts_unconfirmed",)
+    result=CompanySyncStepResult(False,True,accepted_inputs=None,gaps=gaps,pending_count=None,
+        changed_codes=() if previous is None else previous.result.changed_codes,
+        failure=None if previous is None else previous.result.failure)
+    return CompanySyncFamilyResult(plan.family,0 if previous is None else previous.steps,None,calls,
+        _with_plan_gaps(result,plan),unknown)
+
+
 def _invoke_step(producer:CompanySyncProducer,scope:CompanySyncRoundScope,budget:CompanySyncBudget,
     monotonic:Callable[[],float],cancel_requested:Callable[[],bool])->CompanySyncStepResult:
     try:
@@ -156,7 +176,8 @@ def _invoke_step(producer:CompanySyncProducer,scope:CompanySyncRoundScope,budget
 
 
 def ResumeCompanySyncPendingStep(journal:CompanySyncRoundJournal,producers:tuple[CompanySyncProducer,...],
-    scope:CompanySyncRoundScope,round_id:str,budget:CompanySyncBudget,*,monotonic:Callable[[],float],cancel_requested:Callable[[],bool])->bool:
+    scope:CompanySyncRoundScope,round_id:str,budget:CompanySyncBudget,*,monotonic:Callable[[],float],cancel_requested:Callable[[],bool],
+    observe:Callable[[CompanySyncFamilyResult],None]|None=None)->bool:
     """Reconcile one old intent before a new local prerequisite; never start HTTP."""
     family=journal.outstanding_family(round_id)
     if family is None:
@@ -178,4 +199,8 @@ def ResumeCompanySyncPendingStep(journal:CompanySyncRoundJournal,producers:tuple
             raise ValueError("company_sync_recovery_source_state_mismatch")
         result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
     journal.finish(round_id,family,_with_plan_gaps(result,producer.plan))
+    if observe is not None:
+        confirmed=journal.family(round_id,family)
+        if confirmed is not None:
+            observe(confirmed)
     return True

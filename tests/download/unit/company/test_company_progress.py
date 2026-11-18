@@ -21,7 +21,7 @@ from trader.download.domain.company_evidence import (
     DisclosureSecurity,
     EvidenceSyncProgress,
 )
-from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportCompanyStock, ReportCompanySyncStart, ReportCompanySyncFamily
+from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportCompanyStock, ReportCompanySyncStart, ReportCompanySyncFamily, ReportCompanySyncAdvance
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.entrypoints.cli import Main
 from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult
@@ -49,10 +49,32 @@ def test_company_round_start_has_heartbeat_and_finishes_with_owner():
 def test_company_round_unconfirmed_counts_are_not_none_or_zero():
     messages = []
     family = CompanySyncFamilyResult(CompanySyncFamily.FIELDS, 1, None, None,
-        CompanySyncStepResult(True, False, None, 0, (), ()))
+        CompanySyncStepResult(True, False, None, 0, (), ()), unknown_attempts=None)
     ReportCompanySyncFamily(messages.append, family)
     text = messages[0].fields[0].text
-    assert "已接纳未核对项" in text and "预算已占用未核对" in text and "None" not in text
+    assert "已接纳未核对项" in text and "预算已占用未核对，未知未核对" in text and "None" not in text
+
+
+def test_company_step_heartbeat_repeats_acknowledged_counts_and_stops_with_owner():
+    messages = []
+    clock = [0.0]
+    progress = SyncProgress(messages.append, lambda: clock[0])
+    CompanyEvidenceProgress(report=progress, observe=progress.register_observer)
+    ReportCompanySyncStart(progress, 4403)
+    family = CompanySyncFamilyResult(CompanySyncFamily.FINANCIAL, 2, 293, 3,
+        CompanySyncStepResult(False, True, accepted_inputs=293), unknown_attempts=1)
+    clock[0] = 2
+    ReportCompanySyncAdvance(progress, family)
+    assert any("最近确认调度步" == field.text for field in messages[-1].fields)
+    assert any("已接纳293项" in field.text and "占用3，未知1" in field.text for field in messages[-1].fields)
+    clock[0] = 20
+    progress.heartbeat()
+    assert messages[-1].state == "等待" and any("已接纳293项" in field.text for field in messages[-1].fields)
+    count = len(messages)
+    progress.finish_owner("company")
+    clock[0] = 40
+    progress.heartbeat()
+    assert len(messages) == count
 
 
 def _messages(text: str) -> list[str]:
@@ -280,9 +302,9 @@ def test_cancelled_terminal_and_json_report_unknown_counts_without_claiming_zero
     assert "可重试正文 0" not in output and "公告待补 0" not in output
     result = CompanySyncRoundFixture(
         datetime(2026, 10, 18, tzinfo=ZoneInfo("Asia/Shanghai")), ("600001", "600002"),
-        families=(CompanySyncFamilyFixture(
+        families=(replace(CompanySyncFamilyFixture(
             CompanySyncFamily.FINANCIAL, complete=False, pending_count=None, accepted_inputs=1, source_calls=None,
-        ),), cancelled=True,
+        ), unknown_attempts=None),), cancelled=True,
     )
     assert result.needs_retry and replace(result, cancelled=False).needs_retry
     monkeypatch.setattr(
@@ -297,7 +319,7 @@ def test_cancelled_terminal_and_json_report_unknown_counts_without_claiming_zero
     assert len(company["families"]) == 1
     family, = company["families"]
     assert family["accepted_inputs"] == 1 and family["request_slots_consumed"] is None and family["pending_count"] is None
-    assert family["observed_attempts"] is None
+    assert family["observed_attempts"] is None and family["unknown_attempts"] is None
     assert company["paused"] and not company["processing_complete"] and not company["business_complete"]
 
 
