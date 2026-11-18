@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 _NUMBER = re.compile(r"公告编号[：:]?[（(]?(20[0-9]{2}[-－—][0-9]{1,4})(?![0-9])")
 _DASHES = str.maketrans({"－": "-", "—": "-"})
-_CODE = re.compile(r"(?:证券|股票|公司)代码[：:]?([0-9]{6})(?![0-9])")
+_CODE = re.compile(r"(?:证券|股票|公司)代码(?:[（(](?:A(?:股)?(?:[/、]H(?:股)?)?|H股)[）)])?[：:]?([0-9]{6})(?![0-9])")
 
 
 @dataclass(frozen=True, slots=True)

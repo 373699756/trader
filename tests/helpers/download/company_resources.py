@@ -129,7 +129,7 @@ class CompanyResearchFixture(SQLiteCompanyMaterialIndex):
                 prepared = PrepareCompanyIssuerInputs(raw, formal, fact, cutoff=observed_at,
                     extraction_hash=self._facts.extraction_hash, event_policy=self._event_policy,
                     read_document=self._documents.read, revalidate=fact.code in revalidate_codes, check=check,
-                    correct_measurements=False, published_links=previous_links)
+                    include_new_announcements=False, correct_measurements=False, published_links=previous_links)
                 fields.extend(prepared.fields)
                 attempts.extend(prepared.receipts)
                 links.extend(prepared.links)

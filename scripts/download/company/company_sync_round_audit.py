@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import time
 from dataclasses import replace
@@ -15,30 +16,46 @@ from trader.bootstrap import BuildSqlitePolicy, CreateSyncProgress, ExecuteCompa
 from trader.download.domain.company_sync import CompanySyncRoundScope
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
+from trader.download.infra.company_evidence_sql import SCHEMA
 from trader.infra.settings import RuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
+from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession
 
 
 def AuditCompanySyncRounds(
     settings: RuntimeSettings, directory: Path, codes: tuple[str, ...], *, seconds_per_round: float,
+    collection_snapshot: Path | None = None, request_limit: int | None = None,
 ) -> dict[str, object]:
     """Run twice with one frozen scope; independent of the active reference/universe."""
     if not 1 <= len(codes) <= 8 or len(set(codes)) != len(codes):
         raise ValueError("company_sync_round_audit_codes_invalid")
     if not directory.is_absolute() or directory.is_symlink() or not math.isfinite(seconds_per_round) or not 5 <= seconds_per_round <= 600:
         raise ValueError("company_sync_round_audit_budget_invalid")
+    if request_limit is not None and (type(request_limit) is not int or not 0 <= request_limit <= 512):
+        raise ValueError("company_sync_audit_request_limit_invalid")
     RequireIsolatedReplay(directory, (settings.project_root, settings.data_paths.root, settings.runtime_dir))
     if directory.exists():
         raise ValueError("company_sync_round_audit_target_exists")
     directory.mkdir(parents=True)
     isolated = replace(settings, data_paths=DataPaths(directory / "data"), runtime_dir=directory / "runtime")
+    if request_limit is not None:
+        configuration = json.loads((settings.project_root / "config/download.json").read_bytes())
+        configuration["company"]["round_request_limit"] = min(configuration["company"]["round_request_limit"], request_limit)
+        policy_root = directory / "policy"
+        (policy_root / "config").mkdir(parents=True)
+        (policy_root / "config/download.json").write_text(json.dumps(configuration, ensure_ascii=False), encoding="utf-8")
+        isolated = replace(isolated, project_root=policy_root)
+    if collection_snapshot is not None:
+        _copy_directory_metadata(settings, collection_snapshot, isolated.data_paths.company_collection, directory)
     scope = CompanySyncRoundScope(tuple(sorted(codes)), datetime.now(ZoneInfo("Asia/Shanghai")))
     observations: list[dict[str, object]] = []
     for number in (1, 2):
         started = time.monotonic()
         stop_at = started + seconds_per_round
+        def cancelled(stop_at: float = stop_at) -> bool:
+            return time.monotonic() >= stop_at
         result = ExecuteCompanySync(
-            isolated, scope, cancel_requested=lambda stop_at=stop_at: time.monotonic() >= stop_at,
+            isolated, scope, cancel_requested=cancelled,
             report=CreateSyncProgress(), fill=False,
         )
         observations.append({
@@ -60,8 +77,24 @@ def AuditCompanySyncRounds(
         "scope_identity": scope.identity, "codes": list(scope.codes), "cutoff": scope.cutoff.isoformat(),
         "runtime_configuration_sha256": hashlib.sha256(settings.config_path.read_bytes()).hexdigest(),
         "seconds_per_round": seconds_per_round, "rounds": observations,
+        "metadata_snapshot_copied": collection_snapshot is not None, "request_limit_requested": request_limit,
+        "company_configuration_sha256": hashlib.sha256((isolated.project_root / "config/download.json").read_bytes()).hexdigest(),
         "same_finite_round": bool(observations[0]["round_id"]) and observations[0]["round_id"] == observations[1]["round_id"],
     }
+
+
+def _copy_directory_metadata(settings: RuntimeSettings, source: Path, target: Path, directory: Path) -> None:
+    if not source.is_absolute() or source.is_symlink():
+        raise ValueError("company_sync_audit_source_invalid")
+    RequireIsolatedReplay(directory, (source.parent,))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with SqliteSession(source, SqliteConnectionOptions(read_only=True), sqlite_policy=BuildSqlitePolicy(settings)) as original:
+        EnsureSqliteSchema(original, SCHEMA, exact=True)
+        if original.run("SELECT 1 FROM disclosures WHERE body_retained=1 LIMIT 1").fetchone() is not None or original.run(
+            "SELECT 1 FROM document_tasks WHERE path IS NOT NULL LIMIT 1").fetchone() is not None:
+            raise ValueError("company_sync_audit_requires_directory_only_sample")
+        with SqliteSession(target, sqlite_policy=BuildSqlitePolicy(settings)) as replica:
+            original.backup_to(replica, deadline=time.monotonic() + 15, monotonic=time.monotonic)
 
 
 def AuditCompanySyncRestart(

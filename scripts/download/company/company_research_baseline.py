@@ -80,7 +80,7 @@ def ReadCompanyResearchBaseline(
             check()
             prepared = PrepareCompanyIssuerInputs(raw, formal, fact, cutoff=cutoff or original_identity.published_at,
                 extraction_hash=original_identity.extraction_hash, event_policy=event_policy,
-                read_document=read_document, check=check, revalidate=True)
+                read_document=read_document, check=check, revalidate=True, include_new_announcements=False)
             prepared_facts.append(prepared.facts)
             revalidated.extend(prepared.fields)
             prepared_receipts.extend(prepared.receipts)

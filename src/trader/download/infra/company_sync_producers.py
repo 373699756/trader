@@ -14,7 +14,7 @@ from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequ
 from trader.download.domain.company_events import ContractMeasurements
 from trader.download.domain.company_evidence import (
     CompanyInputValidationFailure, CompanyDocumentFailure, CompanyDocumentFailureRules, CompanyDocumentPolicies,
-    CompanySyncConfiguration, Disclosure, DisclosurePartition, EvidenceMarket, StructuredCompanyQuery,
+    CompanySyncConfiguration, CompanyDocumentRouteForFailure, Disclosure, DisclosurePartition, EvidenceMarket, StructuredCompanyQuery,
 )
 from datetime import datetime
 from trader.download.domain.company_facts import CompanyFacts
@@ -175,7 +175,7 @@ class CompanyAnnouncementProducer:
             for start, end in ((scope.cutoff.date(), scope.cutoff.date()),
                 (scope.cutoff.date() - timedelta(days=365), scope.cutoff.date() - timedelta(days=1)))
             for market in markets)
-        self._plan = CompanySyncPhasePlan(CompanySyncFamily.ANNOUNCEMENTS, CanonicalDigest(self._partitions), (
+        self._plan = CompanySyncPhasePlan(CompanySyncFamily.ANNOUNCEMENTS, CanonicalDigest((self._partitions, policies, extraction_hash.hex())), (
             "persistent_risk_initial_state_unverified", "issuer_revision_relationship_unverified",
         ))
 
@@ -262,7 +262,16 @@ class CompanyAnnouncementProducer:
     def state(self, scope: CompanySyncRoundScope) -> CompanySyncPhaseState:
         if not self._initialized(scope):
             return CompanySyncPhaseState(CanonicalDigest("initialize"), False)
+        required = self._document(scope)
+        if required is not None:
+            payload_hash = self._source.document_payload_hash(required.disclosure)
+            return CompanySyncPhaseState(_required_identity(required), payload_hash is None,
+                local_input_verified=payload_hash == required.payload_hash)
+        fresh = self._new_document(scope)
         partition = self._partition(scope)
+        if fresh is not None and (partition is None or not self._inputs.task_done(scope.identity, "announcement_document_turn", CanonicalDigest(partition))):
+            ready = self._source.document_payload_hash(fresh) is not None
+            return CompanySyncPhaseState(CanonicalDigest((fresh, self._policies)), not ready, local_input_verified=ready)
         if partition is not None:
             return CompanySyncPhaseState(CanonicalDigest(partition), any(EvidenceMarket(code) == partition.market for code in self._current_codes))
         document = self._document(scope)
@@ -278,7 +287,14 @@ class CompanyAnnouncementProducer:
                     self._material.restart_partition(initial_partition)
             self._inputs.complete_task(scope.identity, "announcements", "initialize", 0, CanonicalDigest(self._partitions))
             return CompanySyncStepResult(False, True)
-        partition = self._partition(scope)
+        required = self._document(scope)
+        partition = self._partition(scope) if required is None else None
+        fresh = self._new_document(scope) if required is None else None
+        if fresh is not None and (partition is None or not self._inputs.task_done(scope.identity, "announcement_document_turn", CanonicalDigest(partition))):
+            result = self._accept_new_document(scope, fresh)
+            if partition is not None:
+                self._inputs.complete_task(scope.identity, "announcement_document_turn", CanonicalDigest(partition), 0, CanonicalDigest(partition))
+            return result
         if partition is not None:
             if not any(EvidenceMarket(code) == partition.market for code in self._current_codes):
                 self._inputs.complete_task(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(partition), 0, CanonicalDigest(("ineligible", partition)))
@@ -303,7 +319,7 @@ class CompanyAnnouncementProducer:
                     self._refine_partition(partition, scope)
                     return CompanySyncStepResult(False, True, source_calls=1)
             return CompanySyncStepResult(False, True, len(page.rows), 1)
-        document = self._document(scope)
+        document = required
         if document is None:
             return CompanySyncStepResult(True, False, pending_count=None, gaps=("announcement_required_material_not_fully_verified",))
         if document.disclosure.codes[0] not in self._current_codes:
@@ -340,6 +356,61 @@ class CompanyAnnouncementProducer:
         self._inputs.complete_task(scope.identity, "announcements", "document:" + _required_identity(document), 1,
             CanonicalDigest((_required_identity(document), extraction.payload_hash.hex())))
         return CompanySyncStepResult(False, True, 1, int(called))
+
+    def _new_document(self, scope: CompanySyncRoundScope) -> Disclosure | None:
+        if self._configuration is None or self._policies is None or self._wall_clock is None:
+            return None
+        now = self._wall_clock()
+        if now.utcoffset() is None:
+            raise ValueError("company_document_retry_clock_invalid")
+        with self._session(self._material.path) as connection:
+            for offset in range(0, len(self._current_codes), 128):
+                codes = self._current_codes[offset:offset + 128]
+                rows = connection.run("""SELECT d.*,c.code FROM disclosures d
+                    JOIN disclosure_codes c ON c.disclosure_id=d.id
+                    JOIN company_document_requirements required ON required.disclosure_id=d.id
+                    WHERE d.source='cninfo' AND d.kind='announcement' AND d.body_checked=0
+                    AND d.published_at>=? AND d.published_at<=? AND c.code IN (""" + ",".join("?" for _ in codes) + """ )
+                    AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1
+                    AND NOT EXISTS(SELECT 1 FROM document_retries retry WHERE retry.disclosure_id=d.id
+                        AND retry.record_hash=d.record_hash AND retry.retry_policy_id=? AND retry.retry_at>?)
+                    ORDER BY d.published_at DESC,d.source_key""",
+                    ((scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat(), *codes, self._policies.standard, now.isoformat()))
+                for row in rows:
+                    item = DecodeCompanyDisclosure(row)
+                    if not self._inputs.task_done(scope.identity, "new_announcement_document", CanonicalDigest((item, self._policies))):
+                        return item
+        return None
+
+    def _accept_new_document(self, scope: CompanySyncRoundScope, item: Disclosure) -> CompanySyncStepResult:
+        assert self._configuration is not None and self._policies is not None and self._wall_clock is not None
+        called = not self._source.document_ready(item)
+        key = CanonicalDigest((item, self._policies))
+        try:
+            if called:
+                self._source.download_document(item, attempt_limit=1)
+            try:
+                extraction = self._source.extract_document(item)
+            except CompanyDocumentFailure as failure:
+                route = CompanyDocumentRouteForFailure(failure.reason)
+                if route == "standard":
+                    raise
+                extraction = self._source.extract_document(item, route=route)
+            if not self._material.commit_document(item, extraction, scope.cutoff):
+                raise ValueError("company_announcement_material_changed")
+        except CompanyDocumentFailure as failure:
+            transient = next((transient for reason, _route, transient in CompanyDocumentFailureRules() if reason == failure.reason), False)
+            delay = self._configuration.document_transient_retry_seconds if transient else self._configuration.document_failure_retry_seconds
+            attempted_at = self._wall_clock()
+            self._material.document_failure(item, self._policies.standard, failure.reason, attempted_at,
+                attempted_at + timedelta(seconds=delay), payload_hash=failure.payload_hash, diagnostic=failure.diagnostic)
+            self._inputs.complete_task(scope.identity, "new_announcement_document", key, 0, CanonicalDigest(failure.reason))
+            return CompanySyncStepResult(False, True, source_calls=int(called), gaps=("announcement_document_failed",))
+        except CompanyRawCapacityError:
+            return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
+        self._inputs.complete_task(scope.identity, "new_announcement_document", key, 1,
+            CanonicalDigest((extraction.payload_hash.hex(), hashlib.sha256(extraction.text.encode()).hexdigest())))
+        return CompanySyncStepResult(False, True, accepted_inputs=1, source_calls=int(called))
 
 
 __all__ = ["CompanyRatioProducer", "CompanyAnnualIncomeProducer", "CompanyNewsProducer", "CompanyAnnouncementProducer"]

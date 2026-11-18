@@ -13,7 +13,8 @@ from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_measurement_corrections import CorrectCompanyRepurchaseDisposalMeasurements, RefineCompanyIsolatedPositiveMeasurements
 from trader.download.infra.company_sync_inputs import CompanyRecoveredInput
-from trader.download.infra.company_field_publication import PrepareCompanyFieldResults
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, PrepareCompanyFieldResults
+from trader.download.infra.company_announcement_preparation import PrepareCompanyAnnouncements
 from trader.download.infra.company_facts_index import CompanyInputReceipt
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.infra.sqlite_connection import SqliteConnection
@@ -26,21 +27,27 @@ class CompanyIssuerPreparation:
     receipts: tuple[CompanyInputReceipt, ...]
     links: tuple[CompanyPublishedEvidenceLink, ...]
     corrected_event_ids: tuple[str, ...]
+    pending_retained: int
 
 
 def PrepareCompanyIssuerInputs(
     collected: SqliteConnection, formal: SqliteConnection, previous: CompanyFacts, *, cutoff: datetime,
     extraction_hash: bytes, event_policy: CompanyEventPolicy, read_document: Callable[[bytes], str],
-    check: Callable[[], None], revalidate: bool, correct_measurements: bool = True,
+    check: Callable[[], None], revalidate: bool, include_new_announcements: bool, correct_measurements: bool = True,
     published_links: tuple[CompanyPublishedEvidenceLink, ...] = (),
     recovered: tuple[CompanyRecoveredInput, ...] = (),
 ) -> CompanyIssuerPreparation:
     """Use the sole field proofer and only valid-backed exact bodies for corrections."""
+    original = previous
+    announcement = PrepareCompanyAnnouncements(collected, formal, previous, cutoff=cutoff, extraction_hash=extraction_hash,
+        rule_identity=CompanyFieldProofRulesHash(), event_policy=event_policy, read_document=read_document, check=check) if include_new_announcements and correct_measurements else None
+    if announcement is not None:
+        previous = announcement.facts
     identities = tuple(sorted({identity for event in previous.risk_events + previous.positive_events for identity in event.evidence_ids}
                               | {review.evidence_id for review in previous.review_reasons if review.evidence_id is not None}))
-    documents: list[CompanyDocument] = []
-    links: list[CompanyPublishedEvidenceLink] = []
-    directory_receipts: list[CompanyInputReceipt] = []
+    documents: list[CompanyDocument] = list(announcement.documents) if announcement is not None else []
+    links: list[CompanyPublishedEvidenceLink] = list(announcement.links) if announcement is not None else []
+    directory_receipts: list[CompanyInputReceipt] = list(announcement.receipts) if announcement is not None else []
     recovered_ids = frozenset(item.source_key for item in recovered if item.code == previous.code)
     correction_ids = frozenset(identity for event in previous.positive_events
         if correct_measurements and event.event_type is CompanyPositiveType.SHARE_REPURCHASE
@@ -59,22 +66,28 @@ def PrepareCompanyIssuerInputs(
         if not isinstance(record, str) or len(record) != 64 or any(character not in "0123456789abcdef" for character in record):
             continue
         body_hash = row["body_hash"]
-        valid = isinstance(body_hash, bytes) and len(body_hash) == 32 and formal.run(
+        pending_receipt = next((receipt for receipt in directory_receipts if (receipt.code, receipt.source, receipt.source_key,
+            receipt.record_hash, receipt.body_hash) == (previous.code, row["source"], identity, record, body_hash)), None)
+        valid = isinstance(body_hash, bytes) and len(body_hash) == 32 and (pending_receipt is not None and pending_receipt.outcome == "valid" or formal.run(
             """SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? AND record_hash=?
             AND extraction_hash=? AND body_hash=? AND outcome='valid' LIMIT 1""",
             (row["source"], identity, previous.code, record, extraction_hash, body_hash),
-        ).fetchone() is not None
+        ).fetchone() is not None)
         disclosure = DecodeCompanyDisclosure(row)
         checked = bool(valid and row["body_checked"])
         previous_link = next((item for item in published_links if item.code == previous.code and item.source == disclosure.source
             and item.link.evidence_id == identity), None)
-        if previous_link is None or previous_link.record_hash == record:
+        if not any(link.link.evidence_id == identity for link in links) and (previous_link is None or previous_link.record_hash == record):
             links.append(CompanyPublishedEvidenceLink(previous.code, disclosure.source, record,
                 CompanyEvidenceLink(identity, disclosure.title, disclosure.url, disclosure.published_at, checked)))
-        if not valid and formal.run("SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? AND record_hash=? AND extraction_hash=?",
+        elif previous_link is not None and previous_link.record_hash != record:
+            links.append(previous_link)
+        if not valid and pending_receipt is None and formal.run("SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? AND record_hash=? AND extraction_hash=?",
             (disclosure.source, identity, previous.code, record, extraction_hash)).fetchone() is None:
             directory_receipts.append(CompanyInputReceipt(disclosure.source, identity, previous.code, record,
                 extraction_hash, None, cutoff, "directory_observed", ""))
+        if any(document.disclosure.identity == identity for document in documents):
+            continue
         if ((identity not in correction_ids or not IsCompanyRepurchaseCancellationOnly(row["title"])) and identity not in recovered_ids
             or not checked or not row["body_retained"] or row["kind"] != "announcement"
             or collected.run("SELECT COUNT(*) FROM disclosure_codes WHERE disclosure_id=?", (row["id"],)).require_one()[0] != 1):
@@ -96,8 +109,9 @@ def PrepareCompanyIssuerInputs(
         facts = RefineCompanyIsolatedPositiveMeasurements(facts, fresh, cutoff, event_policy)
     prepared = PrepareCompanyFieldResults(collected, formal, facts, tuple(documents), observed_at=cutoff,
         extraction_hash=extraction_hash, event_policy=event_policy, read_document=read_document, revalidate=revalidate)
-    corrected = tuple(item.event_id for item in facts.positive_events if item not in previous.positive_events)
-    return CompanyIssuerPreparation(facts, prepared.results, (*prepared.receipts, *directory_receipts), tuple(links), corrected)
+    corrected = tuple(item.event_id for item in facts.positive_events if item not in original.positive_events)
+    return CompanyIssuerPreparation(facts, prepared.results, (*prepared.receipts, *directory_receipts), tuple(links), corrected,
+        announcement.pending_retained if announcement is not None else 0)
 
 
 __all__ = ["CompanyIssuerPreparation", "PrepareCompanyIssuerInputs"]

@@ -25,6 +25,7 @@ from trader.download.infra.company_facts_index import (
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EncodeCompanyTime, EVIDENCE_SOURCES, RequireCompanyTime
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.download.infra.company_financial_observations import ReadCompanyFinancialObservations, WriteCompanyFinancialObservations
+from trader.download.infra.company_fact_inputs import BindCompanyEvidenceSource
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import (
@@ -415,7 +416,10 @@ class SQLiteCompanyNormalizedIndex:
         if generation is not None:
             return self._publish_scope(scope, codes, cutoff)
         self._check_cancelled()
-        identity = self._normalized.publish(changed, dict((*source_pairs, *sources)), parent, cutoff,
+        bound_sources = dict(source_pairs)
+        for key, supplier in sources:
+            BindCompanyEvidenceSource(bound_sources, key, supplier)
+        identity = self._normalized.publish(changed, bound_sources, parent, cutoff,
             receipts=receipts, field_results=ordered, field_rules_hash=field_rules_hash, document_links=links).identity
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
             if ReadCompanyPublicationIdentity(connection) != identity:

@@ -31,6 +31,12 @@ def test_inline_citation_cannot_become_own_number_or_accept_partial_numeric_matc
     assert numbers.own is None and numbers.references == ("2025-009",)
 
 
+@pytest.mark.parametrize("label", ("证券代码（A/H）", "证券代码(A股/H股)", "证券代码（A股）", "股票代码"))
+def test_explicit_issuer_header_allows_share_class_labels_but_never_later_cited_codes(label):
+    numbers = ExtractCompanyAnnouncementNumbers(label + "：000063/00763\n公告编号：2026-101\n本公司说明如下。\n证券代码：600001")
+    assert numbers.issuer_codes == ("000063",)
+
+
 def test_conflicting_header_numbers_and_unbounded_reference_lists_remain_unlinked():
     assert ExtractCompanyAnnouncementNumbers("公告编号：2026-001\n公告编号：2026-002").references == ()
     numbers = ExtractCompanyAnnouncementNumbers(

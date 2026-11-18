@@ -230,16 +230,29 @@ class CompanySyncRuntime:
         material: list[tuple[object, ...]] = []
         with self._session(self.facts.path, check=check, read_only=True) as formal, SqliteTransaction(formal):
             facts = ReadCompanyFactRows(formal, eligible_codes)
+            publication = ReadCompanyPublicationIdentity(formal)
         identities = tuple(sorted({identity for fact in facts for event in fact.risk_events + fact.positive_events for identity in event.evidence_ids}
             | {review.evidence_id for fact in facts for review in fact.review_reasons if review.evidence_id is not None}))
         with self._session(self.material.path, check=check, read_only=True) as raw, SqliteTransaction(raw):
+            for offset in range(0, len(eligible_codes), 128):
+                check()
+                codes = eligible_codes[offset:offset + 128]
+                for row in raw.run("""SELECT c.code,d.source,d.source_key,d.record_hash,d.body_hash,d.body_checked,d.body_retained
+                    FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id
+                    JOIN company_document_requirements required ON required.disclosure_id=d.id
+                    WHERE d.kind='announcement' AND d.source='cninfo' AND d.published_at>=? AND d.published_at<=?
+                    AND c.code IN (""" + ",".join("?" for _ in codes) + ") ORDER BY c.code,d.source,d.source_key",
+                    ((scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat(), *codes)):
+                    material.append((row[0], row[1], row[2], row[3], row[4].hex() if isinstance(row[4], bytes) else None, row[5], row[6]))
             for offset in range(0, len(identities), 512):
                 check()
                 batch = identities[offset:offset + 512]
                 for row in raw.run("SELECT c.code,d.source,d.source_key,d.record_hash,d.body_hash,d.body_checked,d.body_retained FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE d.source_key IN (" + ",".join("?" for _ in batch) + ") ORDER BY c.code,d.source,d.source_key", batch):
                     if row[0] in eligible_codes:
                         material.append((row[0], row[1], row[2], row[3], row[4].hex() if isinstance(row[4], bytes) else None, row[5], row[6]))
-        return CanonicalDigest((self.inputs.watermark(scope.identity), tuple(material)))
+        return CanonicalDigest((self.inputs.watermark(scope.identity),
+            tuple(sorted(set(material), key=lambda row: (str(row[0]), str(row[1]), str(row[2])))),
+            publication.content_hash.hex() if publication is not None else None))
 
     @contextmanager
     def _session(self, path: Path, *, check: Callable[[], None], read_only: bool) -> Iterator[SqliteConnection]:
@@ -289,10 +302,12 @@ class CompanySyncRuntime:
                 prepared.append(PrepareCompanyIssuerInputs(raw, formal, fact, cutoff=scope.cutoff,
                     extraction_hash=self.facts.extraction_hash, event_policy=self._event_policy,
                     read_document=self._read_document, check=check, revalidate=revalidate or needs_recovery_reproof, correct_measurements=fact.code in eligible_codes,
-                    published_links=ReadCompanyDocumentLinks(formal, (fact.code,)), recovered=recovered))
+                    include_new_announcements=True, published_links=ReadCompanyDocumentLinks(formal, (fact.code,)), recovered=recovered))
         changed = self.normalized.publish_prepared(all_codes, tuple(item.facts for item in prepared),
             tuple(field for item in prepared for field in item.fields), tuple(receipt for item in prepared for receipt in item.receipts),
-            tuple(link for item in prepared for link in item.links), scope.cutoff, field_rules_hash=rules_hash)
+            tuple(link for item in prepared for link in item.links), scope.cutoff, field_rules_hash=rules_hash,
+            sources=tuple(sorted({(receipt.source_key, receipt.source) for item in prepared for receipt in item.receipts}
+                | {(link.link.evidence_id, link.source) for item in prepared for link in item.links})))
         self.inputs.acknowledge_recovered(scope.identity, tuple(item for item in recovered if item.code in all_codes))
         check()
         with (self._session(self.material.path, check=check, read_only=False) as raw,
@@ -300,7 +315,8 @@ class CompanySyncRuntime:
             SqliteTransaction(formal)):
             RegisterCompanyMaterialDependencies(raw, formal, tuple(item.facts for item in prepared), self.facts.extraction_hash)
         pending = sum(field.applicable and field.state != "verified" for item in prepared for field in item.fields)
-        return CompanySyncStepResult(True, False, len(prepared), changed_codes=changed, pending_count=pending,
+        remaining = sum(item.pending_retained for item in prepared)
+        return CompanySyncStepResult(not remaining, bool(remaining), len(prepared), changed_codes=changed, pending_count=pending + remaining,
             gaps=("field_proof_incomplete",) if pending else ())
 
 
