@@ -36,6 +36,8 @@
 
 财务单页可显式加`--financial-source-records`观察同一供应商行的八指标、证券／报告期、NOTICE_DATE、UPDATE_DATE及CURRENCY；须配`--structured-page financial`，不能与代码筛选／报告期键试验或修订过滤试验混用。仅该模式请求15个精确列、最多500行／1MiB，复用现八值decoder；缺元数据拒绝，不回退旧11列模式。NOTICE／UPDATE为供应商时点，observed_at为本地观察时点，业务复合键和内容摘要不冒充供应商记录号／真实更正身份；source_null不签未披露。原始行数与A股观察行数分列，公开最多5条安全身份／缺项摘要，不输出原行；默认生产fetch、正式库和来源准入均不变。
 
+完整分页改用同一sources动作的`--structured-window financial|pledge|unlock --structured-start YYYY-MM-DD --structured-end YYYY-MM-DD`：财务可选允许的一年披露窗，质押须一个已知快照日，解禁须在未来180日内。最多256页，每页500条，逐页检查总数、重复键与截止；`pagination_verified`只签本次来源查询对账，不签市场覆盖、比率分母或正式采用。免费财务对比用互斥的`--financial-alternatives --codes 600600 000063`，每股新浪／同花顺各取最近两份累计报告，最多8股；保留各源原值与差异，不拼表、写库或使用Tushare。来源解码成功与发行人正确性分别报告；同花顺本协议缺披露时点及币种，继续明确未知。
+
 `download/company/sources --official-financial-baseline <已有公司全库审计JSON> --official-financial-directory <仓库外原件目录>`只读查询该报告中最多50股的三季报来源空项，每股目录最多3页、每页30条，复用正式目录、下载、原件校验及解析封装，不写公司数据库。报告保留精确目录／PDF／正常正文摘要、实际提取方式与策略，以及前四页表格版式的独立摘要和有限引文，供逐列标注；不同范围的文本摘要分列，不混作正式字段证据。季度正常文本现沿版式提取，旧报告中的原生文本摘要仍保留原含义。缺页、失败、歧义或未完成标注保持待核，不将0、破折号及未披露混算，也不以此诊断自动替换财务值。
 
 `company_financial_replay.AuditCompanyFinancialReplay`接收该来源报告、独立复核的逐值标注、已归档原件及全新仓库外目录，经正常季度版式解析／提交／发布链验证最多50股400项；显式注入实际配置、SQLite策略及下载器构造器。原始财务库只读，隔离副本中的供应商NULL输入再次刷新后，逐值核正式数值／非数值状态、原valid、发布身份、新增尝试和发布正文读取；不签生产采用、历史版本可得性或完整风险保全。普通全库审计的`official_fields`、`official_evidence`区分已采纳的官方季度证明与仍为NULL的结构化来源，非数值原因单列，不把官方可用零值再报为缺项。

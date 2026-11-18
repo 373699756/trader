@@ -124,6 +124,42 @@ def test_fixed_source_budget_exhaustion_still_runs_local_fields_and_does_not_ref
     assert not physical and journal.source_calls(result.round_id) == 1
 
 
+def test_each_family_advances_before_financial_fetches_its_next_page(tmp_path):
+    journal, producers, budget, physical, calls, transport = _resources(tmp_path)
+    order = []
+    for producer in producers:
+        original = producer.advance
+
+        def record(scope, *, cancel_requested, deadline, selected=producer, advance=original):
+            order.append(selected.plan.family)
+            return advance(scope, cancel_requested=cancel_requested, deadline=deadline)
+
+        producer.advance = record
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert result.business_complete
+    assert tuple(order[:7]) == tuple(CompanySyncFamily)
+    assert order[7] is CompanySyncFamily.FINANCIAL and len(physical) == 2
+
+
+def test_small_step_allowance_reaches_later_families_without_finishing_financial(tmp_path):
+    journal, producers, budget, physical, calls, transport = _resources(tmp_path)
+    budget = CompanySyncBudget(7, 8, 10, 10)
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert not result.processing_complete and result.budget_exhausted
+    assert len(physical) == 1 and tuple(item.family for item in result.families) == tuple(CompanySyncFamily)
+    assert result.families[-1].result.processed_scope_complete and "news" in calls
+
+
+def test_finishing_exactly_at_step_limit_does_not_invent_budget_exhaustion(tmp_path):
+    journal, producers, budget, physical, calls, transport = _resources(tmp_path)
+    budget = CompanySyncBudget(9, 8, 10, 10)
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert result.business_complete and not result.budget_exhausted and len(physical) == 2
+
+
 def test_transport_rejection_and_unobserved_slot_cannot_be_reported_as_confirmed_http(tmp_path):
     journal, producers, budget, physical, calls, transport = _resources(tmp_path, maximum=1)
     plans = tuple(item.plan for item in producers)

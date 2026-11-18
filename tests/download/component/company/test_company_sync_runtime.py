@@ -7,7 +7,7 @@ import pytest
 from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, DisclosurePage, StructuredCompanyPage
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosureQuery, StructuredCompanyPage
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
 from trader.download.domain.company_sync import CompanySyncBudget
 from trader.download.infra.company_document_files import CompanyDocumentFiles
@@ -19,6 +19,7 @@ from trader.download.infra.company_normalized_index import SQLiteCompanyNormaliz
 from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_runtime import CompanySyncRuntime
+from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
 from trader.infra.http_contracts import HttpResponse
 from trader.infra.http_transport import RequestsHttpTransport
 from trader.infra.sqlite_connection import SqliteSession
@@ -79,6 +80,83 @@ def _runtime(tmp_path):
     return runtime, reader, transport, physical
 
 
+def test_broad_directory_duplicates_refine_durable_dates_without_accepting_duplicate_rows(tmp_path):
+    runtime, reader, transport, _physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    before = reader.read(_SCOPE.codes)
+
+    class Source:
+        def fetch(self, partition, *, order=""):
+            if partition.start == partition.end == _SCOPE.cutoff.date():
+                return DisclosurePage((), 0, False)
+            item = Disclosure("cninfo", "duplicate", _SCOPE.codes, "普通公告", _SCOPE.cutoff - timedelta(days=1), "", "a" * 64)
+            return DisclosurePage((item, item), 2, False)
+
+    producer = CompanyAnnouncementProducer(runtime.inputs, runtime.material, Source(), _SCOPE,
+        sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash)
+    for _ in range(3):
+        result = producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=10)
+    assert result.can_continue and result.accepted_inputs == 0 and result.source_calls == 1
+    whole = producer._partitions[1]
+    children = runtime.material.pending_partitions(whole)
+    assert len(children) == 2 and sum((item.end - item.start).days + 1 for item in children) == 365
+    assert all(item.page == 1 and item.start <= item.end for item in children)
+    assert all((item.start, item.end) != (whole.start, whole.end) for item in children)
+    assert reader.read(_SCOPE.codes) == before
+    with SqliteSession(runtime.material.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM disclosures").require_one()[0] == 0
+    transport.close()
+
+
+def test_single_day_directory_uses_existing_query_splits_and_checks_parent_union(tmp_path):
+    runtime, reader, transport, _physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+
+    class Source:
+        parent_calls = 0
+
+        def fetch(self, partition, *, order=""):
+            item = Disclosure("cninfo", "first", _SCOPE.codes, "普通公告", _SCOPE.cutoff, "", "a" * 64)
+            if partition.query is None:
+                self.parent_calls += 1
+                return DisclosurePage((item, item), 2, False) if self.parent_calls == 1 else DisclosurePage((item,), 1, False)
+            return DisclosurePage((item,), 1, False) if partition.query.plate == "shmb" else DisclosurePage((), 0, False)
+
+        def split_queries(self, partition):
+            return (DisclosureQuery("shmb"), DisclosureQuery("shkcp"))
+
+    source = Source()
+    producer = CompanyAnnouncementProducer(runtime.inputs, runtime.material, source, _SCOPE,
+        sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash)
+    for _ in range(5):
+        result = producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=10)
+    today = producer._partitions[0]
+    assert runtime.material.pending_partitions(today) == () and source.parent_calls == 2
+    assert result.accepted_inputs == 0 and result.source_calls == 1
+    assert reader.read(_SCOPE.codes)[0].risk_events == ()
+    transport.close()
+
+
+def test_unsplittable_single_day_duplicates_remain_rejected(tmp_path):
+    runtime, _reader, transport, _physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+
+    class Source:
+        def fetch(self, partition, *, order=""):
+            item = Disclosure("cninfo", "duplicate", _SCOPE.codes, "普通公告", _SCOPE.cutoff, "", "a" * 64)
+            return DisclosurePage((item, item), 2, False)
+
+        def split_queries(self, partition):
+            raise CompanyInputValidationFailure("cninfo_query_unsplittable")
+
+    producer = CompanyAnnouncementProducer(runtime.inputs, runtime.material, Source(), _SCOPE,
+        sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash)
+    producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=10)
+    with pytest.raises(CompanyInputValidationFailure, match="cninfo_query_unsplittable"):
+        producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=10)
+    transport.close()
+
+
 def test_real_empty_target_initializes_unavailable_and_runs_finite_families_with_explicit_source_gaps(tmp_path):
     runtime, reader, transport, physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
@@ -92,6 +170,37 @@ def test_real_empty_target_initializes_unavailable_and_runs_finite_families_with
     assert result.publication_hash == reader.publication_identity()
     assert reader.read(_SCOPE.codes) == (initial,)
     assert runtime.journal.can_refresh(result.round_id)
+
+
+def test_new_same_day_cutoff_cannot_refill_an_exhausted_source_budget(tmp_path):
+    runtime, reader, transport, physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    with transport:
+        first = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 1, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0)
+        before = tuple(physical)
+        publication = reader.publication_identity()
+        second = runtime.run(_SCOPE.codes, _SCOPE.cutoff + timedelta(hours=1), CompanySyncBudget(100, 200, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0)
+        with pytest.raises(ValueError, match="company_sync_refresh_cutoff_before_active"):
+            runtime.run(_SCOPE.codes, _SCOPE.cutoff - timedelta(minutes=1), CompanySyncBudget(100, 200, 20, 10),
+                cancel_requested=lambda: False, monotonic=lambda: 0)
+    assert first.budget_exhausted and first.processing_complete
+    assert second.round_id == first.round_id and second.scope == first.scope
+    assert tuple(physical) == before and runtime.journal.source_calls(first.round_id) == 1
+    assert runtime.journal.active().max_source_calls == 1 and reader.publication_identity() == publication
+
+
+def test_next_day_refresh_keeps_the_old_exhausted_ledger_and_starts_a_dated_round(tmp_path):
+    runtime, _reader, transport, physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    with transport:
+        first = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 1, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0)
+        second = runtime.run(_SCOPE.codes, _SCOPE.cutoff + timedelta(days=1), CompanySyncBudget(100, 1, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0)
+    assert first.round_id != second.round_id and second.scope.cutoff.date() > first.scope.cutoff.date()
+    assert len(physical) == 2 and runtime.journal.source_calls(first.round_id) == runtime.journal.source_calls(second.round_id) == 1
 
 
 def test_news_only_requests_selected_published_codes_and_resume_keeps_original_selection(tmp_path):

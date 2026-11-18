@@ -11,6 +11,8 @@ from scripts.core.catalog import WorkerArguments
 from scripts.core.contracts import DiagnosticCommand
 from scripts.download.company.options import CompanyOptions
 from scripts.download.company.company_structured_field_audit import BuildCompanyStructuredPageQuery, ValidateCompanyStructuredFinancialKeys
+from scripts.download.company.company_structured_window_audit import BuildCompanyStructuredWindowQuery
+from scripts.download.company.company_financial_alternatives import ValidateCompanyFinancialAlternativeCodes
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from scripts.core.paths import PROJECT_ROOT
 
@@ -77,6 +79,15 @@ def BuildCommands(
             common_timeout,
         ),)
     elif options.action_identity == "research-source-compare":
+        if options.financial_alternatives:
+            ValidateCompanyFinancialAlternativeCodes(options.codes)
+        if options.structured_window is not None:
+            if options.structured_page is not None or options.codes or options.financial_source_records or options.structured_report_date is not None:
+                raise ValueError("--structured-window cannot select stock keys or another source mode")
+            BuildCompanyStructuredWindowQuery(
+                options.structured_window, options.structured_start, options.structured_end,
+                observed_at=datetime.now(ZoneInfo("Asia/Shanghai")),
+            )
         if options.financial_source_records and (
             options.structured_page != "financial" or options.codes or options.structured_report_date is not None
         ):
@@ -111,6 +122,11 @@ def BuildCommands(
             + (("--field-source-schema",) if options.field_source_schema else ())
             + (("--field-source-identities",) if options.field_source_identities else ())
             + (("--financial-source-records",) if options.financial_source_records else ())
+            + (("--financial-alternatives", "--codes", *options.codes) if options.financial_alternatives else ())
+            + (("--structured-window", options.structured_window,
+                "--structured-start", options.structured_start.isoformat(),
+                "--structured-end", options.structured_end.isoformat())
+               if options.structured_window is not None and options.structured_start is not None and options.structured_end is not None else ())
             + (("--structured-page", options.structured_page,
                 "--structured-start", options.structured_start.isoformat(),
                 "--structured-end", options.structured_end.isoformat())

@@ -12,6 +12,8 @@ from scripts.core.contracts import DiagnosticResult
 from scripts.core.projection_values import ProjectMapping, ProjectSummary, SafeNonnegativeInt, SafeStringList, SafeText
 from scripts.download.company.projections import ProjectCompanyResume, ProjectCompanyRiskComparisonDetails
 from scripts.download.company.company_official_financial_audit import ProjectCompanyOfficialFinancialAudit
+from scripts.download.company.company_structured_window_audit import ProjectCompanyStructuredWindow
+from scripts.download.company.company_financial_alternatives import ProjectCompanyFinancialAlternatives
 from trader.download.domain.company_evidence import EvidenceMarket
 
 _FINANCIAL_PAGE_COLUMNS = (
@@ -38,6 +40,30 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
     source = result.payload
     if source is None or result.error_code is not None:
         return result
+    if source.get("probe") == "financial_alternatives":
+        valid = source.get("status") in ("passed", "degraded", "timed_out") and source.get("read_only") is True and (
+            all(source.get(key) is False for key in (
+                "production_adopted", "issuer_revision_verified", "population_coverage_verified", "field_correctness_verified",
+            ))
+        )
+        return replace(result, error_code="invalid_company_financial_alternatives" if not valid else None)
+    if source.get("probe") == "structured_window":
+        valid = source.get("status") in ("passed", "failed", "timed_out", "skipped") and (
+            source.get("read_only") is True and source.get("source") == "eastmoney"
+            and source.get("component") in ("financial", "pledge", "unlock")
+            and all(source.get(key) is False for key in (
+                "production_adopted", "issuer_revision_verified", "population_coverage_verified",
+            ))
+            and source.get("pagination_verified") is (source.get("status") == "passed")
+        )
+        window_counts = tuple(source.get(key) for key in ("fetch_invocations", "received_pages", "raw_rows", "decoded_rows", "duplicate_keys"))
+        valid = valid and all(type(value) is int and 0 <= value <= 128000 for value in window_counts)
+        if valid:
+            window_calls, window_pages, window_raw, window_decoded, window_duplicates = (int(value) for value in window_counts if isinstance(value, int))
+            valid = 0 <= window_pages <= window_calls <= 256 and window_decoded <= window_raw and source.get("page_limit") == 256 and source.get("page_size") == 500
+            if source.get("status") == "passed":
+                valid = valid and 1 <= window_pages and source.get("reported_pages") == window_pages and source.get("reported_total") == window_raw and window_duplicates == 0
+        return replace(result, error_code="invalid_company_structured_window" if not valid else None)
     if source.get("probe") == "structured_page":
         observation = source.get("observation_status", source.get("status"))
         calls, attempts = source.get("fetch_invocations"), source.get("physical_http_attempts")
@@ -1070,6 +1096,12 @@ _DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[st
 
 
 def ProjectDetails(result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    if source.get("probe") == "financial_alternatives":
+        payload["summary"] = ProjectCompanyFinancialAlternatives(source)
+        return
+    if source.get("probe") == "structured_window":
+        payload["summary"] = ProjectCompanyStructuredWindow(dict(source))
+        return
     if source.get("probe") == "structured_page":
         _structured_page_details(source, payload)
         return

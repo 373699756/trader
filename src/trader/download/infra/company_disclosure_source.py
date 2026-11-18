@@ -176,6 +176,7 @@ class CninfoMarketDisclosureSource:
         return tuple(item for item in rows if item.codes == (request.code,)
                      and item.published_at <= observed_at and IsCompanyFinancialReportTitle(item.title, request.report_date))
 
+    @CompanySourceOperation
     def split_queries(self, partition: DisclosurePartition) -> tuple[DisclosureQuery, ...]:
         query = partition.query
         if query is None:

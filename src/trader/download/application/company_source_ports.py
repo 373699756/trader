@@ -6,7 +6,7 @@ from typing import Literal,Protocol
 
 from trader.download.domain.company_annual_income import CompanyAnnualIncome,CompanyAnnualIncomeRequest
 from trader.download.domain.company_evidence import (
-    CompanyDocumentExtraction,Disclosure,DisclosurePage,DisclosurePartition,DocumentRoute,
+    CompanyDocumentExtraction,Disclosure,DisclosurePage,DisclosurePartition,DisclosureQuery,DocumentRoute,
     StructuredCompanyPage,StructuredCompanyQuery,
 )
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
@@ -31,6 +31,7 @@ class CompanyNewsSource(Protocol):
 
 class CompanyOfficialDocumentSource(Protocol):
     def fetch(self,partition:DisclosurePartition,*,order:Literal["","asc","desc"]="")->DisclosurePage: ...
+    def split_queries(self,partition:DisclosurePartition)->tuple[DisclosureQuery,...]: ...
     def document_ready(self,item:Disclosure)->bool: ...
     def document_payload_hash(self,item:Disclosure)->bytes|None: ...
     def download_document(self,item:Disclosure,*,attempt_limit:int=3)->None: ...

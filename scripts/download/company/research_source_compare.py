@@ -26,6 +26,8 @@ from scripts.download.company.company_structured_field_audit import AuditCompany
 from scripts.download.company.company_structured_field_audit import AuditCompanyStructuredPage, BuildCompanyStructuredPageQuery
 from scripts.download.company.company_structured_field_audit import ValidateCompanyStructuredFinancialKeys
 from scripts.download.company.company_structured_field_audit import AuditCompanyFinancialRevision, CompanyFinancialRevisionRequest
+from scripts.download.company.company_structured_window_audit import AuditCompanyStructuredWindow, BuildCompanyStructuredWindowQuery
+from scripts.download.company.company_financial_alternatives import AuditCompanyFinancialAlternatives, ValidateCompanyFinancialAlternativeCodes
 from scripts.download.company.company_official_financial_audit import AuditCompanyOfficialFinancialSources
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from trader.download.infra.company_raw_files import CompanyRawFiles
@@ -129,11 +131,11 @@ def Collect(args: argparse.Namespace, *, project_root: Path) -> dict[str, object
             )
             try:
                 if component == "financial":
-                    begin, end = now.date() - timedelta(days=550 if label == "financial_baseline" else 7), now.date()
+                    begin, end = now.date() - timedelta(days=365 if label == "financial_baseline" else 7), now.date()
                 elif component == "pledge":
                     begin = end = structured.pledge_day(now)
                 else:
-                    begin, end = now.date(), now.date() + timedelta(days=90)
+                    begin, end = now.date(), now.date() + timedelta(days=180)
                 received = usable = duplicate = pages = 0
                 expected: int | None = None
                 seen_structured: set[tuple[str, str]] = set()
@@ -226,6 +228,8 @@ def Main() -> int:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--field-sources-only", action="store_true", help="Read one bounded page of structured company field alternatives; no database writes.")
     modes.add_argument("--structured-page", choices=("financial", "pledge", "unlock"), help="Decode one production structured page without discovery or pagination; requires explicit dates.")
+    modes.add_argument("--structured-window", choices=("financial", "pledge", "unlock"), help="Reconcile every page in an explicit bounded window; no database writes.")
+    modes.add_argument("--financial-alternatives", action="store_true", help="Compare two cumulative reports per source for 1..8 explicit codes; no production adoption.")
     parser.add_argument("--structured-start", type=date.fromisoformat)
     parser.add_argument("--structured-end", type=date.fromisoformat)
     parser.add_argument("--structured-report-date", type=date.fromisoformat)
@@ -254,7 +258,16 @@ def Main() -> int:
         args.structured_page != "financial" or args.codes or args.structured_report_date is not None
     ):
         parser.error("--financial-source-records requires --structured-page financial without key filters")
-    if args.structured_page is not None:
+    if args.structured_window is not None:
+        if args.codes or args.structured_report_date is not None:
+            parser.error("--structured-window cannot select stock keys")
+        try:
+            structured_query = BuildCompanyStructuredWindowQuery(
+                args.structured_window, args.structured_start, args.structured_end, observed_at=datetime.now(_SHANGHAI),
+            )
+        except ValueError:
+            parser.error("--structured-window requires bounded explicit dates")
+    elif args.structured_page is not None:
         try:
             structured_query = BuildCompanyStructuredPageQuery(
                 args.structured_page, args.structured_start, args.structured_end, observed_at=datetime.now(_SHANGHAI),
@@ -288,19 +301,37 @@ def Main() -> int:
             revision_request = CompanyFinancialRevisionRequest(args.codes[0], args.financial_revision_period)
         except ValueError:
             parser.error("financial revision requires an A-share code and a quarter-end period")
-    if args.annual_income_period is None and args.financial_revision_period is None and not args.st_name_history and structured_query is None and args.codes:
+    if args.financial_alternatives:
+        try:
+            ValidateCompanyFinancialAlternativeCodes(tuple(args.codes))
+        except ValueError:
+            parser.error("--financial-alternatives requires 1..8 distinct A-share codes")
+    if args.annual_income_period is None and args.financial_revision_period is None and not args.st_name_history and not args.financial_alternatives and structured_query is None and args.codes:
         parser.error("--codes selects securities only with --annual-income-period or --financial-revision-period")
     runtime = LoadRuntimeSettings(args.config)
     runtime_hash = hashlib.sha256(Path(args.config).expanduser().resolve().read_bytes()).hexdigest()
-    if structured_query is not None:
+    if args.financial_alternatives:
         attempts: list[HttpAttempt] = []
         with OpenExternalHttp(observe=attempts.append) as session:
-            report = AuditCompanyStructuredPage(
-                session, structured_query, observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
+            report = AuditCompanyFinancialAlternatives(
+                session, tuple(args.codes), observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
                 deadline=time.monotonic() + args.task_seconds, http_attempts=attempts,
-                financial_codes=tuple(args.codes), financial_report_date=args.structured_report_date,
-                financial_source_records=args.financial_source_records,
             )
+    elif structured_query is not None:
+        attempts = []
+        with OpenExternalHttp(observe=attempts.append) as session:
+            if args.structured_window is not None:
+                report = AuditCompanyStructuredWindow(
+                    session, structured_query, observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
+                    deadline=time.monotonic() + args.task_seconds, http_attempts=attempts,
+                )
+            else:
+                report = AuditCompanyStructuredPage(
+                    session, structured_query, observed_at=datetime.now(_SHANGHAI), timeout_seconds=args.timeout_seconds,
+                    deadline=time.monotonic() + args.task_seconds, http_attempts=attempts,
+                    financial_codes=tuple(args.codes), financial_report_date=args.structured_report_date,
+                    financial_source_records=args.financial_source_records,
+                )
     elif args.official_financial_baseline is not None:
         configuration = LoadCompanySyncConfiguration(runtime.project_root)
         RequireIsolatedReplay(args.official_financial_directory, (runtime.project_root, runtime.data_paths.root, runtime.runtime_dir))
@@ -365,4 +396,4 @@ def Main() -> int:
         report = Collect(args, project_root=runtime.project_root)
     report["runtime_configuration_sha256"] = runtime_hash
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 1 if (revision_request is not None or args.st_name_history or structured_query is not None) and report.get("status") in {"failed", "cancelled", "timed_out"} else 0
+    return 1 if (revision_request is not None or args.st_name_history or args.financial_alternatives or structured_query is not None) and report.get("status") in {"failed", "cancelled", "timed_out"} else 0

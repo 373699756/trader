@@ -144,11 +144,15 @@ class CompanySyncRuntime:
         if cancel_requested() or monotonic() >= budget.deadline:
             return CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancel_requested(), not cancel_requested(), "")
         active = self.journal.active()
+        exhausted_same_day = active is not None and cutoff.astimezone(active.scope.cutoff.tzinfo).date() == active.scope.cutoff.date() and (
+            self.journal.source_calls(active.round_id) >= active.max_source_calls
+        )
         if active is not None and new_refresh and (codes != active.scope.codes or cutoff != active.scope.cutoff) and self.journal.can_refresh(active.round_id):
             if cutoff < active.scope.cutoff:
                 raise ValueError("company_sync_refresh_cutoff_before_active")
-            self.journal.finish_refresh(active.round_id)
-            active = None
+            if not exhausted_same_day:
+                self.journal.finish_refresh(active.round_id)
+                active = None
         if active is not None:
             scope = active.scope
             budget = replace(budget, max_source_calls=active.max_source_calls)

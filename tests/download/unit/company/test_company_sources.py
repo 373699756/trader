@@ -57,6 +57,21 @@ def test_source_boundary_does_not_translate_local_file_failure():
     assert caught.value is error
 
 
+def test_cninfo_issuer_split_translates_transport_cancel_and_preserves_local_file_failure():
+    from trader.download.domain.company_sync import CompanySourceCancelled
+    from trader.infra.http_contracts import HttpCancelled
+
+    for error, expected in ((HttpCancelled("http_cancelled"), CompanySourceCancelled), (FileNotFoundError("local file"), FileNotFoundError)):
+        class FailedSession(Session):
+            def get(self, url, *, raised=error, **kwargs):
+                raise raised
+
+        source = CninfoMarketDisclosureSource(FailedSession({}), monotonic=lambda: 0, sleeper=lambda value: None)
+        with pytest.raises(expected) as caught:
+            source.split_queries(DisclosurePartition("sse", NOW.date(), NOW.date(), query=DisclosureQuery("shmb")))
+        assert caught.value is error or caught.value.__cause__ is error
+
+
 def test_cninfo_uses_market_dates_default_sort_and_actual_more_flag():
     session = Session(
         {

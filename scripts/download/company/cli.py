@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 from scripts.core.paths import PROJECT_ROOT, ExternalPath
 from scripts.download.company.options import CompanyOptions
 from scripts.download.company.company_structured_field_audit import BuildCompanyStructuredPageQuery, CompanyFinancialRevisionRequest, ValidateCompanyStructuredFinancialKeys
+from scripts.download.company.company_structured_window_audit import BuildCompanyStructuredWindowQuery
+from scripts.download.company.company_financial_alternatives import ValidateCompanyFinancialAlternativeCodes
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from scripts.download.market.market_factor_budget import MARKET_SOURCE_LOOP_LIMIT_SECONDS, MARKET_TASK_LIMIT_SECONDS
 
@@ -70,6 +72,8 @@ def BuildParser(
         field_source_schema=False,
         field_source_identities=False,
         structured_page=None,
+        structured_window=None,
+        financial_alternatives=False,
         structured_start=None,
         structured_end=None,
         structured_report_date=None,
@@ -121,8 +125,10 @@ def BuildParser(
         modes = parser.add_mutually_exclusive_group()
         modes.add_argument('--field-sources-only', action='store_true', help='bounded read-only samples of structured company field alternatives')
         modes.add_argument('--structured-page', choices=('financial', 'pledge', 'unlock'), help='decode one production structured page without discovery or pagination; requires explicit dates')
-        parser.add_argument('--structured-start', type=date.fromisoformat, help='explicit sample start; financial at most seven days, pledge one known day, unlock within the next 180 days')
-        parser.add_argument('--structured-end', type=date.fromisoformat, help='explicit sample end; requires --structured-page')
+        modes.add_argument('--structured-window', choices=('financial', 'pledge', 'unlock'), help='reconcile every page in an explicit bounded window with production decoders; no database writes')
+        modes.add_argument('--financial-alternatives', action='store_true', help='compare two cumulative reports from Sina and THS for 1..8 explicit codes; no production adoption')
+        parser.add_argument('--structured-start', type=date.fromisoformat, help='explicit start; financial page at most seven days, full window within one year, pledge one known day, unlock within the next 180 days')
+        parser.add_argument('--structured-end', type=date.fromisoformat, help='explicit end; requires --structured-page or --structured-window')
         parser.add_argument('--structured-report-date', type=date.fromisoformat, help='experimental two-request financial key filter check for 2..8 explicit --codes and one report period; requires --structured-page financial')
         parser.add_argument('--financial-source-records', action='store_true', help='explicit same-row financial metadata observation; requires --structured-page financial without --codes')
         modes.add_argument('--annual-income-period', type=date.fromisoformat, help='one December 31 period for exactly one A-share code')
@@ -193,10 +199,12 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         field_source_schema=args.field_source_schema,
         field_source_identities=args.field_source_identities,
         structured_page=args.structured_page,
+        structured_window=args.structured_window,
         structured_start=args.structured_start,
         structured_end=args.structured_end,
         structured_report_date=args.structured_report_date,
         financial_source_records=args.financial_source_records,
+        financial_alternatives=args.financial_alternatives,
         annual_income_period=args.annual_income_period,
         financial_revision_period=args.financial_revision_period,
         official_financial_baseline=args.official_financial_baseline.expanduser().resolve() if args.official_financial_baseline is not None else None,
@@ -275,7 +283,14 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         or options.codes or options.structured_report_date is not None
     ):
         raise ValueError("--financial-source-records requires --structured-page financial without key filters")
-    if options.structured_page is not None:
+    if options.structured_window is not None:
+        if options.structured_page is not None or options.codes or options.structured_report_date is not None:
+            raise ValueError("--structured-window cannot select stock keys or another source mode")
+        BuildCompanyStructuredWindowQuery(
+            options.structured_window, options.structured_start, options.structured_end,
+            observed_at=datetime.now(ZoneInfo("Asia/Shanghai")),
+        )
+    elif options.structured_page is not None:
         structured_query = BuildCompanyStructuredPageQuery(
             options.structured_page, options.structured_start, options.structured_end,
             observed_at=datetime.now(ZoneInfo("Asia/Shanghai")),
@@ -283,6 +298,10 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         ValidateCompanyStructuredFinancialKeys(structured_query, options.codes, options.structured_report_date)
     elif options.structured_start is not None or options.structured_end is not None or options.structured_report_date is not None:
         raise ValueError("--structured-start and --structured-end require --structured-page")
+    if options.financial_alternatives:
+        if options.action_identity != "research-source-compare":
+            raise ValueError("--financial-alternatives requires the sources action")
+        ValidateCompanyFinancialAlternativeCodes(options.codes)
     if options.st_name_history:
         if (
             options.action_identity != 'research-source-compare'
@@ -321,6 +340,6 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
             CompanyAnnualIncomeRequest(options.codes[0], (options.annual_income_period,))
         except ValueError as exc:
             raise ValueError("annual income requires an A-share code and a December 31 period") from exc
-    elif options.action_identity == "research-source-compare" and options.codes and not options.st_name_history and options.structured_page is None:
+    elif options.action_identity == "research-source-compare" and options.codes and not options.st_name_history and not options.financial_alternatives and options.structured_page is None:
         raise ValueError("--codes selects securities only with --annual-income-period or --financial-revision-period; other modes audit market-wide sources")
     return options

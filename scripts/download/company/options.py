@@ -46,6 +46,8 @@ class CompanyOptions:
     field_source_schema: bool = False
     field_source_identities: bool = False
     structured_page: Literal["financial", "pledge", "unlock"] | None = None
+    structured_window: Literal["financial", "pledge", "unlock"] | None = None
+    financial_alternatives: bool = False
     structured_start: date | None = None
     structured_end: date | None = None
     structured_report_date: date | None = None

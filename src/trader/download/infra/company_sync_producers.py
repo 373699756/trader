@@ -196,8 +196,29 @@ class CompanyAnnouncementProducer:
         return self._inputs.task_done(scope.identity, "announcements", "initialize")
 
     def _partition(self, scope: CompanySyncRoundScope) -> DisclosurePartition | None:
-        return next((pending for partition in self._partitions for pending in self._material.pending_partitions(partition)
-            if not self._inputs.task_done(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(pending))), None)
+        for partition in self._partitions:
+            for parent in self._material.pending_partitions(partition):
+                queries = self._material.disclosure_queries(parent)
+                # An empty child queue still needs a fresh parent/union check.
+                candidates: tuple[DisclosurePartition, ...]
+                if queries is None:
+                    candidates = (parent,)
+                elif queries:
+                    candidates = queries
+                else:
+                    candidates = (replace(parent, page=1),)
+                for pending in candidates:
+                    if not self._inputs.task_done(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(pending)):
+                        return pending
+        return None
+
+    def _refine_partition(self, partition: DisclosurePartition, scope: CompanySyncRoundScope) -> None:
+        if partition.query is None and partition.start < partition.end:
+            self._material.split_partition(partition, scope.cutoff)
+        else:
+            # Reuse the source's board/issuer split and the material owner's
+            # exact union reconciliation; never deduplicate into coverage.
+            self._material.split_query(partition, self._source.split_queries(partition))
 
     def _document(self, scope: CompanySyncRoundScope) -> _RequiredDocument | None:
         if self._configuration is None or self._policies is None or self._wall_clock is None:
@@ -263,11 +284,24 @@ class CompanyAnnouncementProducer:
                 self._inputs.complete_task(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(partition), 0, CanonicalDigest(("ineligible", partition)))
                 return CompanySyncStepResult(False, True, gaps=("population_members_became_ineligible",))
             page = self._source.fetch(partition, order="desc")
-            if page.total > 100 * partition.page_size and partition.start < partition.end:
-                self._material.split_partition(partition, scope.cutoff)
+            if partition.query is None and self._material.disclosure_queries(partition) == ():
+                self._material.commit_query_coverage(partition, page, scope.cutoff)
+                return CompanySyncStepResult(False, True, source_calls=1)
+            if page.total > 100 * partition.page_size:
+                self._refine_partition(partition, scope)
                 return CompanySyncStepResult(False, True, source_calls=1)
             else:
-                self._material.commit_page(partition, page, scope.cutoff)
+                try:
+                    self._material.commit_page(partition, page, scope.cutoff)
+                except CompanyInputValidationFailure as exc:
+                    if str(exc) not in {
+                        "cninfo_partition_changed", "cninfo_page_truncated", "cninfo_page_count_inconsistent", "cninfo_duplicate_page_links",
+                    }:
+                        raise
+                    # A drifting broad range cannot establish coverage. Refine
+                    # its durable owner instead of repeating the rejected page.
+                    self._refine_partition(partition, scope)
+                    return CompanySyncStepResult(False, True, source_calls=1)
             return CompanySyncStepResult(False, True, len(page.rows), 1)
         document = self._document(scope)
         if document is None:

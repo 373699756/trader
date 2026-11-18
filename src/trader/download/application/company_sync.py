@@ -1,7 +1,7 @@
 """One finite full-company round; every family keeps its own truthful outcome."""
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from trader.download.domain.company_sync import (
@@ -33,6 +33,14 @@ class CompanySyncRoundJournal(Protocol):
     def publication_identity(self)->str: ...
 
 
+@dataclass
+class _FamilyProgress:
+    producer: CompanySyncProducer
+    steps: int = 0
+    result: CompanySyncFamilyResult | None = None
+    deferred: bool = False
+
+
 def RunCompanySyncRound(
     journal:CompanySyncRoundJournal,
     producers:tuple[CompanySyncProducer,...],
@@ -54,64 +62,75 @@ def RunCompanySyncRound(
     steps=0
     stopped=False
     exhausted=False
-    results:list[CompanySyncFamilyResult]=[]
     pending_family=journal.outstanding_family(round_id)
     ordered_producers=tuple(producer for producer in producers if producer.plan.family==pending_family)+tuple(producer for producer in producers if producer.plan.family!=pending_family)
-    for producer in ordered_producers:
-        family=producer.plan.family
-        current=journal.family(round_id,family)
-        refresh=(current is not None and producer.plan.refresh_on_input_change
-            and journal.completed_state(round_id,family)!=producer.state(scope))
-        if current is not None and not current.result.can_continue and not refresh:
-            results.append(current)
-            exhausted=exhausted or "source_budget_exhausted" in current.result.gaps
-            continue
-        for _ in range(budget.steps_per_family):
-            if cancel_requested() or monotonic()>=budget.deadline or steps>=budget.max_steps:
+    progress=tuple(_FamilyProgress(producer) for producer in ordered_producers)
+    while not stopped:
+        advanced=False
+        for item in progress:
+            producer=item.producer
+            family=producer.plan.family
+            if item.deferred or item.steps>=budget.steps_per_family:
+                continue
+            if cancel_requested() or monotonic()>=budget.deadline:
                 exhausted=not cancel_requested()
+                stopped=True
+                break
+            current=journal.family(round_id,family)
+            if current is not None:
+                item.result=current
+            refresh=(current is not None and producer.plan.refresh_on_input_change
+                and journal.completed_state(round_id,family)!=producer.state(scope))
+            if current is not None and not current.result.can_continue and not refresh:
+                exhausted=exhausted or "source_budget_exhausted" in current.result.gaps
+                continue
+            if steps>=budget.max_steps:
+                exhausted=True
                 stopped=True
                 break
             state=producer.state(scope)
             outstanding=journal.outstanding(round_id,family)
-            if outstanding is not None and (outstanding.source_required or outstanding.identity!=state.identity):
+            reconciled=outstanding is not None and (outstanding.source_required or outstanding.identity!=state.identity)
+            if reconciled and outstanding is not None:
                 if outstanding.source_required and outstanding.identity==state.identity and not state.local_input_verified:
                     result=(CompanySyncStepResult(False,True,deferred=True)
                         if journal.outstanding_calls(round_id,family)==0 else
                         CompanySyncStepResult(False,False,gaps=("source_attempt_unconfirmed",),failure="source_attempt_unconfirmed"))
                 else:
                     result=CompanySyncStepResult(False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
-                journal.finish(round_id,family,_with_plan_gaps(result,producer.plan))
-                current=journal.family(round_id,family)
-                steps+=1
-                if not result.can_continue:
-                    break
-                continue
-            if outstanding is None:
-                journal.start(round_id,family,state)
-            if state.source_required and journal.source_calls(round_id)>=budget.max_source_calls:
-                exhausted=True
-                result=CompanySyncStepResult(False,False,gaps=("source_budget_exhausted",))
             else:
-                try:
-                    result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
-                except CompanySyncInterrupted:
-                    exhausted=not cancel_requested()
-                    stopped=True
-                    break
-                exhausted=exhausted or "source_budget_exhausted" in result.gaps
+                if outstanding is None:
+                    journal.start(round_id,family,state)
+                if state.source_required and journal.source_calls(round_id)>=budget.max_source_calls:
+                    exhausted=True
+                    result=CompanySyncStepResult(False,False,gaps=("source_budget_exhausted",))
+                else:
+                    try:
+                        result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
+                    except CompanySyncInterrupted:
+                        exhausted=not cancel_requested()
+                        stopped=True
+                        break
+                    exhausted=exhausted or "source_budget_exhausted" in result.gaps
             steps+=1
+            item.steps+=1
+            advanced=True
             journal.finish(round_id,family,_with_plan_gaps(result,producer.plan))
             current=journal.family(round_id,family)
-            if cancel_requested() or not result.can_continue or result.deferred:
+            if current is not None:
+                item.result=current
+            if result.deferred and not reconciled:
+                item.deferred=True
+            if cancel_requested():
+                stopped=True
                 break
-        if current is not None:
-            results.append(current)
-        if cancel_requested() or stopped:
+        if not advanced:
             break
     # Do not open another database after cancellation to manufacture a final
     # inventory or publication count. The last acknowledged head stays explicit.
     publication="" if cancel_requested() or monotonic()>=budget.deadline else journal.publication_identity()
-    ordered_results=tuple(sorted(results,key=lambda item:tuple(CompanySyncFamily).index(item.family)))
+    ordered_results=tuple(sorted((item.result for item in progress if item.result is not None),
+        key=lambda result:tuple(CompanySyncFamily).index(result.family)))
     return CompanySyncRoundResult(round_id,scope,ordered_results,cancel_requested(),exhausted,publication)
 
 
