@@ -55,6 +55,25 @@ def test_company_round_unconfirmed_counts_are_not_none_or_zero():
     assert "已接纳未核对项" in text and "预算已占用未核对，未知未核对" in text and "None" not in text
 
 
+@pytest.mark.parametrize("report", (ReportCompanySyncFamily, ReportCompanySyncAdvance))
+def test_company_failure_is_visible_with_exact_gaps_before_progress_throttle(report):
+    messages = []
+    clock = [0.0]
+    progress = SyncProgress(messages.append, lambda: clock[0])
+    report(progress, CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, complete=False))
+    clock[0] = 0.1
+    failure = "company_round_page_number_mismatch"
+    report(progress, CompanySyncFamilyFixture(
+        CompanySyncFamily.FINANCIAL, complete=False,
+        failure=failure, gaps=("supplier_input_rejected", "latest_financial_population_unverified"),
+    ))
+    assert len(messages) == 2 and messages[-1].state == "失败"
+    text = " | ".join(field.text for field in messages[-1].fields)
+    assert f"错误 {failure}" in text
+    assert "缺口原因 supplier_input_rejected,latest_financial_population_unverified" in text
+    assert "本族请求预算已占用0" in text
+
+
 def test_company_step_heartbeat_repeats_acknowledged_counts_and_stops_with_owner():
     messages = []
     clock = [0.0]

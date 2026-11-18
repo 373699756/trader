@@ -6,6 +6,10 @@
 
 ## 1. 待完成任务
 
+阶段378／公司同步错误日志可见性：completed（诊断展示及定向验证）。基线380c349e。终端族进度只给缺口数、汇总优先显示预算停止，导致已持久记录的财务校验错误不易追查。族进度及收尾直接显示安全错误码和全部缺口原因，已知失败立即输出、不被一秒节流压掉，族收尾显示失败；请求占用明确为本族。最终汇总并列原预算／取消原因、各族错误及company/company_sync.sqlite3轮次定位。沿用现有JSON和请求账本，不新增文本日志owner、失败表双写、来源重试或数据库结构；d同步实际留痕合同。
+验证：公司进度／普通sync两组83项通过（`timeout 40s .venv/bin/python3 -m pytest -q tests/download/unit/company/test_company_progress.py tests/download/unit/market/test_sync_data.py --junitxml=/tmp/trader-stage378-diagnostics.xml`）。fixture覆盖错误在节流窗内立即可见、具体缺口、预算停止与失败并列、JSON及退出码不变；4个受影响Python文件Ruff E/F/B/UP、完整diff Review及git diff --check通过。初次额外I检查报告8处既有导入排序问题，未运行格式化或扩大整理；本批无公共类型或复杂边界变化，未跑mypy、全量、真实下载及发布验收。
+未完成项／边界：本批实现无剩余；既有财务第57次请求错误仍为company_round_page_identity_mismatch，失败响应未留存，不能还原具体不一致字段或冒签来源故障已修复。仅诊断代码交付，不操作活动资料、请求账本或运行进程，终端修复从下次启动采用；通用预算原因仍涵盖时间／步骤／请求限制，不编造历史停止细项。
+
 阶段377／普通同步恢复旧失败补缺：completed（代码及定向验证）。交付基线e266ec7c，接续原28eb87ad上的同批草稿。根因是旧修复回执永久占用预约资格，且同日已发布／Tencent冷却可使history提前already_current。此前实库只读确认423股日为旧BaoStock超时failed回执（300390 31／600039 362／600809 13／603444 17），本批按用户最终计划覆盖全部失败原因，不限超时／取消。
 实际改动：共用PriceRepairAttempts允许不同补缺批次重约旧failed及中断requested，保留同批去重、resolved保护和晚到旧失败隔离；history／market共用唯一owner，不加重试循环。history在无Tencent新任务时仍检查当前总体／日历内可恢复Bao缺口，独立于Tencent冷却；正常批次继续先持久确认全部Tencent结果再统一补缺，已成功及窗口外资料不派发。旧窗读取和修复持久保存移出供应商可恢复异常块，数据库失败立即停止后续请求，保留未完成预约／持久候选供恢复；供应商失败仍逐股继续。原同源完整候选、合法尾窗、回执与清缺口事务及旧快照保护保留；既有每窗口首次加3次重试、失败后额外等15／30／60秒不变。d同步正常恢复、回执与物理失败合同。
 验证：预约规则11、当前缺口筛选／冷却6、正常history／market跨运行恢复4、持久读写／供应商边界4、重放／窗口保护2、Tencent顺序与候选资格2、Tencent落库失败阻断Bao1，共30项去重通过；XML `/tmp/trader-stage377-*.xml`，两份重放／窗口报告按同ID去重。各pytest命令独立25秒上限，使用小型隔离库及供应商fixture，不真实等待或请求BaoStock。4源码mypy、7个受影响Python文件严格Ruff、独立完整本批diff Review及git diff --check通过；未运行格式脚本或全量／性能／发布门禁。

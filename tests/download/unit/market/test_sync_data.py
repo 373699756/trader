@@ -285,6 +285,7 @@ def test_typed_history_terminal_state_reaches_the_cli_without_downgrading_failur
     (3, (), "company_raw_capacity_exhausted", False, False, "fields:company_raw_capacity_exhausted"),
     (None, (), None, True, False, "task:cancelled"),
     (None, (), None, False, True, "company_round_budget_exhausted"),
+    (None, ("supplier_input_rejected",), "company_round_page_number_mismatch", False, True, "company_round_budget_exhausted"),
 ))
 def test_company_terminal_reason_reaches_projection_and_cli(
     tmp_path, monkeypatch, capsys, pending, gaps, failure, cancelled, paused, reason,
@@ -318,9 +319,13 @@ def test_company_terminal_reason_reaches_projection_and_cli(
     assert terminal.state == ("取消" if cancelled else "等待" if reason else "完成") and terminal.finished
     fields = " | ".join(field.text for field in terminal.fields)
     assert f"原因 {reason or '无'}" in fields
+    if failure is not None:
+        assert f"company·fields 错误 {failure}" in fields
+        assert f"公司失败记录 company/company_sync.sqlite3；轮次 {company.round_id}" in fields
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == status and payload["tasks"][0]["reason"] == reason
     assert payload["tasks"][0]["families"][-1]["pending_count"] == pending
+    assert payload["tasks"][0]["families"][-1]["failure"] == failure
     assert payload["tasks"][0]["business_complete"] is (reason is None)
     assert payload["tasks"][0]["paused"] is (cancelled or paused)
 

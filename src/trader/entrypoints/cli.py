@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.application.sync_data import SyncResult
 from trader.download.domain.company_evidence import CompanyDownloadStore
-from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
+from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressTask
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
@@ -188,6 +188,12 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
     _report_sync_failure(result, progress)
     summary = ProjectSyncResult(result)
     progress(ProgressMessage(tuple(ProgressField(f"{task.task} {'待补齐' if task.status == 'pending' else task.status} 原因 {task.reason or '无'}") for task in result.tasks)
+                             + tuple(ProgressField(f"company·{family.family.value} 错误 {family.result.failure}", ProgressLevel.ERROR)
+                                     for task in result.tasks if task.company is not None
+                                     for family in task.company.families if family.result.failure is not None)
+                             + tuple(ProgressField(f"公司失败记录 company/company_sync.sqlite3；轮次 {task.company.round_id}")
+                                     for task in result.tasks if task.company is not None
+                                     and any(family.result.failure is not None for family in task.company.families))
                              + ((ProgressField(f"前置失败 {result.failure}"),) if result.failure is not None else ()),
                              task=ProgressTask("sync", "result", "结果汇总"),
                              state="取消" if summary["status"] == "cancelled" else "失败" if summary["status"] == "failed"
