@@ -53,6 +53,27 @@ def test_retained_new_original_reaches_normal_formal_reader_without_a_source_bud
             (item.identity, runtime.facts.extraction_hash)).require_one()[0] == "valid"
 
 
+def test_employee_option_reaches_formal_fields_without_awards_or_repeat_reads(tmp_path):
+    runtime, reader, transport, physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    body = "证券代码：600001 公告编号：2026-103\n本公司首次回购公司股份15万股，占公司总股本比例为0.0258%。\n"
+    body += "回购用途\n□减少注册资本\n√用于员工持股计划或股权激励\n□用于转换公司可转债\n回购股份用于员工持股计划，后续另行披露。" + _DETAIL
+    _material(runtime, body, key="employee", title="关于首次回购公司股份的公告")
+    _run(runtime, transport)
+    fact, = reader.read(_SCOPE.codes)
+    event, = fact.positive_events
+    assert event.measurements.purpose.value == "employee_plan"
+    assert event.positive_level == 0 and event.level_milestones == ()
+    fields = reader.read_fields(_SCOPE.codes).results
+    purpose, = (field for field in fields if field.field == "repurchase_purpose")
+    assert purpose.state == "verified" and purpose.value == "employee_plan"
+    assert purpose.evidence[0].quote == "用于员工持股计划，"
+    head = reader.publication_identity()
+    runtime._read_document = lambda digest: pytest.fail("unchanged_purpose_must_not_read_body_again")
+    _run(runtime, transport)
+    assert reader.publication_identity() == head and physical == []
+
+
 @pytest.mark.parametrize("body", (_INVESTIGATION.replace("600001", "600002"), _INVESTIGATION.replace("证券代码：600001\n", ""),
     _INVESTIGATION.replace("证券代码：600001", "证券代码：600001 证券代码：600002")))
 def test_missing_or_other_issuer_header_cannot_publish_risk_or_valid_receipt(tmp_path, body):

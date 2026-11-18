@@ -38,6 +38,51 @@ def test_literal_cumulative_table_keeps_its_original_lines_and_does_not_reward_e
     assert event.positive_level == 0 and not event.level_milestones
 
 
+@pytest.mark.parametrize("marker,prefix", (("√", "用于"), ("☑", ""), ("✓", "用于")))
+def test_employee_incentive_template_needs_a_separate_unambiguous_purpose(marker, prefix):
+    document = _document(_table().replace("√用于员工持股计划或股权激励", marker + prefix + "员工持股计划或股权激励") +
+                         "本次回购股份用于员工持股计划，相关安排另行披露。")
+    field, = (field for field in ExtractCompanyFieldEvidence(document, _AT, _POLICY) if field.field == "repurchase_purpose")
+    assert field.value == "employee_plan" and field.state == "verified"
+    assert field.evidence[0].quote == "用于员工持股计划，"
+    assert field.evidence[0].start_line == field.evidence[0].end_line == 12
+    event = ExtractCompanyLinkCandidate(document, _AT, _POLICY).positive
+    assert event.positive_level == 0 and not event.level_milestones
+
+
+@pytest.mark.parametrize("purpose", ("员工持股计划或股权激励计划", "股权激励或员工持股计划", "股权激励计划或员工持股计划"))
+def test_employee_incentive_disjunction_alone_stays_unverified(purpose):
+    document = _document("本公司首次回购公司股份10,000股，占总股本比例0.1%。回购股份用于" + purpose + "。")
+    assert not any(field.field == "repurchase_purpose" for field in ExtractCompanyFieldEvidence(document, _AT, _POLICY))
+
+
+@pytest.mark.parametrize("purpose", (
+    "□用于员工持股计划或股权激励",
+    "不用于员工持股计划或股权激励。",
+    "如果后续获得批准，回购股份用于员工持股计划或股权激励。",
+    "若满足条件，√用于员工持股计划或股权激励。",
+    "√用于员工持股计划或股权激励，√用于注销。",
+    "√用于员工持股计划或股权激励。另有回购股份用于股权激励。",
+    "√用于员工持股计划或股权激励。回购股份用于维护公司价值及股东权益。",
+    "用于员工持股计划及股权激励。",
+))
+def test_employee_option_never_certifies_unchecked_negated_conditional_or_distinct_mixed_purposes(purpose):
+    document = _document("本公司首次回购公司股份10,000股，占总股本比例0.1%。" + purpose)
+    assert not any(field.field == "repurchase_purpose" for field in ExtractCompanyFieldEvidence(document, _AT, _POLICY))
+
+
+@pytest.mark.parametrize("narrative", (
+    "回购股份不用于员工持股计划。",
+    "若方案通过，回购股份用于员工持股计划。",
+    "回购股份用于员工持股计划。回购股份用于员工持股计划。",
+    "回购股份用于员工持股计划。另一用途为用于股权激励。",
+    "回购股份用于员工持股计划及股权激励。",
+))
+def test_combined_option_cannot_override_uncertain_conflicting_or_duplicate_narratives(narrative):
+    document = _document(_table() + narrative)
+    assert not any(field.field == "repurchase_purpose" for field in ExtractCompanyFieldEvidence(document, _AT, _POLICY))
+
+
 @pytest.mark.parametrize("introduction", (
     "根据法律规定，现将公司首次回购股份的情况披露如下：",
     "根据法律规定，现将本次回购股份情况公告如下：",

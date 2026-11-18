@@ -16,6 +16,7 @@ from trader.download.domain.company_evidence import CompanyDocument
 _CONDITIONAL = r"假如|假设|假定|如果|倘若|若|一旦|只要|仅当|是否|能否"
 _INTRODUCTION = r"(?:^|[，,])现将[^。；;]{0,30}(?:公告|披露)如下[：:]"
 _CURRENT_PURPOSE = re.compile(r"本次回购(?:的)?股份用途(?:为|是)([^，,。；;]{1,80})")
+_EMPLOYEE_INCENTIVE_PURPOSE = re.compile(r"(?:员工持股计划或股权激励(?:计划)?|股权激励(?:计划)?或员工持股计划)")
 _QUANTITY = r"[0-9]+(?:[,，][0-9]{3})*(?:\.[0-9]+)?"
 _TABLE = re.compile(
     r"累计已回购股数(?P<quantity>" + _QUANTITY + r")(?P<unit>万|亿)?股"
@@ -32,7 +33,7 @@ _NO_ACTION = (
     r"(?:本公司|公司)(?:尚未|未曾|并未|没有|未)(?:实际)?(?:开展|实施|进行)?(?:首次)?(?:股份)?回购"
 )
 COMPANY_REPURCHASE_FIELDS_DIGEST = hashlib.sha256("\0".join((
-    _CONDITIONAL, _INTRODUCTION, _CURRENT_PURPOSE.pattern, _TABLE.pattern, _FIRST_QUANTITY.pattern,
+    _CONDITIONAL, _INTRODUCTION, _CURRENT_PURPOSE.pattern, _EMPLOYEE_INCENTIVE_PURPOSE.pattern, _TABLE.pattern, _FIRST_QUANTITY.pattern,
     _TABLE_TITLE, _TABLE_PLAN_TITLE, _MONTHLY_ACTION_SCOPE, _NO_ACTION, "更正前", "更正后", "除上述更正外", "issuer_header_exact", "first_quantity_consistent",
 )).encode()).digest()
 
@@ -156,6 +157,17 @@ def CompanyRepurchasePurposeStatement(
     for match in reversed(options):
         if match[1] in {"□", "☐"}:
             normalized = normalized[:match.start()] + normalized[match.end():]
+    combined_option = len(selected) == 1 and re.fullmatch(
+        r"(?:用于)?" + _EMPLOYEE_INCENTIVE_PURPOSE.pattern, selected[0][2],
+    ) is not None
+    if combined_option:
+        # A broad selected option is not evidence of either exact purpose.
+        # Only a separate, unambiguous narrative can prove the saved value.
+        if _purpose_prefix_uncertain(body, selected[0].start()):
+            return None
+        normalized = body
+        for match in reversed(options):
+            normalized = normalized[:match.start()] + normalized[match.end():]
     signals = (
         (RepurchasePurpose.CANCELLATION, r"减少注册资本|用于注销"),
         (RepurchasePurpose.EMPLOYEE_PLAN, r"员工持股"),
@@ -169,7 +181,10 @@ def CompanyRepurchasePurposeStatement(
         r"(?:注销|减少注册资本|员工持股|股权激励|转换公司|为?维护公司价值)", normalized,
     ):
         return None
-    if selected:
+    if combined_option:
+        statements = tuple(re.finditer(r"用于员工持股(?:计划)?(?:[，,。；;]|$)", normalized))
+        statement = statements[0][0] if len(statements) == 1 else None
+    elif selected:
         statement = selected[0][0] if len(selected) == 1 and parse_purpose(selected[0][0]) is purpose else None
     else:
         expression = {
@@ -180,12 +195,17 @@ def CompanyRepurchasePurposeStatement(
         }[purpose]
         statements = tuple(re.finditer(expression, body))
         statement = statements[0][0] if len(statements) == 1 else None
-    if statement is not None and re.search(
-        r"(?:不是|并不|不再|不会|不得|不能|并非|无需|无须|尚未|未曾|不将|未将)[^。；;]{0,40}$",
-        body[:body.find(statement)],
-    ):
+    if statement is not None and _purpose_prefix_uncertain(body, body.find(statement)):
         return None
     return statement
+
+
+def _purpose_prefix_uncertain(body: str, position: int) -> bool:
+    prefix = re.split(r"[。；;！？!?]", body[:position])[-1]
+    return re.search(_CONDITIONAL, prefix) is not None or re.search(
+        r"(?:不是|并不|不再|不会|不得|不能|并非|无需|无须|尚未|未曾|不将|未将)[^。；;]{0,40}$",
+        prefix,
+    ) is not None
 
 
 __all__ = [
