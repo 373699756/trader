@@ -141,6 +141,12 @@
 
 本次实施保存点：整体仍in_progress，不能称“按计划全部完成”。用户已回复没有其它已开通来源或官方数据导出；本批未采购、申请新权限或缩减合同。当前可独立复现的本地错误误降级、新闻范围／恢复及结构诊断已修，公共HTTP边界已切换；正式来源准入及其后真实质量／完整联网／采用／性能仍受下述具体条件阻塞，不另建阶段转移。
 
+最新来源裁决／2026-11-18，接936c93b3：用户明确“Tushare不能用就不要用”，company正式与候选路线均排除Tushare，不再调用其公司接口，也不把取得Tushare权限作为后续前置。已核普通company及参考准备无Tushare依赖，未改用户runtime或其它业务凭据。用户另已明确要求清空data/company，本机全部内容删除完成且目录保留为空；旧库不兼容不再是新建资料的当前阻塞，但清空不代表来源、字段或风险已验收，旧1448等样本数不再当作当前库存。
+
+免费替代取证：本次核当前AKShare官方[财务文档](https://akshare.akfamily.xyz/data/stock/stock_finance.html)及已安装Sina／THS源码，Sina财务摘要与三表有明确接口；沿其原始地址仅请求600600的1个财务摘要报告，HTTP成功、provider code=0，返回20260930报告和88个指标，包含归母／扣非利润、基本EPS、每股净资产及多种ROE标签。`/tmp/trader-company-sina-financial-one-20261118.json`为23402字节、SHA0f7009fe6354d8d0c4abdce9bc1ede4c298be610b0d72f2dc84eabe83bdfffd3；重复标签与ROE类别须按原分组核验，不直接采用为八字段正式财报，原披露／修订／全市场及请求成本均未证。THS首个000063探针错误用了market=17，实际HTTP403；核已安装源码后改为深市market=33，同一basicapi、size=1请求成功，status_code=0，1份2026三季报、来源声明共112份。`/tmp/trader-company-ths-financial-sz-one-20261118.json`为3069字节、SHA05bb71ec35dcca13e589b7232b32cfbc20e528df4d70b20e4191a80b5f3654b7；最初错误参数及403终端回执保留，不归因来源整体拒绝，也不签已翻112份。BaoStock官方季频盈利字段明确epsTTM及平均ROE，只能核可比项，不改指标口径。未使用Tushare、批量下载、写业务库、改变评分或启用新源。
+
+当前可推进范围重申：优先完成现有免费来源的完整分页／唯一键／日期／总数及质押解禁分母核验；在新隔离空目标跑真实有限轮次、正常及取消恢复；以真实新样本比较Sina独立财务候选，核合格资料族后接通正常正式发布；继续公告主体／同案／修订解除及字段质量。单页未遍历或尚未验证不能统称为“没有替代、只能采购”，这些工作不等待Tushare。发行人真实更正与更早持续风险初态尚需实际证据，未证明就保留缺证，不擅自缩减现行合同。d已同步Tushare退出及免费候选范围；本次仅两份文档，完整diff与git diff --check核验，不运行测试或宣称新源已正式接通。
+
 实际代码：有限编排不再把任意OSError接纳成来源降级，本地文件／材料提交失败保留原异常和未确认步骤并停止后续请求；唯一供应商边界改为CompanySourceOperation，全部两个来源adapter及消费者原子切换、旧符号删除，仅翻译HTTP取消／超时／连接／解码／大小类别并保留因果，内部重试次数和退避不变。组合根使用原RecentPublishedNewsCodes及四档只读冻结端口，名单与本轮总体相交后经原inputs任务owner固定；同scope重启不借新名单扩源、不退预算，近7天／50条边界在登记前校验，fill保持跳过。冻结reader显式接受受本轮期限约束的公共只读session，取消不再被吞为冻结不可用，不初始化／恢复冻结。coverage先核两库完整当前schema，旧结构通过公共JSON分别报告collection／facts且complete=false，不再只留下invalid_json；SQL预算失败和非预算异常的原因果继续保留。company_http_audit删除http.client，组合根公共传输显式持有／关闭本机客户端，沿原字节／deadline／I/O保护；未加新格式版本、数据库结构或兼容读取。d同步实际合同。
 
 本机资料取证：company_facts.sqlite3为9129984字节、raw/company_collection.sqlite3为94679040字节，两者完整当前结构均不兼容；normalized／inputs／请求账本在这份资料根不存在。当前公共只读报告`/tmp/trader-company-current-inventory-typed-20261118.json`明确两库失败；先前`current-inventory-20261118.json`的invalid_json及直接入口原始sqlite_schema_unsupported回执保留，不说已核到当前字段／风险分母。11月17日complete-normal与52原件恢复隔离目录本机均缺失，不重建冒充原输入，不抄1448／337／126等旧计数。未转换、删改或重下旧资料，未启动／停止用户writer或服务；新代码没有接纳这些旧库作为当前正式输入。
