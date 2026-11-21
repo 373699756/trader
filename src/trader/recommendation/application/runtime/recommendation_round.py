@@ -278,7 +278,7 @@ class RecommendationRounds:
             raise
         self._publication = publication
         self._outcome = "published" if publication.accepted else publication.reason
-        if publication.accepted and self._publish_batch_event is not None:
+        if publication.accepted and self._publish_batch_event is not None and any(items for _, items in publication.events):
             self._publish_batch_event(sequence, publication.events)
 
     def _wait_for_collection(self, profile: str, sequence: int, remaining_profiles: set[str]) -> bool:

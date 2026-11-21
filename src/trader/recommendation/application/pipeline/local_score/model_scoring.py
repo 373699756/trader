@@ -43,6 +43,7 @@ from trader.recommendation.domain.market.feature_contracts import (
     V2_TOMORROW_MODEL_FEATURE_MANIFEST,
 )
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, ModelIndustryReference
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import MODEL_PREDICTION_RANK_SCORE_SCALE
 from trader.recommendation.domain.scoring.residualization import ExposureContract, ResidualizeExposure
@@ -249,6 +250,7 @@ class ProductionModelScoringService:
         cost_policy: ExecutionCostPolicy,
         monotonic: Callable[[], float] = time.perf_counter,
         shared_features: SharedModelFeatureCache | None = None,
+        prediction_target: PredictionTarget | None = None,
     ) -> None:
         head = profile.heads.get(strategy)
         if head is None:
@@ -274,6 +276,7 @@ class ProductionModelScoringService:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{strategy.value} production model identity is invalid") from exc
         self._strategy = strategy
+        self._prediction_target = prediction_target
         self._cost_policy = cost_policy
         self._predictor = predictor
         self._required_momentum_horizons = frozenset(
@@ -354,6 +357,7 @@ class ProductionModelScoringService:
                 else WEIGHTED_EVIDENCE_SCORE_SCALE
             ),
             production_authority=evidence.production_authority,
+            prediction_target=self._prediction_target,
         )
 
     def computation_status(self) -> ModelComputationStatus:
@@ -617,6 +621,7 @@ class ProductionModelScoringService:
             cost_reference.version,
             ranked=self._predictor.profile_id == "v5",
             production_authority=self._evidence.production_authority,
+            prediction_target=self._prediction_target,
         )
         deadline.require_time("completed_after_score_projection_deadline")
         self._state = _ModelComputationState(
@@ -771,7 +776,14 @@ def _score_predictions(
     *,
     ranked: bool = False,
     production_authority: bool = True,
+    prediction_target: PredictionTarget | None = None,
 ) -> ModelScoreBatch:
+    if prediction_target is not None and any(item.target_probability is None for item in predictions):
+        raise ValueError("D25 prediction is missing its configured target probability")
+    signals = tuple(
+        item.target_probability if item.target_probability is not None else item.predicted_excess_return
+        for item in predictions
+    )
     score_identity = (
         {
             "score_scale": MODEL_PREDICTION_RANK_SCORE_SCALE,
@@ -781,7 +793,7 @@ def _score_predictions(
             ).hexdigest(),
             "rank_population_version": "model-prediction-population:"
             + hashlib.sha256(
-                repr(tuple((item.code, item.predicted_excess_return) for item in predictions)).encode()
+                repr(tuple((item.code, signal) for item, signal in zip(predictions, signals, strict=True))).encode()
             ).hexdigest(),
         }
         if ranked
@@ -795,14 +807,13 @@ def _score_predictions(
             missing_codes,
             cost_reference_version,
             production_authority=production_authority,
+            prediction_target=prediction_target,
             **score_identity,
         )
     utilities = tuple(
         prediction.predicted_excess_return - cost for prediction, cost in zip(predictions, costs, strict=True)
     )
-    prediction_scores = _relative_prediction_scores(
-        tuple(prediction.predicted_excess_return for prediction in predictions)
-    )
+    prediction_scores = _relative_prediction_scores(signals)
     diagnostics: dict[str, ModelDiagnostics] = {}
     for prediction, cost, utility, score in zip(
         predictions,
@@ -820,6 +831,7 @@ def _score_predictions(
             estimated_cost_pct=cost_pct,
             predicted_net_excess_pct=net_pct,
             model_disagreement_pct=None,
+            target_probability=prediction.target_probability,
         )
     return ModelScoreBatch(
         model_version,
@@ -828,6 +840,7 @@ def _score_predictions(
         missing_codes,
         cost_reference_version,
         production_authority=production_authority,
+        prediction_target=prediction_target,
         **score_identity,
     )
 

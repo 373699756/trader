@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from threading import RLock
 
 import pytest
 
@@ -16,10 +17,12 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord
 from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes
 from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.scoring.profile_identity import TOMORROW_PROBABILITY_SCORE_SCALE
 from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 from trader.web import CreateApp
@@ -45,6 +48,57 @@ def test_status_exposes_actual_fetch_inflight_count_without_private_source_field
         "physical_fetch_inflight_count": 1, "planned_count": 12,
     }
     assert "must-not-leak" not in response.get_data(as_text=True)
+
+
+def test_current_and_events_route_only_to_profiles_with_the_same_tomorrow_target():
+    lock = RLock()
+    stream = UnifiedFreezeEventStream()
+    lanes = {}
+    events = {}
+    source = _freeze()
+    for profile, threshold in (("v1", 500), ("v2", None), ("v3", 800)):
+        index = UnifiedFreezeIndex(transaction_lock=lock)
+        events[profile] = ()
+        if threshold is not None:
+            target = PredictionTarget(Strategy.TOMORROW, threshold)
+            current = replace(source, input_versions=(
+                ("prediction_target", target.identity),
+                ("score_scale", TOMORROW_PROBABILITY_SCORE_SCALE),
+                ("score_model", "artifact"),
+                ("score_model_id", "artifact"),
+                ("score_contract_hash", "artifact"),
+            ))
+            assert index.publish(current, expected_version=None).accepted
+            events[profile] = (BuildFreezeCommitted(current),)
+        lanes[profile] = UnifiedWebServices(
+            UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock()),
+            stream, lambda: {}, profile_id=profile,
+        )
+    services = ProfiledWebServices(
+        lanes, default_profile="v2", tomorrow_profiles={"v1": "v1", "v2": "v1", "v3": "v3"},
+    )
+    client = CreateApp(services=services).test_client()
+    batch = client.get("/api/freezes/current").get_json()["profiles"]
+    for profile, threshold in (("v1", 500), ("v2", 500), ("v3", 800)):
+        response = client.get(f"/api/freezes/tomorrow/current?profile={profile}")
+        assert response.get_json()["prediction_target"]["threshold_bps"] == threshold
+        assert batch[profile]["tomorrow"]["prediction_target"]["threshold_bps"] == threshold
+        assert batch[profile]["tomorrow"]["scoring_profile"] == profile
+
+    stream.publish_batch(1, tuple(events.items()))
+    stream.publish_committed(events["v3"][0], profile="v3")
+    response = client.get("/api/events?profile=v2&cursor=0", buffered=False)
+    try:
+        iterator = iter(response.response)
+        next(iterator)
+        event_batch = json.loads(next(iterator).decode().split("data: ", 1)[1])["profiles"]
+        assert event_batch["v2"]["tomorrow"]["scoring_profile"] == "v2"
+        assert event_batch["v2"]["tomorrow"]["prediction_target"]["threshold_bps"] == 500
+        assert event_batch["v3"]["tomorrow"]["prediction_target"]["threshold_bps"] == 800
+        event = json.loads(next(iterator).decode().split("data: ", 1)[1])
+        assert event["scoring_profiles"] == ["v3"]
+    finally:
+        response.close()
 
 
 def test_unified_freeze_routes_validate_strategy_date_and_etag() -> None:

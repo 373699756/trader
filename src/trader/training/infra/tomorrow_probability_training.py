@@ -23,11 +23,14 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader,
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.tomorrow_probability import BuildTomorrowFeatures, TOMORROW_FEATURE_NAMES
-from trader.recommendation.domain.outcomes.tomorrow_target import EvaluateTomorrowCloseGain, TomorrowCloseGain
+from trader.recommendation.domain.outcomes.prediction_target import EvaluatePredictionTarget, PredictionTarget
+from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
 from trader.training.application.resources import TrainingMemoryAdmission
 from trader.training.domain.tomorrow_probability import TomorrowProbabilitySelection, TomorrowProbabilityTrainingResult
 from trader.training.infra.cpu_admission import TrainingCpuBudget
+from trader.training.infra.logistic_fitting import FitBinaryLogistic
 from trader.training.infra.tomorrow_probability import (
+    LoadTomorrowProbabilityModel,
     LogisticTomorrowModel,
     PublishTomorrowProbabilityModel,
     TomorrowProbabilityArtifact,
@@ -105,6 +108,7 @@ class SharedTomorrowTrainer(Protocol):
         history: TomorrowHistoryInput,
         model_root: Path,
         *,
+        target: PredictionTarget,
         cancelled: Callable[[], bool],
         cpu_budget: TrainingCpuBudget,
         memory: TrainingMemoryAdmission,
@@ -115,6 +119,7 @@ def TrainSharedTomorrowProbability(
     history: TomorrowHistoryInput,
     model_root: Path,
     *,
+    target: PredictionTarget,
     cancelled: Callable[[], bool],
     cpu_budget: TrainingCpuBudget,
     memory: TrainingMemoryAdmission,
@@ -131,14 +136,21 @@ def TrainSharedTomorrowProbability(
     # Allow for the packed samples, normalized design, IRLS scratch and the native tree dataset.
     required_bytes = max(1, cap * (5 * len(TOMORROW_FEATURE_NAMES) + 15) * 8)
     try:
+        check()
+        try:
+            current = LoadTomorrowProbabilityModel(model_root, target)
+        except ValueError:
+            current = None
+        if current is not None and current.artifact.history_snapshot_hash == history.snapshot_hash:
+            return TomorrowProbabilityTrainingResult(history.snapshot_hash, current.identity, current.artifact.algorithm)
         with (
             memory.reserve(required_bytes, check),
             cpu_budget.reserve(cpu_budget.native_threads, check),
             cpu_budget.native_runtime(),
             closing(history.iter_training_rows(calendar)) as rows,
         ):
-            samples = _collect_samples(rows, calendar, cap, check)
-            return _train(samples, calendar[:-1], history.snapshot_hash, model_root, check)
+            samples = _collect_samples(rows, calendar, cap, check, target)
+            return _train(samples, calendar[:-1], history.snapshot_hash, model_root, check, target)
     except (OSError, ValueError, HistorySnapshotReadError, lgb.basic.LightGBMError, np.linalg.LinAlgError) as exc:
         if isinstance(exc, InterruptedError):
             raise
@@ -154,12 +166,14 @@ def _failed(snapshot_hash: str, reason: str) -> TomorrowProbabilityTrainingResul
     return TomorrowProbabilityTrainingResult(snapshot_hash, None, None, failure=reason)
 
 
-def _label(current: HistoryTrainingRow, following: HistoryTrainingRow | None) -> TomorrowCloseGain:
+def _label(
+    current: HistoryTrainingRow, following: HistoryTrainingRow | None, target: PredictionTarget,
+) -> TomorrowCloseGain:
     left = current.point
     if following is None or left is None or left.raw_close_price is None:
         return TomorrowCloseGain.PENDING
     if following.cell_status == "supplier_marked_suspended":
-        return EvaluateTomorrowCloseGain(Decimal(str(left.raw_close_price)), None, confirmed_suspended=True)
+        return EvaluatePredictionTarget(target, Decimal(str(left.raw_close_price)), (None,), confirmed_suspended=True)
     right = following.point
     if (
         right is None or following.cell_status != "complete"
@@ -167,8 +181,8 @@ def _label(current: HistoryTrainingRow, following: HistoryTrainingRow | None) ->
         or left.qfq_reconstruction_anchor is not None or right.qfq_reconstruction_anchor is not None
     ):
         return TomorrowCloseGain.PENDING
-    return EvaluateTomorrowCloseGain(
-        Decimal(str(left.qfq_close_price)), Decimal(str(right.qfq_close_price)),
+    return EvaluatePredictionTarget(
+        target, Decimal(str(left.qfq_close_price)), (Decimal(str(right.qfq_close_price)),),
         next_raw_reference=None if right.raw_preclose is None else Decimal(str(right.raw_preclose)),
         next_raw_close=None if right.raw_close_price is None else Decimal(str(right.raw_close_price)),
     )
@@ -179,6 +193,7 @@ def _collect_samples(
     calendar: tuple[date, ...],
     cap: int,
     check: Callable[[], None],
+    target: PredictionTarget,
 ) -> _Samples:
     features: _FloatArray = np.empty((cap, len(TOMORROW_FEATURE_NAMES)), dtype=np.float64)
     labels: _FloatArray = np.empty(cap, dtype=np.float64)
@@ -212,7 +227,7 @@ def _collect_samples(
                 if vector is None:
                     missing_features += 1
                     continue
-                outcome = _label(row, current.get(row.code))
+                outcome = _label(row, current.get(row.code), target)
                 if written >= cap:
                     raise ValueError("tomorrow_history_population_exceeds_manifest")
                 features[written] = vector
@@ -252,48 +267,12 @@ def _sigmoid(scores: _FloatArray) -> _FloatArray:
     return np.asarray(np.exp(-np.logaddexp(0.0, -scores)), dtype=np.float64)
 
 
-def _fit_logistic(
-    features: _FloatArray, labels: _FloatArray, ridge: float, check: Callable[[], None],
-) -> tuple[float, _FloatArray]:
-    _require_labels(labels)
-    params: _FloatArray = np.zeros(features.shape[1] + 1, dtype=np.float64)
-    positive = float(labels.mean())
-    params[0] = math.log(positive / (1 - positive))
-    design: _FloatArray = np.empty((len(labels), len(params)), dtype=np.float64)
-    design[:, 0] = 1
-    design[:, 1:] = features
-    penalty = np.eye(len(params)) * ridge
-    penalty[0, 0] = 1e-8
-
-    def loss(parameters: _FloatArray) -> float:
-        scores = design @ parameters
-        return float(np.sum(np.logaddexp(0, scores) - labels * scores) + parameters @ penalty @ parameters / 2)
-
-    for _iteration in range(30):
-        check()
-        fitted = _sigmoid(design @ params)
-        variance = fitted * (1 - fitted)
-        hessian = design.T @ (design * variance[:, None]) + penalty
-        gradient = design.T @ (fitted - labels) + penalty @ params
-        step = np.linalg.solve(hessian, gradient)
-        if np.max(np.abs(step)) < 1e-7:
-            break
-        baseline = loss(params)
-        for exponent in range(12):
-            proposal = params - step / (2 ** exponent)
-            if loss(proposal) <= baseline:
-                params = proposal
-                break
-        else:
-            raise ValueError("tomorrow_logistic_step_unstable")
-    return float(params[0]), params[1:]
-
-
 def _fit_linear(features: _FloatArray, labels: _FloatArray, check: Callable[[], None]) -> LogisticTomorrowModel:
     means = features.mean(axis=0) if len(features) else np.zeros(features.shape[1])
     scales = features.std(axis=0) if len(features) else np.ones(features.shape[1])
     scales = np.where(scales > 1e-9, scales, 1.0)
-    intercept, weights = _fit_logistic((features - means) / scales, labels, 5.0, check)
+    _require_labels(labels)
+    intercept, weights = FitBinaryLogistic((features - means) / scales, labels, 5.0, check)
     return LogisticTomorrowModel(intercept, tuple(weights), tuple(means), tuple(scales))
 
 
@@ -394,7 +373,7 @@ def _compare(
 
 def _train(
     samples: _Samples, signal_dates: tuple[date, ...], snapshot_hash: str, model_root: Path,
-    check: Callable[[], None],
+    check: Callable[[], None], target: PredictionTarget,
 ) -> TomorrowProbabilityTrainingResult:
     assessment_begin = len(signal_dates) - _ASSESSMENT_SESSIONS
     calibration_end = assessment_begin - _EMBARGO_SESSIONS
@@ -422,7 +401,7 @@ def _train(
     calibration_rows, calibration_labels = _observed_rows(samples, calibration)
     _require_labels(calibration_labels)
     calibration_scores = scores(calibration_rows)
-    intercept, weights = _fit_logistic(calibration_scores[:, None], calibration_labels, 0.001, check)
+    intercept, weights = FitBinaryLogistic(calibration_scores[:, None], calibration_labels, 0.001, check)
     slope = float(weights[0])
     if not math.isfinite(slope) or slope <= 0:
         raise ValueError("tomorrow_calibration_not_monotone")
@@ -435,7 +414,7 @@ def _train(
     fitted_dates = tuple(signal_dates[index] for index in _observed_dates(samples, 0, fitting_end))
     calibrated_dates = tuple(signal_dates[index] for index in calibrated)
     artifact = TomorrowProbabilityArtifact(
-        snapshot_hash, fitted_dates, calibrated_dates,
+        target, snapshot_hash, fitted_dates, calibrated_dates,
         intercept, slope, linear, None if tree is None else tree.model_to_string(),
     )
     check()

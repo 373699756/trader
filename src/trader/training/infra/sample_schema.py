@@ -11,8 +11,9 @@ from trader.training.infra.sample_sequences import SEQUENCE_FORMAT, SampleSequen
 SAMPLE_TARGET_COLUMNS = (
     "target_t1", "target_t2", "target_t3", "target_t4", "target_t5", "target_d25_aggregate"
 )
+D25_HIT_COLUMN = "target_d25_hit"
 _RESERVED_COLUMNS = frozenset((
-    "trade_date", "code", "board", "industry", "avg_amount_20d", "sequence_start", *SAMPLE_TARGET_COLUMNS
+    "trade_date", "code", "board", "industry", "avg_amount_20d", "sequence_start", *SAMPLE_TARGET_COLUMNS, D25_HIT_COLUMN,
 ))
 
 
@@ -54,7 +55,7 @@ def TrainingSampleSchema(names: tuple[str, ...], layout: SampleSequenceLayout | 
         f"CREATE TABLE samples (trade_date INTEGER NOT NULL,code TEXT NOT NULL,board TEXT NOT NULL,"
         f"industry TEXT NOT NULL,avg_amount_20d REAL NOT NULL,{features},"
         + ",".join(f"{name} REAL" for name in SAMPLE_TARGET_COLUMNS)
-        + ",PRIMARY KEY(trade_date,code)) WITHOUT ROWID",
+        + f",{D25_HIT_COLUMN} INTEGER CHECK({D25_HIT_COLUMN} IN (0,1)),PRIMARY KEY(trade_date,code)) WITHOUT ROWID",
         "CREATE TABLE sample_split_dates (trade_date INTEGER PRIMARY KEY,split_name TEXT NOT NULL CHECK("
         "split_name IN ('training','early_stopping','calibration','validation','holdout'))) WITHOUT ROWID",
         "CREATE TABLE sample_statistics (trade_date INTEGER NOT NULL,industry TEXT NOT NULL,target TEXT NOT NULL,"

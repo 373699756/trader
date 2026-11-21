@@ -22,6 +22,7 @@ class PublishedHistoryReadPort(Protocol):
         start: date,
         end: date,
         *,
+        frozen_outcomes: bool = False,
         check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]: ...
 
@@ -61,9 +62,11 @@ class ReadPublishedHistoryUseCase:
         start: date,
         end: date,
         *,
+        frozen_outcomes: bool = False,
         check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
-        return self.publication.read_range(manifest, codes, start, end, check=check)
+        """Read explicit codes, including prior frozen seats when using the full history publication."""
+        return self.publication.read_range(manifest, codes, start, end, frozen_outcomes=frozen_outcomes, check=check)
 
     def iter_windows(
         self,

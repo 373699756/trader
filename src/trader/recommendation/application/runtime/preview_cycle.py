@@ -100,12 +100,9 @@ class PreviewCycleRunner:
         except (DataRefreshUnavailableError, OSError, RuntimeError, ValueError) as exc:
             self._set_status("failed", FailureCode(exc, "preview_run_failed"))
             return
-        strategies = (
-            (Strategy.TOMORROW,)
-            if self._dependencies.shared_tomorrow_owner else self._dependencies.scored_strategies
-        )
+        strategies = self._dependencies.scored_strategies
         freezes = tuple(self._dependencies.index.snapshot(strategy).current for strategy in strategies)
-        if all(isinstance(freeze, ScoredFreeze) and freeze.preview_context == context for freeze in freezes):
+        if freezes and all(isinstance(freeze, ScoredFreeze) and freeze.preview_context == context for freeze in freezes):
             self._set_status("ready")
         elif self._dependencies.rounds.inputs_pending(sequence):
             self._set_status("waiting_inputs", "preview_inputs_pending")

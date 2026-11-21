@@ -19,6 +19,7 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
     UnifiedFreezeQueries,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.application.history_quotes import HistoryQuoteMonth
 
@@ -139,22 +140,17 @@ def _current_batch(services: WebServices | None) -> RouteResponse:
         else ((services.profile_id, services.queries),)
     )
     batch = UnifiedFreezeQueries.current_batch(profiles)
-    shared_tomorrow = (
-        next(
-            (view for profile, pair in batch if profile == services.tomorrow_profile
-             for view in pair if view.strategy is Strategy.TOMORROW),
-            None,
-        )
-        if isinstance(services, ProfiledWebServices) and services.tomorrow_profile is not None else None
-    )
+    tomorrow_views = {profile: view for profile, pair in batch for view in pair if view.strategy is Strategy.TOMORROW}
+    tomorrow_profiles = services.tomorrow_profiles if isinstance(services, ProfiledWebServices) else None
     response = jsonify({
 
         "profiles": {
             profile: {
                 view.strategy.value: {
                     **SerializeFreezeView(
-                        shared_tomorrow
-                        if view.strategy is Strategy.TOMORROW and shared_tomorrow is not None else view
+                        tomorrow_views[tomorrow_profiles[profile]]
+                        if view.strategy is Strategy.TOMORROW and tomorrow_profiles is not None and not view.frozen else view,
+                        configured_target=_configured_target(services, profile, view.strategy),
                     ),
                     "scoring_profile": profile,
                 }
@@ -178,8 +174,8 @@ def _current(services: WebServices | None, strategy_name: str) -> RouteResponse:
     if selected is None:
         return _not_ready()
     profile_id, lane = selected
-    lane = _services_for_strategy(services, lane, strategy)
-    return _view_response(lane.queries.current(strategy), profile_id=profile_id)
+    view = _current_view(services, lane, strategy)
+    return _view_response(view, profile_id=profile_id, configured_target=_configured_target(services, profile_id, strategy))
 
 
 def _history(services: WebServices | None, strategy_name: str) -> RouteResponse:
@@ -280,7 +276,7 @@ def _status(services: WebServices | None) -> RouteResponse:
         runtime = {"status": "degraded", "degraded_reasons": ("runtime_status_unavailable",)}
     stream = lane.events.status()
     strategies = {
-        strategy.value: _strategy_status(_services_for_strategy(services, lane, strategy).queries.current(strategy))
+        strategy.value: _strategy_status(_current_view(services, lane, strategy))
         for strategy in Strategy
     }
     return jsonify(
@@ -357,20 +353,26 @@ def _events(services: WebServices | None) -> RouteResponse:
         lane.events,
         subscription,
         heartbeat_seconds=lane.config.heartbeat_seconds,
+        tomorrow_profiles=services.tomorrow_profiles if isinstance(services, ProfiledWebServices) else None,
     )
 
 
-def _view_response(view: FreezeView, *, profile_id: str | None = None) -> Response:
-    if view.etag is not None and request.if_none_match.contains(view.etag):
+def _view_response(
+    view: FreezeView, *, profile_id: str | None = None, configured_target: PredictionTarget | None = None,
+) -> Response:
+    etag = view.etag
+    if etag is not None and configured_target is not None:
+        etag = f"{profile_id}:{configured_target.identity}:{etag}"
+    if etag is not None and request.if_none_match.contains(etag):
         response = Response(status=304)
-        response.set_etag(view.etag)
+        response.set_etag(etag)
         return response
-    payload = SerializeFreezeView(view)
+    payload = SerializeFreezeView(view, configured_target=configured_target)
     if profile_id is not None:
         payload["scoring_profile"] = profile_id
     response = jsonify(payload)
-    if view.etag is not None:
-        response.set_etag(view.etag)
+    if etag is not None:
+        response.set_etag(etag)
     response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -389,16 +391,23 @@ def _select_services(
     return services.profile_id, services
 
 
-def _services_for_strategy(
+def _current_view(
     services: WebServices | None,
     selected: UnifiedWebServices,
     strategy: Strategy,
-) -> UnifiedWebServices:
+) -> FreezeView:
     if strategy is Strategy.LONG and isinstance(services, ProfiledWebServices):
-        return services.select_long()[1]
-    if strategy is Strategy.TOMORROW and isinstance(services, ProfiledWebServices) and services.tomorrow_profile is not None:
-        return services.profiles[services.tomorrow_profile]
-    return selected
+        return services.select_long()[1].queries.current(strategy)
+    view = selected.queries.current(strategy)
+    if strategy is Strategy.TOMORROW and isinstance(services, ProfiledWebServices):
+        owner = services.select_tomorrow(selected.profile_id)
+        if not view.frozen and owner is not selected:
+            return owner.queries.current(strategy)
+    return view
+
+
+def _configured_target(services: WebServices | None, profile: str, strategy: Strategy) -> PredictionTarget | None:
+    return services.configured_target(profile, strategy) if isinstance(services, ProfiledWebServices) else None
 
 
 def _invalid_profile_response(services: WebServices | None) -> RouteResponse | None:
@@ -746,6 +755,7 @@ def _scoring_head(raw: Mapping[object, object]) -> dict[str, object]:
             "score_scale",
             "production_authority",
             "training_label_cutoff",
+            "prediction_target",
         )
         if field in raw and _json_scalar(raw[field])
     }

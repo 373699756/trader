@@ -103,7 +103,7 @@ _MODEL_DIAGNOSTIC_FIELDS = frozenset(
         "predicted_net_excess_pct",
     }
 )
-_MODEL_DIAGNOSTIC_OPTIONAL_FIELDS = frozenset({"model_disagreement_pct"})
+_MODEL_DIAGNOSTIC_OPTIONAL_FIELDS = frozenset({"model_disagreement_pct", "target_probability"})
 _SELECTION_FIELDS = frozenset(
     {
         "maximum_final_score",
@@ -293,6 +293,7 @@ def _model_diagnostics_from_json(raw: object) -> FreezeModelDiagnostics | None:
         _number(value, "estimated_cost_pct"),
         _number(value, "predicted_net_excess_pct"),
         _optional_number(value.get("model_disagreement_pct")),
+        _optional_number(value.get("target_probability")),
     )
 
 

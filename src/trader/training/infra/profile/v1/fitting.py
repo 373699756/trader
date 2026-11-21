@@ -188,13 +188,14 @@ def _fit_ranker(
     rounds: int,
     compute_threads: int,
     cancel_requested: Callable[[], bool] | None,
+    binary_relevance: bool = False,
 ) -> lgb.Booster:
     def cancellation_callback(_environment: lgb.callback.CallbackEnv) -> None:
         CheckV1Cancellation(cancel_requested)
 
     valid_sets = [] if early is None else [lgb.Dataset(
         early.features,
-        label=_relevance(early, settings),
+        label=early.targets if binary_relevance else _relevance(early, settings),
         weight=_daily_weights(early),
         group=np.asarray(early.groups, dtype=np.int32),
     )]
@@ -202,16 +203,30 @@ def _fit_ranker(
     if early is not None:
         callbacks.append(lgb.early_stopping(settings.early_stopping_rounds, verbose=False))
     return lgb.train(
-        _ranker_parameters(settings, compute_threads),
+        {**_ranker_parameters(settings, compute_threads), **({"label_gain": [0, 1]} if binary_relevance else {})},
         lgb.Dataset(
             fitting.features,
-            label=_relevance(fitting, settings),
+            label=fitting.targets if binary_relevance else _relevance(fitting, settings),
             weight=_daily_weights(fitting),
             group=np.asarray(fitting.groups, dtype=np.int32),
         ),
         num_boost_round=rounds,
         valid_sets=valid_sets,
         callbacks=callbacks,
+    )
+
+
+def FitD25LearnedRankClassifier(
+    fitting: LearnedRankMatrix, early: LearnedRankMatrix, settings: V1TrainingSettings,
+    *, compute_threads: int, cancel_requested: Callable[[], bool] | None,
+) -> lgb.Booster:
+    if len(fitting.targets) < settings.minimum_training_rows or not (
+        np.any(fitting.targets == 1) and np.any(fitting.targets == 0)
+    ):
+        raise ValueError("d25_probability_ranker_labels_insufficient")
+    return _fit_ranker(
+        fitting, settings, early=early, rounds=settings.boosting_rounds, compute_threads=compute_threads,
+        cancel_requested=cancel_requested, binary_relevance=True,
     )
 
 

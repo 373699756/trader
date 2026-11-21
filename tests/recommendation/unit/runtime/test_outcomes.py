@@ -17,6 +17,8 @@ from trader.recommendation.domain.publication.freeze_identity import (
     FreezeDownside,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes
+from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
 from trader.recommendation.infra.persistence.outcome_evidence_index import (
     SQLiteOutcomeEvidenceIndex,
 )
@@ -41,6 +43,10 @@ class _Freezes:
         if self.record is not None and strategy is self.record.strategy and trade_date == self.record.trade_date:
             return self.record
         return None
+
+    def load_history(self, strategy, trade_date):
+        record = self.load(strategy, trade_date)
+        return HistoricalRecordFromBytes(CommittedRecordBytes(record)) if record is not None else None
 
 
 def _index(tmp_path: Path, record: CommittedFreezeRecord | None = None):

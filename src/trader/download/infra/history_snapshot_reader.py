@@ -324,6 +324,7 @@ class HistorySnapshotReader:
         session_dates: tuple[date, ...],
         snapshot: HistorySnapshot,
         *,
+        frozen_outcomes: bool = False,
         check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryCell, ...]:
         if _CODE.fullmatch(code) is None:
@@ -337,7 +338,9 @@ class HistorySnapshotReader:
         ):
             raise ValueError("published history dates are invalid")
         allowed = frozenset(dates)
-        if not self.reference_index(snapshot).eligible(code):
+        # Frozen seats keep their original qualification. Committed price rows may
+        # still exist when a later reference excludes the code from new decisions.
+        if not frozen_outcomes and not self.reference_index(snapshot).eligible(code):
             return ()
         rows: list[PublishedHistoryCell] = []
         for year, month in RouteHistoryMonths(dates[0], dates[-1]):

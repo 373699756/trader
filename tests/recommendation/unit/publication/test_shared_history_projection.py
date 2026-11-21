@@ -2,7 +2,7 @@ import sqlite3
 
 from dataclasses import replace
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 
@@ -17,6 +17,10 @@ from trader.infra.settings.models import HistoryPreloadSettings
 from trader.infra.shutdown import ShutdownDeadline
 
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
+
+from trader.recommendation.domain.outcomes.models import OutcomeTarget
+
+from trader.recommendation.domain.publication.models import Strategy
 
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
@@ -294,9 +298,9 @@ def test_seed_extension_stops_when_the_original_history_window_is_complete():
                 ),
             )
 
-        def read_range(self, manifest, codes, start, end, *, check=None):
+        def read_range(self, manifest, codes, start, end, *, frozen_outcomes=False, check=None):
             self.requested_dates.append(tuple(day for day in manifest.calendar_dates if start <= day <= end))
-            return super().read_range(manifest, codes, start, end, check=check)
+            return super().read_range(manifest, codes, start, end, frozen_outcomes=frozen_outcomes, check=check)
 
     source = History()
     owner = SharedHistoryProjection(ReadPublishedHistoryUseCase(source), monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300.0))
@@ -383,6 +387,67 @@ def test_online_eligibility_does_not_filter_immutable_outcome_history():
     assert source.reads == []
     assert cache.status().outcome_snapshot_hash == source.current.snapshot_hash
     assert len(cache.read_outcome_bars(("600002",), NOW)["600002"]) == 61
+
+
+@pytest.mark.parametrize(
+    ("last_day_evidence", "expected"),
+    (("paired", True), ("supplier_suspension", True), ("inferred_suspension", False),
+     ("suspension_missing_close", False), ("reconstructed", False), ("missing", False)),
+)
+def test_d25_evidence_waits_for_published_t5_and_requires_four_observed_market_closes(last_day_evidence, expected):
+    signal = date(2026, 4, 30)
+    sessions = (signal, *(date(2026, 5, day) for day in (6, 7, 8, 11, 12)))
+    observed = NOW.replace(month=5, day=12, hour=15)
+
+    class History(HistoryInput):
+        def read_range(self, manifest, codes, start, end, *, frozen_outcomes=False, check=None):
+            assert manifest is self.current and frozen_outcomes and start == signal and end == sessions[-1]
+            return super().read_range(manifest, codes, start, end, frozen_outcomes=frozen_outcomes, check=check)
+
+        def window(self, code, dates):
+            initial = super().window(code, dates)
+            # A gap at T+1 does not change the D25 outcome dates.
+            cells = [cell for cell in initial.cells if cell.trade_date != sessions[1]]
+            last = cells[-1]
+            assert last.unadjusted is not None and last.qfq is not None
+            if last_day_evidence == "missing":
+                cells.pop()
+            elif last_day_evidence == "inferred_suspension":
+                cells[-1] = PublishedHistoryCell(code, last.trade_date, "tencent_inferred_suspended", None, None)
+            elif last_day_evidence == "reconstructed":
+                cells[-1] = replace(last, qfq=replace(last.qfq, reconstructed_from=last.trade_date))
+            elif last_day_evidence in ("supplier_suspension", "suspension_missing_close"):
+                cells[-1] = replace(
+                    last,
+                    status="supplier_marked_suspended",
+                    unadjusted=replace(last.unadjusted, trading_status="suspended", volume=0.0, amount=0.0),
+                    qfq=replace(last.qfq, trading_status="suspended", volume=0.0, amount=0.0,
+                                close_price=None if last_day_evidence == "suspension_missing_close" else last.qfq.close_price),
+                )
+            return replace(initial, cells=tuple(cells))
+
+    source = History(6, 0, ("600001",))
+    latest = replace(source.current, snapshot_hash="b" * 64, sequence=2, calendar_dates=sessions, data_cutoff=sessions[-1])
+    source.current = replace(source.current, calendar_dates=sessions[:-1], data_cutoff=sessions[-2])
+    history = ReadPublishedHistoryUseCase(source)
+    cache = PublishedHistoryCache(
+        history, outcome_history=history, lookback_sessions=61, monotonic=lambda: 0.0,
+        projection_owner=SharedHistoryProjection(history, monotonic=lambda: 0.0, settings=HistoryPreloadSettings(warn_after_seconds=300)),
+    )
+    target = OutcomeTarget("frozen", Strategy.D25, signal.isoformat(), "600001", 10.0, None)
+    assert cache.read_d25_close_evidence((target,), observed) == ()
+    source.current = latest
+    assert cache.read_d25_close_evidence((target,), observed - timedelta(seconds=1)) == ()
+    assert source.reads == []
+
+    evidence = cache.read_d25_close_evidence((target,), observed)
+
+    assert bool(evidence) is expected
+    assert source.reads == [("600001",)]
+    if evidence:
+        assert evidence[0].dates == sessions[2:]
+        assert evidence[0].publication_hash == latest.snapshot_hash
+        assert len(evidence[0].closes) == 4
 
 
 def test_same_source_outcomes_remain_readable_when_online_projection_exceeds_capacity():

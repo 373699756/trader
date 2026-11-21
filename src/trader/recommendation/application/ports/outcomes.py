@@ -9,6 +9,8 @@ from typing import Protocol
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.outcomes.models import (
     BenchmarkReturn,
+    D25CloseEvidence,
+    D25RecommendationOutcome,
     OutcomeBar,
     OutcomeTarget,
     RecommendationOutcome,
@@ -58,6 +60,18 @@ class TomorrowOutcomeEvidencePort(Protocol):
     def pending_tomorrow_targets(self, *, limit: int) -> Sequence[OutcomeTarget]: ...
 
     def save_tomorrow_outcomes(self, outcomes: Sequence[TomorrowRecommendationOutcome]) -> None: ...
+
+
+class D25SettlementMarketData(Protocol):
+    def read_d25_close_evidence(
+        self, targets: Sequence[OutcomeTarget], observed_at: datetime,
+    ) -> Sequence[D25CloseEvidence]: ...
+
+
+class D25OutcomeEvidencePort(Protocol):
+    def pending_d25_targets(self, *, limit: int) -> Sequence[OutcomeTarget]: ...
+
+    def save_d25_outcomes(self, outcomes: Sequence[D25RecommendationOutcome]) -> None: ...
 
 
 __all__ = ["OutcomeEvidenceConflictError", "OutcomeSettlementMarketData", "OutcomeTargetReaderPort", "OutcomeWriterPort"]

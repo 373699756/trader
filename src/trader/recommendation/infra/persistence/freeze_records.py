@@ -34,6 +34,7 @@ from trader.recommendation.application.ports.freeze_records import (
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord, IsPreviewFreeze
 from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
 from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
 
@@ -48,6 +49,20 @@ _SCHEMA = SqliteSchema(
         "committed_at INTEGER NOT NULL,commit_kind TEXT NOT NULL,"
         "status TEXT NOT NULL CHECK(status IN ('committed','quarantined')),failure_code TEXT,"
         "PRIMARY KEY(strategy,trade_date))",
+    ),
+)
+_GROUPED_SCHEMA = SqliteSchema(
+    (
+        "CREATE TABLE freeze_record("
+        "strategy TEXT NOT NULL CHECK(strategy='tomorrow'),trade_date INTEGER NOT NULL,"
+        "freeze_id TEXT NOT NULL UNIQUE,freeze_hash BLOB NOT NULL CHECK(length(freeze_hash)=32),"
+        "record_hash BLOB NOT NULL CHECK(length(record_hash)=32),record_bytes BLOB NOT NULL,"
+        "committed_at INTEGER NOT NULL,commit_kind TEXT NOT NULL,"
+        "status TEXT NOT NULL CHECK(status IN ('committed','quarantined')),failure_code TEXT,"
+        "prediction_target TEXT NOT NULL,PRIMARY KEY(trade_date,prediction_target))",
+        "CREATE TABLE tomorrow_profile_day("
+        "profile TEXT NOT NULL CHECK(profile IN ('v1','v2','v3','v5')),trade_date INTEGER NOT NULL,"
+        "freeze_id TEXT NOT NULL REFERENCES freeze_record(freeze_id),PRIMARY KEY(profile,trade_date))",
     ),
 )
 
@@ -68,6 +83,7 @@ class SQLiteFreezeRecords:
         cache: BoundedLruCache[object] | None = None,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), sqlite_policy: SqliteIoPolicy,
         read_session: Callable[[Path], AbstractContextManager[SqliteConnection]] | None = None,
+        grouped: bool = False,
     ) -> None:
         self._sqlite_policy = sqlite_policy
         self._read_session = read_session
@@ -75,6 +91,7 @@ class SQLiteFreezeRecords:
         self._fault_injector = fault_injector or (lambda _stage: None)
         self._lock = threading.RLock()
         self._cache = cache
+        self._schema = _GROUPED_SCHEMA if grouped else _SCHEMA
         self._wall_clock = wall_clock
         self._cache_source = "freeze:" + hashlib.sha256(str(path.absolute()).encode()).hexdigest()[:24]
 
@@ -85,7 +102,7 @@ class SQLiteFreezeRecords:
                 self._validate_current_structure()
             with SqliteSession(self._database, SqliteConnectionOptions(journal_mode="WAL"), sqlite_policy=self._sqlite_policy) as connection:
                 EnsureSqliteSchema(
-                    connection, _SCHEMA, allow_create=True, exact=True,
+                    connection, self._schema, allow_create=True, exact=True,
                 )
         except (OSError, sqlite3.Error) as exc:
             raise FreezeRecordUnavailableError("freeze record initialization failed") from exc
@@ -103,7 +120,7 @@ class SQLiteFreezeRecords:
                 ), sqlite_policy=self._sqlite_policy,
             )
             with session as connection:
-                EnsureSqliteSchema(connection, _SCHEMA, exact=True)
+                EnsureSqliteSchema(connection, self._schema, exact=True)
                 with SqliteTransaction(connection, immediate=write):
                     yield connection
         except InterruptedError:
@@ -113,7 +130,7 @@ class SQLiteFreezeRecords:
 
     def _validate_current_structure(self) -> None:
         with SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-            EnsureSqliteSchema(connection, _SCHEMA, exact=True)
+            EnsureSqliteSchema(connection, self._schema, exact=True)
 
     def commit(self, record: CommittedFreezeRecord) -> None:
         if not isinstance(record, CommittedFreezeRecord):
@@ -143,21 +160,115 @@ class SQLiteFreezeRecords:
                 if row["record_hash"] != digest or bytes(row["record_bytes"]) != payload:
                     raise FreezeRecordConflictError("freeze record is already committed with different content")
                 return
-            connection.run(
-                "INSERT INTO freeze_record VALUES (?,?,?,?,?,?,?,?,'committed',NULL)",
-                (
-                    record.strategy.value,
-                    EncodeDate(record.trade_date),
-                    record.version,
-                    EncodeHash(record.payload_hash),
-                    digest,
-                    payload,
-                    EncodeTime(record.committed_at),
-                    record.commit_kind,
-                ),
-            )
+            self._insert(connection, record, payload, digest)
             self._fault_injector("before_commit")
         self._fault_injector("after_commit")
+
+    @staticmethod
+    def _insert(
+        connection: SqliteConnection, record: CommittedFreezeRecord, payload: bytes, digest: bytes, *,
+        prediction_target: str | None = None,
+    ) -> None:
+        fields = (
+            record.strategy.value,
+            EncodeDate(record.trade_date),
+            record.version,
+            EncodeHash(record.payload_hash),
+            digest,
+            payload,
+            EncodeTime(record.committed_at),
+            record.commit_kind,
+        )
+        if prediction_target is None:
+            connection.run("INSERT INTO freeze_record VALUES (?,?,?,?,?,?,?,?,'committed',NULL)", fields)
+        else:
+            connection.run(
+                "INSERT INTO freeze_record VALUES (?,?,?,?,?,?,?,?,'committed',NULL,?)", (*fields, prediction_target),
+            )
+
+    def commit_tomorrow(
+        self, record: CommittedFreezeRecord, prediction_target: str, profiles: tuple[ScoringProfileId, ...],
+        *, owner: ScoringProfileId,
+    ) -> None:
+        if (
+            self._schema is not _GROUPED_SCHEMA or record.strategy is not Strategy.TOMORROW
+            or IsPreviewFreeze(record.freeze) or owner not in profiles or set(profiles) - set(SCORING_PROFILE_IDS)
+            or dict(record.freeze.input_versions).get("prediction_target") != prediction_target
+        ):
+            raise FreezeRecordUnavailableError("invalid Tomorrow freeze binding")
+        payload = CommittedRecordBytes(record)
+        digest = _bounded_digest(payload)
+        trade_day = EncodeDate(record.trade_date)
+        with self._lock, self._connect(write=True) as connection:
+            row = connection.run(
+                "SELECT * FROM freeze_record WHERE trade_date=? AND prediction_target=?",
+                (trade_day, prediction_target),
+            ).fetchone()
+            if row is not None:
+                self._load_record(row)
+                if row["record_hash"] != digest or bytes(row["record_bytes"]) != payload:
+                    raise FreezeRecordConflictError("Tomorrow group already has a different formal result")
+            else:
+                self._insert(connection, record, payload, digest, prediction_target=prediction_target)
+            for profile in profiles:
+                binding = connection.run(
+                    "SELECT freeze_id FROM tomorrow_profile_day WHERE profile=? AND trade_date=?", (profile, trade_day),
+                ).fetchone()
+                if binding is None:
+                    connection.run("INSERT INTO tomorrow_profile_day VALUES (?,?,?)", (profile, trade_day, record.version))
+                elif profile == owner and binding["freeze_id"] != record.version:
+                    raise FreezeRecordConflictError("Tomorrow profile already has a different formal result")
+            self._fault_injector("before_commit")
+        self._fault_injector("after_commit")
+
+    def load_tomorrow_profile(self, profile: ScoringProfileId, trade_date: date) -> CommittedFreezeRecord | None:
+        row = self._tomorrow_profile_row(profile, trade_date)
+        return None if row is None else self._load_record(row)
+
+    def load_tomorrow_history(self, profile: ScoringProfileId, trade_date: date) -> HistoricalFreezeRecord | None:
+        row = self._tomorrow_profile_row(profile, trade_date)
+        return None if row is None else self._load_history_record(row)
+
+    def _tomorrow_profile_row(self, profile: ScoringProfileId, trade_date: date) -> sqlite3.Row | None:
+        if not self._database.exists():
+            return None
+        with self._lock, self._history_connection() as connection:
+            return connection.run(
+                "SELECT f.* FROM tomorrow_profile_day p JOIN freeze_record f USING(freeze_id) "
+                "WHERE p.profile=? AND p.trade_date=? AND f.trade_date=p.trade_date", (profile, EncodeDate(trade_date)),
+            ).fetchone()
+
+    def tomorrow_records(self, trade_date: date) -> tuple[CommittedFreezeRecord, ...]:
+        if not self._database.exists():
+            return ()
+        with self._lock, self._history_connection() as connection:
+            rows = connection.run(
+                "SELECT * FROM freeze_record WHERE trade_date=? AND status='committed' ORDER BY prediction_target",
+                (EncodeDate(trade_date),),
+            ).fetchall()
+        return tuple(self._load_record(row) for row in rows)
+
+    def list_tomorrow_profile_dates(
+        self, profile: ScoringProfileId, *, limit: int, year: int | None, month: int | None,
+    ) -> tuple[date, ...]:
+        if (year is None) != (month is None) or not 1 <= limit <= 366:
+            raise ValueError("invalid Tomorrow profile date range")
+        if not self._database.exists():
+            return ()
+        with self._lock, self._history_connection() as connection:
+            query = (
+                "SELECT p.trade_date FROM tomorrow_profile_day p JOIN freeze_record f USING(freeze_id) "
+                "WHERE p.profile=? AND f.status='committed' "
+            )
+            if year is None or month is None:
+                rows = connection.run(query + "ORDER BY p.trade_date DESC LIMIT ?", (profile, limit)).fetchall()
+            else:
+                first = EncodeDate(date(year, month, 1))
+                last = EncodeDate(date(year, month, monthrange(year, month)[1]))
+                rows = connection.run(
+                    query + "AND p.trade_date BETWEEN ? AND ? ORDER BY p.trade_date DESC", (profile, first, last),
+                ).fetchall()
+        return tuple(DecodeDate(row["trade_date"]) for row in rows)
 
     def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
         identity = self._cache_identity("published_recommendation_view", strategy, trade_date.isoformat())
@@ -185,7 +296,7 @@ class SQLiteFreezeRecords:
             session = self._read_session(self._database) if self._read_session is not None else SqliteSession(
                 self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy)
             with session as connection:
-                EnsureSqliteSchema(connection, _SCHEMA)
+                EnsureSqliteSchema(connection, self._schema, exact=self._schema is _GROUPED_SCHEMA)
                 with SqliteTransaction(connection):
                     yield connection
         except InterruptedError:
@@ -256,7 +367,7 @@ class SQLiteFreezeRecords:
             return ()
         with self._lock, self._history_connection() as connection:
             rows = connection.run(
-                "SELECT trade_date FROM freeze_record WHERE strategy=? AND status='committed' "
+                "SELECT DISTINCT trade_date FROM freeze_record WHERE strategy=? AND status='committed' "
                 "AND trade_date>? ORDER BY trade_date LIMIT ?",
                 (strategy.value, EncodeDate(after) if after is not None else 0, limit),
             ).fetchall()
@@ -286,8 +397,8 @@ class SQLiteFreezeRecords:
                     self._load_history_record(row)
                 except FreezeRecordUnavailableError:
                     connection.run(
-                        "UPDATE freeze_record SET status='quarantined',failure_code='payload_invalid' WHERE strategy=? AND trade_date=?",
-                        (row["strategy"], row["trade_date"]),
+                        "UPDATE freeze_record SET status='quarantined',failure_code='payload_invalid' WHERE freeze_id=?",
+                        (row["freeze_id"],),
                     )
                     quarantined += 1
         return FreezeRecordRecoverySummary(quarantined=quarantined)
@@ -323,6 +434,8 @@ def _verify_row_identity(row: sqlite3.Row, record: CommittedFreezeRecord | Histo
             or EncodeHash(record.payload_hash) != row["freeze_hash"]
             or EncodeTime(record.committed_at) != row["committed_at"]
             or record.commit_kind != row["commit_kind"]
+            or ("prediction_target" in row.keys() and dict(record.freeze.input_versions).get("prediction_target")
+                != row["prediction_target"])
         ):
         raise FreezeRecordUnavailableError("freeze record identity mismatch")
 

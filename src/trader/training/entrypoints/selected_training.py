@@ -39,7 +39,7 @@ from trader.training.entrypoints.report_output import ProjectTrainingError, Trai
 from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.training_diagnostics import BuildTrainingOperationIssue
-from trader.training.domain.tomorrow_probability import TomorrowProbabilityTrainingResult
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityGroupResult
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
@@ -199,12 +199,14 @@ def _run_selected_training(
                 prepare_training(selection), WorkerFutureExecutor(executor),
             )
             shared = run.tomorrow_probability
-            shared_failed = shared is not None and not shared.ready
-            if shared is not None:
+            shared_failed = any(not group.result.ready for group in shared)
+            for group in shared:
+                target = group.target.threshold_bps / 100
+                group_result = group.result
                 command_output.report_notice(
-                    "Tomorrow ≥5%模型",
-                    shared.failure or shared.algorithm or "模型未就绪",
-                    state="失败" if shared_failed else "完成",
+                    f"Tomorrow ≥{target:g}%模型",
+                    f"{','.join(group.profiles)} | {group_result.failure or group_result.algorithm or '模型未就绪'}",
+                    state="完成" if group_result.ready else "失败",
                 )
             returned_training_code = (
                 130 if cancelled.is_set() or any(outcome.cancelled for outcome in run.outcomes)
@@ -214,9 +216,12 @@ def _run_selected_training(
             )
         progress_closed = True
         codes: list[int] = []
+        d25_targets = dict(run.d25_targets)
         for outcome in run.outcomes:
             result = outcome.result
             payload = _project_outcome(outcome)
+            if (d25_target := d25_targets.get(outcome.profile)) is not None:
+                payload["d25_target"] = {"identity": d25_target.identity, "threshold_bps": d25_target.threshold_bps}
             if isinstance(result, TrainingRunResult):
                 if not cancelled.is_set():
                     contract = next(
@@ -224,7 +229,7 @@ def _run_selected_training(
                         for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
                         if item.profile_id == outcome.profile
                     )
-                    if shared is not None:
+                    if shared:
                         contract = D25ProfileContract(contract)
                     try:
                         maintenance = EvaluateAllHistoryTrainingDue(
@@ -297,8 +302,8 @@ def _run_selected_training(
             ],
             "not_started": [],
         }
-        if shared is not None:
-            summary["tomorrow_probability"] = _project_shared_tomorrow(shared)
+        if shared:
+            summary["tomorrow_probability"] = [_project_shared_tomorrow(group) for group in shared]
         complete_outcome_summary = True
     except (KeyboardInterrupt, InterruptedError, CancelledError) as exc:
         cancelled.set()
@@ -320,7 +325,7 @@ def _run_selected_training(
             "timing": ProjectTrainingExecutionTiming(measurements.snapshot()) if measurements is not None else None,
         }
         if isinstance(exc, SelectedD25IndustryUnavailable):
-            summary["tomorrow_probability"] = _project_shared_tomorrow(exc.tomorrow_probability)
+            summary["tomorrow_probability"] = [_project_shared_tomorrow(group) for group in exc.tomorrow_probability]
             summary["not_started"] = profiles
     finally:
         deadline = cancelled.shutdown_deadline()
@@ -393,9 +398,13 @@ def _run_selected_training(
     return code
 
 
-def _project_shared_tomorrow(result: TomorrowProbabilityTrainingResult) -> dict[str, object]:
+def _project_shared_tomorrow(group: TomorrowProbabilityGroupResult) -> dict[str, object]:
+    result = group.result
     selected = result.selection
     return {
+        "target": group.target.identity,
+        "threshold_bps": group.target.threshold_bps,
+        "profiles": group.profiles,
         "ready": result.ready,
         "history_snapshot_hash": result.history_snapshot_hash,
         "model_identity": result.model_identity,

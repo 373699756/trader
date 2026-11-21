@@ -201,9 +201,7 @@ class UnifiedFreezeIndex:
 
         if not pairs or len({pair.profile for pair in pairs}) != len(pairs):
             raise ValueError("profiled publication requires unique profiles")
-        if len({tuple(freeze.strategy for freeze in pair.freezes) for pair in pairs}) != 1:
-            raise ValueError("profiled publications must include the same strategies")
-        if len({freeze.trade_date for pair in pairs for freeze in pair.freezes}) != 1:
+        if len({freeze.trade_date for pair in pairs for freeze in pair.freezes}) > 1:
             raise ValueError("profiled publication requires one trade date")
         transaction_lock = pairs[0].index._lock
         if any(pair.index._lock is not transaction_lock for pair in pairs):
@@ -232,9 +230,9 @@ class UnifiedFreezeIndex:
     ) -> str | None:
         if any(not isinstance(freeze, ScoredFreeze) for freeze in freezes):
             raise ValueError("historical snapshots are read-only")
-        if tuple(freeze.strategy for freeze in freezes) not in {(Strategy.TOMORROW, Strategy.D25), (Strategy.D25,)}:
-            raise ValueError("profiled publication requires D25, with Tomorrow only in a paired runtime")
-        if len({freeze.trade_date for freeze in freezes}) != 1:
+        if tuple(freeze.strategy for freeze in freezes) not in {(), (Strategy.TOMORROW,), (Strategy.D25,), (Strategy.TOMORROW, Strategy.D25)}:
+            raise ValueError("profiled publication may only include one freeze per ready scored strategy")
+        if len({freeze.trade_date for freeze in freezes}) > 1:
             raise ValueError("profiled publication requires one trade date")
         for freeze, overlay, expected_version in zip(freezes, overlays, expected_versions, strict=True):
             rejection = _scored_rejection(

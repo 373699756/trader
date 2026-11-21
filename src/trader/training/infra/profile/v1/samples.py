@@ -34,12 +34,14 @@ from trader.recommendation.domain.market.v1.features import (
     LearnedRankDailyPoint,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort, TrainingSampleDiagnostics
 from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.v1.learned_rank import IsLearnedRankIndustryIdentity, LearnedRankDateSplit
 from trader.training.domain.v1.training_plan import LearnedRankPartitionCoverage, LearnedRankSampleCounts
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
+from trader.training.infra.d25_label import D25HitLabel, VerifiedD25Close
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.sample_schema import SampleFeatureHash
 from trader.training.infra.sample_progress import TrainingSampleProgressTracker
@@ -55,7 +57,8 @@ _SAMPLE_SCHEMA = SqliteSchema(
         "CREATE TABLE samples (trade_date INTEGER NOT NULL,code TEXT NOT NULL,industry TEXT NOT NULL,"
         + ",".join(f"{name} REAL NOT NULL" for name in LEARNED_RANK_SAMPLE_COLUMNS)
         + ",zero_signs INTEGER NOT NULL CHECK(zero_signs BETWEEN 0 AND 1023),"
-        "target_t1 REAL,target_d25 REAL,PRIMARY KEY(trade_date,code)) WITHOUT ROWID",
+        "target_t1 REAL,target_d25 REAL,target_d25_hit INTEGER CHECK(target_d25_hit IN (0,1)),"
+        "PRIMARY KEY(trade_date,code)) WITHOUT ROWID",
     ),
 )
 
@@ -88,10 +91,12 @@ class LearnedRankMatrix:
 class LearnedRankMatrixRequest:
     dates: tuple[date, ...]
     strategy: Strategy
+    d25_probability: bool = False
 
     def __post_init__(self) -> None:
         if (
             self.strategy not in {Strategy.TOMORROW, Strategy.D25}
+            or self.d25_probability and self.strategy is not Strategy.D25
             or not self.dates or self.dates != tuple(sorted(set(self.dates)))
         ):
             raise ValueError("learned-rank matrix requires one scored strategy and date partition")
@@ -126,6 +131,8 @@ class LearnedRankCandidate:
     features: tuple[float, ...]
     entry: float
     future: list[float | None] = field(default_factory=lambda: [None] * 5)
+    signal_d25_close: float | None = None
+    future_d25_closes: list[float | None] = field(default_factory=lambda: [None] * 4)
 
 
 @dataclass
@@ -181,7 +188,9 @@ class LearnedRankSampleIndex:
     def close(self) -> None:
         self._connection.close()
 
-    def add_day(self, pending: LearnedRankPendingDay, *, include_t1: bool = True) -> tuple[int, int, int]:
+    def add_day(
+        self, pending: LearnedRankPendingDay, *, include_t1: bool = True, d25_target: PredictionTarget | None = None,
+    ) -> tuple[int, int, int]:
         candidates = tuple(pending.candidates.values())
         benchmarks = tuple(
             ObservedTrainingBenchmark(item.future[index] for item in candidates) if include_t1 or index > 0 else None
@@ -211,10 +220,11 @@ class LearnedRankSampleIndex:
                     1 << position for position, value in enumerate(item.features)
                     if value == 0.0 and math.copysign(1.0, value) < 0
                 )
-                rows.append((EncodeDate(pending.trade_date), item.code, item.industry, *item.features, flags, t1, d25))
+                hit = D25HitLabel(d25_target, item.signal_d25_close, item.future_d25_closes) if d25_target else None
+                rows.append((EncodeDate(pending.trade_date), item.code, item.industry, *item.features, flags, t1, d25, hit))
                 converted += 1
             self._connection.run_many(
-                "INSERT INTO samples VALUES (" + ",".join("?" for _ in range(16)) + ")", rows
+                "INSERT INTO samples VALUES (" + ",".join("?" for _ in range(17)) + ")", rows
             )
         return converted, missing_t1, missing_d25
 
@@ -269,14 +279,14 @@ class LearnedRankSampleIndex:
         date_values = {EncodeDate(day): day for request in requests for day in request.dates}
         start, end = min(date_values), max(date_values)
         counts = tuple(
-            (DecodeDate(row[0]), int(row[1]), int(row[2])) for row in self._connection.run(
-                "SELECT trade_date,COUNT(target_t1),COUNT(target_d25) FROM samples "
+            (DecodeDate(row[0]), int(row[1]), int(row[2]), int(row[3])) for row in self._connection.run(
+                "SELECT trade_date,COUNT(target_t1),COUNT(target_d25),COUNT(target_d25_hit) FROM samples "
                 "WHERE trade_date BETWEEN ? AND ? GROUP BY trade_date", (start, end),
             )
         )
         outputs = []
         for number, request in enumerate(requests):
-            target = 1 if request.strategy is Strategy.TOMORROW else 2
+            target = 3 if request.d25_probability else 1 if request.strategy is Strategy.TOMORROW else 2
             if any(request.dates[0] <= row[0] <= request.dates[-1]
                    and row[0] not in dates_by_request[number] and cast(int, row[target]) > 0 for row in counts):
                 raise ValueError("learned-rank sample crossed a date partition")
@@ -289,7 +299,7 @@ class LearnedRankSampleIndex:
         width = len(LEARNED_RANK_SAMPLE_COLUMNS)
         with closing(self._connection.run(
             f"SELECT trade_date,code,industry,{','.join(LEARNED_RANK_SAMPLE_COLUMNS)},"
-            "zero_signs,target_t1,target_d25 FROM samples WHERE trade_date BETWEEN ? AND ? "
+            "zero_signs,target_t1,target_d25,target_d25_hit FROM samples WHERE trade_date BETWEEN ? AND ? "
             "ORDER BY trade_date,code", (start, end),
         )) as cursor:
             while batch := cursor.fetch_values(self._sample_settings.v1_batch_rows):
@@ -314,7 +324,7 @@ class LearnedRankSampleIndex:
                 codes = np.asarray(tuple(map(code_values.setdefault, batch_codes, batch_codes)), dtype=object)
                 industries = np.asarray(tuple(map(industry_values.setdefault, batch_industries, batch_industries)), dtype=object)
                 for request, output in zip(requests, outputs, strict=True):
-                    target = width + (1 if request.strategy is Strategy.TOMORROW else 2)
+                    target = width + (3 if request.d25_probability else 1 if request.strategy is Strategy.TOMORROW else 2)
                     selected = np.flatnonzero(
                         (day_numbers >= EncodeDate(request.dates[0]))
                         & (day_numbers <= EncodeDate(request.dates[-1]))
@@ -364,6 +374,7 @@ def BuildLearnedRankSamples(
     history_sessions: int,
     stream: LearnedRankSampleStream = _STANDALONE_STREAM,
     final_fit_plans: tuple[FinalFitDatePlan, ...] | None = None,
+    d25_target: PredictionTarget | None = None,
 ) -> LearnedRankSampleCounts:
     progress, cancel_requested, aligned_rows = stream.progress, stream.cancel_requested, stream.aligned_rows
     calendar = source.snapshot.calendar.open_dates
@@ -420,7 +431,9 @@ def BuildLearnedRankSamples(
         position = positions[row.trade_date]
         if row.trade_date != current:
             while pending and position - pending[0].position > 5:
-                added, absent_t1, absent_d25 = index.add_day(pending.popleft(), include_t1=include_t1)
+                added, absent_t1, absent_d25 = index.add_day(
+                    pending.popleft(), include_t1=include_t1, d25_target=d25_target,
+                )
                 converted += added
                 missing_t1 += absent_t1
                 missing_d25 += absent_d25
@@ -451,6 +464,8 @@ def BuildLearnedRankSamples(
                 and row.cell_status in {None, "complete", "supplier_marked_suspended"}
             ):
                 candidate.future[horizon - 1] = point.close_price / candidate.entry - 1.0
+                if d25_target is not None and horizon >= 2:
+                    candidate.future_d25_closes[horizon - 2] = VerifiedD25Close(row)
         if row.trade_date in selected and row.cell_status in {None, "complete"} and point.amount > 0.0:
             if row.industry is None:
                 missing_industry += 1
@@ -459,13 +474,16 @@ def BuildLearnedRankSamples(
             elif (features := CalculateLearnedRankFeatures(tuple(state.points))) is None:
                 short_window += 1
             else:
-                pending[-1].candidates[row.code] = LearnedRankCandidate(row.code, row.industry, features, point.close_price)
+                pending[-1].candidates[row.code] = LearnedRankCandidate(
+                    row.code, row.industry, features, point.close_price,
+                    signal_d25_close=VerifiedD25Close(row) if d25_target is not None else None,
+                )
         state.points.append(point)
         state.last_position = position
         if emit:
             report()
     while pending:
-        added, absent_t1, absent_d25 = index.add_day(pending.popleft(), include_t1=include_t1)
+        added, absent_t1, absent_d25 = index.add_day(pending.popleft(), include_t1=include_t1, d25_target=d25_target)
         converted += added
         missing_t1 += absent_t1
         missing_d25 += absent_d25

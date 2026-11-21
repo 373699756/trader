@@ -20,6 +20,7 @@ def EvaluateTomorrowCloseGain(
     confirmed_suspended: bool = False,
     next_raw_reference: Decimal | None = None,
     next_raw_close: Decimal | None = None,
+    threshold_bps: int = 500,
 ) -> TomorrowCloseGain:
     """Classify comparable closes without rounding either price or the return.
 
@@ -33,19 +34,19 @@ def EvaluateTomorrowCloseGain(
     if next_close is None or not next_close.is_finite() or next_close <= 0:
         return TomorrowCloseGain.PENDING
 
-    hit = _meets_threshold(signal_close, next_close)
+    hit = _meets_threshold(signal_close, next_close, threshold_bps)
     if next_raw_reference is not None and next_raw_close is not None and (
         not next_raw_reference.is_finite()
         or next_raw_reference <= 0
         or not next_raw_close.is_finite()
         or next_raw_close <= 0
-        or _meets_threshold(next_raw_reference, next_raw_close) != hit
+        or _meets_threshold(next_raw_reference, next_raw_close, threshold_bps) != hit
     ):
         return TomorrowCloseGain.PENDING
     return TomorrowCloseGain.HIT if hit else TomorrowCloseGain.MISS
 
 
-def _meets_threshold(signal_close: Decimal, next_close: Decimal) -> bool:
+def _meets_threshold(signal_close: Decimal, next_close: Decimal, threshold_bps: int) -> bool:
     signal_numerator, signal_denominator = signal_close.as_integer_ratio()
     next_numerator, next_denominator = next_close.as_integer_ratio()
-    return 100 * next_numerator * signal_denominator >= 105 * signal_numerator * next_denominator
+    return 10_000 * next_numerator * signal_denominator >= (10_000 + threshold_bps) * signal_numerator * next_denominator

@@ -38,7 +38,6 @@ from trader.recommendation.domain.publication.freeze_identity import (
     ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 
 
 @dataclass(frozen=True)
@@ -122,13 +121,10 @@ class CloseControlCoordinator:
     ) -> None:
         versions = dict(current.input_versions)
         native_version = versions.get("native", current.version)
-        close_version = (
-            versions.get("tomorrow_close_evidence")
-            if versions.get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET
-            else f"official-close:{native_version}"
-        )
+        close_key = current.prediction_close_key
+        close_version = versions.get(close_key) if close_key is not None else f"official-close:{native_version}"
         if close_version is None:
-            self._hooks.failure("seal", "tomorrow_closing_evidence_pending", request.strategy)
+            self._hooks.failure("seal", f"{request.strategy.value}_closing_evidence_pending", request.strategy)
             return
         try:
             with SessionGuard(request.session):

@@ -41,7 +41,8 @@ from trader.training.application.tomorrow_training import CancellableTrainingPro
 from trader.infra.future_cleanup import CloseAfterFutures
 from trader.infra.shutdown import ShutdownDeadline
 from trader.training.domain.v1.training_plan import BuildLearnedRankReadDates
-from trader.training.domain.tomorrow_probability import TomorrowProbabilityTrainingResult
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTargets
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityGroupResult
 from trader.training.infra.engine import FitSelectedProfile, InspectSelectedProfile, ProfileTrainingRequest
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
@@ -116,9 +117,12 @@ class SelectedTrainingAdapter:
     load_industry_snapshot: Callable[[datetime], CurrentIndustrySnapshot] = field(kw_only=True)
     clock: Callable[[], datetime] = field(kw_only=True)
     train_shared_tomorrow: SharedTomorrowTrainer | None = field(default=None, kw_only=True)
+    prediction_targets: PredictionTargets | None = field(default=None, kw_only=True)
     _measurements: TrainingExecutionMeasurements = field(init=False)
 
     def __post_init__(self) -> None:
+        if (self.train_shared_tomorrow is None) != (self.prediction_targets is None):
+            raise ValueError("production training requires prediction targets and the Tomorrow trainer")
         object.__setattr__(
             self, "_measurements",
             self.request.measurements if self.request.measurements is not None
@@ -166,19 +170,23 @@ class SelectedTrainingAdapter:
             for profile in request.profiles:
                 scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
             RequireHistoryRepackIdle(paths.history)
-            tomorrow = None
-            if self.train_shared_tomorrow is not None:
-                tomorrow = self.train_shared_tomorrow(
-                    OpenTomorrowHistoryInput(paths.history, sqlite_policy=self.sqlite_policy), paths.models,
-                    cancelled=request.cancelled, cpu_budget=request.cpu_budget,
-                    memory=request.memory_admission,
+            tomorrow: tuple[TomorrowProbabilityGroupResult, ...] = ()
+            train = self.train_shared_tomorrow
+            if train is not None and self.prediction_targets is not None:
+                tomorrow_history = OpenTomorrowHistoryInput(paths.history, sqlite_policy=self.sqlite_policy)
+                tomorrow = tuple(
+                    TomorrowProbabilityGroupResult(target, profiles, train(
+                        tomorrow_history, paths.models, target=target, cancelled=request.cancelled,
+                        cpu_budget=request.cpu_budget, memory=request.memory_admission,
+                    ))
+                    for target, profiles in self.prediction_targets.tomorrow_groups(request.profiles)
                 )
             try:
                 industry = self.load_industry_snapshot(self.clock())
             except InterruptedError:
                 raise
             except (OSError, ValueError, RuntimeError) as exc:
-                if tomorrow is not None:
+                if tomorrow:
                     raise SelectedD25IndustryUnavailable(tomorrow) from exc
                 raise
             history = SQLiteHistoryTrainingInputSnapshot.open(
@@ -186,7 +194,7 @@ class SelectedTrainingAdapter:
             )
             factory = _TrainingTaskFactory(
                 request, history, scope, self._measurements, sqlite_policy=self.sqlite_policy,
-                d25_only=self.train_shared_tomorrow is not None,
+                prediction_targets=self.prediction_targets,
             )
             yield _SelectedTrainingSession(request, history, factory, self._measurements, stopped, tomorrow)
         except SelectedTrainingDrainError as exc:
@@ -204,7 +212,7 @@ class _SelectedTrainingSession:
     factory: _TrainingTaskFactory
     measurements: TrainingExecutionMeasurements
     stopped: Event
-    tomorrow: TomorrowProbabilityTrainingResult | None
+    tomorrow: tuple[TomorrowProbabilityGroupResult, ...]
     physical_rows: int = 0
 
     def abort(self) -> ShutdownDeadline:
@@ -278,6 +286,11 @@ class _SelectedTrainingSession:
             run, history_rows_read=self.physical_rows, timing=self.measurements.snapshot(),
             industry_snapshot=self.history.snapshot.industry_snapshot,
             tomorrow_probability=self.tomorrow,
+            d25_targets=tuple(
+                (profile, self.factory.prediction_targets.for_profile(profile, Strategy.D25))
+                for profile in self.request.profiles
+                if self.factory.prediction_targets is not None
+            ),
         )
 
 
@@ -289,7 +302,7 @@ class _TrainingTaskFactory:
     measurements: TrainingExecutionMeasurements
 
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
-    d25_only: bool = field(kw_only=True)
+    prediction_targets: PredictionTargets | None = field(kw_only=True)
 
     def prepare(
         self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort
@@ -307,11 +320,13 @@ class _TrainingTaskFactory:
         paths = selection.paths
         calendar = self.history.snapshot.calendar.open_dates
         settings = LoadV1TrainingSettings(selection.runtime.project_root)
-        strategies = (Strategy.D25,) if self.d25_only else (Strategy.TOMORROW, Strategy.D25)
+        d25_target = self.prediction_targets.for_profile("v1", Strategy.D25) if self.prediction_targets else None
+        strategies = (Strategy.D25,) if d25_target is not None else (Strategy.TOMORROW, Strategy.D25)
         reused = InspectV1Training(
             self.history, paths.models, settings, cancel_requested=selection.cancelled,
             compute_threads=selection.cpu_budget.profile_threads.v1,
             strategies=strategies,
+            d25_target=d25_target,
         )
         if reused is not None:
             return SelectedTrainingTask("v1", frozenset(), partial(_reused, reused))
@@ -340,6 +355,7 @@ class _TrainingTaskFactory:
             execution_observer=self.measurements,
             sqlite_policy=self.sqlite_policy,
             strategies=strategies,
+            d25_target=d25_target,
         )
         return SelectedTrainingTask("v1", dates, partial(_run_v1, execute))
 
@@ -353,7 +369,8 @@ class _TrainingTaskFactory:
             for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
             if item.profile_id == profile
         )
-        if self.d25_only:
+        d25_target = self.prediction_targets.for_profile(profile, Strategy.D25) if self.prediction_targets else None
+        if d25_target is not None:
             contract = D25ProfileContract(contract)
         settings = LoadProfileTrainingSettings(selection.runtime.project_root, profile)
         if isinstance(settings.fitting, TcnFittingParameters):
@@ -391,6 +408,8 @@ class _TrainingTaskFactory:
                 execution_options=selection.execution_options,
                 memory_capacity_bytes=selection.memory_capacity_bytes,
                 execution_observer=self.measurements,
+                d25_target=d25_target,
+                cancel_requested=selection.cancelled,
             ), sqlite_policy=self.sqlite_policy,
         )
         if reused is not None:

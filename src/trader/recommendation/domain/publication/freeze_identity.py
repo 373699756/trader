@@ -21,7 +21,7 @@ from trader.recommendation.domain.publication.historical_pipeline import (
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.publication.score_ledger import ScoreLedger, ScoreLedgerPayload
-from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
+from trader.recommendation.domain.outcomes.prediction_target import ParsePredictionTargetIdentity
 from trader.recommendation.domain.scoring.profile_identity import (
     LEARNED_RANK_SCORE_SCALE,
     MODEL_RANK_SCORE_SCALES,
@@ -157,6 +157,7 @@ class FreezeModelDiagnostics:
     estimated_cost_pct: float
     predicted_net_excess_pct: float
     model_disagreement_pct: float | None = None
+    target_probability: float | None = None
 
     def __post_init__(self) -> None:
         _validate_score(self.signal_score, "model signal score")
@@ -165,6 +166,8 @@ class FreezeModelDiagnostics:
         _validate_optional_market_value(self.predicted_net_excess_pct, "predicted net excess")
         if self.model_disagreement_pct is not None:
             _validate_optional_market_value(self.model_disagreement_pct, "model disagreement", non_negative=True)
+        if self.target_probability is not None and not 0.0 <= self.target_probability <= 1.0:
+            raise ValueError("target probability must be between zero and one")
 
 
 @dataclass(frozen=True)
@@ -285,7 +288,12 @@ class ScoredFreeze:
             or any(item.action is RecommendationAction.EXECUTABLE for item in items)
         ):
             raise ValueError("shadow identity cannot grant production authority or executable actions")
-        score_scale = dict(versions).get("score_scale")
+        model_versions = dict(versions)
+        target_identity = model_versions.get("prediction_target")
+        target = ParsePredictionTargetIdentity(target_identity)
+        if target_identity is not None and (target is None or target.strategy is not self.strategy):
+            raise ValueError("freeze prediction target is incompatible with the strategy")
+        score_scale = model_versions.get("score_scale")
         model_rank = score_scale in MODEL_RANK_SCORE_SCALES
         if model_rank:
             score_model_id = dict(versions).get("score_model_id")
@@ -300,33 +308,31 @@ class ScoredFreeze:
             ):
                 raise ValueError("model rank freezes require a complete execution and model identity")
         elif score_scale == TOMORROW_PROBABILITY_SCORE_SCALE:
-            model_versions = dict(versions)
             if (
                 self.strategy is not Strategy.TOMORROW
-                or model_versions.get("prediction_target") != TOMORROW_CLOSE_GAIN_TARGET
-                or model_versions.get("score_model_id") != TOMORROW_CLOSE_GAIN_TARGET
+                or target is None
+                or model_versions.get("score_model_id") != (
+                    model_versions.get("score_model") if target.identity == target_identity else target_identity
+                )
                 or not model_versions.get("score_model")
                 or not model_versions.get("score_contract_hash")
             ):
                 raise ValueError("Tomorrow probability freezes require a complete model identity")
-            if self.is_formal:
-                close_evidence = model_versions.get("tomorrow_close_evidence")
-                if (
-                    close_evidence is None
-                    or not model_versions.get("native")
-                    or close_evidence != f"official-close:{model_versions.get('native')}"
-                    or any(
-                        item.quote is not None
-                        and (
-                            item.quote.source_time.date() != self.trade_date
-                            or item.quote.source_time.hour < 15
-                        )
-                        for item in items
-                    )
-                ):
-                    raise ValueError("formal Tomorrow probability freeze requires closing evidence")
         elif self.stage == "local" and any(item.final_score != item.local_score for item in items):
             raise ValueError("local freeze final scores must equal local scores")
+        if target is not None and self.is_formal:
+            close_evidence = model_versions.get(f"{target.strategy.value}_close_evidence")
+            if (
+                close_evidence is None
+                or not model_versions.get("native")
+                or close_evidence != f"official-close:{model_versions.get('native')}"
+                or any(
+                    item.quote is not None
+                    and (item.quote.source_time.date() != self.trade_date or item.quote.source_time.hour < 15)
+                    for item in items
+                )
+            ):
+                raise ValueError("formal prediction-target freeze requires closing evidence")
         if any(item.quote is not None and item.quote.source_time > self.observed_at for item in items):
             raise ValueError("freeze cannot contain a future quote")
         aggregates = _normalize_counts(self.filter_aggregates)
@@ -340,9 +346,15 @@ class ScoredFreeze:
             self,
             "version",
             f"freeze:{self.strategy.value}:{self.trade_date.isoformat()}:{self.stage}:{self.sequence}"
+            + PredictionTargetSuffix(self.strategy, target_identity)
             + (f":preview:{self.preview_context.run_id}" if self.preview_context is not None else "")
             + (":formal" if self.is_formal else ""),
         )
+
+    @property
+    def prediction_close_key(self) -> str | None:
+        target = ParsePredictionTargetIdentity(dict(self.input_versions).get("prediction_target"))
+        return f"{target.strategy.value}_close_evidence" if target is not None else None
 
 
 @dataclass(frozen=True)
@@ -487,7 +499,8 @@ class CommittedFreezeRecord:
         object.__setattr__(
             self,
             "version",
-            f"record:{self.strategy.value}:{self.trade_date.isoformat()}:{self.freeze.stage}:{self.freeze.sequence}",
+            f"record:{self.strategy.value}:{self.trade_date.isoformat()}:{self.freeze.stage}:{self.freeze.sequence}"
+            + PredictionTargetSuffix(self.strategy, dict(self.freeze.input_versions).get("prediction_target")),
         )
 
     @property
@@ -497,6 +510,13 @@ class CommittedFreezeRecord:
     @property
     def trade_date(self) -> date:
         return self.freeze.trade_date
+
+
+def PredictionTargetSuffix(strategy: Strategy, identity: str | None) -> str:
+    target = ParsePredictionTargetIdentity(identity)
+    if target is None or target.strategy is not strategy or target.identity != identity:
+        return ""
+    return f":target:{target.identity}"
 
 
 def IdentityCodes(identity: FreezeIdentity) -> frozenset[str]:
@@ -867,6 +887,7 @@ def _model_diagnostics_payload(value: FreezeModelDiagnostics) -> dict[str, _Json
         "estimated_cost_pct": value.estimated_cost_pct,
         "predicted_net_excess_pct": value.predicted_net_excess_pct,
         "model_disagreement_pct": value.model_disagreement_pct,
+        **({"target_probability": value.target_probability} if value.target_probability is not None else {}),
     }
 
 

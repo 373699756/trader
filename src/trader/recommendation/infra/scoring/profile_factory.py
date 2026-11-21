@@ -19,6 +19,7 @@ from trader.recommendation.application.pipeline.local_score.tomorrow_probability
 from trader.recommendation.application.pipeline.local_score.v1.scoring import LearnedRankScoringService
 from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile
 from trader.recommendation.domain.market.tomorrow_probability import TomorrowProbabilityPredictor
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
@@ -49,6 +50,8 @@ def BuildProfileScoring(
     maintenance: Callable[[], tuple[HeadTrainingStatus, ...]] | None,
     tomorrow_predictor: TomorrowProbabilityPredictor | None = None,
     shared_tomorrow: bool = False,
+    tomorrow_target: PredictionTarget | None = None,
+    d25_target: PredictionTarget | None = None,
 ) -> PublishedModelScoringService:
     """Construct only in-memory capabilities; bootstrap owns all I/O and external resources."""
     shared = SharedModelFeatureCache()
@@ -56,13 +59,21 @@ def BuildProfileScoring(
         ModelScoringRouter(
             profile_id,
             {
-                strategy: TomorrowProbabilityCapability(profile_id, tomorrow_predictor)
+                strategy: TomorrowProbabilityCapability(profile_id, tomorrow_predictor, tomorrow_target)
                 if shared_tomorrow and strategy is Strategy.TOMORROW
-                else LearnedRankScoringService(loaded, strategy, cost_policy=cost_policy, content_hash=ContentHash)
+                else LearnedRankScoringService(
+                    loaded, strategy, cost_policy=cost_policy, content_hash=ContentHash,
+                    prediction_target=d25_target if strategy is Strategy.D25 else None,
+                )
                 if loaded is not None and strategy in loaded.heads and profile_id == "v1"
-                else ProductionModelScoringService(loaded, strategy, cost_policy=cost_policy, shared_features=shared)
+                else ProductionModelScoringService(
+                    loaded, strategy, cost_policy=cost_policy, shared_features=shared,
+                    prediction_target=d25_target if strategy is Strategy.D25 else None,
+                )
                 if loaded is not None and strategy in loaded.heads
-                else UnavailableModelCapability(profile_id, history_sessions, model_failure)
+                else UnavailableModelCapability(
+                    profile_id, history_sessions, model_failure, d25_target if strategy is Strategy.D25 else None
+                )
                 for strategy in (Strategy.TOMORROW, Strategy.D25)
             },
         ),

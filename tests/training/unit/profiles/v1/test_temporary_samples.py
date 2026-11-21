@@ -25,7 +25,7 @@ _NAMESPACE = ".temporary-training"
 def _populate(index: LearnedRankSampleIndex) -> None:
     with SqliteTransaction(index._connection):
         index._connection.run(
-            "INSERT INTO samples VALUES (" + ",".join("?" for _ in range(16)) + ")",
+            "INSERT INTO samples VALUES (" + ",".join("?" for _ in range(16)) + ",NULL)",
             (EncodeDate(_DAY), "600001", "bank", *(float(number) for number in range(10)), 0, 0.1, 0.2),
         )
 

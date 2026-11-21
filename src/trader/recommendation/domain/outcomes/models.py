@@ -11,7 +11,12 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET, TomorrowCloseGain
+from trader.recommendation.domain.outcomes.prediction_target import (
+    ComparableCloseReturn,
+    EvaluatePredictionTarget,
+    ParsePredictionTargetIdentity,
+)
+from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
 
 
 def OutcomeHorizons(strategy: Strategy) -> tuple[int, ...]:
@@ -100,10 +105,10 @@ class OutcomeTarget:
     prediction_target: str | None = None
 
     def __post_init__(self) -> None:
-        if self.prediction_target is not None and (
-            self.prediction_target != TOMORROW_CLOSE_GAIN_TARGET or self.strategy is not Strategy.TOMORROW
-        ):
-            raise ValueError("outcome target contract is invalid")
+        if self.prediction_target is not None:
+            target = ParsePredictionTargetIdentity(self.prediction_target)
+            if target is None or target.strategy is not self.strategy:
+                raise ValueError("outcome target contract is invalid")
         if self.entry_at is not None:
             if self.entry_at.tzinfo is None or self.entry_at.utcoffset() is None:
                 raise ValueError("outcome entry time must be timezone-aware")
@@ -145,12 +150,60 @@ class TomorrowRecommendationOutcome:
 
     def __post_init__(self) -> None:
         if (
-            self.target.prediction_target != TOMORROW_CLOSE_GAIN_TARGET
+            self.target.strategy is not Strategy.TOMORROW
+            or self.target.prediction_target is None
             or self.target.stock_code != self.evidence.code
             or self.target.recommend_date != self.evidence.signal_date.isoformat()
             or self.label is TomorrowCloseGain.PENDING
         ):
             raise ValueError("Tomorrow outcome is not terminal or does not match its target")
+
+
+@dataclass(frozen=True, slots=True)
+class D25CloseEvidence:
+    code: str
+    signal_date: date
+    dates: tuple[date, date, date, date]
+    publication_hash: str
+    signal_raw_close: Decimal
+    signal_close: Decimal
+    closes: tuple[Decimal, Decimal, Decimal, Decimal]
+
+    def __post_init__(self) -> None:
+        if (
+            not self.publication_hash or len(self.dates) != 4 or tuple(sorted(set(self.dates))) != self.dates
+            or self.dates[0] <= self.signal_date
+            or not self.signal_raw_close.is_finite() or self.signal_raw_close <= 0
+            or ComparableCloseReturn(self.signal_close, self.closes, sessions=4) is None
+        ):
+            raise ValueError("D25 close evidence is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class D25RecommendationOutcome:
+    target: OutcomeTarget
+    evidence: D25CloseEvidence
+    label: TomorrowCloseGain
+    settled_at: datetime
+
+    def __post_init__(self) -> None:
+        target = ParsePredictionTargetIdentity(self.target.prediction_target)
+        if (
+            target is None or target.strategy is not Strategy.D25
+            or self.target.stock_code != self.evidence.code
+            or self.target.recommend_date != self.evidence.signal_date.isoformat()
+            or Decimal(str(self.target.anchor_raw_price)) != self.evidence.signal_raw_close
+            or self.label is TomorrowCloseGain.PENDING
+            or self.label is not EvaluatePredictionTarget(target, self.evidence.signal_close, self.evidence.closes)
+        ):
+            raise ValueError("D25 outcome is not terminal or does not match its target")
+
+    @property
+    def actual_return_pct(self) -> float:
+        actual = ComparableCloseReturn(self.evidence.signal_close, self.evidence.closes, sessions=4)
+        if actual is None:
+            raise ValueError("settled D25 evidence must have comparable prices")
+        return float(actual * 100)
 
 
 @dataclass(frozen=True)
@@ -256,6 +309,8 @@ class RecommendationOutcome:
 __all__ = [
     "BenchmarkConstituentReturn",
     "BenchmarkReturn",
+    "D25CloseEvidence",
+    "D25RecommendationOutcome",
     "OutcomeBar",
     "OutcomeExitStatus",
     "OutcomePrice",

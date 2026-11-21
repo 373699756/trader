@@ -6,7 +6,7 @@ import platform
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing, contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.metadata import version
 from pathlib import Path
 
@@ -18,6 +18,8 @@ from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application import learned_rank_training
 from trader.training.application.resources import (
@@ -36,12 +38,14 @@ from trader.training.domain.v1.training_plan import (
 )
 from trader.training.domain.training_date_coverage import TrainingDateCoverage
 from trader.training.infra.execution_options import BASELINE_EXECUTION_OPTIONS, TrainingExecutionOptions
+from trader.training.infra.d25_probability import D25ProbabilityBinding, HasD25Probability, PublishD25Probability
+from trader.training.infra.d25_probability_training import FitV1D25Probability
 from trader.training.infra.fitting_resources import ReserveTrainingFittingResources
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.implementation_identity import TrainingImplementationIdentity
 from trader.training.infra.profile.v1.fitting import FitLearnedRankHead, LearnedRankPartitions, RefitLearnedRankHead
 from trader.training.infra.profile.v1.models import (
-    LearnedRankPredictor, PublishLearnedRankPair, ReadLearnedRankPair, RecoverLearnedRankPublication,
+    LearnedRankMetadataHash, LearnedRankPredictor, PublishLearnedRankPair, ReadLearnedRankPair, RecoverLearnedRankPublication,
 )
 from trader.training.infra.profile.v1.samples import (
     BuildLearnedRankSamples, CheckV1Cancellation, LearnedRankInputPort, LearnedRankMatrixRequest,
@@ -107,6 +111,7 @@ class _LearnedRankInspection:
     settings: V1TrainingSettings
     model_root: Path
     cancel_requested: Callable[[], bool] | None
+    d25_target: PredictionTarget | None = field(default=None, kw_only=True)
 
     def check_cancelled(self) -> None:
         CheckV1Cancellation(self.cancel_requested)
@@ -126,6 +131,14 @@ class _LearnedRankInspection:
             for head in pair.heads:
                 self.check_cancelled()
                 LearnedRankPredictor(head)
+                if head.strategy is Strategy.D25 and self.d25_target is not None and not HasD25Probability(
+                    self.model_root / "v1", "v1", LEARNED_RANK_FEATURE_IDS,
+                    D25ProbabilityBinding(
+                        self.d25_target, head.content_hash, pair.training_input_hash,
+                        LearnedRankMetadataHash(pair.contract_hash, head.split, head.final_fit),
+                    ),
+                ):
+                    return False
         except InterruptedError:
             raise
         except (OSError, ValueError, LightGBMError):
@@ -151,6 +164,7 @@ class LearnedRankTrainingAdapter:
     execution_options: TrainingExecutionOptions
     execution_observer: TrainingExecutionObserver | None
     strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25)
+    d25_target: PredictionTarget | None = None
 
     @contextmanager
     def open(self) -> Iterator[learned_rank_training.LearnedRankTrainingSessionPort]:
@@ -166,7 +180,7 @@ class LearnedRankTrainingAdapter:
             input_source = self.input_factory()
             yield _PinnedLearnedRankSession(
                 _training_source(input_source, self.settings, self.compute_threads, self.strategies), self.settings,
-                self.model_root, self.cancel_requested, self, input_source,
+                self.model_root, self.cancel_requested, self, input_source, d25_target=self.d25_target,
             )
 
 
@@ -213,6 +227,7 @@ class _LearnedRankSamples:
                     history_sessions=plan.settings.history_sessions,
                     stream=LearnedRankSampleStream(adapter.progress, adapter.cancel_requested, adapter.aligned_rows),
                     final_fit_plans=plan.final_fit_plans,
+                    d25_target=adapter.d25_target,
                 )
             coverage = index.coverage(plan.splits, final_fit_plans=plan.final_fit_plans)
             dates = tuple(
@@ -243,7 +258,9 @@ class _LearnedRankSamples:
                 memory_first=adapter.execution_options.memory_first,
             ) as reservation,
         ):
-            yield _LearnedRankFitter(index, self.directory, adapter, reservation.compute_threads)
+            yield _LearnedRankFitter(
+                index, self.directory, adapter, reservation.compute_threads, self.session.source.training_input_hash,
+            )
 
 
 @dataclass(frozen=True)
@@ -252,6 +269,7 @@ class _LearnedRankFitter:
     directory: Path
     adapter: LearnedRankTrainingAdapter
     compute_threads: int
+    training_input_hash: str
 
     def fit_diagnostic(self, strategy: Strategy, split: LearnedRankDateSplit) -> LearnedRankHead:
         requests = tuple(
@@ -274,10 +292,23 @@ class _LearnedRankFitter:
                 (LearnedRankMatrixRequest(plan.fit_dates, diagnostic.strategy),),
                 self.directory / "matrices", resources, cancel_requested=self.adapter.cancel_requested,
             )
-            return RefitLearnedRankHead(
+            final = RefitLearnedRankHead(
                 diagnostic, plan, matrices[0], self.adapter.settings,
                 compute_threads=self.compute_threads, cancel_requested=self.adapter.cancel_requested,
             )
+        target = self.adapter.d25_target
+        if target is not None and final.strategy is Strategy.D25:
+            artifact = FitV1D25Probability(
+                self.index, self.directory / "d25-probability", diagnostic.split, self.adapter.settings,
+                D25ProbabilityBinding(
+                    target, final.content_hash, self.training_input_hash,
+                    LearnedRankMetadataHash(final.training_contract_hash, final.split, final.final_fit),
+                ),
+                compute_threads=self.compute_threads, cancel_requested=self.adapter.cancel_requested,
+            )
+            CheckV1Cancellation(self.adapter.cancel_requested)
+            PublishD25Probability(self.adapter.model_root / "v1", artifact)
+        return final
 
 
 def InspectV1Training(
@@ -288,6 +319,7 @@ def InspectV1Training(
     cancel_requested: Callable[[], bool] | None = None,
     compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
     strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25),
+    d25_target: PredictionTarget | None = None,
 ) -> learned_rank_training.V1TrainingResult | None:
     """Validate the stored native pair against a pinned source and implementation."""
     if type(compute_threads) is not int or compute_threads < 1:
@@ -295,6 +327,7 @@ def InspectV1Training(
     CheckV1Cancellation(cancel_requested)
     return learned_rank_training.InspectLearnedRankTraining(_LearnedRankInspection(
         _training_source(source, settings, compute_threads, strategies), settings, model_root, cancel_requested,
+        d25_target=d25_target,
     ))
 
 
@@ -336,14 +369,17 @@ def RunV1Training(
     execution_options: TrainingExecutionOptions = BASELINE_EXECUTION_OPTIONS,
     execution_observer: TrainingExecutionObserver | None = None,
     strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25),
+    d25_target: PredictionTarget | None = None,
 ) -> learned_rank_training.V1TrainingResult:
     """Hold the pinned source and all disposable resources for the application run."""
     if type(compute_threads) is not int or compute_threads < 1:
         raise ValueError("training_cpu_request_invalid")
+    if d25_target is not None and (d25_target.strategy is not Strategy.D25 or strategies != (Strategy.D25,)):
+        raise ValueError("d25_probability_requires_d25_head")
     return learned_rank_training.TrainLearnedRank(LearnedRankTrainingAdapter(
         input_factory, model_root, sample_root, sample_settings, history_root, settings,
         progress, cancel_requested, aligned_rows, memory_admission, sqlite_policy, cpu_admission,
-        compute_threads, execution_options, execution_observer, strategies,
+        compute_threads, execution_options, execution_observer, strategies, d25_target,
     ))
 
 

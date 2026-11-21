@@ -2373,6 +2373,7 @@ async function verifyAtomicBatchCache() {
   ui.payloads.clear();
   const batch = (sequence) => ({
     round_sequence: sequence,
+    published_strategies: { v1: ["tomorrow", "d25"], v5: ["tomorrow", "d25"] },
     profiles: Object.fromEntries(["v1", "v5"].map((profile) => [profile,
       Object.fromEntries(["tomorrow", "d25"].map((strategy) => {
         const version = `${profile}-${strategy}-${sequence}`;

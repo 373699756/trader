@@ -20,6 +20,7 @@ from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddResearchEvidenceParsers
@@ -388,6 +389,13 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         "runtime_version": runtime.config_version,
         "strategy_version": strategy.strategy_version,
         "scoring_profile": strategy.scoring_profile,
+        "prediction_targets": {
+            profile: {
+                "tomorrow_bps": strategy.prediction_targets.for_profile(profile, Strategy.TOMORROW).threshold_bps,
+                "d25_bps": strategy.prediction_targets.for_profile(profile, Strategy.D25).threshold_bps,
+            }
+            for profile in SCORING_PROFILE_IDS
+        },
         "watchlist_version": watchlist.watchlist_version,
         "runtime_dir": str(runtime.runtime_dir),
         "data_dir": str(runtime.data_paths.root),

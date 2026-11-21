@@ -53,8 +53,6 @@ def PrepareCurrentPair(
     clock: Clock,
     publish_before: datetime | None,
 ) -> PreparedCurrentPair:
-    if tuple(freeze.strategy for freeze in freezes) not in {(Strategy.TOMORROW, Strategy.D25), (Strategy.D25,)}:
-        raise ValueError("profiled publication requires D25, with Tomorrow only in a paired runtime")
     return PreparedCurrentPair(
         profile,
         index,

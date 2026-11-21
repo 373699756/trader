@@ -62,10 +62,17 @@ class RuntimeDependencies:
     round_profile: str = "default"
     prepare_publication: Callable[[], None] | None = None
     shared_tomorrow_owner: bool | None = None
+    tomorrow_model_ready: bool = True
+    d25_model_ready: bool = True
     tomorrow_settlement: Callable[[datetime], object] | None = None
 
     @property
     def scored_strategies(self) -> tuple[Strategy, ...]:
-        if self.shared_tomorrow_owner is False:
-            return (Strategy.D25,)
-        return Strategy.TOMORROW, Strategy.D25
+        return tuple(
+            strategy
+            for strategy, ready in (
+                (Strategy.TOMORROW, self.shared_tomorrow_owner is not False and self.tomorrow_model_ready),
+                (Strategy.D25, self.d25_model_ready),
+            )
+            if ready
+        )

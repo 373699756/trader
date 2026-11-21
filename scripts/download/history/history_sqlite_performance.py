@@ -41,7 +41,7 @@ from trader.download.infra.current_industry_publication import CurrentIndustryCa
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.cache import BoundedLruCache
 from trader.infra.settings import LoadRuntimeSettings
-from trader.recommendation.infra.settings.loading import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadPredictionTargets, LoadStrategySettings
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_codec import DecodeDate
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
@@ -51,9 +51,11 @@ from trader.recommendation.infra.market_data.published_company_research import P
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.training.infra.training_settings import LoadRuntimeTrainingSettings
 from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
+from trader.training.infra.d25_probability import LoadD25ScoringProfile
 from trader.recommendation.infra.runtime.initialization import FixedCacheTtl
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.performance.history_context_reuse import ReusableHistoryContexts
@@ -231,10 +233,20 @@ def _measure_preload(
         raise RuntimeError("startup_reference_unavailable")
     reference_seconds = time.monotonic() - total_started
     model_started = time.monotonic()
+    targets = LoadPredictionTargets(settings.strategy_config_path)
     models = tuple(
-        LoadScoringProfile(profile, training_root=settings.data_paths.models, d25_only=True) for profile in selected
+        LoadD25ScoringProfile(
+            settings.data_paths.models,
+            LoadScoringProfile(profile, training_root=settings.data_paths.models, d25_only=True),
+            targets.for_profile(profile, Strategy.D25),
+        )
+        for profile in selected
     )
-    tomorrow_model = LoadTomorrowProbabilityModel(settings.data_paths.models)
+    tomorrow_models = {
+        target.identity: model.identity if model is not None else None
+        for target, _members in targets.tomorrow_groups(selected)
+        for model in (LoadTomorrowProbabilityModel(settings.data_paths.models, target),)
+    }
     model_seconds = time.monotonic() - model_started
     history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(root, sqlite_policy=sqlite_policy))
     manifest = history.manifest()
@@ -350,7 +362,7 @@ def _measure_preload(
                     for name, value in (sorted(pstats.Stats(company_profiler).get_stats_profile().func_profiles.items(), key=lambda item: item[1].cumtime, reverse=True)[:20] if cpu_profile and company_seconds else ())
                 ],
                 "model_versions": {profile: CanonicalDigest(model.publications) for profile, model in zip(selected, models, strict=True)},
-                "tomorrow_model_identity": tomorrow_model.identity if tomorrow_model is not None else None,
+                "tomorrow_model_identities": tomorrow_models,
                 "environment": {"python": platform.python_version(), "platform": platform.platform(), "cpu_count": os.cpu_count()},
                 "logical_cache_bytes": sum(item.estimated_bytes for sources in cache.status().datasets.values() for item in sources.values()),
                 "process_peak_rss_bytes": _peak_rss_bytes(),

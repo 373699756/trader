@@ -39,6 +39,8 @@ from trader.training.infra.sample_index import (
     TrainingSample,
 )
 from trader.training.infra.sample_progress import TrainingSampleProgressTracker
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.training.infra.d25_label import D25HitLabel, VerifiedD25Close
 
 
 class TrainingHistorySource(Protocol):
@@ -65,6 +67,7 @@ class TrainingSampleBuildRequest:
     index: SQLiteTrainingSampleIndex
     profile: TrainedProfileContract
     progress: TomorrowTrainingProgressPort | None = None
+    d25_target: PredictionTarget | None = None
 
 
 @dataclass
@@ -78,6 +81,8 @@ class _PendingSample:
     features: tuple[float, ...]
     close: float
     future_returns: list[float | None] = field(default_factory=lambda: [None] * 5)
+    signal_d25_close: float | None = None
+    future_d25_closes: list[float | None] = field(default_factory=lambda: [None] * 4)
 
 
 @dataclass
@@ -103,6 +108,7 @@ class _SampleBuildState:
     readable_dates: frozenset[date]
     allowed_codes: frozenset[str]
     include_t1: bool
+    d25_target: PredictionTarget | None = None
     converted_samples: int = 0
     pending_days: list[_PendingDay] = field(default_factory=list)
     rolling_codes: dict[str, _RollingCodeState] = field(default_factory=dict)
@@ -142,7 +148,7 @@ class _SampleBuildState:
             self.suspended_sessions += row.cell_status == "supplier_marked_suspended"
             self.estimated_sessions += row.cell_status in {"unknown_missing", "tencent_inferred_suspended"}
         if row.point is not None and row.cell_status in {None, "complete", "supplier_marked_suspended"}:
-            self._record_future_close(code, row.point, position)
+            self._record_future_close(row, row.point, position)
         if row.point is None:
             rolling.points.clear()
             if rolling.sequence_points is not None:
@@ -167,6 +173,8 @@ class _SampleBuildState:
                     rolling.sequence_points,
                 )
                 if candidate is not None:
+                    if self.d25_target is not None:
+                        candidate.signal_d25_close = VerifiedD25Close(row)
                     self.pending_days[-1].samples[code] = candidate
                 else:
                     self.invalid_features += 1
@@ -197,15 +205,17 @@ class _SampleBuildState:
                 rolling.sequence_points.clear()
         return rolling
 
-    def _record_future_close(self, code: str, point: HistoryTrainingPoint, position: int) -> None:
+    def _record_future_close(self, row: HistoryTrainingRow, point: HistoryTrainingPoint, position: int) -> None:
         close = _eligible_future_close(point)
         if close is None:
             return
         for pending_day in self.pending_days[:-1]:
             horizon = position - pending_day.calendar_position
-            candidate = pending_day.samples.get(code)
+            candidate = pending_day.samples.get(row.code)
             if candidate is not None and (1 if self.include_t1 else 2) <= horizon <= 5:
                 candidate.future_returns[horizon - 1] = close / candidate.close - 1.0
+                if self.d25_target is not None and horizon >= 2:
+                    candidate.future_d25_closes[horizon - 2] = VerifiedD25Close(row)
 
     def flush_matured(self, last_position: int, *, all_days: bool = False) -> None:
         while self.pending_days and (all_days or last_position - self.pending_days[0].calendar_position >= 5):
@@ -219,7 +229,7 @@ class _SampleBuildState:
                     for horizon in range(5)
                 ),
             )
-            finalized = _finalize_sample_day(tuple(pending.samples.values()), self.profile)
+            finalized = _finalize_sample_day(tuple(pending.samples.values()), self.profile, self.d25_target)
             self.missing_labels += len(pending.samples) - len(finalized)
             if self.include_t1:
                 self.missing_t1 += len(pending.samples) - sum(item.targets[0] is not None for item in finalized)
@@ -273,6 +283,7 @@ def _new_sample_state(request: TrainingSampleBuildRequest) -> _SampleBuildState:
         request.window.readable_dates,
         frozenset(request.codes),
         any(head.target_column == "target_t1" for head in request.profile.heads),
+        request.d25_target,
     )
 
 
@@ -392,6 +403,7 @@ def _ordered_dates(dates: frozenset[date]) -> tuple[date, ...]:
 def _finalize_sample_day(
     values: Sequence[_PendingSample],
     profile: TrainedProfileContract,
+    d25_target: PredictionTarget | None = None,
 ) -> tuple[TrainingSample, ...]:
     population = tuple(values)
     if not population:
@@ -437,6 +449,8 @@ def _finalize_sample_day(
                 item.average_amount_20d,
                 features if include_t1 else features[1:],
                 (excess[0], excess[1], excess[2], excess[3], excess[4], aggregate),
+                D25HitLabel(d25_target, item.signal_d25_close, item.future_d25_closes)
+                if d25_target is not None else None,
             )
         )
     return tuple(finalized)

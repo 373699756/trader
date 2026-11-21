@@ -272,6 +272,12 @@
     };
   }
 
+  function targetLabel(target) {
+    if (!target || !Number.isInteger(target.threshold_bps) || target.threshold_bps < 0) return "";
+    const period = { tomorrow: "次日涨幅", d25: "第2–5个交易日平均涨幅" }[target.strategy];
+    return period ? `${period} ≥${target.threshold_bps / 100}%` : "";
+  }
+
   function scorePresentation(snapshot) {
     const versions = snapshot && snapshot.input_versions || {};
     const learnedRank = Boolean(snapshot && snapshot.strategy !== "long"
@@ -283,7 +289,8 @@
       tomorrowProbability,
       shadow: Boolean(snapshot && snapshot.strategy !== "long" && versions.execution_mode === "shadow"),
       preview: Boolean(snapshot && snapshot.run_mode === "preview"),
-      finalLabel: tomorrowProbability ? "次日涨幅 ≥5% 概率" : learnedRank ? "模型排序分" : "最终评分",
+      finalLabel: tomorrowProbability ? `${targetLabel(snapshot.prediction_target) || "次日目标"}概率`
+        : learnedRank ? "模型排序分" : "最终评分",
     };
   }
 
@@ -352,7 +359,7 @@
   }
 
   function row(item, historical, snapshot) {
-    return historical ? historyRow(item) : currentRow(item, snapshot);
+    return historical ? historyRow(item, snapshot) : currentRow(item, snapshot);
   }
 
   function stock(item, includeContext = true) {
@@ -388,6 +395,8 @@
     const scoreDetail = ledger
       ? `基础 ${number(ledger.weighted_base_score, 2)} · +${number(ledger.applied_bonus, 2)} · −${number(ledger.applied_risk_penalty, 2)}`
       : "旧记录无加减分明细";
+    const d25Probability = snapshot && snapshot.strategy === "d25" && hasValue(scores.target_probability)
+      ? `<span>达标概率 ${number(scores.target_probability * 100, 2)}%</span>` : "";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}</td>
@@ -398,7 +407,7 @@
       <td>${valuePercent(item.turnover_rate) || "-"}</td>
       <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack">${primaryScore}<span aria-label="加减分明细">${scoreDetail}</span></div></td>
+      <td><div class="score-stack">${primaryScore}${d25Probability}<span aria-label="加减分明细">${scoreDetail}</span></div></td>
       <td class="reason-cell"><div class="reason-stack"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span><span class="review-status" aria-label="风险复核">风险复核：${review}</span></div></td>
     </tr>`;
   }
@@ -437,7 +446,7 @@
   }
 
   function tableRows(items, snapshot) {
-    if (snapshot && snapshot.historical === true) return rows(items, true);
+    if (snapshot && snapshot.historical === true) return rows(items, true, snapshot);
     if (snapshot && snapshot.strategy === "long") return longRows(items);
     return rows(items, false, snapshot);
   }
@@ -448,7 +457,7 @@
     return 11;
   }
 
-  function historyRow(item) {
+  function historyRow(item, snapshot) {
     const anchorChange = pct(item.anchor_daily_return_pct);
     const todayChange = pct(item.pct_change);
     const anchorToNow = pct(item.anchor_to_now_pct);
@@ -457,7 +466,10 @@
     const sourceDay = item.source_time ? String(item.source_time).slice(0, 10) : "";
     const quoteNote = item.quote_status === "retained" || sourceDay && sourceDay !== window.TraderSelection.shanghaiDate()
       ? `<span class="stock-code">${item.quote_status === "retained" ? "保留行情 · " : "最近交易日 · "}${escapeHtml(sourceDay)}</span>` : "";
-    const outcome = { hit: "次日 ≥5% 命中", miss: "次日未命中", pending: "次日待结算" }[item.tomorrow_outcome];
+    const status = { hit: "命中", miss: "未命中", pending: "待结算" }[item.tomorrow_outcome || item.d25_outcome];
+    const target = targetLabel(snapshot && snapshot.prediction_target);
+    const realized = hasValue(item.actual_return_pct) ? `实测 ${pct(item.actual_return_pct).text}` : "";
+    const outcome = status ? [target, status, realized].filter(Boolean).join(" ") : "";
     return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}${outcome ? `<span class="stock-code">${outcome}</span>` : ""}</td>
@@ -545,6 +557,7 @@
       ["评分版本", hasValue(scoreVersion) ? scoreVersion : null],
       ["本地评分", valueNumber(scores.local_score, 2)],
       ["模型相对信号分", valueNumber(scores.model_signal_score, 2)],
+      ["目标达标概率", hasValue(scores.target_probability) ? `${number(scores.target_probability * 100, 2)}%` : null],
       ["预测超额收益", valuePct(scores.predicted_excess_return_pct)],
       ["估算交易成本", valuePct(scores.estimated_cost_pct)],
       ["预测成本后净超额", valuePct(scores.predicted_net_excess_pct)],
@@ -825,5 +838,6 @@
     statusErrorLabel,
     sourceLabel,
     scorePresentation,
+    targetLabel,
   };
 })();

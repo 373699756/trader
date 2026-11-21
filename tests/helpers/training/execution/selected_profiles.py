@@ -146,7 +146,7 @@ def four_profile_seed(request: pytest.FixtureRequest, tmp_path_factory: pytest.T
         assert len(tuple(selection.paths.models.rglob("model.json"))) == 8
         assert 1 <= selection.cpu_budget.peak_reserved_threads <= (3 if execution_case == "combined" else 1)
         assert all("[num_threads: 1]" in head.rank_model for head in result.outcomes[0].result.heads)
-        assert tcn_threads == [1]
+        assert tcn_threads == [2 if execution_case == "combined" else 1]
         assert torch.get_num_threads() == original_threads
         assert torch.are_deterministic_algorithms_enabled() == original_deterministic
         assert result.timing is not None

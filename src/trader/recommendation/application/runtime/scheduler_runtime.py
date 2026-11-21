@@ -546,25 +546,20 @@ class SchedulerRuntime:
                 for strategy in (Strategy.TOMORROW, Strategy.D25)
             )
             if round_sequence is None:
-                if self._dependencies.shared_tomorrow_owner is None:
+                scored = self._dependencies.scored_strategies
+                if self._dependencies.shared_tomorrow_owner is None and len(scored) == 2:
                     self._cycles.execute_pair((requests[0], requests[1]))
                 else:
-                    if self._dependencies.shared_tomorrow_owner:
-                        self._cycles.execute(requests[0])
-                    self._cycles.execute(requests[1])
+                    for request in requests:
+                        if request.strategy in scored:
+                            self._cycles.execute(request)
             else:
                 self._execute_scored_round((requests[0], requests[1]), round_sequence)
         except StaleSessionError:
             return
 
     def _execute_scored_round(self, requests: tuple[CycleRequest, CycleRequest], sequence: int) -> None:
-        owner = self._dependencies.shared_tomorrow_owner
-        if owner is None:
-            self._cycles.execute_round_pair(requests, round_sequence=sequence)
-            return
-        if owner:
-            self._cycles.execute(requests[0])
-        self._cycles.execute_round_d25(requests[1], round_sequence=sequence)
+        self._cycles.execute_round_pair(requests, round_sequence=sequence)
 
     def _process_recommendation_round(self, scheduled: ScheduledPipelineTask) -> None:
         sequence = scheduled.round_sequence
@@ -661,7 +656,7 @@ class SchedulerRuntime:
             self._record_failure("refresh", "round_collection_timeout")
 
     def submit_cycle(self, request: CycleRequest) -> LatestWinsOffer:
-        if request.strategy is Strategy.TOMORROW and self._dependencies.shared_tomorrow_owner is False:
+        if request.strategy is not Strategy.LONG and request.strategy not in self._dependencies.scored_strategies:
             return LatestWinsOffer.REJECTED
         with self._lock:
             if not self._running:

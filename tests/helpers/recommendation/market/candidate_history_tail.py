@@ -72,7 +72,7 @@ class HistoryInput:
         self.reads.append(tuple(codes))
         return tuple(self.window(code, manifest.calendar_dates[-sessions:]) for code in codes)
 
-    def read_range(self, manifest, codes, start, end, *, check=None):
+    def read_range(self, manifest, codes, start, end, *, frozen_outcomes=False, check=None):
         if check is not None:
             check()
         self.reads.append(tuple(codes))

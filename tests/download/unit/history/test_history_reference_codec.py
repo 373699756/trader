@@ -14,6 +14,7 @@ from tests.helpers.shared.reference_fixtures import PublishHistoryReferenceFixtu
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from tests.helpers.download.history.infra.history_sync import NOW, FakeSupplier
 from tests.helpers.download.history.history_supplier_router import Baseline, Prices, _current_universe
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStCheckProgress, HistoryStEligibilitySummary
@@ -617,14 +618,14 @@ def test_sync_recovers_missing_reference_binding_without_redownloading_prices(tm
     assert InspectHistorySnapshot(root, verify_partitions=True, sqlite_policy=SqlitePolicyFixture()).state == "published"
 
 
-def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
+def test_new_st_exclusion_preserves_committed_rows_for_frozen_outcomes_only(tmp_path):
     from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
     from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 
-    dates = (date(2026, 9, 8), date(2026, 9, 9))
+    dates = tuple(date(2026, 9, day) for day in (3, 4, 7, 8, 9, 10))
     config = HistorySyncConfiguration(
         tmp_path / "baostock",
-        sessions=2,
+        sessions=len(dates),
         reread_sessions=2,
         minimum_free_bytes=0,
         reference_root=(tmp_path / "baostock").parent / "reference",
@@ -661,9 +662,20 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
     )} == {"600001"}
     published = SQLitePublishedHistorySnapshot(config.history_root, sqlite_policy=SqlitePolicyFixture())
     manifest = published.manifest()
+    assert manifest is not None
     assert manifest.universe_codes == ("600001",)
     assert [item.code for item in published.read_windows(manifest, ("600001", "600002"), sessions=2)] == ["600001"]
     assert [item.code for item in published.iter_windows(manifest, sessions=2)] == ["600001"]
+    use_case = ReadPublishedHistoryUseCase(published)
+    assert use_case.read_range(manifest, ("600002",), dates[0], dates[-1]) == ()
+    first, later = use_case.read_range(
+        manifest, ("600002", "600001", "600002", "600003"), dates[0], dates[-1], frozen_outcomes=True
+    )
+    assert (first.code, later.code) == ("600002", "600001")
+    assert tuple(cell.trade_date for cell in first.cells) == dates
+    assert all(cell.unadjusted is not None and cell.qfq is not None for cell in first.cells)
+    with pytest.raises(ValueError, match="published_history_codes_invalid"):
+        use_case.read_range(manifest, ("坏代码",), dates[0], dates[-1], frozen_outcomes=True)
 
     with (
         SqliteSession(config.history_root / snapshot.partitions[0].relative_path) as connection,

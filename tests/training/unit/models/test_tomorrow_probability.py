@@ -8,7 +8,9 @@ import pytest
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
 
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel, PublishTomorrowProbabilityModel
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.memory_admission import TrainingMemoryBudget
@@ -16,6 +18,8 @@ from trader.training.infra.tomorrow_probability_training import (
     TrainSharedTomorrowProbability, _collect_samples, _fit_tree, _label, _train,
 )
 
+_TARGET = PredictionTarget(Strategy.TOMORROW, 500)
+_HIGHER_TARGET = PredictionTarget(Strategy.TOMORROW, 600)
 
 def _row(day: date, code: str, close: float, *, opening: float = 100, preclose: float = 100) -> HistoryTrainingRow:
     return HistoryTrainingRow(
@@ -43,18 +47,19 @@ def test_label_preserves_exact_hit_and_unknown_or_suspension() -> None:
     following_day = day + timedelta(days=1)
     current = _row(day, "600001", 100)
     threshold = _row(following_day, current.code, 105)
-    assert _label(current, threshold) is TomorrowCloseGain.HIT
-    assert _label(current, _row(following_day, current.code, 104.9999)) is TomorrowCloseGain.MISS
-    assert _label(current, None) is TomorrowCloseGain.PENDING
-    assert _label(current, replace(threshold, cell_status="supplier_marked_suspended")) is TomorrowCloseGain.MISS
-    assert _label(current, replace(threshold, cell_status="tencent_inferred_suspended")) is TomorrowCloseGain.PENDING
+    assert _label(current, threshold, _TARGET) is TomorrowCloseGain.HIT
+    assert _label(current, threshold, _HIGHER_TARGET) is TomorrowCloseGain.MISS
+    assert _label(current, _row(following_day, current.code, 104.9999), _TARGET) is TomorrowCloseGain.MISS
+    assert _label(current, None, _TARGET) is TomorrowCloseGain.PENDING
+    assert _label(current, replace(threshold, cell_status="supplier_marked_suspended"), _TARGET) is TomorrowCloseGain.MISS
+    assert _label(current, replace(threshold, cell_status="tencent_inferred_suspended"), _TARGET) is TomorrowCloseGain.PENDING
     assert threshold.point is not None
     assert _label(current, replace(threshold, point=replace(
         threshold.point, qfq_reconstruction_anchor=following_day,
-    ))) is TomorrowCloseGain.PENDING
+    )), _TARGET) is TomorrowCloseGain.PENDING
     assert _label(current, replace(threshold, point=replace(
         threshold.point, raw_preclose=101,
-    ))) is TomorrowCloseGain.PENDING
+    )), _TARGET) is TomorrowCloseGain.PENDING
 
 
 def test_pooled_model_trains_selects_calibrates_and_reloads(tmp_path: Path) -> None:
@@ -73,14 +78,18 @@ def test_pooled_model_trains_selects_calibrates_and_reloads(tmp_path: Path) -> N
         )
         for day_index, day in enumerate(dates) for index, code in enumerate(codes)
     )
-    samples = _collect_samples(rows, dates, len(dates) * len(codes), lambda: None)
-    result = _train(samples, dates[:-1], "a" * 64, tmp_path, lambda: None)
+    samples = _collect_samples(rows, dates, len(dates) * len(codes), lambda: None, _TARGET)
+    result = _train(samples, dates[:-1], "a" * 64, tmp_path, lambda: None, _TARGET)
     assert result.ready
     assert result.selection is not None
     assert result.selection.comparable_seats == 6 * 40
     assert result.assessment_brier is not None and result.assessment_brier < 0.1
-    model = LoadTomorrowProbabilityModel(tmp_path)
+    model = LoadTomorrowProbabilityModel(tmp_path, _TARGET)
     assert model is not None and model.identity == result.model_identity
+    assert LoadTomorrowProbabilityModel(tmp_path, _HIGHER_TARGET) is None
+    changed = PublishTomorrowProbabilityModel(tmp_path, replace(model.artifact, target=_HIGHER_TARGET))
+    assert changed != model.identity
+    assert LoadTomorrowProbabilityModel(tmp_path, _TARGET) == model
     assert model.artifact.fitting_dates[-1] < model.artifact.calibration_dates[0]
     vectors = tuple(tuple(vector) for vector in samples.features[:8])
     probabilities = model.predict_probabilities(vectors)
@@ -93,14 +102,14 @@ def test_pooled_model_trains_selects_calibrates_and_reloads(tmp_path: Path) -> N
     )
     tree_model_root = tmp_path / "tree"
     PublishTomorrowProbabilityModel(tree_model_root, artifact)
-    tree_model = LoadTomorrowProbabilityModel(tree_model_root)
+    tree_model = LoadTomorrowProbabilityModel(tree_model_root, _TARGET)
     assert tree_model is not None and tree_model.booster is not None
     batch = tree_model.predict_probabilities(vectors)
     assert all(0.0 <= value <= 1.0 for value in batch)
     assert batch == pytest.approx(tuple(tree_model.predict_probability(vector) for vector in vectors))
     with pytest.raises(ValueError, match="tomorrow_probability_artifact_tree_invalid"):
         PublishTomorrowProbabilityModel(tree_model_root, replace(artifact, lightgbm="invalid tree"))
-    restored = LoadTomorrowProbabilityModel(tree_model_root)
+    restored = LoadTomorrowProbabilityModel(tree_model_root, _TARGET)
     assert restored is not None and restored.identity == tree_model.identity
 
 
@@ -111,11 +120,11 @@ def test_shared_training_respects_memory_admission_and_cancellation(tmp_path: Pa
     history = SimpleNamespace(open_dates=dates, universe_count=6, snapshot_hash="a" * 64)
     budget = TrainingCpuBudget(2, TrainingResourceSettingsFixture().cpu)
     blocked = TrainSharedTomorrowProbability(
-        history, tmp_path, cancelled=lambda: False, cpu_budget=budget, memory=TrainingMemoryBudget(1),
+        history, tmp_path, target=_TARGET, cancelled=lambda: False, cpu_budget=budget, memory=TrainingMemoryBudget(1),
     )
     assert blocked.failure == "tomorrow_probability_memory_budget_insufficient"
     with pytest.raises(InterruptedError, match="training_cancelled"):
         TrainSharedTomorrowProbability(
-            history, tmp_path, cancelled=lambda: True, cpu_budget=budget, memory=TrainingMemoryBudget(2**20),
+            history, tmp_path, target=_TARGET, cancelled=lambda: True, cpu_budget=budget, memory=TrainingMemoryBudget(2**20),
         )
-    assert LoadTomorrowProbabilityModel(tmp_path) is None
+    assert LoadTomorrowProbabilityModel(tmp_path, _TARGET) is None

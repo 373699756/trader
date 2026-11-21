@@ -1,4 +1,10 @@
 {
+  "prediction_targets": {
+    "v1": {"tomorrow_bps": 500, "d25_bps": 100},
+    "v2": {"tomorrow_bps": 500, "d25_bps": 100},
+    "v3": {"tomorrow_bps": 500, "d25_bps": 100},
+    "v5": {"tomorrow_bps": 500, "d25_bps": 100}
+  },
   "selection": {
     "default_top_k": 6,
     "maximum_top_k": 12,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+import json
 import threading
 
 from datetime import datetime
@@ -71,9 +72,16 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
     assert not (tmp_path / ".runtime").exists()
 
 
-def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, caplog):
+def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, monkeypatch, caplog):
     config = _empty_config(tmp_path)
     _publish_profile(tmp_path / "data/training/models", D25ProfileContract(V3_TRAINING_PROFILE))
+    seen = []
+
+    def load_target(model_root, profile, target):
+        seen.append((profile.profile_id, target.threshold_bps))
+        return profile
+
+    monkeypatch.setattr("trader.training.infra.d25_probability.LoadD25ScoringProfile", load_target)
     system = BuildProfiledSystem(config)
     client = system.app.test_client()
 
@@ -83,6 +91,7 @@ def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, cap
         assert not scoring["heads"]["tomorrow"]["is_enable"]
     assert "V2 双头模型工件缺失" in caplog.text
     assert "V3 双头模型工件缺失" not in caplog.text
+    assert seen == [("v3", 100)]
 
 
 def test_shared_tomorrow_is_ready_with_no_d25_models(tmp_path, monkeypatch):
@@ -94,20 +103,47 @@ def test_shared_tomorrow_is_ready_with_no_d25_models(tmp_path, monkeypatch):
 
     calls = []
 
-    def load(model_root):
-        calls.append(model_root)
+    def load(model_root, target):
+        calls.append((model_root, target.threshold_bps))
         return Predictor()
 
     monkeypatch.setattr("trader.training.infra.tomorrow_probability.LoadTomorrowProbabilityModel", load)
     system = BuildProfiledSystem(_empty_config(tmp_path), profiles=("v1", "v3"))
     client = system.app.test_client()
     assert len(calls) == 1
+    assert calls[0][1] == 500
     for profile in ("v1", "v3"):
         heads = client.get(f"/api/status?profile={profile}").get_json()["scoring_profile"]["heads"]
         assert heads["tomorrow"]["is_enable"]
         assert not heads["d25"]["is_enable"]
-    assert system.systems[0].scheduler._dependencies.scored_strategies == (Strategy.TOMORROW, Strategy.D25)
-    assert system.systems[1].scheduler._dependencies.scored_strategies == (Strategy.D25,)
+    assert system.systems[0].scheduler._dependencies.scored_strategies == (Strategy.TOMORROW,)
+    assert system.systems[1].scheduler._dependencies.scored_strategies == ()
+
+
+def test_changing_one_tomorrow_target_loads_only_two_groups(tmp_path, monkeypatch):
+    config = _empty_config(tmp_path)
+    path = config.with_name("selection.json")
+    document = json.loads(path.read_text())
+    document["prediction_targets"]["v1"]["tomorrow_bps"] = 600
+    path.write_text(json.dumps(document))
+    loaded = []
+
+    class Predictor:
+        identity = "a" * 64
+
+    def load(model_root, target):
+        loaded.append(target.threshold_bps)
+        if target.threshold_bps == 600:
+            raise FileNotFoundError
+        return Predictor()
+
+    monkeypatch.setattr("trader.training.infra.tomorrow_probability.LoadTomorrowProbabilityModel", load)
+    system = BuildProfiledSystem(config, profiles=("v1", "v5", "v3", "v2"))
+    assert loaded == [600, 500]
+    client = system.app.test_client()
+    for profile in ("v1", "v2", "v3", "v5"):
+        payload = client.get(f"/api/status?profile={profile}").get_json()
+        assert payload["scoring_profile"]["heads"]["tomorrow"]["is_enable"] is (profile != "v1")
 
 
 def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_failure(tmp_path, monkeypatch):

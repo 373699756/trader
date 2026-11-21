@@ -8,7 +8,8 @@ from tests.helpers.shared.configuration import RuntimeSettingsFixture
 from trader.entrypoints.cli import BuildParser
 from trader.infra.settings.data_paths import DataPaths
 from trader.recommendation.domain.market.tomorrow_probability import TOMORROW_FEATURE_NAMES
-from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.baseline_identity_audit import BaselineIdentityAuditService
 from trader.training.infra.research.baseline_identity_sources import LoadBaselineIdentityEvidence
 from trader.training.infra.tomorrow_probability import (
@@ -37,7 +38,7 @@ def test_baseline_audit_reads_only_the_shared_production_artifact(tmp_path: Path
     runtime = replace(RuntimeSettingsFixture(), data_paths=DataPaths(tmp_path / "data"))
 
     initial = BaselineIdentityAuditService(LoadBaselineIdentityEvidence(runtime)).execute()
-    assert "tomorrow_probability_target" in initial.unavailable
+    assert "tomorrow_probability_target_500" in initial.unavailable
     assert not runtime.data_paths.root.exists()
 
     for profile in ("v2", "v3"):
@@ -46,14 +47,14 @@ def test_baseline_audit_reads_only_the_shared_production_artifact(tmp_path: Path
         retired.write_text("retired model", encoding="utf-8")
     width = len(TOMORROW_FEATURE_NAMES)
     model = TomorrowProbabilityArtifact(
-        "a" * 64, (date(2024, 1, 2),), (date(2024, 2, 2),), 0, 1,
+        PredictionTarget(Strategy.TOMORROW, 500), "a" * 64, (date(2024, 1, 2),), (date(2024, 2, 2),), 0, 1,
         LogisticTomorrowModel(0, (0.0,) * width, (0.0,) * width, (1.0,) * width), None,
     )
     identity = PublishTomorrowProbabilityModel(runtime.data_paths.models, model)
 
     result = BaselineIdentityAuditService(LoadBaselineIdentityEvidence(runtime)).execute()
-    claim = next(item for item in result.claims if item.name == "tomorrow_probability_target")
-    assert claim.actual == TOMORROW_CLOSE_GAIN_TARGET and claim.source_hash == identity
+    claim = next(item for item in result.claims if item.name == "tomorrow_probability_target_500")
+    assert claim.actual == model.target.identity and claim.source_hash == identity
     assert claim.status == "matched"
     assert result.status == "live_identity_unverified"
     assert not result.production_authority

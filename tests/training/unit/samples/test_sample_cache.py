@@ -37,10 +37,11 @@ def test_read_only_samples_check_structure_and_split_without_a_format_number(tmp
     with SqliteSession(path) as connection:
         connection.run("PRAGMA user_version=1")
     original = path.read_bytes()
-    with SQLiteTrainingSampleIndex(path, ("first", "second"), prepared_split_hash=split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as samples:
-        samples.require_split(split)
+    with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
+        SQLiteTrainingSampleIndex(path, ("first", "second"), prepared_split_hash=split.content_hash, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture())
     assert path.read_bytes() == original
     with SqliteSession(path) as connection:
+        connection.run("PRAGMA user_version=0")
         connection.run("DROP TABLE sample_statistics")
     original = path.read_bytes()
     with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):

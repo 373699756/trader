@@ -21,7 +21,7 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import date
@@ -43,6 +43,7 @@ from trader.download.infra.history_partition_repack import (
 )
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.training.application.resources import TrainingCpuAdmission, TrainingExecutionObserver, TrainingMemoryAdmission
@@ -65,6 +66,8 @@ from trader.training.infra.history.history_training_input import (
 )
 from trader.training.infra.implementation_identity import TrainingImplementationIdentity
 from trader.training.infra.execution_options import TrainingExecutionOptions
+from trader.training.infra.d25_probability import D25ProbabilityBinding, HasD25Probability, PublishD25Probability
+from trader.training.infra.d25_probability_training import D25IndustryFitRequest, FitIndustryD25Probability
 from trader.training.infra.fitting_resources import ReserveTrainingFittingResources, TrainingFittingReservation
 from trader.training.infra.model_bundles.bundle_snapshot import (
     MakeBundleStagingDirectory,
@@ -161,6 +164,8 @@ class ProfileTrainingRequest:
     execution_options: TrainingExecutionOptions = field(default_factory=TrainingExecutionOptions, kw_only=True)
     memory_capacity_bytes: int | None = field(default=None, kw_only=True)
     execution_observer: TrainingExecutionObserver | None = field(default=None, kw_only=True)
+    d25_target: PredictionTarget | None = field(default=None, kw_only=True)
+    cancel_requested: Callable[[], bool] | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         strategies = tuple(contract.strategy for contract in self.contracts)
@@ -177,6 +182,9 @@ class ProfileTrainingRequest:
             or any(contract != self.profile.head_for_strategy(contract.strategy) for contract in self.contracts)
             or (self.profile.algorithm == "lightgbm") != isinstance(self.settings.fitting, LightGBMFittingParameters)
             or (self.profile.algorithm == "tcn") != isinstance(self.settings.fitting, TcnFittingParameters)
+            or self.d25_target is not None and (
+                self.d25_target.strategy is not Strategy.D25 or strategies != (Strategy.D25,)
+            )
         ):
             raise ValueError("profile training request contains a foreign or duplicate head contract")
 
@@ -381,6 +389,7 @@ class _ProfileTrainingAdapter:
                 self.metrics = _prepare_samples(
                     TrainingSampleBuildRequest(
                         self.history, snapshot.training_codes, window, samples, request.profile, request.progress,
+                        d25_target=request.d25_target,
                     ),
                     cache, aligned_rows=self.aligned_rows, observer=request.execution_observer,
                 )
@@ -497,7 +506,7 @@ class _ProfileFittingAdapter:
                 compute_threads=self.reservation.compute_threads, progress=request.progress,
                 industry_snapshot=snapshot.industry_snapshot,
             )
-            result, staging = _fit_and_prepare_head(
+            result, staging, utility_metadata_hash = _fit_and_prepare_head(
                 _HeadFitRequest(
                     _HeadPlan(contract, head.label_cutoff, head.training_contract_hash),
                     request.profile, request.settings, snapshot, self.plan.split, self.owner.metrics,
@@ -505,13 +514,31 @@ class _ProfileFittingAdapter:
                 ),
                 fitted, refitted,
             )
-            if staging is not None:
+            if staging is not None and utility_metadata_hash is not None:
                 if not self.staged:
                     self.resources.callback(
                         ClearProfileStaging, request.train_root,
                         strategies=tuple(head.strategy for head in request.profile.heads),
                     )
                 self.staged.append((head.strategy, staging))
+                if request.d25_target is not None:
+                    def checkpoint() -> None:
+                        if request.cancel_requested is not None and request.cancel_requested():
+                            raise InterruptedError("d25_probability_training_cancelled")
+                        _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1))
+
+                    artifact = FitIndustryD25Probability(
+                        self.samples,
+                        D25IndustryFitRequest(
+                            request.profile.profile_id, contract, self.plan.split, request.settings.fitting,
+                            tuple(item.industry for item in refitted), self.reservation.compute_threads,
+                            D25ProbabilityBinding(
+                                request.d25_target, result.model_hash, snapshot.training_input_hash, utility_metadata_hash,
+                            ),
+                        ), checkpoint,
+                    )
+                    checkpoint()
+                    PublishD25Probability(request.train_root, artifact)
             return PreparedTrainingHead(result, staging is not None)
 
     def publish_pair(self) -> None:
@@ -536,6 +563,7 @@ def _sample_cache_for(
             snapshot.training_input_hash,
             snapshot.input_descriptor_hash,
             request.profile.profile_id,
+            request.d25_target.identity if request.d25_target is not None else None,
             split.content_hash,
             feature_count,
             SEQUENCE_FORMAT if sequence_layout else "monthly_samples",
@@ -639,7 +667,7 @@ def _prepare_locked_split(
 
 def _fit_and_prepare_head(
     request: _HeadFitRequest, fitted: IndustryFitResult, refitted: tuple[FittedIndustryModel, ...],
-) -> tuple[HeadTrainingResult, Path | None]:
+) -> tuple[HeadTrainingResult, Path | None, str | None]:
     plan = request.plan
     snapshot = request.snapshot
     contract = plan.contract
@@ -700,7 +728,7 @@ def _fit_and_prepare_head(
                 sample_database_peak_bytes=request.peak_bytes,
                 final_fit=request.final_fit_plan,
                 diagnostic_plan=request.split,
-            ), None
+            ), None, None
         metadata = _metadata_document(context, model_hash, fitted, training_input, report)
         metadata["final_fit"] = BuildFinalFitEvidence(
             request.final_fit_plan, request.split, diagnostic_model, model_hash, refitted,
@@ -710,7 +738,8 @@ def _fit_and_prepare_head(
             metadata["training_configuration"] = TcnConfigurationDocument(
                 request.settings.fit_dates, request.settings.fitting
             )
-        metadata["content_hash"] = ContentHash(metadata)
+        metadata_hash = ContentHash(metadata)
+        metadata["content_hash"] = metadata_hash
         staging = MakeBundleStagingDirectory(request.train_root)
         _write_json(staging / "model.json", model)
         _write_json(staging / "metadata.json", metadata)
@@ -733,7 +762,7 @@ def _fit_and_prepare_head(
             final_fit=request.final_fit_plan,
             diagnostic_plan=request.split,
         )
-        return result, staging
+        return result, staging, metadata_hash
     except InterruptedError:
         if staging is not None:
             ClearProfileStaging(request.train_root, strategies=tuple(head.strategy for head in request.profile.heads))
@@ -748,7 +777,7 @@ def _fit_and_prepare_head(
             label_cutoff=plan.label_cutoff,
             sample_database_peak_bytes=request.peak_bytes,
             diagnostic_plan=request.split,
-        ), None
+        ), None, None
 
 
 def _report_document(
@@ -915,6 +944,11 @@ def _reuse_profile(history: _TrainingInputSnapshot, request: ProfileTrainingRequ
     heads: list[PublishedTrainingHead] = []
     for bundle, contract in zip(bundles, request.contracts, strict=True):
         model = bundle.model
+        if request.d25_target is not None and not HasD25Probability(
+            request.train_root, request.profile.profile_id, contract.feature_manifest.names,
+            D25ProbabilityBinding(request.d25_target, model.content_hash, bundle.training_input_hash, bundle.metadata_hash),
+        ):
+            return None
         heads.append(
             PublishedTrainingHead(HeadTrainingResult(
                 contract.strategy,

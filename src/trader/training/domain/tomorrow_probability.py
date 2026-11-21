@@ -2,6 +2,9 @@
 
 from dataclasses import dataclass
 
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+
 
 @dataclass(frozen=True, slots=True)
 class TomorrowProbabilitySelection:
@@ -33,3 +36,10 @@ class TomorrowProbabilityTrainingResult:
     @property
     def ready(self) -> bool:
         return self.model_identity is not None and self.failure is None
+
+
+@dataclass(frozen=True, slots=True)
+class TomorrowProbabilityGroupResult:
+    target: PredictionTarget
+    profiles: tuple[ScoringProfileId, ...]
+    result: TomorrowProbabilityTrainingResult

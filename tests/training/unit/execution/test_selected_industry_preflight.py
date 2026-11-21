@@ -27,6 +27,7 @@ from trader.download.domain.baostock_daily import (
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.infra.settings.loading import LoadPredictionTargets
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.selected_training import SelectedD25IndustryUnavailable, SelectedTrainingDrainError, SelectedTrainingRun, SelectedTrainingTask, TrainSelectedProfiles, TrainingLocations
 from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError, HistoryMaintenanceLock
@@ -201,7 +202,7 @@ def test_current_industry_applies_to_all_signal_dates_regardless_of_old_interval
     with ExitStack() as resources:
         factory = selected_training._TrainingTaskFactory(
             request, source, resources, TrainingExecutionMeasurements(("v1",), lambda: 0),
-            sqlite_policy=SqlitePolicyFixture(), d25_only=False,
+            sqlite_policy=SqlitePolicyFixture(), prediction_targets=None,
         )
         task = factory.prepare("v1", request.progresses[0])
     assert task.profile == "v1" and task.readable_dates
@@ -255,11 +256,13 @@ def test_shared_tomorrow_can_read_the_published_prices_before_d25_checks_industr
     adapter = SelectedTrainingAdapter(
         request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=load,
         clock=lambda: _CURRENT_INDUSTRY.observed_at, train_shared_tomorrow=fit_tomorrow,
+        prediction_targets=LoadPredictionTargets(request.runtime.strategy_config_path),
     )
     with pytest.raises(SelectedD25IndustryUnavailable) as blocked, adapter.open():
         pytest.fail("D25 may not open without its current industry input")
     assert stages == ["tomorrow", "industry"]
-    assert blocked.value.tomorrow_probability.ready
+    assert len(blocked.value.tomorrow_probability) == 1
+    assert blocked.value.tomorrow_probability[0].result.ready
 
 
 def test_reusable_v1_model_skips_industry_preflight_and_price_scan(tmp_path, monkeypatch):

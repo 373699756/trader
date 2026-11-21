@@ -24,7 +24,7 @@ from trader.http_api.route_services import UnifiedWebServices
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
-from trader.recommendation.infra.settings.loading import LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadPredictionTargets, LoadStrategySettings
 from trader.infra.settings.models import PerformanceBudgetSettings
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import WorkerFutureExecutor
@@ -477,15 +477,26 @@ def _prepare_profiles(
     quotes: tuple[MarketQuote, ...] = ()
     fixture_seconds = 0.0
     cost_policy = LoadExecutionCostPolicy(config_path.parent)
+    from trader.training.infra.d25_probability import LoadD25ScoringProfile
     from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
 
-    tomorrow_predictor = LoadTomorrowProbabilityModel(settings.data_paths.models)
+    targets = LoadPredictionTargets(settings.strategy_config_path)
+    tomorrow_models = {
+        target: LoadTomorrowProbabilityModel(settings.data_paths.models, target)
+        for target, _members in targets.tomorrow_groups(selected)
+    }
     for profile_id in selected:
         strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile_id)
+        tomorrow_target = targets.for_profile(profile_id, Strategy.TOMORROW)
+        d25_target = targets.for_profile(profile_id, Strategy.D25)
         try:
             loaded = LoadScoringProfile(profile_id, training_root=settings.data_paths.models, d25_only=True)
+            loaded = LoadD25ScoringProfile(settings.data_paths.models, loaded, d25_target)
         except ScoringModelsUnavailableError as exc:
             profiles.append(_ProfileLoad(profile_id, exc.reason))
+            continue
+        except (OSError, ValueError, RuntimeError):
+            profiles.append(_ProfileLoad(profile_id, "d25_target_model_unavailable"))
             continue
         started = time.perf_counter()
         training = LoadRuntimeTrainingSettings(settings.project_root, profile_id)
@@ -499,7 +510,7 @@ def _prepare_profiles(
         workloads.append(
             PerformanceProfileWorkload(
                 loaded, BuildRecommendationPolicy(strategy), features, settings.config_version, cost_policy,
-                tomorrow_predictor if not workloads else None,
+                tomorrow_models.pop(tomorrow_target, None), tomorrow_target, d25_target,
             )
         )
         profiles.append(

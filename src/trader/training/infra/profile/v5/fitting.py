@@ -104,7 +104,7 @@ def RefitTcnIndustry(
     # The sample index owns the bounded memory/mapped matrix and its cleanup.
     with samples.final_fit_data(counts, contract, plan) as data:
         progress.publish("normalization")
-        means, scales = _final_transforms(data, auxiliary, parameters.batch_size, heartbeat)
+        means, scales = FitTcnFeatureTransforms(data, auxiliary, parameters.batch_size, heartbeat)
         torch.manual_seed(parameters.seed)
         network = TcnNetwork(auxiliary, parameters.dropout, parameters.architecture)
         optimizer = torch.optim.AdamW(
@@ -137,7 +137,7 @@ def RefitTcnIndustry(
         )
 
 
-def _final_transforms(
+def FitTcnFeatureTransforms(
     data: TrainingSampleMatrix, auxiliary: int, batch_size: int, heartbeat: Callable[[], None],
 ) -> tuple[np.ndarray, np.ndarray]:
     sums = np.zeros(auxiliary + 6)

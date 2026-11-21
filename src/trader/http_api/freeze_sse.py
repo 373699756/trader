@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import queue
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 
 from flask import Response, stream_with_context
 
@@ -23,6 +23,7 @@ def FreezeEventResponse(
     subscription: UnifiedSubscription,
     *,
     heartbeat_seconds: float,
+    tomorrow_profiles: Mapping[str, str] | None = None,
 ) -> Response:
     def generate() -> Iterator[str]:
         subscriber = subscription.queue
@@ -32,7 +33,7 @@ def FreezeEventResponse(
                 yield _encode(_resync(subscription.server_sequence_at_open, subscription.resync_reason))
             else:
                 for event in subscription.replay:
-                    yield _encode(event)
+                    yield _encode(event, tomorrow_profiles)
             while True:
                 if not stream.is_subscribed(subscriber):
                     yield _encode(_resync(stream.last_sequence(), "slow_subscriber"))
@@ -42,7 +43,7 @@ def FreezeEventResponse(
                 except queue.Empty:
                     yield ": heartbeat\n\n"
                     continue
-                yield _encode(event)
+                yield _encode(event, tomorrow_profiles)
         finally:
             stream.unsubscribe(subscriber)
 
@@ -53,9 +54,9 @@ def FreezeEventResponse(
     return response
 
 
-def _encode(event: UnifiedPublishedEvent) -> str:
+def _encode(event: UnifiedPublishedEvent, tomorrow_profiles: Mapping[str, str] | None = None) -> str:
     payload = json.dumps(
-        SerializeEvent(event),
+        SerializeEvent(event, tomorrow_profiles=tomorrow_profiles),
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),

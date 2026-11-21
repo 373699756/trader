@@ -30,16 +30,18 @@
 
     function eventMatchesCurrent(payload) {
       const deliveryProfile = state.strategy === "long" ? state.longProfile : state.profile;
-      if (payload && payload.scoring_profile && payload.scoring_profile !== deliveryProfile
-          && !sharedTomorrow(payload)
-          && !(sharedTomorrow(state.payload) && payload.snapshot_id === state.payload.snapshot_id)) return false;
+      if (payload && Array.isArray(payload.scoring_profiles)) {
+        if (!payload.scoring_profiles.includes(deliveryProfile)) return false;
+      } else if (payload && payload.scoring_profile && payload.scoring_profile !== deliveryProfile) {
+        return false;
+      }
       const currentDate = state.payload && (state.payload.current_trade_date || state.payload.trade_date);
       return patches.eventMatchesCurrent(payload, state.strategy, currentDate);
     }
 
-    function sharedTomorrow(payload) {
-      return payload && payload.strategy === "tomorrow" && payload.input_versions
-        && payload.input_versions.prediction_target === "next_close_gain_at_least_5_percent";
+    function forCurrentProfile(payload) {
+      return payload && Array.isArray(payload.scoring_profiles)
+        ? { ...payload, scoring_profile: state.profile } : payload;
     }
 
     function connect() {
@@ -68,8 +70,7 @@
         const receivedAt = performance.now();
         rememberEvent(event);
         diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
-        let payload = eventPayload(event);
-        if (sharedTomorrow(payload)) payload = { ...payload, scoring_profile: state.profile };
+        const payload = forCurrentProfile(eventPayload(event));
         if (!state.date && eventMatchesCurrent(payload) && applyRecommendationPatch(payload)) {
           recordPatchPaint(receivedAt);
         }
@@ -78,8 +79,10 @@
         const receivedAt = performance.now();
         rememberEvent(event);
         diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
-        const payload = eventPayload(event);
-        if (!state.date && eventMatchesCurrent(payload) && applyOverlayPatch(payload)) recordPatchPaint(receivedAt);
+        const payload = forCurrentProfile(eventPayload(event));
+        if (!state.date && eventMatchesCurrent(payload) && applyOverlayPatch(payload)) {
+          recordPatchPaint(receivedAt);
+        }
       };
       const replaceBatch = (event) => {
         const receivedAt = performance.now();

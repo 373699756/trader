@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import threading
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from tests.helpers.recommendation.publication.freeze_identity import NOW, freeze
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import FreezeCommitted
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (
@@ -46,15 +48,14 @@ def test_unified_index_allows_one_concurrent_expected_version_winner() -> None:
     assert event.items[0].score_components == (("trend", 88.0),)
 
 
-def test_profiled_batch_rejects_every_profile_before_any_partial_write() -> None:
+@pytest.mark.parametrize("second_strategies", ((Strategy.TOMORROW, Strategy.D25), (Strategy.D25,), ()))
+def test_profiled_batch_rejects_every_profile_before_any_partial_write(second_strategies) -> None:
     lock = threading.RLock()
     indexes = (UnifiedFreezeIndex(transaction_lock=lock), UnifiedFreezeIndex(transaction_lock=lock))
     pairs = []
     for profile, index, offset in (("v1", indexes[0], 0), ("v2", indexes[1], 2)):
-        freezes = (
-            freeze(Strategy.TOMORROW, sequence=1 + offset),
-            freeze(Strategy.D25, sequence=2 + offset),
-        )
+        strategies = (Strategy.TOMORROW, Strategy.D25) if profile == "v1" else second_strategies
+        freezes = tuple(freeze(strategy, sequence=number + offset) for number, strategy in enumerate(strategies, start=1))
         overlays = tuple(
             FreezeOverlay(
                 item.strategy,
@@ -66,10 +67,11 @@ def test_profiled_batch_rejects_every_profile_before_any_partial_write() -> None
             )
             for item in freezes
         )
-        pairs.append(UnifiedProfilePair(profile, index, freezes, overlays, (None, None)))
+        pairs.append(UnifiedProfilePair(profile, index, freezes, overlays, (None,) * len(freezes)))
 
-    rejected = replace(pairs[1], expected_versions=("missing", None))
-    result = UnifiedFreezeIndex.publish_scored_batch((pairs[0], rejected))
+    ready, checked = (pairs[0], pairs[1]) if second_strategies else (pairs[1], pairs[0])
+    rejected = replace(checked, expected_versions=("missing", *checked.expected_versions[1:]))
+    result = UnifiedFreezeIndex.publish_scored_batch((ready, rejected))
 
     assert not result.accepted and result.reason == "cas_mismatch"
     assert all(index.snapshot(strategy).current is None for index in indexes for strategy in (Strategy.TOMORROW, Strategy.D25))
@@ -80,7 +82,9 @@ def test_profiled_batch_rejects_every_profile_before_any_partial_write() -> None
     assert accepted.accepted
     assert tuple(profile for profile, _events in accepted.events) == ("v1", "v2")
     captured = UnifiedFreezeIndex.snapshot_batch(indexes)
-    assert tuple(tuple(snapshot.current for snapshot in pair) for pair in captured) == tuple(pair.freezes for pair in pairs)
+    assert tuple(tuple(snapshot.current for snapshot in pair if snapshot.current is not None) for pair in captured) == (
+        pairs[0].freezes, pairs[1].freezes,
+    )
     with ThreadPoolExecutor(max_workers=1) as executor:
         with lock:
             reader = executor.submit(UnifiedFreezeIndex.snapshot_batch, indexes)

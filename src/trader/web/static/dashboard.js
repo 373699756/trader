@@ -762,6 +762,8 @@
       quote_status: quote.status,
       action: item.action,
       tomorrow_outcome: item.tomorrow_outcome || null,
+      d25_outcome: item.d25_outcome || null,
+      actual_return_pct: item.actual_return_pct,
       action_reason: item.action_reason || item.observation_reason,
       selection_date: item.selection_anchor && item.selection_anchor.date,
       selection_price: item.selection_anchor && item.selection_anchor.price,
@@ -786,6 +788,7 @@
         estimated_cost_pct: scores.estimated_cost_pct,
         predicted_net_excess_pct: scores.predicted_net_excess_pct,
         model_disagreement_pct: scores.model_disagreement_pct,
+        target_probability: scores.target_probability,
       },
       risks: Array.isArray(item.risk_details) && item.risk_details.length > 0
         ? item.risk_details
@@ -906,11 +909,13 @@
     const shadow = presentation.shadow;
     els.sixSeatStatus.textContent = payload.status === "not_ready" && recommendations.length === 0
       ? "待评分" : recommendations.length ? `${recommendations.length} / 6 只` : "合法空榜";
-    els.sixSeatMeta.textContent = presentation.preview
+    const summary = presentation.preview
       ? `测试预览${shadow ? " · Shadow 仅观察" : ""} · 推荐 ${counts.recommend} · 关注 ${counts.watch} · 回避 ${counts.avoid}`
       : shadow
       ? `Shadow 仅观察 · 关注 ${counts.watch} · 回避 ${counts.avoid}`
       : `推荐 ${counts.recommend} · 关注 ${counts.watch} · 回避 ${counts.avoid}`;
+    const target = window.TraderRender.targetLabel(payload.prediction_target);
+    els.sixSeatMeta.textContent = target ? `${target} · ${summary}` : summary;
   }
   function renderOutcomeSummary(payload) {
     if (!els.outcomeSummary) return;
@@ -923,10 +928,10 @@
       const label = item.tier === "recommend" ? "推荐" : item.tier === "selected" ? "全部入席" : "关注";
       const complete = Number(item.complete_count) || 0;
       const total = Number(item.sample_count) || 0;
-      if (item.prediction_target === "next_close_gain_at_least_5_percent") {
+      if (item.target) {
         const hits = Number(item.hit_count) || 0;
         const rate = complete ? `${(hits / complete * 100).toFixed(1)}%` : "—";
-        return `${label} 次日涨幅 ≥5%：已结算 ${complete}/${total} · 命中 ${hits} · 命中率 ${rate}`;
+        return `${label} ${window.TraderRender.targetLabel(item.target)}：已结算 ${complete}/${total} · 命中 ${hits} · 命中率 ${rate}`;
       }
       const positive = Number(item.positive_count) || 0;
       const average = item.average_net_excess_pct;
@@ -1173,21 +1178,25 @@
   function applyRecommendationBatch(batch) {
     if (!Number.isInteger(batch.round_sequence)
       || batch.round_sequence < 1 || !batch.profiles || typeof batch.profiles !== "object"
-      || !completeBatchProfiles(batch.profiles)) {
+      || !completeBatchProfiles(batch.profiles) || !batch.published_strategies
+      || !completeBatchProfiles(batch.published_strategies)) {
       requestRecommendationResync("batch_schema_mismatch");
       return false;
     }
     const replacements = new Map();
     const etags = new Map(state.etags);
     let tradeDate = null;
-    const updates = Object.values(batch.profiles);
-    const strategies = updates.every((pair) => pair && pair.d25 && !pair.tomorrow)
-      ? ["d25"] : ["tomorrow", "d25"];
     for (const [profile, pair] of Object.entries(batch.profiles)) {
+      const strategies = batch.published_strategies[profile];
+      if (!pair || typeof pair !== "object" || !Array.isArray(strategies)
+          || new Set(strategies).size !== strategies.length || Object.keys(pair).length !== strategies.length) {
+        requestRecommendationResync("batch_schema_mismatch");
+        return false;
+      }
       for (const strategy of strategies) {
         const patch = pair && pair[strategy];
         const key = `${profile}:${strategy}:current`;
-        if (!patch || patch.scoring_profile !== profile || patch.replace !== true) {
+        if (!["tomorrow", "d25"].includes(strategy) || !patch || patch.scoring_profile !== profile || patch.replace !== true) {
           requestRecommendationResync("batch_identity_mismatch");
           return false;
         }

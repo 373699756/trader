@@ -19,7 +19,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.profile.v1.samples import LEARNED_RANK_SAMPLE_COLUMNS, LearnedRankMatrixRequest, LearnedRankSampleIndex
 
 _FIRST_DAY = date(2026, 1, 5)
-_INSERT = "INSERT INTO samples VALUES (" + ",".join("?" for _ in range(16)) + ")"
+_INSERT = "INSERT INTO samples VALUES (" + ",".join("?" for _ in range(16)) + ",NULL)"
 
 
 def _features(number: int) -> tuple[float, ...]:

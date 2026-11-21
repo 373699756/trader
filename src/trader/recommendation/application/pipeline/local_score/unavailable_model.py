@@ -12,6 +12,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.scoring.profile_identity import (
     LEARNED_RANK_SCORE_SCALE,
     MODEL_PREDICTION_RANK_SCORE_SCALE,
@@ -26,6 +27,7 @@ class UnavailableModelCapability:
     profile_id: ScoringProfileId
     history_required_sessions: int
     reason: str = "production_model_missing"
+    prediction_target: PredictionTarget | None = None
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
         return False
@@ -59,6 +61,7 @@ class UnavailableModelCapability:
                 else WEIGHTED_EVIDENCE_SCORE_SCALE
             ),
             production_authority=True,
+            prediction_target=self.prediction_target,
         )
 
 

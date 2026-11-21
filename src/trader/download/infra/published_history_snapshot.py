@@ -154,10 +154,13 @@ class SQLitePublishedHistorySnapshot:
         start: date,
         end: date,
         *,
+        frozen_outcomes: bool = False,
         check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
         if check is not None:
             check()
+        if frozen_outcomes:
+            ValidatePublishedHistoryCodes(frozenset(codes))
         if start > end or start < manifest.calendar_dates[0] or end > manifest.data_cutoff:
             raise ValueError("published history range is invalid")
         history = self._matching_snapshot(manifest)
@@ -168,9 +171,11 @@ class SQLitePublishedHistorySnapshot:
         allowed_codes = frozenset(manifest.universe_codes)
         try:
             for code in tuple(dict.fromkeys(codes)):
-                if code not in allowed_codes:
+                if not frozen_outcomes and code not in allowed_codes:
                     continue
-                rows = self._reader.read_published_code_window(code, dates, history.snapshot, check=check)
+                rows = self._reader.read_published_code_window(
+                    code, dates, history.snapshot, frozen_outcomes=frozen_outcomes, check=check
+                )
                 if rows:
                     windows.append(PublishedHistoryWindow(code, rows))
             self._matching_snapshot(manifest)

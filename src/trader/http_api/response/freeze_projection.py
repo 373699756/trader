@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import (
@@ -22,6 +23,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     RecommendationPipelineStatus,
 )
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
+from trader.recommendation.domain.outcomes.prediction_target import ParsePredictionTargetIdentity, PredictionTarget
 from trader.recommendation.domain.publication.freeze_identity import FreezeItem, FreezeQuote
 from trader.recommendation.domain.publication.historical_pipeline import (
     HistoricalFacet,
@@ -36,7 +38,7 @@ from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.publication.score_ledger import ScoreLedgerPayload
 
 
-def SerializeFreezeView(view: FreezeView) -> dict[str, object]:
+def SerializeFreezeView(view: FreezeView, *, configured_target: PredictionTarget | None = None) -> dict[str, object]:
     if view.strategy is Strategy.LONG:
         return _serialize_long_view(view)
     return {
@@ -58,6 +60,7 @@ def SerializeFreezeView(view: FreezeView) -> dict[str, object]:
         "frozen_at": _time(view.frozen_at),
         "freeze_kind": view.freeze_kind,
         "input_versions": dict(view.input_versions),
+        **_prediction_fields(view.input_versions, configured_target if view.freeze_version is None else None),
         "coverage": {
             "candidate_count": view.coverage.candidate_count,
             "evaluated_count": view.coverage.evaluated_count,
@@ -96,7 +99,11 @@ def SerializeFreezeView(view: FreezeView) -> dict[str, object]:
                 "positive_count": item.positive_count,
                 "average_net_excess_pct": item.average_net_excess_pct,
                 **(
-                    {"prediction_target": item.prediction_target, "hit_count": item.hit_count}
+                    {
+                        "prediction_target": item.prediction_target,
+                        "hit_count": item.hit_count,
+                        "target": _prediction_target(item.prediction_target),
+                    }
                     if item.prediction_target is not None else {}
                 ),
             }
@@ -288,6 +295,8 @@ def SerializeFreezeItem(item: FreezeItemView) -> dict[str, object]:
         "action": item.action,
         "action_reason": item.action_reason,
         **({"tomorrow_outcome": item.tomorrow_outcome.value} if item.tomorrow_outcome is not None else {}),
+        **({"d25_outcome": item.d25_outcome.value} if item.d25_outcome is not None else {}),
+        **({"actual_return_pct": item.actual_return_pct} if item.actual_return_pct is not None else {}),
         "score_status": item.score_status,
         "scores": {
             "ledger": ScoreLedgerPayload(item.score_ledger) if item.score_ledger is not None else None,
@@ -301,6 +310,7 @@ def SerializeFreezeItem(item: FreezeItemView) -> dict[str, object]:
             "estimated_cost_pct": item.estimated_cost_pct,
             "predicted_net_excess_pct": item.predicted_net_excess_pct,
             "model_disagreement_pct": item.model_disagreement_pct,
+            **({"target_probability": item.target_probability} if item.target_probability is not None else {}),
         },
         "risk_codes": list(item.risk_codes),
         "risk_details": [
@@ -352,19 +362,19 @@ def SerializeFreezeItem(item: FreezeItemView) -> dict[str, object]:
     }
 
 
-def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
+def SerializeEvent(
+    event: UnifiedPublishedEvent,
+    *,
+    tomorrow_profiles: Mapping[str, str] | None = None,
+) -> dict[str, object]:
     payload = event.payload
     common: dict[str, object] = {}
     if isinstance(payload, FreezeBatchPayload):
+        profiles = _serialize_batch(payload, tomorrow_profiles)
         common.update(
             round_sequence=payload.round_sequence,
-            profiles={
-                profile.profile: {
-                    freeze.strategy.value: _serialize_freeze_event(freeze)
-                    for freeze in profile.freezes
-                }
-                for profile in payload.profiles
-            },
+            profiles=profiles,
+            published_strategies={profile: list(pair) for profile, pair in profiles.items()},
         )
     elif isinstance(payload, FreezeEventPayload):
         common.update(
@@ -393,7 +403,28 @@ def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
         )
     elif isinstance(payload, ResyncEventPayload):
         common["reason"] = payload.reason
+    if (
+        tomorrow_profiles is not None
+        and isinstance(payload, (FreezeEventPayload, OverlayEventPayload))
+        and payload.strategy is Strategy.TOMORROW
+    ):
+        common["scoring_profiles"] = [profile for profile, owner in tomorrow_profiles.items() if owner == payload.profile]
     return common
+
+
+def _serialize_batch(
+    payload: FreezeBatchPayload, tomorrow_profiles: Mapping[str, str] | None,
+) -> dict[str, dict[str, dict[str, object]]]:
+    profiles = {
+        profile.profile: {freeze.strategy.value: _serialize_freeze_event(freeze) for freeze in profile.freezes}
+        for profile in payload.profiles
+    }
+    if tomorrow_profiles is not None:
+        for profile, owner in tomorrow_profiles.items():
+            owner_view = profiles.get(owner, {}).get(Strategy.TOMORROW.value)
+            if profile != owner and profile in profiles and owner_view is not None:
+                profiles[profile][Strategy.TOMORROW.value] = {**owner_view, "scoring_profile": profile}
+    return profiles
 
 
 def _serialize_freeze_event(payload: FreezeEventPayload) -> dict[str, object]:
@@ -421,6 +452,22 @@ def SerializeError(code: str, message: str) -> dict[str, object]:
 
 def _time(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _prediction_target(identity: str) -> dict[str, object] | None:
+    target = ParsePredictionTargetIdentity(identity)
+    if target is None:
+        return None
+    return {"identity": identity, "strategy": target.strategy.value, "threshold_bps": target.threshold_bps}
+
+
+def _prediction_fields(
+    input_versions: tuple[tuple[str, str], ...], configured_target: PredictionTarget | None = None,
+) -> dict[str, object]:
+    identity = dict(input_versions).get("prediction_target")
+    if identity is None and configured_target is not None:
+        identity = configured_target.identity
+    return {"prediction_target": _prediction_target(identity)} if identity is not None else {}
 
 
 def _preview_fields(context: PreviewContext | None, generated_at: datetime | None) -> dict[str, object]:
@@ -475,6 +522,7 @@ def _serialize_freeze_replacement(
         "published_at": _time(replacement.observed_at),
         "strategy_version": replacement.strategy_version,
         "input_versions": dict(replacement.input_versions),
+        **_prediction_fields(replacement.input_versions),
         "fusion_mode": replacement.fusion_mode,
         "stale": False,
         "frozen": False,
@@ -567,6 +615,10 @@ def _serialize_freeze_patch_item(item: FreezeItem, *, rank: int) -> dict[str, ob
             "deepseek_risk_penalty": components.get("deepseek_risk_penalty"),
             "final_score": item.final_score,
             "model_signal_score": model.signal_score if model is not None else None,
+            **(
+                {"target_probability": model.target_probability}
+                if model is not None and model.target_probability is not None else {}
+            ),
             "predicted_excess_return_pct": model.predicted_excess_return_pct if model is not None else None,
             "estimated_cost_pct": model.estimated_cost_pct if model is not None else None,
             "predicted_net_excess_pct": model.predicted_net_excess_pct if model is not None else None,

@@ -44,7 +44,7 @@ _RUNTIME_FILES = {
     "deepseek.json": ("deepseek",),
 }
 _STRATEGY_FILES = {
-    "selection.json": ("selection",),
+    "selection.json": ("selection", "prediction_targets"),
     "filter.json": ("hard_filters",),
     "scoring.json": (
         "company_scoring",
@@ -1039,9 +1039,8 @@ def test_qfq_windows_are_loaded_from_download_configuration(tmp_path) -> None:
         {"profile": "v2", "sessions": 200},
         {"profile": "v3", "sessions": 50},
     ]
-    document["online_qfq"].update(
-        {"workers": 7, "source_timeout_seconds": 14.5, "source_retries": 1}
-    )
+    document["online_qfq"]["workers"] = 7
+    document["history"].update({"tencent_timeout_seconds": 14.5, "tencent_retries": 1})
     (config_dir / "download.json").write_text(json.dumps(document), encoding="utf-8")
 
     settings = LoadQfqWindowConfiguration(tmp_path)

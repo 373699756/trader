@@ -24,6 +24,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.market.factors import PercentileReference, RoundScore
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
 from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
@@ -43,12 +44,14 @@ class LearnedRankScoringService:
         cost_policy: ExecutionCostPolicy,
         content_hash: Callable[[object], str],
         monotonic: Callable[[], float] = time.monotonic,
+        prediction_target: PredictionTarget | None = None,
     ) -> None:
         if profile.profile_id != "v1" or strategy not in profile.heads:
             raise ValueError("learned rank requires its own complete profile head")
         self._head = profile.heads[strategy]
         self._predictor = cast(LearnedRankPredictorPort, self._head.predictor)
         self._strategy = strategy
+        self._prediction_target = prediction_target
         self._cost_policy = cost_policy
         self._content_hash = content_hash
         self._monotonic = monotonic
@@ -162,7 +165,8 @@ class LearnedRankScoringService:
         if deadline is not None and self._monotonic() >= deadline:
             raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
         if tuple(item.code for item in predictions) != population_codes or any(
-            item.rank_raw is None for item in predictions
+            item.rank_raw is None or self._prediction_target is not None and item.target_probability is None
+            for item in predictions
         ):
             raise ValueError("learned rank predictor returned an incomplete population")
         ranks = PercentileRanks(tuple(cast(float, item.rank_raw) for item in predictions))
@@ -188,6 +192,7 @@ class LearnedRankScoringService:
                 prediction.predicted_excess_return * 100.0,
                 cost * 100.0,
                 (prediction.predicted_excess_return - cost) * 100.0,
+                target_probability=prediction.target_probability,
             )
         requested = frozenset(requested_codes)
         selected = tuple(item for item in predictions if item.code in requested)
@@ -207,6 +212,7 @@ class LearnedRankScoringService:
             score_model_id=self._predictor.model_id,
             score_contract_hash=self._contract_hash,
             production_authority=self._head.evidence.production_authority,
+            prediction_target=self._prediction_target,
             rank_population_version="learned-rank-population:"
             + self._content_hash(
                 (
@@ -244,6 +250,7 @@ class LearnedRankScoringService:
             point_in_time_parity=evidence.point_in_time_parity,
             score_scale=LEARNED_RANK_SCORE_SCALE,
             production_authority=evidence.production_authority,
+            prediction_target=self._prediction_target,
             training_label_cutoff=evidence.training_label_cutoff,
             computation=ModelComputationStatus(
                 candidate_count=self._candidate_count,

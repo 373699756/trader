@@ -34,7 +34,8 @@ from trader.training.application.resources import TrainingSampleSettings
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.sample_sequences import SampleSequenceLayout, SampleSequenceReader, SampleSequenceWriter
-from trader.training.infra.sample_schema import SAMPLE_TARGET_COLUMNS, SampleFeatureHash, TrainingSampleSchema
+from trader.training.infra.sample_schema import D25_HIT_COLUMN, SAMPLE_TARGET_COLUMNS, SampleFeatureHash, TrainingSampleSchema
+from trader.recommendation.domain.publication.models import Strategy
 
 _BASELINE_EXECUTION_OPTIONS = TrainingExecutionOptions()
 
@@ -48,6 +49,7 @@ class TrainingSample:
     average_amount_20d: float
     features: tuple[float, ...]
     targets: tuple[float | None, float | None, float | None, float | None, float | None, float | None]
+    d25_hit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -246,7 +248,7 @@ class SQLiteTrainingSampleIndex:
         self._counts_by_target.clear()
         values = tuple(samples)
         column_width = self._column_features + int(self._sequence_layout is not None)
-        placeholders = ", ".join("?" for _ in range(5 + column_width + len(SAMPLE_TARGET_COLUMNS)))
+        placeholders = ", ".join("?" for _ in range(6 + column_width + len(SAMPLE_TARGET_COLUMNS)))
         self._connection.run_many(
             f"INSERT INTO samples VALUES ({placeholders})",  # noqa: S608
             (self._encode(sample) for sample in values),
@@ -437,9 +439,12 @@ class SQLiteTrainingSampleIndex:
         split_name: TrainingSplitName,
         *,
         batch_size: int = 256,
+        d25_probability: bool = False,
     ) -> Iterator[TrainingSampleBatch]:
         """Stream one industry's ordered partition without allocating its full matrix."""
-        yield from self._iter_batches(contract, split_name, industry=industry, batch_size=batch_size)
+        yield from self._iter_batches(
+            contract, split_name, industry=industry, batch_size=batch_size, d25_probability=d25_probability,
+        )
 
     def iter_validation_batches(
         self, contract: TrainedHeadContract, *, batch_size: int = 256
@@ -521,15 +526,18 @@ class SQLiteTrainingSampleIndex:
         *,
         industry: str | None,
         batch_size: int,
+        d25_probability: bool = False,
     ) -> Iterator[TrainingSampleBatch]:
         if not 1 <= batch_size <= 256:
             raise ValueError("training batch size must be within 1..256")
         if split_name == "holdout":
             raise ValueError("training_holdout_is_sealed")
-        target = _require_target_column(contract.target_column)
+        if d25_probability and contract.strategy is not Strategy.D25:
+            raise ValueError("d25_probability_requires_d25_features")
+        target = D25_HIT_COLUMN if d25_probability else _require_target_column(contract.target_column)
         self._feature_columns(contract)
         shared = self._shared_rows
-        if shared is not None and industry == shared.industry and split_name != "validation":
+        if not d25_probability and shared is not None and industry == shared.industry and split_name != "validation":
             target_position = SAMPLE_TARGET_COLUMNS.index(target)
             selected_rows = [
                 position for position, partition in enumerate(shared.splits)
@@ -923,6 +931,7 @@ class SQLiteTrainingSampleIndex:
             sample.average_amount_20d,
             *encoded_features,
             *sample.targets,
+            sample.d25_hit,
         )
 
 

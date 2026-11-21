@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import threading
 from bisect import bisect_right
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
+from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryManifest, PublishedHistoryWindow
 from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.recommendation.domain.market.history_metrics import (
     BuildHistoryContext,
@@ -39,7 +39,7 @@ from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.aligned_history_bars import AlignedHistoryBars
 from trader.recommendation.infra.market_data.published_history_bars import OutcomeBars
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
-from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomeTarget, TomorrowCloseEvidence
+from trader.recommendation.domain.outcomes.models import D25CloseEvidence, OutcomeBar, OutcomeTarget, TomorrowCloseEvidence
 
 _RAW_RETENTION_SESSIONS = 20
 
@@ -633,31 +633,58 @@ class PublishedHistoryCache:
     def read_tomorrow_close_evidence(
         self, targets: Sequence[OutcomeTarget], observed_at: datetime
     ) -> tuple[TomorrowCloseEvidence, ...]:
-        """Pin the latest committed manifest for a whole settlement round."""
+        return tuple(
+            item
+            for window, signal, (following,), publication_hash in self._read_frozen_close_windows(
+                targets, observed_at, first_horizon=1, last_horizon=1
+            )
+            if (item := _tomorrow_close_window(window, signal, following, publication_hash)) is not None
+        )
+
+    def read_d25_close_evidence(
+        self, targets: Sequence[OutcomeTarget], observed_at: datetime
+    ) -> tuple[D25CloseEvidence, ...]:
+        """Read the four market closes only after the last one can be observed."""
+        evidence: list[D25CloseEvidence] = []
+        for window, signal, dates, publication_hash in self._read_frozen_close_windows(
+            targets, observed_at, first_horizon=2, last_horizon=5
+        ):
+            day_two, day_three, day_four, day_five = dates
+            item = _d25_close_window(window, signal, (day_two, day_three, day_four, day_five), publication_hash)
+            if item is not None:
+                evidence.append(item)
+        return tuple(evidence)
+
+    def _read_frozen_close_windows(
+        self, targets: Sequence[OutcomeTarget], observed_at: datetime, *, first_horizon: int, last_horizon: int
+    ) -> Iterator[tuple[PublishedHistoryWindow, date, tuple[date, ...], str]]:
+        """Pin the latest committed manifest for all seats in this settlement read."""
         self._check_outcome_read()
         history = self._outcome_history
-        if history is None:
-            return ()
+        if history is None or not targets:
+            return
+        if observed_at.utcoffset() is None:
+            raise ValueError("outcome_observation_time_invalid")
         manifest = history.manifest()
         if manifest is None:
-            return ()
+            return
         by_day: dict[date, list[str]] = {}
         for target in targets:
             by_day.setdefault(date.fromisoformat(target.recommend_date), []).append(target.stock_code)
         local = observed_at.astimezone(SHANGHAI)
         sessions = manifest.calendar_dates
-        dates = {signal: following for signal, following in zip(sessions, sessions[1:])}
-        evidence: list[TomorrowCloseEvidence] = []
+        positions = {day: index for index, day in enumerate(sessions)}
         for signal, codes in by_day.items():
-            following = dates.get(signal)
-            if following is None or local < datetime.combine(following, time(15), SHANGHAI):
+            position = positions.get(signal)
+            if position is None or position + last_horizon >= len(sessions):
                 continue
-            windows = history.read_range(manifest, codes, signal, following, check=self._check_outcome_read)
-            evidence.extend(
-                item for window in windows
-                if (item := _tomorrow_close_window(window, signal, following, manifest.snapshot_hash)) is not None
-            )
-        return tuple(evidence)
+            following = sessions[position + first_horizon : position + last_horizon + 1]
+            if local < datetime.combine(following[-1], time(15), SHANGHAI):
+                continue
+            for window in history.read_range(
+                manifest, codes, signal, following[-1], frozen_outcomes=True, check=self._check_outcome_read
+            ):
+                yield window, signal, following, manifest.snapshot_hash
 
     def _check_outcome_read(self) -> None:
         if self._outcome_cancelled.is_set():
@@ -727,6 +754,50 @@ def _tomorrow_close_window(
         Decimal(str(end.unadjusted.preclose)) if end.unadjusted is not None and end.unadjusted.preclose is not None else None,
         Decimal(str(end.unadjusted.close_price)) if end.unadjusted is not None and end.unadjusted.close_price is not None else None,
     )
+
+
+def _d25_close_window(
+    window: PublishedHistoryWindow,
+    signal: date,
+    following: tuple[date, date, date, date],
+    publication_hash: str,
+) -> D25CloseEvidence | None:
+    cells = {cell.trade_date: cell for cell in window.cells}
+    start = cells.get(signal)
+    if start is None or start.status != "complete":
+        return None
+    start_close = _observed_paired_close(start)
+    if start_close is None:
+        return None
+    day_two, day_three, day_four, day_five = (_observed_paired_close(cells.get(day)) for day in following)
+    if day_two is None or day_three is None or day_four is None or day_five is None:
+        return None
+    # All prices come from one pinned publication. History validates qfq basis
+    # before admitting a tail or replacing the stock's full observed window.
+    return D25CloseEvidence(
+        window.code,
+        signal,
+        following,
+        publication_hash,
+        start_close[0],
+        start_close[1],
+        (day_two[1], day_three[1], day_four[1], day_five[1]),
+    )
+
+
+def _observed_paired_close(cell: PublishedHistoryCell | None) -> tuple[Decimal, Decimal] | None:
+    if cell is None or cell.status not in ("complete", "supplier_marked_suspended"):
+        return None
+    raw, qfq = cell.unadjusted, cell.qfq
+    if raw is None or qfq is None or qfq.reconstructed_from is not None:
+        return None
+    if raw.close_price is None or qfq.close_price is None:
+        return None
+    raw_close = Decimal(str(raw.close_price))
+    qfq_close = Decimal(str(qfq.close_price))
+    if not raw_close.is_finite() or not qfq_close.is_finite() or raw_close <= 0 or qfq_close <= 0:
+        return None
+    return raw_close, qfq_close
 
 
 def _model_sequences(

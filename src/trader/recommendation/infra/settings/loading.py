@@ -62,13 +62,16 @@ from trader.recommendation.domain.market.research import (
     MarketRegimePolicy,
 )
 from trader.recommendation.domain.market.tail import TailSignalPolicy
-from trader.recommendation.domain.scoring.profile_identity import ParseScoringProfile, ScoringProfileId
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget, PredictionTargets, ProfilePredictionTargets
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ParseScoringProfile, ScoringProfileId
 
 _STRATEGY_KEYS = {
     "company_scoring",
     "scoring_profile",
     "fusion",
     "selection",
+    "prediction_targets",
     "hard_filters",
     "board_local_strategy_weights",
     "local_component_weights",
@@ -83,7 +86,7 @@ _STRATEGY_KEYS = {
     "factor_contract",
 }
 _STRATEGY_SECTION_FILES = {
-    "selection.json": {"selection"},
+    "selection.json": {"selection", "prediction_targets"},
     "filter.json": {"hard_filters"},
     "scoring.json": {
         "company_scoring",
@@ -200,6 +203,7 @@ def LoadStrategySettings(
     settings = StrategySettings(
         strategy_version=StrategyContractIdentity(raw),
         scoring_profile=ParseScoringProfile(effective_profile),
+        prediction_targets=_parse_prediction_targets(_mapping(raw, "prediction_targets")),
         fusion=FusionSettings(
             confidence_coverage_min=_number(
                 fusion_raw,
@@ -242,6 +246,30 @@ def LoadStrategySettings(
     )
     ValidateStrategySettings(settings)
     return settings
+
+
+def LoadPredictionTargets(strategy_config_path: str | os.PathLike[str]) -> PredictionTargets:
+    path = Path(strategy_config_path).expanduser().resolve().parent / "selection.json"
+    raw = _read_json_object(path)
+    _require_exact_keys(raw, _STRATEGY_SECTION_FILES[path.name], "selection")
+    return _parse_prediction_targets(_mapping(raw, "prediction_targets"))
+
+
+def _parse_prediction_targets(raw: Mapping[str, object]) -> PredictionTargets:
+    _require_exact_keys(raw, set(SCORING_PROFILE_IDS), "prediction_targets")
+    v1, v2, v3, v5 = (_parse_profile_targets(_mapping(raw, profile), profile) for profile in SCORING_PROFILE_IDS)
+    return PredictionTargets(v1, v2, v3, v5)
+
+
+def _parse_profile_targets(raw: Mapping[str, object], profile: ScoringProfileId) -> ProfilePredictionTargets:
+    label = f"prediction_targets.{profile}"
+    _require_exact_keys(raw, {"tomorrow_bps", "d25_bps"}, label)
+    try:
+        tomorrow = _integer(raw, "tomorrow_bps", minimum=0)
+        d25 = _integer(raw, "d25_bps", minimum=0)
+    except ConfigurationError as exc:
+        raise ConfigurationError(f"{label}.{exc}") from exc
+    return ProfilePredictionTargets(PredictionTarget(Strategy.TOMORROW, tomorrow), PredictionTarget(Strategy.D25, d25))
 
 
 def LoadLongWatchlist(config_path: str | os.PathLike[str]) -> LongWatchlist:

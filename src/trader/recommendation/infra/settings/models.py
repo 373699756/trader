@@ -13,6 +13,7 @@ from trader.recommendation.domain.market.research import (
     MarketRegimePolicy,
 )
 from trader.recommendation.domain.market.tail import TailSignalPolicy
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTargets
 from trader.recommendation.domain.scoring.company import CompanyScoringPolicy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
@@ -103,6 +104,7 @@ class StrategySettings:
     factor_contract: Mapping[str, object]
     factor_index: Mapping[str, FactorDefinition]
     company_scoring: CompanyScoringPolicy
+    prediction_targets: PredictionTargets
 
 
 @dataclass(frozen=True)

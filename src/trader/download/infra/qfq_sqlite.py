@@ -890,8 +890,11 @@ class SQLiteQfqWindowCache:
         start: date,
         end: date,
         *,
+        frozen_outcomes: bool = False,
         check: Callable[[], None] | None = None,
     ) -> tuple[PublishedHistoryWindow, ...]:
+        if frozen_outcomes:
+            raise ValueError("frozen_outcomes_require_full_history")
         if start > end or start < manifest.calendar_dates[0] or end > manifest.data_cutoff:
             raise ValueError("qfq_read_window_invalid")
         return tuple(

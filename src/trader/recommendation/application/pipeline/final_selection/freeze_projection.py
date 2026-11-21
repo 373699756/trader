@@ -56,6 +56,7 @@ from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewO
 from trader.recommendation.domain.market.history_alignment import HISTORY_INPUT_FAILURES
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.tomorrow_probability import IsTomorrowClosingQuote
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 from trader.recommendation.domain.publication.freeze_identity import (
     FreezeDownside,
@@ -140,6 +141,7 @@ class _FreezeProjectionContext:
     rank_population_version: str | None = None
     preview_context: PreviewContext | None = None
     official_close_evidence: str | None = None
+    prediction_target: PredictionTarget | None = None
 
 
 @dataclass(frozen=True)
@@ -170,11 +172,13 @@ def BuildScoredLocal(
     head_status = profile_status.heads.get(native_input.strategy) if profile_status is not None else None
     model_rank = head_status is not None and head_status.score_scale in MODEL_SELECTION_SCORE_SCALES
     predicts_close_gain = head_status is not None and head_status.score_scale == TOMORROW_PROBABILITY_SCORE_SCALE
+    target = head_status.prediction_target if head_status is not None else None
+    requires_close_event = predicts_close_gain or target is not None
     if runtime.quality_batch is None:
         minimum_history = (
             model_scoring.history_required_sessions(native_input.strategy)
             if model_scoring is not None
-            and (native_input.phase != "close_fallback" or model_rank)
+            and (native_input.phase != "close_fallback" or model_rank or requires_close_event)
             and model_scoring.uses_model(native_input.strategy)
             else 20
         )
@@ -186,10 +190,10 @@ def BuildScoredLocal(
     native_input = quality_batch.native_input
     official_close_evidence = (
         _official_close_evidence(native_input, quality_batch.output.records)
-        if predicts_close_gain else None
+        if requires_close_event else None
     )
-    if predicts_close_gain and native_input.phase == "close_fallback" and official_close_evidence is None:
-        raise ValueError("tomorrow_closing_evidence_pending")
+    if requires_close_event and native_input.phase == "close_fallback" and official_close_evidence is None:
+        raise ValueError(f"{native_input.strategy.value}_closing_evidence_pending")
     population_qualifications = runtime.population_qualifications
     if population_qualifications is not None:
         ValidatePopulationQualifications(
@@ -213,7 +217,7 @@ def BuildScoredLocal(
     )
     uses_model = (
         model_scoring is not None
-        and (native_input.phase != "close_fallback" or model_rank)
+        and (native_input.phase != "close_fallback" or model_rank or requires_close_event)
         and model_scoring.uses_model(strategy)
     )
     prediction_inputs = (
@@ -267,6 +271,8 @@ def BuildScoredLocal(
         raise ValueError("model_rank_unavailable")
     if predicts_close_gain and prediction_inputs and model_batch is not None and not model_batch.diagnostics:
         raise ValueError("tomorrow_probability_inputs_pending")
+    if target is not None and (model_batch is None or model_batch.prediction_target != target):
+        raise ValueError(f"{strategy.value}_prediction_target_unavailable")
     profile_history_qualified_codes = (
         frozenset(
             feature.quote.code
@@ -468,6 +474,7 @@ def BuildScoredLocal(
                 rank_population_version=model_batch.rank_population_version if model_batch is not None else None,
                 preview_context=native_input.preview_context,
                 official_close_evidence=official_close_evidence,
+                prediction_target=target,
             ),
         ),
         score_model_version=model_version,
@@ -701,9 +708,11 @@ def _scored_freeze(
                 ("cost_reference", context.cost_reference_version),
                 (
                     "prediction_target",
-                    TOMORROW_CLOSE_GAIN_TARGET if context.score_scale == TOMORROW_PROBABILITY_SCORE_SCALE else None,
+                    context.prediction_target.identity
+                    if context.prediction_target is not None
+                    else TOMORROW_CLOSE_GAIN_TARGET if context.score_scale == TOMORROW_PROBABILITY_SCORE_SCALE else None,
                 ),
-                ("tomorrow_close_evidence", context.official_close_evidence),
+                (f"{context.strategy.value}_close_evidence", context.official_close_evidence),
             )
             if value is not None
         )
@@ -787,6 +796,7 @@ def _freeze_item(
                 estimated_cost_pct=model_diagnostics.estimated_cost_pct,
                 predicted_net_excess_pct=model_diagnostics.predicted_net_excess_pct,
                 model_disagreement_pct=model_diagnostics.model_disagreement_pct,
+                target_probability=model_diagnostics.target_probability,
             )
             if isinstance(model_diagnostics, ModelDiagnostics)
             else None

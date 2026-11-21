@@ -9,9 +9,10 @@ import json
 import math
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
 
@@ -23,18 +24,21 @@ from trader.infra.sqlite_connection import (
     SqliteSession,
     SqliteTransaction,
 )
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import OutcomeTierSummary
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import OutcomeTierSummary, TargetOutcomeView
 from trader.recommendation.application.ports.freeze_records import FreezeRecordPort
 from trader.recommendation.application.ports.outcomes import OutcomeEvidenceConflictError
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.outcomes.models import (
     BenchmarkReturn,
+    D25RecommendationOutcome,
     OutcomeHorizons,
     OutcomeTarget,
     RecommendationOutcome,
     TomorrowRecommendationOutcome,
 )
-from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET, TomorrowCloseGain
+from trader.recommendation.domain.outcomes.prediction_target import ComparableCloseReturn, ParsePredictionTargetIdentity
+from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
+from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord
 
 
 @dataclass(frozen=True)
@@ -52,15 +56,18 @@ class SQLiteOutcomeEvidenceIndex:
         self,
         runtime_root: Path,
         freezes: FreezeRecordPort, *, sqlite_policy: SqliteIoPolicy, tomorrow_database: Path | None = None,
+        tomorrow_settlement_records: Callable[[date], tuple[CommittedFreezeRecord, ...]] | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
         self._database = runtime_root / "outcomes.sqlite3"
         self._tomorrow_database = tomorrow_database if tomorrow_database is not None else self._database
         self._freezes = freezes
+        self._tomorrow_settlement_records = tomorrow_settlement_records or self._profile_tomorrow_records
         self._lock = threading.RLock()
         self._initialized = False
         self._tomorrow_initialized = False
         self._tomorrow_scan_after: date | None = None
+        self._d25_scan_after: date | None = None
 
     @classmethod
     def inspect_status(cls, runtime_root: Path, *, sqlite_policy: SqliteIoPolicy) -> OutcomeEvidenceStatus:
@@ -91,22 +98,23 @@ class SQLiteOutcomeEvidenceIndex:
         if limit < 1:
             raise ValueError("summary limit must be positive")
         identities, sample_counts, targets = _summary_samples(self._freezes, strategy, limit)
-        completed = {
-            **_summary_returns(
-                self._database, strategy,
-                {key: value for key, value in identities.items() if value[1] is None},
-                sqlite_policy=self._sqlite_policy,
-            ),
-            **_summary_returns(
-                self._tomorrow_database, strategy,
-                {key: value for key, value in identities.items() if value[1] is not None},
-                sqlite_policy=self._sqlite_policy,
-            ),
-        }
+        if strategy is Strategy.TOMORROW and self._tomorrow_database != self._database:
+            completed = {
+                **_summary_returns(
+                    self._database, strategy, {key: value for key, value in identities.items() if value[1] is None},
+                    sqlite_policy=self._sqlite_policy,
+                ),
+                **_summary_returns(
+                    self._tomorrow_database, strategy, {key: value for key, value in identities.items() if value[1] is not None},
+                    sqlite_policy=self._sqlite_policy,
+                ),
+            }
+        else:
+            completed = _summary_returns(self._database, strategy, identities, sqlite_policy=self._sqlite_policy)
         summaries: list[OutcomeTierSummary] = []
         for target in targets:
             for tier in _TOMORROW_TIERS if target is not None else _SUMMARY_TIERS:
-                for horizon in OutcomeHorizons(strategy):
+                for horizon in _summary_horizons(strategy, target):
                     key = (tier, horizon, target)
                     values = completed.get(key, [])
                     sample_count = sample_counts.get(key, 0)
@@ -138,28 +146,31 @@ class SQLiteOutcomeEvidenceIndex:
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
             self._initialized = True
 
-    def tomorrow_hits(self, record_version: str) -> tuple[tuple[str, TomorrowCloseGain], ...]:
-        if not self._tomorrow_database.is_file():
+    def target_outcomes(self, record_version: str, strategy: Strategy, target: str) -> tuple[TargetOutcomeView, ...]:
+        prediction = ParsePredictionTargetIdentity(target)
+        if prediction is None or prediction.strategy is not strategy:
+            raise ValueError("outcome target is incompatible with strategy")
+        database = self._tomorrow_database if strategy is Strategy.TOMORROW else self._database
+        if not database.is_file():
             return ()
         try:
             with SqliteSession(
-                self._tomorrow_database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy
+                database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy
             ) as connection:
                 rows = connection.run(
                     "SELECT code, record_hash, record_bytes FROM recommendation_outcomes "
-                    "WHERE snapshot_id=? AND strategy=? AND horizon=1 ORDER BY code",
-                    (record_version, Strategy.TOMORROW.value),
+                    "WHERE snapshot_id=? AND strategy=? AND horizon=? ORDER BY code",
+                    (record_version, strategy.value, _summary_horizons(strategy, target)[0]),
                 ).fetchall()
         except sqlite3.Error as exc:
-            raise OutcomeEvidenceConflictError("Tomorrow outcome read failed") from exc
-        return tuple(
-            (str(row["code"]), label)
-            for row in rows
-            if isinstance(
-                label := _summary_value(bytes(row["record_bytes"]), bytes(row["record_hash"]), TOMORROW_CLOSE_GAIN_TARGET),
-                TomorrowCloseGain,
-            )
-        )
+            raise OutcomeEvidenceConflictError("prediction outcome read failed") from exc
+        results = []
+        for row in rows:
+            document = _outcome_document(bytes(row["record_bytes"]), bytes(row["record_hash"]), target)
+            label = _outcome_label(document)
+            actual = _actual_return(document, strategy)
+            results.append(TargetOutcomeView(str(row["code"]), label, actual))
+        return tuple(results)
 
     def pending_outcome_targets(self, *, limit: int) -> Sequence[OutcomeTarget]:
         if limit < 1:
@@ -171,7 +182,7 @@ class SQLiteOutcomeEvidenceIndex:
                 record = self._freezes.load(strategy, trade_date)
                 if record is None:
                     continue
-                if dict(record.freeze.input_versions).get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET:
+                if ParsePredictionTargetIdentity(dict(record.freeze.input_versions).get("prediction_target")) is not None:
                     continue
                 for item in sorted(record.freeze.items, key=lambda value: value.code):
                     if not item.selected or item.quote is None:
@@ -198,39 +209,59 @@ class SQLiteOutcomeEvidenceIndex:
         return tuple(targets)
 
     def pending_tomorrow_targets(self, *, limit: int) -> Sequence[OutcomeTarget]:
+        return self._pending_prediction_targets(Strategy.TOMORROW, limit=limit)
+
+    def pending_d25_targets(self, *, limit: int) -> Sequence[OutcomeTarget]:
+        return self._pending_prediction_targets(Strategy.D25, limit=limit)
+
+    def _pending_prediction_targets(self, strategy: Strategy, *, limit: int) -> Sequence[OutcomeTarget]:
         if limit < 1:
             raise ValueError("outcome target limit must be positive")
         targets: list[OutcomeTarget] = []
         with self._lock:
-            days = self._freezes.list_settlement_dates(
-                Strategy.TOMORROW, after=self._tomorrow_scan_after, limit=64
-            )
-            if not days:
-                self._tomorrow_scan_after = None
-                return ()
+            tomorrow = strategy is Strategy.TOMORROW
+            after = self._tomorrow_scan_after if tomorrow else self._d25_scan_after
+            days = self._freezes.list_settlement_dates(strategy, after=after, limit=64)
             for trade_date in days:
-                self._tomorrow_scan_after = trade_date
-                record = self._freezes.load(Strategy.TOMORROW, trade_date)
-                if (
-                    record is None
-                    or dict(record.freeze.input_versions).get("prediction_target") != TOMORROW_CLOSE_GAIN_TARGET
-                ):
-                    continue
-                for item in record.freeze.items:
-                    if item.selected and item.quote is not None and self._pending_horizons(
-                        record.version, Strategy.TOMORROW, item.code, database=self._tomorrow_database
-                    ):
-                        targets.append(
-                            OutcomeTarget(
-                                record.version, Strategy.TOMORROW, trade_date.isoformat(), item.code,
-                                item.quote.price, None, (1,), entry_at=item.quote.source_time,
-                                prediction_target=TOMORROW_CLOSE_GAIN_TARGET,
-                            )
-                        )
+                records = self._tomorrow_settlement_records(trade_date) if tomorrow else self._profile_records(strategy, trade_date)
+                for record in records:
+                    targets.extend(self._unsettled_prediction_targets(record))
+                after = trade_date
                 if len(targets) >= limit:
-                    return tuple(targets[:limit])
-            if len(days) < 64:
-                self._tomorrow_scan_after = None
+                    break
+            else:
+                if len(days) < 64:
+                    after = None
+            if tomorrow:
+                self._tomorrow_scan_after = after
+            else:
+                self._d25_scan_after = after
+        return tuple(targets[:limit])
+
+    def _profile_tomorrow_records(self, trade_date: date) -> tuple[CommittedFreezeRecord, ...]:
+        return self._profile_records(Strategy.TOMORROW, trade_date)
+
+    def _profile_records(self, strategy: Strategy, trade_date: date) -> tuple[CommittedFreezeRecord, ...]:
+        record = self._freezes.load(strategy, trade_date)
+        return () if record is None else (record,)
+
+    def _unsettled_prediction_targets(self, record: CommittedFreezeRecord) -> tuple[OutcomeTarget, ...]:
+        strategy = record.strategy
+        identity = dict(record.freeze.input_versions).get("prediction_target")
+        if identity is None or ParsePredictionTargetIdentity(identity) is None:
+            return ()
+        database = self._tomorrow_database if strategy is Strategy.TOMORROW else self._database
+        horizons = _summary_horizons(strategy, identity)
+        targets = []
+        for item in record.freeze.items:
+            if (
+                item.selected and item.quote is not None
+                and horizons[0] in self._pending_horizons(record.version, strategy, item.code, database=database)
+            ):
+                targets.append(OutcomeTarget(
+                    record.version, strategy, record.trade_date.isoformat(), item.code,
+                    item.quote.price, None, horizons, entry_at=item.quote.source_time, prediction_target=identity,
+                ))
         return tuple(targets)
 
     def record_benchmark_return(self, benchmark: BenchmarkReturn, *, observed_at: datetime) -> None:
@@ -299,8 +330,12 @@ class SQLiteOutcomeEvidenceIndex:
     def save_tomorrow_outcomes(self, outcomes: Sequence[TomorrowRecommendationOutcome]) -> None:
         self._save_outcomes(outcomes, database=self._tomorrow_database)
 
+    def save_d25_outcomes(self, outcomes: Sequence[D25RecommendationOutcome]) -> None:
+        self._save_outcomes(outcomes)
+
     def _save_outcomes(
-        self, outcomes: Sequence[RecommendationOutcome | TomorrowRecommendationOutcome], *, database: Path | None = None,
+        self, outcomes: Sequence[RecommendationOutcome | TomorrowRecommendationOutcome | D25RecommendationOutcome],
+        *, database: Path | None = None,
     ) -> None:
         target_database = self._database if database is None else database
         if target_database == self._database:
@@ -324,6 +359,11 @@ class SQLiteOutcomeEvidenceIndex:
                     target = outcome.target
                     payload = _tomorrow_outcome_bytes(outcome)
                     key = (target.snapshot_id, target.strategy.value, target.stock_code, 1)
+                    recommend_date, status = target.recommend_date, "complete"
+                elif isinstance(outcome, D25RecommendationOutcome):
+                    target = outcome.target
+                    payload = _d25_outcome_bytes(outcome)
+                    key = (target.snapshot_id, target.strategy.value, target.stock_code, 5)
                     recommend_date, status = target.recommend_date, "complete"
                 else:
                     payload = _outcome_bytes(outcome)
@@ -381,6 +421,10 @@ _TOMORROW_TIERS: tuple[_SummaryTier, ...] = ("recommend", "selected")
 _SummaryIdentities = dict[tuple[str, str], tuple[tuple[_SummaryTier, ...], str | None]]
 
 
+def _summary_horizons(strategy: Strategy, target: str | None) -> tuple[int, ...]:
+    return (5,) if strategy is Strategy.D25 and target is not None else OutcomeHorizons(strategy)
+
+
 def _summary_samples(
     freezes: FreezeRecordPort, strategy: Strategy, limit: int
 ) -> tuple[_SummaryIdentities, dict[_SummaryKey, int], tuple[str | None, ...]]:
@@ -388,7 +432,7 @@ def _summary_samples(
     sample_counts: dict[_SummaryKey, int] = {}
     targets: list[str | None] = []
     for trade_date in freezes.list_dates(strategy, limit=limit):
-        record = freezes.load(strategy, trade_date)
+        record = freezes.load_history(strategy, trade_date)
         if record is None:
             continue
         target = dict(record.freeze.input_versions).get("prediction_target")
@@ -405,7 +449,7 @@ def _summary_samples(
                 tiers = ("recommend", "selected") if recommended else ("selected",)
             identities[(record.version, item.code)] = tiers, target
             for tier in tiers:
-                for horizon in OutcomeHorizons(strategy):
+                for horizon in _summary_horizons(strategy, target):
                     key = (tier, horizon, target)
                     sample_counts[key] = sample_counts.get(key, 0) + 1
     return identities, sample_counts, tuple(targets) if targets else (None,)
@@ -449,7 +493,7 @@ def _summary_rows(
         raise OutcomeEvidenceConflictError("outcome summary read failed") from exc
 
 
-def _summary_value(payload: bytes, record_hash: bytes, target: str | None) -> float | TomorrowCloseGain | None:
+def _outcome_document(payload: bytes, record_hash: bytes, target: str | None) -> dict[str, object]:
     if _sha256(payload) != record_hash:
         raise OutcomeEvidenceConflictError("outcome summary payload hash mismatch")
     try:
@@ -458,14 +502,42 @@ def _summary_value(payload: bytes, record_hash: bytes, target: str | None) -> fl
         raise OutcomeEvidenceConflictError("outcome summary payload is invalid") from exc
     if not isinstance(value, dict) or value.get("prediction_target") != target:
         raise OutcomeEvidenceConflictError("outcome summary target is invalid")
-    if target == TOMORROW_CLOSE_GAIN_TARGET:
-        try:
-            label = TomorrowCloseGain(value["label"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise OutcomeEvidenceConflictError("outcome summary label is invalid") from exc
-        if label is TomorrowCloseGain.PENDING:
-            raise OutcomeEvidenceConflictError("outcome summary must contain mature evidence")
-        return label
+    return value
+
+
+def _outcome_label(document: dict[str, object]) -> TomorrowCloseGain:
+    try:
+        label = TomorrowCloseGain(document["label"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise OutcomeEvidenceConflictError("outcome summary label is invalid") from exc
+    if label is TomorrowCloseGain.PENDING:
+        raise OutcomeEvidenceConflictError("outcome summary must contain mature evidence")
+    return label
+
+
+def _actual_return(document: dict[str, object], strategy: Strategy) -> float | None:
+    if strategy is Strategy.D25:
+        realized = document.get("actual_return_pct")
+        if not isinstance(realized, (int, float)) or isinstance(realized, bool) or not math.isfinite(realized):
+            raise OutcomeEvidenceConflictError("settled D25 return is invalid")
+        return float(realized)
+    if document.get("confirmed_suspended") is not False:
+        return None
+    signal = document.get("signal_close")
+    next_close = document.get("next_close")
+    if not isinstance(signal, str) or not isinstance(next_close, str):
+        return None
+    try:
+        realized_return = ComparableCloseReturn(Decimal(signal), (Decimal(next_close),), sessions=1)
+    except InvalidOperation as exc:
+        raise OutcomeEvidenceConflictError("settled Tomorrow close prices are invalid") from exc
+    return float(realized_return * 100) if realized_return is not None else None
+
+
+def _summary_value(payload: bytes, record_hash: bytes, target: str | None) -> float | TomorrowCloseGain | None:
+    value = _outcome_document(payload, record_hash, target)
+    if target is not None and ParsePredictionTargetIdentity(target) is not None:
+        return _outcome_label(value)
     net = value.get("net_excess_return_pct")
     if value.get("status") != "complete" or not isinstance(net, (int, float)):
         return None
@@ -483,7 +555,7 @@ def _tomorrow_outcome_bytes(outcome: TomorrowRecommendationOutcome) -> bytes:
         "stock_code": outcome.target.stock_code,
         "horizon": 1,
         "status": "complete",
-        "prediction_target": TOMORROW_CLOSE_GAIN_TARGET,
+        "prediction_target": outcome.target.prediction_target,
         "label": outcome.label.value,
         "publication_hash": evidence.publication_hash,
         "next_date": evidence.next_date.isoformat(),
@@ -493,6 +565,26 @@ def _tomorrow_outcome_bytes(outcome: TomorrowRecommendationOutcome) -> bytes:
         "next_raw_reference": str(evidence.next_raw_reference) if evidence.next_raw_reference is not None else None,
         "next_raw_close": str(evidence.next_raw_close) if evidence.next_raw_close is not None else None,
         "confirmed_suspended": evidence.confirmed_suspended,
+    })
+
+
+def _d25_outcome_bytes(outcome: D25RecommendationOutcome) -> bytes:
+    evidence = outcome.evidence
+    return _canonical_bytes({
+        "snapshot_id": outcome.target.snapshot_id,
+        "strategy": Strategy.D25.value,
+        "recommend_date": outcome.target.recommend_date,
+        "stock_code": outcome.target.stock_code,
+        "horizon": 5,
+        "status": "complete",
+        "prediction_target": outcome.target.prediction_target,
+        "label": outcome.label.value,
+        "actual_return_pct": outcome.actual_return_pct,
+        "publication_hash": evidence.publication_hash,
+        "sample_dates": [trade_date.isoformat() for trade_date in evidence.dates],
+        "signal_raw_close": str(evidence.signal_raw_close),
+        "signal_close": str(evidence.signal_close),
+        "future_closes": [str(close) for close in evidence.closes],
     })
 
 

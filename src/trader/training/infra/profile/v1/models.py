@@ -417,7 +417,7 @@ def _metadata_publication_identity(metadata: Mapping[str, object], strategy: Str
         or plan.fit_dates[-1] != split.label_cutoff
     ):
         raise ModelBundleContractError("V1 publication final-fit dates differ")
-    metadata_hash = ContentHash((contract, split, plan))
+    metadata_hash = LearnedRankMetadataHash(contract, split, plan)
     label_cutoff = plan.fit_dates[-1]
     return ModelPublicationIdentity(
         "v1",
@@ -428,6 +428,10 @@ def _metadata_publication_identity(metadata: Mapping[str, object], strategy: Str
         _text(training, "training_input_hash"),
         _text(metadata, "pair_content_hash"),
     )
+
+
+def LearnedRankMetadataHash(contract: str, split: LearnedRankDateSplit, plan: FinalFitDatePlan) -> str:
+    return ContentHash((contract, split, plan))
 
 
 def _require_head_directories(profile_root: Path, strategies: tuple[Strategy, ...]) -> None:
@@ -592,7 +596,7 @@ def LoadV1ScoringProfile(model_root: Path, *, strategies: tuple[Strategy, ...] =
                 "v1",
                 head.strategy,
                 head.content_hash,
-                ContentHash((pair.contract_hash, head.split, head.final_fit)),
+                LearnedRankMetadataHash(pair.contract_hash, head.split, head.final_fit),
                 head.final_fit.fit_dates[-1],
                 pair.training_input_hash,
                 pair.content_hash,
@@ -782,6 +786,7 @@ def _final_fit_plan(raw_plan: object) -> FinalFitDatePlan:
 
 
 __all__ = [
+    "LearnedRankMetadataHash",
     "LearnedRankPredictor",
     "LoadV1ScoringProfile",
     "PublishLearnedRankPair",

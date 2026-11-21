@@ -80,9 +80,9 @@ def test_leading_absence_uses_earlier_valuation_without_compressing_calendar():
     class History(HistoryInput):
         read_ranges = []
 
-        def read_range(self, manifest, codes, start, end, *, check=None):
+        def read_range(self, manifest, codes, start, end, *, frozen_outcomes=False, check=None):
             self.read_ranges.append((start, end))
-            return super().read_range(manifest, codes, start, end, check=check)
+            return super().read_range(manifest, codes, start, end, frozen_outcomes=frozen_outcomes, check=check)
 
         @staticmethod
         def window(code, selected):

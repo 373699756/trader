@@ -18,11 +18,13 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.tomorrow_probability import TomorrowProbabilityCapability
+from trader.recommendation.application.ports.freeze_records import FreezeRecordConflictError
 from trader.recommendation.application.tomorrow_outcome_settlement import TomorrowOutcomeSettlementService
 from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 from trader.recommendation.domain.market.models import Board, Evidence
 from trader.recommendation.domain.market.tomorrow_probability import BuildTomorrowFeatures
 from trader.recommendation.domain.outcomes.models import TomorrowCloseEvidence
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord
 from trader.recommendation.domain.publication.models import Strategy
@@ -34,14 +36,14 @@ from trader.recommendation.infra.policy_settings import BuildRecommendationPolic
 from trader.recommendation.infra.settings.loading import LoadStrategySettings
 
 
-def _current(*, close_evidence: bool, quote_time):
+def _current(*, close_evidence: bool, quote_time, target=None):
     current = freeze()
     versions = (
         ("native", "published_input"),
         ("score_scale", TOMORROW_PROBABILITY_SCORE_SCALE),
         ("score_model", "model_digest"),
-        ("score_model_id", TOMORROW_CLOSE_GAIN_TARGET),
-        ("prediction_target", TOMORROW_CLOSE_GAIN_TARGET),
+        ("score_model_id", "model_digest" if target is not None else TOMORROW_CLOSE_GAIN_TARGET),
+        ("prediction_target", target.identity if target is not None else TOMORROW_CLOSE_GAIN_TARGET),
         ("score_contract_hash", "model_digest"),
     )
     if close_evidence:
@@ -57,7 +59,7 @@ def _current(*, close_evidence: bool, quote_time):
 
 
 def test_formal_tomorrow_rejects_an_intraday_quote_even_with_a_claimed_close():
-    current = _current(close_evidence=True, quote_time=NOW)
+    current = _current(close_evidence=True, quote_time=NOW, target=PredictionTarget(Strategy.TOMORROW, 800))
     with pytest.raises(ValueError, match="closing evidence"):
         replace(current, is_formal=True)
 
@@ -65,21 +67,39 @@ def test_formal_tomorrow_rejects_an_intraday_quote_even_with_a_claimed_close():
 def test_profile_switch_preserves_one_frozen_tomorrow_and_its_hit_rate(tmp_path):
     policy = SqlitePolicyFixture()
     shared = SQLiteFreezeRecords(tmp_path / "shared" / "freeze.sqlite3", sqlite_policy=policy)
+    grouped = SQLiteFreezeRecords(tmp_path / "shared" / "targets.sqlite3", sqlite_policy=policy, grouped=True)
     profile_a = SQLiteFreezeRecords(tmp_path / "v2" / "freeze.sqlite3", sqlite_policy=policy)
     profile_b = SQLiteFreezeRecords(tmp_path / "v3" / "freeze.sqlite3", sqlite_policy=policy)
-    owner_a = StrategyFreezeRecords(profile_a, shared, True)
-    owner_b = StrategyFreezeRecords(profile_b, shared, True)
+    profile_c = SQLiteFreezeRecords(tmp_path / "v5" / "freeze.sqlite3", sqlite_policy=policy)
+    target = PredictionTarget(Strategy.TOMORROW, 500)
+    other_target = PredictionTarget(Strategy.TOMORROW, 800)
+    owner_a = StrategyFreezeRecords(profile_a, shared, True, grouped, "v2", target, ("v2", "v3"), True)
+    owner_b = StrategyFreezeRecords(profile_b, shared, False, grouped, "v3", target, ("v2", "v3"))
+    owner_c = StrategyFreezeRecords(profile_c, shared, True, grouped, "v5", other_target, ("v2", "v5"))
     owner_a.initialize()
     owner_b.initialize()
-    current = _current(close_evidence=True, quote_time=NOW.replace(hour=15, minute=0))
+    owner_c.initialize()
+    current = _current(close_evidence=True, quote_time=NOW.replace(hour=15, minute=0), target=target)
     record = CommittedFreezeRecord(replace(current, is_formal=True), current.observed_at, "close_fallback")
     owner_a.commit(record)
+    other_current = _current(close_evidence=True, quote_time=NOW.replace(hour=15, minute=0), target=other_target)
+    other_record = CommittedFreezeRecord(replace(other_current, is_formal=True), other_current.observed_at, "close_fallback")
+    owner_c.commit(other_record)
+    assert owner_a.load(Strategy.TOMORROW, NOW.date()) == record
     assert owner_b.load(Strategy.TOMORROW, NOW.date()) == record
+    assert owner_c.load(Strategy.TOMORROW, NOW.date()) == other_record
+    assert record.version != other_record.version
+    switched = StrategyFreezeRecords(profile_b, shared, True, grouped, "v3", other_target, ("v3", "v5"))
+    with pytest.raises(FreezeRecordConflictError):
+        switched.commit(other_record)
+    assert switched.load(Strategy.TOMORROW, NOW.date()) == record
+    assert switched.load_history(Strategy.TOMORROW, NOW.date()).version == record.version
 
     next_day = NOW.date() + timedelta(days=1)
     shared_outcome_path = tmp_path / "research" / "tomorrow" / "outcomes.sqlite3"
     first = SQLiteOutcomeEvidenceIndex(
         tmp_path / "research" / "v2", owner_a, sqlite_policy=policy, tomorrow_database=shared_outcome_path,
+        tomorrow_settlement_records=owner_a.tomorrow_settlement_records,
     )
     second = SQLiteOutcomeEvidenceIndex(
         tmp_path / "research" / "v3", owner_b, sqlite_policy=policy, tomorrow_database=shared_outcome_path,
@@ -89,7 +109,7 @@ def test_profile_switch_preserves_one_frozen_tomorrow_and_its_hit_rate(tmp_path)
         publication_available = False
 
         def read_tomorrow_close_evidence(self, targets, observed_at):
-            assert targets[0].snapshot_id == record.version
+            assert {item.snapshot_id for item in targets} == {record.version, other_record.version}
             assert observed_at.date() == next_day
             if not self.publication_available:
                 return ()
@@ -116,15 +136,19 @@ def test_profile_switch_preserves_one_frozen_tomorrow_and_its_hit_rate(tmp_path)
     assert SerializeFreezeView(before)["items"][0]["tomorrow_outcome"] == "pending"
     assert service.settle(observed).settled == 0
     market.publication_available = True
-    assert service.settle(observed).settled == 1
+    assert service.settle(observed).settled == 2
     assert service.settle(observed).settled == 0
     recommend, selected = second.summaries(Strategy.TOMORROW)
-    assert recommend.prediction_target == TOMORROW_CLOSE_GAIN_TARGET
+    assert recommend.prediction_target == target.identity
     assert (recommend.sample_count, recommend.complete_count, recommend.hit_count) == (1, 1, 1)
     assert (selected.sample_count, selected.complete_count, selected.hit_count) == (1, 1, 1)
-    assert second.tomorrow_hits(record.version) == (("600001", "hit"),)
+    hit, = second.target_outcomes(record.version, Strategy.TOMORROW, target.identity)
+    miss, = second.target_outcomes(other_record.version, Strategy.TOMORROW, other_target.identity)
+    assert (hit.code, hit.label, hit.actual_return_pct) == ("600001", "hit", 5.0)
+    assert (miss.code, miss.label, miss.actual_return_pct) == ("600001", "miss", 5.0)
     after = queries.history(Strategy.TOMORROW, NOW.date())
     assert SerializeFreezeView(after)["items"][0]["tomorrow_outcome"] == "hit"
+    assert SerializeFreezeView(after)["items"][0]["actual_return_pct"] == 5.0
     assert before.etag != after.etag
 
 

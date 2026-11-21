@@ -11,7 +11,8 @@ from trader.recommendation.application.ports.outcomes import (
     TomorrowSettlementMarketData,
 )
 from trader.recommendation.domain.outcomes.models import TomorrowRecommendationOutcome
-from trader.recommendation.domain.outcomes.tomorrow_target import EvaluateTomorrowCloseGain, TomorrowCloseGain
+from trader.recommendation.domain.outcomes.prediction_target import EvaluatePredictionTarget, ParsePredictionTargetIdentity
+from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,11 +38,13 @@ class TomorrowOutcomeSettlementService:
         results: list[TomorrowRecommendationOutcome] = []
         for target in targets:
             item = evidence.get((target.stock_code, target.recommend_date))
-            if item is None or item.signal_raw_close != Decimal(str(target.anchor_raw_price)):
+            prediction = ParsePredictionTargetIdentity(target.prediction_target)
+            if prediction is None or item is None or item.signal_raw_close != Decimal(str(target.anchor_raw_price)):
                 continue
-            label = EvaluateTomorrowCloseGain(
+            label = EvaluatePredictionTarget(
+                prediction,
                 item.signal_close,
-                item.next_close,
+                (item.next_close,),
                 confirmed_suspended=item.confirmed_suspended,
                 next_raw_reference=item.next_raw_reference,
                 next_raw_close=item.next_raw_close,

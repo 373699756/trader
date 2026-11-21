@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import cast
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
-from trader.recommendation.domain.publication.freeze_identity import FreezeStage
+from trader.recommendation.domain.publication.freeze_identity import FreezeStage, PredictionTargetSuffix
 from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord, HistoricalFreezeSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.freeze_record_codec import DecodeFreezeItem, DecodeFreezePipeline, DecodeSelectionDiagnostics
@@ -43,14 +43,16 @@ def HistoricalRecordFromBytes(payload: bytes) -> HistoricalFreezeRecord:
         raise ValueError("historical freeze coordinates invalid")
     freeze_version = _text(raw, "freeze_version")
     coordinate_identity = f"freeze:{strategy.value}:{trade_date.isoformat()}:{stage}:{sequence}"
+    input_versions = _pairs(saved, "input_versions")
+    prediction_suffix = PredictionTargetSuffix(strategy, dict(input_versions).get("prediction_target"))
     if freeze_version not in {
-        coordinate_identity + (":formal" if saved.get("is_formal") is True else ""),
+        coordinate_identity + prediction_suffix + (":formal" if saved.get("is_formal") is True else ""),
         coordinate_identity + ":" + freeze_hash[:16],
     }:
         raise ValueError("historical freeze saved identity invalid")
     version = _text(raw, "version")
     if version not in {
-        f"record:{strategy.value}:{trade_date.isoformat()}:{stage}:{sequence}",
+        f"record:{strategy.value}:{trade_date.isoformat()}:{stage}:{sequence}" + prediction_suffix,
         f"record:{strategy.value}:{trade_date.isoformat()}:{record_hash[:16]}",
     }:
         raise ValueError("historical record saved identity invalid")
@@ -61,7 +63,7 @@ def HistoricalRecordFromBytes(payload: bytes) -> HistoricalFreezeRecord:
     pipeline = DecodeFreezePipeline(saved.get("pipeline"))
     snapshot = HistoricalFreezeSnapshot(
         strategy, trade_date, sequence, observed_at, cast(FreezeStage, stage),
-        _optional_text(saved.get("parent_version")), _pairs(saved, "input_versions"),
+        _optional_text(saved.get("parent_version")), input_versions,
         _text(saved, "config_version"), _text(saved, "strategy_version"), items,
         _counts(saved, "filter_aggregates"), tuple(_strings(saved, "degraded_reasons")),
         _optional_count(saved.get("population_count")), _optional_count(saved.get("rejected_count")),

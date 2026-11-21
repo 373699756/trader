@@ -9,6 +9,8 @@ from types import MappingProxyType
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget, PredictionTargets
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.application.history_quotes import HistoryQuotes
 
 StatusProvider = Callable[[], dict[str, object]]
@@ -42,19 +44,26 @@ class ProfiledWebServices:
     config: WebApiConfig = WebApiConfig()
     long_profile: str = "v2"
     history_quotes: HistoryQuotes | None = None
-    tomorrow_profile: str | None = None
+    tomorrow_profiles: Mapping[str, str] | None = None
+    prediction_targets: PredictionTargets | None = None
 
     def __post_init__(self) -> None:
         profiles = dict(self.profiles)
+        tomorrow_profiles = (
+            dict(self.tomorrow_profiles) if self.tomorrow_profiles is not None else {profile: profile for profile in profiles}
+        )
         if (
             not profiles
             or self.default_profile not in profiles
             or self.long_profile not in profiles
-            or self.tomorrow_profile is not None and self.tomorrow_profile not in profiles
+            or tomorrow_profiles.keys() != profiles.keys()
+            or set(tomorrow_profiles.values()) - profiles.keys()
+            or any(tomorrow_profiles[owner] != owner for owner in tomorrow_profiles.values())
             or set(profiles) - set(SCORING_PROFILE_IDS)
         ):
             raise ValueError("profiled web services contain invalid profile identities")
         object.__setattr__(self, "profiles", MappingProxyType(profiles))
+        object.__setattr__(self, "tomorrow_profiles", MappingProxyType(tomorrow_profiles))
 
     def select(self, profile: str | None) -> tuple[str, UnifiedWebServices]:
         selected = profile or self.default_profile
@@ -65,6 +74,14 @@ class ProfiledWebServices:
 
     def select_long(self) -> tuple[str, UnifiedWebServices]:
         return self.long_profile, self.profiles[self.long_profile]
+
+    def select_tomorrow(self, profile: str) -> UnifiedWebServices:
+        return self.profiles[self.tomorrow_profiles[profile]] if self.tomorrow_profiles is not None else self.profiles[profile]
+
+    def configured_target(self, profile: str, strategy: Strategy) -> PredictionTarget | None:
+        if self.prediction_targets is None or strategy is Strategy.LONG:
+            return None
+        return self.prediction_targets.for_profile(SCORING_PROFILE_IDS[SCORING_PROFILE_IDS.index(profile)], strategy)
 
 
 WebServices = UnifiedWebServices | ProfiledWebServices

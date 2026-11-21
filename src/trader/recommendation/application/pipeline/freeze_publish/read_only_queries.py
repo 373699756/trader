@@ -27,7 +27,8 @@ from trader.recommendation.domain.evidence.document_reference import CompanyDocu
 from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
-from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET, TomorrowCloseGain
+from trader.recommendation.domain.outcomes.prediction_target import ParsePredictionTargetIdentity
+from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
 from trader.recommendation.domain.publication.freeze_identity import (
     CommittedFreezeRecord,
     FreezeItem,
@@ -87,10 +88,17 @@ class OutcomeTierSummary:
     hit_count: int | None = None
 
 
+@dataclass(frozen=True)
+class TargetOutcomeView:
+    code: str
+    label: TomorrowCloseGain
+    actual_return_pct: float | None
+
+
 class OutcomeSummaryReader(Protocol):
     def summaries(self, strategy: Strategy, *, limit: int = 31) -> tuple[OutcomeTierSummary, ...]: ...
 
-    def tomorrow_hits(self, record_version: str) -> tuple[tuple[str, TomorrowCloseGain], ...]: ...
+    def target_outcomes(self, record_version: str, strategy: Strategy, target: str) -> tuple[TargetOutcomeView, ...]: ...
 
 
 class CompanyDocumentLinkReader(Protocol):
@@ -150,6 +158,7 @@ class FreezeItemView:
     estimated_cost_pct: float | None = None
     predicted_net_excess_pct: float | None = None
     model_disagreement_pct: float | None = None
+    target_probability: float | None = None
     research_components: ResearchComponentCoverage | None = None
     risk_details: tuple[FreezeRiskDisclosure, ...] = ()
     score_ledger: ScoreLedger | None = None
@@ -160,6 +169,8 @@ class FreezeItemView:
     selection_price: float | None = None
     selection_to_now_pct: float | None = None
     tomorrow_outcome: TomorrowCloseGain | None = None
+    d25_outcome: TomorrowCloseGain | None = None
+    actual_return_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -348,14 +359,29 @@ class UnifiedFreezeQueries:
             return view
         try:
             view = replace(view, outcome_summaries=self._outcome_summaries.summaries(strategy))
-            if dict(view.input_versions).get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET:
-                hits = dict(self._outcome_summaries.tomorrow_hits(record.version))
+            identity = dict(view.input_versions).get("prediction_target")
+            target = ParsePredictionTargetIdentity(identity)
+            if identity is not None and target is not None:
+                outcomes = {
+                    outcome.code: outcome
+                    for outcome in self._outcome_summaries.target_outcomes(record.version, strategy, identity)
+                }
+                settled_items: list[FreezeItemView] = []
+                for item in view.items:
+                    if not item.selected:
+                        settled_items.append(item)
+                        continue
+                    outcome = outcomes.get(item.code)
+                    label = outcome.label if outcome is not None else TomorrowCloseGain.PENDING
+                    actual_return_pct = outcome.actual_return_pct if outcome is not None else None
+                    if target.strategy is Strategy.TOMORROW:
+                        item = replace(item, tomorrow_outcome=label, actual_return_pct=actual_return_pct)
+                    else:
+                        item = replace(item, d25_outcome=label, actual_return_pct=actual_return_pct)
+                    settled_items.append(item)
                 view = replace(
                     view,
-                    items=tuple(
-                        replace(item, tomorrow_outcome=hits.get(item.code, TomorrowCloseGain.PENDING))
-                        if item.selected else item for item in view.items
-                    ),
+                    items=tuple(settled_items),
                 )
         except (OSError, RuntimeError, ValueError):
             view = replace(view, degraded_reasons=(*view.degraded_reasons, "outcome_summary_unavailable"))
@@ -374,7 +400,9 @@ class UnifiedFreezeQueries:
         )
         digest = hashlib.sha256(
             json.dumps(
-                (summary_identity, view.degraded_reasons, tuple(item.tomorrow_outcome for item in view.items)),
+                (summary_identity, view.degraded_reasons, tuple(
+                    (item.tomorrow_outcome, item.d25_outcome, item.actual_return_pct) for item in view.items
+                )),
                 ensure_ascii=True,
                 separators=(",", ":"),
             ).encode()
@@ -595,6 +623,7 @@ def _scored_item(
         estimated_cost_pct=model.estimated_cost_pct if model is not None else None,
         predicted_net_excess_pct=model.predicted_net_excess_pct if model is not None else None,
         model_disagreement_pct=model.model_disagreement_pct if model is not None else None,
+        target_probability=model.target_probability if model is not None else None,
         classified_industry=classified_industry,
     )
 

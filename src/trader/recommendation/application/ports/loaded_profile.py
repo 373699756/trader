@@ -12,6 +12,7 @@ from typing import Literal, Protocol
 from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId, TOMORROW_PROBABILITY_SCORE_SCALE
 from trader.recommendation.domain.scoring.residualization import ExposureContract
@@ -65,6 +66,7 @@ class ModelPrediction:
     code: str
     predicted_excess_return: float
     rank_raw: float | None = None
+    target_probability: float | None = None
 
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit():
@@ -73,6 +75,8 @@ class ModelPrediction:
             raise ValueError("model prediction must be finite")
         if self.rank_raw is not None and not math.isfinite(self.rank_raw):
             raise ValueError("raw model rank must be finite")
+        if self.target_probability is not None and not 0.0 <= self.target_probability <= 1.0:
+            raise ValueError("target probability must be between zero and one")
 
 
 class ModelPredictorPort(Protocol):
@@ -113,6 +117,7 @@ class ModelDiagnostics:
     # Legacy dual-model records may contain this value. New single-model
     # predictions leave it absent instead of publishing a synthetic zero.
     model_disagreement_pct: float | None = None
+    target_probability: float | None = None
 
     def __post_init__(self) -> None:
         values = (
@@ -125,6 +130,7 @@ class ModelDiagnostics:
             any(not math.isfinite(value) for value in values)
             or not 0.0 <= self.signal_score <= 100.0
             or self.estimated_cost_pct < 0.0
+            or self.target_probability is not None and not 0.0 <= self.target_probability <= 1.0
             or (
                 self.model_disagreement_pct is not None
                 and (not math.isfinite(self.model_disagreement_pct) or self.model_disagreement_pct < 0.0)
@@ -161,6 +167,7 @@ class ModelScoreBatch:
     score_contract_hash: str | None = None
     production_authority: bool = True
     rank_population_version: str | None = None
+    prediction_target: PredictionTarget | None = None
 
     def __post_init__(self) -> None:
         diagnostics = dict(self.diagnostics)
@@ -337,6 +344,7 @@ class ScoringHeadRuntimeStatus:
     production_authority: bool = True
     training_label_cutoff: date | None = None
     prediction_inflight_count: int = 0
+    prediction_target: PredictionTarget | None = None
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,7 @@ from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixtu
 
 import shutil
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import date
 from multiprocessing import get_context
 from threading import Event
@@ -17,7 +18,9 @@ from tests.helpers.training.model_publication import CrashProfilePublication
 from tests.helpers.training.profiles.v5.v5_training import _history
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
+from trader.recommendation.infra.settings.loading import LoadPredictionTargets
 from trader.training.application.selected_training import SelectedTrainingTask, TrainingLocations
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.cpu_admission import TrainingCpuBudget
@@ -47,19 +50,45 @@ def test_selected_train_separates_shared_tomorrow_from_four_d25_heads(tmp_path, 
     monkeypatch.setattr(selected_training, "OpenTomorrowHistoryInput", lambda *_args, **_kwargs: shared_input)
     received = []
 
-    def train_shared(history, models, **_resources):
+    def train_shared(history, models, *, target, **_resources):
         assert history is shared_input and models == request.paths.models
-        received.append(history)
+        received.append(target.threshold_bps)
         return TomorrowProbabilityTrainingResult("a" * 64, "b" * 64, "logistic")
 
+    # Route all production heads through the normal branch while keeping this
+    # older history fixture focused on routing. The direct event fits are tested
+    # against explicit mature labels in the dedicated D25 model tests.
+    fit_profiles = []
+    fit_targets = []
+
+    def fit_v1(_index, _directory, _split, _settings, binding, **_resources):
+        fit_profiles.append("v1")
+        fit_targets.append(binding.target.threshold_bps)
+        return object()
+
+    def fit_industry(_samples, request, _checkpoint):
+        fit_profiles.append(request.profile)
+        fit_targets.append(request.binding.target.threshold_bps)
+        return object()
+
+    monkeypatch.setattr("trader.training.infra.profile.v1.training.FitV1D25Probability", fit_v1)
+    monkeypatch.setattr("trader.training.infra.profile.v1.training.PublishD25Probability", lambda *_args: None)
+    monkeypatch.setattr("trader.training.infra.engine.FitIndustryD25Probability", fit_industry)
+    monkeypatch.setattr("trader.training.infra.engine.PublishD25Probability", lambda *_args: None)
+    targets = LoadPredictionTargets(request.runtime.strategy_config_path)
+    targets = replace(targets, v1=replace(targets.v1, tomorrow=PredictionTarget(Strategy.TOMORROW, 600)))
     with ThreadPoolExecutor(max_workers=4) as executor:
         run = TrainSelectedProfiles(SelectedTrainingAdapter(
             request, sqlite_policy=SqlitePolicyFixture(),
             load_industry_snapshot=lambda _: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at,
             train_shared_tomorrow=train_shared,
+            prediction_targets=targets,
         ), executor)
-    assert received == [shared_input]
-    assert run.tomorrow_probability is not None and run.tomorrow_probability.ready
+    assert received == [600, 500]
+    assert tuple(group.profiles for group in run.tomorrow_probability) == (("v1",), ("v2", "v3", "v5"))
+    assert all(group.result.ready for group in run.tomorrow_probability)
+    assert sorted(fit_profiles) == ["v1", "v2", "v3", "v5"]
+    assert fit_targets == [100] * 4
     assert tuple(outcome.profile for outcome in run.outcomes) == request.profiles
     for outcome in run.outcomes:
         assert outcome.result is not None and outcome.result.status == "engineering_ready", outcome

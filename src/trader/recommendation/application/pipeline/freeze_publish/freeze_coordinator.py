@@ -19,7 +19,6 @@ from trader.recommendation.application.ports.freeze_records import (
     FreezeRecordPort,
 )
 from trader.recommendation.domain.evidence.pipeline import StageState
-from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 from trader.recommendation.domain.publication.freeze_identity import (
     CommittedFreezeRecord,
     IsPreviewFreeze,
@@ -95,12 +94,9 @@ class ScoredFreezeCoordinator:
             return FreezeOperationResult("shadow_only")
         if current is not None and not self._runtime_identity.matches(current):
             return FreezeOperationResult("runtime_identity_mismatch")
-        if (
-            current is not None
-            and dict(current.input_versions).get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET
-            and not dict(current.input_versions).get("tomorrow_close_evidence")
-        ):
-            return FreezeOperationResult("tomorrow_closing_evidence_pending")
+        if current is not None and (close_key := current.prediction_close_key) is not None:
+            if not dict(current.input_versions).get(close_key):
+                return FreezeOperationResult(f"{self._strategy.value}_closing_evidence_pending")
         with ObservePublicationIo(
             self._publication_io,
             "freeze_seal",
@@ -178,6 +174,7 @@ class ScoredFreezeCoordinator:
             return "shadow_only"
         current = self._current(now.date())
         versions = dict(freeze.input_versions)
+        close_key = freeze.prediction_close_key
         rejections = (
             (
                 freeze.strategy is not self._strategy or freeze.trade_date != now.date(),
@@ -186,8 +183,7 @@ class ScoredFreezeCoordinator:
             (
                 freeze.observed_at > now or not official_close_version.startswith("official-close:")
                 or (
-                    versions.get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET
-                    and versions.get("tomorrow_close_evidence") != official_close_version
+                    close_key is not None and versions.get(close_key) != official_close_version
                 ),
                 "invalid_official_close",
             ),

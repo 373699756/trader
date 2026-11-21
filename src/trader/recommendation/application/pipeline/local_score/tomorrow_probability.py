@@ -14,7 +14,9 @@ from trader.recommendation.application.ports.loaded_profile import (
 from trader.recommendation.domain.candidate.filters import BoardForSnapshot
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.tomorrow_probability import BuildTomorrowFeatures, TomorrowProbabilityPredictor
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import (
     ScoringProfileId,
     TOMORROW_PROBABILITY_SCORE_SCALE,
@@ -25,6 +27,11 @@ from trader.recommendation.domain.scoring.profile_identity import (
 class TomorrowProbabilityCapability:
     profile_id: ScoringProfileId
     predictor: TomorrowProbabilityPredictor | None
+    target: PredictionTarget | None = None
+
+    def __post_init__(self) -> None:
+        if self.target is not None and self.target.strategy is not Strategy.TOMORROW:
+            raise ValueError("Tomorrow scoring requires a Tomorrow prediction target")
 
     @property
     def history_required_sessions(self) -> int:
@@ -63,8 +70,9 @@ class TomorrowProbabilityCapability:
             predictions,
             tuple(missing),
             score_scale=TOMORROW_PROBABILITY_SCORE_SCALE,
-            score_model_id=TOMORROW_CLOSE_GAIN_TARGET,
+            score_model_id=predictor.identity if self.target is not None else TOMORROW_CLOSE_GAIN_TARGET,
             score_contract_hash=predictor.identity,
+            prediction_target=self.target,
         )
 
     def status(self) -> ScoringHeadRuntimeStatus:
@@ -72,7 +80,8 @@ class TomorrowProbabilityCapability:
         return ScoringHeadRuntimeStatus(
             is_enabled=self.predictor is not None,
             profile_id=self.profile_id,
-            model_id=TOMORROW_CLOSE_GAIN_TARGET,
+            model_id=identity if self.target is not None else TOMORROW_CLOSE_GAIN_TARGET,
+            prediction_target=self.target,
             model_hash=identity,
             scoring_version=identity,
             activation_basis="trained_artifact",

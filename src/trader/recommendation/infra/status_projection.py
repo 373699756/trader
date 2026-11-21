@@ -284,6 +284,7 @@ def _scoring_head_payload(status: ScoringHeadRuntimeStatus) -> dict[str, object]
         "runtime_anchor": status.runtime_anchor,
         "point_in_time_parity": status.point_in_time_parity,
         "score_scale": status.score_scale,
+        **({"prediction_target": status.prediction_target.identity} if status.prediction_target is not None else {}),
         "production_authority": status.production_authority,
         **(
             {"training_label_cutoff": status.training_label_cutoff.isoformat()}

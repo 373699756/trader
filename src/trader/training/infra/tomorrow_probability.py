@@ -15,10 +15,10 @@ from trader.infra.regular_file import ReadRegularFile
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.serialization.sealing import ReplaceFile
 from trader.recommendation.domain.market.tomorrow_probability import TOMORROW_FEATURE_NAMES
-from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.publication.models import Strategy
 
 _MAX_MODEL_BYTES = 16 * 1024 * 1024
-_MODEL_NAME = "tomorrow.json"
 _ARTIFACT_KEYS = {
     "target", "features", "history_snapshot_hash", "fitting_dates", "calibration_dates",
     "logistic", "lightgbm", "calibration",
@@ -44,6 +44,7 @@ class LogisticTomorrowModel:
 
 @dataclass(frozen=True, slots=True)
 class TomorrowProbabilityArtifact:
+    target: PredictionTarget
     history_snapshot_hash: str
     fitting_dates: tuple[date, ...]
     calibration_dates: tuple[date, ...]
@@ -54,7 +55,8 @@ class TomorrowProbabilityArtifact:
 
     def __post_init__(self) -> None:
         if (
-            len(self.history_snapshot_hash) != 64
+            self.target.strategy is not Strategy.TOMORROW
+            or len(self.history_snapshot_hash) != 64
             or any(character not in "0123456789abcdef" for character in self.history_snapshot_hash)
             or not self.fitting_dates or not self.calibration_dates
             or self.fitting_dates != tuple(sorted(set(self.fitting_dates)))
@@ -108,7 +110,7 @@ class LoadedTomorrowProbabilityModel:
 def _document(artifact: TomorrowProbabilityArtifact) -> dict[str, object]:
     logistic = artifact.logistic
     return {
-        "target": TOMORROW_CLOSE_GAIN_TARGET,
+        "target": artifact.target.identity,
         "features": TOMORROW_FEATURE_NAMES,
         "history_snapshot_hash": artifact.history_snapshot_hash,
         "fitting_dates": tuple(day.isoformat() for day in artifact.fitting_dates),
@@ -122,6 +124,12 @@ def _document(artifact: TomorrowProbabilityArtifact) -> dict[str, object]:
     }
 
 
+def TomorrowProbabilityModelPath(model_root: Path, target: PredictionTarget) -> Path:
+    if target.strategy is not Strategy.TOMORROW:
+        raise ValueError("tomorrow_probability_target_invalid")
+    return model_root / f"tomorrow-{target.threshold_bps}.json"
+
+
 def PublishTomorrowProbabilityModel(model_root: Path, artifact: TomorrowProbabilityArtifact) -> str:
     document = _document(artifact)
     identity = ContentHash(document)
@@ -130,12 +138,12 @@ def PublishTomorrowProbabilityModel(model_root: Path, artifact: TomorrowProbabil
         raise ValueError("tomorrow_probability_artifact_too_large")
     if artifact.lightgbm is not None:
         _load_tree(artifact.lightgbm)
-    ReplaceFile(model_root / _MODEL_NAME, text)
+    ReplaceFile(TomorrowProbabilityModelPath(model_root, artifact.target), text)
     return identity
 
 
-def LoadTomorrowProbabilityModel(model_root: Path) -> LoadedTomorrowProbabilityModel | None:
-    path = model_root / _MODEL_NAME
+def LoadTomorrowProbabilityModel(model_root: Path, target: PredictionTarget) -> LoadedTomorrowProbabilityModel | None:
+    path = TomorrowProbabilityModelPath(model_root, target)
     try:
         encoded = ReadRegularFile(path, maximum_bytes=_MAX_MODEL_BYTES)
     except FileNotFoundError:
@@ -149,7 +157,7 @@ def LoadTomorrowProbabilityModel(model_root: Path) -> LoadedTomorrowProbabilityM
         raise ValueError("tomorrow_probability_artifact_invalid")
     if (
         ContentHash(source) != identity
-        or source["target"] != TOMORROW_CLOSE_GAIN_TARGET
+        or source["target"] != target.identity
         or source["features"] != list(TOMORROW_FEATURE_NAMES)
     ):
         raise ValueError("tomorrow_probability_artifact_contract_mismatch")
@@ -163,7 +171,7 @@ def LoadTomorrowProbabilityModel(model_root: Path) -> LoadedTomorrowProbabilityM
     ):
         raise ValueError("tomorrow_probability_artifact_invalid")
     artifact = TomorrowProbabilityArtifact(
-        snapshot, _dates(source["fitting_dates"]), _dates(source["calibration_dates"]), *calibration,
+        target, snapshot, _dates(source["fitting_dates"]), _dates(source["calibration_dates"]), *calibration,
         logistic=None if linear is None else LogisticTomorrowModel(
             _number(linear["intercept"]), _numbers(linear["weights"]), _numbers(linear["means"]), _numbers(linear["scales"]),
         ),
@@ -216,4 +224,5 @@ __all__ = [
     "LogisticTomorrowModel",
     "PublishTomorrowProbabilityModel",
     "TomorrowProbabilityArtifact",
+    "TomorrowProbabilityModelPath",
 ]

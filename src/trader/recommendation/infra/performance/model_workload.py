@@ -32,6 +32,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.tomorrow_probability import TomorrowProbabilityPredictor
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
@@ -47,6 +48,8 @@ class PerformanceProfileWorkload:
     config_version: str
     cost_policy: ExecutionCostPolicy
     tomorrow_predictor: TomorrowProbabilityPredictor | None = None
+    tomorrow_target: PredictionTarget | None = None
+    d25_target: PredictionTarget | None = None
 
     @property
     def strategies(self) -> tuple[Strategy, ...]:
@@ -64,6 +67,8 @@ class PerformanceProfileWorkload:
             maintenance=None,
             tomorrow_predictor=self.tomorrow_predictor,
             shared_tomorrow=self.tomorrow_predictor is not None,
+            tomorrow_target=self.tomorrow_target,
+            d25_target=self.d25_target,
         )
 
 
