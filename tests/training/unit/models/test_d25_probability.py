@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import replace
 from datetime import date, timedelta
@@ -12,13 +13,14 @@ from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.training.configuration import TcnFittingParametersFixture
 from tests.helpers.training.profiles.v1.learned_rank_training import _History, _settings
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
+from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 from trader.training.domain.v1.learned_rank import BuildLearnedRankDateSplit
-from trader.training.infra.d25.labels import D25HitLabel
+from trader.training.infra.d25.labels import D25HitLabel, VerifiedD25Close
 from trader.training.infra.d25.artifact import (
     D25ProbabilityBinding,
     HasD25Probability,
@@ -37,6 +39,7 @@ from trader.training.infra.fitting_settings import LightGBMFittingParameters, Ri
 from trader.training.infra.d25.v1.samples import LearnedRankCandidate, LearnedRankPendingDay, LearnedRankSampleIndex
 from trader.training.infra.d25.v1.models import LoadV1ScoringProfile
 from trader.training.infra.d25.v1.training import RunV1Training
+from trader.training.infra.history.aligned_training_rows import AlignTrainingRows
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSampleBatch
 
 _TARGET = PredictionTarget(Strategy.D25, 100)
@@ -51,6 +54,80 @@ def test_d25_exact_binary_label_requires_four_prices() -> None:
     assert D25HitLabel(_TARGET, 100, (100, 101, 101, 101.999999)) == 0
     assert D25HitLabel(_OTHER, 100, prices) == 0
     assert D25HitLabel(_TARGET, 100, (100, 101, None, 102)) is None
+
+
+@pytest.mark.parametrize(("condition", "expected_status", "expected_label"), (
+    ("complete", "complete", 1),
+    ("suspended", "supplier_marked_suspended", 1),
+    ("suspended_raw_only", "supplier_marked_suspended", None),
+    ("suspended_qfq_only", "supplier_marked_suspended", None),
+    ("inferred", "unknown_missing", None),
+    ("unknown", "unknown_missing", None),
+    ("reconstructed", "complete", None),
+))
+def test_d25_close_event_after_production_history_alignment(condition, expected_status, expected_label) -> None:
+    dates = _CALENDAR[:6]
+    industry = "capco:J66货币金融服务"
+    rows = []
+    for day, close in zip(dates, (100.0, 103.0, 100.0, 101.0, 101.0, 102.0), strict=True):
+        point = HistoryTrainingPoint(
+            day, close, 2_000.0, close, close, close, 200.0,
+            raw_open=close, raw_high=close, raw_low=close, raw_close_price=close,
+            raw_preclose=99.0, raw_amount=2_100.0,
+        )
+        status = "complete"
+        if day == dates[2]:
+            if condition.startswith("suspended"):
+                status = "supplier_marked_suspended"
+                if condition == "suspended_raw_only":
+                    point = replace(point, qfq_close_price=None)
+                elif condition == "suspended_qfq_only":
+                    point = replace(point, raw_close_price=None)
+            elif condition in {"inferred", "unknown"}:
+                status = "tencent_inferred_suspended" if condition == "inferred" else "unknown_missing"
+            elif condition == "reconstructed":
+                point = replace(point, qfq_reconstruction_anchor=dates[4])
+        rows.append(HistoryTrainingRow("600001", day, "main", industry, point, status))
+
+    aligned = tuple(AlignTrainingRows(iter(rows), dates))
+    assert aligned[0].point is rows[0].point
+    assert aligned[2].cell_status == expected_status
+    second_horizon = aligned[2].point
+    assert second_horizon is not None
+    if condition in {"suspended_raw_only", "inferred", "unknown"}:
+        assert second_horizon.qfq_close_price == 103.0
+        assert second_horizon.raw_close_price is None and second_horizon.raw_preclose is None
+    else:
+        assert second_horizon.qfq_close_price == 100.0
+        assert second_horizon.raw_close_price == (None if condition == "suspended_qfq_only" else 100.0)
+    if condition.startswith("suspended") or condition in {"inferred", "unknown"}:
+        assert second_horizon.raw_volume == second_horizon.qfq_amount == 0.0
+    if condition == "reconstructed":
+        assert second_horizon.qfq_reconstruction_anchor == dates[4]
+
+    signal = VerifiedD25Close(aligned[0])
+    future = tuple(VerifiedD25Close(row) for row in aligned[2:])
+    assert D25HitLabel(_TARGET, signal, future) == expected_label
+
+
+def test_v1_production_fit_builds_d25_probabilities_from_raw_history_rows(tmp_path: Path) -> None:
+    class VerifiedHistory(_History):
+        def iter_training_rows(self, allowed_dates: frozenset[date]) -> Iterator[HistoryTrainingRow]:
+            for row in super().iter_training_rows(allowed_dates):
+                assert row.point is not None
+                yield replace(row, point=replace(row.point, raw_close_price=row.point.qfq_close_price))
+
+    model_root = tmp_path / "models"
+    target = PredictionTarget(Strategy.D25, 50)
+    result = RunV1Training(
+        VerifiedHistory, model_root, history_root=tmp_path / "history", sample_root=tmp_path / "samples",
+        settings=_settings(), sample_settings=TrainingSampleSettingsFixture(), sqlite_policy=SqlitePolicyFixture(),
+        strategies=(Strategy.D25,), d25_target=target,
+    )
+    assert result.status == "engineering_ready", (result.failure_reasons, result.diagnostic)
+    utility = LoadV1ScoringProfile(model_root, strategies=(Strategy.D25,))
+    loaded = LoadD25ScoringProfile(model_root, utility, target)
+    assert loaded.heads[Strategy.D25].predictor.model_hash != utility.heads[Strategy.D25].predictor.model_hash
 
 
 def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Path) -> None:

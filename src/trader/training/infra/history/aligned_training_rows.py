@@ -65,15 +65,7 @@ def AlignTrainingRows(
             aligned = AlignMarketSession(day, _observation(row), previous.get(code))
             if aligned is not None:
                 previous[code] = aligned
-                point = HistoryTrainingPoint(
-                    day,
-                    aligned.close,
-                    aligned.amount,
-                    aligned.open_price,
-                    aligned.high,
-                    aligned.low,
-                    aligned.volume,
-                )
+                point = _training_point(day, row.point, aligned)
             else:
                 previous.pop(code, None)
                 point = None
@@ -88,6 +80,31 @@ def AlignTrainingRows(
         current = next(groups, None)
     if current is not None:
         raise ValueError("history_alignment_row_outside_calendar")
+
+
+def _training_point(
+    day: date, observed: HistoryTrainingPoint | None, aligned: AlignedMarketSession,
+) -> HistoryTrainingPoint:
+    if aligned.kind == "trading" and observed is not None:
+        return observed
+    if observed is not None and (
+        aligned.kind == "suspended"
+        and observed.qfq_close_price is not None
+        and observed.qfq_close_price > 0
+    ):
+        return replace(
+            observed,
+            qfq_close_price=aligned.close,
+            qfq_amount=aligned.amount,
+            qfq_open=aligned.open_price,
+            qfq_high=aligned.high,
+            qfq_low=aligned.low,
+            raw_volume=aligned.volume,
+        )
+    # A carry-forward valuation preserves the date without acquiring source price evidence.
+    return HistoryTrainingPoint(
+        day, aligned.close, aligned.amount, aligned.open_price, aligned.high, aligned.low, aligned.volume,
+    )
 
 
 def _observation(row: HistoryTrainingRow) -> MarketDailyObservation:
