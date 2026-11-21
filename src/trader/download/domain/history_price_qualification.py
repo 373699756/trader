@@ -15,6 +15,10 @@ HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-never-st")
 _RAW_ACTIVITY_REL_TOLERANCE = 0.001
 
 
+class HistoryPriceQualificationError(RuntimeError):
+    """A candidate conflicts with price facts before any replacement is written."""
+
+
 class HistoryQfqBasisError(RuntimeError):
     """An incremental window cannot prove one observed qfq price basis."""
 
@@ -76,7 +80,7 @@ def QualifyReplacementWindow(
             continue
         raw = cell.unadjusted
         if raw is None or raw.trading_status != before.unadjusted.trading_status:
-            raise RuntimeError("price_replacement_trading_status_conflict")
+            raise HistoryPriceQualificationError("price_replacement_trading_status_conflict")
         if raw.trading_status == "trading":
             _require_raw_prices(before.unadjusted, raw)
             if any(
@@ -87,7 +91,7 @@ def QualifyReplacementWindow(
                     (before.unadjusted.turnover, raw.turnover),
                 )
             ):
-                raise RuntimeError("price_replacement_known_raw_field_missing")
+                raise HistoryPriceQualificationError("price_replacement_known_raw_field_missing")
     return incoming
 
 
@@ -221,9 +225,9 @@ def _require_raw_prices(
         (left.volume, right.volume, 100.0, _RAW_ACTIVITY_REL_TOLERANCE),
     ):
         if a is None or b is None or not isclose(a, b, rel_tol=relative, abs_tol=absolute):
-            raise RuntimeError("history_tail_raw_price_conflict")
+            raise HistoryPriceQualificationError("history_tail_raw_price_conflict")
     if left.amount is None or right.amount is None or not _same_raw_amount(left.amount, right.amount):
-        raise RuntimeError("history_tail_raw_price_conflict")
+        raise HistoryPriceQualificationError("history_tail_raw_price_conflict")
 
 
 def _same_raw_amount(left: float, right: float) -> bool:

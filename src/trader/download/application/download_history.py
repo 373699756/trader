@@ -21,6 +21,7 @@ from trader.download.domain.history_maintenance import (
     HistoryMaintenanceState, HistoryMaintenanceStatus, HistoryPriceGapSummary, HistoryPriceReviewSummary,
 )
 from trader.download.domain.history_price_qualification import (
+    HistoryPriceQualificationError,
     HISTORY_UNIVERSE_CONTRACT, QualifyReplacementWindow,
 )
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
@@ -385,6 +386,7 @@ class DownloadHistoryUseCase:
                 if not reserved:
                     continue
                 attempted += 1
+                failure = None
                 previous = None
                 if prices.repair_source(security.code, inputs.batch.sequence) == "baostock":
                     previous = PublishedHistoryWindow(
@@ -411,16 +413,23 @@ class DownloadHistoryUseCase:
                     if self.cancel():
                         raise KeyboardInterrupt
                 except (OSError, RuntimeError, ValueError) as exc:
-                    reason = self.dependencies.maintenance.download_failure(exc)
-                    prices.fail_repair(security.code, batch_id, reason)
+                    failure = self.dependencies.maintenance.download_failure(exc)
+                else:
+                    try:
+                        prices.replace_repair(security, dates, candidate, inputs.batch.sequence)
+                    except HistoryPriceQualificationError as exc:
+                        # Only pre-write candidate rejection is local to this stock.
+                        # Persistence and replay failures must still stop the batch.
+                        failure = self.dependencies.maintenance.download_failure(exc)
+                    else:
+                        repaired += 1
+                if failure is not None:
+                    prices.fail_repair(security.code, batch_id, failure)
                     if self.progress is not None:
                         self.progress.publish(HistorySyncProgress(
                             "baostock_repair", "failed", completed, len(selected), security.code,
-                            failure_reason=reason,
+                            failure_reason=failure,
                         ))
-                else:
-                    prices.replace_repair(security, dates, candidate, inputs.batch.sequence)
-                    repaired += 1
             prices.replay_repairs(allowed_codes)
             if self.progress is not None:
                 self.progress.publish(HistorySyncProgress(

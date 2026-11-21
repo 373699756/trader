@@ -6,6 +6,10 @@
 
 ## 1. 待完成任务
 
+阶段379／BaoStock候选冲突继续后续股票：completed（错误处理及隔离回归）。基线b5e4d132；主工作区落后上游且公司测试存在未提交重叠，直接快进被Git拒绝，改用最新上游的隔离工作区施工，未改写Afuture或用户修改。下载后的完整候选打印待落库，旧价核验在replace_repair内抛出RuntimeError，却位于单股捕获的else分支，导致整轮退出。新增HistoryPriceQualificationError只标识写入前raw价格／量额、交易状态与已知字段冲突；应用层只接纳此类单股失败，保留原价、失败待补回执并继续后续股票。数据库读写及恢复回放失败仍终止；供应商首次加三次重试保持原owner及次数，数据冲突不叠加网络请求，d同步边界。
+验证：隔离工作区以PYTHONPATH=src及主工作区.venv/bin/python3运行pytest -q，test_price_repair_pipeline.py、test_baostock_sync_supplier.py、test_baostock_repair_progress.py、test_history_price_qualification.py四文件通过。新增真实隔离SQLite回归分别制造成交额、成交量、收盘价冲突，核第一股旧价及缺口保留、失败回执、零恢复候选残留，第二股仍成功修复；既有读写失败终止、2000日整窗替换、四轮请求／退避／取消及日志回归一并通过。3个受影响Python文件Ruff E/F/B/UP（忽略E501）、2源码mypy、相对上游完整diff Review及git diff --check通过，未运行格式、全量、性能或发布门禁。
+未完成项／边界：本批实现无剩余；未请求真实BaoStock、写活动数据库或重启用户同步，原量额冲突原因及个股实际补齐仍须后续真实同步核验。主工作区保留原分支及未提交修改，本批在隔离工作区交付至同名上游；主工作区采用修复前仍需保留其修改后同步上游，不冒称当前进程已采用。
+
 阶段378／公司同步错误日志可见性：completed（诊断展示及定向验证）。基线380c349e。终端族进度只给缺口数、汇总优先显示预算停止，导致已持久记录的财务校验错误不易追查。族进度及收尾直接显示安全错误码和全部缺口原因，已知失败立即输出、不被一秒节流压掉，族收尾显示失败；请求占用明确为本族。最终汇总并列原预算／取消原因、各族错误及company/company_sync.sqlite3轮次定位。沿用现有JSON和请求账本，不新增文本日志owner、失败表双写、来源重试或数据库结构；d同步实际留痕合同。
 验证：公司进度／普通sync两组83项通过（`timeout 40s .venv/bin/python3 -m pytest -q tests/download/unit/company/test_company_progress.py tests/download/unit/market/test_sync_data.py --junitxml=/tmp/trader-stage378-diagnostics.xml`）。fixture覆盖错误在节流窗内立即可见、具体缺口、预算停止与失败并列、JSON及退出码不变；4个受影响Python文件Ruff E/F/B/UP、完整diff Review及git diff --check通过。初次额外I检查报告8处既有导入排序问题，未运行格式化或扩大整理；本批无公共类型或复杂边界变化，未跑mypy、全量、真实下载及发布验收。
 未完成项／边界：本批实现无剩余；既有财务第57次请求错误仍为company_round_page_identity_mismatch，失败响应未留存，不能还原具体不一致字段或冒签来源故障已修复。仅诊断代码交付，不操作活动资料、请求账本或运行进程，终端修复从下次启动采用；通用预算原因仍涵盖时间／步骤／请求限制，不编造历史停止细项。

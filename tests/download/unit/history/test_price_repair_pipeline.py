@@ -137,6 +137,55 @@ def test_history_reports_obtained_before_replacement_and_stops_on_database_failu
     assert (summary.attempted, summary.repaired, summary.skipped) == (2, 1 if failure_mode == "supplier" else 2, 0)
 
 
+@pytest.mark.parametrize("field", ("amount", "volume", "close_price"))
+def test_history_conflicting_bao_candidate_keeps_old_prices_and_repairs_next_stock(tmp_path, field):
+    from tests.helpers.download.history.infra.history_sync import ProgressRecorder
+
+    calls = []
+    prior = {}
+
+    class ConflictingRepair(RepairHistory):
+        def fetch_tencent_window(self, security, dates):
+            window = PublishedHistoryWindow(security.code, tuple(
+                ProjectHistoryCell(cell) for cell in _download(security.code, dates, 0.5).batch.cells
+            ))
+            partial = replace(window, cells=(replace(window.cells[0], status="qfq_missing", qfq=None), *window.cells[1:]))
+            prior[security.code] = partial
+            raise HistorySupplierPendingError(partial, "tencent_qfq_invalid_price", dates[:1])
+
+        def fetch_baostock_window(self, security, dates):
+            calls.append(security.code)
+            window = super().fetch_baostock_window(security, dates)
+            if security.code == "600001":
+                cell = window.cells[-1]
+                raw = replace(cell.unadjusted, **{field: getattr(cell.unadjusted, field) + 100000.0})
+                window = replace(window, cells=(*window.cells[:-1], replace(cell, unadjusted=raw)))
+            return window
+
+    days = (date(2026, 1, 2), date(2026, 1, 5))
+    config = _config(tmp_path, days)
+    progress = ProgressRecorder()
+    result = RunHistoryFixture(config, ConflictingRepair(days), clock=lambda: _now(days[-1]), progress=progress)
+    assert result.state == "completed" and result.unresolved_price_cells == 1
+    assert calls == ["600001", "600002"]
+    reports = [item for item in progress.values if item.stage == "baostock_repair"]
+    assert [(item.current_item, item.failure_reason) for item in reports if item.state == "failed"] == [
+        ("600001", "history_tail_raw_price_conflict"),
+    ]
+    assert reports[-1].repair_summary.repaired == 1
+    path = config.history_root / "catalog.sqlite3"
+    with SqliteSession(path) as connection:
+        assert [tuple(row) for row in connection.run(
+            "SELECT code,state,resolved_source FROM price_repair_attempt ORDER BY code",
+        )] == [("600001", "failed", None), ("600002", "resolved", "baostock")]
+        assert connection.run("SELECT COUNT(*) FROM price_replacement").require_one()[0] == 0
+    snapshot = HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).load_state().published_snapshot
+    cells = HistorySnapshotReader(config.history_root, sqlite_policy=SqlitePolicyFixture()).read_published_code_window(
+        "600001", days, snapshot,
+    )
+    assert tuple(ProjectHistoryCell(cell) for cell in cells) == prior["600001"].cells
+
+
 def test_history_does_not_report_obtained_for_incomplete_supplier_candidate(tmp_path, monkeypatch):
     from tests.helpers.download.history.infra.history_sync import ProgressRecorder
 
