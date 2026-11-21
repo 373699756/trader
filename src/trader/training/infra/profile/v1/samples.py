@@ -181,9 +181,12 @@ class LearnedRankSampleIndex:
     def close(self) -> None:
         self._connection.close()
 
-    def add_day(self, pending: LearnedRankPendingDay) -> tuple[int, int, int]:
+    def add_day(self, pending: LearnedRankPendingDay, *, include_t1: bool = True) -> tuple[int, int, int]:
         candidates = tuple(pending.candidates.values())
-        benchmarks = tuple(ObservedTrainingBenchmark(item.future[index] for item in candidates) for index in range(5))
+        benchmarks = tuple(
+            ObservedTrainingBenchmark(item.future[index] for item in candidates) if include_t1 or index > 0 else None
+            for index in range(5)
+        )
         converted = missing_t1 = missing_d25 = 0
         rows: list[tuple[object, ...]] = []
         with SqliteTransaction(self._connection):
@@ -198,7 +201,7 @@ class LearnedRankSampleIndex:
                     if all(value is not None for value in excess[1:])
                     else None
                 )
-                missing_t1 += t1 is None
+                missing_t1 += include_t1 and t1 is None
                 missing_d25 += d25 is None
                 if t1 is None and d25 is None:
                     continue
@@ -217,9 +220,9 @@ class LearnedRankSampleIndex:
 
     def coverage(
         self,
-        splits: tuple[LearnedRankDateSplit, LearnedRankDateSplit],
+        splits: tuple[LearnedRankDateSplit, ...],
         *,
-        final_fit_plans: tuple[FinalFitDatePlan, FinalFitDatePlan] | None = None,
+        final_fit_plans: tuple[FinalFitDatePlan, ...] | None = None,
     ) -> tuple[LearnedRankPartitionCoverage, ...]:
         counts = {
             DecodeDate(day): (int(t1_rows), int(d25_rows))
@@ -228,7 +231,9 @@ class LearnedRankSampleIndex:
             )
         }
         result: list[LearnedRankPartitionCoverage] = []
-        for position, (strategy, split) in enumerate(zip((Strategy.TOMORROW, Strategy.D25), splits, strict=True)):
+        for position, split in enumerate(splits):
+            strategy = Strategy.TOMORROW if split.maturity_sessions == 1 else Strategy.D25
+            target_column = 0 if strategy is Strategy.TOMORROW else 1
             partitions: tuple[
                 tuple[Literal["fitting", "early_stopping", "calibration", "validation", "final_fitting"], tuple[date, ...]], ...
             ] = (
@@ -240,7 +245,7 @@ class LearnedRankSampleIndex:
             if final_fit_plans is not None:
                 partitions = (*partitions, ("final_fitting", final_fit_plans[position].fit_dates))
             for name, days in partitions:
-                rows = tuple(counts.get(day, (0, 0))[position] for day in days)
+                rows = tuple(counts.get(day, (0, 0))[target_column] for day in days)
                 result.append(
                     LearnedRankPartitionCoverage(
                         strategy, name, len(days), sum(value > 0 for value in rows), sum(rows),
@@ -353,17 +358,18 @@ _STANDALONE_STREAM = LearnedRankSampleStream()
 
 def BuildLearnedRankSamples(
     source: LearnedRankInputPort,
-    splits: tuple[LearnedRankDateSplit, LearnedRankDateSplit],
+    splits: tuple[LearnedRankDateSplit, ...],
     index: LearnedRankSampleIndex,
     *,
     history_sessions: int,
     stream: LearnedRankSampleStream = _STANDALONE_STREAM,
-    final_fit_plans: tuple[FinalFitDatePlan, FinalFitDatePlan] | None = None,
+    final_fit_plans: tuple[FinalFitDatePlan, ...] | None = None,
 ) -> LearnedRankSampleCounts:
     progress, cancel_requested, aligned_rows = stream.progress, stream.cancel_requested, stream.aligned_rows
     calendar = source.snapshot.calendar.open_dates
     positions = {day: position for position, day in enumerate(calendar)}
     selected = frozenset(day for split in splits for day in split.sample_dates)
+    include_t1 = any(split.maturity_sessions == 1 for split in splits)
     if final_fit_plans is not None:
         if any(
             plan.source_cutoff != source.snapshot.source_cutoff
@@ -414,7 +420,7 @@ def BuildLearnedRankSamples(
         position = positions[row.trade_date]
         if row.trade_date != current:
             while pending and position - pending[0].position > 5:
-                added, absent_t1, absent_d25 = index.add_day(pending.popleft())
+                added, absent_t1, absent_d25 = index.add_day(pending.popleft(), include_t1=include_t1)
                 converted += added
                 missing_t1 += absent_t1
                 missing_d25 += absent_d25
@@ -441,6 +447,7 @@ def BuildLearnedRankSamples(
             if (
                 candidate is not None
                 and 1 <= horizon <= 5
+                and (include_t1 or horizon > 1)
                 and row.cell_status in {None, "complete", "supplier_marked_suspended"}
             ):
                 candidate.future[horizon - 1] = point.close_price / candidate.entry - 1.0
@@ -458,7 +465,7 @@ def BuildLearnedRankSamples(
         if emit:
             report()
     while pending:
-        added, absent_t1, absent_d25 = index.add_day(pending.popleft())
+        added, absent_t1, absent_d25 = index.add_day(pending.popleft(), include_t1=include_t1)
         converted += added
         missing_t1 += absent_t1
         missing_d25 += absent_d25

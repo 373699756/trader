@@ -31,7 +31,7 @@ from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
 from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
-from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+from trader.recommendation.application.ports.freeze_records import FreezeRecordPort
 
 ResearchTraceT = TypeVar("ResearchTraceT")
 OutcomeEvidenceT = TypeVar("OutcomeEvidenceT")
@@ -62,7 +62,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     app: ApplicationT
     supervisor: RuntimeSupervisor
     scheduler: SchedulerRuntime
-    records: SQLiteFreezeRecords
+    records: FreezeRecordPort
     market_cache: BoundedLruCache[object]
     minute_pool: BoundedExecutor
     source_lanes: SourceLaneScheduler
@@ -73,7 +73,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, WebServicesT, 
     freeze_queries: UnifiedFreezeQueries
     freeze_events: UnifiedFreezeEventStream
     tomorrow_index: UnifiedFreezeIndex
-    tomorrow_records: SQLiteFreezeRecords
+    tomorrow_records: FreezeRecordPort
     research_trace: ResearchTraceT
     outcome_evidence: OutcomeEvidenceT
     input_preloader: PublishedInputPreloader

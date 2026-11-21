@@ -22,10 +22,12 @@ from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
 from trader.infra.settings import RuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.resources import TrainingExecutionObserver, TrainingFanoutSettings, TrainingMemoryAdmission, TrainingSampleSettings
 from trader.training.application.selected_training import (
+    SelectedD25IndustryUnavailable,
     SelectedProfileResult,
     SelectedTrainingOutcome,
     SelectedTrainingPreparationError,
@@ -39,10 +41,12 @@ from trader.training.application.tomorrow_training import CancellableTrainingPro
 from trader.infra.future_cleanup import CloseAfterFutures
 from trader.infra.shutdown import ShutdownDeadline
 from trader.training.domain.v1.training_plan import BuildLearnedRankReadDates
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityTrainingResult
 from trader.training.infra.engine import FitSelectedProfile, InspectSelectedProfile, ProfileTrainingRequest
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+from trader.training.infra.model_bundles.contracts import D25ProfileContract
 from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
 from trader.training.infra.profile.v1.training import InspectV1Training, InspectV1TrainingDates, RunV1Training
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -53,6 +57,7 @@ from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.sample_progress import TrainingSampleProgressTracker
+from trader.training.infra.tomorrow_probability_training import OpenTomorrowHistoryInput, SharedTomorrowTrainer
 
 
 def ResolveTrainingLocations(
@@ -110,6 +115,7 @@ class SelectedTrainingAdapter:
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
     load_industry_snapshot: Callable[[datetime], CurrentIndustrySnapshot] = field(kw_only=True)
     clock: Callable[[], datetime] = field(kw_only=True)
+    train_shared_tomorrow: SharedTomorrowTrainer | None = field(default=None, kw_only=True)
     _measurements: TrainingExecutionMeasurements = field(init=False)
 
     def __post_init__(self) -> None:
@@ -155,17 +161,34 @@ class SelectedTrainingAdapter:
         scope = ExitStack()
         try:
             scope.enter_context(HistoryMaintenanceLock(paths.history.with_name(".history.lock")))
+            if self.train_shared_tomorrow is not None:
+                scope.enter_context(HistoryMaintenanceLock(paths.models / ".tomorrow.training.lock"))
             for profile in request.profiles:
                 scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
             RequireHistoryRepackIdle(paths.history)
-            industry = self.load_industry_snapshot(self.clock())
+            tomorrow = None
+            if self.train_shared_tomorrow is not None:
+                tomorrow = self.train_shared_tomorrow(
+                    OpenTomorrowHistoryInput(paths.history, sqlite_policy=self.sqlite_policy), paths.models,
+                    cancelled=request.cancelled, cpu_budget=request.cpu_budget,
+                    memory=request.memory_admission,
+                )
+            try:
+                industry = self.load_industry_snapshot(self.clock())
+            except InterruptedError:
+                raise
+            except (OSError, ValueError, RuntimeError) as exc:
+                if tomorrow is not None:
+                    raise SelectedD25IndustryUnavailable(tomorrow) from exc
+                raise
             history = SQLiteHistoryTrainingInputSnapshot.open(
                 paths.history, industry_snapshot=industry, sqlite_policy=self.sqlite_policy,
             )
             factory = _TrainingTaskFactory(
                 request, history, scope, self._measurements, sqlite_policy=self.sqlite_policy,
+                d25_only=self.train_shared_tomorrow is not None,
             )
-            yield _SelectedTrainingSession(request, history, factory, self._measurements, stopped)
+            yield _SelectedTrainingSession(request, history, factory, self._measurements, stopped, tomorrow)
         except SelectedTrainingDrainError as exc:
             cleanup = CloseAfterFutures(scope.pop_all().close, exc.pending)
             exc.pending = (cleanup,)
@@ -181,6 +204,7 @@ class _SelectedTrainingSession:
     factory: _TrainingTaskFactory
     measurements: TrainingExecutionMeasurements
     stopped: Event
+    tomorrow: TomorrowProbabilityTrainingResult | None
     physical_rows: int = 0
 
     def abort(self) -> ShutdownDeadline:
@@ -253,6 +277,7 @@ class _SelectedTrainingSession:
         return replace(
             run, history_rows_read=self.physical_rows, timing=self.measurements.snapshot(),
             industry_snapshot=self.history.snapshot.industry_snapshot,
+            tomorrow_probability=self.tomorrow,
         )
 
 
@@ -264,6 +289,7 @@ class _TrainingTaskFactory:
     measurements: TrainingExecutionMeasurements
 
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
+    d25_only: bool = field(kw_only=True)
 
     def prepare(
         self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort
@@ -281,17 +307,21 @@ class _TrainingTaskFactory:
         paths = selection.paths
         calendar = self.history.snapshot.calendar.open_dates
         settings = LoadV1TrainingSettings(selection.runtime.project_root)
+        strategies = (Strategy.D25,) if self.d25_only else (Strategy.TOMORROW, Strategy.D25)
         reused = InspectV1Training(
             self.history, paths.models, settings, cancel_requested=selection.cancelled,
             compute_threads=selection.cpu_budget.profile_threads.v1,
+            strategies=strategies,
         )
         if reused is not None:
             return SelectedTrainingTask("v1", frozenset(), partial(_reused, reused))
-        blocked = InspectV1TrainingDates(self.history, settings, compute_threads=selection.cpu_budget.profile_threads.v1)
+        blocked = InspectV1TrainingDates(
+            self.history, settings, compute_threads=selection.cpu_budget.profile_threads.v1, strategies=strategies,
+        )
         if blocked is not None:
             return SelectedTrainingTask("v1", frozenset(), partial(_reused, blocked))
         dates = AlignmentReadDates(calendar, BuildLearnedRankReadDates(
-            calendar, self.history.snapshot.source_cutoff, settings,
+            calendar, self.history.snapshot.source_cutoff, settings, strategies=strategies,
         ))
         execute = partial(
             RunV1Training,
@@ -309,6 +339,7 @@ class _TrainingTaskFactory:
             execution_options=selection.execution_options,
             execution_observer=self.measurements,
             sqlite_policy=self.sqlite_policy,
+            strategies=strategies,
         )
         return SelectedTrainingTask("v1", dates, partial(_run_v1, execute))
 
@@ -322,6 +353,8 @@ class _TrainingTaskFactory:
             for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
             if item.profile_id == profile
         )
+        if self.d25_only:
+            contract = D25ProfileContract(contract)
         settings = LoadProfileTrainingSettings(selection.runtime.project_root, profile)
         if isinstance(settings.fitting, TcnFittingParameters):
             # Load the optional native library before capturing job-wide thread limits.

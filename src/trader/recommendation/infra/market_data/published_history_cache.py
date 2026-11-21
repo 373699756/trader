@@ -7,9 +7,10 @@ from bisect import bisect_right
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
+from decimal import Decimal
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.domain.published_history import PublishedHistoryManifest
+from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.recommendation.domain.market.history_metrics import (
     BuildHistoryContext,
@@ -38,7 +39,7 @@ from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.infra.market_data.aligned_history_bars import AlignedHistoryBars
 from trader.recommendation.infra.market_data.published_history_bars import OutcomeBars
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
-from trader.recommendation.domain.outcomes.models import OutcomeBar
+from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomeTarget, TomorrowCloseEvidence
 
 _RAW_RETENTION_SESSIONS = 20
 
@@ -629,6 +630,35 @@ class PublishedHistoryCache:
     def cancel_outcome_reads(self) -> None:
         self._outcome_cancelled.set()
 
+    def read_tomorrow_close_evidence(
+        self, targets: Sequence[OutcomeTarget], observed_at: datetime
+    ) -> tuple[TomorrowCloseEvidence, ...]:
+        """Pin the latest committed manifest for a whole settlement round."""
+        self._check_outcome_read()
+        history = self._outcome_history
+        if history is None:
+            return ()
+        manifest = history.manifest()
+        if manifest is None:
+            return ()
+        by_day: dict[date, list[str]] = {}
+        for target in targets:
+            by_day.setdefault(date.fromisoformat(target.recommend_date), []).append(target.stock_code)
+        local = observed_at.astimezone(SHANGHAI)
+        sessions = manifest.calendar_dates
+        dates = {signal: following for signal, following in zip(sessions, sessions[1:])}
+        evidence: list[TomorrowCloseEvidence] = []
+        for signal, codes in by_day.items():
+            following = dates.get(signal)
+            if following is None or local < datetime.combine(following, time(15), SHANGHAI):
+                continue
+            windows = history.read_range(manifest, codes, signal, following, check=self._check_outcome_read)
+            evidence.extend(
+                item for window in windows
+                if (item := _tomorrow_close_window(window, signal, following, manifest.snapshot_hash)) is not None
+            )
+        return tuple(evidence)
+
     def _check_outcome_read(self) -> None:
         if self._outcome_cancelled.is_set():
             raise InterruptedError("outcome_history_read_cancelled")
@@ -667,6 +697,36 @@ class PublishedHistoryCache:
         with self._lock:
             self._error_count += 1
             self._maintenance_reason = reason
+
+
+def _tomorrow_close_window(
+    window: PublishedHistoryWindow, signal: date, following: date, publication_hash: str
+) -> TomorrowCloseEvidence | None:
+    cells = {cell.trade_date: cell for cell in window.cells}
+    start, end = cells.get(signal), cells.get(following)
+    if (
+        start is None or start.status != "complete" or start.unadjusted is None
+        or start.unadjusted.close_price is None or end is None
+    ):
+        return None
+    raw_close = Decimal(str(start.unadjusted.close_price))
+    if end.status == "supplier_marked_suspended" and end.unadjusted is not None:
+        if end.unadjusted.trading_status == "suspended":
+            return TomorrowCloseEvidence(window.code, signal, following, publication_hash, raw_close, raw_close, None, True)
+        return None
+    start_qfq, end_qfq = start.qfq, end.qfq
+    if (
+        end.status != "complete" or start_qfq is None or end_qfq is None
+        or start_qfq.reconstructed_from is not None or end_qfq.reconstructed_from is not None
+        or start_qfq.close_price is None or end_qfq.close_price is None
+    ):
+        return None
+    return TomorrowCloseEvidence(
+        window.code, signal, following, publication_hash, raw_close,
+        Decimal(str(start_qfq.close_price)), Decimal(str(end_qfq.close_price)), False,
+        Decimal(str(end.unadjusted.preclose)) if end.unadjusted is not None and end.unadjusted.preclose is not None else None,
+        Decimal(str(end.unadjusted.close_price)) if end.unadjusted is not None and end.unadjusted.close_price is not None else None,
+    )
 
 
 def _model_sequences(

@@ -37,8 +37,10 @@ REFERENCE_SCHEMA = SqliteSchema(
         """CREATE TABLE reference_publication(
             publication_id TEXT PRIMARY KEY, content_hash BLOB NOT NULL UNIQUE CHECK(length(content_hash)=32),
             checked_at INTEGER NOT NULL, calendar_id BLOB NOT NULL REFERENCES calendar_version(calendar_id),
-            industry_version TEXT, security_count INTEGER NOT NULL CHECK(security_count BETWEEN 1 AND 12000)
+            industry_version TEXT, security_count INTEGER NOT NULL CHECK(security_count BETWEEN 1 AND 12000),
+            completed_at INTEGER CHECK(completed_at>=checked_at)
         ) WITHOUT ROWID""",
+        "CREATE INDEX reference_completed_at ON reference_publication(completed_at DESC,publication_id) WHERE completed_at IS NOT NULL",
         """CREATE TABLE reference_member(
             publication_id TEXT NOT NULL REFERENCES reference_publication(publication_id),
             code TEXT NOT NULL, security_id BLOB NOT NULL, st_id BLOB NOT NULL,

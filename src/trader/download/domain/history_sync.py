@@ -108,6 +108,8 @@ class HistorySyncConfiguration:
     progress_heartbeat_seconds: float
     write_batches: HistoryWriteBatchPolicy
     price_review: PriceReviewConfiguration = field(default_factory=PriceReviewConfiguration)
+    tencent_timeout_seconds: float = 15.0
+    tencent_retries: int = 2
 
     def __post_init__(self) -> None:
         if (
@@ -118,6 +120,8 @@ class HistorySyncConfiguration:
             or self.minimum_free_bytes < 0
             or self.supplier_timeout_seconds <= 0
             or not 0 <= self.supplier_retries <= 3
+            or not 0.1 <= self.tencent_timeout_seconds <= 120
+            or not 0 <= self.tencent_retries <= 2
             or self.query_interval_seconds < BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS
             or not 0 < self.cancellation_grace_seconds <= 10.0
             or not 0 < self.progress_heartbeat_seconds <= self.supplier_timeout_seconds

@@ -54,8 +54,7 @@ from trader.infra.sqlite_connection import (
 _Rows: TypeAlias = tuple[tuple[int, PriceValues], ...]
 _SELECT = ",".join(PRICE_COLUMNS)
 _BAR_ROW_PARAMETERS = len(PRICE_COLUMNS) + 2
-# 38 structured rows use 988 parameters, below SQLite's older 999-parameter limit.
-_INSERT_ROWS_PER_STATEMENT = 38
+_INSERT_ROWS_PER_STATEMENT = 999 // _BAR_ROW_PARAMETERS
 _INSERT_ROW_PLACEHOLDERS = "(" + ",".join("?" for _ in range(_BAR_ROW_PARAMETERS)) + ")"
 _POPULATION_SQL = (
     "CREATE TABLE IF NOT EXISTS window_population(profile TEXT NOT NULL, code TEXT NOT NULL, "

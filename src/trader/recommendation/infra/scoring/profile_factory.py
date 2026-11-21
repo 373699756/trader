@@ -15,13 +15,16 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
     SharedModelFeatureCache,
 )
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
+from trader.recommendation.application.pipeline.local_score.tomorrow_probability import TomorrowProbabilityCapability
 from trader.recommendation.application.pipeline.local_score.v1.scoring import LearnedRankScoringService
 from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile
+from trader.recommendation.domain.market.tomorrow_probability import TomorrowProbabilityPredictor
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.training.domain.model_publication import HeadTrainingStatus
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
+from trader.training.infra.model_bundles.contracts import D25ProfileContract
 from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
 from trader.training.infra.model_bundles.profile_publication import (
     InspectPublishedProfileBundles,
@@ -44,6 +47,8 @@ def BuildProfileScoring(
     model_failure: str,
     cost_policy: ExecutionCostPolicy,
     maintenance: Callable[[], tuple[HeadTrainingStatus, ...]] | None,
+    tomorrow_predictor: TomorrowProbabilityPredictor | None = None,
+    shared_tomorrow: bool = False,
 ) -> PublishedModelScoringService:
     """Construct only in-memory capabilities; bootstrap owns all I/O and external resources."""
     shared = SharedModelFeatureCache()
@@ -51,10 +56,12 @@ def BuildProfileScoring(
         ModelScoringRouter(
             profile_id,
             {
-                strategy: LearnedRankScoringService(loaded, strategy, cost_policy=cost_policy, content_hash=ContentHash)
-                if loaded is not None and profile_id == "v1"
+                strategy: TomorrowProbabilityCapability(profile_id, tomorrow_predictor)
+                if shared_tomorrow and strategy is Strategy.TOMORROW
+                else LearnedRankScoringService(loaded, strategy, cost_policy=cost_policy, content_hash=ContentHash)
+                if loaded is not None and strategy in loaded.heads and profile_id == "v1"
                 else ProductionModelScoringService(loaded, strategy, cost_policy=cost_policy, shared_features=shared)
-                if loaded is not None
+                if loaded is not None and strategy in loaded.heads
                 else UnavailableModelCapability(profile_id, history_sessions, model_failure)
                 for strategy in (Strategy.TOMORROW, Strategy.D25)
             },
@@ -82,6 +89,7 @@ def LoadScoringProfile(
     profile_id: ScoringProfileId,
     *,
     training_root: Path,
+    d25_only: bool = False,
 ) -> LoadedScoringProfile:
     """Load one authorized profile without exposing model file details to callers."""
 
@@ -89,7 +97,10 @@ def LoadScoringProfile(
         from trader.training.infra.profile.v1.models import LoadV1ScoringProfile
 
         try:
-            return LoadV1ScoringProfile(training_root)
+            return (
+                LoadV1ScoringProfile(training_root, strategies=(Strategy.D25,))
+                if d25_only else LoadV1ScoringProfile(training_root)
+            )
         except FileNotFoundError as exc:
             raise ScoringModelsMissingError() from exc
         except ProfilePublicationBusyError as exc:
@@ -115,6 +126,8 @@ def LoadScoringProfile(
                 if profile_id == "v5"
                 else V3_TRAINING_PROFILE
             )
+            if d25_only:
+                profile = D25ProfileContract(profile)
             inspected = InspectPublishedProfileBundles(training_root / profile.output_directory, profile)
             bundles = tuple(item.model for item in inspected)
             return BuildTrainedScoringProfile(profile_id, bundles)

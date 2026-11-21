@@ -487,7 +487,7 @@ class HistorySnapshotReader:
         codes: Collection[str],
         progress: Callable[[int], None] | None = None,
         *,
-        industry_snapshot: CurrentIndustrySnapshot,
+        industry_snapshot: CurrentIndustrySnapshot | None,
     ) -> Iterator[HistoryTrainingRow]:
         """Trust the published snapshot and stream its narrow training projection."""
 
@@ -515,7 +515,7 @@ class HistorySnapshotReader:
                         processed_rows += 1
                         if row.trade_date not in allowed_dates:
                             raise HistorySnapshotReadError("history training row is outside the published calendar")
-                        yield _with_training_industry(row, industry_snapshot)
+                        yield row if industry_snapshot is None else _with_training_industry(row, industry_snapshot)
                         if progress is not None and processed_rows % 512 == 0:
                             progress(processed_rows)
                 completed_month = True

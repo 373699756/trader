@@ -8,15 +8,16 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, cast
+from zoneinfo import ZoneInfo
 
 from trader.download.application.prepare_reference import ReferenceDatabaseIncompatibleError
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockSecurity
 from trader.download.domain.company_evidence import EvidenceSyncProgress
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.domain.prepared_reference import PreparedReference
+from trader.download.domain.prepared_reference import PreparedReference, PreparedReferenceObservation
 from trader.download.infra.reference_schema import REFERENCE_SCHEMA
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_codec import DecodeDate, DecodeHash, DecodeTime, EncodeDate, EncodeHash, EncodeTime
@@ -27,6 +28,9 @@ from trader.infra.sqlite_connection import (
     SqliteConnectionOptions,
     SqliteTransaction,
 )
+
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class SQLiteReferenceIndex:
@@ -97,7 +101,10 @@ class SQLiteReferenceIndex:
             )
             return tuple(sorted(merged.values(), key=lambda item: item.code))
 
-    def publish(self, reference: PreparedReference, evidence: tuple[HistoryStEvidence, ...]) -> None:
+    def publish(
+        self, reference: PreparedReference, evidence: tuple[HistoryStEvidence, ...], *,
+        completed_at: datetime | None = None,
+    ) -> None:
         source = tuple(sorted(evidence, key=lambda item: item.code))
         projected = tuple(replace(item, checked_on=reference.checked_at.date()) for item in source)
         if projected != reference.st_evidence or any(item.checked_on > reference.checked_at.date() for item in source):
@@ -105,6 +112,18 @@ class SQLiteReferenceIndex:
         # A reused permanent exclusion retains its original supplier check date.
         if any(item.status != "ever_st" and item.checked_on != reference.checked_at.date() for item in source):
             raise ValueError("reference_st_publication_stale")
+        if completed_at is not None:
+            if completed_at.utcoffset() is None:
+                raise ValueError("reference_observation_time_invalid")
+            completed_at = completed_at.astimezone(_SHANGHAI)
+            if completed_at.date() == reference.checked_at.date():
+                PreparedReferenceObservation(reference, completed_at)
+            elif completed_at < reference.checked_at:
+                raise ValueError("reference_observation_time_invalid")
+            else:
+                # A capture spanning days can still support current sync, but is not
+                # evidence that either trading day's reference was available in full.
+                completed_at = None
         calendar_hash = EncodeHash(CanonicalDigest(reference.open_dates))
         with self._connection(write=True) as connection:
             existing = connection.run(
@@ -149,7 +168,7 @@ class SQLiteReferenceIndex:
                     tuple(value for day in dates for value in (calendar_hash, EncodeDate(day))),
                 )
             connection.run(
-                "INSERT INTO reference_publication VALUES(?,?,?,?,?,?)",
+                "INSERT INTO reference_publication VALUES(?,?,?,?,?,?,?)",
                 (
                     reference.identity,
                     EncodeHash(reference.identity),
@@ -157,6 +176,7 @@ class SQLiteReferenceIndex:
                     calendar_hash,
                     reference.industry_version,
                     len(reference.official_universe),
+                    EncodeTime(completed_at) if completed_at is not None else None,
                 ),
             )
             connection.run_many(
@@ -186,6 +206,28 @@ class SQLiteReferenceIndex:
             return None
         with self._connection() as connection:
             return _read(connection, publication_id)
+
+    def read_as_of(self, cutoff: datetime) -> PreparedReferenceObservation | None:
+        """Use a completed observation from the exact local day of the cutoff."""
+        if cutoff.utcoffset() is None:
+            raise ValueError("reference_observation_time_invalid")
+        local = cutoff.astimezone(_SHANGHAI)
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        if not self.path.is_file():
+            return None
+        with self._connection() as connection:
+            observed = connection.run(
+                "SELECT publication_id,completed_at FROM reference_publication "
+                "WHERE completed_at BETWEEN ? AND ? ORDER BY completed_at DESC,publication_id LIMIT 1",
+                (EncodeTime(start), EncodeTime(local)),
+            ).fetchone()
+            if observed is None:
+                return None
+            reference = _read(connection, cast(str, observed[0]))
+            if reference is None:
+                raise ValueError("reference_publication_missing")
+            result = PreparedReferenceObservation(reference, DecodeTime(observed[1]))
+            return result if local.date() in reference.open_dates else None
 
     def identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str | None:
         if cancel_requested is not None and cancel_requested():

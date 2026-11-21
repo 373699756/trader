@@ -158,7 +158,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
                 heads = []
                 with samples.fitting(EstimateLearnedRankFittingBytes(coverage)) as fitting:
                     diagnostics = []
-                    for strategy, split in zip((Strategy.TOMORROW, Strategy.D25), plan.splits, strict=True):
+                    for strategy, split in zip(source.strategies, plan.splits, strict=True):
                         session.check_cancelled()
                         _progress(session.progress, "model_fit", "started", strategy)
                         diagnostics.append(fitting.fit_diagnostic(strategy, split))
@@ -170,7 +170,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
                 _progress(session.progress, "artifact_publish", "started", None)
                 pair = LearnedRankFinalPair(
                     source.training_input_hash, source.source_identity_hash, source.calendar_hash, source.source_cutoff,
-                    plan.settings, (heads[0], heads[1]), run_id, source.calendar,
+                    plan.settings, tuple(heads), run_id, source.calendar,
                     price_snapshot_hash=source.snapshot_hash, industry_snapshot=source.industry_snapshot,
                 )
                 session.check_cancelled()

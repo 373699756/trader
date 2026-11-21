@@ -198,7 +198,6 @@ def test_run_script_help_lists_retained_download_and_training_commands(tmp_path:
     assert [line.strip().split("  ", 1)[0] for line in commands.splitlines()] == [
         "./run.sh sync",
         "./run.sh sync history",
-        "./run.sh sync market",
         "./run.sh sync company", "./run.sh sync company fill",
         "./run.sh train", "./run.sh train v1,v5",
     ]
@@ -430,7 +429,7 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
 
 
 @pytest.mark.parametrize("arguments", (
-    (), ("history",), ("market",),
+    (), ("history",),
     ("company",), ("company", "fill"),
 ))
 def test_run_script_forwards_retained_sync_commands(tmp_path: Path, arguments: tuple[str, ...]) -> None:

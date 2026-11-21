@@ -42,6 +42,7 @@ class ProfiledWebServices:
     config: WebApiConfig = WebApiConfig()
     long_profile: str = "v2"
     history_quotes: HistoryQuotes | None = None
+    tomorrow_profile: str | None = None
 
     def __post_init__(self) -> None:
         profiles = dict(self.profiles)
@@ -49,6 +50,7 @@ class ProfiledWebServices:
             not profiles
             or self.default_profile not in profiles
             or self.long_profile not in profiles
+            or self.tomorrow_profile is not None and self.tomorrow_profile not in profiles
             or set(profiles) - set(SCORING_PROFILE_IDS)
         ):
             raise ValueError("profiled web services contain invalid profile identities")

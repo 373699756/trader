@@ -13,7 +13,7 @@ from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.entrypoints.history_maintenance_projection import ProjectHistoryMaintenanceStatus
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
+from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
 
@@ -27,7 +27,6 @@ def RunDownload(
 
     runtime = LoadRuntimeSettings(config_path)
     configuration = LoadHistorySyncConfiguration(project_root, runtime.data_paths)
-    qfq_configuration = LoadQfqWindowConfiguration(project_root)
     report = CreateSyncProgress()
     progress = StderrHistorySyncProgress(report=report)
     with (
@@ -37,7 +36,6 @@ def RunDownload(
         try:
             status = ExecuteHistoryDownload(
                 configuration,
-                qfq_configuration=qfq_configuration,
                 shutdown_timeout_seconds=runtime.pipeline.shutdown_timeout_seconds,
                 progress=progress,
                 cancel_requested=cancelled.is_set,

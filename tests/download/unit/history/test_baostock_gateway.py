@@ -232,6 +232,8 @@ def test_gateway_reconstructs_explicit_early_listing_qfq_gap() -> None:
     assert all(cell.status == "complete" for cell in batch.cells)
     assert batch.cells[0].qfq is not None
     assert batch.cells[0].qfq.close_price == pytest.approx(9.9)
+    assert batch.cells[0].qfq.reconstructed_from == batch.cells[1].trade_date
+    assert batch.cells[1].qfq is not None and batch.cells[1].qfq.reconstructed_from is None
 
 
 def test_gateway_preserves_explicit_suspended_qfq_gap() -> None:
@@ -256,6 +258,8 @@ def test_gateway_preserves_explicit_suspended_qfq_gap() -> None:
     batch = gateway.fetch_code_download(spec, security, calendar).batch
 
     assert batch.cells[0].status == "supplier_marked_suspended"
+    assert batch.cells[0].qfq is not None
+    assert batch.cells[0].qfq.reconstructed_from == batch.cells[0].trade_date
 
 
 def test_qfq_source_windows_follow_the_confirmed_001872_code_change() -> None:

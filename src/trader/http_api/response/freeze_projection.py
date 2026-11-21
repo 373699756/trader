@@ -95,6 +95,10 @@ def SerializeFreezeView(view: FreezeView) -> dict[str, object]:
                 "complete_count": item.complete_count,
                 "positive_count": item.positive_count,
                 "average_net_excess_pct": item.average_net_excess_pct,
+                **(
+                    {"prediction_target": item.prediction_target, "hit_count": item.hit_count}
+                    if item.prediction_target is not None else {}
+                ),
             }
             for item in view.outcome_summaries
         ],
@@ -283,6 +287,7 @@ def SerializeFreezeItem(item: FreezeItemView) -> dict[str, object]:
         "selection_rank": item.selection_rank,
         "action": item.action,
         "action_reason": item.action_reason,
+        **({"tomorrow_outcome": item.tomorrow_outcome.value} if item.tomorrow_outcome is not None else {}),
         "score_status": item.score_status,
         "scores": {
             "ledger": ScoreLedgerPayload(item.score_ledger) if item.score_ledger is not None else None,

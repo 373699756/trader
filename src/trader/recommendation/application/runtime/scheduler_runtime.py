@@ -220,7 +220,7 @@ class SchedulerRuntime:
         )
         self._preview = PreviewCycleRunner(
             dependencies,
-            lambda requests, sequence: self._cycles.execute_round_pair(requests, round_sequence=sequence),
+            self._execute_scored_round,
             self._scheduled_request,
         )
 
@@ -310,6 +310,8 @@ class SchedulerRuntime:
             with self._lock:
                 self._phase = MarketPhase.CLOSED
             return retry_delay
+        if observed_at.time() >= wall_time(15):
+            self._close_control.submit_tomorrow_settlement(observed_at)
         batch = self._dependencies.cadence.plan(observed_at, is_trading_day=is_trading_day)
         with self._lock:
             self._phase = (
@@ -465,7 +467,17 @@ class SchedulerRuntime:
                     scheduled=scheduled,
                 )
                 for strategy in scheduled.freeze_strategies
+                if Strategy(strategy) in self._dependencies.scored_strategies
             }
+            for strategy in scheduled.freeze_strategies:
+                if Strategy(strategy) not in self._dependencies.scored_strategies:
+                    self._dependencies.cadence.record_point_result(
+                        scheduled.scheduled_at.date().isoformat(),
+                        scheduled.schedule_point or SchedulePoint.AFTERNOON_FREEZE,
+                        strategy,
+                        SchedulePointResult.MISSED,
+                        at=scheduled.scheduled_at,
+                    )
             accepted = any(submissions.values())
             rejected_freezes = tuple(strategy for strategy, submitted in submissions.items() if not submitted)
         else:
@@ -534,11 +546,25 @@ class SchedulerRuntime:
                 for strategy in (Strategy.TOMORROW, Strategy.D25)
             )
             if round_sequence is None:
-                self._cycles.execute_pair((requests[0], requests[1]))
+                if self._dependencies.shared_tomorrow_owner is None:
+                    self._cycles.execute_pair((requests[0], requests[1]))
+                else:
+                    if self._dependencies.shared_tomorrow_owner:
+                        self._cycles.execute(requests[0])
+                    self._cycles.execute(requests[1])
             else:
-                self._cycles.execute_round_pair((requests[0], requests[1]), round_sequence=round_sequence)
+                self._execute_scored_round((requests[0], requests[1]), round_sequence)
         except StaleSessionError:
             return
+
+    def _execute_scored_round(self, requests: tuple[CycleRequest, CycleRequest], sequence: int) -> None:
+        owner = self._dependencies.shared_tomorrow_owner
+        if owner is None:
+            self._cycles.execute_round_pair(requests, round_sequence=sequence)
+            return
+        if owner:
+            self._cycles.execute(requests[0])
+        self._cycles.execute_round_d25(requests[1], round_sequence=sequence)
 
     def _process_recommendation_round(self, scheduled: ScheduledPipelineTask) -> None:
         sequence = scheduled.round_sequence
@@ -635,6 +661,8 @@ class SchedulerRuntime:
             self._record_failure("refresh", "round_collection_timeout")
 
     def submit_cycle(self, request: CycleRequest) -> LatestWinsOffer:
+        if request.strategy is Strategy.TOMORROW and self._dependencies.shared_tomorrow_owner is False:
+            return LatestWinsOffer.REJECTED
         with self._lock:
             if not self._running:
                 return LatestWinsOffer.REJECTED
@@ -944,7 +972,7 @@ class SchedulerRuntime:
     def _missing_after_close_scored_strategies(self, observed_at: datetime) -> tuple[Strategy, ...]:
         return tuple(
             strategy
-            for strategy in (Strategy.TOMORROW, Strategy.D25)
+            for strategy in self._dependencies.scored_strategies
             if (formal := self._dependencies.index.snapshot(strategy).formal) is None
             or formal.trade_date != observed_at.date()
         )

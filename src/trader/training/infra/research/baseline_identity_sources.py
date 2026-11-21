@@ -5,12 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from trader.infra.serialization.canonical import FileSha256
-from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.settings import RuntimeSettings
-from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.training.application.baseline_identity_audit import BaselineIdentityEvidence
 from trader.training.domain.evaluation.baseline_identity import BaselineIdentityClaim, SourceHash
+from trader.training.domain.evaluation.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
+from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
 from trader.training.infra.research.tomorrow_historical_evidence import (
     TomorrowHistoricalEvidenceConflictError,
     TomorrowHistoricalEvidenceIndex,
@@ -29,14 +30,20 @@ class PackagedBaselineIdentityEvidence(BaselineIdentityEvidence):
 def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineIdentityEvidence:
     strategy = LoadStrategySettings(runtime.strategy_config_path)
     strategy_hash = FileSha256(runtime.strategy_config_path)
-    design_path = runtime.project_root / "docs/2_工程设计.md"
-    strategy_doc_path = runtime.project_root / "docs/1_评分逻辑.md"
-    v2 = LoadScoringProfile("v2", training_root=runtime.data_paths.models).heads[Strategy.TOMORROW].predictor
-    v3 = LoadScoringProfile("v3", training_root=runtime.data_paths.models).heads[Strategy.TOMORROW].predictor
-    historical_evidence = TomorrowHistoricalEvidenceIndex(
-        runtime.data_paths.research(strategy.scoring_profile) / "experiments"
-    )
-    historical_source = runtime.data_paths.research(strategy.scoring_profile) / "experiments"
+    design_path = runtime.project_root / "docs/b_系统设计.md"
+    strategy_doc_path = runtime.project_root / "docs/c_评分设计.md"
+    model_source = str(runtime.data_paths.models / "tomorrow.json")
+    model_target: str | None
+    try:
+        model = LoadTomorrowProbabilityModel(runtime.data_paths.models)
+    except (OSError, ValueError):
+        model = None
+        model_target = "artifact_conflict"
+    else:
+        model_target = TOMORROW_CLOSE_GAIN_TARGET if model is not None else None
+    historical_root = runtime.data_paths.research(strategy.scoring_profile) / "experiments"
+    historical_evidence = TomorrowHistoricalEvidenceIndex(historical_root)
+    historical_source = str(historical_root / TOMORROW_HISTORICAL_SPEC.research_identity / "historical-report.json")
     historical_conflict = False
     try:
         historical_report = historical_evidence.read_report_payload()
@@ -46,7 +53,7 @@ def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineId
     historical_report_hash = _optional_text(historical_report, "content_hash")
     historical_model_hash = _optional_text(historical_report, "model_artifact_hash")
     historical_status = "artifact_conflict" if historical_conflict else _optional_text(historical_report, "status")
-    historical_hash_source = SourceHash(str(historical_source / "historical-report.json"))
+    historical_hash_source = historical_report_hash or SourceHash(historical_source)
     historical_binding = (
         "conflict" if historical_conflict else "bound" if historical_report_hash and historical_model_hash else None
     )
@@ -59,40 +66,27 @@ def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineId
             strategy_hash,
         ),
         BaselineIdentityClaim(
-            "v2_model_identity",
-            "industry_ridge_lightgbm",
-            v2.model_id,
-            str(runtime.data_paths.models / "v2/tomorrow/model.json"),
-            SourceHash(v2.model_hash),
-        ),
-        BaselineIdentityClaim(
-            "v3_model_identity",
-            "industry_ridge_lightgbm",
-            v3.model_id,
-            str(runtime.data_paths.models / "v3/tomorrow/model.json"),
-            SourceHash(v3.model_hash),
+            "tomorrow_probability_target",
+            TOMORROW_CLOSE_GAIN_TARGET,
+            model_target,
+            model_source,
+            model.identity if model is not None else SourceHash(model_source),
         ),
         BaselineIdentityClaim(
             "historical_screening_conclusion",
             "historical_rejected",
             historical_status,
-            str(historical_source / "historical-report.json"),
+            historical_source,
             historical_hash_source,
+            required=False,
         ),
         BaselineIdentityClaim(
             "historical_model_report_binding",
             "bound",
             historical_binding,
-            str(historical_source / "historical-report.json"),
+            historical_source,
             historical_hash_source,
             required=False,
-        ),
-        BaselineIdentityClaim(
-            "production_authorization_basis",
-            "manual_user_override",
-            "manual_user_override",
-            "tomorrow-production-activation-policy",
-            SourceHash("tomorrow-production-activation-policy"),
         ),
         BaselineIdentityClaim(
             "strategy_source_hash",

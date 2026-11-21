@@ -72,7 +72,10 @@ def _runtime(tmp_path):
     def execute(request):
         physical.append(request.url)
         return HttpResponse(200, b"ok")
-    transport = RequestsHttpTransport(authorize=journal.authorize_request, observe=journal.observe_attempt, execute_request=execute)
+    transport = RequestsHttpTransport(
+        monotonic=lambda: 0, authorize=journal.authorize_request,
+        observe=journal.observe_attempt, execute_request=execute,
+    )
     source = _Sources(transport)
     runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs, event_policy=event_policy, sqlite_policy=policy,
         read_document=documents.read, financial_source=source, ratio_source=source, annual_source=source,

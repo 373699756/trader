@@ -46,7 +46,7 @@ from trader.recommendation.infra.market_data.market_task_runner import MarketTas
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
-from trader.recommendation.domain.outcomes.models import OutcomeBar
+from trader.recommendation.domain.outcomes.models import OutcomeBar, OutcomeTarget, TomorrowCloseEvidence
 
 
 @dataclass(frozen=True)
@@ -698,6 +698,11 @@ class MarketFeatureService:
         observed_at: datetime,
     ) -> Mapping[str, tuple[OutcomeBar, ...]]:
         return self.history.read_outcome_bars(NormalizeMarketCodes(codes), observed_at)
+
+    def read_tomorrow_close_evidence(
+        self, targets: Sequence[OutcomeTarget], observed_at: datetime
+    ) -> tuple[TomorrowCloseEvidence, ...]:
+        return self.history.read_tomorrow_close_evidence(targets, observed_at)
 
     def health(self) -> JsonObject:
         return self.health_reporter.health()

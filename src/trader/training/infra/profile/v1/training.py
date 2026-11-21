@@ -70,12 +70,13 @@ def _training_identity(
 
 def _training_source(
     source: LearnedRankInputPort, settings: V1TrainingSettings, compute_threads: int,
+    strategies: tuple[Strategy, ...],
 ) -> LearnedRankTrainingSource:
     snapshot = source.snapshot
     return LearnedRankTrainingSource(
         snapshot.snapshot_hash, snapshot.source_identity_hash, snapshot.calendar_hash, snapshot.source_cutoff,
         snapshot.calendar.open_dates, _training_identity(snapshot, settings, compute_threads),
-        industry_snapshot=snapshot.industry_snapshot,
+        industry_snapshot=snapshot.industry_snapshot, strategies=strategies,
     )
 
 
@@ -111,9 +112,9 @@ class _LearnedRankInspection:
         CheckV1Cancellation(self.cancel_requested)
 
     def read_pair(self) -> LearnedRankFinalPair | None:
-        RecoverLearnedRankPublication(self.model_root)
+        RecoverLearnedRankPublication(self.model_root, strategies=self.source.strategies)
         try:
-            pair = ReadLearnedRankPair(self.model_root)
+            pair = ReadLearnedRankPair(self.model_root, strategies=self.source.strategies)
         except InterruptedError:
             raise
         except (OSError, ValueError, LightGBMError):
@@ -149,6 +150,7 @@ class LearnedRankTrainingAdapter:
     compute_threads: int
     execution_options: TrainingExecutionOptions
     execution_observer: TrainingExecutionObserver | None
+    strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25)
 
     @contextmanager
     def open(self) -> Iterator[learned_rank_training.LearnedRankTrainingSessionPort]:
@@ -163,7 +165,7 @@ class LearnedRankTrainingAdapter:
             RequireHistoryRepackIdle(self.history_root)
             input_source = self.input_factory()
             yield _PinnedLearnedRankSession(
-                _training_source(input_source, self.settings, self.compute_threads), self.settings,
+                _training_source(input_source, self.settings, self.compute_threads, self.strategies), self.settings,
                 self.model_root, self.cancel_requested, self, input_source,
             )
 
@@ -285,21 +287,23 @@ def InspectV1Training(
     *,
     cancel_requested: Callable[[], bool] | None = None,
     compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
+    strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25),
 ) -> learned_rank_training.V1TrainingResult | None:
     """Validate the stored native pair against a pinned source and implementation."""
     if type(compute_threads) is not int or compute_threads < 1:
         raise ValueError("training_cpu_request_invalid")
     CheckV1Cancellation(cancel_requested)
     return learned_rank_training.InspectLearnedRankTraining(_LearnedRankInspection(
-        _training_source(source, settings, compute_threads), settings, model_root, cancel_requested,
+        _training_source(source, settings, compute_threads, strategies), settings, model_root, cancel_requested,
     ))
 
 
 def InspectV1TrainingDates(
     source: LearnedRankInputPort, settings: V1TrainingSettings, *,
     compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
+    strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25),
 ) -> learned_rank_training.V1TrainingResult | None:
-    identity = _training_source(source, settings, compute_threads)
+    identity = _training_source(source, settings, compute_threads, strategies)
     try:
         plan = BuildLearnedRankTrainingPlan(identity, settings)
     except ValueError as exc:
@@ -331,6 +335,7 @@ def RunV1Training(
     compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
     execution_options: TrainingExecutionOptions = BASELINE_EXECUTION_OPTIONS,
     execution_observer: TrainingExecutionObserver | None = None,
+    strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25),
 ) -> learned_rank_training.V1TrainingResult:
     """Hold the pinned source and all disposable resources for the application run."""
     if type(compute_threads) is not int or compute_threads < 1:
@@ -338,7 +343,7 @@ def RunV1Training(
     return learned_rank_training.TrainLearnedRank(LearnedRankTrainingAdapter(
         input_factory, model_root, sample_root, sample_settings, history_root, settings,
         progress, cancel_requested, aligned_rows, memory_admission, sqlite_policy, cpu_admission,
-        compute_threads, execution_options, execution_observer,
+        compute_threads, execution_options, execution_observer, strategies,
     ))
 
 

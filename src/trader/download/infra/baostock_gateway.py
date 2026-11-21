@@ -411,7 +411,7 @@ def _reconstruct_unavailable_qfq(
     if any(day not in raw_by_date or day in qfq_by_date for day in missing):
         raise RuntimeError("supplier_adjustment_unavailable")
     suspended = {day for day in missing if raw_by_date[day].trading_status == "suspended"}
-    repaired = [_scaled_qfq(raw_by_date[day], Decimal("1")) for day in sorted(suspended)]
+    repaired = [_scaled_qfq(raw_by_date[day], Decimal("1"), day) for day in sorted(suspended)]
     requested = set(missing) - suspended
     if not requested:
         return tuple(sorted((*qfq, *repaired), key=lambda item: item.trade_date))
@@ -454,8 +454,9 @@ def _reconstruct_unavailable_qfq(
         previous_qfq = qfq_by_date.get(previous_day)
         if previous_qfq is not None:
             factor = _qfq_factor(previous_qfq, previous_raw)
+            anchor_day = previous_day
         if previous_day in requested:
-            repaired.append(_scaled_qfq(previous_raw, factor))
+            repaired.append(_scaled_qfq(previous_raw, factor, anchor_day))
     if {item.trade_date for item in repaired} != requested:
         raise RuntimeError("supplier_adjustment_unavailable")
     return tuple(sorted((*qfq, *repaired), key=lambda item: item.trade_date))
@@ -484,7 +485,7 @@ def _qfq_factor(qfq: BaoStockDailySide, raw: BaoStockDailySide) -> Decimal:
         raise RuntimeError("supplier_adjustment_unavailable") from exc
 
 
-def _scaled_qfq(raw: BaoStockDailySide, factor: Decimal) -> BaoStockDailySide:
+def _scaled_qfq(raw: BaoStockDailySide, factor: Decimal, anchor: date) -> BaoStockDailySide:
     def scale(value: float | None) -> float | None:
         return None if value is None else float(Decimal(str(value)) * factor)
 
@@ -502,6 +503,7 @@ def _scaled_qfq(raw: BaoStockDailySide, factor: Decimal) -> BaoStockDailySide:
         None,
         None,
         raw.trading_status,
+        anchor,
     )
 
 

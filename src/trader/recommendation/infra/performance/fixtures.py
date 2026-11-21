@@ -119,7 +119,7 @@ def BuildPerformanceFixtures(
 
 
 def _shared_industries(profile: LoadedScoringProfile) -> tuple[str, ...]:
-    if set(profile.heads) != {Strategy.TOMORROW, Strategy.D25}:
+    if Strategy.D25 not in profile.heads:
         raise ValueError("performance_profile_requires_complete_heads")
     if profile.profile_id == "v1":
         return tuple(f"capco:performance-industry-{index}" for index in range(20))

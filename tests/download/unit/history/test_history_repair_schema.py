@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -42,7 +42,9 @@ def _candidate() -> PublishedHistoryCell:
         turnover=1.0,
         trading_status="trading",
     )
-    qfq = replace(raw, adjustment="qfq", preclose=None, pct_change=None, turnover=None)
+    qfq = replace(
+        raw, adjustment="qfq", preclose=None, pct_change=None, turnover=None, reconstructed_from=_DAY + timedelta(days=1),
+    )
     return PublishedHistoryCell("600001", _DAY, "complete", raw, qfq)
 
 

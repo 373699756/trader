@@ -31,7 +31,7 @@ def BuildParser(
         source_interval_seconds=1.0,
         runtime_config=PROJECT_ROOT / 'config/runtime.json',
         history_days=61,
-        qfq_database=None,
+        history_root=None,
         market_sources=('tencent', 'eastmoney', 'sina', 'cninfo'),
         market_profiles=('v2', 'v3'),
         market_sizes=(120, 720, 0),
@@ -55,7 +55,7 @@ def BuildParser(
     if action_identity in ("tushare",):
         parser.add_argument('--history-days', type=int, default=61, help='history rows per stock; calendar-day window for BaoStock experiments')
     if action_identity in ("market-factor-compare",):
-        parser.add_argument('--qfq-database', type=Path)
+        parser.add_argument('--history-root', type=Path)
     if action_identity in ("market-factor-compare",):
         parser.add_argument('--market-sources', nargs='+', choices=_MARKET_SOURCES, default=_MARKET_SOURCES)
     if action_identity in ("market-factor-compare",):
@@ -87,7 +87,7 @@ def ParseOptions(args: argparse.Namespace) -> MarketOptions:
         source_interval_seconds=args.source_interval_seconds,
         runtime_config=Path(args.runtime_config).expanduser().resolve(),
         history_days=args.history_days,
-        qfq_database=args.qfq_database.expanduser().resolve() if args.qfq_database is not None else None,
+        history_root=args.history_root.expanduser().resolve() if args.history_root is not None else None,
         market_sources=tuple(args.market_sources),
         market_profiles=tuple(args.market_profiles),
         market_sizes=tuple(args.market_sizes),

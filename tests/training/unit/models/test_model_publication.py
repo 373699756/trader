@@ -14,6 +14,7 @@ import pytest
 from tests.helpers.training.profiles.v3.profile import _diagnostic_documents, _documents, _hash, _publish_profile
 from tests.helpers.training.history_training_due import HistoryTrainingExpectationFixture
 from trader.infra.serialization.canonical import ContentHash
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring import profile_factory
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
 from trader.training.infra.history.history_training_due import PublishedTrainingState
@@ -29,6 +30,7 @@ from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, DecodeHeadPublicationIdentity
 from trader.training.infra.model_bundles.bundle_snapshot import InspectPublishedHeadBundle
+from trader.training.infra.model_bundles.contracts import D25ProfileContract
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
@@ -61,6 +63,24 @@ def test_unexpected_runtime_error_is_not_reclassified_as_missing_models(tmp_path
     monkeypatch.setattr(profile_factory, "InspectPublishedProfileBundles", unexpected)
     with pytest.raises(RuntimeError, match="programming defect"):
         LoadScoringProfile("v3", training_root=tmp_path)
+
+
+def test_d25_only_publication_requires_exact_current_head_scope(tmp_path):
+    legacy = tmp_path / "paired"
+    _publish_profile(legacy, V3_TRAINING_PROFILE)
+    contract = D25ProfileContract(V3_TRAINING_PROFILE)
+    root = tmp_path / "models" / "v3"
+    staged = legacy / "staging-v3-d25"
+
+    bundles = PublishProfileBundles(root, contract, ((Strategy.D25, staged),))
+    assert len(bundles) == 1 and bundles[0].model.strategy is Strategy.D25
+    assert {entry.name for entry in root.iterdir()} == {"d25"}
+    assert InspectPublishedProfileBundles(root, contract) == bundles
+    assert tuple(item.strategy for item in ReadPublishedProfileIdentities(
+        root, contract, cancel_requested=lambda: False,
+    )) == (Strategy.D25,)
+    with pytest.raises(ValueError, match="retired or foreign"):
+        InspectPublishedProfileBundles(legacy / "v3", contract)
 
 
 def _legacy_refit_documents(contract):

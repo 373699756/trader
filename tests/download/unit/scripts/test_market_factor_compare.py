@@ -393,7 +393,7 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
     comparison.Collect(
         Namespace(
             config=Path("unused"),
-            qfq_database=Path("unused"),
+            history_root=Path("unused"),
             profiles=("v2", "v3"),
             sources=("tencent",),
             mode="single",
@@ -738,7 +738,7 @@ def test_child_sdk_stdout_cannot_corrupt_json_report(
         return {"status": "degraded", "summary": {"complete": False}}
 
     monkeypatch.setattr(comparison, "Collect", Collect)
-    monkeypatch.setattr(sys, "argv", ["probe", "--config", "config/runtime.json", "--qfq-database", "data/qfq"])
+    monkeypatch.setattr(sys, "argv", ["probe", "--config", "config/runtime.json", "--history-root", "data/qfq"])
     assert comparison.Main() == 0
     output = capfd.readouterr()
     assert json.loads(output.out)["status"] == "degraded"

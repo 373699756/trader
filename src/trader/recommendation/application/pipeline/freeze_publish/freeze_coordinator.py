@@ -19,6 +19,7 @@ from trader.recommendation.application.ports.freeze_records import (
     FreezeRecordPort,
 )
 from trader.recommendation.domain.evidence.pipeline import StageState
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 from trader.recommendation.domain.publication.freeze_identity import (
     CommittedFreezeRecord,
     IsPreviewFreeze,
@@ -94,6 +95,12 @@ class ScoredFreezeCoordinator:
             return FreezeOperationResult("shadow_only")
         if current is not None and not self._runtime_identity.matches(current):
             return FreezeOperationResult("runtime_identity_mismatch")
+        if (
+            current is not None
+            and dict(current.input_versions).get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET
+            and not dict(current.input_versions).get("tomorrow_close_evidence")
+        ):
+            return FreezeOperationResult("tomorrow_closing_evidence_pending")
         with ObservePublicationIo(
             self._publication_io,
             "freeze_seal",
@@ -170,13 +177,18 @@ class ScoredFreezeCoordinator:
         if IsShadowFreeze(freeze):
             return "shadow_only"
         current = self._current(now.date())
+        versions = dict(freeze.input_versions)
         rejections = (
             (
                 freeze.strategy is not self._strategy or freeze.trade_date != now.date(),
                 "no_eligible_freeze",
             ),
             (
-                freeze.observed_at > now or not official_close_version.startswith("official-close:"),
+                freeze.observed_at > now or not official_close_version.startswith("official-close:")
+                or (
+                    versions.get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET
+                    and versions.get("tomorrow_close_evidence") != official_close_version
+                ),
                 "invalid_official_close",
             ),
             (not self._runtime_identity.matches(freeze), "runtime_identity_mismatch"),

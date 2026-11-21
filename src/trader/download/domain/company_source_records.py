@@ -109,6 +109,10 @@ class CompanyFinancialSourceObservation:
         return self.financial.code, self.financial.report_date
 
     @property
+    def source_key(self) -> str:
+        return f"{self.source_security_identity}:{self.financial.report_date}"
+
+    @property
     def units(self) -> tuple[tuple[CompanyFinancialField, CompanyFinancialUnit], ...]:
         return (
             ("basic_eps", "currency_per_share"), ("book_value_per_share", "currency_per_share"),

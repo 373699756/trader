@@ -16,7 +16,6 @@ from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleE
 from trader.download.domain.company_sync import CompanySyncFamily
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.entrypoints.sync_projection import ProjectSyncResult
 from trader.download.infra.sync_database_failure import AdaptSyncDatabaseFailures
 from trader.infra.sqlite_connection import SqliteSession
@@ -32,7 +31,7 @@ def _history(state="completed", unresolved_price_cells=0):
 
 
 
-@pytest.mark.parametrize("target", ("all", "history", "market", "company"))
+@pytest.mark.parametrize("target", ("all", "history", "company"))
 def test_one_prepared_full_reference_is_shared_in_order(target):
     reference = PreparedFixture(_NOW)
     calls = []
@@ -46,50 +45,19 @@ def test_one_prepared_full_reference_is_shared_in_order(target):
         calls.append("history")
         return _history()
 
-    def market(value):
-        assert value is reference
-        calls.append("market")
-        return QfqUpdateResult(_NOW.date(), 1)
-
     def company(value):
         assert value is reference
         calls.append("company")
         return CompanySyncRoundFixture(_NOW)
 
-    result = SyncData(prepare, history, market, company, lambda: False).execute(target)
-    assert calls == ["prepare", *(("history", "market", "company") if target == "all" else (target,))]
+    result = SyncData(prepare, history, company, lambda: False).execute(target)
+    assert calls == ["prepare", *(("history", "company") if target == "all" else (target,))]
     assert result.exit_code == 0
     assert ProjectSyncResult(result)["status"] == "completed"
 
 
-@pytest.mark.parametrize("failure", (None, "source_unavailable", "cancelled"))
-def test_market_shutdown_failure_preserves_the_published_result_and_original_failure(failure):
-    market = QfqUpdateResult(
-        _NOW.date(), 17, changed_files=("daily_window.sqlite3",), changed_rows=42,
-        failure_reason=failure, shutdown_failure="qfq_shutdown_incomplete",
-    )
-
-    def forbidden(_reference):
-        pytest.fail("market command must not start another task")
-
-    result = SyncData(
-        lambda: PreparedFixture(_NOW), forbidden, lambda _reference: market, forbidden, lambda: False,
-    ).execute("market")
-    task, = result.tasks
-    assert task.market is market
-    assert task.status == ("cancelled" if failure == "cancelled" else "failed")
-    assert task.reason == "qfq_shutdown_incomplete"
-    assert result.exit_code == (130 if failure == "cancelled" else 1)
-    assert market.needs_retry
-    projected = ProjectSyncResult(result)["tasks"][0]
-    assert projected["failure_reason"] == failure
-    assert projected["shutdown_failure"] == "qfq_shutdown_incomplete"
-    assert projected["changed_rows"] == 42 and projected["completed_codes"] == 17
-    assert tuple(projected["changed_files"]) == market.changed_files
-
-
 @pytest.mark.parametrize("pending", (False, True))
-def test_failed_or_incomplete_history_continues_market_and_company(pending):
+def test_failed_or_incomplete_history_continues_company(pending):
     calls = []
 
     def history(value):
@@ -97,28 +65,23 @@ def test_failed_or_incomplete_history_continues_market_and_company(pending):
             return replace(_history(unresolved_price_cells=1), reason="history_price_gaps_remaining")
         raise RuntimeError("history unavailable")
 
-    def market(value):
-        calls.append("market")
-        return QfqUpdateResult(_NOW.date(), 1)
-
     def company(value):
         calls.append("company")
         return CompanySyncRoundFixture(_NOW)
 
-    result = SyncData(lambda: PreparedFixture(_NOW), history, market, company, lambda: False).execute("all")
-    assert calls == ["market", "company"]
+    result = SyncData(lambda: PreparedFixture(_NOW), history, company, lambda: False).execute("all")
+    assert calls == ["company"]
     assert result.exit_code == 1
     assert result.tasks[0].status == ("pending" if pending else "failed")
     assert result.tasks[0].reason == ("history_price_gaps_remaining" if pending else "RuntimeError")
 
 
-@pytest.mark.parametrize("failed_task", ("history", "market", "company"))
+@pytest.mark.parametrize("failed_task", ("history", "company"))
 @pytest.mark.parametrize("error", (sqlite3.OperationalError, sqlite3.IntegrityError))
 def test_sqlite_task_failure_preserves_results_and_continues_following_tasks(failed_task, error):
     calls = []
     failures = []
     history = _history()
-    market = QfqUpdateResult(_NOW.date(), 17, changed_rows=42)
     company = CompanySyncRoundFixture(_NOW)
 
     def synchronize(task, value):
@@ -130,13 +93,12 @@ def test_sqlite_task_failure_preserves_results_and_continues_following_tasks(fai
     result = SyncData(
         lambda: PreparedFixture(_NOW),
         AdaptSyncDatabaseFailures(lambda _: synchronize("history", history)),
-        AdaptSyncDatabaseFailures(lambda _: synchronize("market", market)),
         AdaptSyncDatabaseFailures(lambda _: synchronize("company", company)),
         lambda: False,
         lambda context, exc: failures.append((context.stage, exc)),
     ).execute("all")
 
-    assert calls == ["history", "market", "company"]
+    assert calls == ["history", "company"]
     assert result.exit_code == 1 and result.failure is None and not result.cancelled
     assert [task.task for task in result.tasks] == calls
     for task in result.tasks:
@@ -144,18 +106,11 @@ def test_sqlite_task_failure_preserves_results_and_continues_following_tasks(fai
         assert task.reason == (error.__name__ if task.task == failed_task else None)
     if failed_task != "history":
         assert result.tasks[0].history is history
-    if failed_task != "market":
-        assert result.tasks[1].market is market
     if failed_task != "company":
-        assert result.tasks[2].company is company
-    if failed_task == "market":
-        assert len(failures) == 1 and failures[0][0] == "market_command"
-        assert isinstance(failures[0][1], SyncDatabaseError)
-        assert isinstance(failures[0][1].__cause__, error)
-    else:
-        assert failures == []
+        assert result.tasks[1].company is company
+    assert failures == []
     projected = ProjectSyncResult(result)
-    assert projected["status"] == "failed" and len(projected["tasks"]) == 3
+    assert projected["status"] == "failed" and len(projected["tasks"]) == 2
     assert "private database detail" not in json.dumps(projected)
 
 
@@ -173,44 +128,7 @@ def test_database_adapter_preserves_the_cause_from_the_shared_connection():
 
 
 
-@pytest.mark.parametrize("failure", ("qfq_worker_unavailable", "source_unavailable", "cancelled"))
-def test_market_download_failure_reason_reaches_summary_json_and_cli(tmp_path, monkeypatch, capsys, failure):
-    market = QfqUpdateResult(_NOW.date(), 17, pending_codes=1, changed_rows=42, failure_reason=failure)
-
-    def forbidden(_):
-        pytest.fail("market command must not start another task")
-
-    result = SyncData(
-        lambda: PreparedFixture(_NOW), forbidden, lambda _: market, forbidden, lambda: False,
-    ).execute("market")
-    status = "cancelled" if failure == "cancelled" else "pending"
-    assert result.tasks[0].market is market and result.tasks[0].reason == failure
-    assert result.tasks[0].status == status
-    from tests.helpers.shared.configuration import RuntimeSettingsFixture
-    from trader.entrypoints import cli
-
-    runtime = RuntimeSettingsFixture()
-    monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _: runtime)
-    monkeypatch.setattr(cli, "_configuration_payload", lambda *_: {})
-    monkeypatch.setattr("trader.bootstrap.PrepareRuntimeDisk", lambda settings, **_: settings)
-    monkeypatch.setattr("trader.bootstrap.ExecuteSync", lambda *_, **__: result)
-    messages = []
-    progress = SyncProgress(messages.append, lambda: 0.0)
-    args = cli.BuildParser().parse_args(["--config", str(tmp_path / "runtime.json"), "sync", "market"])
-    assert cli._run_sync(args, progress) == (130 if status == "cancelled" else 1)
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == status
-    assert payload["tasks"][0]["reason"] == payload["tasks"][0]["failure_reason"] == failure
-    assert payload["tasks"][0]["changed_rows"] == 42
-    terminal = messages[-1]
-    if status == "pending":
-        assert terminal.state == "等待"
-        assert f"market 待补齐 原因 {failure}" in " | ".join(field.text for field in terminal.fields)
-    else:
-        assert terminal.state == "取消"
-
-
-def test_sqlite_failure_during_cancellation_keeps_previous_result_and_skips_following_task():
+def test_sqlite_failure_during_cancellation_keeps_previous_result():
     cancelled = False
     history = _history()
 
@@ -219,16 +137,13 @@ def test_sqlite_failure_during_cancellation_keeps_previous_result_and_skips_foll
         cancelled = True
         raise sqlite3.OperationalError("interrupted")
 
-    def forbidden(_):
-        pytest.fail("company must not start after cancellation")
-
     result = SyncData(
         lambda: PreparedFixture(_NOW), lambda _: history,
-        AdaptSyncDatabaseFailures(interrupt), forbidden, lambda: cancelled,
+        AdaptSyncDatabaseFailures(interrupt), lambda: cancelled,
     ).execute("all")
     assert result.cancelled and result.exit_code == 130 and result.failure is None
     assert [task.status for task in result.tasks] == ["completed", "cancelled"]
-    assert result.tasks[0].history is history and result.tasks[1].task == "market"
+    assert result.tasks[0].history is history and result.tasks[1].task == "company"
     assert ProjectSyncResult(result)["status"] == "cancelled"
 
 
@@ -269,7 +184,7 @@ def test_typed_history_terminal_state_reaches_the_cli_without_downgrading_failur
     def forbidden(_reference):
         pytest.fail("history command must not start another task")
 
-    result = SyncData(lambda: PreparedFixture(_NOW), synchronize, forbidden, forbidden, lambda: cancelled).execute("history")
+    result = SyncData(lambda: PreparedFixture(_NOW), synchronize, forbidden, lambda: cancelled).execute("history")
     assert result.tasks[0].history is history and result.tasks[0].reason == reason
     assert result.tasks[0].status == status
     assert ProjectSyncResult(result)["status"] == status
@@ -297,7 +212,7 @@ def test_company_terminal_reason_reaches_projection_and_cli(
         cancelled=cancelled, budget_exhausted=paused,
     )
     result = SyncData(
-        lambda: PreparedFixture(_NOW), lambda _: _history(), lambda _: QfqUpdateResult(_NOW.date(), 1),
+        lambda: PreparedFixture(_NOW), lambda _: _history(),
         lambda _: company, lambda: False,
     ).execute("company")
     status = "cancelled" if cancelled else "pending" if reason else "completed"
@@ -342,7 +257,7 @@ def test_company_incompatible_database_is_a_failure_with_explicit_material_scope
         raise CompanyDatabaseIncompatibleError(store)
 
     result = SyncData(
-        lambda: PreparedFixture(_NOW), lambda _: _history(), lambda _: QfqUpdateResult(_NOW.date(), 1),
+        lambda: PreparedFixture(_NOW), lambda _: _history(),
         company, lambda: False,
     ).execute("company")
     assert result.tasks[0].reason == "CompanyDatabaseIncompatibleError"
@@ -388,7 +303,7 @@ def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, ex
     }
 
 
-@pytest.mark.parametrize("target", ("all", "history", "market", "company"))
+@pytest.mark.parametrize("target", ("all", "history", "company"))
 @pytest.mark.parametrize("error", (ValueError, sqlite3.OperationalError))
 def test_common_preparation_failure_stops_all_tasks(target, error):
     def fail():
@@ -397,7 +312,7 @@ def test_common_preparation_failure_stops_all_tasks(target, error):
     def forbidden(value):
         pytest.fail("dependent task ran after preparation failed")
 
-    result = SyncData(AdaptSyncDatabaseFailures(fail), forbidden, forbidden, forbidden, lambda: False).execute(target)
+    result = SyncData(AdaptSyncDatabaseFailures(fail), forbidden, forbidden, lambda: False).execute(target)
     assert result.tasks == () and result.exit_code == 1
     assert result.failure == f"preparation_{error.__name__}"
 
@@ -409,7 +324,7 @@ def test_incompatible_reference_database_keeps_specific_failure_category():
     def forbidden(value):
         pytest.fail("dependent task ran after preparation failed")
 
-    result = SyncData(fail, forbidden, forbidden, forbidden, lambda: False).execute("history")
+    result = SyncData(fail, forbidden, forbidden, lambda: False).execute("history")
     assert result.failure == "preparation_ReferenceDatabaseIncompatibleError"
     assert result.tasks == () and result.exit_code == 1
 
@@ -424,7 +339,7 @@ def test_cancellation_stops_following_tasks(interrupt):
     def forbidden(value):
         pytest.fail("task ran after cancellation")
 
-    result = SyncData(lambda: PreparedFixture(_NOW), history, forbidden, forbidden, lambda: False).execute("all")
+    result = SyncData(lambda: PreparedFixture(_NOW), history, forbidden, lambda: False).execute("all")
     assert result.exit_code == 130 and result.cancelled
 
 
@@ -432,7 +347,7 @@ def test_cancel_before_preparation_has_no_side_effects():
     def forbidden(*args):
         pytest.fail("cancelled work ran")
 
-    assert SyncData(forbidden, forbidden, forbidden, forbidden, lambda: True).execute("all").exit_code == 130
+    assert SyncData(forbidden, forbidden, forbidden, lambda: True).execute("all").exit_code == 130
 
 
 @pytest.mark.parametrize("during_preparation", (False, True))
@@ -447,7 +362,7 @@ def test_interrupted_io_is_cancelled_instead_of_failed(during_preparation, error
 
     prepare = interrupt if during_preparation else lambda: PreparedFixture(_NOW)
     result = SyncData(
-        AdaptSyncDatabaseFailures(prepare), interrupt, interrupt,
+        AdaptSyncDatabaseFailures(prepare), interrupt,
         AdaptSyncDatabaseFailures(interrupt), lambda: cancelled,
     ).execute("company")
     assert result.exit_code == 130 and result.failure is None

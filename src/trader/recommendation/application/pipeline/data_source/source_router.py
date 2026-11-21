@@ -63,6 +63,7 @@ from trader.recommendation.application.pipeline.quality_check.pipeline_status im
 )
 from trader.recommendation.application.pipeline.stage_output import MeasuredOutput, PipelineStageOutput
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
+from trader.recommendation.domain.scoring.profile_identity import TOMORROW_PROBABILITY_SCORE_SCALE
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import (
     FullMarketFeatureBatch,
@@ -270,10 +271,12 @@ class MarketInputCoordinator(DataRefreshPort):
         status = self._model_scoring.status() if self._model_scoring is not None else None
         if status is None:
             raise DataRefreshUnavailableError("model_scoring_unavailable")
-        for head in status.heads.values():
-            if not head.is_enabled:
-                reason = next(iter(head.historical_failure_reasons), "production_model_unavailable")
-                raise DataRefreshUnavailableError(reason)
+        heads = tuple(status.heads.values())
+        shared = any(head.score_scale == TOMORROW_PROBABILITY_SCORE_SCALE for head in heads)
+        disabled = tuple(head for head in heads if not head.is_enabled)
+        if disabled and (not shared or len(disabled) == len(heads)):
+            reason = next(iter(disabled[0].historical_failure_reasons), "production_model_unavailable")
+            raise DataRefreshUnavailableError(reason)
         try:
             self._market.prepare_preview(context)
         except MarketDataPendingError as exc:

@@ -74,6 +74,22 @@ class PreparedReference:
         return BaoStockCalendar(dates[-sessions:])
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedReferenceObservation:
+    """Facts finished collecting during a particular local reference session."""
+
+    reference: PreparedReference
+    completed_at: datetime
+
+    def __post_init__(self) -> None:
+        if (
+            self.completed_at.utcoffset() != timedelta(hours=8)
+            or self.completed_at.date() != self.reference.checked_at.date()
+            or self.completed_at < self.reference.checked_at
+        ):
+            raise ValueError("reference_observation_time_invalid")
+
+
 def RecordedHistoryPopulations(reference: PreparedReference) -> tuple[tuple[BaoStockSecurity, ...], ...]:
     """Return the distinct nonempty ST cohorts whose original identities may be recorded."""
     downloaded = reference.eligible_universe
@@ -86,6 +102,7 @@ def RecordedHistoryPopulations(reference: PreparedReference) -> tuple[tuple[BaoS
 
 __all__ = [
     "PreparedReference",
+    "PreparedReferenceObservation",
     "RecordedHistoryPopulations",
     "SelectEligibleSecurities",
 ]

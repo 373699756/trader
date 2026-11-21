@@ -9,6 +9,8 @@ SCORING_PROFILE_IDS: tuple[ScoringProfileId, ...] = ("v1", "v2", "v3", "v5")
 LEARNED_RANK_SCORE_SCALE = "learned_rank_percentile_0_100"
 MODEL_PREDICTION_RANK_SCORE_SCALE = "model_prediction_percentile_0_100"
 MODEL_RANK_SCORE_SCALES = frozenset((LEARNED_RANK_SCORE_SCALE, MODEL_PREDICTION_RANK_SCORE_SCALE))
+TOMORROW_PROBABILITY_SCORE_SCALE = "tomorrow_close_gain_probability_0_100"
+MODEL_SELECTION_SCORE_SCALES = MODEL_RANK_SCORE_SCALES | {TOMORROW_PROBABILITY_SCORE_SCALE}
 
 
 def ParseScoringProfile(value: str) -> ScoringProfileId:

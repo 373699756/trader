@@ -8,18 +8,18 @@
 
 | 业务 | 入口 | 输入 | 输出 | 明确的边界 |
 | --- | --- | --- | --- | --- |
-| download | 人工 `sync history/market/company` | 数据源、已提交断点、下载配置 | 可用资料版本、覆盖和失败记录 | 不训练、不评分、不触发 Web 更新用例 |
-| training | 人工选择四档训练 | 固定资料版本、训练配置 | 各档双头模型和评价报告 | 不自动下载，不发布推荐 |
+| download | 人工 `sync history/company` | 数据源、已提交断点、下载配置 | 可用资料版本、覆盖和失败记录 | 不训练、不评分、不触发 Web 更新用例 |
+| training | 人工 `train` | 固定资料版本、训练配置 | 一个共享 Tomorrow 概率模型、所选档位 D25 模型及报告 | 不自动下载，不发布推荐 |
 | recommendation | 本地服务启动 | 已发布资料、模型、实时行情 | 不可变推荐批次和只读状态 | 不补历史、不训练、不日更新 |
 | http_api、web | 浏览器请求和事件订阅 | recommendation/application 只读用例 | JSON 白名单和桌面展示 | 不抓取、评分、访问业务数据库或写业务状态 |
 
-荐股和三个下载模块都先读取全部股票的代码、名称和ST状态，排除当前ST及已有曾ST记录后，才加载或采集其他个股资料。unknown在下载和荐股中均通过ST门，保留未核实标记和后续核验，不将其改写为clear；荐股不再仅因unknown阻断行情、历史／公司预载或评分，不计入阻断性待补。已确认ST、退市及其它资格规则继续独立生效。荐股从本地已发布资料读取状态，不在线补证据；两个业务不互相调用实现，放行中的未知与业务排除分别计数。
+荐股、History 和 Company 都先读取证券名称和 ST 状态。确认当前或曾 ST 及退市按合同排除。unknown 通过 ST 门并保留未核实标记，后续资格独立生效。荐股从已发布本地资料读状态，放行中的未知与业务排除分别计数。
 
 `train`只调用`bootstrap.ExecuteSelectedTraining`，读取已经发布的本地资料；缺资料时提示用户手动执行`./run.sh sync history`，不代为下载。原自动组合函数`ExecuteDownloadTrain`删除，`run.sh train`继续转发同一个CLI入口。训练的线程数和进程优先级也由组合根准备。
 
-`run.sh sync`先准备公共参考，再依次更新history、market和company；`sync history|market|company`用于单项更新，只有company另有`fill`。Shell与PowerShell启动器使用相同的精简命令范围，训练仅接受`train [档位列表]`；训练JSON／诊断文件参数在环境准备前拒绝，独立`trader-cli`继续提供这两项能力。历史／行情手动补缺、定向范围及专属辅助字段扫描已从启动器、CLI、组合根及业务执行链删除，不保留隐藏入口或兼容分支；普通同步的自动缺价处理、断点和有界停牌复核保留。公司补缺使用位置参数`fill`，全部入口拒绝旧`--fill`写法。普通sync已支持续传，company fill不承诺全部错误恢复，具体选择及限制以d第1章为准。
+`run.sh sync`先准备公共参考，再依次更新history和company；`sync history|company`用于单项更新，只有company另有`fill`。Shell与PowerShell启动器使用相同的精简命令范围，训练仅接受`train [档位列表]`；训练JSON／诊断文件参数在环境准备前拒绝，独立`trader-cli`继续提供这两项能力。历史／行情手动补缺、定向范围及专属辅助字段扫描已从启动器、CLI、组合根及业务执行链删除，不保留隐藏入口或兼容分支；普通同步的自动缺价处理、断点和有界停牌复核保留。公司补缺使用位置参数`fill`，全部入口拒绝旧`--fill`写法。普通sync已支持续传，company fill不承诺全部错误恢复，具体选择及限制以d第1章为准。
 
-正常训练由组合根一次加载下载owner的最新有效`CurrentIndustrySnapshot`，四档双头按这份映射处理全部价格历史；正常history不再准备历史行业。训练输入及复用同时绑定价格和行业语义，刷新时间不冒充语义变化，缺失／过期／损坏明确拒绝。日期预检、样本事实及模型工件合同归[e第1、3、7章](e_训练设计.md#1-输入固定双头独立)，独立点时收益研究仍须另具历史证据。
+正常训练固定一个已发布历史。D25 使用同一份有效`CurrentIndustrySnapshot`，Tomorrow 共享概率头用量价和板块。模型或资料有更新时按运行采用规则重启加载。独立点时研究须具备逐日总体和当时可见的输入证据，训练合同见[e第1章](e_训练设计.md#1-输入固定双头独立)。
 
 ## 2. 模块与依赖
 
@@ -156,7 +156,7 @@ flowchart TD
 | 资料族 | 当前代码或文档中的代表路径 | 负责文档 | 主要读写方式 |
 | --- | --- | --- | --- |
 | 完整历史目录和年库 | `data/market/history/catalog.sqlite3`、`prices_<year>.sqlite3` | d 第3、8章 | 下载批写，训练按日期顺序读，启动按窗口读 |
-| 独立短窗 | `data/market/daily_window.sqlite3` | d 第4、8章 | 整窗 raw/qfq 配对提交 |
+| 各档行情窗口 | 同一已发布年度历史 | d 第3、4章 | 按需读取配对记录，不另写行情库 |
 | 证券、ST、行业 | `data/market/reference/company_st.sqlite3`、`industry.sqlite3` | d 第2、8章 | 手动更新、启动批量读取 |
 | 公司采集与正式事实 | `data/company/raw/company_collection.sqlite3`、`company_facts.sqlite3` | d 第5、8章 | 采集账本和轻量正式事实分开 |
 | 样本与模型 | `data/training/` | e 第3、7章 | 身份固定、有界批读、各档双头发布 |

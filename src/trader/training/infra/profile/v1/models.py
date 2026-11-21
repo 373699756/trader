@@ -25,7 +25,7 @@ from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.regular_file import ReadRegularFile
 from trader.infra.serialization.canonical import CanonicalValue, ContentHash
 from trader.infra.serialization.fields import IsFiniteNumber, IsInteger, IsNonEmptyText, IsSha256Text, IsTextSequence
-from trader.infra.settings.parser import RequireExactKeys
+from trader.infra.settings.parser import ConfigurationError, RequireExactKeys
 from trader.recommendation.application.ports.loaded_profile import (
     HeadRuntime,
     LoadedScoringProfile,
@@ -193,14 +193,15 @@ class LearnedRankPredictor:
 
 
 def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None:
-    """Publish only the two validated final-refit heads as one locked profile directory."""
+    """Publish the selected final-refit heads as one locked profile directory."""
     if not isinstance(pair, LearnedRankFinalPair):
         raise ValueError("V1 publication requires a complete final-refit pair")
     for head in pair.heads:
         LearnedRankPredictor(head)
     model_root.mkdir(parents=True, exist_ok=True)
     profile_root = model_root / "v1"
-    RecoverLearnedRankPublication(model_root)
+    strategies = tuple(head.strategy for head in pair.heads)
+    RecoverLearnedRankPublication(model_root, strategies=strategies)
     if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
         raise ValueError("V1 model directory is invalid")
     staging = Path(tempfile.mkdtemp(prefix=".v1.publication.", dir=model_root))
@@ -273,14 +274,14 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None
             AtomicWriteJson(directory / "metadata.json", metadata)
             _fsync_directory(directory)
         _fsync_directory(staging)
-        if _read_pair_directory(staging) != pair:
+        if _read_pair_directory(staging, strategies) != pair:
             raise ValueError("learned-rank staged pair differs")
         with ProfilePublicationLock(profile_root):
             RequireProfilePublicationReady(profile_root)
             if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
                 raise ValueError("V1 model directory is invalid")
             if profile_root.exists():
-                InspectProfileWorkspace(profile_root, allow_partial_heads=True)
+                InspectProfileWorkspace(profile_root, allow_partial_heads=True, strategies=strategies)
                 os.replace(profile_root, previous)
                 old_moved = True
             new_moved = False
@@ -297,27 +298,29 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None
                 raise
         if old_moved:
             try:
-                InspectProfileWorkspace(previous, allow_partial_heads=True)
+                InspectProfileWorkspace(previous, allow_partial_heads=True, strategies=strategies)
                 shutil.rmtree(previous)
             except (OSError, ValueError):
                 _LOGGER.warning("V1 previous model directory cleanup failed")
     finally:
         if staging.exists() or staging.is_symlink():
-            InspectProfileWorkspace(staging, allow_partial_heads=True)
+            InspectProfileWorkspace(staging, allow_partial_heads=True, strategies=strategies)
             shutil.rmtree(staging)
 
 
-def RecoverLearnedRankPublication(model_root: Path) -> None:
+def RecoverLearnedRankPublication(model_root: Path, *, strategies: tuple[Strategy, ...] = _STRATEGIES) -> None:
     """Explicit training restores an interrupted V1 pair without promoting staged models."""
-    RecoverProfilePublication(model_root / "v1", _read_pair_directory)
+    RecoverProfilePublication(
+        model_root / "v1", lambda path: _read_pair_directory(path, strategies), strategies=strategies,
+    )
 
 
-def ReadLearnedRankPair(model_root: Path) -> LearnedRankFinalPair:
+def ReadLearnedRankPair(model_root: Path, *, strategies: tuple[Strategy, ...] = _STRATEGIES) -> LearnedRankFinalPair:
     profile_root = model_root / "v1"
     if not model_root.exists():
         raise FileNotFoundError(profile_root)
     with ProfilePublicationLock(profile_root):
-        return _read_pair_directory(profile_root)
+        return _read_pair_directory(profile_root, strategies)
 
 
 def ReadV1PublicationIdentities(
@@ -325,6 +328,7 @@ def ReadV1PublicationIdentities(
     *,
     cancel_requested: Callable[[], bool],
     timeout_seconds: float = 1.0,
+    strategies: tuple[Strategy, ...] = _STRATEGIES,
 ) -> tuple[ModelPublicationIdentity, ...]:
     """Observe V1's declared pair identity without model bytes or native predictors."""
     if cancel_requested():
@@ -339,8 +343,9 @@ def ReadV1PublicationIdentities(
             raise FileNotFoundError(profile_root)
         if profile_root.is_symlink() or not profile_root.is_dir():
             raise ValueError("V1 model directory is invalid")
+        _require_head_directories(profile_root, strategies)
         documents = []
-        for strategy in _STRATEGIES:
+        for strategy in strategies:
             if cancel_requested():
                 raise InterruptedError("model_publication_observation_cancelled")
             directory = profile_root / strategy.value
@@ -368,11 +373,11 @@ def ReadV1PublicationIdentities(
         if any(metadata[key] != first[key] for metadata in documents[1:] for key in _SHARED_METADATA_FIELDS):
             raise ModelBundleContractError("V1 pair metadata differs")
         identities = tuple(_metadata_publication_identity(metadata, strategy) for metadata, strategy in zip(
-            documents, _STRATEGIES, strict=True,
+            documents, strategies, strict=True,
         ))
         inputs = tuple(_object(metadata["training_input"]) for metadata in documents)
         fields = _SHARED_INPUT_FIELDS | {"calendar_dates"}
-        if any(inputs[1][key] != inputs[0][key] for key in fields):
+        if any(item[key] != inputs[0][key] for item in inputs[1:] for key in fields):
             raise ModelBundleContractError("V1 pair training input differs")
         return identities
 
@@ -425,19 +430,25 @@ def _metadata_publication_identity(metadata: Mapping[str, object], strategy: Str
     )
 
 
-def _read_pair_directory(profile_root: Path) -> LearnedRankFinalPair:
-    if not profile_root.exists() and not profile_root.is_symlink():
-        raise FileNotFoundError(profile_root)
-    if not profile_root.is_dir() or profile_root.is_symlink():
-        raise ValueError("V1 model directory is invalid")
+def _require_head_directories(profile_root: Path, strategies: tuple[Strategy, ...]) -> None:
+    if strategies not in {_STRATEGIES, (Strategy.D25,)}:
+        raise ValueError("V1 model strategy contract is invalid")
     head_names = {path.name for path in profile_root.iterdir()}
-    expected_heads = {strategy.value for strategy in _STRATEGIES}
+    expected_heads = {strategy.value for strategy in strategies}
     if head_names < expected_heads:
         raise FileNotFoundError("V1 model requires both heads")
     if head_names != expected_heads:
         raise ValueError("V1 model directory has unexpected entries")
+
+
+def _read_pair_directory(profile_root: Path, strategies: tuple[Strategy, ...] = _STRATEGIES) -> LearnedRankFinalPair:
+    if not profile_root.exists() and not profile_root.is_symlink():
+        raise FileNotFoundError(profile_root)
+    if not profile_root.is_dir() or profile_root.is_symlink():
+        raise ValueError("V1 model directory is invalid")
+    _require_head_directories(profile_root, strategies)
     documents: list[tuple[Mapping[str, object], Mapping[str, object]]] = []
-    for strategy in _STRATEGIES:
+    for strategy in strategies:
         directory = profile_root / strategy.value
         if directory.is_symlink() or not directory.is_dir():
             raise ValueError("V1 head directory is invalid")
@@ -456,6 +467,8 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankFinalPair:
         model, metadata = (_object(json.loads(path.read_text(encoding="utf-8"))) for path in paths)
         _verify_document(model, _MODEL_DOCUMENT_FIELDS, "V1 model")
         _verify_document(metadata, _METADATA_DOCUMENT_FIELDS, "V1 metadata")
+        if metadata["model_hash"] != model["content_hash"]:
+            raise ModelBundleIntegrityError("V1 model and metadata hash differ")
         _validate_metadata_identity(metadata, strategy)
         expected: Mapping[str, object] = {
             "profile_id": "v1",
@@ -463,8 +476,6 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankFinalPair:
             "pair_content_hash": model["pair_content_hash"],
             "head_content_hash": model["head_content_hash"],
         }
-        if metadata["model_hash"] != model["content_hash"]:
-            raise ModelBundleIntegrityError("V1 model and metadata hash differ")
         if any(model[key] != value or metadata[key] != value for key, value in expected.items()):
             raise ModelBundleContractError("V1 head identity differs")
         documents.append((model, metadata))
@@ -507,7 +518,7 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankFinalPair:
         heads.append(head)
         inputs.append(training)
     shared_input_fields = _SHARED_INPUT_FIELDS | {"calendar_dates"}
-    if any(inputs[1][key] != inputs[0][key] for key in shared_input_fields):
+    if any(item[key] != inputs[0][key] for item in inputs[1:] for key in shared_input_fields):
         raise ModelBundleContractError("V1 pair training input differs")
     first_input = inputs[0]
     industry = ParseTrainingIndustrySnapshot(first_input["industry_snapshot"])
@@ -522,7 +533,7 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankFinalPair:
         _text(first_input, "calendar_hash"),
         date.fromisoformat(_text(first_input, "source_cutoff")),
         ParseV1TrainingSettings(_object(first_input["settings"])),
-        (heads[0], heads[1]),
+        tuple(heads),
         _text(first_input, "training_identity_hash"),
         calendar_dates,
         price_snapshot_hash=_text(first_input, "price_snapshot_hash"), industry_snapshot=industry,
@@ -535,7 +546,10 @@ def _read_pair_directory(profile_root: Path) -> LearnedRankFinalPair:
 
 
 def _verify_document(raw: Mapping[str, object], fields: frozenset[str], label: str) -> None:
-    RequireExactKeys(raw, set(fields) | {"content_hash"}, label)
+    try:
+        RequireExactKeys(raw, set(fields) | {"content_hash"}, label)
+    except ConfigurationError as exc:
+        raise ModelBundleContractError(f"{label} identity fields are invalid") from exc
     if raw["content_hash"] != ContentHash({key: raw[key] for key in fields}):
         raise ModelBundleIntegrityError(f"{label} content hash differs")
 
@@ -550,8 +564,8 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def LoadV1ScoringProfile(model_root: Path) -> LoadedScoringProfile:
-    pair = ReadLearnedRankPair(model_root)
+def LoadV1ScoringProfile(model_root: Path, *, strategies: tuple[Strategy, ...] = _STRATEGIES) -> LoadedScoringProfile:
+    pair = ReadLearnedRankPair(model_root, strategies=strategies)
     evidence = ProfileEvidence(
         "historical_unavailable",
         ("prediction_return_validation_not_passed", "point_in_time_parity_unverified"),

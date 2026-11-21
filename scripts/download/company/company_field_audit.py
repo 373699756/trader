@@ -17,11 +17,12 @@ from trader.download.domain.company_events import CompanyEventPolicy, CompanyPos
 from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
 from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, Disclosure
+from trader.download.domain.company_source_records import CompanyFinancialSourceValues
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_protocol import DecodeCompanyDate, EncodeCompanyTime, EVIDENCE_SOURCES, RequireCompanyTime
-from trader.download.infra.company_fact_inputs import DecodeCompanyFinancial
+from trader.download.infra.company_financial_observations import ReadCommittedCompanyFinancialReports
 from trader.download.infra.company_financial_publication import ReadCompanyFinancialSourceProofs
 from scripts.core.projection_values import SafeStringList, SafeNonnegativeInt, SafeText, ProjectMapping
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
@@ -189,7 +190,12 @@ def _contract_details(event: CompanyPositiveEvent, measurements: ContractMeasure
 
 def _financial_sources(formal: SqliteConnection, raw: SqliteConnection, observed_at: datetime) -> dict[str, object]:
     columns = ("eps", "bps", "revenue_growth_pct", "profit_growth_pct", "core_profit_growth_pct", "roe_pct", "parent_profit", "core_profit")
-    inputs = {(row["code"], row["report_date"]): row for row in raw.run("SELECT * FROM financials")}
+    identity = ReadCompanyPublicationIdentity(formal)
+    codes = tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code"))
+    inputs = {
+        (item.code, item.report_date): item
+        for item in ReadCommittedCompanyFinancialReports(formal, codes, identity.published_at, identity.extraction_hash)
+    } if identity is not None and identity.published_at <= observed_at else {}
     result: dict[str, object] = {}
     for name, table in (("retained", "company_facts"), ("latest", "company_latest_financial")):
         rows = formal.run(f"SELECT code,report_date,disclosed_at,{','.join(columns)} FROM {table} WHERE report_date IS NOT NULL ORDER BY code").fetchall()
@@ -202,20 +208,21 @@ def _financial_sources(formal: SqliteConnection, raw: SqliteConnection, observed
         incomplete = mismatches = identity_changes = gap_rows = 0
         for row in rows:
             day = DecodeCompanyDate(row["report_date"])
-            source = inputs.get((row["code"], day.isoformat() if day is not None else ""))
-            same_identity = source is not None and EncodeCompanyTime(datetime.fromisoformat(source["published_at"])) == row["disclosed_at"]
+            source = inputs.get((row["code"], day)) if day is not None else None
+            source_values = dict(zip(columns, (value for _, value in CompanyFinancialSourceValues(source)), strict=True)) if source is not None else {}
+            same_identity = source is not None and EncodeCompanyTime(source.published_at) == row["disclosed_at"]
             identity_changes += not same_identity
             gaps: list[dict[str, str]] = []
             proofs = ReadCompanyFinancialSourceProofs(
-                raw, formal, DecodeCompanyFinancial(source),
+                raw, formal, source,
                 CompanyFinancial(row["code"], day, RequireCompanyTime(row["disclosed_at"]), *tuple(row)[3:]), observed_at,
             ) if (same_identity and source is not None and day is not None
-                  and any(source[field] is None for field in ("eps", "roe_pct", "core_profit_growth_pct", "revenue_growth_pct"))
+                  and any(source_values[field] is None for field in ("eps", "roe_pct", "core_profit_growth_pct", "revenue_growth_pct"))
                   and all(row[field] is None or type(row[field]) in {int, float} and isfinite(row[field]) for field in columns)) else ()
             different = False
             incomplete += any(row[field] is None for field in columns)
             for field in columns:
-                provider_null_fields += source is not None and source[field] is None
+                provider_null_fields += source is not None and source_values[field] is None
                 proof = next((proof for proof in proofs if ("eps" if proof.field == "basic_eps" else proof.field) == field), None)
                 if row[field] is None:
                     missing[field] += 1
@@ -231,11 +238,11 @@ def _financial_sources(formal: SqliteConnection, raw: SqliteConnection, observed
                     reason = "source_record_missing"
                 elif not same_identity:
                     reason = "source_revision_changed"
-                elif row[field] is None and source[field] is None:
+                elif row[field] is None and source_values[field] is None:
                     reason = "source_null"
                 elif row[field] is None:
                     reason = "publication_missing"
-                elif row[field] != source[field]:
+                elif row[field] != source_values[field]:
                     reason = "value_mismatch"
                 else:
                     continue

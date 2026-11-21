@@ -27,8 +27,8 @@ def BuildTrainedScoringProfile(
     if profile_id not in {"v2", "v3", "v5"}:
         raise ValueError("shared trained heads require the V2, V3 or V5 scoring profile")
     by_strategy = {bundle.strategy: bundle for bundle in bundles}
-    if len(bundles) != 2 or set(by_strategy) != {Strategy.TOMORROW, Strategy.D25}:
-        raise ValueError("shared scoring profiles require one Tomorrow and D25 bundle")
+    if len(bundles) != len(by_strategy) or set(by_strategy) not in ({Strategy.TOMORROW, Strategy.D25}, {Strategy.D25}):
+        raise ValueError("trained scoring profile strategy bundles are invalid")
     if any(bundle.serialization_profile_id != profile_id for bundle in bundles):
         raise ValueError("shared scoring profile contains a foreign head")
     if any(bundle.final_fit is None or bundle.diagnostic_plan is None for bundle in bundles):
@@ -42,7 +42,7 @@ def BuildTrainedScoringProfile(
     try:
         predictors: dict[Strategy, HeadPredictorPort] = {
             strategy: cast(HeadPredictorPort, TrainedHeadPredictor(profile_id, by_strategy[strategy], strategy))
-            for strategy in (Strategy.TOMORROW, Strategy.D25)
+            for strategy in by_strategy
         }
     except LightGBMError as exc:
         raise ValueError("shared LightGBM model is invalid") from exc

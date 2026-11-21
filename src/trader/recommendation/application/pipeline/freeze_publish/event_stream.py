@@ -86,7 +86,7 @@ class ResyncEventPayload:
 @dataclass(frozen=True)
 class ProfileFreezeBatch:
     profile: str
-    freezes: tuple[FreezeEventPayload, FreezeEventPayload]
+    freezes: tuple[FreezeEventPayload, ...]
 
 
 @dataclass(frozen=True)
@@ -151,7 +151,7 @@ class UnifiedFreezeEventStream:
     def publish_batch(
         self,
         round_sequence: int,
-        events: tuple[tuple[str, tuple[FreezeCommitted, FreezeCommitted]], ...],
+        events: tuple[tuple[str, tuple[FreezeCommitted, ...]], ...],
     ) -> UnifiedPublishedEvent:
         if round_sequence < 1 or not events:
             raise ValueError("freeze batch requires a positive round and profile events")
@@ -160,7 +160,7 @@ class UnifiedFreezeEventStream:
             tuple(
                 ProfileFreezeBatch(
                     profile,
-                    (_freeze_payload(items[0], profile=profile), _freeze_payload(items[1], profile=profile)),
+                    tuple(_freeze_payload(item, profile=profile) for item in items),
                 )
                 for profile, items in events
             ),

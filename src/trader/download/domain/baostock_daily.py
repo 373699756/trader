@@ -175,11 +175,13 @@ class BaoStockDailySide:
     pct_change: float | None
     turnover: float | None
     trading_status: BaoStockTradingStatus
+    reconstructed_from: date | None = None
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if _CODE.fullmatch(self.code) is None:
             raise ValueError("BaoStock daily side identity is invalid")
+        ValidateDailyReconstruction(self.adjustment, self.trade_date, self.reconstructed_from)
         ValidateDailySideValues(
             self.adjustment,
             self.trading_status,
@@ -188,6 +190,13 @@ class BaoStockDailySide:
             (self.preclose, self.pct_change, self.turnover),
         )
         object.__setattr__(self, "content_hash", CanonicalDigest(self))
+
+
+def ValidateDailyReconstruction(
+    adjustment: BaoStockAdjustment, trade_date: date, anchor: date | None
+) -> None:
+    if anchor is not None and (adjustment != "qfq" or type(anchor) is not date or anchor < trade_date):
+        raise ValueError("BaoStock reconstruction anchor is invalid")
 
 
 @dataclass(frozen=True)
@@ -460,4 +469,5 @@ __all__ = [
     "ValidateDailySideValues",
     "ValidateDailyPrices",
     "ValidateDailyRawFields",
+    "ValidateDailyReconstruction",
 ]

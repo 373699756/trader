@@ -41,7 +41,7 @@ from trader.training.infra.model_bundles.bundle_codec import ModelBundleContract
 from trader.training.infra.model_bundles.bundle_snapshot import (
     PublishedHeadBundle,
 )
-from trader.training.infra.model_bundles.contracts import TrainedProfileContract
+from trader.training.infra.model_bundles.contracts import D25ProfileContract, TrainedProfileContract
 from trader.training.infra.model_bundles.profile_publication import (
     InspectPublishedProfileBundles,
     ProfilePublicationBusyError,
@@ -380,7 +380,7 @@ def EvaluateAllHistoryTrainingDue(
             expectation = load_expectation(profile, observed_at)
         except (OSError, RuntimeError, TypeError, ValueError, ImportError):
             expectation = None
-        for strategy in (Strategy.TOMORROW, Strategy.D25):
+        for strategy in (head.strategy for head in profile.heads):
             bundle = next((item for item in heads if item.strategy is strategy), None)
             due = (
                 EvaluateHistoryTrainingDue(
@@ -428,6 +428,7 @@ class PublishedTrainingState:
         load_expectation: Callable[[TrainedProfileContract, datetime], HistoryTrainingExpectation],
         wall_clock: Callable[[], datetime], sqlite_policy: SqliteIoPolicy,
         metadata_cache: BoundedCache[object] | None = None,
+        d25_only: bool = False,
     ) -> None:
         self._sqlite_policy = sqlite_policy
         self._metadata_cache = metadata_cache
@@ -436,6 +437,7 @@ class PublishedTrainingState:
         self._maintenance_path = maintenance_path
         self._loaded = loaded
         self._owned_profile = owned_profile
+        self._strategies = (Strategy.D25,) if d25_only else (Strategy.TOMORROW, Strategy.D25)
         self._load_expectation = load_expectation
         self._clock = wall_clock
         self._lock = threading.Lock()
@@ -456,7 +458,7 @@ class PublishedTrainingState:
                 "publication_not_observed",
             )
             for profile_id in profile_ids
-            for strategy in (Strategy.TOMORROW, Strategy.D25)
+            for strategy in self._strategies
         )
 
     def initialize(self, cancel_requested: Callable[[], bool] | None = None) -> None:
@@ -496,7 +498,7 @@ class PublishedTrainingState:
                 expectation = self._load_expectation(profile, observed_at)
             except (OSError, RuntimeError, TypeError, ValueError, ImportError):
                 expectation = None
-            for strategy in (Strategy.TOMORROW, Strategy.D25):
+            for strategy in self._strategies:
                 if cancelled():
                     return
                 bundle = next((item for item in heads if item.strategy is strategy), None)
@@ -577,18 +579,19 @@ class PublishedTrainingState:
                     True,
                     failure,
                 )
-                for strategy in (Strategy.TOMORROW, Strategy.D25)
+                for strategy in self._strategies
             )
         if not cancelled():
             with self._lock:
                 self._status = tuple(results)
 
     def _profiles(self) -> tuple[TrainedProfileContract, ...]:
-        return (
+        profiles = (
             V2_TRAINING_PROFILE,
             V3_TRAINING_PROFILE,
             *((V5_TRAINING_PROFILE,) if self._owned_profile == "v5" else ()),
         )
+        return tuple(D25ProfileContract(profile) for profile in profiles) if self._strategies == (Strategy.D25,) else profiles
 
     def _v1_publications(
         self, cancelled: Callable[[], bool]
@@ -596,7 +599,9 @@ class PublishedTrainingState:
         from trader.training.infra.profile.v1.models import ReadV1PublicationIdentities
 
         try:
-            return ReadV1PublicationIdentities(self._training_root, cancel_requested=cancelled), None
+            return ReadV1PublicationIdentities(
+                self._training_root, cancel_requested=cancelled, strategies=self._strategies,
+            ), None
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return (), f"model_observation:{type(exc).__name__}"
 

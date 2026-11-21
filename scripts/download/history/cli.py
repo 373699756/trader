@@ -143,7 +143,7 @@ def BuildParser(
     if action_identity in ("history-write",):
         parser.add_argument('--history-publication-profile', action='store_true', help='history-write: profile isolated publication; optional history-root replays published files, no network')
     if action_identity in ("qfq-sqlite","download-failures",):
-        parser.add_argument('--qfq-database', type=Path)
+        parser.add_argument('--qfq-database', type=Path, required=True)
     if action_identity in ("history-publication", "qfq-sqlite"):
         parser.add_argument('--price-field-audit', action='store_true', help='explicit full published field and per-stock date scan, no network or source writes')
         parser.add_argument('--audit-checkpoint', type=Path, help='external checkpoint; exact source/config/publication/file fingerprints required for resume')
@@ -383,7 +383,9 @@ def _validate_audit_outputs(options: HistoryOptions, report: str) -> None:
         _require_audit_output_separation(outputs, directories, options.action_identity)
         return
     if options.action_identity == "qfq-sqlite":
-        database = options.qfq_database if options.qfq_database is not None else settings.data_paths.daily_window
+        database = options.qfq_database
+        if database is None:
+            raise ValueError("archived short-window diagnostics require --qfq-database")
         directories.extend((database.parent.resolve(), settings.data_paths.reference_database.parent.resolve()))
     else:
         root = options.history_root if options.history_root is not None else settings.data_paths.history

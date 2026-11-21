@@ -26,9 +26,7 @@ def BuildCommands(
 
         options = replace(options, history_root=LoadRuntimeSettings(options.runtime_config).data_paths.history)
     if options.action_identity in {"qfq-sqlite", "download-failures"} and options.qfq_database is None:
-        from trader.infra.settings import LoadRuntimeSettings
-
-        options = replace(options, qfq_database=LoadRuntimeSettings(options.runtime_config).data_paths.daily_window)
+        raise ValueError("archived short-window diagnostics require --qfq-database")
     if options.action_identity == "history":
         commands = (DiagnosticCommand(
             "history_sources",

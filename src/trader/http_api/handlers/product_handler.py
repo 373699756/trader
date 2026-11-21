@@ -139,11 +139,25 @@ def _current_batch(services: WebServices | None) -> RouteResponse:
         else ((services.profile_id, services.queries),)
     )
     batch = UnifiedFreezeQueries.current_batch(profiles)
+    shared_tomorrow = (
+        next(
+            (view for profile, pair in batch if profile == services.tomorrow_profile
+             for view in pair if view.strategy is Strategy.TOMORROW),
+            None,
+        )
+        if isinstance(services, ProfiledWebServices) and services.tomorrow_profile is not None else None
+    )
     response = jsonify({
 
         "profiles": {
             profile: {
-                view.strategy.value: {**SerializeFreezeView(view), "scoring_profile": profile}
+                view.strategy.value: {
+                    **SerializeFreezeView(
+                        shared_tomorrow
+                        if view.strategy is Strategy.TOMORROW and shared_tomorrow is not None else view
+                    ),
+                    "scoring_profile": profile,
+                }
                 for view in pair
             }
             for profile, pair in batch
@@ -164,6 +178,7 @@ def _current(services: WebServices | None, strategy_name: str) -> RouteResponse:
     if selected is None:
         return _not_ready()
     profile_id, lane = selected
+    lane = _services_for_strategy(services, lane, strategy)
     return _view_response(lane.queries.current(strategy), profile_id=profile_id)
 
 
@@ -381,6 +396,8 @@ def _services_for_strategy(
 ) -> UnifiedWebServices:
     if strategy is Strategy.LONG and isinstance(services, ProfiledWebServices):
         return services.select_long()[1]
+    if strategy is Strategy.TOMORROW and isinstance(services, ProfiledWebServices) and services.tomorrow_profile is not None:
+        return services.profiles[services.tomorrow_profile]
     return selected
 
 

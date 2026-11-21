@@ -46,6 +46,7 @@ class LearnedRankTrainingSource:
     calendar: tuple[date, ...]
     identity_hash: str
     industry_snapshot: CurrentIndustrySnapshot = field(kw_only=True)
+    strategies: tuple[Strategy, ...] = field(default=(Strategy.TOMORROW, Strategy.D25), kw_only=True)
 
     @property
     def training_input_hash(self) -> str:
@@ -56,8 +57,8 @@ class LearnedRankTrainingSource:
 class LearnedRankTrainingPlan:
     source: LearnedRankTrainingSource
     settings: V1TrainingSettings
-    splits: tuple[LearnedRankDateSplit, LearnedRankDateSplit]
-    final_fit_plans: tuple[FinalFitDatePlan, FinalFitDatePlan]
+    splits: tuple[LearnedRankDateSplit, ...]
+    final_fit_plans: tuple[FinalFitDatePlan, ...]
 
 
 def BuildLearnedRankTrainingPlan(
@@ -65,33 +66,38 @@ def BuildLearnedRankTrainingPlan(
 ) -> LearnedRankTrainingPlan:
     return LearnedRankTrainingPlan(
         source, settings,
-        _diagnostic_splits(source.calendar, source.source_cutoff, settings),
-        (
+        _diagnostic_splits(source.calendar, source.source_cutoff, settings, source.strategies),
+        tuple(
             BuildFinalFitDatePlan(
-                source.calendar, source_cutoff=source.source_cutoff, fit_sessions=settings.fit_dates, maturity_sessions=1,
-            ),
-            BuildFinalFitDatePlan(
-                source.calendar, source_cutoff=source.source_cutoff, fit_sessions=settings.fit_dates, maturity_sessions=5,
-            ),
+                source.calendar, source_cutoff=source.source_cutoff, fit_sessions=settings.fit_dates,
+                maturity_sessions=1 if strategy is Strategy.TOMORROW else 5,
+            )
+            for strategy in source.strategies
         ),
     )
 
 
 def BuildLearnedRankReadDates(
-    calendar: tuple[date, ...], source_cutoff: date, settings: V1TrainingSettings,
+    calendar: tuple[date, ...], source_cutoff: date, settings: V1TrainingSettings, *,
+    strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25),
 ) -> frozenset[date]:
-    splits = _diagnostic_splits(calendar, source_cutoff, settings)
+    splits = _diagnostic_splits(calendar, source_cutoff, settings, strategies)
     first = min(calendar.index(day) for split in splits for day in split.sample_dates) - settings.history_sessions
     return frozenset(day for day in calendar[first:] if day <= source_cutoff)
 
 
 def _diagnostic_splits(
     calendar: tuple[date, ...], source_cutoff: date, settings: V1TrainingSettings,
-) -> tuple[LearnedRankDateSplit, LearnedRankDateSplit]:
+    strategies: tuple[Strategy, ...],
+) -> tuple[LearnedRankDateSplit, ...]:
+    if strategies not in {(Strategy.TOMORROW, Strategy.D25), (Strategy.D25,)}:
+        raise ValueError("learned_rank_training_strategies_invalid")
     diagnostic_calendar = tuple(day for day in calendar if day <= source_cutoff)
-    return (
-        BuildLearnedRankDateSplit(diagnostic_calendar, settings, maturity_sessions=1),
-        BuildLearnedRankDateSplit(diagnostic_calendar, settings, maturity_sessions=5),
+    return tuple(
+        BuildLearnedRankDateSplit(
+            diagnostic_calendar, settings, maturity_sessions=1 if strategy is Strategy.TOMORROW else 5,
+        )
+        for strategy in strategies
     )
 
 
@@ -114,7 +120,7 @@ def LearnedRankTrainingDateRequirements(plan: LearnedRankTrainingPlan) -> tuple[
     return tuple(
         TrainingDateRequirement(strategy, cast(TrainingDatePartition, partition), plan.source.source_cutoff, final_fit.fit_dates[-1], dates)
         for strategy, split, final_fit in zip(
-            (Strategy.TOMORROW, Strategy.D25), plan.splits, plan.final_fit_plans, strict=True,
+            plan.source.strategies, plan.splits, plan.final_fit_plans, strict=True,
         )
         for partition, dates in (
             ("fitting", split.fitting), ("early_stopping", split.early_stopping),
@@ -130,7 +136,7 @@ def LearnedRankCoverageFailures(
     expected = tuple(
         (strategy, partition, len(dates))
         for strategy, split, final_fit in zip(
-            (Strategy.TOMORROW, Strategy.D25), plan.splits, plan.final_fit_plans, strict=True,
+            plan.source.strategies, plan.splits, plan.final_fit_plans, strict=True,
         )
         for partition, dates in (
             ("fitting", split.fitting), ("early_stopping", split.early_stopping),

@@ -5,6 +5,7 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
+import logging
 import time
 import threading
 from collections.abc import Callable
@@ -24,17 +25,14 @@ from trader.download.application.history_ports import HistorySyncDependencies
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.entrypoints.sync_progress import SyncProgress
-from trader.download.infra.progress_projection import ProjectingDownloadProgress, QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
 from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncRoundResult, CompanySyncRoundScope
-from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain import company_evidence, company_events
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort, HistoryTwoStageSupplier
 from trader.download.domain.prepared_reference import PreparedReference
-from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowConfiguration
 from trader.download.entrypoints import company_evidence_progress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra import company_facts_reader
@@ -42,15 +40,10 @@ from trader.download.infra.akshare_calendar import FetchAkshareCalendar
 from trader.download.infra.cninfo_industry import CninfoIndustryClient
 from trader.download.infra.cninfo_headers import CninfoIndustryHeaders
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
-from trader.download.infra.download_failure_diagnostics import DownloadFailureDiagnostics
-from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureContext
-from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.current_industry_publication import CurrentIndustryCache, CurrentIndustryPublication
 from trader.download.infra.download_settings import (
-    LoadDownloadFailureConfiguration,
     LoadHistorySyncConfiguration,
-    LoadQfqWindowConfiguration,
 )
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
@@ -62,8 +55,6 @@ from trader.download.infra.history_sync_io import HistorySyncIo, HistorySyncReso
 from trader.download.domain.price_review import PriceReviewBudget
 from trader.download.infra.tencent_request_budget import TencentRequestBudget
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
-from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.download.infra.qfq_update_runner import QfqShutdown, QfqShutdownScope, QfqUpdateRunner
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.download.infra.sync_database_failure import AdaptSyncDatabaseFailures
 from trader.download.infra.tencent_qfq_supplier import (
@@ -87,7 +78,6 @@ from trader.infra.process_lock import ProcessLock
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
-from trader.infra.settings.data_paths import DataPaths
 from trader.infra.disk_probe import DiskProbe
 from trader.infra.disk_runtime import ConfigureDisk
 from trader.infra.disk_types import DiskMedium
@@ -97,6 +87,7 @@ from trader.recommendation.application.long_runtime import LongRuntime, LongRunt
 from trader.recommendation.application.history_quotes import HistoryQuotes
 from trader.recommendation.infra.settings.history_quotes import LoadHistoryQuoteSettings
 from trader.recommendation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
+from trader.recommendation.application.tomorrow_outcome_settlement import TomorrowOutcomeSettlementService
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
 from trader.recommendation.application.pipeline.data_source import source_router
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlService
@@ -172,6 +163,7 @@ from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 from trader.web import CreateApp
 
 if TYPE_CHECKING:
+    from trader.recommendation.domain.market.tomorrow_probability import TomorrowProbabilityPredictor
     from trader.training.entrypoints.report_output import TrainingReportOutput
     from trader.training.application.research_commands import ResearchEvidenceCommand, ResearchEvidenceResult
 
@@ -232,34 +224,9 @@ def ExecuteSync(
     history_progress = StderrHistorySyncProgress(report=report)
     configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
     price_review_budget = TencentRequestBudget(configuration.price_review)
-    qfq_configuration = LoadQfqWindowConfiguration(settings.project_root) if target != "company" else None
-    failure_configuration = LoadDownloadFailureConfiguration(settings.project_root)
-    market_window = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy, verification_cache=file_verification) if target in ("market", "all") else None
-    market_failures = (
-        DownloadFailureDiagnostics(
-            partial(market_window.RecordDownloadFailure,
-                    configuration=failure_configuration), clock.now, report=report,
-        ) if market_window is not None else None
-    )
-
-    def sync_market(reference: PreparedReference) -> QfqUpdateResult:
-        if qfq_configuration is None:
-            raise RuntimeError("qfq_configuration_unavailable")
-        report(QfqMessage("资料交接", ('参考资料已准备，开始更新 raw/qfq 短窗口',), state="完成", finished=True))
-        return report.run("market", partial(
-            ExecuteQfqDownload, paths, configuration, qfq_configuration,
-            failure_configuration=failure_configuration, report=report,
-            shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
-            reference=reference, cancel_requested=cancel_requested,
-            sqlite_policy=sqlite_policy, failures=market_failures,
-            price_review_budget=price_review_budget, verification_cache=file_verification, primary=market_window,
-        ))
-
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
-        if qfq_configuration is None:
-            raise RuntimeError("qfq_configuration_unavailable")
         return history_progress.run(partial(
-                ExecuteHistoryDownload, configuration, qfq_configuration=qfq_configuration,
+                ExecuteHistoryDownload, configuration,
                 shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
                 reference=reference, progress=history_progress,
                 cancel_requested=cancel_requested, disk_medium=settings.disk_medium,
@@ -267,7 +234,6 @@ def ExecuteSync(
         ))
 
     return SyncData(
-        failures=market_failures,
         prepare=AdaptSyncDatabaseFailures(lambda: report.run("参考", lambda: _prepare_reference(
             paths.reference, clock.now(), progress,
             report=progress.report_preparation,
@@ -275,7 +241,6 @@ def ExecuteSync(
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds, sqlite_policy=sqlite_policy, disk_medium=settings.disk_medium,
         ))),
         history=AdaptSyncDatabaseFailures(sync_history),
-        market=AdaptSyncDatabaseFailures(sync_market),
         company=AdaptSyncDatabaseFailures(lambda reference: report.run("company", lambda: ExecuteCompanySync(
             settings, CompanySyncRoundScope(tuple(item.code for item in reference.eligible_universe), clock.now()),
             cancel_requested=cancel_requested, report=report, fill=fill_missing,
@@ -335,7 +300,7 @@ def _prepare_reference(
             source.fetch,
             partial(publication.calendar, observed_at.date(), fetch=calendar, progress=progress, source="新浪/Akshare"),
             industry.fetch,
-            publication.publish,
+            lambda reference, evidence: publication.publish(reference, evidence, completed_at=industry_clock()),
             cancel_requested,
             sources=ReferencePreparationSources("新浪/交易所", "新浪/Akshare", "巨潮"),
         )
@@ -366,6 +331,7 @@ def ExecuteSelectedTraining(
 
     from trader.training.entrypoints.selected_training import RunSelectedTraining
     from trader.training.infra.selected_training import ResolveTrainingLocations, SelectedTrainingAdapter
+    from trader.training.infra.tomorrow_probability_training import TrainSharedTomorrowProbability
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
 
     if history_root is not None or training_root is not None:
@@ -383,7 +349,8 @@ def ExecuteSelectedTraining(
         fanout_settings=resources.fanout, sample_settings=resources.samples,
         paths=ResolveTrainingLocations(runtime.data_paths, history_root, training_root), sqlite_policy=sqlite_policy,
         prepare_training=partial(SelectedTrainingAdapter, sqlite_policy=sqlite_policy,
-                                 load_industry_snapshot=industry_reader, clock=ShanghaiClock(_utc_now).now),
+                                 load_industry_snapshot=industry_reader, clock=ShanghaiClock(_utc_now).now,
+                                 train_shared_tomorrow=TrainSharedTomorrowProbability),
         load_expectation=HistoryTrainingExpectationReader(
             industry_reader, partial(LoadProfileTrainingSettings, runtime.project_root), lambda: cpu_budget.profile_threads,
         ).read,
@@ -441,7 +408,6 @@ def ExecuteHistorySync(
 def ExecuteHistoryDownload(
     configuration: HistorySyncConfiguration,
     *,
-    qfq_configuration: QfqWindowConfiguration,
     shutdown_timeout_seconds: float,
     reference: PreparedReference | None = None,
     progress: HistorySyncProgressPort | None = None,
@@ -486,8 +452,8 @@ def ExecuteHistoryDownload(
                     http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar,
                 ),
                 TencentQfqOptions(
-                    timeout_seconds=qfq_configuration.source_timeout_seconds,
-                    retries=qfq_configuration.source_retries,
+                    timeout_seconds=configuration.tencent_timeout_seconds,
+                    retries=configuration.tencent_retries,
                 ),
             )
             return ExecuteHistorySync(
@@ -508,107 +474,6 @@ def ExecuteHistoryDownload(
                     shutdown=shutdown_budget, verification_cache=verification_cache,
                 ),
             )
-
-
-def ExecuteQfqDownload(
-    paths: DataPaths,
-    history_configuration: HistorySyncConfiguration,
-    qfq_configuration: QfqWindowConfiguration,
-    *,
-    failure_configuration: DownloadFailureConfiguration,
-    shutdown_timeout_seconds: float,
-    reference: PreparedReference | None = None,
-    cancel_requested: Callable[[], bool] = lambda: False,
-    report: Callable[[ProgressMessage], None] | None = None,
-    now: Callable[[], datetime] = _utc_now,
-    sqlite_policy: SqliteIoPolicy,
-    failures: DownloadFailurePort | None = None,
-    price_review_budget: PriceReviewBudget | None = None,
-    verification_cache: SqliteVerificationCache | None = None,
-    primary: SQLiteQfqWindowCache | None = None,
-) -> QfqUpdateResult:
-    """Compose explicit short-window maintenance without building the server."""
-    if report is None:
-        report = CreateSyncProgress()
-    v2 = primary if primary is not None else SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=sqlite_policy, verification_cache=verification_cache)
-    v3 = SQLiteQfqWindowCache(paths.daily_window, "v3", sqlite_policy=sqlite_policy, verification_cache=verification_cache)
-    if failures is None:
-        failures = DownloadFailureDiagnostics(
-            partial(v2.RecordDownloadFailure, configuration=failure_configuration), ShanghaiClock(now).now,
-            report=report,
-        )
-    prepared_started = time.monotonic()
-    if reference is None:
-        try:
-            reference = _prepare_reference(
-                paths.reference,
-                ShanghaiClock(now).now(),
-                None,
-                cancel_requested=cancel_requested,
-                shutdown_timeout_seconds=shutdown_timeout_seconds, sqlite_policy=sqlite_policy,
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            if not cancel_requested():
-                failures(DownloadFailureContext("reference_preparation", elapsed_seconds=time.monotonic() - prepared_started), exc)
-            raise
-    history_root = paths.history
-    history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root, sqlite_policy=sqlite_policy, verification_cache=verification_cache))
-    started = time.monotonic()
-    qfq_pool = BoundedExecutor(
-        worker_count=qfq_configuration.workers,
-        queue_capacity=0,
-        thread_name_prefix="qfq-download",
-    )
-    qfq_writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="qfq-writer")
-    shutdown_budget = ShutdownBudget(shutdown_timeout_seconds)
-    with ExitStack() as http_resources:
-        with QfqShutdownScope(QfqShutdown(qfq_writer, qfq_pool, report, failures), shutdown_budget, started, cancel_requested) as shutdown:
-            http_pool = TencentSessionPool(
-                tuple(
-                    http_resources.enter_context(OpenExternalHttp())
-                    for _index in range(qfq_configuration.workers)
-                )
-            )
-            tencent = TencentQfqSupplier(
-                TencentQfqDependencies(
-                    http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar,
-                    failures=failures,
-                ),
-                TencentQfqOptions(
-                    timeout_seconds=qfq_configuration.source_timeout_seconds,
-                    retries=qfq_configuration.source_retries,
-                ),
-            )
-            baseline = http_resources.enter_context(BaoStockHistorySupplier(
-                history_configuration,
-                cancel_requested=cancel_requested,
-                price_total_seconds=history_configuration.supplier_timeout_seconds,
-                price_policy=BaoStockRequestPolicy(
-                    history_configuration.supplier_timeout_seconds, history_configuration.supplier_retries
-                ),
-                vendor_lock=ProcessLock(paths.reference / "baostock.lock", label="BaoStock"),
-                failures=failures,
-            ))
-            repair_supplier = HistorySupplierRouter(baseline, tencent, reference)
-            updater = UpdateQfqWindows(
-                v2,
-                v3,
-                tencent,
-                cancel_requested,
-                ProjectingDownloadProgress(report),
-                qfq_configuration,
-                worker_pool=qfq_pool,
-                writer_pool=qfq_writer,
-                repair_supplier=repair_supplier,
-                failures=failures,
-                price_review_budget=price_review_budget if price_review_budget is not None else TencentRequestBudget(qfq_configuration.price_review),
-                shutdown=shutdown_budget,
-            )
-            result = QfqUpdateRunner(
-                history, updater, v2, v3, paths.daily_window.with_suffix(".lock"), ShanghaiClock(now).now,
-                failures=failures,
-            ).execute()
-    return shutdown.finish(result)
 
 
 def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Path, sqlite_policy: SqliteIoPolicy, cancel_requested: Callable[[], bool]) -> ResearchEvidenceResult:
@@ -681,6 +546,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     recommendation_rounds: RecommendationRounds | None = None,
     publication_lock: threading.RLock | None = None,
     freeze_events: UnifiedFreezeEventStream | None = None,
+    tomorrow_predictor: TomorrowProbabilityPredictor | None = None,
+    shared_tomorrow: bool = False,
 ) -> ApplicationSystem[SQLiteFreezeTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
@@ -735,12 +602,17 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         )
     )
     persistence = BuildPublicationPersistence(
-        context, shared_inputs.budget if shared_inputs else None, budget_path=budget_path, sqlite_policy=sqlite_policy
+        context, shared_inputs.budget if shared_inputs else None, budget_path=budget_path,
+        sqlite_policy=sqlite_policy, shared_tomorrow=shared_tomorrow,
     )
     profile_id = strategy.scoring_profile
     model_failure = "production_model_missing"
     try:
-        loaded_profile = LoadScoringProfile(profile_id, training_root=paths.models)
+        loaded_profile = (
+            LoadScoringProfile(profile_id, training_root=paths.models, d25_only=True)
+            if shared_tomorrow
+            else LoadScoringProfile(profile_id, training_root=paths.models)
+        )
     except ScoringModelsUnavailableError as exc:
         loaded_profile = None
         model_failure = f"production_model_{exc.reason}"
@@ -790,7 +662,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     policy = policy_settings.BuildRecommendationPolicy(context.strategy, quote_sessions=context.cadence_policy.sessions)
     model_publications = PublishedTrainingState(
         paths.history, paths.models, loaded_profile.publications if loaded_profile else (), metadata_cache=workers.market_cache,
-        maintenance_path=paths.training_maintenance, owned_profile=profile_id, wall_clock=ShanghaiClock(now).now, sqlite_policy=sqlite_policy,
+        maintenance_path=paths.training_maintenance, owned_profile=profile_id, wall_clock=ShanghaiClock(now).now,
+        sqlite_policy=sqlite_policy, d25_only=shared_tomorrow,
         load_expectation=HistoryTrainingExpectationReader(
             partial(ReadIndustrySnapshot, paths.reference, sqlite_policy=sqlite_policy),
             partial(LoadProfileTrainingSettings, settings.project_root),
@@ -801,18 +674,25 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         profile_id, loaded_profile,
         history_sessions=training_settings.history_sessions, model_failure=model_failure, cost_policy=cost_policy,
         maintenance=model_publications.status,
+        tomorrow_predictor=tomorrow_predictor, shared_tomorrow=shared_tomorrow,
     )
     candidate_filtering = CandidateFilteringService(policy, model_scoring)
     local_scoring = LocalScoringService(model_scoring, RankingSelectionService(), RiskControlService())
     publication_io = PublicationIoTracker(now=ShanghaiClock(now).now, monotonic=time.monotonic)
     next_long_sequence = partial(run_scope.next_sequence, persistence.sequence.allocate)
+    profile_status = model_scoring.status()
+    authorized_strategies = frozenset(
+        strategy
+        for strategy, head in profile_status.heads.items()
+        if head.is_enabled and head.production_authority
+    ) if profile_status is not None else frozenset()
     publication = _build_publication(
         context,
         composition_inputs.RuntimePublicationDependencies(
             next_long_sequence, persistence.records, market_data, persistence.outcomes
         ),
         publication_io=publication_io,
-        production_authority=bool((profile_status := model_scoring.status()) and profile_status.production_authority),
+        authorized_strategies=authorized_strategies,
         publication_lock=publication_lock,
         freeze_events=freeze_events, sqlite_policy=sqlite_policy,
     )
@@ -863,6 +743,12 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                     market_data, persistence.outcomes, persistence.outcomes, session_distance=calendar.session_distance
                 ),
             ),
+            shared_tomorrow_owner=owns_shared_runtime if shared_tomorrow else None,
+            tomorrow_settlement=(
+                TomorrowOutcomeSettlementService(market_data, persistence.outcomes).settle
+                if shared_tomorrow and owns_shared_runtime
+                else None
+            ),
             research_factory=ResearchRuntime,
             publish_freeze=partial(publication.freeze_events.publish_committed, profile=profile_id),
             publish_overlay=None,
@@ -888,9 +774,14 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
 
     def initialize_published_inputs(cancelled: Callable[[], bool]) -> None:
+        profile_version = ContentHash(loaded_profile.publications) if loaded_profile else model_failure
+        model_version = (
+            ContentHash((profile_version, tomorrow_predictor.identity))
+            if tomorrow_predictor is not None else profile_version
+        )
         market_data.initialize_published_inputs(
             cancelled,
-            model_version=ContentHash(loaded_profile.publications) if loaded_profile else model_failure,
+            model_version=model_version,
             config_version=effective_config_version,
         )
 
@@ -976,6 +867,13 @@ def BuildProfiledSystem(
     """Build the selected profiles with one shared resource owner and read-only surface."""
     profiles = ParseProfileSelection(",".join(profiles))
     settings = LoadRuntimeSettings(config_path)
+    from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
+
+    try:
+        tomorrow_predictor = LoadTomorrowProbabilityModel(settings.data_paths.models)
+    except (OSError, ValueError, RuntimeError) as exc:
+        tomorrow_predictor = None
+        logging.getLogger(__name__).warning("tomorrow_probability_model_unavailable category=%s", type(exc).__name__)
     default_profile = "v2" if "v2" in profiles else profiles[0]
     publication_lock = threading.RLock()
     freeze_events = UnifiedFreezeEventStream(
@@ -994,6 +892,8 @@ def BuildProfiledSystem(
         recommendation_rounds=rounds,
         publication_lock=publication_lock,
         freeze_events=freeze_events,
+        tomorrow_predictor=tomorrow_predictor,
+        shared_tomorrow=True,
     )
     shared = composition_inputs.SharedRecommendationInputs(
         primary.workers,
@@ -1012,6 +912,8 @@ def BuildProfiledSystem(
         recommendation_rounds=rounds,
         publication_lock=publication_lock,
         freeze_events=freeze_events,
+        tomorrow_predictor=tomorrow_predictor,
+        shared_tomorrow=True,
     )
     systems = [primary]
     for profile in profiles:
@@ -1039,6 +941,7 @@ def BuildProfiledSystem(
             profiles={profile: web_profiles[profile] for profile in profiles},
             default_profile=default_profile,
             long_profile=default_profile,
+            tomorrow_profile=default_profile,
             config=primary.web_services.config,
             history_quotes=history_quotes,
         )
@@ -1286,7 +1189,7 @@ def _build_publication(
     dependencies: composition_inputs.RuntimePublicationDependencies,
     *,
     publication_io: PublicationIoTracker,
-    production_authority: bool,
+    authorized_strategies: frozenset[Strategy],
     publication_lock: threading.RLock | None,
     freeze_events: UnifiedFreezeEventStream | None, sqlite_policy: SqliteIoPolicy,
 ) -> composition_inputs.RuntimePublicationContext:
@@ -1324,7 +1227,6 @@ def _build_publication(
             context.effective_config_version, context.strategy.strategy_version
         ),
         publication_io=publication_io,
-        production_authority=production_authority,
     )
     return composition_inputs.RuntimePublicationContext(
         records,
@@ -1349,8 +1251,8 @@ def _build_publication(
         ),
         freeze_queries,
         freeze_events,
-        freezer(strategy=Strategy.TOMORROW),
-        freezer(strategy=Strategy.D25),
+        freezer(strategy=Strategy.TOMORROW, production_authority=Strategy.TOMORROW in authorized_strategies),
+        freezer(strategy=Strategy.D25, production_authority=Strategy.D25 in authorized_strategies),
         observer,
     )
 

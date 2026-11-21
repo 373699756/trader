@@ -9,7 +9,7 @@ import pytest
 
 from tests.helpers.download.configuration import DownloadFailureConfigurationFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from tests.helpers.download.qfq import QFQ_CONFIGURATION, QFQ_TENCENT_OPTIONS
+from tests.helpers.download.qfq import QFQ_TENCENT_OPTIONS
 from tests.helpers.download.history.tencent_history_supplier import _Http, DAY, SECURITY
 from tests.helpers.download.history.infra.history_sync import NOW
 from trader.download.domain.download_failure import DownloadFailureContext
@@ -123,27 +123,6 @@ def test_diagnostic_write_failure_is_visible_and_does_not_replace_original_error
     assert "download_failure_recording_failed" in caplog.text and "private" not in caplog.text
 
 
-def test_market_reference_preparation_failure_is_recorded_before_workers_start(tmp_path, monkeypatch):
-    from trader import bootstrap
-    from trader.infra.settings.data_paths import DataPaths
-    from tests.helpers.download.configuration import HistorySyncConfigurationFixture
-
-    paths = DataPaths(tmp_path)
-    def prepare(*_args, **_kwargs):
-        raise ValueError("history_reference_publication_missing")
-
-    monkeypatch.setattr(bootstrap, "_prepare_reference", prepare)
-    with pytest.raises(ValueError, match="history_reference_publication_missing"):
-        bootstrap.ExecuteQfqDownload(
-            paths, HistorySyncConfigurationFixture(paths.history, paths.reference), QFQ_CONFIGURATION,
-            failure_configuration=DownloadFailureConfigurationFixture(),
-            shutdown_timeout_seconds=1, sqlite_policy=SqlitePolicyFixture(), now=lambda: NOW,
-        )
-    event, = _read(paths.daily_window)["events"]
-    assert event["stage"] == "reference_preparation"
-    assert event["reason"] == "history_reference_publication_missing"
-
-
 def test_retention_and_read_only_missing_table(tmp_path):
     path = tmp_path / "daily.sqlite3"
     with SqliteSession(path) as connection:
@@ -185,7 +164,7 @@ def test_sync_preparation_preserves_original_exception_before_public_result_proj
     def unreachable(_reference):
         raise AssertionError("preparation failed before task dispatch")
 
-    result = SyncData(prepare, unreachable, unreachable, unreachable, lambda: False, failures=_recorder(path)).execute("market")
+    result = SyncData(prepare, unreachable, unreachable, lambda: False, failures=_recorder(path)).execute("history")
     assert result.failure == "preparation_RuntimeError"
     event, = _read(path)["events"]
     assert event["reason"] == "history_reference_publication_missing"

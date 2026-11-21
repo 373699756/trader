@@ -1,11 +1,9 @@
 """Every download filters current and historical ST before business requests."""
 
-from tests.helpers.download.configuration import DownloadFailureConfigurationFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
 from dataclasses import replace
 from datetime import timedelta
-from functools import partial
 from pathlib import Path
 from threading import enumerate as enumerate_threads
 
@@ -18,9 +16,7 @@ from trader import bootstrap
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.history_reference import HistoryStEvidence
 from tests.helpers.download.configuration import HistorySyncConfigurationFixture as HistorySyncConfiguration
-from trader.download.infra.download_settings import LoadQfqWindowConfiguration
 from trader.download.infra.reference_index import SQLiteReferenceIndex
-from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 from trader.infra.http_contracts import HttpError
 from trader.infra.settings import LoadRuntimeSettings
@@ -88,7 +84,6 @@ def st_sources(monkeypatch):
         "LoadHistorySyncConfiguration",
         lambda root, paths: HistorySyncConfiguration(paths.history, paths.reference, minimum_free_bytes=0),
     )
-    monkeypatch.setattr(bootstrap, "LoadDownloadFailureConfiguration", lambda _root: DownloadFailureConfigurationFixture())
     return calls, sessions
 
 
@@ -107,9 +102,8 @@ def _seed_st(path):
 
 
 
-@pytest.mark.parametrize("command", ("history", "qfq", "market"))
 def test_price_commands_complete_st_filter_before_calendar_and_prices(
-    tmp_path, monkeypatch, st_sources, command, capsys
+    tmp_path, monkeypatch, st_sources
 ):
     calls, sessions = st_sources
     reference_root = DataPaths(tmp_path / "data").reference
@@ -138,49 +132,14 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(
 
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Prices)
     monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: Industry(_DAYS))
-    if command == "history":
-        result = bootstrap.ExecuteHistoryDownload(
-            HistorySyncConfiguration(
-                tmp_path / "history", reference_root, sessions=3, reread_sessions=2, minimum_free_bytes=0
-            ),
-            qfq_configuration=LoadQfqWindowConfiguration(_ROOT),
-            shutdown_timeout_seconds=2.0,
-            clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
-        )
-        assert result.state == "completed", result.reason
-    elif command == "qfq":
-        paths = DataPaths(tmp_path / "data")
-        result = bootstrap.ExecuteQfqDownload(
-            paths,
-            bootstrap.LoadHistorySyncConfiguration(_ROOT, paths),
-            LoadQfqWindowConfiguration(_ROOT),
-            failure_configuration=DownloadFailureConfigurationFixture(),
-            shutdown_timeout_seconds=2.0,
-            now=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
-        )
-        assert result.completed_codes == 4
-        assert not result.needs_retry
-    else:
-        paths = DataPaths(tmp_path / "data")
-        settings = replace(
-            LoadRuntimeSettings(_ROOT / "config/runtime.json"), data_paths=paths
-        )
-        monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: settings)
-        monkeypatch.setattr(bootstrap, "ExecuteQfqDownload", partial(bootstrap.ExecuteQfqDownload, now=lambda: NOW))
-        result = bootstrap.ExecuteSync(Path("unused"), "market")
-        assert result.exit_code == 0, result
-        assert result.tasks[0].market.completed_codes == 4
-        cache = SQLiteQfqWindowCache(paths.daily_window, "v2", sqlite_policy=SqlitePolicyFixture())
-        assert cache.codes() == frozenset({"600001", "600004", "600005", "600007"})
-        window = cache.read_code("600001")
-        assert len(window.cells) == LoadQfqWindowConfiguration(_ROOT).v2_sessions
-        assert all(cell.qfq is not None for cell in window.cells)
-        output = capsys.readouterr().err
-        assert "sync company" not in output
-        stages = ("ST资格", "交易日历", "当前行业", "参考发布", "资料交接", "market·准备")
-        assert [output.index(stage) for stage in stages] == sorted(output.index(stage) for stage in stages)
-        assert "参考·ST资格" in output
-        assert "开始更新 raw/qfq 短窗口" in output
+    result = bootstrap.ExecuteHistoryDownload(
+        HistorySyncConfiguration(
+            tmp_path / "history", reference_root, sessions=3, reread_sessions=2, minimum_free_bytes=0
+        ),
+        shutdown_timeout_seconds=2.0,
+        clock=lambda: NOW, sqlite_policy=SqlitePolicyFixture(),
+    )
+    assert result.state == "completed", result.reason
     assert set(downloaded) == {"600001", "600004", "600005", "600007"}
     assert all(session.closed for session in sessions)
 
@@ -196,13 +155,12 @@ def test_corrupt_st_cache_stops_risk_commands_before_business_requests(tmp_path,
     settings.data_paths.reference.mkdir(parents=True)
     (settings.data_paths.reference / "company_st.sqlite3").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: settings)
-    monkeypatch.setattr(bootstrap, "LoadQfqWindowConfiguration", lambda _root: LoadQfqWindowConfiguration(_ROOT))
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("business preparation must wait for valid ST evidence")
 
     monkeypatch.setattr(bootstrap, "ChinaTradingCalendar", forbidden)
-    result = bootstrap.ExecuteSync(Path("unused"), "market")
+    result = bootstrap.ExecuteSync(Path("unused"), "history")
     assert result.exit_code == 1 and not result.tasks
     assert calls == []
     assert all(session.closed for session in sessions)

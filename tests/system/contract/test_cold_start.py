@@ -25,6 +25,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
 from trader.training.infra.model_bundles.profile_publication import InspectPublishedProfileBundles
+from trader.training.infra.model_bundles.contracts import D25ProfileContract
 
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
@@ -55,11 +56,12 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
         scoring = payload["scoring_profile"]
         assert scoring["profile_id"] == selected
         assert set(scoring["heads"]) == {"tomorrow", "d25"}
-        for head in scoring["heads"].values():
+        for strategy, head in scoring["heads"].items():
             assert head["is_enable"] is False
             assert head["production_authority"] is True
             assert head["model_hash"] == ""
-            assert head["historical_failure_reasons"] == ["production_model_missing"]
+            reason = "tomorrow_probability_model_unavailable" if strategy == "tomorrow" else "production_model_missing"
+            assert head["historical_failure_reasons"] == [reason]
         assert "./run.sh train" in caplog.text
     assert "./run.sh sync history" in caplog.text
     assert "缺少已发布完整历史" in caplog.text
@@ -71,15 +73,41 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
 
 def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, caplog):
     config = _empty_config(tmp_path)
-    _publish_profile(tmp_path / "data/training/models", V3_TRAINING_PROFILE)
+    _publish_profile(tmp_path / "data/training/models", D25ProfileContract(V3_TRAINING_PROFILE))
     system = BuildProfiledSystem(config)
     client = system.app.test_client()
 
     for profile, is_enabled in (("v2", False), ("v3", True)):
         scoring = client.get(f"/api/status?profile={profile}").get_json()["scoring_profile"]
-        assert all(head["is_enable"] is is_enabled for head in scoring["heads"].values())
+        assert scoring["heads"]["d25"]["is_enable"] is is_enabled
+        assert not scoring["heads"]["tomorrow"]["is_enable"]
     assert "V2 双头模型工件缺失" in caplog.text
     assert "V3 双头模型工件缺失" not in caplog.text
+
+
+def test_shared_tomorrow_is_ready_with_no_d25_models(tmp_path, monkeypatch):
+    class Predictor:
+        identity = "a" * 64
+
+        def predict_probabilities(self, features):
+            return (0.25,) * len(features)
+
+    calls = []
+
+    def load(model_root):
+        calls.append(model_root)
+        return Predictor()
+
+    monkeypatch.setattr("trader.training.infra.tomorrow_probability.LoadTomorrowProbabilityModel", load)
+    system = BuildProfiledSystem(_empty_config(tmp_path), profiles=("v1", "v3"))
+    client = system.app.test_client()
+    assert len(calls) == 1
+    for profile in ("v1", "v3"):
+        heads = client.get(f"/api/status?profile={profile}").get_json()["scoring_profile"]["heads"]
+        assert heads["tomorrow"]["is_enable"]
+        assert not heads["d25"]["is_enable"]
+    assert system.systems[0].scheduler._dependencies.scored_strategies == (Strategy.TOMORROW, Strategy.D25)
+    assert system.systems[1].scheduler._dependencies.scored_strategies == (Strategy.D25,)
 
 
 def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_failure(tmp_path, monkeypatch):

@@ -136,6 +136,8 @@ class FreezeAdapter(FreezePort):
     def freeze(self, strategy: Strategy, at: datetime, current: FreezeIdentity | None) -> None:
         del at, current
         result = self._freezers[strategy].freeze_scheduled()
+        if result.status == "tomorrow_closing_evidence_pending":
+            raise SealUnavailableError(result.status)
         if result.status in {"persistence_failed", "index_commit_conflict"}:
             raise RuntimeError(result.status)
 

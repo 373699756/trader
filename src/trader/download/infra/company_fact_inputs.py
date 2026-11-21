@@ -7,11 +7,8 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from typing import Literal, cast
 
-from trader.download.domain.company_evidence import CompanyFinancial, Disclosure
+from trader.download.domain.company_evidence import Disclosure
 
-
-def DecodeCompanyFinancial(row: sqlite3.Row) -> CompanyFinancial:
-    return CompanyFinancial(row[0], date.fromisoformat(row[1]), datetime.fromisoformat(row[2]), *tuple(row)[3:])
 
 def DecodeCompanyDisclosure(row: sqlite3.Row) -> Disclosure:
     return Disclosure(
@@ -38,4 +35,4 @@ def BindCompanyEvidenceSource(sources: dict[str, str], key: str, source: str) ->
         raise ValueError("company_evidence_source_ambiguous")
     sources[key] = source
 
-__all__ = ["DecodeCompanyFinancial", "DecodeCompanyDisclosure", "CompanyCoverageComplete", "BindCompanyEvidenceSource"]
+__all__ = ["DecodeCompanyDisclosure", "CompanyCoverageComplete", "BindCompanyEvidenceSource"]

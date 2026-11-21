@@ -25,32 +25,6 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
         summary["incompatible_company_store"] = task.incompatible_company_store.value
     if task.history is not None:
         summary["history"] = ProjectHistoryMaintenanceStatus(task.history)
-    if task.market is not None:
-        market = task.market
-        summary.update(
-            {
-                "target_date": market.target_date.isoformat() if market.target_date else None,
-                "completed_codes": market.completed_codes,
-                "pending_codes": market.pending_codes,
-                "no_trade_data_codes": market.no_trade_data_codes,
-                "latest_missing_codes": market.latest_missing_codes,
-                "latest_suspended_codes": market.latest_suspended_codes,
-                "latest_inferred_suspended_codes": market.latest_inferred_suspended_codes,
-                "price_review": {
-                    "examined_codes": market.price_review.examined_codes,
-                    "physical_requests": market.price_review.physical_requests,
-                    "remaining_inferred_codes": market.price_review.remaining_inferred_codes,
-                    "exhaustion_reason": market.price_review.exhaustion_reason,
-                    "discovery_completed": market.price_review.discovery_completed,
-                },
-                "changed_files": market.changed_files,
-                "changed_rows": market.changed_rows,
-                "skipped_codes": market.skipped_codes,
-                "failure_reason": market.failure_reason,
-                "shutdown_failure": market.shutdown_failure,
-                "pending_reasons": [{"reason": item.reason, "count": item.count} for item in market.pending_reasons],
-            }
-        )
     if task.company is not None:
         company = task.company
         summary.update(

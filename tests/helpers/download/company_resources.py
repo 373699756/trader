@@ -79,11 +79,6 @@ class CompanyResearchFixture(SQLiteCompanyMaterialIndex):
         self._test_financials = tuple({(item.code, item.report_date): item for item in (*self._test_financials, *page.financials)}.values())
         self._ratio_component = page.component
         self._test_ratios = tuple({(item.code, item.day): item for item in (*self._test_ratios, *page.ratios)}.values())
-        with SqliteSession(self.path, sqlite_policy=self._sqlite_policy) as raw:
-            raw.run_many("INSERT OR REPLACE INTO financials VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
-                (item.code, str(item.report_date), item.published_at.isoformat(), item.basic_eps, item.book_value_per_share,
-                 item.revenue_growth_pct, item.net_profit_growth_pct, item.core_profit_growth_pct, item.roe_pct,
-                 item.parent_net_profit, item.core_net_profit) for item in page.financials))
         return len(page.financials)+len(page.ratios)
 
     def _local_documents(self) -> tuple[tuple[CompanyDocument, ...], tuple[CompanyInputReceipt, ...]]:

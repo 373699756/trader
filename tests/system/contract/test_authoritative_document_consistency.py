@@ -199,7 +199,7 @@ def test_scoring_and_download_contracts_do_not_reintroduce_retired_behavior() ->
     assert "deepseek_score*0.32" not in compact
     assert "ROUND_HALF_UP" in scoring and "168" in scoring
     assert "terminal_holdout_already_opened" in scoring
-    for command in ("train", "sync market", "sync company"):
+    for command in ("train", "sync history", "sync company"):
         assert f"./run.sh {command}" in history
     for invariant in (
         "不依赖history",

@@ -83,11 +83,13 @@ def _side(value: object, adjustment: BaoStockAdjustment) -> PublishedHistorySide
         "pct_change",
         "turnover",
         "trading_status",
+        "reconstructed_from",
     }:
         raise ValueError("published daily side fields are invalid")
     status = _text(payload["trading_status"])
     if payload["adjustment"] != adjustment or status not in {"trading", "suspended"}:
         raise ValueError("published daily side semantics are invalid")
+    anchor = payload["reconstructed_from"]
     return PublishedHistorySide(
         _text(payload["code"]),
         date.fromisoformat(_text(payload["trade_date"])),
@@ -102,6 +104,7 @@ def _side(value: object, adjustment: BaoStockAdjustment) -> PublishedHistorySide
         _number(payload["pct_change"]),
         _number(payload["turnover"]),
         cast(BaoStockTradingStatus, status),
+        date.fromisoformat(_text(anchor)) if anchor is not None else None,
     )
 
 
@@ -122,6 +125,7 @@ def _encode_side(value: PublishedHistorySide | None) -> dict[str, object] | None
         "pct_change": value.pct_change,
         "turnover": value.turnover,
         "trading_status": value.trading_status,
+        "reconstructed_from": value.reconstructed_from.isoformat() if value.reconstructed_from is not None else None,
     }
 
 

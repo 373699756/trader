@@ -15,6 +15,7 @@ from trader.infra.settings.parser import (
     RequireMapping,
 )
 from trader.training.infra.resource_settings import ReadTrainingConfiguration
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.model_fitting import (
@@ -47,10 +48,11 @@ class ProfileTrainingSettings:
             self.history_sessions != profile.history_sessions
             or self.momentum_horizons != profile.momentum_horizons
             or self.market_state_momentum_horizons != profile.market_state_momentum_horizons
-            or self.tomorrow_feature_ids
-            != tuple(n for n in profile.heads[0].feature_manifest.names if not n.startswith("sequence_"))
-            or self.d25_feature_ids
-            != tuple(n for n in profile.heads[1].feature_manifest.names if not n.startswith("sequence_"))
+            or any(
+                (self.tomorrow_feature_ids if head.strategy is Strategy.TOMORROW else self.d25_feature_ids)
+                != tuple(name for name in head.feature_manifest.names if not name.startswith("sequence_"))
+                for head in profile.heads
+            )
         ):
             raise ValueError("training input settings do not match the profile feature contract")
 

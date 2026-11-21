@@ -32,11 +32,11 @@ from trader.recommendation.domain.publication.models import Strategy
 class PreparedCurrentPair:
     profile: str
     index: UnifiedFreezeIndex
-    freezes: tuple[ScoredFreeze, ScoredFreeze]
-    overlays: tuple[FreezeOverlay, FreezeOverlay]
-    expected_versions: tuple[str | None, str | None]
+    freezes: tuple[ScoredFreeze, ...]
+    overlays: tuple[FreezeOverlay, ...]
+    expected_versions: tuple[str | None, ...]
     publication_io: PublicationIoTracker | None
-    sessions: tuple[SessionLease | None, SessionLease | None]
+    sessions: tuple[SessionLease | None, ...]
     clock: Clock
     publish_before: datetime | None
 
@@ -45,21 +45,21 @@ def PrepareCurrentPair(
     profile: str,
     index: UnifiedFreezeIndex,
     builder: FreezeBuilderPort,
-    freezes: tuple[ScoredFreeze, ScoredFreeze],
+    freezes: tuple[ScoredFreeze, ...],
     *,
-    expected_versions: tuple[str | None, str | None],
+    expected_versions: tuple[str | None, ...],
     publication_io: PublicationIoTracker | None,
-    sessions: tuple[SessionLease | None, SessionLease | None],
+    sessions: tuple[SessionLease | None, ...],
     clock: Clock,
     publish_before: datetime | None,
 ) -> PreparedCurrentPair:
-    if tuple(freeze.strategy for freeze in freezes) != (Strategy.TOMORROW, Strategy.D25):
-        raise ValueError("paired publication requires tomorrow and d25")
+    if tuple(freeze.strategy for freeze in freezes) not in {(Strategy.TOMORROW, Strategy.D25), (Strategy.D25,)}:
+        raise ValueError("profiled publication requires D25, with Tomorrow only in a paired runtime")
     return PreparedCurrentPair(
         profile,
         index,
         freezes,
-        (builder.initial_overlay(freezes[0]), builder.initial_overlay(freezes[1])),
+        tuple(builder.initial_overlay(freeze) for freeze in freezes),
         expected_versions,
         publication_io,
         sessions,

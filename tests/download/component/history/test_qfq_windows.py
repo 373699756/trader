@@ -17,7 +17,6 @@ import pytest
 
 from tests.helpers.download.qfq import QFQ_CONFIGURATION, QFQ_TENCENT_OPTIONS, publish_windows
 from tests.helpers.shared.reference_fixtures import PreparedFixture
-from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import QfqPairPublicationError, UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
@@ -36,8 +35,7 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.domain.qfq_planning import QfqNonTradingFact
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
-from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
-from trader.entrypoints import cli
+from trader.download.infra.terminal_progress import RenderProgress
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
@@ -46,7 +44,6 @@ from trader.recommendation.infra.market_data.published_history_cache import Publ
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from tests.helpers.download.history.qfq_windows import (
     DAYS,
-    PROJECT_ROOT,
     SHANGHAI,
     Supplier,
     _IncompleteSupplier,
@@ -2055,53 +2052,6 @@ def test_market_publication_check_rejects_corrupted_pair(tmp_path, monkeypatch):
     assert checked.needs_retry
     with pytest.raises(RuntimeError, match="checksum_mismatch"):
         updater.v2.verify_integrity()
-
-
-@pytest.mark.parametrize(
-    "pending,no_trade_data,latest_missing,exit_code",
-    ((0, 0, 0, 0), (2, 0, 0, 1), (0, 1, 0, 0), (0, 0, 20, 1)),
-)
-def test_qfq_cli_is_zero_argument_and_reports_pending(
-    tmp_path, monkeypatch, capsys, pending, no_trade_data, latest_missing, exit_code
-) -> None:
-    from trader.download.application.sync_data import SyncResult, SyncTaskResult
-
-    calls = []
-
-    def execute(config, target, **kwargs):
-        calls.append((config, target))
-        from trader.download.application.progress_message import ProgressField
-
-        TerminalDownloadProgress()(ProgressMessage((ProgressField("qfq fixture progress"),)))
-        market = QfqUpdateResult(
-            DAYS[-1],
-            completed_codes=100,
-            pending_codes=pending,
-            pending_reasons=(QfqPendingReason("qfq_window_incomplete", pending),) if pending else (),
-            no_trade_data_codes=no_trade_data,
-            latest_missing_codes=latest_missing,
-        )
-        return SyncResult((SyncTaskResult("market", "pending" if market.needs_retry else "completed", market=market),))
-
-    monkeypatch.setattr("trader.bootstrap.ExecuteSync", execute)
-    monkeypatch.setattr("trader.bootstrap.PrepareRuntimeDisk", lambda runtime, **kwargs: runtime)
-    config = PROJECT_ROOT / "config/runtime.json"
-    assert cli.Main(["--config", str(config), "sync", "market"]) == exit_code
-    captured = capsys.readouterr()
-    summary = json.loads(captured.out)
-    assert "schema_version" not in summary
-    payload = summary["tasks"][0]
-    assert "启动·配置检查" in captured.err and "sync·结果汇总" in captured.err
-    assert "qfq fixture progress" in captured.err
-    assert payload["pending_codes"] == pending
-    assert payload["no_trade_data_codes"] == no_trade_data
-    assert payload["latest_missing_codes"] == latest_missing
-    assert payload["failure_reason"] is None
-    assert calls == [(config, "market")]
-    with pytest.raises(SystemExit) as rejected:
-        cli.Main(["--config", str(config), "sync", "market", "--profile", "v3"])
-    assert rejected.value.code == 2
-    assert calls == [(config, "market")]
 
 
 def test_local_extraction_heartbeat_is_visible_and_thread_stops():

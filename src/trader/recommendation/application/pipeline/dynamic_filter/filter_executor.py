@@ -46,6 +46,7 @@ class ScoredSelectionOptions:
     population_max_age_seconds: float | None = None
     minimum_history_sessions: int = 20
     model_input_eligible_codes: frozenset[str] | None = None
+    require_profile_history_window: bool = True
     population_quote_freshness_basis: QuoteFreshnessBasis = QuoteFreshnessBasis.EVALUATION
 
 
@@ -227,6 +228,7 @@ def _selection_request(
         population_max_age_seconds=options.population_max_age_seconds,
         minimum_history_sessions=options.minimum_history_sessions,
         model_input_eligible_codes=options.model_input_eligible_codes,
+        require_profile_history_window=options.require_profile_history_window,
         population_quote_freshness_basis=options.population_quote_freshness_basis,
     )
 

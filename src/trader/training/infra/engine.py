@@ -370,7 +370,7 @@ class _ProfileTrainingAdapter:
         with _training_errors():
             request, snapshot = self.request, self.history.snapshot
             request.train_root.mkdir(parents=True, exist_ok=True)
-            ClearProfileStaging(request.train_root)
+            ClearProfileStaging(request.train_root, strategies=tuple(head.strategy for head in request.profile.heads))
             inspected = self.cache is not None
             if self.cache is None:
                 self.cache = _sample_cache_for(snapshot, plan.split, request, sqlite_policy=self.sqlite_policy)
@@ -507,7 +507,10 @@ class _ProfileFittingAdapter:
             )
             if staging is not None:
                 if not self.staged:
-                    self.resources.callback(ClearProfileStaging, request.train_root)
+                    self.resources.callback(
+                        ClearProfileStaging, request.train_root,
+                        strategies=tuple(head.strategy for head in request.profile.heads),
+                    )
                 self.staged.append((head.strategy, staging))
             return PreparedTrainingHead(result, staging is not None)
 
@@ -526,7 +529,7 @@ def _sample_cache_for(
 ) -> TrainingSampleCache:
     feature_names = TrainingFeatureNames(request.profile.heads)
     feature_count = len(feature_names)
-    sequence_layout = SampleSequenceLayout(6, 60, 6) if request.profile.algorithm == "tcn" else None
+    sequence_layout = SampleSequenceLayout(feature_count - 60 * 6, 60, 6) if request.profile.algorithm == "tcn" else None
     cache_identity = ContentHash(
         (
             TrainingImplementationIdentity(),
@@ -733,11 +736,11 @@ def _fit_and_prepare_head(
         return result, staging
     except InterruptedError:
         if staging is not None:
-            ClearProfileStaging(request.train_root)
+            ClearProfileStaging(request.train_root, strategies=tuple(head.strategy for head in request.profile.heads))
         raise
     except (LightGBMError, OSError, TypeError, ValueError, RuntimeError, sqlite3.Error) as exc:
         if staging is not None:
-            ClearProfileStaging(request.train_root)
+            ClearProfileStaging(request.train_root, strategies=tuple(head.strategy for head in request.profile.heads))
         return replace(
             _blocked_from_snapshot(contract, snapshot, _reason(exc)),
             diagnostic=CaptureTrainingError(exc),

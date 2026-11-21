@@ -26,6 +26,7 @@ from trader.training.infra.model_bundles.bundle_snapshot import (
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
 _LOGGER = logging.getLogger(__name__)
+_PAIRED_STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
 
 
 class ProfilePublicationBusyError(RuntimeError):
@@ -65,14 +66,15 @@ def ProfilePublicationLock(
 
 
 def RecoverProfilePublication(
-    profile_root: Path, validate: Callable[[Path], object], *, timeout_seconds: float = 2.0
+    profile_root: Path, validate: Callable[[Path], object], *, timeout_seconds: float = 2.0,
+    strategies: tuple[Strategy, ...] = _PAIRED_STRATEGIES,
 ) -> None:
     """Explicit writers recover a unique validated old pair under the publication lock."""
     if not profile_root.parent.exists():
         return
     with ProfilePublicationLock(profile_root, timeout_seconds):
         if profile_root.exists() or profile_root.is_symlink():
-            InspectProfileWorkspace(profile_root, allow_partial_heads=True)
+            InspectProfileWorkspace(profile_root, allow_partial_heads=True, strategies=strategies)
             return
         previous = tuple(profile_root.parent.glob(f".{profile_root.name}.previous.*"))
         if not previous:
@@ -83,7 +85,7 @@ def RecoverProfilePublication(
         suffix = candidate.name.removeprefix(f".{profile_root.name}.previous.")
         if len(suffix) != 32 or any(character not in "0123456789abcdef" for character in suffix):
             raise ValueError("model publication recovery has an unrecognized previous directory")
-        workspace = InspectProfileWorkspace(candidate)
+        workspace = InspectProfileWorkspace(candidate, strategies=strategies)
         if workspace.has_pair:
             validate(candidate)
         os.replace(candidate, profile_root)
@@ -95,14 +97,18 @@ def RecoverProfileBundles(
 ) -> None:
     """Training restores the previous pair before deciding whether it can be reused."""
     RecoverProfilePublication(
-        profile_root, lambda path: _inspect_profile_directory(path, profile), timeout_seconds=timeout_seconds
+        profile_root, lambda path: _inspect_profile_directory(path, profile), timeout_seconds=timeout_seconds,
+        strategies=tuple(head.strategy for head in profile.heads),
     )
 
 
-def ClearProfileStaging(profile_root: Path, *, timeout_seconds: float = 2.0) -> None:
+def ClearProfileStaging(
+    profile_root: Path, *, timeout_seconds: float = 2.0,
+    strategies: tuple[Strategy, ...] = _PAIRED_STRATEGIES,
+) -> None:
     """Remove only current owned staging after validating the entire profile tree."""
     with ProfilePublicationLock(profile_root, timeout_seconds):
-        workspace = InspectProfileWorkspace(profile_root, allow_partial_heads=True)
+        workspace = InspectProfileWorkspace(profile_root, allow_partial_heads=True, strategies=strategies)
         for staging in workspace.staging:
             shutil.rmtree(staging)
 
@@ -122,8 +128,9 @@ def PublishProfileBundles(
 ) -> tuple[LoadedPublishedHeadBundle, ...]:
     """Publish a recent production pair after validating both heads and their shared source."""
 
-    if tuple(strategy for strategy, _ in staged) != tuple(head.strategy for head in profile.heads):
-        raise ValueError("profile publication requires both ordered strategy heads")
+    strategies = tuple(head.strategy for head in profile.heads)
+    if tuple(strategy for strategy, _ in staged) != strategies:
+        raise ValueError("profile publication requires the current strategy heads")
     bundles = tuple(InspectPublishedHeadBundle(path, strategy, profile).model for strategy, path in staged)
     if (
         len({item.training_input_hash for item in bundles}) != 1
@@ -158,7 +165,7 @@ def PublishProfileBundles(
         with ProfilePublicationLock(profile_root, timeout_seconds):
             RequireProfilePublicationReady(profile_root)
             if profile_root.exists() or profile_root.is_symlink():
-                InspectProfileWorkspace(profile_root, allow_partial_heads=True)
+                InspectProfileWorkspace(profile_root, allow_partial_heads=True, strategies=strategies)
                 os.replace(profile_root, previous)
                 old_moved = True
             new_moved = False
@@ -175,14 +182,14 @@ def PublishProfileBundles(
                 raise
         if old_moved:
             try:
-                InspectProfileWorkspace(previous, allow_partial_heads=True)
+                InspectProfileWorkspace(previous, allow_partial_heads=True, strategies=strategies)
                 shutil.rmtree(previous)
             except (OSError, ValueError):
                 _LOGGER.warning("trained_profile_previous_cleanup_failed")
         return tuple(replace(head, model_path=profile_root / head.strategy.value / "model.json") for head in heads)
     finally:
         if publication.exists() or publication.is_symlink():
-            InspectProfileWorkspace(publication, allow_partial_heads=True)
+            InspectProfileWorkspace(publication, allow_partial_heads=True, strategies=strategies)
             shutil.rmtree(publication)
 
 
@@ -220,6 +227,7 @@ def ReadPublishedProfileIdentities(
             raise FileNotFoundError(profile_root)
         if profile_root.is_symlink() or not profile_root.is_dir():
             raise ValueError("trained profile directory is invalid")
+        _require_current_head_directories(profile_root, profile)
         identities = tuple(
             ReadPublishedHeadIdentity(
                 profile_root / contract.directory_name,
@@ -245,6 +253,7 @@ def _inspect_profile_directory(
         raise FileNotFoundError(profile_root)
     if not profile_root.is_dir() or profile_root.is_symlink():
         raise ValueError("trained profile directory is invalid")
+    _require_current_head_directories(profile_root, profile)
     heads = tuple(
         InspectPublishedHeadBundle(profile_root / contract.directory_name, contract.strategy, profile)
         for contract in profile.heads
@@ -254,15 +263,26 @@ def _inspect_profile_directory(
     return heads
 
 
-def InspectProfileWorkspace(profile_root: Path, *, allow_partial_heads: bool = False) -> ProfileWorkspace:
+def _require_current_head_directories(profile_root: Path, profile: TrainedProfileContract) -> None:
+    actual = {entry.name for entry in profile_root.iterdir()} & {strategy.value for strategy in _PAIRED_STRATEGIES}
+    expected = {head.directory_name for head in profile.heads}
+    if actual - expected:
+        raise ModelBundleContractError("trained profile contains retired or foreign strategy heads")
+
+
+def InspectProfileWorkspace(
+    profile_root: Path, *, allow_partial_heads: bool = False,
+    strategies: tuple[Strategy, ...] = _PAIRED_STRATEGIES,
+) -> ProfileWorkspace:
     """Reject any unowned entry before a publisher moves or removes a whole tree."""
     # Writers may replace owned incomplete heads; restoring an old generation
     # additionally requires a complete pair and its caller's content validation.
     if profile_root.is_symlink() or not profile_root.is_dir():
         raise ValueError("model publication recovery directory is invalid")
     directories = tuple(profile_root.iterdir())
-    heads = {path.name for path in directories} & {"tomorrow", "d25"}
-    if not allow_partial_heads and heads and heads != {"tomorrow", "d25"}:
+    required = {strategy.value for strategy in strategies}
+    heads = {path.name for path in directories} & required
+    if not allow_partial_heads and heads and heads != required:
         raise ValueError("model publication recovery directory is missing a head")
     staging = []
     for directory in directories:
@@ -289,13 +309,12 @@ def InspectProfileWorkspace(profile_root: Path, *, allow_partial_heads: bool = F
             raise ValueError("model publication recovery file is invalid")
     # A first installation has only owned staging directories, never a published
     # pair. Restore that workspace so training can rebuild, without reusing a head.
-    return ProfileWorkspace(heads == {"tomorrow", "d25"}, tuple(staging))
+    return ProfileWorkspace(heads == required, tuple(staging))
 
 
 def _validate_profile_pair(heads: tuple[LoadedPublishedHeadBundle, ...]) -> None:
     if (
-        len(heads) != 2
-        or len({item.training_input_hash for item in heads}) != 1
+        len({item.training_input_hash for item in heads}) != 1
         or len({item.training_run_hash for item in heads}) != 1
         or len({item.source_identity_hash for item in heads}) != 1
     ):

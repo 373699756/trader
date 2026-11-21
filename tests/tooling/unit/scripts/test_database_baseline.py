@@ -314,18 +314,18 @@ def test_database_comparison_routes_the_external_baseline_to_the_same_harness(tm
                 "--database-rounds",
                 "5",
                 "--database-acceptance-focus",
-                "market-company",
+                "company",
             ]
         )
     )
     command = BuildToolCommands(options, python_executable=sys.executable)[0]
     assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path / "baseline"))
     assert command.argv[command.argv.index("--rounds") + 1] == "5"
-    assert command.argv[command.argv.index("--acceptance-focus") + 1] == "market-company"
+    assert command.argv[command.argv.index("--acceptance-focus") + 1] == "company"
     assert command.name == "database_baseline"
 
 
-@pytest.mark.parametrize("focus", ("history", "market-company"))
+@pytest.mark.parametrize("focus", ("history", "company"))
 @pytest.mark.parametrize(
     "failure",
     (
@@ -401,7 +401,7 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
                             },
                         },
                     }
-                    for target in ("all", "history", "market", "company")
+                    for target in ("all", "history", "company")
                 }
             },
         }
@@ -420,7 +420,7 @@ def test_comparison_requires_equal_publications_and_every_round_within_memory_bu
         report = _compare(baseline, 2, 61, 5, "unknown", focus)
         assert report["acceptance"]["accepted"] is (
             failure not in {"rss", "company_startup"}
-            and not (focus == "market-company" and failure == "company_no_gain")
+            and not (focus == "company" and failure == "company_no_gain")
         )
         assert report["acceptance"]["database_size_within_5_percent"] is (failure != "company_space")
         assert report["acceptance"]["process_rss_within_2_gib"] is (failure != "rss")
@@ -471,7 +471,7 @@ def test_real_sync_adapters_preserve_joint_single_restart_and_memory_reads(tmp_p
     assert result["joint_single_equivalent"] is True
     assert result["independent_targets"] is True
     targets = result["targets"]
-    for target in ("all", "history", "market", "company"):
+    for target in ("all", "history", "company"):
         data = targets[target]
         assert data["initial"]["files_bytes"] > 0
         assert data["same_day"]["files_bytes"] > 0

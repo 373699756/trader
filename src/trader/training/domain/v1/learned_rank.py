@@ -336,7 +336,7 @@ class LearnedRankPair:
     calendar_hash: str
     source_cutoff: date
     settings: V1TrainingSettings
-    heads: tuple[LearnedRankHead, LearnedRankHead]
+    heads: tuple[LearnedRankHead, ...]
     training_identity_hash: str
     price_snapshot_hash: str = field(kw_only=True)
     industry_snapshot: CurrentIndustrySnapshot = field(kw_only=True)
@@ -353,7 +353,7 @@ class LearnedRankPair:
                 )
             )
             or self.training_input_hash != BuildTrainingInputHash(self.price_snapshot_hash, self.industry_snapshot.content_hash)
-            or tuple(head.strategy for head in self.heads) != (Strategy.TOMORROW, Strategy.D25)
+            or tuple(head.strategy for head in self.heads) not in {(Strategy.TOMORROW, Strategy.D25), (Strategy.D25,)}
             or any(head.split.label_cutoff >= self.source_cutoff for head in self.heads)
             or any(head.training_contract_hash != self.contract_hash for head in self.heads)
         ):
@@ -370,7 +370,7 @@ class LearnedRankPair:
 
 @dataclass(frozen=True)
 class LearnedRankFinalPair(LearnedRankPair):
-    heads: tuple[LearnedRankFinalHead, LearnedRankFinalHead]
+    heads: tuple[LearnedRankFinalHead, ...]
     calendar_dates: tuple[date, ...]
 
     def __post_init__(self) -> None:

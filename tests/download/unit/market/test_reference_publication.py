@@ -19,6 +19,23 @@ from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOpt
 _NOW = datetime(2026, 10, 26, 20, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
+def test_historical_reference_requires_same_session_completed_capture(tmp_path):
+    publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    checked_at = _NOW.replace(hour=13)
+    completed_at = checked_at + timedelta(minutes=30)
+    reference = PreparedFixture(checked_at)
+    publication.publish(reference, reference.st_evidence, completed_at=completed_at)
+    assert publication.read_as_of(checked_at + timedelta(minutes=15)) is None
+    captured = publication.read_as_of(checked_at.replace(hour=15))
+    assert captured is not None and captured.reference == reference
+    assert captured.completed_at == completed_at
+    assert publication.read_as_of(checked_at + timedelta(days=1)) is None
+    assert publication.read_as_of(checked_at - timedelta(days=1)) is None
+    following = PreparedFixture(checked_at + timedelta(days=1))
+    publication.publish(following, following.st_evidence)
+    assert publication.read_as_of(checked_at + timedelta(days=1, hours=2)) is None
+
+
 def test_same_day_calendar_reuse_preserves_reference_and_avoids_supplier(tmp_path):
     publication = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
     reference = PreparedFixture(_NOW)

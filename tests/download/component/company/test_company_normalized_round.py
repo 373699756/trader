@@ -24,7 +24,7 @@ from trader.download.infra.company_field_result_rows import ReadCompanyFieldResu
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, PrepareCompanyFieldResults
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EVIDENCE_SOURCES, RequireCompanyTime
-from trader.download.infra.company_financial_observations import ReadCompanyFinancialObservations
+from trader.download.infra.company_financial_observations import ReadCommittedCompanyFinancialReports, ReadCompanyFinancialObservations
 from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, SQLiteCompanyNormalizedIndex
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_publication import PublishSqliteFile, SqlitePublicationError
@@ -186,12 +186,24 @@ def test_duplicate_business_key_across_pages_is_rejected_even_outside_population
 
 def test_same_report_changed_values_or_null_without_revision_proof_never_overwrite(tmp_path):
     index, facts = _index(tmp_path / "candidate", _baseline(tmp_path))
-    _run(index, _Source({1: _page(_observation())}))
+    original = _observation()
+    _run(index, _Source({1: _page(original)}))
     later = _CUTOFF + timedelta(minutes=1)
+    changed = _observation(eps=None, cutoff=later)
+    index.accept(_QUERY, _page(changed), _CODES, later)
+    with SqliteSession(index.path) as normalized:
+        assert set(ReadCompanyFinancialObservations(normalized, _CODES)) == {original, changed}
     with pytest.raises(ValueError, match="revision_unproven"):
-        index.accept(_QUERY, _page(_observation(eps=None, cutoff=later)), _CODES, later)
+        index.normalize(_QUERY, _CODES, later)
     with SqliteSession(facts.path) as formal:
         assert ReadCompanyFactRows(formal, _CODES)[0].latest_financial.basic_eps == 2
+        assert ReadCompanyFinancialObservations(formal, _CODES) == (original,)
+        identity = ReadCompanyPublicationIdentity(formal)
+        assert identity is not None
+        assert ReadCommittedCompanyFinancialReports(formal, _CODES, later, identity.extraction_hash) == (original.financial,)
+        assert not ReadCommittedCompanyFinancialReports(
+            formal, _CODES, _CUTOFF - timedelta(seconds=1), identity.extraction_hash,
+        )
 
 
 def test_cancelled_late_source_response_retains_accepted_input_and_never_repeats_the_page(tmp_path):

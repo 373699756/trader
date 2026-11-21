@@ -42,7 +42,7 @@ class ProfileTrainingSource:
     def __post_init__(self) -> None:
         if (
             tuple((head.strategy, head.maturity_sessions) for head in self.heads)
-            != ((Strategy.TOMORROW, 1), (Strategy.D25, 5))
+            not in {((Strategy.TOMORROW, 1), (Strategy.D25, 5)), ((Strategy.D25, 5),)}
             or (self.profile_id, self.algorithm) not in {("v2", "lightgbm"), ("v3", "ridge"), ("v5", "tcn")}
             or type(self.minimum_industry_training_rows) is not int or self.minimum_industry_training_rows < 1
         ):

@@ -28,8 +28,9 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.infra.settings import LoadRuntimeSettings
 from trader.training.application.learned_rank_training import V1TrainingResult
-from trader.training.application.selected_training import SelectedTrainingDrainError, SelectedTrainingRun, SelectedTrainingTask, TrainSelectedProfiles, TrainingLocations
+from trader.training.application.selected_training import SelectedD25IndustryUnavailable, SelectedTrainingDrainError, SelectedTrainingRun, SelectedTrainingTask, TrainSelectedProfiles, TrainingLocations
 from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError, HistoryMaintenanceLock
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityTrainingResult
 from trader.infra.shutdown import ShutdownDeadline
 from trader.training.infra import selected_training
 from trader.training.infra.cpu_admission import TrainingCpuBudget
@@ -200,7 +201,7 @@ def test_current_industry_applies_to_all_signal_dates_regardless_of_old_interval
     with ExitStack() as resources:
         factory = selected_training._TrainingTaskFactory(
             request, source, resources, TrainingExecutionMeasurements(("v1",), lambda: 0),
-            sqlite_policy=SqlitePolicyFixture(),
+            sqlite_policy=SqlitePolicyFixture(), d25_only=False,
         )
         task = factory.prepare("v1", request.progresses[0])
     assert task.profile == "v1" and task.readable_dates
@@ -234,6 +235,31 @@ def test_selected_profiles_freeze_one_clock_and_current_industry_load_for_the_ru
     assert len(adopted) == 4 and all(snapshot is adopted[0] for snapshot in adopted)
     assert reported is adopted[0]
     assert tuple(member.code for member in adopted[0].members) == ("000001",)
+
+
+def test_shared_tomorrow_can_read_the_published_prices_before_d25_checks_industry(tmp_path):
+    request = _request(tmp_path, industry=False)
+    stages = []
+
+    def fit_tomorrow(history, model_root, **_resources):
+        stages.append("tomorrow")
+        rows = tuple(history.iter_training_rows(history.open_dates[-1:]))
+        assert len(rows) == 1 and rows[0].code == "000001" and rows[0].industry is None
+        assert model_root == request.paths.models
+        return TomorrowProbabilityTrainingResult(history.snapshot_hash, "b" * 64, "logistic")
+
+    def load(_now):
+        stages.append("industry")
+        raise RuntimeError("industry_snapshot_unavailable")
+
+    adapter = SelectedTrainingAdapter(
+        request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=load,
+        clock=lambda: _CURRENT_INDUSTRY.observed_at, train_shared_tomorrow=fit_tomorrow,
+    )
+    with pytest.raises(SelectedD25IndustryUnavailable) as blocked, adapter.open():
+        pytest.fail("D25 may not open without its current industry input")
+    assert stages == ["tomorrow", "industry"]
+    assert blocked.value.tomorrow_probability.ready
 
 
 def test_reusable_v1_model_skips_industry_preflight_and_price_scan(tmp_path, monkeypatch):

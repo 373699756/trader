@@ -19,7 +19,7 @@ from trader.infra.signal_cancellation import ManualCancellation, ManualCancellat
 from trader.infra.workers import ManagedWorkerExecutor, WorkerFutureExecutor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingFanoutSettings, TrainingMemoryAdmission, TrainingSampleSettings
-from trader.training.application.selected_training import SelectedProfileResult, SelectedTrainingOutcome, SelectedTrainingPort, SelectedTrainingRun, TrainSelectedProfiles, TrainingLocations
+from trader.training.application.selected_training import SelectedD25IndustryUnavailable, SelectedProfileResult, SelectedTrainingOutcome, SelectedTrainingPort, SelectedTrainingRun, TrainSelectedProfiles, TrainingLocations
 from trader.training.entrypoints.profile_training import (
     ProjectLearnedRankTrainingResult,
     ProjectProfileTrainingResult,
@@ -39,11 +39,12 @@ from trader.training.entrypoints.report_output import ProjectTrainingError, Trai
 from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.training_diagnostics import BuildTrainingOperationIssue
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityTrainingResult
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
 from trader.training.infra.history.history_training_expectation import HistoryTrainingExpectation
-from trader.training.infra.model_bundles.contracts import TrainedProfileContract
+from trader.training.infra.model_bundles.contracts import D25ProfileContract, TrainedProfileContract
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -197,9 +198,19 @@ def _run_selected_training(
             run = TrainSelectedProfiles(
                 prepare_training(selection), WorkerFutureExecutor(executor),
             )
+            shared = run.tomorrow_probability
+            shared_failed = shared is not None and not shared.ready
+            if shared is not None:
+                command_output.report_notice(
+                    "Tomorrow ≥5%模型",
+                    shared.failure or shared.algorithm or "模型未就绪",
+                    state="失败" if shared_failed else "完成",
+                )
             returned_training_code = (
                 130 if cancelled.is_set() or any(outcome.cancelled for outcome in run.outcomes)
-                else int(any(outcome.result is None or outcome.result.status != "engineering_ready" for outcome in run.outcomes))
+                else int(shared_failed or any(
+                    outcome.result is None or outcome.result.status != "engineering_ready" for outcome in run.outcomes
+                ))
             )
         progress_closed = True
         codes: list[int] = []
@@ -213,6 +224,8 @@ def _run_selected_training(
                         for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
                         if item.profile_id == outcome.profile
                     )
+                    if shared is not None:
+                        contract = D25ProfileContract(contract)
                     try:
                         maintenance = EvaluateAllHistoryTrainingDue(
                             paths.history,
@@ -239,7 +252,7 @@ def _run_selected_training(
                 if outcome.cancelled
                 else int(result is None or result.status != "engineering_ready" or "maintenance_failure" in payload)
             )
-        code = 130 if cancelled.is_set() or 130 in codes else int(any(codes))
+        code = 130 if cancelled.is_set() or 130 in codes else int(shared_failed or any(codes))
         summary = {
             "industry": ProjectTrainingIndustryCoverage(run.industry_snapshot) if run.industry_snapshot is not None else None,
             "profiles": profiles,
@@ -284,6 +297,8 @@ def _run_selected_training(
             ],
             "not_started": [],
         }
+        if shared is not None:
+            summary["tomorrow_probability"] = _project_shared_tomorrow(shared)
         complete_outcome_summary = True
     except (KeyboardInterrupt, InterruptedError, CancelledError) as exc:
         cancelled.set()
@@ -304,6 +319,9 @@ def _run_selected_training(
             "diagnostic": ProjectTrainingError(diagnostic),
             "timing": ProjectTrainingExecutionTiming(measurements.snapshot()) if measurements is not None else None,
         }
+        if isinstance(exc, SelectedD25IndustryUnavailable):
+            summary["tomorrow_probability"] = _project_shared_tomorrow(exc.tomorrow_probability)
+            summary["not_started"] = profiles
     finally:
         deadline = cancelled.shutdown_deadline()
         try:
@@ -373,6 +391,36 @@ def _run_selected_training(
     report_output.emit(summary)
     command_output.report_notice("结果汇总", f"档位 {','.join(profiles)} | 退出码 {code}", state="取消" if code == 130 else "失败" if code else "完成")
     return code
+
+
+def _project_shared_tomorrow(result: TomorrowProbabilityTrainingResult) -> dict[str, object]:
+    selected = result.selection
+    return {
+        "ready": result.ready,
+        "history_snapshot_hash": result.history_snapshot_hash,
+        "model_identity": result.model_identity,
+        "algorithm": result.algorithm,
+        "failure": result.failure,
+        "historical_universe_proven": False,
+        "point_in_time_parity": False,
+        "selection_daily_close_proxy": None if selected is None else {
+            "rule_hits": selected.rule_hits,
+            "logistic_hits": selected.logistic_hits,
+            "lightgbm_hits": selected.lightgbm_hits,
+            "comparable_seats": selected.comparable_seats,
+            "rule_unsettled": selected.rule_unsettled,
+            "logistic_unsettled": selected.logistic_unsettled,
+            "lightgbm_unsettled": selected.lightgbm_unsettled,
+        },
+        "assessment_rows": result.assessment_rows,
+        "assessment_positive_rows": result.assessment_positive_rows,
+        "assessment_brier": result.assessment_brier,
+        "assessment_daily_close_proxy": {
+            "hits": result.assessment_hits, "seats": result.assessment_seats, "unsettled": result.assessment_unsettled,
+        },
+        "pending_labels": result.pending_labels,
+        "missing_features": result.missing_features,
+    }
 
 
 def _project_outcome(outcome: SelectedTrainingOutcome[SelectedProfileResult]) -> dict[str, object]:

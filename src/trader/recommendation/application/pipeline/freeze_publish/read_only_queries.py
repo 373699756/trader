@@ -27,6 +27,7 @@ from trader.recommendation.domain.evidence.document_reference import CompanyDocu
 from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET, TomorrowCloseGain
 from trader.recommendation.domain.publication.freeze_identity import (
     CommittedFreezeRecord,
     FreezeItem,
@@ -76,16 +77,20 @@ class _IndustryClassificationReader(Protocol):
 
 @dataclass(frozen=True)
 class OutcomeTierSummary:
-    tier: Literal["recommend", "watch"]
+    tier: Literal["recommend", "watch", "selected"]
     horizon: int
     sample_count: int
     complete_count: int
     positive_count: int
     average_net_excess_pct: float | None
+    prediction_target: str | None = None
+    hit_count: int | None = None
 
 
 class OutcomeSummaryReader(Protocol):
     def summaries(self, strategy: Strategy, *, limit: int = 31) -> tuple[OutcomeTierSummary, ...]: ...
+
+    def tomorrow_hits(self, record_version: str) -> tuple[tuple[str, TomorrowCloseGain], ...]: ...
 
 
 class CompanyDocumentLinkReader(Protocol):
@@ -154,6 +159,7 @@ class FreezeItemView:
     selection_date: date | None = None
     selection_price: float | None = None
     selection_to_now_pct: float | None = None
+    tomorrow_outcome: TomorrowCloseGain | None = None
 
 
 @dataclass(frozen=True)
@@ -342,6 +348,15 @@ class UnifiedFreezeQueries:
             return view
         try:
             view = replace(view, outcome_summaries=self._outcome_summaries.summaries(strategy))
+            if dict(view.input_versions).get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET:
+                hits = dict(self._outcome_summaries.tomorrow_hits(record.version))
+                view = replace(
+                    view,
+                    items=tuple(
+                        replace(item, tomorrow_outcome=hits.get(item.code, TomorrowCloseGain.PENDING))
+                        if item.selected else item for item in view.items
+                    ),
+                )
         except (OSError, RuntimeError, ValueError):
             view = replace(view, degraded_reasons=(*view.degraded_reasons, "outcome_summary_unavailable"))
         summary_identity = tuple(
@@ -352,11 +367,17 @@ class UnifiedFreezeQueries:
                 item.complete_count,
                 item.positive_count,
                 item.average_net_excess_pct,
+                item.prediction_target,
+                item.hit_count,
             )
             for item in view.outcome_summaries
         )
         digest = hashlib.sha256(
-            json.dumps((summary_identity, view.degraded_reasons), ensure_ascii=True, separators=(",", ":")).encode()
+            json.dumps(
+                (summary_identity, view.degraded_reasons, tuple(item.tomorrow_outcome for item in view.items)),
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode()
         ).hexdigest()[:16]
         return replace(view, etag=f"{view.etag}+outcomes:{digest}")
 

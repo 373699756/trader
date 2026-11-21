@@ -268,7 +268,7 @@ class SQLiteCompanyFactsIndex:
                     "company-publication-generation", _parent_identity(parent), self.extraction_hash.hex(),
                     tuple(sorted(facts, key=lambda fact: fact.code)), tuple(sorted(sources.items())),
                     receipt_identities, field_identities, published_links, field_rules_hash.hex() if field_rules_hash else None,
-                    tuple(sorted(financial_observations, key=lambda item: item.business_key)), at,
+                    tuple(sorted(financial_observations, key=lambda item: (*item.business_key, item.record_hash))), at,
                 )))
                 _write_identity(connection, self.extraction_hash, at, identity)
             committed_identity = ReadCompanyPublicationIdentity(connection)

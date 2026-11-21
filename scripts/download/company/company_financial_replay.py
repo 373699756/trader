@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 
@@ -17,7 +17,7 @@ from scripts.core.paths import PROJECT_ROOT
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_facts import CompanyFacts
-from trader.download.domain.company_evidence import CompanyFinancial, StructuredCompanyQuery
+from trader.download.domain.company_evidence import StructuredCompanyQuery
 from trader.download.domain.company_financial_report import (
     COMPANY_FINANCIAL_REPORT_DIGEST, ExtractCompanyFinancialReport,
     CompanyFinancialReportField, CompanyFinancialReportRequest, CompanyFinancialReportState,
@@ -25,7 +25,6 @@ from trader.download.domain.company_financial_report import (
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_fact_inputs import DecodeCompanyFinancial
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
@@ -40,7 +39,7 @@ from trader.download.infra.company_facts_protocol import RequireCompanyTime, Dec
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, CompanyNormalizationBaselineDigest, SQLiteCompanyNormalizedIndex
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
-from trader.download.infra.company_financial_observations import ReadCompanyFinancialObservations
+from trader.download.infra.company_financial_observations import ReadCommittedCompanyFinancialReports, ReadCompanyFinancialObservations
 from trader.download.infra.company_structured_source import DecodeCompanyFinancialSourcePage
 from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
@@ -108,15 +107,6 @@ def _expectations(path: Path) -> tuple[_ExpectedCell, ...]:
     if len({(cell.code, cell.period, cell.field) for cell in expected}) != len(expected) or len({cell.code for cell in expected}) > 50:
         raise ValueError("company_financial_replay_population_invalid")
     return tuple(expected)
-
-
-def _financials(path: Path, codes: tuple[str, ...], observed_at: datetime, policy: SqliteIoPolicy) -> tuple[CompanyFinancial, ...]:
-    slots = ",".join("?" for _ in codes)
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=policy) as connection:
-        return tuple(DecodeCompanyFinancial(row) for row in connection.run(
-            f"SELECT * FROM financials WHERE code IN ({slots}) AND published_at>=? AND published_at<=? ORDER BY code,report_date",
-            (*codes, (observed_at.date() - timedelta(days=365)).isoformat(), observed_at.isoformat()),
-        ))
 
 
 def AuditCompanyFinancialHoldout(
@@ -189,11 +179,16 @@ def AuditCompanyFinancialAdoption(
         with SqliteTransaction(raw), SqliteTransaction(formal):
             facts = ReadCompanyFactRows(formal, codes)
             identity = ReadCompanyPublicationIdentity(formal)
+            originals = {
+                (report.code, report.report_date): report
+                for report in ReadCommittedCompanyFinancialReports(
+                    formal, codes, identity.published_at, identity.extraction_hash,
+                )
+            } if identity is not None and identity.published_at <= observed_at else {}
             for cell in expected:
                 if cancel():
                     raise TimeoutError("company_financial_adoption_deadline_exceeded")
-                source_row = raw.run("SELECT * FROM financials WHERE code=? AND report_date=?", (cell.code, str(cell.period))).fetchone()
-                original = DecodeCompanyFinancial(source_row) if source_row is not None else None
+                original = originals.get((cell.code, cell.period))
                 current = next((fact.latest_financial for fact in facts if fact.code == cell.code), None)
                 proofs = ReadCompanyFinancialSourceProofs(raw, formal, original, current, observed_at) if original is not None else ()
                 proof = next((proof for proof in proofs if proof.field == cell.field), None)

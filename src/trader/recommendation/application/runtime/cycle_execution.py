@@ -39,6 +39,7 @@ from trader.recommendation.domain.publication.freeze_identity import (
     ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 
 
 @dataclass(frozen=True)
@@ -113,10 +114,25 @@ class RecommendationCycleExecutor:
 
         if (requests[0].strategy, requests[1].strategy) != (Strategy.TOMORROW, Strategy.D25):
             raise ValueError("paired cycle requires tomorrow and d25")
+        self._execute_profile_round(requests, round_sequence)
+
+    def execute_round_d25(self, request: CycleRequest, *, round_sequence: int) -> None:
+        if request.strategy is not Strategy.D25:
+            raise ValueError("D25 profile round requires its strategy")
+        self._execute_profile_round((request,), round_sequence)
+
+    def _execute_profile_round(
+        self, requests: tuple[CycleRequest, ...], round_sequence: int,
+    ) -> None:
         try:
-            with SessionGuard(requests[0].session), SessionGuard(requests[1].session):
+            with SessionGuard(requests[0].session), SessionGuard(requests[-1].session):
                 pass
-            freezes = self._build_pair(requests)
+            freezes: tuple[ScoredFreeze, ...] | None
+            if len(requests) == 2:
+                freezes = self._build_pair((requests[0], requests[1]))
+            else:
+                d25 = self._build_fresh_local(requests[0])
+                freezes = (d25,) if isinstance(d25, ScoredFreeze) else None
             if freezes is None or self._dependencies.rounds.cancelled(round_sequence):
                 return
             if (
@@ -133,9 +149,9 @@ class RecommendationCycleExecutor:
                 self._dependencies.index,
                 self._dependencies.freezes,
                 freezes,
-                expected_versions=(expected[0], expected[1]),
+                expected_versions=expected,
                 publication_io=self._dependencies.publication_io,
-                sessions=(requests[0].session, requests[1].session),
+                sessions=tuple(request.session for request in requests),
                 clock=self._dependencies.clock,
                 publish_before=(
                     min(request.review_deadline for request in requests)
@@ -233,6 +249,12 @@ class RecommendationCycleExecutor:
                 return True
             if isinstance(snapshot.current, ScoredFreeze) and snapshot.current.trade_date == request.trade_date:
                 if request.session is not None and not request.session.allows_version(snapshot.current.version):
+                    return False
+                versions = dict(snapshot.current.input_versions)
+                if (
+                    versions.get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET
+                    and not versions.get("tomorrow_close_evidence")
+                ):
                     return False
                 self._close_control.freeze_close_fallback(request, snapshot.current, recovery_path="current")
                 return True

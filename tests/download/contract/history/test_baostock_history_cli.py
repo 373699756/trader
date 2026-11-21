@@ -16,7 +16,6 @@ from trader.download.domain.history_maintenance import (
     HistoryMaintenanceStatus,
 )
 from trader.download.domain.history_sync import HistorySyncProgress
-from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.entrypoints.cli import BuildParser, Main
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
@@ -61,8 +60,7 @@ def test_retired_fill_options_are_rejected_before_configuration(option, monkeypa
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize("target", ("history", "market"))
-def test_normal_price_sync_keeps_automatic_recovery_without_explicit_fill(tmp_path, monkeypatch, target):
+def test_normal_price_sync_keeps_automatic_recovery_without_explicit_fill(tmp_path, monkeypatch):
     from trader.bootstrap import ExecuteSync
 
     settings = replace(LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json"), data_paths=DataPaths(tmp_path / "data"))
@@ -71,23 +69,20 @@ def test_normal_price_sync_keeps_automatic_recovery_without_explicit_fill(tmp_pa
 
     def download(*args, **kwargs):
         assert "repair_only" not in kwargs
-        calls.append(target)
-        if target == "market":
-            return QfqUpdateResult(date(2026, 11, 1), 1)
+        calls.append("history")
         return HistoryMaintenanceStatus("completed", None, tmp_path, "baostock", None, "a" * 64, date(2026, 11, 1), date(2026, 11, 1))
 
     monkeypatch.setattr("trader.bootstrap.LoadRuntimeSettings", lambda _: settings)
     monkeypatch.setattr("trader.bootstrap._prepare_reference", lambda *args, **kwargs: reference)
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", download)
-    monkeypatch.setattr("trader.bootstrap.ExecuteQfqDownload", download)
-    result = ExecuteSync(PROJECT_ROOT / "config/runtime.json", target)
-    assert result.exit_code == 0 and calls == [target]
+    result = ExecuteSync(PROJECT_ROOT / "config/runtime.json", "history")
+    assert result.exit_code == 0 and calls == ["history"]
     assert not (tmp_path / "data").exists()
 
 
 def test_sync_rejects_the_retired_old_standard_industry_import(tmp_path):
     with pytest.raises(SystemExit) as failure:
-        BuildParser().parse_args(["sync", "market", "--industry-evidence", str(tmp_path / "reviewed.json")])
+        BuildParser().parse_args(["sync", "history", "--industry-evidence", str(tmp_path / "reviewed.json")])
     assert failure.value.code == 2
     assert not (tmp_path / "reviewed.json").exists()
 
@@ -101,7 +96,7 @@ def test_train_missing_local_history_fails_without_download(tmp_path, monkeypatc
     def forbidden(*_args, **_kwargs):
         pytest.fail("missing local history must not trigger download or reference preparation")
 
-    for target in ("ExecuteSync", "ExecuteHistoryDownload", "ExecuteQfqDownload", "_prepare_reference"):
+    for target in ("ExecuteSync", "ExecuteHistoryDownload", "_prepare_reference"):
         monkeypatch.setattr(f"trader.bootstrap.{target}", forbidden)
     monkeypatch.setattr("requests.Session.request", forbidden)
     monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda *_args: None)
@@ -114,12 +109,13 @@ def test_train_missing_local_history_fails_without_download(tmp_path, monkeypatc
     assert timing["profiles"][0]["profile"] == "v2"
     assert timing["profiles"][0]["started_after_seconds"] is None
     assert "schema_version" not in result
-    assert result["status"] == "failed" and result["failure"] == "current_industry_not_published"
-    assert result["diagnostic"]["causes"][0]["error_type"] == "ValueError"
+    assert result["status"] == "failed" and result["failure"] == "history_manifest_unavailable"
+    assert result["diagnostic"]["causes"][0]["error_type"] == "RuntimeError"
     assert "./run.sh sync history" in captured.err
     assert "正在准备官方总体" not in captured.err
     assert not tuple((tmp_path / "data").rglob("*.sqlite3"))
     assert not tuple((tmp_path / "data").rglob("model.json"))
+    assert not tuple((tmp_path / "data").rglob("tomorrow.json"))
 
 
 def test_v1_training_dispatch_preserves_its_result(
@@ -218,8 +214,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         from trader.download.infra.history_supplier_router import HistorySupplierRouter
 
         assert isinstance(supplier, HistorySupplierRouter)
-        assert supplier._industry_cache is not None
-        assert supplier._industry_cache.path == _configuration.reference_root / "industry.sqlite3"
+        assert supplier._reference.industry_version == "fixture"
         progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
         return status
 
@@ -260,8 +255,8 @@ def test_download_runs_the_typed_zero_argument_synchronization(
     assert "\x1b" not in captured.err and "\x1b" not in captured.out
     progress_lines = re.sub(r" +", " ", captured.err).splitlines()
     assert progress_lines == [
-        "00:00:00 | 交易日历 | 等待 | 调用 00:00:05",
-        "00:00:00 | 同步完成",
+        "00:00:00 | history·交易日历 00:00:00 | 等待 | 调用 00:00:05",
+        "00:00:00 | history·结果汇总 00:00:00 | 完成 | 同步完成",
     ]
     assert "completed_units" not in captured.err
     assert "total_units" not in captured.err
@@ -321,11 +316,10 @@ def test_download_risk_is_a_zero_argument_command() -> None:
     assert not hasattr(args, "runtime_dir")
 
 
-def test_download_qfq_is_a_zero_argument_command() -> None:
-    args = BuildParser().parse_args(["sync", "market"])
-
-    assert (args.command, args.target) == ("sync", "market")
-    assert not hasattr(args, "runtime_dir")
+def test_retired_market_sync_is_rejected_before_configuration() -> None:
+    with pytest.raises(SystemExit) as failure:
+        BuildParser().parse_args(["sync", "market"])
+    assert failure.value.code == 2
 
 
 def test_train_is_a_zero_argument_command() -> None:

@@ -63,14 +63,6 @@ _BASE_SCHEMA = SqliteSchema(
         """,
         "CREATE INDEX IF NOT EXISTS partition_source_rows ON partition_rows(source_key)",
         """
-        CREATE TABLE IF NOT EXISTS financials (
-          code TEXT NOT NULL, report_date TEXT NOT NULL, published_at TEXT NOT NULL,
-          eps REAL, bps REAL, revenue_growth_pct REAL, profit_growth_pct REAL,
-          core_profit_growth_pct REAL, roe_pct REAL, parent_profit REAL, core_profit REAL,
-          PRIMARY KEY(code,report_date)
-        ) WITHOUT ROWID
-        """,
-        """
         CREATE TABLE IF NOT EXISTS ratios (
           component TEXT NOT NULL CHECK(component IN ('pledge','unlock')), code TEXT NOT NULL,
           as_of_date TEXT NOT NULL, ratio_pct REAL NOT NULL CHECK(ratio_pct>=0 AND ratio_pct<=100),

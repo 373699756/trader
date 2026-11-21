@@ -247,6 +247,21 @@ class SQLiteFreezeRecords:
                 self._cache.put(identity, _FreezeDates(dates), data_version="freeze_dates", source_time=self._wall_clock())
             return dates if month_start is not None else dates[:limit]
 
+    def list_settlement_dates(
+        self, strategy: Strategy, *, after: date | None, limit: int
+    ) -> tuple[date, ...]:
+        if not 1 <= limit <= 366:
+            raise ValueError("settlement date limit must be between 1 and 366")
+        if not self._database.exists():
+            return ()
+        with self._lock, self._history_connection() as connection:
+            rows = connection.run(
+                "SELECT trade_date FROM freeze_record WHERE strategy=? AND status='committed' "
+                "AND trade_date>? ORDER BY trade_date LIMIT ?",
+                (strategy.value, EncodeDate(after) if after is not None else 0, limit),
+            ).fetchall()
+        return tuple(DecodeDate(row["trade_date"]) for row in rows)
+
     def _cache_identity(self, dataset: str, strategy: Strategy, trade_date: str) -> CacheIdentity:
         return CacheIdentity(
             dataset,

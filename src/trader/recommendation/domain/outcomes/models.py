@@ -5,11 +5,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET, TomorrowCloseGain
 
 
 def OutcomeHorizons(strategy: Strategy) -> tuple[int, ...]:
@@ -95,8 +97,13 @@ class OutcomeTarget:
     atr20_pct: float | None
     pending_horizons: tuple[int, ...] = ()
     entry_at: datetime | None = None
+    prediction_target: str | None = None
 
     def __post_init__(self) -> None:
+        if self.prediction_target is not None and (
+            self.prediction_target != TOMORROW_CLOSE_GAIN_TARGET or self.strategy is not Strategy.TOMORROW
+        ):
+            raise ValueError("outcome target contract is invalid")
         if self.entry_at is not None:
             if self.entry_at.tzinfo is None or self.entry_at.utcoffset() is None:
                 raise ValueError("outcome entry time must be timezone-aware")
@@ -109,6 +116,41 @@ class OutcomeTarget:
         if any(horizon not in OutcomeHorizons(self.strategy) for horizon in pending):
             raise ValueError("pending outcome horizons are incompatible with strategy")
         object.__setattr__(self, "pending_horizons", pending)
+
+
+@dataclass(frozen=True, slots=True)
+class TomorrowCloseEvidence:
+    code: str
+    signal_date: date
+    next_date: date
+    publication_hash: str
+    signal_raw_close: Decimal | None
+    signal_close: Decimal | None
+    next_close: Decimal | None
+    confirmed_suspended: bool
+    next_raw_reference: Decimal | None = None
+    next_raw_close: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if not self.publication_hash or self.next_date <= self.signal_date:
+            raise ValueError("Tomorrow close evidence identity is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class TomorrowRecommendationOutcome:
+    target: OutcomeTarget
+    evidence: TomorrowCloseEvidence
+    label: TomorrowCloseGain
+    settled_at: datetime
+
+    def __post_init__(self) -> None:
+        if (
+            self.target.prediction_target != TOMORROW_CLOSE_GAIN_TARGET
+            or self.target.stock_code != self.evidence.code
+            or self.target.recommend_date != self.evidence.signal_date.isoformat()
+            or self.label is TomorrowCloseGain.PENDING
+        ):
+            raise ValueError("Tomorrow outcome is not terminal or does not match its target")
 
 
 @dataclass(frozen=True)

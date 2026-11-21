@@ -22,6 +22,7 @@ from trader.recommendation.application.pipeline.final_selection.freeze_projectio
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.ports.loaded_profile import (
+    ModelDiagnostics,
     LoadedScoringProfile,
     ModelComputationStatus,
     ModelScoreBatch,
@@ -30,6 +31,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.tomorrow_probability import TomorrowProbabilityPredictor
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
@@ -44,6 +46,13 @@ class PerformanceProfileWorkload:
     features: tuple[FeatureSnapshot, ...]
     config_version: str
     cost_policy: ExecutionCostPolicy
+    tomorrow_predictor: TomorrowProbabilityPredictor | None = None
+
+    @property
+    def strategies(self) -> tuple[Strategy, ...]:
+        if self.tomorrow_predictor is not None or Strategy.TOMORROW in self.profile.heads:
+            return Strategy.TOMORROW, Strategy.D25
+        return (Strategy.D25,)
 
     def scoring(self) -> ModelScoringPort:
         return BuildProfileScoring(
@@ -53,6 +62,8 @@ class PerformanceProfileWorkload:
             model_failure="",
             cost_policy=self.cost_policy,
             maintenance=None,
+            tomorrow_predictor=self.tomorrow_predictor,
+            shared_tomorrow=self.tomorrow_predictor is not None,
         )
 
 
@@ -220,6 +231,8 @@ def _prepare_heads(workloads: tuple[PerformanceProfileWorkload, ...], *, changed
         features = _changed_features(workload.features) if changed else workload.features
         scoring = workload.scoring()
         for strategy, input_type in ((Strategy.TOMORROW, TomorrowNativeInput), (Strategy.D25, D25NativeInput)):
+            if strategy not in workload.strategies:
+                continue
             if not scoring.uses_model(strategy) or not all(
                 scoring.is_input_eligible(strategy, item) for item in features
             ):
@@ -307,11 +320,19 @@ def _observation(execution: _HeadExecution) -> PerformanceHeadMeasurement:
     head, before, after = execution.head, execution.before, execution.after
     if execution.batch is not None:
         predicted = len(execution.batch.predictions)
-        positive = sum(value.predicted_net_excess_pct > 0 for value in execution.batch.diagnostics.values())
+        positive = sum(
+            value.predicted_net_excess_pct > 0
+            for value in execution.batch.diagnostics.values()
+            if isinstance(value, ModelDiagnostics)
+        )
         result_hash = ContentHash(execution.batch.predictions)
     elif execution.projection is not None:
         predicted = len(execution.projection.model_diagnostics)
-        positive = sum(value.predicted_net_excess_pct > 0 for _code, value in execution.projection.model_diagnostics)
+        positive = sum(
+            value.predicted_net_excess_pct > 0
+            for _code, value in execution.projection.model_diagnostics
+            if isinstance(value, ModelDiagnostics)
+        )
         result_hash = ContentHash(
             tuple((item.code, item.final_score, item.action.value) for item in execution.projection.local.items)
         )

@@ -16,11 +16,13 @@ import pytest
 from tests.helpers.training.model_publication import CrashProfilePublication
 from tests.helpers.training.profiles.v5.v5_training import _history
 from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
 from trader.training.application.selected_training import SelectedTrainingTask, TrainingLocations
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityTrainingResult
 from trader.training.application.selected_training import TrainSelectedProfiles
 from tests.helpers.training.execution.selected_profiles import (
     ROOT,
@@ -33,6 +35,37 @@ from tests.helpers.training.execution.selected_profiles import (
 
 
 _CURRENT_INDUSTRY = CurrentIndustrySnapshotFixture(("000001", *(f"60000{number}" for number in range(6))))
+
+
+@pytest.mark.slow_training
+def test_selected_train_separates_shared_tomorrow_from_four_d25_heads(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    request = BuildFourProfileRequest(tmp_path, "baseline", monkeypatch, [], [])
+    from trader.training.infra import selected_training
+
+    shared_input = object()
+    monkeypatch.setattr(selected_training, "OpenTomorrowHistoryInput", lambda *_args, **_kwargs: shared_input)
+    received = []
+
+    def train_shared(history, models, **_resources):
+        assert history is shared_input and models == request.paths.models
+        received.append(history)
+        return TomorrowProbabilityTrainingResult("a" * 64, "b" * 64, "logistic")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        run = TrainSelectedProfiles(SelectedTrainingAdapter(
+            request, sqlite_policy=SqlitePolicyFixture(),
+            load_industry_snapshot=lambda _: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at,
+            train_shared_tomorrow=train_shared,
+        ), executor)
+    assert received == [shared_input]
+    assert run.tomorrow_probability is not None and run.tomorrow_probability.ready
+    assert tuple(outcome.profile for outcome in run.outcomes) == request.profiles
+    for outcome in run.outcomes:
+        assert outcome.result is not None and outcome.result.status == "engineering_ready", outcome
+        assert tuple(head.strategy for head in outcome.result.heads) == (Strategy.D25,)
+        assert (request.paths.models / outcome.profile / "d25" / "model.json").is_file()
+        assert not (request.paths.models / outcome.profile / "tomorrow").exists()
 
 
 @pytest.mark.parametrize("terminal", ("worker_failure", "source_failure", "cancelled", "success"))

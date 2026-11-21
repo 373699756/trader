@@ -9,10 +9,11 @@ import re
 
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_events import CompanyDataState
-from trader.download.domain.company_evidence import CompanyFinancial
+from trader.download.domain.company_source_records import CompanyFinancialSourceValues
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import EVIDENCE_SOURCES
+from trader.download.infra.company_financial_observations import ReadCommittedCompanyFinancialReports
 from trader.infra.sqlite_connection import SqliteConnection
 
 _QUARTER_REPORT_TITLE = re.compile(r"(20[0-9]{2})年(?:第三季度|三季度|三季)报告(?:全文|正文)?")
@@ -46,20 +47,11 @@ def ReadUnusedCompanyFinancialInputs(
             and fact.published_at <= observed_at
             and fact.financial.report_date <= observed_at.date()
             and fact.financial.published_at <= observed_at
-            and all(value is not None for value in _financial_values(fact.financial))
+            and all(value is not None for _, value in CompanyFinancialSourceValues(fact.financial))
         }
-        for code, report in tuple(current.items()):
-            raw = collected.run(
-                "SELECT code,report_date,published_at,eps,bps,revenue_growth_pct,profit_growth_pct,"
-                "core_profit_growth_pct,roe_pct,parent_profit,core_profit FROM financials "
-                "WHERE code=? AND report_date<=? AND published_at<=? "
-                "ORDER BY report_date DESC,published_at DESC LIMIT 1",
-                (code, observed_at.date().isoformat(), observed_at.isoformat()),
-            ).fetchone()
-            if raw is None or (
-                raw[0], raw[1], datetime.fromisoformat(raw[2]), *tuple(raw)[3:]
-            ) != (report.code, report.report_date.isoformat(), report.published_at, *_financial_values(report)):
-                del current[code]
+        reports = ReadCommittedCompanyFinancialReports(formal, tuple(current), parent.published_at, parent.extraction_hash)
+        latest = {report.code: report for report in reports}
+        current = {code: report for code, report in current.items() if latest.get(code) == report}
         if not current:
             continue
         slots = ",".join("?" for _ in current)
@@ -103,13 +95,6 @@ def ReadUnusedCompanyFinancialInputs(
         return frozenset()
     _check_cancelled(cancel_requested)
     return frozenset(unused)
-
-
-def _financial_values(report: CompanyFinancial) -> tuple[float | None, ...]:
-    return (
-        report.basic_eps, report.book_value_per_share, report.revenue_growth_pct, report.net_profit_growth_pct,
-        report.core_profit_growth_pct, report.roe_pct, report.parent_net_profit, report.core_net_profit,
-    )
 
 
 def _has_formal_use(formal: SqliteConnection, source: str, source_key: str, code: str) -> bool:

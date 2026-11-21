@@ -179,7 +179,7 @@ def Run(
         report = _unavailable_report("model_unavailable")
         report.update(
             profile_results=profile_results,
-            workload={"profiles": list(selected), "profile_count": len(selected), "model_heads": 2 * len(selected)},
+            workload={"profiles": list(selected), "profile_count": len(selected), "model_heads": 1 + len(selected)},
         )
         return report
     first = workloads[0]
@@ -271,7 +271,7 @@ def Run(
         "workload": {
             "profiles": list(selected),
             "profile_count": len(selected),
-            "model_heads": 2 * len(selected),
+            "model_heads": sum(len(item.strategies) for item in workloads),
             "execution_mode": "concurrent_heads_same_process",
             "evidence_scope": "generated_fixture_real_loaded_models_no_release_authority",
             "market_rows": len(market_inputs),
@@ -345,7 +345,7 @@ def _steady_report(
         "status": "failed" if failures else "passed",
         "identity": {**identity, "measurement_scope": "model_steady_only"},
         "workload": {"profiles": [item.profile.profile_id for item in prepared.workloads],
-                     "model_heads": 2 * len(prepared.workloads), "tick_count": steady.ticks,
+                     "model_heads": sum(len(item.strategies) for item in prepared.workloads), "tick_count": steady.ticks,
                      "evidence_scope": "generated_fixture_real_loaded_models_no_release_authority",
                      "candidate_rows_per_profile": {item.profile.profile_id: len(item.features) for item in prepared.workloads}},
         "memory": {"rss_before_bytes": steady.rss_before_bytes, "rss_after_bytes": steady.rss_after_bytes,
@@ -477,10 +477,13 @@ def _prepare_profiles(
     quotes: tuple[MarketQuote, ...] = ()
     fixture_seconds = 0.0
     cost_policy = LoadExecutionCostPolicy(config_path.parent)
+    from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
+
+    tomorrow_predictor = LoadTomorrowProbabilityModel(settings.data_paths.models)
     for profile_id in selected:
         strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile_id)
         try:
-            loaded = LoadScoringProfile(profile_id, training_root=settings.data_paths.models)
+            loaded = LoadScoringProfile(profile_id, training_root=settings.data_paths.models, d25_only=True)
         except ScoringModelsUnavailableError as exc:
             profiles.append(_ProfileLoad(profile_id, exc.reason))
             continue
@@ -495,7 +498,8 @@ def _prepare_profiles(
         fixture_seconds += time.perf_counter() - started
         workloads.append(
             PerformanceProfileWorkload(
-                loaded, BuildRecommendationPolicy(strategy), features, settings.config_version, cost_policy
+                loaded, BuildRecommendationPolicy(strategy), features, settings.config_version, cost_policy,
+                tomorrow_predictor if not workloads else None,
             )
         )
         profiles.append(

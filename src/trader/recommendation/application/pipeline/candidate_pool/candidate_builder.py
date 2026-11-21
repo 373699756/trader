@@ -17,6 +17,7 @@ from trader.recommendation.application.ports.loaded_profile import ModelScoringP
 from trader.recommendation.domain.candidate.filters import QuoteFreshnessBasis
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import TOMORROW_PROBABILITY_SCORE_SCALE
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidatePlan
 
 SCORED_STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
@@ -109,6 +110,7 @@ def BuildCandidatePlans(
                     strategy,
                     candidates if candidates is not None else features,
                 ),
+                require_profile_history_window=RequiresProfileHistoryWindow(context.model_scoring, strategy),
             ),
             ScoredSelectionIdentity(
                 trade_date=context.evaluated_at.date(),
@@ -128,6 +130,14 @@ def MaximumCandidateQuoteAgeSeconds(strategy: Strategy) -> float:
 
 def RequiredCandidateHistorySessions(model_scoring: ModelScoringPort | None, strategy: Strategy) -> int:
     return model_scoring.history_required_sessions(strategy) if model_scoring is not None else 20
+
+
+def RequiresProfileHistoryWindow(model_scoring: ModelScoringPort | None, strategy: Strategy) -> bool:
+    if strategy is not Strategy.TOMORROW or model_scoring is None:
+        return True
+    status = model_scoring.status()
+    head = status.heads.get(strategy) if status is not None else None
+    return head is None or head.score_scale != TOMORROW_PROBABILITY_SCORE_SCALE
 
 
 def FindModelEligibleCodes(

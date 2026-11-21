@@ -217,6 +217,7 @@ class ScoredSelectionRequest:
     population_max_age_seconds: float | None = None
     minimum_history_sessions: int = 20
     model_input_eligible_codes: frozenset[str] | None = None
+    require_profile_history_window: bool = True
     population_quote_freshness_basis: QuoteFreshnessBasis = QuoteFreshnessBasis.EVALUATION
 
     def __post_init__(self) -> None:
@@ -790,8 +791,9 @@ def ApplySelectionRisks(
 
 
 def _score_input_skip_reason(feature: FeatureSnapshot, request: ScoredSelectionRequest) -> str | None:
-    if feature.model_history_quality is not None and feature.model_history_quality.failure:
-        return feature.model_history_quality.failure
+    history_failure = feature.model_history_quality.failure if feature.model_history_quality is not None else None
+    if history_failure and (request.require_profile_history_window or history_failure != "history_window_insufficient"):
+        return history_failure
     if feature.history_days < request.minimum_history_sessions:
         return "strategy_history_insufficient"
     if not _model_input_is_eligible(feature.quote.code, request):

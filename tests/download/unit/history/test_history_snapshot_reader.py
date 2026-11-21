@@ -183,6 +183,10 @@ def test_history_reader_routes_single_day_code_window_and_cross_month_training_r
     root = tmp_path / "history"
     dates = tuple(date(2026, 8, 1) + timedelta(days=offset) for offset in range(62))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
+    first = rows[0]
+    assert first.cell.qfq is not None
+    first = replace(first, cell=replace(first.cell, qfq=replace(first.cell.qfq, reconstructed_from=dates[1])))
+    rows = (first, *rows[1:])
     snapshot = _build_snapshot(root, rows)
     history = HistorySnapshotReader(root, sqlite_policy=SqlitePolicyFixture())
 
@@ -197,6 +201,14 @@ def test_history_reader_routes_single_day_code_window_and_cross_month_training_r
         snapshot, dates, {"600001", "600002"}, industry_snapshot=current_industry,
     ))
     assert len(training_rows) == 124
+    first_raw = first.cell.unadjusted
+    assert first_raw is not None
+    point = training_rows[0].point
+    assert point is not None
+    assert (point.raw_open, point.raw_high, point.raw_low, point.raw_close_price, point.raw_preclose, point.raw_amount) == (
+        first_raw.open_price, first_raw.high_price, first_raw.low_price, first_raw.close_price, first_raw.preclose, first_raw.amount,
+    )
+    assert point.qfq_reconstruction_anchor == dates[1]
     assert {row.industry for row in training_rows} == {"capco:J66货币金融服务"}
     assert {row.industry for row in history.read_day(dates[31], snapshot)} == {"bank"}
     assert tuple((row.trade_date, row.code) for row in training_rows) == tuple(
@@ -207,6 +219,11 @@ def test_history_reader_routes_single_day_code_window_and_cross_month_training_r
     ))
     assert len(current_rows) == 62
     assert {row.code for row in current_rows} == {"600001"}
+    daily_rows = tuple(history.iter_training_rows(
+        snapshot, dates, {"600001"}, industry_snapshot=None,
+    ))
+    assert all(row.industry is None for row in daily_rows)
+    assert tuple(row.point for row in daily_rows) == tuple(row.point for row in current_rows)
 
     with pytest.raises(ValueError, match="cutoff"):
         history.read_day(dates[-1] + timedelta(days=1), snapshot)

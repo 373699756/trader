@@ -17,7 +17,7 @@ class DatabaseOptions:
     database_probe_directory: Path | None = None
     database_rounds: int = 5
     database_training: bool = False
-    database_acceptance_focus: Literal['history', 'market-company'] = 'history'
+    database_acceptance_focus: Literal['history', 'company'] = 'history'
     download_sizes: tuple[int, ...] = (8,)
     history_days: int = 61
     baseline_checkout: Path | None = None

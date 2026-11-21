@@ -38,13 +38,12 @@ Windows CMD执行run.bat。脚本按需创建.venv并安装项目，默认同进
 | 任务 | 命令 |
 | --- | --- |
 | 查看帮助 | ./run.sh help |
-| 依次更新参考、完整历史、行情窗口和公司资料 | ./run.sh sync |
+| 依次更新参考、完整历史和公司资料 | ./run.sh sync |
 | 只维护完整历史，不自动训练 | ./run.sh sync history |
-| 只更新在线日线 | ./run.sh sync market |
 | 只更新公司资料 | ./run.sh sync company |
 | 补齐公司资料缺口 | ./run.sh sync company fill |
-| 使用本地已发布历史训练全部档位 | ./run.sh train |
-| 只训练指定档位 | ./run.sh train v1,v5 |
+| 训练共享 Tomorrow 和全部 D25 档位 | ./run.sh train |
+| 训练共享 Tomorrow 和指定 D25 档位 | ./run.sh train v1,v5 |
 | 只启动V3 | ./run.sh v3 |
 | 同进程启动任意组合 | ./run.sh v1,v2,v3 |
 
@@ -121,8 +120,8 @@ Tushare不承担生产qfq或财务补缺；无密钥时按其职责降级，不�
 | 现象 | 先检查什么 |
 | --- | --- |
 | 没有推荐 | 输入准备、主要阻断原因；区分数据不足和合法业务空集 |
-| 模型未就绪 | 所选档位双头是否完成训练、是否重启；文件存在不等于身份合格 |
-| 日线待更新 | sync market结果、窗口截止和逐股缺失；不依靠反复重启补下载 |
+| 模型未就绪 | 检查共享 Tomorrow、所选 D25 工件及服务重启后的加载状态 |
+| 日线待更新 | sync history结果、发布截止和逐股缺失；不依靠反复重启补下载 |
 | 公司风险覆盖不足 | sync company页/正文待补及来源失败，不能当作无风险 |
 | local诊断model_unavailable | 缺模型，未完成性能测试；不是性能通过 |
 | 旧进程持锁 | 在原终端正常关闭，不删除server.lock |

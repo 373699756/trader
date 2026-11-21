@@ -256,4 +256,5 @@ def _side(side: PublishedHistorySide | None) -> BaoStockDailySide:
         side.pct_change,
         side.turnover,
         side.trading_status,
+        side.reconstructed_from,
     )

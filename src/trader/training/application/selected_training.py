@@ -23,6 +23,7 @@ from trader.training.application.resources import TrainingExecutionObserver, Tra
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
 from trader.training.application.training_diagnostics import BuildTrainingOperationIssue, TrainingOperationIssue
 from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityTrainingResult
 
 ResultT = TypeVar("ResultT")
 SelectedProfileResult = TrainingRunResult | V1TrainingResult
@@ -60,10 +61,19 @@ class SelectedTrainingRun(Generic[ResultT]):
     history_rows_read: int
     timing: TrainingExecutionTiming | None = field(default=None, kw_only=True)
     industry_snapshot: CurrentIndustrySnapshot | None = field(default=None, kw_only=True)
+    tomorrow_probability: TomorrowProbabilityTrainingResult | None = field(default=None, kw_only=True)
 
 
 class SelectedTrainingPreparationError(RuntimeError):
     """One profile's input boundary failed without stopping other selected profiles."""
+
+
+class SelectedD25IndustryUnavailable(RuntimeError):
+    """D25 could not start after the independent Tomorrow operation returned."""
+
+    def __init__(self, tomorrow_probability: TomorrowProbabilityTrainingResult) -> None:
+        super().__init__("d25_industry_input_unavailable")
+        self.tomorrow_probability = tomorrow_probability
 
 
 class SelectedTrainingDrainError(RuntimeError):
@@ -131,6 +141,8 @@ def TrainSelectedProfiles(operations: SelectedTrainingPort[ResultT], executor: E
             except SelectedTrainingPreparationError as exc:
                 diagnostic = CaptureTrainingError(exc)
                 reason = diagnostic.causes[0].code
+                if reason == "training_operation_failed":
+                    reason = diagnostic.causes[1 if len(diagnostic.causes) > 1 else 0].error_type
 
                 def failed(
                     _rows: Iterator[HistoryTrainingRow], reason: str = reason,
@@ -252,9 +264,10 @@ class _TrainingFanout(Generic[ResultT]):
             outcome = SelectedTrainingOutcome(task.profile, None, "cancelled", True)
         except (OSError, RuntimeError, ValueError, ImportError) as exc:
             diagnostic = exc.diagnostic if isinstance(exc, _PreparationFailure) else CaptureTrainingError(exc)
-            reason = diagnostic.causes[0].code
-            outcome = SelectedTrainingOutcome(task.profile, None, diagnostic.causes[0].error_type if reason == "training_operation_failed" else reason,
-                                              diagnostic=diagnostic)
+            reason = str(exc) if isinstance(exc, _PreparationFailure) else diagnostic.causes[0].code
+            if reason == "training_operation_failed":
+                reason = diagnostic.causes[0].error_type
+            outcome = SelectedTrainingOutcome(task.profile, None, reason, diagnostic=diagnostic)
         if self.on_outcome is not None:
             try:
                 self.on_outcome(outcome)

@@ -21,9 +21,11 @@ from trader.recommendation.domain.publication.historical_pipeline import (
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.publication.score_ledger import ScoreLedger, ScoreLedgerPayload
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 from trader.recommendation.domain.scoring.profile_identity import (
     LEARNED_RANK_SCORE_SCALE,
     MODEL_RANK_SCORE_SCALES,
+    TOMORROW_PROBABILITY_SCORE_SCALE,
 )
 
 FreezeStage = Literal["local", "hybrid"]
@@ -297,6 +299,32 @@ class ScoredFreeze:
                 )
             ):
                 raise ValueError("model rank freezes require a complete execution and model identity")
+        elif score_scale == TOMORROW_PROBABILITY_SCORE_SCALE:
+            model_versions = dict(versions)
+            if (
+                self.strategy is not Strategy.TOMORROW
+                or model_versions.get("prediction_target") != TOMORROW_CLOSE_GAIN_TARGET
+                or model_versions.get("score_model_id") != TOMORROW_CLOSE_GAIN_TARGET
+                or not model_versions.get("score_model")
+                or not model_versions.get("score_contract_hash")
+            ):
+                raise ValueError("Tomorrow probability freezes require a complete model identity")
+            if self.is_formal:
+                close_evidence = model_versions.get("tomorrow_close_evidence")
+                if (
+                    close_evidence is None
+                    or not model_versions.get("native")
+                    or close_evidence != f"official-close:{model_versions.get('native')}"
+                    or any(
+                        item.quote is not None
+                        and (
+                            item.quote.source_time.date() != self.trade_date
+                            or item.quote.source_time.hour < 15
+                        )
+                        for item in items
+                    )
+                ):
+                    raise ValueError("formal Tomorrow probability freeze requires closing evidence")
         elif self.stage == "local" and any(item.final_score != item.local_score for item in items):
             raise ValueError("local freeze final scores must equal local scores")
         if any(item.quote is not None and item.quote.source_time > self.observed_at for item in items):

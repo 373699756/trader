@@ -57,7 +57,6 @@ def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
     for public_command in (
         "./run.sh sync",
         "./run.sh train",
-        "./run.sh sync market",
         "./run.sh sync company",
     ):
         assert public_command in readme

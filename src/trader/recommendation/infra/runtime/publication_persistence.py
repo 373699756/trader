@@ -11,19 +11,30 @@ from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolic
 from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
 from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
+from trader.recommendation.infra.persistence.strategy_freeze_records import StrategyFreezeRecords
+from trader.recommendation.application.ports.freeze_records import FreezeRecordPort
 
 
 def BuildPublicationPersistence(
     context: composition_inputs.RuntimeBuildContext,
     shared_budget: DeepSeekBudgetLedger | None = None,
-    *, budget_path: Path, sqlite_policy: SqliteIoPolicy,
+    *, budget_path: Path, sqlite_policy: SqliteIoPolicy, shared_tomorrow: bool = False,
 ) -> composition_inputs.RuntimePersistenceContext:
     settings = context.settings
     profile_root = settings.data_paths.recommendation(context.strategy.scoring_profile)
-    records = SQLiteFreezeRecords(
+    records: FreezeRecordPort = SQLiteFreezeRecords(
         profile_root / "freeze.sqlite3", cache=context.workers.market_cache, wall_clock=context.now, sqlite_policy=sqlite_policy,
     )
-    outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records, sqlite_policy=sqlite_policy)
+    if shared_tomorrow:
+        tomorrow_records = SQLiteFreezeRecords(
+            settings.data_paths.root / "recommendation/tomorrow/freeze.sqlite3",
+            cache=context.workers.market_cache, wall_clock=context.now, sqlite_policy=sqlite_policy,
+        )
+        records = StrategyFreezeRecords(records, tomorrow_records, context.owns_shared_runtime)
+    outcomes = SQLiteOutcomeEvidenceIndex(
+        settings.data_paths.research(context.strategy.scoring_profile), records, sqlite_policy=sqlite_policy,
+        tomorrow_database=settings.data_paths.root / "research/tomorrow/outcomes.sqlite3" if shared_tomorrow else None,
+    )
     budget = shared_budget or DeepSeekBudgetLedger(
         BudgetStateFile(budget_path, ProcessLock(settings.data_paths.root / ".deepseek.lock", label="DeepSeek")),
         daily_hard_limit=settings.deepseek.daily_hard_limit, strategy_limits=settings.deepseek.strategy_limits,

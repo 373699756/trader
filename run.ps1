@@ -16,9 +16,8 @@ function Show-Usage {
   .\run.ps1 -h                      查看本帮助
 
 下载与训练:
-  .\run.ps1 sync                    依次更新参考、历史、行情窗口和公司资料
+  .\run.ps1 sync                    依次更新参考、历史和公司资料
   .\run.ps1 sync history            更新历史，自动续传
-  .\run.ps1 sync market             更新行情窗口
   .\run.ps1 sync company            更新公司资料
   .\run.ps1 sync company fill       补齐公司资料缺口
   .\run.ps1 train                   使用本地历史训练全部档位
@@ -45,9 +44,9 @@ if ($Mode -in @("help", "-h", "--help")) {
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
 if ($Mode -eq "sync") {
     if ($ForwardArgs.Count -gt 2 -or
-        ($ForwardArgs.Count -gt 0 -and $ForwardArgs[0] -cnotin @("history", "market", "company")) -or
+        ($ForwardArgs.Count -gt 0 -and $ForwardArgs[0] -cnotin @("history", "company")) -or
         ($ForwardArgs.Count -eq 2 -and ($ForwardArgs[0] -cne "company" -or $ForwardArgs[1] -cne "fill"))) {
-        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|market|company]；仅 company 可加 fill。")
+        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|company]；仅 company 可加 fill。")
         exit 2
     }
 } elseif ($ForwardArgs.Count -gt 0) {

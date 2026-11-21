@@ -13,10 +13,6 @@ class DataPaths:
         return self.root / "market/history"
 
     @property
-    def daily_window(self) -> Path:
-        return self.root / "market/daily_window.sqlite3"
-
-    @property
     def reference(self) -> Path:
         return self.root / "market/reference"
 

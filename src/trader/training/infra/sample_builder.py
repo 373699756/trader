@@ -102,6 +102,7 @@ class _SampleBuildState:
     calendar_positions: dict[date, int]
     readable_dates: frozenset[date]
     allowed_codes: frozenset[str]
+    include_t1: bool
     converted_samples: int = 0
     pending_days: list[_PendingDay] = field(default_factory=list)
     rolling_codes: dict[str, _RollingCodeState] = field(default_factory=dict)
@@ -203,7 +204,7 @@ class _SampleBuildState:
         for pending_day in self.pending_days[:-1]:
             horizon = position - pending_day.calendar_position
             candidate = pending_day.samples.get(code)
-            if candidate is not None and 1 <= horizon <= 5:
+            if candidate is not None and (1 if self.include_t1 else 2) <= horizon <= 5:
                 candidate.future_returns[horizon - 1] = close / candidate.close - 1.0
 
     def flush_matured(self, last_position: int, *, all_days: bool = False) -> None:
@@ -214,12 +215,14 @@ class _SampleBuildState:
                 len(pending.samples),
                 tuple(
                     sum(item.future_returns[horizon] is None for item in pending.samples.values())
+                    if self.include_t1 or horizon > 0 else 0
                     for horizon in range(5)
                 ),
             )
             finalized = _finalize_sample_day(tuple(pending.samples.values()), self.profile)
             self.missing_labels += len(pending.samples) - len(finalized)
-            self.missing_t1 += len(pending.samples) - sum(item.targets[0] is not None for item in finalized)
+            if self.include_t1:
+                self.missing_t1 += len(pending.samples) - sum(item.targets[0] is not None for item in finalized)
             self.missing_d25 += len(pending.samples) - sum(item.targets[-1] is not None for item in finalized)
             self.index.add_final(finalized)
             self.converted_samples += len(finalized)
@@ -269,6 +272,7 @@ def _new_sample_state(request: TrainingSampleBuildRequest) -> _SampleBuildState:
         {day: position for position, day in enumerate(calendar)},
         request.window.readable_dates,
         frozenset(request.codes),
+        any(head.target_column == "target_t1" for head in request.profile.heads),
     )
 
 
@@ -392,6 +396,7 @@ def _finalize_sample_day(
     population = tuple(values)
     if not population:
         return ()
+    include_t1 = any(head.target_column == "target_t1" for head in profile.heads)
     residuals = ResidualizeSampleDay(
         tuple(item.features[3 : 3 + len(profile.momentum_horizons)] for item in population),
         tuple(item.board for item in population),
@@ -417,6 +422,12 @@ def _finalize_sample_day(
         aggregate = math.fsum(cast(float, value) for value in d25_values) / 4.0 if None not in d25_values else None
         if excess[0] is None and aggregate is None:
             continue
+        features = (
+            *item.features[:3],
+            *(residual[index] for residual in residuals),
+            *market_state,
+            *item.features[len(profile.raw_feature_manifest.names) :],
+        )
         finalized.append(
             TrainingSample(
                 item.code,
@@ -424,12 +435,7 @@ def _finalize_sample_day(
                 item.board,
                 item.industry,
                 item.average_amount_20d,
-                (
-                    *item.features[:3],
-                    *(residual[index] for residual in residuals),
-                    *market_state,
-                    *item.features[len(profile.raw_feature_manifest.names) :],
-                ),
+                features if include_t1 else features[1:],
                 (excess[0], excess[1], excess[2], excess[3], excess[4], aggregate),
             )
         )

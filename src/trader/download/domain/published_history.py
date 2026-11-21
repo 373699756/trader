@@ -14,6 +14,7 @@ from trader.download.domain.baostock_daily import (
     DailyCellStatus,
     ValidateDailyPrices,
     ValidateDailyRawFields,
+    ValidateDailyReconstruction,
 )
 
 
@@ -34,6 +35,7 @@ class PublishedHistorySide:
     pct_change: float | None
     turnover: float | None
     trading_status: BaoStockTradingStatus
+    reconstructed_from: date | None = None
     already_validated: InitVar[bool] = field(default=False, kw_only=True)
 
     def __post_init__(self, already_validated: bool) -> None:
@@ -41,6 +43,7 @@ class PublishedHistorySide:
             return
         if len(self.code) != 6 or not self.code.isdigit() or type(self.trade_date) is not date:
             raise ValueError("published history side identity is invalid")
+        ValidateDailyReconstruction(self.adjustment, self.trade_date, self.reconstructed_from)
         ValidateDailyPrices(
             self.adjustment,
             self.trading_status,
@@ -107,6 +110,7 @@ def _project_side(side: BaoStockDailySide | None) -> PublishedHistorySide | None
         side.pct_change,
         side.turnover,
         side.trading_status,
+        side.reconstructed_from,
     )
 
 

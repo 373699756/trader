@@ -187,7 +187,7 @@ def TrainProfile(
         window = _require_industry_coverage(operations, plan)
         samples = operations.prepare_samples(plan, window)
         peak_bytes = samples.peak_bytes
-        coverage = _expected_coverage(plan.split, samples.coverage)
+        coverage = _expected_coverage(plan, samples.coverage)
         date_coverage = (*date_coverage, *samples.date_coverage)
         admission = InspectProfileDateAdmission(plan, samples.date_coverage, basis="sample_index")
         if admission is not None:
@@ -318,8 +318,9 @@ def _require_industry_coverage(
 
 
 def _expected_coverage(
-    split: ProductionDiagnosticDatePlan, coverage: tuple[SampleCoverage, ...],
+    plan: ProfileTrainingPlan, coverage: tuple[SampleCoverage, ...],
 ) -> tuple[SampleCoverage, ...]:
+    split = plan.split
     dates = (
         ("training", split.fitting_dates),
         ("early_stopping", split.early_stopping_dates),
@@ -329,7 +330,10 @@ def _expected_coverage(
     )
     expected = tuple(
         (target, partition)
-        for target in ("target_t1", "target_d25_aggregate")
+        for target in (
+            "target_t1" if head.strategy is Strategy.TOMORROW else "target_d25_aggregate"
+            for head in plan.heads
+        )
         for partition, _ in dates
     )
     observed = tuple((item.target, item.partition) for item in coverage)

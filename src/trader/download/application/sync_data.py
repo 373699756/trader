@@ -9,11 +9,10 @@ from trader.download.domain.company_sync import CompanySyncRoundResult
 from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.prepared_reference import PreparedReference
-from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.application.download_failure import DownloadFailurePort
 from trader.download.domain.download_failure import DownloadFailureContext, DownloadValidationFailure
 
-SyncTarget = Literal["all", "history", "market", "company"]
+SyncTarget = Literal["all", "history", "company"]
 
 
 class SyncDatabaseError(RuntimeError):
@@ -32,10 +31,9 @@ def _failure_category(error: BaseException) -> str:
 
 @dataclass(frozen=True)
 class SyncTaskResult:
-    task: Literal["history", "market", "company"]
+    task: Literal["history", "company"]
     status: Literal["completed", "pending", "failed", "cancelled"]
     reason: str | None = None
-    market: QfqUpdateResult | None = None
     company: CompanySyncRoundResult | None = None
     history: HistoryMaintenanceStatus | None = None
     incompatible_company_store: CompanyDownloadStore | None = None
@@ -58,13 +56,12 @@ class SyncResult:
 class SyncData:
     prepare: Callable[[], PreparedReference]
     history: Callable[[PreparedReference], HistoryMaintenanceStatus]
-    market: Callable[[PreparedReference], QfqUpdateResult]
     company: Callable[[PreparedReference], CompanySyncRoundResult]
     cancelled: Callable[[], bool]
     failures: DownloadFailurePort | None = None
 
     def execute(self, target: SyncTarget) -> SyncResult:
-        if target not in ("all", "history", "market", "company"):
+        if target not in ("all", "history", "company"):
             raise ValueError("sync_target_invalid")
         tasks: list[SyncTaskResult] = []
         try:
@@ -80,8 +77,8 @@ class SyncData:
                 if self.failures is not None:
                     self.failures(DownloadFailureContext("reference_preparation"), exc)
                 return SyncResult((), failure=f"preparation_{_failure_category(exc)}")
-            selected: tuple[Literal["history", "market", "company"], ...] = (
-                ("history", "market", "company") if target == "all" else (target,)
+            selected: tuple[Literal["history", "company"], ...] = (
+                ("history", "company") if target == "all" else (target,)
             )
             for task in selected:
                 if self.cancelled():
@@ -101,15 +98,13 @@ class SyncData:
                     if self.cancelled():
                         tasks.append(SyncTaskResult(task, "cancelled"))
                         return SyncResult(tuple(tasks), cancelled=True)
-                    if self.failures is not None and task == "market":
-                        self.failures(DownloadFailureContext("market_command"), exc)
                     tasks.append(SyncTaskResult(task, "failed", _failure_category(exc)))
             return SyncResult(tuple(tasks))
         except KeyboardInterrupt:
             return SyncResult(tuple(tasks), cancelled=True)
 
     def _execute_task(
-        self, task: Literal["history", "market", "company"], reference: PreparedReference
+        self, task: Literal["history", "company"], reference: PreparedReference
     ) -> SyncTaskResult:
         if task == "history":
             history = self.history(reference)
@@ -118,14 +113,6 @@ class SyncData:
             return SyncTaskResult(
                 task, "cancelled" if stopped else "failed" if history.state in {"failed", "blocked"}
                 else "completed" if ready else "pending", reason=history.reason, history=history
-            )
-        if task == "market":
-            market = self.market(reference)
-            stopped = market.failure_reason == "cancelled" or self.cancelled()
-            return SyncTaskResult(
-                task, "cancelled" if stopped else "failed" if market.shutdown_failure
-                else "pending" if market.needs_retry else "completed",
-                reason=market.shutdown_failure or market.failure_reason, market=market,
             )
         company = self.company(reference)
         stopped = self.cancelled() or company.cancelled

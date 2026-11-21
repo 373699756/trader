@@ -35,6 +35,8 @@ def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> Histor
             "minimum_free_bytes",
             "supplier_timeout_seconds",
             "supplier_retries",
+            "tencent_timeout_seconds",
+            "tencent_retries",
             "query_interval_seconds",
             "cancellation_grace_seconds",
             "progress_heartbeat_seconds",
@@ -59,6 +61,8 @@ def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> Histor
         minimum_free_bytes=Integer(history, "minimum_free_bytes", minimum=0),
         supplier_timeout_seconds=Number(history, "supplier_timeout_seconds", minimum=0.001),
         supplier_retries=Integer(history, "supplier_retries", minimum=0),
+        tencent_timeout_seconds=Number(history, "tencent_timeout_seconds", minimum=0.1, maximum=120.0),
+        tencent_retries=Integer(history, "tencent_retries", minimum=0, maximum=2),
         query_interval_seconds=Number(history, "query_interval_seconds", minimum=1.5),
         cancellation_grace_seconds=Number(history, "cancellation_grace_seconds", minimum=0.001),
         progress_heartbeat_seconds=Number(history, "progress_heartbeat_seconds", minimum=0.001),
@@ -83,7 +87,7 @@ def LoadQfqWindowConfiguration(project_root: Path) -> QfqWindowConfiguration:
     qfq = RequireMapping(document, "online_qfq")
     RequireExactKeys(
         qfq,
-        {"profiles", "workers", "source_timeout_seconds", "source_retries"},
+        {"profiles", "workers"},
         "download.online_qfq",
     )
     profiles = qfq.get("profiles")
@@ -98,8 +102,8 @@ def LoadQfqWindowConfiguration(project_root: Path) -> QfqWindowConfiguration:
             v2_sessions=Integer(v2, "sessions", minimum=1),
             v3_sessions=Integer(v3, "sessions", minimum=1),
             workers=Integer(qfq, "workers", minimum=1, maximum=12),
-            source_timeout_seconds=Number(qfq, "source_timeout_seconds", minimum=0.1, maximum=120.0),
-            source_retries=Integer(qfq, "source_retries", minimum=0, maximum=2),
+            source_timeout_seconds=Number(RequireMapping(document, "history"), "tencent_timeout_seconds", minimum=0.1, maximum=120.0),
+            source_retries=Integer(RequireMapping(document, "history"), "tencent_retries", minimum=0, maximum=2),
             price_review=_price_review_configuration(document),
         )
     except ValueError as exc:

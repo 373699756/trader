@@ -276,16 +276,22 @@
     const versions = snapshot && snapshot.input_versions || {};
     const learnedRank = Boolean(snapshot && snapshot.strategy !== "long"
       && ["learned_rank_percentile_0_100", "model_prediction_percentile_0_100"].includes(versions.score_scale));
+    const tomorrowProbability = Boolean(snapshot && snapshot.strategy === "tomorrow"
+      && versions.score_scale === "tomorrow_close_gain_probability_0_100");
     return {
       learnedRank,
+      tomorrowProbability,
       shadow: Boolean(snapshot && snapshot.strategy !== "long" && versions.execution_mode === "shadow"),
       preview: Boolean(snapshot && snapshot.run_mode === "preview"),
-      finalLabel: learnedRank ? "模型排序分" : "最终评分",
+      finalLabel: tomorrowProbability ? "次日涨幅 ≥5% 概率" : learnedRank ? "模型排序分" : "最终评分",
     };
   }
 
   function currentTable(snapshot) {
-    const scoreLabel = scorePresentation(snapshot).learnedRank ? "本地评分 / 模型排名" : "最终评分 / 加减分";
+    const presentation = scorePresentation(snapshot);
+    const scoreLabel = presentation.tomorrowProbability
+      ? presentation.finalLabel
+      : presentation.learnedRank ? "本地评分 / 模型排名" : "最终评分 / 加减分";
     return {
       columns: [
         '<col style="width:48px">',
@@ -377,7 +383,7 @@
     const presentation = scorePresentation(snapshot);
     const primaryScore = presentation.learnedRank
       ? `<span aria-label="本地评分 / 模型排名百分位" title="模型分是同轮排名百分位，不是上涨概率；动作仍由本地分和风险条件决定"><b>本地/模型：${number(scores.local_score, 2)}/${number(scores.final_score, 2)}</b></span>`
-      : `<span aria-label="${presentation.finalLabel}"><b>${presentation.finalLabel} ${number(scores.final_score, 2)}</b></span>`;
+      : `<span aria-label="${presentation.finalLabel}"><b>${presentation.finalLabel} ${number(scores.final_score, 2)}${presentation.tomorrowProbability && hasValue(scores.final_score) ? "%" : ""}</b></span>`;
     const ledger = scores.ledger;
     const scoreDetail = ledger
       ? `基础 ${number(ledger.weighted_base_score, 2)} · +${number(ledger.applied_bonus, 2)} · −${number(ledger.applied_risk_penalty, 2)}`
@@ -451,9 +457,10 @@
     const sourceDay = item.source_time ? String(item.source_time).slice(0, 10) : "";
     const quoteNote = item.quote_status === "retained" || sourceDay && sourceDay !== window.TraderSelection.shanghaiDate()
       ? `<span class="stock-code">${item.quote_status === "retained" ? "保留行情 · " : "最近交易日 · "}${escapeHtml(sourceDay)}</span>` : "";
+    const outcome = { hit: "次日 ≥5% 命中", miss: "次日未命中", pending: "次日待结算" }[item.tomorrow_outcome];
     return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
-      <td>${tierTag(item)}</td>
+      <td>${tierTag(item)}${outcome ? `<span class="stock-code">${outcome}</span>` : ""}</td>
       <td>${stock(item)}</td>
       <td>${number(item.anchor_price, 2)}</td>
       <td class="${anchorChange.className}">${anchorChange.text}</td>
@@ -477,7 +484,8 @@
       : [
         ["推荐动作", ACTION_LABELS[action] || "动作状态未知"],
         ["入池状态", item.selected === false ? "未入池" : "已入池"],
-        [presentation.finalLabel, valueNumber(scores.final_score, 2)],
+        [presentation.finalLabel, presentation.tomorrowProbability && hasValue(scores.final_score)
+          ? `${number(scores.final_score, 2)}%` : valueNumber(scores.final_score, 2)],
         ["当前排名", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 名` : null],
         ["入场形态", SETUP_LABELS[item.setup && item.setup.type] || "形态信息暂不可用"],
         ["下行保护", downside ? (downside.status === "pass" ? "通过" : "转观察") : null],

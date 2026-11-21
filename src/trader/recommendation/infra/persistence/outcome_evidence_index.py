@@ -32,7 +32,9 @@ from trader.recommendation.domain.outcomes.models import (
     OutcomeHorizons,
     OutcomeTarget,
     RecommendationOutcome,
+    TomorrowRecommendationOutcome,
 )
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET, TomorrowCloseGain
 
 
 @dataclass(frozen=True)
@@ -49,13 +51,16 @@ class SQLiteOutcomeEvidenceIndex:
     def __init__(
         self,
         runtime_root: Path,
-        freezes: FreezeRecordPort, *, sqlite_policy: SqliteIoPolicy,
+        freezes: FreezeRecordPort, *, sqlite_policy: SqliteIoPolicy, tomorrow_database: Path | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
         self._database = runtime_root / "outcomes.sqlite3"
+        self._tomorrow_database = tomorrow_database if tomorrow_database is not None else self._database
         self._freezes = freezes
         self._lock = threading.RLock()
         self._initialized = False
+        self._tomorrow_initialized = False
+        self._tomorrow_scan_after: date | None = None
 
     @classmethod
     def inspect_status(cls, runtime_root: Path, *, sqlite_policy: SqliteIoPolicy) -> OutcomeEvidenceStatus:
@@ -85,20 +90,42 @@ class SQLiteOutcomeEvidenceIndex:
 
         if limit < 1:
             raise ValueError("summary limit must be positive")
-        identities, sample_counts = _summary_samples(self._freezes, strategy, limit)
-        completed = _summary_returns(self._database, strategy, identities, sqlite_policy=self._sqlite_policy)
-        return tuple(
-            OutcomeTierSummary(
-                tier,
-                horizon,
-                sample_counts.get((tier, horizon), 0),
-                len(values := completed.get((tier, horizon), [])),
-                sum(value > 0 for value in values),
-                sum(values) / len(values) if values else None,
-            )
-            for tier in ("recommend", "watch")
-            for horizon in OutcomeHorizons(strategy)
-        )
+        identities, sample_counts, targets = _summary_samples(self._freezes, strategy, limit)
+        completed = {
+            **_summary_returns(
+                self._database, strategy,
+                {key: value for key, value in identities.items() if value[1] is None},
+                sqlite_policy=self._sqlite_policy,
+            ),
+            **_summary_returns(
+                self._tomorrow_database, strategy,
+                {key: value for key, value in identities.items() if value[1] is not None},
+                sqlite_policy=self._sqlite_policy,
+            ),
+        }
+        summaries: list[OutcomeTierSummary] = []
+        for target in targets:
+            for tier in _TOMORROW_TIERS if target is not None else _SUMMARY_TIERS:
+                for horizon in OutcomeHorizons(strategy):
+                    key = (tier, horizon, target)
+                    values = completed.get(key, [])
+                    sample_count = sample_counts.get(key, 0)
+                    if target is not None:
+                        summaries.append(
+                            OutcomeTierSummary(
+                                tier, horizon, sample_count, len(values), 0, None,
+                                target, sum(value is TomorrowCloseGain.HIT for value in values),
+                            )
+                        )
+                        continue
+                    returns = tuple(value for value in values if isinstance(value, float))
+                    summaries.append(
+                        OutcomeTierSummary(
+                            tier, horizon, sample_count, len(returns), sum(value > 0 for value in returns),
+                            sum(returns) / len(returns) if returns else None,
+                        )
+                    )
+        return tuple(summaries)
 
     def initialize(self) -> None:
         with self._lock:
@@ -111,6 +138,29 @@ class SQLiteOutcomeEvidenceIndex:
                 EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
             self._initialized = True
 
+    def tomorrow_hits(self, record_version: str) -> tuple[tuple[str, TomorrowCloseGain], ...]:
+        if not self._tomorrow_database.is_file():
+            return ()
+        try:
+            with SqliteSession(
+                self._tomorrow_database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy
+            ) as connection:
+                rows = connection.run(
+                    "SELECT code, record_hash, record_bytes FROM recommendation_outcomes "
+                    "WHERE snapshot_id=? AND strategy=? AND horizon=1 ORDER BY code",
+                    (record_version, Strategy.TOMORROW.value),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise OutcomeEvidenceConflictError("Tomorrow outcome read failed") from exc
+        return tuple(
+            (str(row["code"]), label)
+            for row in rows
+            if isinstance(
+                label := _summary_value(bytes(row["record_bytes"]), bytes(row["record_hash"]), TOMORROW_CLOSE_GAIN_TARGET),
+                TomorrowCloseGain,
+            )
+        )
+
     def pending_outcome_targets(self, *, limit: int) -> Sequence[OutcomeTarget]:
         if limit < 1:
             raise ValueError("outcome target limit must be positive")
@@ -120,6 +170,8 @@ class SQLiteOutcomeEvidenceIndex:
             for trade_date in reversed(self._freezes.list_dates(strategy, limit=31)):
                 record = self._freezes.load(strategy, trade_date)
                 if record is None:
+                    continue
+                if dict(record.freeze.input_versions).get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET:
                     continue
                 for item in sorted(record.freeze.items, key=lambda value: value.code):
                     if not item.selected or item.quote is None:
@@ -143,6 +195,42 @@ class SQLiteOutcomeEvidenceIndex:
                     )
                     if len(targets) >= limit:
                         return tuple(targets)
+        return tuple(targets)
+
+    def pending_tomorrow_targets(self, *, limit: int) -> Sequence[OutcomeTarget]:
+        if limit < 1:
+            raise ValueError("outcome target limit must be positive")
+        targets: list[OutcomeTarget] = []
+        with self._lock:
+            days = self._freezes.list_settlement_dates(
+                Strategy.TOMORROW, after=self._tomorrow_scan_after, limit=64
+            )
+            if not days:
+                self._tomorrow_scan_after = None
+                return ()
+            for trade_date in days:
+                self._tomorrow_scan_after = trade_date
+                record = self._freezes.load(Strategy.TOMORROW, trade_date)
+                if (
+                    record is None
+                    or dict(record.freeze.input_versions).get("prediction_target") != TOMORROW_CLOSE_GAIN_TARGET
+                ):
+                    continue
+                for item in record.freeze.items:
+                    if item.selected and item.quote is not None and self._pending_horizons(
+                        record.version, Strategy.TOMORROW, item.code, database=self._tomorrow_database
+                    ):
+                        targets.append(
+                            OutcomeTarget(
+                                record.version, Strategy.TOMORROW, trade_date.isoformat(), item.code,
+                                item.quote.price, None, (1,), entry_at=item.quote.source_time,
+                                prediction_target=TOMORROW_CLOSE_GAIN_TARGET,
+                            )
+                        )
+                if len(targets) >= limit:
+                    return tuple(targets[:limit])
+            if len(days) < 64:
+                self._tomorrow_scan_after = None
         return tuple(targets)
 
     def record_benchmark_return(self, benchmark: BenchmarkReturn, *, observed_at: datetime) -> None:
@@ -206,15 +294,41 @@ class SQLiteOutcomeEvidenceIndex:
     def save_recommendation_outcomes(self, outcomes: Sequence[RecommendationOutcome]) -> None:
         if any(outcome.is_retryable for outcome in outcomes):
             raise ValueError("retryable recommendation outcomes cannot be persisted")
-        self.initialize()
+        self._save_outcomes(outcomes)
+
+    def save_tomorrow_outcomes(self, outcomes: Sequence[TomorrowRecommendationOutcome]) -> None:
+        self._save_outcomes(outcomes, database=self._tomorrow_database)
+
+    def _save_outcomes(
+        self, outcomes: Sequence[RecommendationOutcome | TomorrowRecommendationOutcome], *, database: Path | None = None,
+    ) -> None:
+        target_database = self._database if database is None else database
+        if target_database == self._database:
+            self.initialize()
+        else:
+            with self._lock:
+                if not self._tomorrow_initialized:
+                    target_database.parent.mkdir(parents=True, exist_ok=True)
+                    with SqliteSession(
+                        target_database, SqliteConnectionOptions(journal_mode="WAL"), sqlite_policy=self._sqlite_policy
+                    ) as connection:
+                        EnsureSqliteSchema(connection, _TOMORROW_SCHEMA, allow_create=True, exact=True)
+                    self._tomorrow_initialized = True
         with (
             self._lock,
-            SqliteSession(self._database, _CONNECTION_OPTIONS, sqlite_policy=self._sqlite_policy) as connection,
+            SqliteSession(target_database, _CONNECTION_OPTIONS, sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True),
         ):
             for outcome in outcomes:
-                payload = _outcome_bytes(outcome)
-                key = (outcome.snapshot_id, outcome.strategy.value, outcome.stock_code, outcome.horizon)
+                if isinstance(outcome, TomorrowRecommendationOutcome):
+                    target = outcome.target
+                    payload = _tomorrow_outcome_bytes(outcome)
+                    key = (target.snapshot_id, target.strategy.value, target.stock_code, 1)
+                    recommend_date, status = target.recommend_date, "complete"
+                else:
+                    payload = _outcome_bytes(outcome)
+                    key = (outcome.snapshot_id, outcome.strategy.value, outcome.stock_code, outcome.horizon)
+                    recommend_date, status = outcome.recommend_date, outcome.status
                 existing = connection.run(
                     "SELECT record_hash, record_bytes FROM recommendation_outcomes "
                     "WHERE snapshot_id = ? AND strategy = ? AND code = ? AND horizon = ?",
@@ -231,19 +345,26 @@ class SQLiteOutcomeEvidenceIndex:
                         """,
                         (
                             *key[:2],
-                            EncodeDate(date.fromisoformat(outcome.recommend_date)),
+                            EncodeDate(date.fromisoformat(recommend_date)),
                             key[2],
                             key[3],
-                            outcome.status,
+                            status,
                             EncodeTime(outcome.settled_at),
                             _sha256(payload),
                             payload,
                         ),
                     )
 
-    def _pending_horizons(self, snapshot_id: str, strategy: Strategy, code: str) -> tuple[int, ...]:
+    def _pending_horizons(
+        self, snapshot_id: str, strategy: Strategy, code: str, *, database: Path | None = None,
+    ) -> tuple[int, ...]:
         horizons = OutcomeHorizons(strategy)
-        with self._lock, SqliteSession(self._database, _CONNECTION_OPTIONS, sqlite_policy=self._sqlite_policy) as connection:
+        target_database = self._database if database is None else database
+        if not target_database.is_file():
+            return horizons
+        with self._lock, SqliteSession(
+            target_database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy
+        ) as connection:
             rows = connection.run(
                 "SELECT horizon FROM recommendation_outcomes WHERE snapshot_id = ? AND strategy = ? AND code = ?",
                 (snapshot_id, strategy.value, code),
@@ -253,47 +374,66 @@ class SQLiteOutcomeEvidenceIndex:
 
 
 _CONNECTION_OPTIONS = SqliteConnectionOptions()
-_SummaryTier = Literal["recommend", "watch"]
+_SummaryTier = Literal["recommend", "watch", "selected"]
+_SummaryKey = tuple[_SummaryTier, int, str | None]
+_SUMMARY_TIERS: tuple[_SummaryTier, ...] = ("recommend", "watch")
+_TOMORROW_TIERS: tuple[_SummaryTier, ...] = ("recommend", "selected")
+_SummaryIdentities = dict[tuple[str, str], tuple[tuple[_SummaryTier, ...], str | None]]
 
 
 def _summary_samples(
     freezes: FreezeRecordPort, strategy: Strategy, limit: int
-) -> tuple[dict[tuple[str, str], _SummaryTier], dict[tuple[_SummaryTier, int], int]]:
-    identities: dict[tuple[str, str], _SummaryTier] = {}
-    sample_counts: dict[tuple[_SummaryTier, int], int] = {}
+) -> tuple[_SummaryIdentities, dict[_SummaryKey, int], tuple[str | None, ...]]:
+    identities: _SummaryIdentities = {}
+    sample_counts: dict[_SummaryKey, int] = {}
+    targets: list[str | None] = []
     for trade_date in freezes.list_dates(strategy, limit=limit):
         record = freezes.load(strategy, trade_date)
         if record is None:
             continue
+        target = dict(record.freeze.input_versions).get("prediction_target")
+        if target not in targets:
+            targets.append(target)
         for item in record.freeze.items:
             if not item.selected or item.quote is None:
                 continue
-            tier: _SummaryTier = "recommend" if item.action is RecommendationAction.EXECUTABLE else "watch"
-            identities[(record.version, item.code)] = tier
-            for horizon in OutcomeHorizons(strategy):
-                key = (tier, horizon)
-                sample_counts[key] = sample_counts.get(key, 0) + 1
-    return identities, sample_counts
+            recommended = item.action is RecommendationAction.EXECUTABLE
+            tiers: tuple[_SummaryTier, ...]
+            if target is None:
+                tiers = ("recommend",) if recommended else ("watch",)
+            else:
+                tiers = ("recommend", "selected") if recommended else ("selected",)
+            identities[(record.version, item.code)] = tiers, target
+            for tier in tiers:
+                for horizon in OutcomeHorizons(strategy):
+                    key = (tier, horizon, target)
+                    sample_counts[key] = sample_counts.get(key, 0) + 1
+    return identities, sample_counts, tuple(targets) if targets else (None,)
 
 
 def _summary_returns(
-    database: Path, strategy: Strategy, identities: dict[tuple[str, str], _SummaryTier], *, sqlite_policy: SqliteIoPolicy
-) -> dict[tuple[_SummaryTier, int], list[float]]:
-    completed: dict[tuple[_SummaryTier, int], list[float]] = {}
+    database: Path, strategy: Strategy,
+    identities: _SummaryIdentities, *,
+    sqlite_policy: SqliteIoPolicy,
+) -> dict[_SummaryKey, list[float | TomorrowCloseGain]]:
+    completed: dict[_SummaryKey, list[float | TomorrowCloseGain]] = {}
     if not database.is_file() or not identities:
         return completed
     for snapshot_id, code, horizon, record_hash, record_bytes in _summary_rows(database, strategy, identities, sqlite_policy=sqlite_policy):
-        tier = identities.get((snapshot_id, code))
-        if tier is None:
+        identity = identities.get((snapshot_id, code))
+        if identity is None:
             continue
-        value = _summary_net_return(record_bytes, record_hash)
+        tiers, target = identity
+        value = _summary_value(record_bytes, record_hash, target)
         if value is not None:
-            completed.setdefault((tier, int(horizon)), []).append(value)
+            for tier in tiers:
+                completed.setdefault((tier, int(horizon), target), []).append(value)
     return completed
 
 
 def _summary_rows(
-    database: Path, strategy: Strategy, identities: dict[tuple[str, str], _SummaryTier], *, sqlite_policy: SqliteIoPolicy
+    database: Path, strategy: Strategy, identities: _SummaryIdentities, *,
+    sqlite_policy: SqliteIoPolicy,
 ) -> list[tuple[str, str, int, bytes, bytes]]:
     snapshot_ids = tuple(sorted({snapshot_id for snapshot_id, _code in identities}))
     placeholders = ",".join("?" for _snapshot_id in snapshot_ids)
@@ -309,19 +449,51 @@ def _summary_rows(
         raise OutcomeEvidenceConflictError("outcome summary read failed") from exc
 
 
-def _summary_net_return(payload: bytes, record_hash: bytes) -> float | None:
+def _summary_value(payload: bytes, record_hash: bytes, target: str | None) -> float | TomorrowCloseGain | None:
     if _sha256(payload) != record_hash:
         raise OutcomeEvidenceConflictError("outcome summary payload hash mismatch")
     try:
         value = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise OutcomeEvidenceConflictError("outcome summary payload is invalid") from exc
+    if not isinstance(value, dict) or value.get("prediction_target") != target:
+        raise OutcomeEvidenceConflictError("outcome summary target is invalid")
+    if target == TOMORROW_CLOSE_GAIN_TARGET:
+        try:
+            label = TomorrowCloseGain(value["label"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OutcomeEvidenceConflictError("outcome summary label is invalid") from exc
+        if label is TomorrowCloseGain.PENDING:
+            raise OutcomeEvidenceConflictError("outcome summary must contain mature evidence")
+        return label
     net = value.get("net_excess_return_pct")
     if value.get("status") != "complete" or not isinstance(net, (int, float)):
         return None
     if not math.isfinite(net):
         raise OutcomeEvidenceConflictError("outcome summary net excess is invalid")
     return float(net)
+
+
+def _tomorrow_outcome_bytes(outcome: TomorrowRecommendationOutcome) -> bytes:
+    evidence = outcome.evidence
+    return _canonical_bytes({
+        "snapshot_id": outcome.target.snapshot_id,
+        "strategy": Strategy.TOMORROW.value,
+        "recommend_date": outcome.target.recommend_date,
+        "stock_code": outcome.target.stock_code,
+        "horizon": 1,
+        "status": "complete",
+        "prediction_target": TOMORROW_CLOSE_GAIN_TARGET,
+        "label": outcome.label.value,
+        "publication_hash": evidence.publication_hash,
+        "next_date": evidence.next_date.isoformat(),
+        "signal_raw_close": str(evidence.signal_raw_close) if evidence.signal_raw_close is not None else None,
+        "signal_close": str(evidence.signal_close) if evidence.signal_close is not None else None,
+        "next_close": str(evidence.next_close) if evidence.next_close is not None else None,
+        "next_raw_reference": str(evidence.next_raw_reference) if evidence.next_raw_reference is not None else None,
+        "next_raw_close": str(evidence.next_raw_close) if evidence.next_raw_close is not None else None,
+        "confirmed_suspended": evidence.confirmed_suspended,
+    })
 
 
 def _outcome_bytes(outcome: RecommendationOutcome) -> bytes:
@@ -420,6 +592,7 @@ _SCHEMA = SqliteSchema(
         """,
     ),
 )
+_TOMORROW_SCHEMA = SqliteSchema(_SCHEMA.statements[1:])
 
 
 __all__ = [

@@ -443,16 +443,16 @@ def test_old_diagnostic_pair_is_rejected_and_cannot_reuse_as_final(tmp_path, reu
         LoadV1ScoringProfile(model_root)
     for strategy in ("tomorrow", "d25"):
         metadata = json.loads((model_root / "v1" / strategy / "metadata.json").read_text(encoding="utf-8"))
-        assert "schema_version" not in metadata
+        assert metadata["schema_version"] == "learned_rank_head_metadata"
         assert "final_fit" not in metadata["training_input"]
         assert "final_model_unseen_validation_passed" not in metadata["validation_report"]
     assert InspectV1Training(_History(), model_root, _settings()) is None
     before = {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")}
-    with pytest.raises(ValueError, match="diagnostic schemas are read-only"):
+    with pytest.raises(ValueError, match="publication requires a complete final-refit"):
         PublishLearnedRankPair(model_root, old)
     assert {path.relative_to(model_root): path.read_bytes() for path in model_root.rglob("*.json")} == before
     missing_root = tmp_path / "uncreated"
-    with pytest.raises(ValueError, match="diagnostic schemas are read-only"):
+    with pytest.raises(ValueError, match="publication requires a complete final-refit"):
         PublishLearnedRankPair(missing_root, old)
     assert not missing_root.exists()
 
@@ -484,6 +484,27 @@ def test_production_final_fit_uses_source_cutoff_for_each_head_maturity(tmp_path
     assert isinstance(pair, LearnedRankFinalPair) and pair.source_cutoff == cutoff
     assert [head.final_fit.fit_dates[-1] for head in pair.heads] == [history.dates[-5], history.dates[-9]]
     assert InspectV1Training(history, tmp_path / "models", _settings()).reused
+
+
+def test_d25_scope_trains_and_publishes_only_the_v1_d25_head(tmp_path: Path) -> None:
+    history = _History()
+    model_root = tmp_path / "models"
+    strategies = (Strategy.D25,)
+    result = RunV1Training(
+        lambda: history, model_root, history_root=tmp_path / "history", sample_root=tmp_path / "samples",
+        settings=_settings(), sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture(),
+        strategies=strategies,
+    )
+    assert result.status == "engineering_ready", result.failure_reasons
+    assert tuple(head.strategy for head in result.heads) == strategies
+    assert result.heads[0].final_fit.fit_dates[-1] == history.dates[-6]
+    assert not (model_root / "v1/tomorrow").exists()
+    assert tuple(LoadV1ScoringProfile(model_root, strategies=strategies).heads) == strategies
+    assert tuple(item.strategy for item in ReadV1PublicationIdentities(
+        model_root, cancel_requested=lambda: False, strategies=strategies,
+    )) == strategies
+    reused = InspectV1Training(history, model_root, _settings(), strategies=strategies)
+    assert reused is not None and reused.reused
 
 
 @pytest.mark.parametrize("error", (ValueError, InterruptedError))
@@ -780,10 +801,10 @@ def test_individual_missing_targets_and_prelisting_rows_do_not_require_each_stoc
 def test_missing_d25_partition_fails_before_either_head_fit_and_reports_coverage(tmp_path, monkeypatch):
     original = LearnedRankSampleIndex.add_day
 
-    def missing_second_day(index, pending):
+    def missing_second_day(index, pending, *, include_t1=True):
         for candidate in pending.candidates.values():
             candidate.future[1] = None
-        return original(index, pending)
+        return original(index, pending, include_t1=include_t1)
 
     monkeypatch.setattr(LearnedRankSampleIndex, "add_day", missing_second_day)
     monkeypatch.setattr(

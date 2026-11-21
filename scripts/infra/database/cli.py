@@ -35,7 +35,7 @@ def BuildParser(
     parser.add_argument('--database-probe-directory', type=Path, help='new external directory for SQLite benchmarks')
     parser.add_argument('--database-rounds', type=int, choices=range(1, 6), default=5, help='database baseline repetitions')
     parser.add_argument('--database-training', action='store_true', help='include four-profile sample I/O in the isolated database baseline')
-    parser.add_argument('--database-acceptance-focus', choices=('history', 'market-company'), default='history')
+    parser.add_argument('--database-acceptance-focus', choices=('history', 'company'), default='history')
     parser.add_argument('--download-sizes', nargs='+', type=int, default=(8,), help='one isolated database workload size within 1..32')
     parser.add_argument('--history-days', type=int, default=61, help='history rows per stock; calendar-day window for BaoStock experiments')
     parser.add_argument('--baseline-checkout', type=Path, help='isolated checkout for history-write, download-performance or database-baseline comparisons')

@@ -13,6 +13,7 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     CandidatePlanningContext,
     CandidatePlanSet,
     RequiredCandidateHistorySessions,
+    RequiresProfileHistoryWindow,
     MaximumCandidateQuoteAgeSeconds,
     FindModelEligibleCodes,
 )
@@ -88,6 +89,7 @@ def ExecuteCandidatePipeline(
                     strategy,
                     source.records,
                 ),
+                require_profile_history_window=RequiresProfileHistoryWindow(context.model_scoring, strategy),
             ),
             ScoredSelectionIdentity(context.evaluated_at.date(), context.data_version, context.data_version),
         )

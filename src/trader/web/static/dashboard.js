@@ -761,6 +761,7 @@
       source_time: quote.source_time,
       quote_status: quote.status,
       action: item.action,
+      tomorrow_outcome: item.tomorrow_outcome || null,
       action_reason: item.action_reason || item.observation_reason,
       selection_date: item.selection_anchor && item.selection_anchor.date,
       selection_price: item.selection_anchor && item.selection_anchor.price,
@@ -919,9 +920,14 @@
     if (!historical) return;
     const summaries = Array.isArray(payload.outcome_summaries) ? payload.outcome_summaries : [];
     const lines = summaries.map((item) => {
-      const label = item.tier === "recommend" ? "推荐" : "关注";
+      const label = item.tier === "recommend" ? "推荐" : item.tier === "selected" ? "全部入席" : "关注";
       const complete = Number(item.complete_count) || 0;
       const total = Number(item.sample_count) || 0;
+      if (item.prediction_target === "next_close_gain_at_least_5_percent") {
+        const hits = Number(item.hit_count) || 0;
+        const rate = complete ? `${(hits / complete * 100).toFixed(1)}%` : "—";
+        return `${label} 次日涨幅 ≥5%：已结算 ${complete}/${total} · 命中 ${hits} · 命中率 ${rate}`;
+      }
       const positive = Number(item.positive_count) || 0;
       const average = item.average_net_excess_pct;
       const mean = average == null || !Number.isFinite(Number(average))
@@ -1174,8 +1180,11 @@
     const replacements = new Map();
     const etags = new Map(state.etags);
     let tradeDate = null;
+    const updates = Object.values(batch.profiles);
+    const strategies = updates.every((pair) => pair && pair.d25 && !pair.tomorrow)
+      ? ["d25"] : ["tomorrow", "d25"];
     for (const [profile, pair] of Object.entries(batch.profiles)) {
-      for (const strategy of ["tomorrow", "d25"]) {
+      for (const strategy of strategies) {
         const patch = pair && pair[strategy];
         const key = `${profile}:${strategy}:current`;
         if (!patch || patch.scoring_profile !== profile || patch.replace !== true) {

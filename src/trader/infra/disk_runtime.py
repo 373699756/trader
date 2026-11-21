@@ -32,10 +32,12 @@ def InspectDataDisk(
     locations = [
         ("runtime", settings.runtime_dir),
         ("history", paths.history),
-        ("daily_window", paths.daily_window),
         ("reference", paths.reference),
         ("company", paths.company),
         ("company_collection", paths.company_collection),
+        ("models.tomorrow", paths.models / "tomorrow.json"),
+        ("recommendation.tomorrow", paths.root / "recommendation/tomorrow"),
+        ("research.tomorrow", paths.root / "research/tomorrow"),
     ]
     for profile in ("v1", "v2", "v3", "v5"):
         locations.extend(

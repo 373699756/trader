@@ -12,6 +12,8 @@ from trader.recommendation.domain.outcomes.models import (
     OutcomeBar,
     OutcomeTarget,
     RecommendationOutcome,
+    TomorrowCloseEvidence,
+    TomorrowRecommendationOutcome,
 )
 
 
@@ -44,6 +46,18 @@ class OutcomeWriterPort(Protocol):
     def record_benchmark_return(self, benchmark: BenchmarkReturn, *, observed_at: datetime) -> None: ...
 
     def save_recommendation_outcomes(self, outcomes: Sequence[RecommendationOutcome]) -> None: ...
+
+
+class TomorrowSettlementMarketData(Protocol):
+    def read_tomorrow_close_evidence(
+        self, targets: Sequence[OutcomeTarget], observed_at: datetime
+    ) -> Sequence[TomorrowCloseEvidence]: ...
+
+
+class TomorrowOutcomeEvidencePort(Protocol):
+    def pending_tomorrow_targets(self, *, limit: int) -> Sequence[OutcomeTarget]: ...
+
+    def save_tomorrow_outcomes(self, outcomes: Sequence[TomorrowRecommendationOutcome]) -> None: ...
 
 
 __all__ = ["OutcomeEvidenceConflictError", "OutcomeSettlementMarketData", "OutcomeTargetReaderPort", "OutcomeWriterPort"]

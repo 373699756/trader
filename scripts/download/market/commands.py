@@ -15,10 +15,10 @@ def BuildCommands(
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
     commands: tuple[DiagnosticCommand, ...]
-    if options.action_identity == "market-factor-compare" and options.qfq_database is None:
+    if options.action_identity == "market-factor-compare" and options.history_root is None:
         from trader.infra.settings import LoadRuntimeSettings
 
-        options = replace(options, qfq_database=LoadRuntimeSettings(options.runtime_config).data_paths.daily_window)
+        options = replace(options, history_root=LoadRuntimeSettings(options.runtime_config).data_paths.history)
     if options.action_identity == "security-master":
         commands = (DiagnosticCommand(
             "exchange_security_master",
@@ -77,7 +77,7 @@ def BuildCommands(
         commands = (DiagnosticCommand(
             "market_factor_compare",
             (python_executable, "-m", "scripts.download.market.market_factor_compare")
-            + ("--config", str(options.runtime_config), "--qfq-database", str(options.qfq_database))
+            + ("--config", str(options.runtime_config), "--history-root", str(options.history_root))
             + ("--sources", *options.market_sources)
             + ("--profiles", *options.market_profiles)
             + ("--sizes", *(str(size) for size in options.market_sizes))

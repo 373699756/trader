@@ -14,7 +14,6 @@ from trader.download.application.sync_data import SyncData
 from trader.download.application.progress_message import ProgressLevel
 from tests.helpers.download.company_round import CompanySyncRoundFixture
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 
 _NOW = datetime(2026, 11, 4, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -63,7 +62,7 @@ class _Industry:
     received_at: datetime = _NOW
 
 
-@pytest.mark.parametrize("target", ("all", "history", "market", "company"))
+@pytest.mark.parametrize("target", ("all", "history", "company"))
 @pytest.mark.parametrize("population", ("ever_st", "current_st"))
 def test_no_eligible_stock_stops_before_calendar_industry_publication_and_downloads(tmp_path, target, population):
     index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
@@ -97,7 +96,6 @@ def test_no_eligible_stock_stops_before_calendar_industry_publication_and_downlo
     )
     result = SyncData(
         lambda: PrepareReference(universe, _NOW, dependencies),
-        forbidden,
         forbidden,
         forbidden,
         lambda: False,
@@ -156,10 +154,6 @@ def test_mixed_population_uses_one_st_cut_and_keeps_original_supplier_check_date
             _NOW.date(),
         )
 
-    def market(reference):
-        record(reference)
-        return QfqUpdateResult(_NOW.date(), 3)
-
     def company(reference):
         record(reference)
         return CompanySyncRoundFixture(_NOW, tuple(item.code for item in reference.official_universe))
@@ -175,12 +169,11 @@ def test_mixed_population_uses_one_st_cut_and_keeps_original_supplier_check_date
     result = SyncData(
         lambda: PrepareReference(tuple(reversed(universe)), _NOW, dependencies),
         history,
-        market,
         company,
         lambda: False,
     ).execute("all")
 
-    assert result.exit_code == 0 and len(received) == 3
+    assert result.exit_code == 0 and len(received) == 2
     assert calls == ["st", "calendar", "industry", "publish"]
     reference, original = published[0]
     assert all(item is reference for item in received)
@@ -270,7 +263,7 @@ def test_cancellation_between_reference_steps_stops_further_io(stage):
 
 
 @pytest.mark.parametrize("industry_status", ("available", "empty", "failed"))
-def test_industry_progress_explains_degradation_and_still_enters_market_update(industry_status):
+def test_industry_progress_explains_degradation_and_still_enters_history_update(industry_status):
     expected = PreparedFixture(_NOW)
     messages, published, downloaded = [], [], []
 
@@ -292,22 +285,21 @@ def test_industry_progress_explains_degradation_and_still_enters_market_update(i
     )
 
     def forbidden(_reference):
-        pytest.fail("sync market must not run history or company")
+        pytest.fail("sync history must not run company")
 
-    def market(reference):
+    def history(reference):
         assert published == [reference]
         assert messages[-1].task.label == "参考发布"
         assert messages[-1].state == "完成"
         downloaded.append(reference)
-        return QfqUpdateResult(_NOW.date(), 1)
+        return HistoryMaintenanceStatus("completed", None, Path("history"), "tencent", None, "a" * 64, _NOW.date(), _NOW.date(), 0)
 
     result = SyncData(
         lambda: PrepareReference(expected.official_universe, _NOW, dependencies, report=messages.append),
-        forbidden,
-        market,
+        history,
         forbidden,
         lambda: False,
-    ).execute("market")
+    ).execute("history")
 
     assert result.exit_code == 0 and len(downloaded) == 1
     industry_message = next(message.fields[0] for message in messages if message.task.label == "当前行业" and message.state in {"完成", "失败"})

@@ -8,7 +8,7 @@ from typing import TypeAlias, cast
 
 from trader.download.domain.baostock_daily import BaoStockAdjustment, BaoStockCellStatus, BaoStockTradingStatus
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide
-from trader.infra.sqlite_codec import DecodeDate
+from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 
 PriceValues: TypeAlias = tuple[str | float | int | None, ...]
 _FIELDS = ("open", "high", "low", "close", "volume", "amount", "preclose", "change_pct", "turnover_pct")
@@ -16,7 +16,7 @@ _NUMBER_POSITIONS = (*range(2, 11), *range(13, 22))
 PRICE_COLUMNS = (
     ("status",)
     + tuple(f"{side}_{field}" for side in ("raw", "qfq") for field in ("present", *_FIELDS, "trading_status"))
-    + ("number_flags",)
+    + ("qfq_reconstruction_anchor", "number_flags")
 )
 
 
@@ -26,6 +26,11 @@ def _price_sql(*, database_checks: bool) -> str:
         + (
             "INTEGER NOT NULL CHECK(number_flags>=0 AND number_flags<68719476736)"
             if name == "number_flags"
+            else (
+                "INTEGER CHECK(qfq_reconstruction_anchor IS NULL OR "
+                "(qfq_present=1 AND qfq_reconstruction_anchor>=trade_date))"
+            )
+            if name == "qfq_reconstruction_anchor"
             else "TEXT"
             if name == "status" or name.endswith("trading_status")
             else "INTEGER"
@@ -44,7 +49,13 @@ PRICE_WINDOW_SQL = _price_sql(database_checks=False)
 
 
 def PriceColumnValues(cell: PublishedHistoryCell) -> PriceValues:
-    values = (cell.status, *_side_values(cell.unadjusted), *_side_values(cell.qfq))
+    anchor = cell.qfq.reconstructed_from if cell.qfq is not None else None
+    values = (
+        cell.status,
+        *_side_values(cell.unadjusted),
+        *_side_values(cell.qfq),
+        EncodeDate(anchor) if anchor is not None else None,
+    )
     flags = 0
     for bit, position in enumerate(_NUMBER_POSITIONS):
         value = values[position]
@@ -64,12 +75,15 @@ def PriceCellFromColumns(
         raise ValueError("price_columns_invalid")
     trade_date = DecodeDate(day)
     values = DecodePriceValues(values)
+    anchor = None if values[23] is None else DecodeDate(values[23])
+    if anchor is not None and (values[12] != 1 or anchor < trade_date):
+        raise ValueError("price_qfq_reconstruction_anchor_invalid")
     return PublishedHistoryCell(
         code,
         trade_date,
         cast(BaoStockCellStatus, values[0]),
         _side(code, trade_date, "unadjusted", values[1:12], already_validated=already_validated),
-        _side(code, trade_date, "qfq", values[12:23], already_validated=already_validated),
+        _side(code, trade_date, "qfq", values[12:23], reconstructed_from=anchor, already_validated=already_validated),
         already_validated=already_validated,
     )
 
@@ -117,7 +131,8 @@ def _side_values(side: PublishedHistorySide | None) -> PriceValues:
 
 
 def _side(
-    code: str, day: date, adjustment: BaoStockAdjustment, values: PriceValues, *, already_validated: bool
+    code: str, day: date, adjustment: BaoStockAdjustment, values: PriceValues, *,
+    already_validated: bool, reconstructed_from: date | None = None,
 ) -> PublishedHistorySide | None:
     if values[0] == 0 and (already_validated or all(value is None for value in values[1:])):
         return None
@@ -144,6 +159,7 @@ def _side(
         numbers[7],
         numbers[8],
         cast(BaoStockTradingStatus, values[-1]),
+        reconstructed_from,
         already_validated=already_validated,
     )
 

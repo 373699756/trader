@@ -210,7 +210,14 @@ SELECT records.trade_date,
        records.qfq_open,
        records.qfq_high,
        records.qfq_low,
-       records.raw_volume
+       records.raw_volume,
+       records.raw_open,
+       records.raw_high,
+       records.raw_low,
+       records.raw_close,
+       records.raw_preclose,
+       records.raw_amount,
+       records.qfq_reconstruction_anchor
 FROM daily_price_revision AS records
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
@@ -1194,7 +1201,7 @@ def _decode_row(row: tuple[object, ...]) -> HistoryRevision:
 
 
 def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
-    if len(row) != 12:
+    if len(row) != 19:
         raise HistoryPricePartitionError("history month training row shape is invalid")
     (
         trade_date_value,
@@ -1209,6 +1216,13 @@ def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
         qfq_high,
         qfq_low,
         raw_volume,
+        raw_open,
+        raw_high,
+        raw_low,
+        raw_close,
+        raw_preclose,
+        raw_amount,
+        qfq_reconstruction_anchor,
     ) = row
     if (
         type(trade_date_value) is not int
@@ -1237,6 +1251,15 @@ def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
             _training_number(qfq_high),
             _training_number(qfq_low),
             _training_number(raw_volume),
+            raw_open=_training_number(raw_open),
+            raw_high=_training_number(raw_high),
+            raw_low=_training_number(raw_low),
+            raw_close_price=_training_number(raw_close),
+            raw_preclose=_training_number(raw_preclose),
+            raw_amount=_training_number(raw_amount),
+            qfq_reconstruction_anchor=(
+                DecodeDate(qfq_reconstruction_anchor) if qfq_reconstruction_anchor is not None else None
+            ),
         )
         if raw_status == qfq_status == "trading" or (
             cell_status == "supplier_marked_suspended" and raw_status == qfq_status == "suspended"

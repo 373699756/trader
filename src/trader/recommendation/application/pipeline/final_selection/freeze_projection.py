@@ -6,6 +6,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import time as wall_time
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.downside_action.downside_protection import (
@@ -42,6 +43,7 @@ from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_ga
 from trader.recommendation.application.pipeline.stage_output import MeasuredOutput, PipelineStageOutput, StageOutput
 from trader.recommendation.application.ports.loaded_profile import (
     ModelDiagnostics,
+    TomorrowProbability,
     ModelScoreBatch,
     ModelScoringContext,
     ModelScoringPort,
@@ -53,6 +55,8 @@ from trader.recommendation.domain.evidence.pipeline import PipelineStage
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.market.history_alignment import HISTORY_INPUT_FAILURES
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
+from trader.recommendation.domain.market.tomorrow_probability import IsTomorrowClosingQuote
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 from trader.recommendation.domain.publication.freeze_identity import (
     FreezeDownside,
     FreezeItem,
@@ -80,7 +84,7 @@ from trader.recommendation.domain.risk.scored_fusion import (
     ScoredReviewCandidate,
     SelectScoredReviewCandidates,
 )
-from trader.recommendation.domain.scoring.profile_identity import MODEL_RANK_SCORE_SCALES
+from trader.recommendation.domain.scoring.profile_identity import MODEL_SELECTION_SCORE_SCALES, TOMORROW_PROBABILITY_SCORE_SCALE
 from trader.recommendation.domain.selection.scored_selection import (
     ApplySelectionRisks,
     FilteredCandidateInputs,
@@ -102,7 +106,7 @@ class ScoredLocalProjection:
     local: ScoredFreeze
     stages: ScoredStageChain
     score_model_version: str | None = None
-    model_diagnostics: tuple[tuple[str, ModelDiagnostics], ...] = ()
+    model_diagnostics: tuple[tuple[str, ModelDiagnostics | TomorrowProbability], ...] = ()
     downside_assessments: tuple[tuple[str, DownsideAssessment], ...] = ()
     cost_reference_version: str | None = None
     started_monotonic: float | None = None
@@ -127,7 +131,7 @@ class _FreezeProjectionContext:
     downside_assessments: tuple[tuple[str, DownsideAssessment], ...]
     parent_version: str | None = None
     score_model_version: str | None = None
-    model_diagnostics: Mapping[str, ModelDiagnostics] | None = None
+    model_diagnostics: Mapping[str, ModelDiagnostics | TomorrowProbability] | None = None
     cost_reference_version: str | None = None
     score_scale: str = WEIGHTED_EVIDENCE_SCORE_SCALE
     score_model_id: str | None = None
@@ -135,6 +139,7 @@ class _FreezeProjectionContext:
     production_authority: bool = True
     rank_population_version: str | None = None
     preview_context: PreviewContext | None = None
+    official_close_evidence: str | None = None
 
 
 @dataclass(frozen=True)
@@ -163,7 +168,8 @@ def BuildScoredLocal(
     model_scoring = runtime.model_scoring
     profile_status = model_scoring.status() if model_scoring is not None else None
     head_status = profile_status.heads.get(native_input.strategy) if profile_status is not None else None
-    model_rank = head_status is not None and head_status.score_scale in MODEL_RANK_SCORE_SCALES
+    model_rank = head_status is not None and head_status.score_scale in MODEL_SELECTION_SCORE_SCALES
+    predicts_close_gain = head_status is not None and head_status.score_scale == TOMORROW_PROBABILITY_SCORE_SCALE
     if runtime.quality_batch is None:
         minimum_history = (
             model_scoring.history_required_sessions(native_input.strategy)
@@ -178,6 +184,12 @@ def BuildScoredLocal(
         if quality_batch.native_input != native_input:
             raise ValueError("scoring context does not match its quality batch")
     native_input = quality_batch.native_input
+    official_close_evidence = (
+        _official_close_evidence(native_input, quality_batch.output.records)
+        if predicts_close_gain else None
+    )
+    if predicts_close_gain and native_input.phase == "close_fallback" and official_close_evidence is None:
+        raise ValueError("tomorrow_closing_evidence_pending")
     population_qualifications = runtime.population_qualifications
     if population_qualifications is not None:
         ValidatePopulationQualifications(
@@ -204,15 +216,19 @@ def BuildScoredLocal(
         and (native_input.phase != "close_fallback" or model_rank)
         and model_scoring.uses_model(strategy)
     )
+    prediction_inputs = (
+        _model_eligible_features(
+            scoring_input.candidate_features,
+            policy,
+            evaluated_at=native_input.evaluated_at,
+            max_age_seconds=native_input.score_max_age_seconds,
+        )
+        if uses_model else ()
+    )
     model_batch = (
         model_scoring.score(
             strategy,
-            _model_eligible_features(
-                scoring_input.candidate_features,
-                policy,
-                evaluated_at=native_input.evaluated_at,
-                max_age_seconds=native_input.score_max_age_seconds,
-            ),
+            prediction_inputs,
             context=replace(
                 runtime.scoring_context or ModelScoringContext(),
                 population_features=(
@@ -240,11 +256,17 @@ def BuildScoredLocal(
     minimum_history_sessions = (
         model_scoring.history_required_sessions(strategy) if model_scoring is not None and uses_model else 20
     )
-    production_authority = (profile_status is None or profile_status.production_authority) and (
+    production_authority = (
+        head_status.production_authority
+        if predicts_close_gain and head_status is not None
+        else profile_status is None or profile_status.production_authority
+    ) and (
         model_batch is None or model_batch.production_authority
     )
-    if model_rank and (model_batch is None or model_batch.score_scale not in MODEL_RANK_SCORE_SCALES):
+    if model_rank and (model_batch is None or model_batch.score_scale not in MODEL_SELECTION_SCORE_SCALES):
         raise ValueError("model_rank_unavailable")
+    if predicts_close_gain and prediction_inputs and model_batch is not None and not model_batch.diagnostics:
+        raise ValueError("tomorrow_probability_inputs_pending")
     profile_history_qualified_codes = (
         frozenset(
             feature.quote.code
@@ -307,6 +329,7 @@ def BuildScoredLocal(
             strategy=strategy,
             minimum_history_sessions=minimum_history_sessions,
             model_input_eligible_codes=profile_history_qualified_codes,
+            require_profile_history_window=not predicts_close_gain,
         ),
         ScoredSelectionIdentity(
             trade_date=native_input.trade_date,
@@ -346,6 +369,11 @@ def BuildScoredLocal(
                     else item.ranking_score
                 ),
                 shadow_only=not production_authority,
+                execution_gate_reason=(
+                    "local_risk_veto"
+                    if predicts_close_gain and any(fact.veto for fact in item.local_risk_facts)
+                    else item.execution_gate_reason
+                ),
             )
             for item in selection.scored_candidates
         }
@@ -439,6 +467,7 @@ def BuildScoredLocal(
                 production_authority=production_authority,
                 rank_population_version=model_batch.rank_population_version if model_batch is not None else None,
                 preview_context=native_input.preview_context,
+                official_close_evidence=official_close_evidence,
             ),
         ),
         score_model_version=model_version,
@@ -507,7 +536,7 @@ def _model_execution_gate_reasons(
     return {
         code: "model_net_utility_non_positive"
         for code, diagnostics in model_batch.diagnostics.items()
-        if diagnostics.predicted_net_excess_pct <= 0.0
+        if isinstance(diagnostics, ModelDiagnostics) and diagnostics.predicted_net_excess_pct <= 0.0
     }
 
 
@@ -648,7 +677,7 @@ def _scored_freeze(
     execution_versions: tuple[tuple[str, str], ...] = ()
     if not context.production_authority:
         execution_versions = (("production_authority", "false"), ("execution_mode", "shadow"))
-    elif context.score_scale in MODEL_RANK_SCORE_SCALES:
+    elif context.score_scale in MODEL_SELECTION_SCORE_SCALES:
         execution_versions = (("production_authority", "true"), ("execution_mode", "production"))
     return ScoredFreeze(
         strategy=context.strategy,
@@ -670,6 +699,11 @@ def _scored_freeze(
                 ("score_contract_hash", context.score_contract_hash),
                 ("rank_population", context.rank_population_version),
                 ("cost_reference", context.cost_reference_version),
+                (
+                    "prediction_target",
+                    TOMORROW_CLOSE_GAIN_TARGET if context.score_scale == TOMORROW_PROBABILITY_SCORE_SCALE else None,
+                ),
+                ("tomorrow_close_evidence", context.official_close_evidence),
             )
             if value is not None
         )
@@ -702,7 +736,7 @@ def _freeze_item(
     *,
     strategy: Strategy,
     review_eligible: bool,
-    model_diagnostics: ModelDiagnostics | None,
+    model_diagnostics: ModelDiagnostics | TomorrowProbability | None,
     downside: DownsideAssessment,
 ) -> FreezeItem:
     reason = entry.freeze_skip_reason or entry.action_reason or "not_selected"
@@ -754,7 +788,7 @@ def _freeze_item(
                 predicted_net_excess_pct=model_diagnostics.predicted_net_excess_pct,
                 model_disagreement_pct=model_diagnostics.model_disagreement_pct,
             )
-            if model_diagnostics is not None
+            if isinstance(model_diagnostics, ModelDiagnostics)
             else None
         ),
     )
@@ -767,6 +801,10 @@ def _selection_diagnostics(
     policy = context.freeze_policy
     selected = tuple(item for item in epoch.entries if item.selected)
     maximum_final_score = max((item.score.final_score for item in epoch.entries), default=None)
+    maximum_action_score = (
+        max((item.score.local_score for item in epoch.entries), default=None)
+        if context.score_scale == TOMORROW_PROBABILITY_SCORE_SCALE else maximum_final_score
+    )
     observation_floor = max(0.0, policy.executable_threshold - policy.observation_margin)
     empty_reason = None
     if _has_no_positive_model_utility(epoch, context):
@@ -776,7 +814,7 @@ def _selection_diagnostics(
     elif not selected:
         if _has_no_positive_model_utility(epoch, context):
             empty_reason = "no_positive_net_utility"
-        elif maximum_final_score is not None and maximum_final_score < observation_floor:
+        elif maximum_action_score is not None and maximum_action_score < observation_floor:
             empty_reason = "score_below_observation_floor"
         else:
             empty_reason = "risk_or_execution_blocked"
@@ -801,8 +839,37 @@ def _has_no_positive_model_utility(
     return (
         context.model_diagnostics is not None
         and bool(context.model_diagnostics)
-        and all(item.predicted_net_excess_pct <= 0.0 for item in context.model_diagnostics.values())
+        and all(
+            isinstance(item, ModelDiagnostics) and item.predicted_net_excess_pct <= 0.0
+            for item in context.model_diagnostics.values()
+        )
     )
+
+
+def _official_close_evidence(
+    native_input: ScoredNativeInput, qualified: tuple[FeatureSnapshot, ...]
+) -> str | None:
+    cutoff = datetime.combine(native_input.trade_date, wall_time(15), tzinfo=native_input.evaluated_at.tzinfo)
+    if native_input.preview_context is not None or native_input.evaluated_at < cutoff:
+        return None
+    if not any(
+        IsTomorrowClosingQuote(item.quote, native_input.trade_date, native_input.evaluated_at)
+        for item in native_input.market_features
+    ) or any(
+        not IsTomorrowClosingQuote(item.quote, native_input.trade_date, native_input.evaluated_at)
+        for item in qualified
+    ):
+        return None
+    for item in (*native_input.market_features, *qualified):
+        if item.company_context is not None and item.company_context.facts.published_at > cutoff:
+            return None
+        if any(
+            evidence.evidence_type != "structured_point_in_time"
+            and (evidence.published_at > cutoff or evidence.received_at is not None and evidence.received_at > cutoff)
+            for evidence in item.evidence
+        ):
+            return None
+    return f"official-close:{native_input.input_version}"
 
 
 def _freeze_quote(quote: MarketQuote) -> FreezeQuote:

@@ -93,7 +93,7 @@ def test_source_parse_failure_reports_exchange_and_safe_cause_before_summary(exc
     def forbidden(_reference):
         pytest.fail("download must not start after official population preparation fails")
 
-    result = SyncData(prepare, forbidden, forbidden, forbidden, lambda: False).execute("history")
+    result = SyncData(prepare, forbidden, forbidden, lambda: False).execute("history")
 
     assert result.failure == f"preparation_reference_{exchange.lower()}_listings_invalid"
     assert result.tasks == () and result.exit_code == 1

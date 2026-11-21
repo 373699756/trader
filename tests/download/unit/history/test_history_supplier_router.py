@@ -32,7 +32,6 @@ from trader.download.entrypoints.history_sync_progress import StderrHistorySyncP
 
 from trader.download.infra.history_control_index import HistoryControlIndex
 
-from trader.download.infra.download_settings import LoadQfqWindowConfiguration
 
 from trader.download.infra.industry_query_index import IndustrySourceDocument, SQLiteIndustryQueryIndex
 
@@ -321,7 +320,6 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
             reference_root=(tmp_path).parent / "reference",
             supplier_timeout_seconds=17.0,
         ),
-        qfq_configuration=LoadQfqWindowConfiguration(Path(__file__).resolve().parents[4]),
         shutdown_timeout_seconds=2.0,
         reference=reference,
         clock=lambda: _at(dates[-1]), sqlite_policy=SqlitePolicyFixture(),

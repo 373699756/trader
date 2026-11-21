@@ -27,7 +27,6 @@ from zoneinfo import ZoneInfo
 import trader
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncTarget
-from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.company_sync import (
     CompanySyncFamily, CompanySyncFamilyResult, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult,
@@ -37,18 +36,15 @@ from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.download.domain.published_history import PublishedHistoryWindow
-from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
+from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.download_settings import (
     LoadHistorySyncConfiguration,
-    LoadQfqWindowConfiguration,
 )
 from trader.bootstrap import ExecuteHistorySync
 from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
-from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings.data_paths import DataPaths
@@ -77,7 +73,6 @@ class _InputIdentities:
     reference: str | None
     history: str
     company: str
-    market: str | None
 
 
 @dataclass(frozen=True)
@@ -170,29 +165,6 @@ class _SyncFixture:
             ),
         )
 
-    def market(self, reference: PreparedReference) -> QfqUpdateResult:
-        if reference is not self.reference:
-            raise RuntimeError("database_baseline_reference_not_shared")
-        v2 = SQLiteQfqWindowCache(self.paths.daily_window, "v2", sqlite_policy=self._sqlite_policy)
-        v3 = SQLiteQfqWindowCache(self.paths.daily_window, "v3", sqlite_policy=self._sqlite_policy)
-        updater = UpdateQfqWindows(
-            v2,
-            v3,
-            self.supplier,
-            cancel_requested=lambda: False,
-            report=lambda _progress: None,
-            configuration=LoadQfqWindowConfiguration(PROJECT_ROOT),
-        )
-        runner = QfqUpdateRunner(
-            ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(self.paths.history, sqlite_policy=self._sqlite_policy)),
-            updater,
-            v2,
-            v3,
-            self.paths.daily_window.with_suffix(".lock"),
-            lambda: _NOW,
-        )
-        return self._measure("market", runner.execute)
-
     def company(self, reference: PreparedReference) -> CompanySyncRoundResult:
         if reference is not self.reference:
             raise RuntimeError("database_baseline_reference_not_shared")
@@ -207,12 +179,14 @@ class _SyncFixture:
             inputs = BuildCompanyMeasurementInputs(codes, _NOW, index.extraction_hash)
             with SqliteSession(index.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
                 parent = ReadCompanyPublicationIdentity(connection)
+                current = {fact.code: fact for fact in ReadCompanyFactRows(connection, codes)}
             published = index.publish(
-                inputs.facts, dict(inputs.sources), parent, _NOW, receipts=inputs.receipts, field_results=(),
+                tuple(fact for fact in inputs.facts if current.get(fact.code) != fact),
+                dict(inputs.sources), parent, _NOW, receipts=inputs.receipts, field_results=(),
             )
             scope = CompanySyncRoundScope(codes, _NOW)
             return CompanySyncRoundResult(
-                CanonicalDigest((scope, published.identity.content_hash, "synthetic_company_inputs_only")), scope,
+                CanonicalDigest((scope, published.identity.content_hash.hex(), "synthetic_company_inputs_only")), scope,
                 tuple(CompanySyncFamilyResult(family, 1, len(inputs.facts) if family is CompanySyncFamily.FINANCIAL else 0,
                     0, CompanySyncStepResult(True, False, changed_codes=published.changed_codes
                         if family is CompanySyncFamily.FINANCIAL else (),
@@ -227,8 +201,8 @@ class _SyncFixture:
         self.phases.clear()
         before = self.preparations
         started = time.monotonic()
-        result = SyncData(self.prepare, self.history, self.market, self.company, lambda: False).execute(target)
-        expected = ("history", "market", "company") if target == "all" else (target,)
+        result = SyncData(self.prepare, self.history, self.company, lambda: False).execute(target)
+        expected = ("history", "company") if target == "all" else (target,)
         isolated_company_only = all(
             task.status == "completed" or task.task == "company" and task.status == "pending"
             and task.company is not None and task.company.processing_complete
@@ -306,7 +280,7 @@ class _SyncFixture:
         if research.status().entries != (len(codes) if self.paths.company.exists() else 0):
             raise RuntimeError("database_baseline_company_projection_failed")
         published = _InputIdentities(
-            references.status().loaded_identity, identities[0], research.loaded_identity, self.window_identity()
+            references.status().loaded_identity, identities[0], research.loaded_identity
         )
         return _Startup(
             published,
@@ -325,20 +299,13 @@ class _SyncFixture:
                     "reference": published.reference,
                     "history": published.history,
                     "company": published.company,
-                    "market": published.market,
                 },
             },
         )
 
-    def window_identity(self) -> str | None:
-        if not self.paths.daily_window.exists():
-            return None
-        codes = tuple(item.code for item in self.reference.eligible_universe)
-        return CanonicalDigest(SQLiteQfqWindowCache(self.paths.daily_window, "v2", sqlite_policy=self._sqlite_policy).read_codes(codes))
-
 
 def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, disk_kind: DiskKind, sqlite_policy: SqliteIoPolicy) -> dict[str, object]:
-    targets: tuple[SyncTarget, ...] = ("all", "history", "market", "company")
+    targets: tuple[SyncTarget, ...] = ("all", "history", "company")
     runs: dict[str, dict[str, object]] = {}
     identities: dict[str, _InputIdentities] = {}
     for target in targets:
@@ -347,12 +314,11 @@ def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, disk_kind: Disk
         startup = fixture.startup()
         identities[target] = startup.identities
         # Each independent target starts with absent unrelated directories.
-        expected = ("history", "market", "company") if target == "all" else (target,)
+        expected = ("history", "company") if target == "all" else (target,)
         actual = tuple(
             name
             for name, path in (
                 ("history", fixture.paths.history),
-                ("market", fixture.paths.daily_window),
                 ("company", fixture.paths.company),
             )
             if path.exists()
@@ -372,7 +338,6 @@ def MeasureSyncBaseline(root: Path, *, size: int, sessions: int, disk_kind: Disk
     combined = identities["all"]
     if (
         identities["history"].history != combined.history
-        or identities["market"].market != combined.market
         or identities["company"].company != combined.company
         or any(value.reference != combined.reference for value in identities.values())
     ):
@@ -511,7 +476,7 @@ def _compare(
     sessions: int,
     rounds: int,
     disk_kind: DiskKind,
-    focus: Literal["history", "market-company"] = "history",
+    focus: Literal["history", "company"] = "history",
     *,
     runtime_config: Path = TOOL_ROOT / "config/runtime.json",
 ) -> dict[str, object]:
@@ -559,7 +524,7 @@ def _compare(
         if focus == "history"
         else tuple(
             tuple(f"sync.targets.{target}.{phase}.wall_seconds" for phase in ("initial", "same_day"))
-            for target in ("market", "company")
+            for target in ("company",)
         )
     )
     improved = [
@@ -574,7 +539,7 @@ def _compare(
         history_walls
         + tuple(
             f"sync.targets.{target}.{phase}.wall_seconds"
-            for target in ("all", "history", "market", "company")
+            for target in ("all", "history", "company")
             for phase in ("initial", "same_day")
         )
         + tuple(f"sync.targets.{target}.startup.phases.startup_history.wall_seconds" for target in ("all", "history"))
@@ -633,7 +598,7 @@ def Main() -> int:
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--include-training", action="store_true")
     parser.add_argument("--baseline-checkout", type=Path)
-    parser.add_argument("--acceptance-focus", choices=("history", "market-company"), default="history")
+    parser.add_argument("--acceptance-focus", choices=("history", "company"), default="history")
     parser.add_argument("--expected-product-root", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--runtime-config", type=Path, default=TOOL_ROOT / "config/runtime.json")
     args = parser.parse_args()

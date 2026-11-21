@@ -1,0 +1,94 @@
+"""Apply the shared Tomorrow model to one prepared market batch."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from trader.recommendation.application.ports.loaded_profile import (
+    ModelScoreBatch,
+    ModelScoringContext,
+    ScoringHeadRuntimeStatus,
+    TomorrowProbability,
+)
+from trader.recommendation.domain.candidate.filters import BoardForSnapshot
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.tomorrow_probability import BuildTomorrowFeatures, TomorrowProbabilityPredictor
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
+from trader.recommendation.domain.scoring.profile_identity import (
+    ScoringProfileId,
+    TOMORROW_PROBABILITY_SCORE_SCALE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TomorrowProbabilityCapability:
+    profile_id: ScoringProfileId
+    predictor: TomorrowProbabilityPredictor | None
+
+    @property
+    def history_required_sessions(self) -> int:
+        # Local downside controls still require the baseline history window.
+        return 20
+
+    def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
+        return self.predictor is not None and _features(feature) is not None
+
+    def score(
+        self,
+        features: Sequence[FeatureSnapshot],
+        *,
+        context: ModelScoringContext | None = None,
+    ) -> ModelScoreBatch:
+        predictor = self.predictor
+        if predictor is None:
+            raise RuntimeError("tomorrow_probability_model_unavailable")
+        codes: list[str] = []
+        vectors: list[tuple[float, ...]] = []
+        missing: list[str] = []
+        for feature in sorted(features, key=lambda item: item.quote.code):
+            vector = _features(feature)
+            if vector is None:
+                missing.append(feature.quote.code)
+                continue
+            codes.append(feature.quote.code)
+            vectors.append(vector)
+        predictions = tuple(
+            TomorrowProbability(code, probability)
+            for code, probability in zip(codes, predictor.predict_probabilities(tuple(vectors)), strict=True)
+        )
+        return ModelScoreBatch(
+            predictor.identity,
+            {prediction.code: prediction for prediction in predictions},
+            predictions,
+            tuple(missing),
+            score_scale=TOMORROW_PROBABILITY_SCORE_SCALE,
+            score_model_id=TOMORROW_CLOSE_GAIN_TARGET,
+            score_contract_hash=predictor.identity,
+        )
+
+    def status(self) -> ScoringHeadRuntimeStatus:
+        identity = self.predictor.identity if self.predictor is not None else ""
+        return ScoringHeadRuntimeStatus(
+            is_enabled=self.predictor is not None,
+            profile_id=self.profile_id,
+            model_id=TOMORROW_CLOSE_GAIN_TARGET,
+            model_hash=identity,
+            scoring_version=identity,
+            activation_basis="trained_artifact",
+            historical_status="historical_data_insufficient",
+            historical_failure_reasons=(
+                ("tomorrow_probability_model_unavailable",) if self.predictor is None else ("point_in_time_not_proven",)
+            ),
+            monitoring_mode="automatic_t1_outcome_settlement",
+            automatic_model_update=False,
+            loss_probability_status="not_modeled",
+            score_scale=TOMORROW_PROBABILITY_SCORE_SCALE,
+        )
+
+
+def _features(feature: FeatureSnapshot) -> tuple[float, ...] | None:
+    quote = feature.quote
+    return BuildTomorrowFeatures(
+        quote.open_price, quote.high, quote.low, quote.price, quote.volume, BoardForSnapshot(feature)
+    )

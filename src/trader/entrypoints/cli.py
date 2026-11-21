@@ -60,8 +60,8 @@ def BuildParser() -> argparse.ArgumentParser:
     )
     training.add_argument("--json", action="store_true", help="Print complete result JSON to stdout.")
     training.add_argument("--diagnostics", type=Path, help="Write full diagnostics to a new file; never overwrite.")
-    sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history, market and company.")
-    sync.add_argument("target", nargs="?", default="all", choices=("all", "market", "company", "history"))
+    sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history and company.")
+    sync.add_argument("target", nargs="?", default="all", choices=("all", "company", "history"))
     sync.add_argument("operation", nargs="?", choices=("fill",), help="仅company：恢复本地缺证和已知原件；不按字段空值扩大逐股PDF下载。")
     subparsers.add_parser(
         "history-automation-status",
@@ -360,7 +360,7 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
         scoring_profile=profile_override,
     )
     watchlist = LoadLongWatchlist(runtime.long_watchlist_path)
-    from trader.download.infra.download_settings import LoadDownloadFailureConfiguration, LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
+    from trader.download.infra.download_settings import LoadDownloadFailureConfiguration, LoadHistorySyncConfiguration
     from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
     from trader.training.infra.research_settings import LoadEvaluationCostScenarios
     from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
@@ -371,7 +371,6 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
 
     config_dir = runtime.config_path.parent
     download = LoadHistorySyncConfiguration(runtime.project_root, runtime.data_paths)
-    qfq = LoadQfqWindowConfiguration(runtime.project_root)
     failure = LoadDownloadFailureConfiguration(runtime.project_root)
     training_v2 = LoadProfileTrainingSettings(runtime.project_root, "v2")
     training_v3 = LoadProfileTrainingSettings(runtime.project_root, "v3")
@@ -398,10 +397,8 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
             "maximum_codes": download.write_batches.maximum_codes,
             "maximum_cells": download.write_batches.maximum_cells,
         },
-        "qfq_sessions": {"v2": qfq.v2_sessions, "v3": qfq.v3_sessions},
-        "qfq_workers": qfq.workers,
-        "qfq_source_timeout_seconds": qfq.source_timeout_seconds,
-        "qfq_source_retries": qfq.source_retries,
+        "history_tencent_timeout_seconds": download.tencent_timeout_seconds,
+        "history_tencent_retries": download.tencent_retries,
         "download_failure_diagnostics": {"retention_limit": failure.retention_limit, "query_limit": failure.query_limit},
         "sqlite_policy": {
             "hdd": {

@@ -7,7 +7,7 @@ from typing import cast
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryCell, PublishedHistorySide
-from trader.download.infra.price_columns import PriceCellFromColumns, PriceColumnValues, PriceValues
+from trader.download.infra.price_columns import PRICE_COLUMNS, PriceCellFromColumns, PriceColumnValues, PriceValues
 from trader.infra.sqlite_codec import DecodeHash
 
 
@@ -30,7 +30,7 @@ def PublishedCellFromPriceColumns(row: tuple[object, ...]) -> PublishedHistoryCe
 
 
 def _columns(row: tuple[object, ...]) -> tuple[PublishedHistoryCell, int, BaoStockBoard, str, str]:
-    if len(row) != 30:
+    if len(row) != 6 + len(PRICE_COLUMNS):
         raise ValueError("history_revision_column_count_invalid")
     day, code, revision_id, sequence, board = row[:5]
     if (
@@ -64,6 +64,7 @@ def _side(value: PublishedHistorySide | None) -> BaoStockDailySide | None:
         value.pct_change,
         value.turnover,
         value.trading_status,
+        value.reconstructed_from,
     )
 
 

@@ -38,6 +38,7 @@ from trader.recommendation.domain.publication.freeze_identity import (
     ScoredFreeze,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class CloseControlCoordinator:
         self._control_pending: set[str] = set()
         self._control_completed: OrderedDict[str, None] = OrderedDict()
         self._close_input: RefreshOutcome | None = None
+        self._last_tomorrow_settlement: float | None = None
 
     def rotate_session(self) -> None:
         with self._lock:
@@ -70,7 +72,7 @@ class CloseControlCoordinator:
         at = scheduled.scheduled_at
         missing = tuple(
             strategy
-            for strategy in (Strategy.TOMORROW, Strategy.D25)
+            for strategy in self._dependencies.scored_strategies
             if (formal := self._dependencies.index.snapshot(strategy).formal) is None or formal.trade_date != at.date()
         )
         with self._lock:
@@ -118,7 +120,16 @@ class CloseControlCoordinator:
         *,
         recovery_path: Literal["current", "close_rebuild"],
     ) -> None:
-        native_version = dict(current.input_versions).get("native", current.version)
+        versions = dict(current.input_versions)
+        native_version = versions.get("native", current.version)
+        close_version = (
+            versions.get("tomorrow_close_evidence")
+            if versions.get("prediction_target") == TOMORROW_CLOSE_GAIN_TARGET
+            else f"official-close:{native_version}"
+        )
+        if close_version is None:
+            self._hooks.failure("seal", "tomorrow_closing_evidence_pending", request.strategy)
+            return
         try:
             with SessionGuard(request.session):
                 self._dependencies.sealing.freeze_close_fallback(
@@ -126,7 +137,7 @@ class CloseControlCoordinator:
                     request.observed_at,
                     current,
                     recovery_path=recovery_path,
-                    official_close_version=f"official-close:{native_version}",
+                    official_close_version=close_version,
                 )
         except StaleSessionError:
             return
@@ -180,8 +191,10 @@ class CloseControlCoordinator:
                 self._dependencies.sealing.freeze(strategy, at, current)
         except StaleSessionError:
             return
-        except SealUnavailableError:
-            self._hooks.failure("seal", "freeze_unavailable", strategy)
+        except SealUnavailableError as exc:
+            if str(exc) == "tomorrow_closing_evidence_pending":
+                missed = True
+            self._hooks.failure("seal", "tomorrow_closing_evidence_pending" if missed else "freeze_unavailable", strategy)
         except Exception as exc:
             self._hooks.failure("seal", f"freeze_unexpected:{type(exc).__name__}", strategy)
         else:
@@ -212,6 +225,33 @@ class CloseControlCoordinator:
         if future is None:
             self._finish_control(key, success=False)
             self._hooks.failure("settlement", "settlement_capacity_rejected", None)
+
+    def submit_tomorrow_settlement(self, at: datetime) -> None:
+        settle = self._dependencies.tomorrow_settlement
+        if settle is None:
+            return
+        key = "tomorrow_close_gain_settlement"
+        with self._lock:
+            now = self._dependencies.monotonic()
+            if self._last_tomorrow_settlement is not None and now - self._last_tomorrow_settlement < 60:
+                return
+            if not self._reserve_control(key):
+                return
+            self._last_tomorrow_settlement = now
+        if self._control.submit(self._run_tomorrow_settlement, key, at, settle) is None:
+            self._finish_control(key, success=False)
+            self._hooks.failure("settlement", "tomorrow_settlement_capacity_rejected", Strategy.TOMORROW)
+
+    def _run_tomorrow_settlement(
+        self, key: str, at: datetime, settle: Callable[[datetime], object]
+    ) -> None:
+        try:
+            settle(at)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._hooks.failure("settlement", f"tomorrow_settlement:{type(exc).__name__}", Strategy.TOMORROW)
+        finally:
+            # The next round must still inspect newly committed History.
+            self._finish_control(key, success=False)
 
     def _run_settlement(self, key: str, at: datetime) -> None:
         success = False

@@ -14,22 +14,18 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.current_industry_publication import CurrentIndustryCache
-from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.recommendation.domain.market.history_metrics import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.infra.settings.loading import LoadStrategySettings
-from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import (
-    ProductionModelScoringService,
-    SharedModelFeatureCache,
-)
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.ports.loaded_profile import ModelPredictorPort
+from trader.recommendation.application.ports.loaded_profile import ModelPredictorPort, ModelScoringPort
 from trader.recommendation.domain.market.industry import QuoteWithIndustry
 from trader.recommendation.domain.market.models import FeatureSnapshot, ModelIndustryReference
 from trader.recommendation.domain.market.price_basis import HistoryPriceAnchor
+from trader.recommendation.domain.market.tomorrow_probability import TOMORROW_FEATURE_NAMES
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.infra.market_data.published_history_bars import QfqBars
@@ -37,7 +33,8 @@ from trader.recommendation.infra.market_data.published_references import Publish
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.recommendation.infra.scoring.profile_factory import BuildProfileScoring, LoadScoringProfile
+from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 
@@ -69,7 +66,7 @@ class FactorInputs:
     profile: ScoringProfileId
     policy: RecommendationPolicy
     builder: FeatureBuilder
-    models: ModelScoringRouter
+    models: ModelScoringPort
     model_heads: tuple[ModelFeatureRequirements, ...]
     histories: Mapping[str, tuple[DailyBar, ...]]
     contexts: Mapping[str, HistoryContext]
@@ -105,7 +102,7 @@ def ReadReferences(reference_root: Path, at: datetime, *, sqlite_policy: SqliteI
 
 
 def LoadFactorInputs(
-    config: Path, qfq_database: Path, profile: ScoringProfileId, codes: tuple[str, ...], at: datetime, *, sqlite_policy: SqliteIoPolicy
+    config: Path, history_root: Path, profile: ScoringProfileId, codes: tuple[str, ...], at: datetime, *, sqlite_policy: SqliteIoPolicy
 ) -> FactorInputs:
     if profile not in ("v2", "v3"):
         raise ValueError("market_factor_inputs_unsupported_profile")
@@ -113,11 +110,11 @@ def LoadFactorInputs(
     settings = LoadRuntimeSettings(config)
     strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile)
     training = LoadProfileTrainingSettings(settings.project_root, profile)
-    cache = SQLiteQfqWindowCache(qfq_database, profile, sqlite_policy=sqlite_policy)
+    cache = SQLitePublishedHistorySnapshot(history_root, sqlite_policy=sqlite_policy)
     manifest = cache.manifest()
     if manifest is None:
         raise RuntimeError("qfq_snapshot_unavailable")
-    windows = cache.read_codes(codes)
+    windows = cache.read_windows(manifest, codes, sessions=training.history_sessions)
     histories = {window.code: HistoryAtCut(QfqBars(window), at) for window in windows}
     price_anchors = {
         window.code: tuple(
@@ -136,25 +133,17 @@ def LoadFactorInputs(
         raise RuntimeError("qfq_snapshot_changed")
     read_ms = (time.monotonic() - started) * 1000
     started = time.monotonic()
-    loaded = LoadScoringProfile(profile, training_root=settings.data_paths.models)
-    model_heads = tuple(
-        ModelFeatureRequirements(
-            strategy=target,
-            feature_ids=cast(ModelPredictorPort, loaded.heads[target].predictor).feature_ids,
-            requires_industry=cast(
-                ModelPredictorPort, loaded.heads[target].predictor
-            ).exposure_contract.requires_industry,
-        )
-        for target in (Strategy.TOMORROW, Strategy.D25)
+    loaded = LoadScoringProfile(profile, training_root=settings.data_paths.models, d25_only=True)
+    d25_predictor = cast(ModelPredictorPort, loaded.heads[Strategy.D25].predictor)
+    model_heads = (
+        ModelFeatureRequirements(Strategy.TOMORROW, TOMORROW_FEATURE_NAMES, False),
+        ModelFeatureRequirements(Strategy.D25, d25_predictor.feature_ids, d25_predictor.exposure_contract.requires_industry),
     )
     cost = LoadExecutionCostPolicy(config.parent)
-    shared = SharedModelFeatureCache()
-    models = ModelScoringRouter(
-        profile,
-        {
-            target: ProductionModelScoringService(loaded, target, cost_policy=cost, shared_features=shared)
-            for target in (Strategy.TOMORROW, Strategy.D25)
-        },
+    models = BuildProfileScoring(
+        profile, loaded, history_sessions=training.history_sessions, model_failure="",
+        cost_policy=cost, maintenance=None, shared_tomorrow=True,
+        tomorrow_predictor=LoadTomorrowProbabilityModel(settings.data_paths.models),
     )
     model_ms = (time.monotonic() - started) * 1000
     history_sessions = max(models.history_required_sessions(target) for target in (Strategy.TOMORROW, Strategy.D25))

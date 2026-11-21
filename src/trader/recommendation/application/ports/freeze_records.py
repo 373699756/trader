@@ -7,6 +7,7 @@ from datetime import date
 from typing import Protocol
 
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord
+from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -36,6 +37,8 @@ class FreezeRecordPort(Protocol):
 
     def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None: ...
 
+    def load_history(self, strategy: Strategy, trade_date: date) -> HistoricalFreezeRecord | None: ...
+
     def list_dates(
         self,
         strategy: Strategy,
@@ -43,6 +46,10 @@ class FreezeRecordPort(Protocol):
         limit: int = 31,
         year: int | None = None,
         month: int | None = None,
+    ) -> tuple[date, ...]: ...
+
+    def list_settlement_dates(
+        self, strategy: Strategy, *, after: date | None, limit: int
     ) -> tuple[date, ...]: ...
 
     def recover(self) -> FreezeRecordRecoverySummary: ...

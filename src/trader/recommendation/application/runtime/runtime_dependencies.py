@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
@@ -33,6 +34,7 @@ from trader.recommendation.application.runtime.cadence import (
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.run_scope import RecommendationRunScope
 from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
+from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)
@@ -59,3 +61,11 @@ class RuntimeDependencies:
     rounds: RecommendationRounds = field(default_factory=RecommendationRounds)
     round_profile: str = "default"
     prepare_publication: Callable[[], None] | None = None
+    shared_tomorrow_owner: bool | None = None
+    tomorrow_settlement: Callable[[datetime], object] | None = None
+
+    @property
+    def scored_strategies(self) -> tuple[Strategy, ...]:
+        if self.shared_tomorrow_owner is False:
+            return (Strategy.D25,)
+        return Strategy.TOMORROW, Strategy.D25

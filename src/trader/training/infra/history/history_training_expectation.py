@@ -23,7 +23,7 @@ class HistoryTrainingExpectation:
 
     def __post_init__(self) -> None:
         if (
-            tuple(strategy for strategy, _ in self.contracts) != (Strategy.TOMORROW, Strategy.D25)
+            tuple(strategy for strategy, _ in self.contracts) not in {(Strategy.TOMORROW, Strategy.D25), (Strategy.D25,)}
             or any(len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
                    for _, value in self.contracts)
         ):

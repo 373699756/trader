@@ -27,7 +27,7 @@ from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
 from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 from trader.recommendation.infra.market_data.published_input_preloader import PublishedInputPreloader
-from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+from trader.recommendation.application.ports.freeze_records import FreezeRecordPort
 from trader.recommendation.infra.persistence.freeze_trace_index import SQLiteFreezeTraceIndex
 from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
@@ -50,7 +50,7 @@ class RuntimeBuildContext:
 @dataclass(frozen=True)
 class RuntimePersistenceContext:
     sequence: PublicationSequence
-    records: SQLiteFreezeRecords
+    records: FreezeRecordPort
     budget: DeepSeekBudgetLedger
     outcomes: SQLiteOutcomeEvidenceIndex
 
@@ -68,7 +68,7 @@ class SharedRecommendationInputs:
 
 @dataclass(frozen=True)
 class RuntimePublicationContext:
-    tomorrow_records: SQLiteFreezeRecords
+    tomorrow_records: FreezeRecordPort
     tomorrow_index: UnifiedFreezeIndex
     freeze_drafts: UnifiedFreezeDraftIndex
     research_trace: SQLiteFreezeTraceIndex
@@ -83,7 +83,7 @@ class RuntimePublicationContext:
 @dataclass(frozen=True)
 class RuntimePublicationDependencies:
     next_sequence: Callable[[], int]
-    records: SQLiteFreezeRecords
+    records: FreezeRecordPort
     market_data: MarketFeatureService
     outcomes: SQLiteOutcomeEvidenceIndex
     additional_observers: tuple[FreezeEventConsumer[FreezeObservation], ...] = ()

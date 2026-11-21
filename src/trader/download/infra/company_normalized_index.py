@@ -24,7 +24,9 @@ from trader.download.infra.company_facts_index import (
 )
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EncodeCompanyTime, EVIDENCE_SOURCES, RequireCompanyTime
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
-from trader.download.infra.company_financial_observations import ReadCompanyFinancialObservations, WriteCompanyFinancialObservations
+from trader.download.infra.company_financial_observations import (
+    ReadCompanyFinancialObservations, ReadRoundCompanyFinancialObservations, WriteCompanyFinancialObservations,
+)
 from trader.download.infra.company_fact_inputs import BindCompanyEvidenceSource
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.infra.serialization.canonical_codec import CanonicalDigest
@@ -46,7 +48,9 @@ _SCHEMA = SqliteSchema((*COMPANY_FACTS_SCHEMA.statements,
     ) WITHOUT ROWID""",
     """CREATE TABLE company_round_member (
       scope TEXT NOT NULL,code TEXT NOT NULL,report_date TEXT NOT NULL,
-      PRIMARY KEY(scope,code,report_date)
+      record_hash TEXT,
+      PRIMARY KEY(scope,code,report_date),
+      FOREIGN KEY(code,report_date,record_hash) REFERENCES company_financial_observation(code,report_date,record_hash)
     ) WITHOUT ROWID""",
     """CREATE TABLE company_round_intent (
       scope TEXT PRIMARY KEY,generation BLOB NOT NULL,parent_content_hash BLOB,
@@ -144,7 +148,9 @@ class SQLiteCompanyNormalizedIndex:
                         item.source, item.source_key, item.code, item.record_hash, item.extraction_hash,
                     )))
                     or ReadCompanyDocumentLinks(connection, codes) != tuple(sorted(baseline.document_links, key=lambda item: (item.code, item.source, item.link.evidence_id)))
-                    or ReadCompanyFinancialObservations(connection, codes) != tuple(sorted(baseline.financial_observations, key=lambda item: item.business_key))
+                    or ReadCompanyFinancialObservations(connection, codes) != tuple(sorted(
+                        baseline.financial_observations, key=lambda item: (*item.business_key, item.record_hash),
+                    ))
                 ):
                     raise ValueError("company_normalization_partial_seed_changed")
             if parent is None:
@@ -201,12 +207,15 @@ class SQLiteCompanyNormalizedIndex:
             WriteCompanyFinancialObservations(connection, selected)
             connection.run_many(
                 "INSERT OR IGNORE INTO company_input_receipt VALUES(?,?,?,?,?,?,?,?,?)",
-                (("eastmoney_financial", f"{item.source_security_identity}:{item.financial.report_date}", item.financial.code,
+                (("eastmoney_financial", item.source_key, item.financial.code,
                   item.record_hash, self._facts.extraction_hash, None, EncodeCompanyTime(item.observed_at), "valid", "")
                  for item in selected),
             )
-            connection.run_many("INSERT INTO company_round_member VALUES(?,?,?)",
-                                ((scope, item.financial.code, item.financial.report_date.isoformat()) for item in page.observations))
+            selected_hashes = {item.record_hash for item in selected}
+            connection.run_many("INSERT INTO company_round_member VALUES(?,?,?,?)",
+                                ((scope, item.financial.code, item.financial.report_date.isoformat(),
+                                  item.record_hash if item.record_hash in selected_hashes else None)
+                                 for item in page.observations))
             connection.run("INSERT INTO company_round_page VALUES(?,?,?,?,?,?)", (scope, page.page, page.pages, page.total, page.raw_count, page.response_hash))
 
     def normalize(self, query: StructuredCompanyQuery, codes: tuple[str, ...], cutoff: datetime) -> tuple[str, ...]:
@@ -219,11 +228,18 @@ class SQLiteCompanyNormalizedIndex:
             previous = ReadCompanyFactRows(connection, codes)
             if tuple(item.code for item in previous) != codes:
                 raise ValueError("company_round_population_missing")
-            members = {(row[0], row[1]) for row in connection.run("SELECT code,report_date FROM company_round_member WHERE scope=?", (scope,))}
-            observations = tuple(item for item in ReadCompanyFinancialObservations(connection, codes)
-                                 if (item.financial.code, item.financial.report_date.isoformat()) in members)
+            observations = ReadRoundCompanyFinancialObservations(connection, scope)
+            current = {item.business_key: item.financial for item in observations}
+            if any(
+                item.observed_at <= cutoff and item.business_key in current and item.financial != current[item.business_key]
+                for item in ReadCompanyFinancialObservations(connection, codes)
+            ):
+                raise CompanyInputValidationFailure("company_normalization_revision_unproven")
+            by_code: dict[str, list[CompanyFinancialSourceObservation]] = {}
+            for observation in observations:
+                by_code.setdefault(observation.financial.code, []).append(observation)
             changed = tuple(candidate for fact in previous if (candidate := NormalizeCompanyFinancialFacts(
-                fact, tuple(item for item in observations if item.financial.code == fact.code), cutoff,
+                fact, tuple(by_code.get(fact.code, ())), cutoff,
             )) is not fact)
             fields = ReadCompanyFieldResults(connection, tuple(item.code for item in changed))
             sources = _sources(connection)
@@ -272,10 +288,8 @@ class SQLiteCompanyNormalizedIndex:
                 previous = {item.code: item for item in ReadCompanyFactRows(formal, codes)}
                 changed = tuple(item for item in facts if item != previous.get(item.code))
                 fields = ReadCompanyFieldResults(source, codes)
-                members = {(row[0], row[1]) for row in source.run("SELECT code,report_date FROM company_round_member WHERE scope=?", (scope,))}
-                observations = tuple(item for item in ReadCompanyFinancialObservations(source, codes)
-                                     if (item.financial.code, item.financial.report_date.isoformat()) in members)
-                financial_keys = {(item.financial.code, f"{item.source_security_identity}:{item.financial.report_date}", item.record_hash)
+                observations = ReadRoundCompanyFinancialObservations(source, scope)
+                financial_keys = {(item.financial.code, item.source_key, item.record_hash)
                                   for item in observations}
                 receipts = tuple(item for item in _receipts(source) if item.source != "eastmoney_financial"
                                  or (item.code, item.source_key, item.record_hash) in financial_keys)

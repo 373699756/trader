@@ -102,10 +102,20 @@ class HistoryTrainingPoint:
     qfq_high: float | None = None
     qfq_low: float | None = None
     raw_volume: float | None = None
+    raw_open: float | None = None
+    raw_high: float | None = None
+    raw_low: float | None = None
+    raw_close_price: float | None = None
+    raw_preclose: float | None = None
+    raw_amount: float | None = None
+    qfq_reconstruction_anchor: date | None = None
 
     def __post_init__(self) -> None:
         if type(self.trade_date) is not date:
             raise ValueError("history training point date is invalid")
+        anchor = self.qfq_reconstruction_anchor
+        if anchor is not None and (type(anchor) is not date or anchor < self.trade_date):
+            raise ValueError("history training point reconstruction anchor is invalid")
         if any(
             value is not None and (not math.isfinite(value) or value < 0.0)
             for value in (
@@ -115,6 +125,12 @@ class HistoryTrainingPoint:
                 self.qfq_high,
                 self.qfq_low,
                 self.raw_volume,
+                self.raw_open,
+                self.raw_high,
+                self.raw_low,
+                self.raw_close_price,
+                self.raw_preclose,
+                self.raw_amount,
             )
         ):
             raise ValueError("history training point contains an invalid number")

@@ -13,7 +13,7 @@ from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId, TOMORROW_PROBABILITY_SCORE_SCALE
 from trader.recommendation.domain.scoring.residualization import ExposureContract
 from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
 
@@ -134,10 +134,26 @@ class ModelDiagnostics:
 
 
 @dataclass(frozen=True, slots=True)
+class TomorrowProbability:
+    code: str
+    probability: float
+
+    def __post_init__(self) -> None:
+        if len(self.code) != 6 or not self.code.isdigit():
+            raise ValueError("prediction code is invalid")
+        if not math.isfinite(self.probability) or not 0.0 <= self.probability <= 1.0:
+            raise ValueError("Tomorrow probability must be between zero and one")
+
+    @property
+    def signal_score(self) -> float:
+        return self.probability * 100.0
+
+
+@dataclass(frozen=True, slots=True)
 class ModelScoreBatch:
     model_version: str
-    diagnostics: Mapping[str, ModelDiagnostics]
-    predictions: tuple[HeadPrediction, ...]
+    diagnostics: Mapping[str, ModelDiagnostics | TomorrowProbability]
+    predictions: tuple[HeadPrediction | TomorrowProbability, ...]
     missing_codes: tuple[str, ...]
     cost_reference_version: str | None = None
     score_scale: str = WEIGHTED_EVIDENCE_SCORE_SCALE
@@ -149,6 +165,7 @@ class ModelScoreBatch:
     def __post_init__(self) -> None:
         diagnostics = dict(self.diagnostics)
         prediction_codes = tuple(item.code for item in self.predictions)
+        forecasts_probability = self.score_scale == TOMORROW_PROBABILITY_SCORE_SCALE
         if (
             not self.model_version
             or len(prediction_codes) != len(set(prediction_codes))
@@ -157,6 +174,9 @@ class ModelScoreBatch:
             or set(self.missing_codes).intersection(prediction_codes)
             or self.cost_reference_version == ""
             or self.rank_population_version == ""
+            or any(isinstance(item, TomorrowProbability) != forecasts_probability for item in self.predictions)
+            or any(isinstance(item, TomorrowProbability) != forecasts_probability for item in diagnostics.values())
+            or forecasts_probability and self.cost_reference_version is not None
         ):
             raise ValueError("model score batch identity is invalid")
         object.__setattr__(self, "diagnostics", MappingProxyType(diagnostics))

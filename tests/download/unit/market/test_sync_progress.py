@@ -17,7 +17,6 @@ from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.domain.download_failure import DownloadFailureContext
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncProgress
-from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.infra.settings import LoadRuntimeSettings
 from trader.infra.progress_format import DisplayWidth
@@ -318,8 +317,7 @@ def test_shell_feedback_uses_shared_prefix_and_sanitizes_installer_lines():
     assert all(line.count("|") == 3 for line in result.stderr.splitlines())
 
 
-@pytest.mark.parametrize("target,fill", [("history",False),("market",False)])
-def test_sync_entrypoints_share_timing_and_keep_business_results(monkeypatch, tmp_path, target, fill):
+def test_sync_entrypoints_share_timing_and_keep_business_results(monkeypatch, tmp_path):
     from trader.bootstrap import ExecuteSync
 
     root = Path(__file__).resolve().parents[4]
@@ -342,20 +340,12 @@ def test_sync_entrypoints_share_timing_and_keep_business_results(monkeypatch, tm
         clock[0] += 10
         return HistoryMaintenanceStatus("completed", None, tmp_path, "tencent", None, "a" * 64, now.date(), now.date())
 
-    def market(*args, report, **kwargs):
-        assert "repair_only" not in kwargs
-        report(ProgressMessage((), task=ProgressTask("market", "prices", "价格更新"), state="开始"))
-        clock[0] += 10
-        return QfqUpdateResult(now.date(), 1)
-
     monkeypatch.setattr("trader.bootstrap.LoadRuntimeSettings", lambda path: settings)
     monkeypatch.setattr("trader.bootstrap._prepare_reference", prepare)
     monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", history)
-    monkeypatch.setattr("trader.bootstrap.ExecuteQfqDownload", market)
-    result = ExecuteSync(settings.config_path, target, fill_missing=fill, report=log)
+    result = ExecuteSync(settings.config_path, "history", report=log)
     assert result.exit_code == 0
-    selected = ["history", "market", "company"] if target == "all" else [target]
-    assert [item.task for item in result.tasks] == selected
+    assert [item.task for item in result.tasks] == ["history"]
     lines = stream.getvalue().splitlines()
     totals = [line.split(" | ")[0] for line in lines]
     assert totals == sorted(totals)

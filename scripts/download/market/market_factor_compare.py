@@ -956,7 +956,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
     input_codes = tuple(dict.fromkeys(code for size in args.sizes for code in SelectCodes(official, size)))
     for profile in args.profiles:
         try:
-            inputs = LoadFactorInputs(args.config, args.qfq_database, profile, input_codes, at, sqlite_policy=sqlite_policy)
+            inputs = LoadFactorInputs(args.config, args.history_root, profile, input_codes, at, sqlite_policy=sqlite_policy)
             profiles.append(inputs)
             preparation.append(
                 {
@@ -1189,7 +1189,7 @@ def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None, sq
 def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--qfq-database", type=Path, required=True)
+    parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--cpu-profile-dir", type=Path)
     parser.add_argument("--sources", nargs="+", choices=_SOURCES, default=list(_SOURCES))
     parser.add_argument("--profiles", nargs="+", choices=("v2", "v3"), default=["v2", "v3"])
