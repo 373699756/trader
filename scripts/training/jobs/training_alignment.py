@@ -521,7 +521,7 @@ def _sample_reuse(
         result["copy_verification_seconds"] = time.monotonic() - copy_started
         result["preparation_seconds"] = time.monotonic() - started
         result["linked_bytes" if transfer == "hardlink" else "copied_bytes"] = copied
-        refit = _train_once(runtime, history, target, selected, industry_snapshot=industry_snapshot)
+        refit = _train_once(runtime, history, target, selected, industry_snapshot=industry_snapshot, d25_only=True)
         result["run"] = refit
         _write_workload_checkpoint(work, "sample_refit", refit)
         after = _sample_signatures(preparation_root, selected)
@@ -590,7 +590,9 @@ def _prepare_sample_reuse(
     *, industry_snapshot: CurrentIndustrySnapshot,
 ) -> dict[str, object]:
     """Exercise the normal failed-fit cache retention path in an isolated preparation run."""
+    from scripts.training.jobs.training_performance import SAMPLE_PREPARATION_CONTROLLED_CAUSE
     from trader.bootstrap import ExecuteSelectedTraining
+    from trader.recommendation.domain.publication.models import Strategy
     from trader.training.entrypoints.report_output import TrainingReportOutput
     from trader.training.infra import engine
 
@@ -611,7 +613,7 @@ def _prepare_sample_reuse(
                 unexpected_workspaces += 1
             else:
                 calls[profile] += 1
-        raise ValueError("training_sample_probe_controlled_fit_failure")
+        raise ValueError(SAMPLE_PREPARATION_CONTROLLED_CAUSE)
 
     captured = io.StringIO()
     started = time.monotonic()
@@ -620,7 +622,7 @@ def _prepare_sample_reuse(
         with TrainingProcessMeasurement(disk_root=work) as measurement, redirect_stdout(captured):
             code = ExecuteSelectedTraining(
                 runtime, profiles, history_root=history, training_root=work, industry_snapshot=industry_snapshot,
-                report_output=TrainingReportOutput(json_output=True),
+                report_output=TrainingReportOutput(json_output=True), strategy=Strategy.D25,
             )
     finally:
         engine.FitIndustryModels = original_fit
@@ -632,7 +634,7 @@ def _prepare_sample_reuse(
         "fitter_restored": engine.FitIndustryModels is original_fit,
         "fit_entry_counts": calls,
         "unexpected_workspaces": unexpected_workspaces,
-        "model_files_created": sum(len(tuple((work / "models").rglob(name))) for name in ("model.json", "metadata.json")),
+        "model_files_created": sum(1 for _ in (work / "models").rglob("*.json")),
         "exit_code": code,
         "seconds": time.monotonic() - started,
         "resources": measurement.result,
@@ -667,9 +669,11 @@ def _file_sha256(path: Path) -> str:
 
 def _train_once(
     runtime: RuntimeSettings, history: Path, work: Path, profiles: tuple[ScoringProfileId, ...],
-    *, industry_snapshot: CurrentIndustrySnapshot,
+    *, industry_snapshot: CurrentIndustrySnapshot, d25_only: bool = False,
 ) -> dict[str, object]:
+    from scripts.training.jobs.training_performance import TrainingArtifactEvidence, TrainingSuccessfulReceipt
     from trader.bootstrap import ExecuteSelectedTraining
+    from trader.recommendation.domain.publication.models import Strategy
     from trader.training.entrypoints.report_output import TrainingReportOutput
 
     captured = io.StringIO()
@@ -677,49 +681,60 @@ def _train_once(
     with TrainingProcessMeasurement(disk_root=work) as measurement, redirect_stdout(captured):
         code = ExecuteSelectedTraining(
             runtime, profiles, history_root=history, training_root=work, industry_snapshot=industry_snapshot,
-            report_output=TrainingReportOutput(json_output=True),
+            report_output=TrainingReportOutput(json_output=True), strategy=Strategy.D25 if d25_only else None,
         )
     seconds = time.monotonic() - started
     reports = ReadJsonReports(captured.getvalue())
     results = [item for item in reports if "profile" in item]
     execution = next((item for item in reports if "profiles" in item and "training_status" in item), None)
-    ready_profiles = tuple(
-        profile for profile in profiles
-        if any(item.get("profile") == profile and item.get("status") == "engineering_ready" for item in results)
-    )
-    event_values = _load_event_values(runtime, work / "models", ready_profiles)
-    reloaded_heads = len(event_values)
-    complete = code == 0 and reloaded_heads == len(profiles) * 2 and len(results) == len(profiles)
-    return {
-        "complete": complete,
+    result: dict[str, object] = {
+        "complete": False,
         "exit_code": code,
         "profiles": results,
         "execution": execution,
-        "reloaded_heads": reloaded_heads,
+        "artifacts": [],
+        "reloaded_heads": 0,
         "seconds": seconds,
         "resources": measurement.result,
-        "numeric_fingerprints": _numeric_fingerprints(work / "models", profiles, event_values) if complete else (),
+        "numeric_fingerprints": (),
     }
+    if code != 0 or not TrainingSuccessfulReceipt(results, execution, profiles):
+        return result
+    artifacts, event_values = _load_artifact_evidence(runtime, work / "models", profiles, d25_only=d25_only)
+    result["artifacts"] = artifacts
+    result["reloaded_heads"] = len(artifacts)
+    if TrainingArtifactEvidence(result, profiles, d25_only=d25_only) is not None:
+        result["complete"] = True
+        result["numeric_fingerprints"] = _numeric_fingerprints(
+            work / "models", profiles, event_values, d25_only=d25_only,
+        )
+    return result
 
 
-def _load_event_values(
+def _load_artifact_evidence(
     runtime: RuntimeSettings, model_root: Path, profiles: tuple[ScoringProfileId, ...],
-) -> dict[tuple[ScoringProfileId, str], object]:
+    *, d25_only: bool,
+) -> tuple[list[dict[str, str]], dict[tuple[ScoringProfileId, str], object]]:
     from trader.recommendation.domain.publication.models import Strategy
     from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile
     from trader.recommendation.infra.settings.loading import LoadPredictionTargets
-    from trader.training.infra.d25.artifact import ReadD25ProbabilityArtifact
+    from trader.training.infra.d25.artifact import LoadD25ScoringProfile, ReadD25ProbabilityArtifact
     from trader.training.infra.d25.tree import D25TreeModel
     from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel
 
     targets = LoadPredictionTargets(runtime.strategy_config_path)
+    identities: list[dict[str, str]] = []
     values: dict[tuple[ScoringProfileId, str], object] = {}
     for profile in profiles:
-        tomorrow = LoadTomorrowProbabilityModel(
+        tomorrow = None if d25_only else LoadTomorrowProbabilityModel(
             model_root, profile, targets.for_profile(profile, Strategy.TOMORROW), project_root=runtime.project_root,
         )
         if tomorrow is not None:
             artifact = tomorrow.artifact
+            identities.append({
+                "profile": profile, "strategy": "tomorrow", "target": artifact.target.identity,
+                "input_hash": artifact.history_snapshot_hash, "model_hash": tomorrow.identity,
+            })
             values[(profile, "tomorrow")] = (
                 artifact.calibration_intercept, artifact.calibration_slope,
                 _lightgbm_fingerprint_model(artifact.lightgbm) if artifact.lightgbm is not None else
@@ -727,7 +742,20 @@ def _load_event_values(
                 asdict(artifact.tcn) if artifact.tcn is not None else None,
             )
         utility = LoadD25UtilityProfile(profile, training_root=model_root)
-        d25 = ReadD25ProbabilityArtifact(model_root, utility, targets.for_profile(profile, Strategy.D25))
+        target = targets.for_profile(profile, Strategy.D25)
+        model_hash = LoadD25ScoringProfile(model_root, utility, target).heads[Strategy.D25].predictor.model_hash
+        d25 = ReadD25ProbabilityArtifact(model_root, utility, target)
+        publication = next(item for item in utility.publications if item.strategy is Strategy.D25)
+        utility_model_hash, input_hash, metadata_hash, report_hash = _read_d25_utility_evidence(model_root, profile)
+        if (utility_model_hash, input_hash, metadata_hash) != (
+            publication.model_hash, publication.training_history_hash, publication.metadata_hash,
+        ):
+            raise ValueError("training_alignment_d25_utility_publication_changed")
+        identities.append({
+            "profile": profile, "strategy": "d25", "target": target.identity,
+            "input_hash": input_hash, "model_hash": model_hash,
+            "utility_model_hash": utility_model_hash, "utility_report_hash": report_hash,
+        })
         values[(profile, "d25")] = (
             d25.calibration,
             tuple(
@@ -735,7 +763,28 @@ def _load_event_values(
                 for key, model in d25.industry_models
             ),
         )
-    return values
+    return identities, values
+
+
+def _read_d25_utility_evidence(model_root: Path, profile: ScoringProfileId) -> tuple[str, str, str, str]:
+    from trader.recommendation.domain.publication.models import Strategy
+
+    if profile == "v1":
+        from trader.infra.serialization.canonical import ContentHash
+        from trader.training.infra.d25.v1.models import LearnedRankMetadataHash, ReadLearnedRankPair
+
+        pair = ReadLearnedRankPair(model_root, strategies=(Strategy.D25,))
+        head, = pair.heads
+        metadata_hash = LearnedRankMetadataHash(pair.contract_hash, head.split, head.final_fit)
+        report_hash = ContentHash((head.diagnostic.content_hash, head.split, head.validation, head.final_fit))
+        return head.content_hash, pair.training_input_hash, metadata_hash, report_hash
+
+    from trader.training.infra.d25.contracts import StandardD25Profile
+    from trader.training.infra.model_bundles.profile_publication import InspectPublishedProfileBundles
+
+    contract = StandardD25Profile(profile)
+    bundle, = InspectPublishedProfileBundles(model_root / contract.output_directory, contract)
+    return bundle.model_hash, bundle.training_input_hash, bundle.metadata_hash, bundle.report_hash
 
 
 def _fingerprint_model_object(value: object) -> dict[str, object]:
@@ -786,7 +835,7 @@ def _fingerprint_model_values(profile: ScoringProfileId, model: dict[str, object
 
 def _numeric_fingerprints(
     model_root: Path, profiles: tuple[ScoringProfileId, ...],
-    event_values: dict[tuple[ScoringProfileId, str], object],
+    event_values: dict[tuple[ScoringProfileId, str], object], *, d25_only: bool = False,
 ) -> tuple[dict[str, object], ...]:
     fingerprints: list[dict[str, object]] = []
     metric_fields = (
@@ -834,10 +883,10 @@ def _numeric_fingerprints(
                 raise ValueError("training_alignment_diagnostic_model_document_invalid")
             components = {"final": components, "diagnostic": _fingerprint_model_values(profile, diagnostic)}
         metrics = report["validation"] if profile == "v1" else {field: report[field] for field in metric_fields}
-        for strategy, values in (
-            ("tomorrow", event_values[(profile, "tomorrow")]),
-            ("d25", (event_values[(profile, "d25")], components, metrics)),
-        ):
+        strategies: list[tuple[str, object]] = [("d25", (event_values[(profile, "d25")], components, metrics))]
+        if not d25_only:
+            strategies.insert(0, ("tomorrow", event_values[(profile, "tomorrow")]))
+        for strategy, values in strategies:
             numeric = json.dumps(values, ensure_ascii=True, sort_keys=True, allow_nan=False).encode()
             fingerprints.append({
                 "profile": profile,

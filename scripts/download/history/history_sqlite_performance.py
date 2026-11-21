@@ -297,6 +297,7 @@ def _measure_preload(
     history_seconds = time.monotonic() - started
     company_seconds = binding_seconds = 0.0
     company_error: str | None = None
+    company_loaded_identity: str | None = None
     company_profiler = cProfile.Profile()
     feature_measurement: dict[str, object] = {}
     if all(profile.status().state == "published" for profile in profiles):
@@ -318,7 +319,9 @@ def _measure_preload(
         )
         research.initialize(manifest.universe_codes if manifest else (), cancelled=lambda: False)
         company_seconds = time.monotonic() - company_started
-        company_error = research.status().last_error or None
+        company_status = research.status()
+        company_error = company_status.last_error or None
+        company_loaded_identity = company_status.loaded_identity or None
         binding_started = time.monotonic()
         for profile, model in zip(profiles, models, strict=True):
             profile.bind_inputs(observed, versions={**references.versions(), "company": research.loaded_identity, "model": CanonicalDigest(model.publications)}, config_version=settings.config_version)
@@ -339,12 +342,18 @@ def _measure_preload(
         for name, value in (sorted(stats.func_profiles.items(), key=lambda item: item[1].cumtime, reverse=True)[:25] if stats else ())
     ]
     states = [profile.status() for profile in profiles]
-    passed = all(state.maintenance_state == "ready" for state in states) and company_error is None
+    passed = (
+        all(state.maintenance_state == "ready" for state in states)
+        and all(tomorrow_models.values())
+        and company_error is None
+        and company_loaded_identity is not None
+    )
     emit_report(
         {
             "status": "passed" if passed else "degraded",
             "summary": {
                 "read_only": True,
+                "evidence_scope": "isolated_cold_start_history_and_company_preload_diagnostic",
                 "context_candidate": context_candidate,
                 "context_reuse": {
                     "requests": context_counts.requests, "calculations": context_counts.calculations,
@@ -358,13 +367,21 @@ def _measure_preload(
                 "company_seconds": company_seconds,
                 "binding_seconds": binding_seconds,
                 "company_error": company_error,
+                "company_loaded_identity": company_loaded_identity,
                 "feature_audit": feature_measurement,
                 "company_functions": [
                     {"function": name, "module": Path(value.file_name).name, "calls": value.ncalls,
                      "self_seconds": value.tottime, "cumulative_seconds": value.cumtime}
                     for name, value in (sorted(pstats.Stats(company_profiler).get_stats_profile().func_profiles.items(), key=lambda item: item[1].cumtime, reverse=True)[:20] if cpu_profile and company_seconds else ())
                 ],
-                "model_versions": {profile: CanonicalDigest(model.publications) for profile, model in zip(selected, models, strict=True)},
+                "d25_utility_publication_identities": {
+                    profile: CanonicalDigest(model.publications)
+                    for profile, model in zip(selected, models, strict=True)
+                },
+                "d25_model_identities": {
+                    profile: model.heads[Strategy.D25].predictor.model_hash
+                    for profile, model in zip(selected, models, strict=True)
+                },
                 "tomorrow_model_identities": tomorrow_models,
                 "environment": {"python": platform.python_version(), "platform": platform.platform(), "cpu_count": os.cpu_count()},
                 "logical_cache_bytes": sum(item.estimated_bytes for sources in cache.status().datasets.values() for item in sources.values()),

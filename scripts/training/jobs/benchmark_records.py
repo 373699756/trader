@@ -11,6 +11,7 @@ from pathlib import Path
 from scripts.core.contracts import DiagnosticResult
 from scripts.training.jobs.training_performance import (
     SummarizeTrainingBenchmark,
+    TrainingArtifactEvidence,
     TrainingReuseFailures,
     TrainingSampleReuseFailures,
 )
@@ -168,7 +169,7 @@ def _review_child(payload: dict[str, object]) -> _ChildReview:
     sample = _mapping(scenario.get("run"), "training_benchmark_sample_reuse_missing")
     heads = _head_values(initial, _PROFILES, reused=False)
     _head_values(repeat, _PROFILES, reused=True)
-    _head_values(sample, _PROFILES[1:], reused=False)
+    _head_values(sample, _PROFILES[1:], reused=False, d25_only=True)
     rows = _scan(initial, _PROFILES, first=True)
     _scan(repeat, _PROFILES, first=False)
     _scan(sample, _PROFILES[1:], first=False)
@@ -186,8 +187,8 @@ def _review_child(payload: dict[str, object]) -> _ChildReview:
         raise ValueError("training_benchmark_evidence_invalid:" + ",".join(evidence_failures))
     fingerprints = _fingerprints(initial, _PROFILES)
     repeat_numeric = fingerprints != _fingerprints(repeat, _PROFILES)
-    sample_numeric = [head for head in fingerprints if head["profile"] in _PROFILES[1:]] != _fingerprints(
-        sample, _PROFILES[1:]
+    sample_numeric = [head for head in fingerprints if head["profile"] in _PROFILES[1:] and head["strategy"] == "d25"] != _fingerprints(
+        sample, _PROFILES[1:], d25_only=True,
     )
     before = _cache_signatures(scenario.get("source_cache_signatures_before"))
     after = _cache_signatures(scenario.get("source_cache_signatures_after"))
@@ -219,11 +220,15 @@ def _review_child(payload: dict[str, object]) -> _ChildReview:
         workloads[name] = {
             "seconds": _seconds(run.get("seconds")),
             "resources": _resources(run.get("resources")),
+            "strategies": ["d25"] if name == "sample_reuse" else list(_STRATEGIES),
+            "history_scan_scope": "d25_fanout",
             "history_scan_passes": 1 if name == "initial" else 0,
             "history_rows_read": rows if name == "initial" else 0,
         }
     preparation = _mapping(scenario.get("preparation"), "training_benchmark_sample_preparation_missing")
     preparation_details = {
+        "strategy": "d25",
+        "history_scan_scope": "d25_fanout",
         "seconds": _seconds(preparation.get("seconds")),
         "copy_verification_seconds": _seconds(scenario.get("copy_verification_seconds")),
         "cache_transfer_method": scenario.get("cache_transfer_method"),
@@ -233,9 +238,7 @@ def _review_child(payload: dict[str, object]) -> _ChildReview:
         "resources": _resources(preparation["resources"]) if "resources" in preparation else None,
     }
     total = _seconds(summary.get("total_seconds"))
-    inputs = [{"profile": profile, "training_input_hash": input_hash} for profile, input_hash in sorted({
-        (str(head["profile"]), str(head["training_input_hash"])) for head in heads
-    })]
+    inputs = [{key: head[key] for key in ("profile", "strategy", "input_hash", "target")} for head in heads]
     identity: dict[str, object] = {
         "training_configuration_sha256": configuration,
         "inputs": inputs,
@@ -269,37 +272,22 @@ def _failure_codes(value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
-def _head_values(run: dict[str, object], expected: tuple[str, ...], *, reused: bool) -> list[dict[str, object]]:
+def _head_values(
+    run: dict[str, object], expected: tuple[str, ...], *, reused: bool, d25_only: bool = False,
+) -> tuple[dict[str, str], ...]:
     if (run.get("complete") is not True or type(run.get("exit_code")) is not int or run.get("exit_code") != 0
-            or type(run.get("reloaded_heads")) is not int or run.get("reloaded_heads") != len(expected) * 2):
+            or type(run.get("reloaded_heads")) is not int
+            or run.get("reloaded_heads") != len(expected) * (1 if d25_only else 2)):
         raise ValueError("training_benchmark_run_incomplete")
     profiles = run.get("profiles")
     if not isinstance(profiles, list) or len(profiles) != len(expected):
         raise ValueError("training_benchmark_profiles_incomplete")
-    values: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for value in profiles:
-        profile = _mapping(value, "training_benchmark_profile_invalid")
-        name = _text(profile.get("profile"), "training_benchmark_profile_invalid")
-        if name not in expected or name in seen or profile.get("status") != "engineering_ready" or profile.get("reused") is not reused:
-            raise ValueError("training_benchmark_profile_invalid")
-        seen.add(name)
-        input_hash = _hash(profile.get("training_input_hash"))
-        heads = profile.get("heads")
-        if not isinstance(heads, list) or len(heads) != 2:
-            raise ValueError("training_benchmark_heads_incomplete")
-        strategies: set[str] = set()
-        for value in heads:
-            head = _mapping(value, "training_benchmark_head_invalid")
-            strategy = _text(head.get("strategy"), "training_benchmark_head_invalid")
-            if strategy not in _STRATEGIES or strategy in strategies or head.get("status") != "engineering_ready":
-                raise ValueError("training_benchmark_head_invalid")
-            strategies.add(strategy)
-            values.append({
-                "profile": name, "training_input_hash": input_hash, "strategy": strategy,
-                "model_hash": _hash(head.get("model_hash")), "report_hash": _hash(head.get("report_hash")),
-            })
-    return sorted(values, key=lambda item: (str(item["profile"]), str(item["strategy"])))
+    if any(_mapping(value, "training_benchmark_profile_invalid").get("reused") is not reused for value in profiles):
+        raise ValueError("training_benchmark_profile_invalid")
+    evidence = TrainingArtifactEvidence(run, expected, d25_only=d25_only)
+    if evidence is None:
+        raise ValueError("training_benchmark_heads_incomplete")
+    return evidence
 
 
 def _scan(run: dict[str, object], expected: tuple[str, ...], *, first: bool) -> int:
@@ -312,16 +300,19 @@ def _scan(run: dict[str, object], expected: tuple[str, ...], *, first: bool) -> 
     return rows
 
 
-def _fingerprints(run: dict[str, object], expected: tuple[str, ...]) -> list[dict[str, object]]:
+def _fingerprints(
+    run: dict[str, object], expected: tuple[str, ...], *, d25_only: bool = False,
+) -> list[dict[str, object]]:
     values = run.get("numeric_fingerprints")
-    if not isinstance(values, list) or len(values) != len(expected) * 2:
+    strategies = ("d25",) if d25_only else _STRATEGIES
+    if not isinstance(values, list) or len(values) != len(expected) * len(strategies):
         raise ValueError("training_benchmark_numeric_fingerprints_missing")
     parsed: dict[tuple[str, str], str] = {}
     for value in values:
         item = _mapping(value, "training_benchmark_numeric_fingerprint_invalid")
         profile = _text(item.get("profile"), "training_benchmark_numeric_fingerprint_invalid")
         strategy = _text(item.get("strategy"), "training_benchmark_numeric_fingerprint_invalid")
-        if profile not in expected or strategy not in _STRATEGIES or (profile, strategy) in parsed:
+        if profile not in expected or strategy not in strategies or (profile, strategy) in parsed:
             raise ValueError("training_benchmark_numeric_fingerprint_invalid")
         parsed[(profile, strategy)] = _hash(item.get("model_values_and_metrics_sha256"))
     return [{"profile": profile, "strategy": strategy, "model_values_and_metrics_sha256": digest}

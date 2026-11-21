@@ -9,7 +9,8 @@ import statistics
 import time
 from collections.abc import Callable
 from concurrent.futures import Executor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from threading import Lock
 from types import CodeType
 
 from lightgbm import Booster
@@ -24,6 +25,7 @@ from trader.recommendation.application.pipeline.policy import RecommendationPoli
 from trader.recommendation.application.ports.loaded_profile import (
     ModelDiagnostics,
     LoadedScoringProfile,
+    ModelComputationStageStatus,
     ModelComputationStatus,
     ModelScoreBatch,
     ModelScoringContext,
@@ -40,6 +42,44 @@ from trader.recommendation.infra.performance.process_memory import PerformanceMe
 from trader.recommendation.infra.scoring.profile_factory import BuildDiagnosticProfileScoring, BuildProfileScoring
 
 
+class _MeasuredTomorrowPredictor:
+    """Record native batch calls only for an offline workload."""
+
+    def __init__(self, predictor: TomorrowProbabilityPredictor) -> None:
+        self._predictor = predictor
+        self._lock = Lock()
+        self._batches = 0
+        self._last_ms = 0.0
+        self._total_ms = 0.0
+
+    @property
+    def identity(self) -> str:
+        return self._predictor.identity
+
+    def predict_probability(self, features: tuple[float, ...]) -> float:
+        return self._predictor.predict_probability(features)
+
+    def predict_probabilities(self, rows: tuple[tuple[float, ...], ...]) -> tuple[float, ...]:
+        if not rows:
+            return self._predictor.predict_probabilities(rows)
+        started = time.perf_counter()
+        try:
+            return self._predictor.predict_probabilities(rows)
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            with self._lock:
+                self._batches += 1
+                self._last_ms = elapsed_ms
+                self._total_ms += elapsed_ms
+
+    def computation_status(self, status: ModelComputationStatus) -> ModelComputationStatus:
+        with self._lock:
+            if not self._batches:
+                return status
+            stage = ModelComputationStageStatus("batch_prediction", self._batches, self._last_ms, self._total_ms)
+            return replace(status, predictor_batch_count=self._batches, stage_durations=(stage,))
+
+
 @dataclass(frozen=True)
 class PerformanceProfileWorkload:
     profile: LoadedScoringProfile
@@ -50,6 +90,11 @@ class PerformanceProfileWorkload:
     tomorrow_predictor: TomorrowProbabilityPredictor | None = None
     tomorrow_target: PredictionTarget | None = None
     d25_target: PredictionTarget | None = None
+    _tomorrow_meter: _MeasuredTomorrowPredictor | None = field(init=False, default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self.tomorrow_predictor is not None and self.tomorrow_target is not None:
+            object.__setattr__(self, "_tomorrow_meter", _MeasuredTomorrowPredictor(self.tomorrow_predictor))
 
     @property
     def strategies(self) -> tuple[Strategy, ...]:
@@ -73,10 +118,19 @@ class PerformanceProfileWorkload:
             model_failure="",
             cost_policy=self.cost_policy,
             maintenance=None,
-            tomorrow_predictor=self.tomorrow_predictor,
+            tomorrow_predictor=self._tomorrow_meter,
             tomorrow_target=self.tomorrow_target,
             d25_target=self.d25_target,
         )
+
+    def computation_status(self, scoring: ModelScoringPort, strategy: Strategy) -> ModelComputationStatus:
+        status = scoring.status()
+        if status is None or strategy not in status.heads:
+            raise ValueError("performance head status is unavailable")
+        computation = status.heads[strategy].computation
+        if strategy is Strategy.TOMORROW and self._tomorrow_meter is not None:
+            return self._tomorrow_meter.computation_status(computation)
+        return computation
 
 
 @dataclass(frozen=True)
@@ -85,6 +139,7 @@ class _HeadWorkload:
     scoring: ModelScoringPort
     native: ScoredNativeInput
     policy: RecommendationPolicy
+    workload: PerformanceProfileWorkload
 
 
 @dataclass(frozen=True)
@@ -261,7 +316,7 @@ def _prepare_heads(workloads: tuple[PerformanceProfileWorkload, ...], *, changed
                 30.0,
                 30.0,
             )
-            heads.append(_HeadWorkload(workload.profile.profile_id, scoring, native, workload.policy))
+            heads.append(_HeadWorkload(workload.profile.profile_id, scoring, native, workload.policy, workload))
     return tuple(heads)
 
 
@@ -294,10 +349,7 @@ def _changed_features(features: tuple[FeatureSnapshot, ...]) -> tuple[FeatureSna
 
 
 def _status(head: _HeadWorkload) -> ModelComputationStatus:
-    status = head.scoring.status()
-    if status is None or head.native.strategy not in status.heads:
-        raise ValueError("performance head status is unavailable")
-    return status.heads[head.native.strategy].computation
+    return head.workload.computation_status(head.scoring, head.native.strategy)
 
 
 def _score_head(head: _HeadWorkload) -> _HeadExecution:

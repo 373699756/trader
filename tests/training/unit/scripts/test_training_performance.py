@@ -6,6 +6,9 @@ from scripts.core.catalog import SelectionArguments
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
+from tests.helpers.training.scripts.training_execution_performance import _d25_fixture_point, _install_tomorrow_history
+from tests.helpers.training.scripts.training_execution_performance import _run
+from tests.helpers.training.scripts.training_execution_performance import _sample_scenario as _sample_fixture
 
 import json
 import hashlib
@@ -56,58 +59,10 @@ def test_benchmark_plans_direct_children_with_distinct_external_outputs(tmp_path
 
 
 def _sample_scenario(profile):
-    selected = profile["profile"]
-    if selected == "v1":
-        return {"profiles": [], "not_applicable_profiles": ["v1"], "run": None}
-    return {
-        "profiles": [selected],
-        "not_applicable_profiles": [],
-        "cache_verified": True,
-        "source_cache_unchanged": True,
-        "target_cache_cleared": True,
-        "copied_bytes": 4096,
-        "model_files_copied": 0,
-        "copy_verification_seconds": 0.25,
-        "preparation": {
-            "method": "controlled_failure_before_fit", "fault_injected": True, "fitter_restored": True,
-            "fit_entry_counts": {selected: 1}, "unexpected_workspaces": 0, "model_files_created": 0,
-            "exit_code": 1, "seconds": 1.0,
-            "execution": {
-                "status": "failed", "profiles": [selected], "history_scan_passes": 1, "history_rows_read": 100,
-            },
-            "profiles": [{
-                "profile": selected, "training_input_hash": profile["training_input_hash"], "reused": False,
-                "status": "blocked", "heads": [
-                    {"strategy": strategy, "status": "blocked", "model_hash": "", "report_hash": "",
-                     "failure_reasons": ["profile_training_failed"]}
-                    for strategy in ("tomorrow", "d25")
-                ],
-            }],
-        },
-        "run": {
-            "complete": True,
-            "seconds": 2.0,
-            "profiles": [dict(deepcopy(profile), reused=False)],
-            "execution": {
-                "status": "completed", "profiles": [selected], "history_scan_passes": 0, "history_rows_read": 0,
-            },
-            "numeric_fingerprints": [
-                {"profile": selected, "strategy": strategy, "model_values_and_metrics_sha256": "b" * 64}
-                for strategy in ("tomorrow", "d25")
-            ],
-        },
-    }
+    return _sample_fixture("serial", 2.0, (profile["profile"],))
 
 
 def _serial_results():
-    profile = {
-        "profile": "v5",
-        "status": "engineering_ready",
-        "training_input_hash": "a" * 64,
-        "heads": [
-            {"strategy": strategy, "status": "engineering_ready", "model_hash": "b" * 64, "report_hash": "c" * 64} for strategy in ("tomorrow", "d25")
-        ],
-    }
     return tuple(
         DiagnosticResult(
             "training_alignment:" + mode + ":v5",
@@ -116,13 +71,10 @@ def _serial_results():
             {
                 "status": "passed",
                 "summary": {
-                    "profiles": [profile],
-                    "initial": {"complete": True, "profiles": [profile], "seconds": duration / 1000,
-                                "numeric_fingerprints": _sample_scenario(profile)["run"]["numeric_fingerprints"]},
-                    "repeat": {"complete": True, "profiles": [dict(deepcopy(profile), reused=True)], "seconds": duration / 10000,
-                               "execution": {"status": "completed", "profiles": ["v5"], "history_scan_passes": 0, "history_rows_read": 0}},
+                    "initial": _run("serial", ("v5",), duration / 1000, False),
+                    "repeat": _run("serial", ("v5",), duration / 10000, True),
                     "process_peak_rss_bytes": 100,
-                    "sample_reuse": _sample_scenario(profile),
+                    "sample_reuse": _sample_fixture("serial", 2.0, ("v5",)),
                 },
             },
             None,
@@ -224,22 +176,8 @@ def _checkout_results():
         ("candidate", 5.0, 0.1),
         ("baseline_after", 9.0, 9.0),
     ):
-        profile = {
-            "profile": "v1",
-            "status": "engineering_ready",
-            "training_input_hash": "a" * 64,
-            "heads": [
-                {"strategy": strategy, "status": "engineering_ready", "model_hash": mode, "report_hash": mode} for strategy in ("tomorrow", "d25")
-            ],
-        }
-        numeric = [
-            {"profile": "v1", "strategy": strategy, "model_values_and_metrics_sha256": "b" * 64}
-            for strategy in ("tomorrow", "d25")
-        ]
-        initial = {"complete": True, "profiles": [profile], "seconds": initial_seconds, "numeric_fingerprints": numeric}
-        repeat = dict(initial, seconds=repeat_seconds, profiles=[dict(deepcopy(profile), reused=mode == "candidate")],
-                      execution={"status": "completed", "profiles": ["v1"], "history_scan_passes": int(mode != "candidate"),
-                                 "history_rows_read": 0 if mode == "candidate" else 10})
+        initial = _run(mode, ("v1",), initial_seconds, False)
+        repeat = _run(mode, ("v1",), repeat_seconds, mode == "candidate")
         results.append(
             DiagnosticResult(
                 "training_alignment:" + mode + ":v1",
@@ -252,7 +190,7 @@ def _checkout_results():
                         "repeat": repeat,
                         "source_identity_unchanged": True,
                         "training_configuration_sha256": "d" * 64,
-                        "sample_reuse": _sample_scenario(profile),
+                        "sample_reuse": _sample_fixture(mode, 2.0, ("v1",)),
                     },
                 },
                 None,
@@ -319,30 +257,31 @@ def test_model_numeric_fingerprints_include_components_and_metrics_but_not_ident
     from tests.helpers.training.scripts.training_model_fingerprints import _fit_models
 
     rank_model = _fit_models("v1").two_threads
-    paths = []
-    for strategy in ("tomorrow", "d25"):
-        root = tmp_path / "v1" / strategy
-        root.mkdir(parents=True)
-        model = {"components": {"ridge_coefficients": [0.1, 0.2], "rank_model": rank_model}, "content_hash": "old-source"}
-        metadata = {"validation_report": {"validation": {"mean_absolute_error": 0.01}}, "content_hash": "old-source"}
-        (root / "model.json").write_text(json.dumps(model))
-        (root / "metadata.json").write_text(json.dumps(metadata))
-        paths.append((root, model, metadata))
-    first = _numeric_fingerprints(tmp_path, ("v1",))
-    for root, model, metadata in paths:
-        model["content_hash"] = metadata["content_hash"] = "new-source"
-        (root / "model.json").write_text(json.dumps(model))
-        (root / "metadata.json").write_text(json.dumps(metadata))
-    assert _numeric_fingerprints(tmp_path, ("v1",)) == first
-    root, model, metadata = paths[0]
+    root = tmp_path / "v1" / "d25"
+    root.mkdir(parents=True)
+    model = {"components": {"ridge_coefficients": [0.1, 0.2], "rank_model": rank_model}, "content_hash": "old-source"}
+    metadata = {
+        "training_input": {"final_fit": {}}, "content_hash": "old-source",
+        "validation_report": {
+            "validation": {"mean_absolute_error": 0.01}, "diagnostic_head": deepcopy(model["components"]),
+        },
+    }
+    event_values = {("v1", "d25"): {"weights": [0.1, 0.2]}}
+    (root / "model.json").write_text(json.dumps(model))
+    (root / "metadata.json").write_text(json.dumps(metadata))
+    first = _numeric_fingerprints(tmp_path, ("v1",), event_values, d25_only=True)
+    model["content_hash"] = metadata["content_hash"] = "new-source"
+    (root / "model.json").write_text(json.dumps(model))
+    (root / "metadata.json").write_text(json.dumps(metadata))
+    assert _numeric_fingerprints(tmp_path, ("v1",), event_values, d25_only=True) == first
     model["components"]["ridge_coefficients"][0] = 0.3
     (root / "model.json").write_text(json.dumps(model))
-    assert _numeric_fingerprints(tmp_path, ("v1",)) != first
+    assert _numeric_fingerprints(tmp_path, ("v1",), event_values, d25_only=True) != first
     model["components"]["ridge_coefficients"][0] = 0.1
     metadata["validation_report"]["validation"]["mean_absolute_error"] = 0.02
     (root / "model.json").write_text(json.dumps(model))
     (root / "metadata.json").write_text(json.dumps(metadata))
-    assert _numeric_fingerprints(tmp_path, ("v1",)) != first
+    assert _numeric_fingerprints(tmp_path, ("v1",), event_values, d25_only=True) != first
 
 
 @pytest.mark.parametrize("initial_complete", (True, False))
@@ -382,17 +321,10 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
         assert industry_snapshot is industry
         calls.append((history, work, profiles))
         is_repeat = len(calls) == 2
-        profile = deepcopy(_checkout_results()[1].payload["summary"]["initial"]["profiles"][0])
-        profile["reused"] = is_repeat and reused
-        return {
-            "complete": initial_complete,
-            "profiles": [profile],
-            "execution": {"status": "completed", "profiles": ["v1"], "history_scan_passes": int(not is_repeat),
-                          "history_rows_read": 0 if is_repeat else 10},
-            "reloaded_heads": 2 if initial_complete else 0,
-            "seconds": 1.0,
-            "numeric_fingerprints": ("unchanged",),
-        }
+        run = _run("same_workspace", profiles, 1.0, is_repeat and reused)
+        if is_repeat:
+            run["execution"].update(history_scan_passes=0, history_rows_read=0)
+        return dict(run, complete=initial_complete)
 
     monkeypatch.setattr(training_alignment, "_train_once", train_once)
     report = training_alignment._probe(tmp_path / "history", tmp_path / "work", ("v1",), sqlite_policy=SqlitePolicyFixture(), require_reuse=require_reuse)
@@ -417,6 +349,7 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
     "missing_execution", "failed_execution", "scan", "rows", "boolean_zero", "missing_counter",
     "wrong_execution_profiles", "malformed_execution_profiles", "not_reused", "boolean_reused",
     "missing_profile", "duplicate_head", "changed_model", "changed_input", "failed_profile", "failed_head",
+    "tomorrow_model", "tomorrow_refit", "tomorrow_fake_report",
 ))
 def test_comparison_rejects_false_reuse_even_when_child_claims_passed(checkout, change):
     results = list(deepcopy(_checkout_results() if checkout else _serial_results()))
@@ -446,13 +379,19 @@ def test_comparison_rejects_false_reuse_even_when_child_claims_passed(checkout, 
     elif change == "missing_profile":
         repeat["profiles"] = []
     elif change == "duplicate_head":
-        profile["heads"][1] = dict(profile["heads"][0])
+        profile["heads"].append(dict(profile["heads"][0]))
     elif change == "changed_model":
         profile["heads"][0]["model_hash"] = "changed"
     elif change == "changed_input":
         profile["training_input_hash"] = "changed"
     elif change == "failed_head":
         profile["heads"][0]["status"] = "failed"
+    elif change == "tomorrow_model":
+        execution["tomorrow_probability"][0]["model_identity"] = "f" * 64
+    elif change == "tomorrow_refit":
+        execution["tomorrow_probability"][0]["assessment_rows"] = 100
+    elif change == "tomorrow_fake_report":
+        next(item for item in repeat["artifacts"] if item["strategy"] == "tomorrow")["report_hash"] = "f" * 64
     else:
         profile["status"] = "failed"
     report = BuildReport("training-performance", results)
@@ -464,9 +403,7 @@ def test_comparison_rejects_false_reuse_even_when_child_claims_passed(checkout, 
 @pytest.mark.parametrize("profile", ("v1", "v2", "v3", "v5"))
 def test_four_profile_reuse_requires_every_selected_member(profile):
     profiles = ("v1", "v2", "v3", "v5")
-    run = deepcopy(_serial_results()[1].payload["summary"]["repeat"])
-    run["profiles"] = [dict(deepcopy(run["profiles"][0]), profile=selected) for selected in profiles]
-    run["execution"]["profiles"] = list(profiles)
+    run = _run("all_profiles", profiles, 1.0, True)
     initial = deepcopy(run)
     assert TrainingReuseFailures(initial, run, profiles) == ()
     next(item for item in run["profiles"] if item["profile"] == profile)["reused"] = False
@@ -477,7 +414,10 @@ def test_four_profile_reuse_requires_every_selected_member(profile):
     "missing", "history_scan", "history_rows", "boolean_zero", "model_reused", "different_input",
     "different_weights", "cache_changed", "cache_unverified", "models_copied", "cache_missing", "wrong_profiles",
     "cache_not_cleared", "preparation_missing", "preparation_not_restored", "preparation_unreached",
+    "refit_tomorrow", "preparation_tomorrow",
     "preparation_models", "preparation_success", "preparation_other_failure", "preparation_no_scan",
+    "preparation_wrong_cause", "preparation_missing_cause", "preparation_executor_timeout",
+    "preparation_watchdog_failure", "preparation_missing_progress_shutdown",
 ))
 def test_sample_refit_rejects_claimed_success_without_its_workload_evidence(change):
     results = list(deepcopy(_serial_results()))
@@ -520,8 +460,22 @@ def test_sample_refit_rejects_claimed_success_without_its_workload_evidence(chan
         scenario["preparation"]["exit_code"] = 0
     elif change == "preparation_other_failure":
         scenario["preparation"]["profiles"][0]["heads"][0]["failure_reasons"] = ["history_training_data_incomplete"]
+    elif change == "preparation_wrong_cause":
+        scenario["preparation"]["profiles"][0]["heads"][0]["diagnostic"]["causes"][-1]["code"] = "unrelated_fit_failure"
+    elif change == "preparation_missing_cause":
+        del scenario["preparation"]["profiles"][0]["heads"][0]["diagnostic"]
+    elif change == "preparation_executor_timeout":
+        scenario["preparation"]["execution"]["shutdown"]["timed_out"] = True
+    elif change == "preparation_watchdog_failure":
+        scenario["preparation"]["execution"]["shutdown"]["watchdog_failure"] = "ValueError"
+    elif change == "preparation_missing_progress_shutdown":
+        scenario["preparation"]["execution"]["progress_shutdown"] = []
     elif change == "preparation_no_scan":
         scenario["preparation"]["execution"]["history_scan_passes"] = 0
+    elif change == "refit_tomorrow":
+        run["execution"]["tomorrow_probability"] = []
+    elif change == "preparation_tomorrow":
+        scenario["preparation"]["execution"]["strategy"] = None
     else:
         scenario["profiles"] = ["v1"]
     comparison = SummarizeTrainingBenchmark(results)
@@ -557,23 +511,24 @@ def test_sample_refit_uses_verified_copy_without_deleting_or_copying_original_mo
     model.parent.mkdir(parents=True)
     model.write_text("original model")
     original = (model.read_bytes(), model.stat().st_mtime_ns)
-    initial = deepcopy(_serial_results()[1].payload["summary"]["initial"])
+    initial = _run("serial", ("v1", "v5"), 1.0, False)
     calls = []
     industry = CurrentIndustrySnapshotFixture(("600001",))
 
-    def train(runtime, history, target, profiles, *, industry_snapshot):
+    def train(runtime, history, target, profiles, *, industry_snapshot, d25_only):
         assert industry_snapshot is industry
+        assert d25_only
         calls.append(target)
         assert profiles == ("v5",)
         assert target == work / "sample-reuse"
         assert not (target / "models").exists()
         assert (target / "samples/v5/samples.sqlite3").read_bytes() == database.read_bytes()
         shutil.rmtree(target / "samples/v5")
-        return _sample_scenario(initial["profiles"][0])["run"]
+        return _sample_fixture("serial", 2.0, ("v5",))["run"]
 
     def prepare(*_args, industry_snapshot):
         assert industry_snapshot is industry
-        return _sample_scenario(initial["profiles"][0])["preparation"]
+        return _sample_fixture("serial", 2.0, ("v5",))["preparation"]
 
     monkeypatch.setattr(training_alignment, "_prepare_sample_reuse", prepare)
     monkeypatch.setattr(training_alignment, "_train_once", train)
@@ -605,17 +560,19 @@ def test_v1_sample_reuse_is_explicitly_not_applicable_and_never_runs_a_fake_cach
 
 @pytest.mark.parametrize("transfer", ("copy", "hardlink"))
 def test_sample_preparation_uses_real_engine_retention_then_normal_refit_clears_cache(tmp_path, monkeypatch, transfer):
-    from tests.helpers.training.profiles.v5.v5_training import _history
+    from tests.helpers.training.profiles.v5 import v5_training
     from trader.infra.settings import LoadRuntimeSettings
     from trader.training.infra import engine, selected_training
-    from trader.training.infra.training_settings import LoadProfileTrainingSettings
+    from trader.training.infra.training_settings import LoadD25TrainingSettings
 
     project = Path(__file__).resolve().parents[4]
-    history = _history(tmp_path / "history")
+    monkeypatch.setattr(v5_training, "_point", _d25_fixture_point)
+    history = v5_training._history(tmp_path / "history")
+    _install_tomorrow_history(monkeypatch, history.snapshot.calendar.open_dates, history.snapshot.snapshot_hash)
     monkeypatch.setattr(selected_training.SQLiteHistoryTrainingInputSnapshot, "open", lambda *_a, **_kw: history)
-    settings = LoadProfileTrainingSettings(project, "v3")
+    settings = LoadD25TrainingSettings(project, "v3")
     settings = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=10))
-    monkeypatch.setattr(selected_training, "LoadProfileTrainingSettings", lambda *_args: settings)
+    monkeypatch.setattr(selected_training, "LoadD25TrainingSettings", lambda *_args: settings)
     monkeypatch.setattr("trader.training.entrypoints.selected_training.EvaluateAllHistoryTrainingDue", lambda *_a, **_kw: ())
     runtime = LoadRuntimeSettings(project / "config/runtime.json")
     work = tmp_path / "work"
@@ -633,6 +590,8 @@ def test_sample_preparation_uses_real_engine_retention_then_normal_refit_clears_
     assert engine.FitIndustryModels is fitter
     assert (work / "sample-preparation/samples/v3/complete.json").is_file() is (transfer == "copy")
     assert result["run"]["execution"]["history_scan_passes"] == 0
+    assert result["run"]["execution"]["strategy"] == result["preparation"]["execution"]["strategy"] == "d25"
+    assert {artifact["strategy"] for artifact in result["run"]["artifacts"]} == {"d25"}
     assert result["source_cache_unchanged"] and result["target_cache_cleared"]
     assert not (work / "sample-reuse/samples/v3").exists()
     assert result["cache_transfer_method"] == transfer

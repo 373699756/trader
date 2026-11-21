@@ -362,10 +362,7 @@ class _ProfileReplay:
         return tuple(result)
 
     def _status(self, strategy: Strategy) -> ModelComputationStatus:
-        status = self.scoring.status()
-        if status is None:
-            raise ValueError("continuous replay requires model computation counters")
-        return status.heads[strategy].computation
+        return self.workload.computation_status(self.scoring, strategy)
 
     def run(self, trace: PerformanceCpuTrace | None = None) -> None:
         self.sequence += 1

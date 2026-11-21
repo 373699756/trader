@@ -17,6 +17,9 @@ from scripts.training.output_paths import RequireIndependentOutput
 from scripts.core.contracts import DiagnosticResult
 
 
+SAMPLE_PREPARATION_CONTROLLED_CAUSE = "training_sample_probe_controlled_fit_failure"
+
+
 class _Round(TypedDict):
     mode: str
     complete: bool
@@ -61,8 +64,8 @@ def TrainingReuseFailures(initial: object, repeat: object, profiles: Sequence[st
         if (not isinstance(selected, (list, tuple)) or not all(isinstance(item, str) for item in selected)
                 or tuple(sorted(selected)) != tuple(sorted(profiles))):
             failures.append("reuse_execution_profiles_mismatch")
-    before = _reuse_identity(initial.get("profiles"), profiles)
-    after = _reuse_identity(repeat.get("profiles"), profiles)
+    before = TrainingArtifactEvidence(initial, profiles)
+    after = TrainingArtifactEvidence(repeat, profiles)
     if before is None or after is None or before != after:
         failures.append("reuse_artifact_identity_mismatch")
     runs = repeat.get("profiles")
@@ -70,6 +73,13 @@ def TrainingReuseFailures(initial: object, repeat: object, profiles: Sequence[st
         not isinstance(run, Mapping) or run.get("reused") is not True for run in runs
     ):
         failures.append("reuse_profiles_not_reused")
+    if isinstance(execution, Mapping):
+        tomorrow = execution.get("tomorrow_probability")
+        if not isinstance(tomorrow, list) or any(
+            not isinstance(head, Mapping) or type(head.get("assessment_rows")) is not int or head["assessment_rows"] != 0
+            for head in tomorrow
+        ):
+            failures.append("reuse_tomorrow_refitted_or_missing")
     return tuple(failures)
 
 
@@ -99,29 +109,29 @@ def TrainingSampleReuseFailures(initial: object, scenario: object, profiles: Seq
             value = execution.get(key)
             if type(value) is not int or value != 0:
                 failures.append("sample_reuse_" + key + "_not_zero")
-        if execution.get("profiles") not in (selected, list(selected)):
+        if (execution.get("profiles") not in (selected, list(selected))
+                or execution.get("strategy") != "d25" or "tomorrow_probability" in execution):
             failures.append("sample_reuse_execution_profiles_mismatch")
     runs = run.get("profiles")
-    baseline = initial.get("profiles")
-    if not isinstance(baseline, list) or not isinstance(runs, list):
+    if not isinstance(runs, list):
         failures.append("sample_reuse_profile_results_missing")
     else:
-        before = [item for item in baseline if isinstance(item, Mapping) and item.get("profile") in selected]
-        if _reuse_identity(before, selected) is None or _reuse_identity(runs, selected) is None:
+        before = TrainingArtifactEvidence(initial, profiles)
+        after = TrainingArtifactEvidence(run, selected, d25_only=True)
+        if before is None or after is None:
             failures.append("sample_reuse_artifacts_incomplete")
-        elif sorted((item["profile"], item["training_input_hash"]) for item in before) != sorted(
-            (item["profile"], item["training_input_hash"]) for item in runs
-        ):
+        elif _artifact_inputs(tuple(row for row in before if row["profile"] in selected and row["strategy"] == "d25")) != _artifact_inputs(after):
             failures.append("sample_reuse_input_mismatch")
         if not runs or any(not isinstance(item, Mapping) or item.get("reused") is not False for item in runs):
             failures.append("sample_reuse_did_not_refit")
     fingerprints = initial.get("numeric_fingerprints")
     expected = (
-        [item for item in fingerprints if isinstance(item, Mapping) and item.get("profile") in selected]
+        [item for item in fingerprints if isinstance(item, Mapping) and item.get("profile") in selected
+         and item.get("strategy") == "d25"]
         if isinstance(fingerprints, (tuple, list)) else None
     )
-    values = _fingerprint_values(expected, selected)
-    if values is None or values != _fingerprint_values(run.get("numeric_fingerprints"), selected):
+    values = _fingerprint_values(expected, selected, d25_only=True)
+    if values is None or values != _fingerprint_values(run.get("numeric_fingerprints"), selected, d25_only=True):
         failures.append("sample_reuse_model_values_mismatch")
     if scenario.get("source_cache_unchanged") is not True:
         failures.append("sample_reuse_source_cache_changed")
@@ -165,68 +175,196 @@ def TrainingSamplePreparationFailures(
     if type(preparation.get("exit_code")) is not int or preparation.get("exit_code") != 1:
         failures.append("sample_preparation_exit_invalid")
     execution = preparation.get("execution")
-    if not isinstance(execution, Mapping) or execution.get("status") != "failed":
+    if (not isinstance(execution, Mapping) or execution.get("status") != "failed"
+            or execution.get("training_status") != "failed"):
         failures.append("sample_preparation_failure_result_missing")
     else:
-        if execution.get("profiles") not in (tuple(profiles), list(profiles)):
+        if (execution.get("profiles") not in (tuple(profiles), list(profiles))
+                or execution.get("strategy") != "d25" or "tomorrow_probability" in execution):
             failures.append("sample_preparation_execution_profiles_mismatch")
         scans, rows = execution.get("history_scan_passes"), execution.get("history_rows_read")
         if type(scans) is not int or scans != 1 or type(rows) is not int or rows <= 0:
             failures.append("sample_preparation_history_scan_invalid")
+        if not _training_shutdown_complete(execution, set(profiles)):
+            failures.append("sample_preparation_shutdown_incomplete")
     baseline, prepared = initial.get("profiles"), preparation.get("profiles")
     if (not isinstance(baseline, list) or not isinstance(prepared, list) or len(prepared) != len(profiles)
             or any(not isinstance(item, Mapping) for item in prepared)):
         failures.append("sample_preparation_profiles_missing")
     else:
-        expected = {item.get("profile"): item.get("training_input_hash") for item in baseline
-                    if isinstance(item, Mapping) and item.get("profile") in profiles}
+        expected = {item.get("profile"): (item.get("training_input_hash"), item.get("d25_target")) for item in baseline
+                    if isinstance(item, Mapping) and isinstance(item.get("profile"), str) and item.get("profile") in profiles}
         seen = set()
         for item in prepared:
             profile, heads = item.get("profile"), item.get("heads")
+            input_hash, target = item.get("training_input_hash"), item.get("d25_target")
             if (not isinstance(profile, str) or profile not in profiles or profile in seen
                     or item.get("status") != "blocked" or item.get("reused") is not False
-                    or not expected.get(profile) or item.get("training_input_hash") != expected[profile]
-                    or not isinstance(heads, list) or len(heads) != 2
+                    or not _artifact_hash(input_hash) or not isinstance(target, Mapping)
+                    or (input_hash, target) != expected.get(profile)
+                    or not isinstance(heads, list) or len(heads) != 1
                     or any(not isinstance(head, Mapping) for head in heads)):
                 failures.append("sample_preparation_profile_result_invalid")
                 continue
             seen.add(profile)
-            if ({head.get("strategy") for head in heads} != {"tomorrow", "d25"}
-                    or any(head.get("status") != "blocked" or head.get("model_hash") != ""
-                           or head.get("report_hash") != "" or head.get("failure_reasons") != ["profile_training_failed"]
-                           for head in heads)):
+            head = heads[0]
+            if (head.get("strategy") != "d25" or head.get("status") != "blocked" or head.get("model_hash") != ""
+                    or head.get("report_hash") != "" or head.get("failure_reasons") != ["profile_training_failed"]):
                 failures.append("sample_preparation_head_result_invalid")
+            if not _has_controlled_sample_failure(head.get("diagnostic")):
+                failures.append("sample_preparation_controlled_cause_missing")
     if _seconds(preparation.get("seconds")) is None:
         failures.append("sample_preparation_duration_invalid")
     return tuple(failures)
 
 
-def _reuse_identity(value: object, profiles: Sequence[str]) -> tuple[tuple[str, ...], ...] | None:
-    if not profiles or len(set(profiles)) != len(profiles) or not isinstance(value, list) or len(value) != len(profiles):
+def _clean_shutdown(step: Mapping[str, object], name: str) -> bool:
+    return (
+        step.get("name") == name and step.get("completed") is True and step.get("timed_out") is False
+        and type(step.get("cancelled_count")) is int and step["cancelled_count"] == 0
+    )
+
+
+def _training_shutdown_complete(execution: Mapping[str, object], profiles: set[str]) -> bool:
+    shutdown = execution.get("shutdown")
+    progress = _keyed_rows(execution.get("progress_shutdown"), profiles)
+    return (
+        isinstance(shutdown, Mapping) and _clean_shutdown(shutdown, "training_executor")
+        and "failure" in shutdown and shutdown["failure"] is None
+        and "watchdog_failure" in shutdown and shutdown["watchdog_failure"] is None
+        and "shutdown_diagnostic" not in execution and progress is not None
+        and all(_clean_shutdown(step, "progress_heartbeat") for step in progress.values())
+    )
+
+
+def _has_controlled_sample_failure(diagnostic: object) -> bool:
+    causes = diagnostic.get("causes") if isinstance(diagnostic, Mapping) else None
+    if not isinstance(causes, list) or not causes or any(not isinstance(cause, Mapping) for cause in causes):
+        return False
+    terminal: Mapping[str, object] = causes[-1]
+    return terminal.get("code") == SAMPLE_PREPARATION_CONTROLLED_CAUSE and terminal.get("error_type") == "ValueError"
+
+
+def _keyed_rows(value: object, expected: set[str]) -> dict[str, Mapping[str, object]] | None:
+    if not isinstance(value, list) or len(value) != len(expected):
         return None
-    identities: list[tuple[str, ...]] = []
-    seen: set[str] = set()
-    for run in value:
-        if not isinstance(run, Mapping):
+    rows: dict[str, Mapping[str, object]] = {}
+    for row in value:
+        if not isinstance(row, Mapping):
             return None
-        profile, input_hash, heads = run.get("profile"), run.get("training_input_hash"), run.get("heads")
-        if (not isinstance(profile, str) or profile not in profiles or profile in seen
-                or not isinstance(input_hash, str) or not input_hash or run.get("status") != "engineering_ready"
-                or not isinstance(heads, list) or len(heads) != 2):
+        profile = row.get("profile")
+        if not isinstance(profile, str) or profile not in expected or profile in rows:
             return None
-        seen.add(profile)
-        strategies: set[str] = set()
-        for head in heads:
-            if not isinstance(head, Mapping):
+        rows[profile] = row
+    return rows
+
+
+def TrainingSuccessfulReceipt(outcomes: object, execution: object, profiles: Sequence[str]) -> bool:
+    """Require clean terminal results and resource shutdown for every selected profile."""
+    selected = set(profiles)
+    if (not profiles or len(selected) != len(profiles) or not isinstance(execution, Mapping)
+            or execution.get("status") != "completed" or execution.get("training_status") != "completed"
+            or execution.get("profiles") not in (list(profiles), tuple(profiles)) or execution.get("not_started") != []):
+        return False
+    profile_rows = _keyed_rows(outcomes, selected)
+    results = _keyed_rows(execution.get("results"), selected)
+    if profile_rows is None or results is None or not _training_shutdown_complete(execution, selected):
+        return False
+    for profile, outcome in profile_rows.items():
+        result = results[profile]
+        if (outcome.get("status") != "engineering_ready" or "maintenance_failure" in outcome
+                or type(result.get("exit_code")) is not int or result["exit_code"] != 0
+                or any(outcome.get(key) != [] or result.get(key) != [] for key in ("post_commit_issues", "delivery_issues"))):
+            return False
+    return True
+
+
+def _artifact_hash(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def _matches_target(strategy: str, identity: object) -> bool:
+    prefix = "next_close_gain_at_least_" if strategy == "tomorrow" else "mean_close_gain_d2_d5_at_least_"
+    if not isinstance(identity, str) or not identity.startswith(prefix) or not identity.endswith("_bps"):
+        return False
+    amount = identity[len(prefix):-4]
+    return amount == "0" or (amount.isascii() and amount.isdecimal() and not amount.startswith("0"))
+
+
+def _d25_evidence(identity: Mapping[str, object], outcome: Mapping[str, object]) -> bool:
+    heads = outcome.get("heads")
+    target = outcome.get("d25_target")
+    if not isinstance(heads, list) or len(heads) != 1 or not isinstance(heads[0], Mapping) or not isinstance(target, Mapping):
+        return False
+    utility = heads[0]
+    return (
+        outcome.get("status") == utility.get("status") == "engineering_ready"
+        and utility.get("strategy") == "d25"
+        and identity.get("input_hash") == outcome.get("training_input_hash")
+        and identity.get("target") == target.get("identity")
+        and _matches_threshold(identity["target"], target.get("threshold_bps"))
+        and identity.get("utility_model_hash") == utility.get("model_hash")
+        and identity.get("utility_report_hash") == utility.get("report_hash")
+        and _artifact_hash(identity.get("utility_model_hash")) and _artifact_hash(identity.get("utility_report_hash"))
+    )
+
+
+def _matches_threshold(identity: object, threshold: object) -> bool:
+    return isinstance(identity, str) and type(threshold) is int and threshold >= 0 and identity.endswith(f"_{threshold}_bps")
+
+
+def TrainingArtifactEvidence(
+    value: object, profiles: Sequence[str], *, d25_only: bool = False,
+) -> tuple[dict[str, str], ...] | None:
+    """Validate the native readback against the unique current CLI receipt."""
+    expected_profiles = set(profiles)
+    if not isinstance(value, Mapping) or not profiles or len(expected_profiles) != len(profiles):
+        return None
+    outcomes = _keyed_rows(value.get("profiles"), expected_profiles)
+    execution = value.get("execution")
+    if outcomes is None or not isinstance(execution, Mapping):
+        return None
+    if (execution.get("strategy") != ("d25" if d25_only else None) or "strategy" not in execution
+            or not TrainingSuccessfulReceipt(value.get("profiles"), execution, profiles)):
+        return None
+    tomorrow = {} if d25_only else _keyed_rows(execution.get("tomorrow_probability"), expected_profiles)
+    if tomorrow is None or d25_only and "tomorrow_probability" in execution:
+        return None
+    expected = {(profile, strategy) for profile in profiles for strategy in (("d25",) if d25_only else ("tomorrow", "d25"))}
+    raw = value.get("artifacts")
+    if not isinstance(raw, list) or len(raw) != len(expected):
+        return None
+    identities: dict[tuple[str, str], dict[str, str]] = {}
+    for item in raw:
+        if not isinstance(item, dict) or not all(isinstance(key, str) and isinstance(field, str) for key, field in item.items()):
+            return None
+        profile, strategy = item.get("profile"), item.get("strategy")
+        if (not isinstance(profile, str) or not isinstance(strategy, str)
+                or (profile, strategy) not in expected or (profile, strategy) in identities):
+            return None
+        fields = {"profile", "strategy", "input_hash", "target", "model_hash"}
+        if strategy == "d25":
+            fields.update(("utility_model_hash", "utility_report_hash"))
+        if (set(item) != fields or not _artifact_hash(item["input_hash"]) or not _artifact_hash(item["model_hash"])
+                or not _matches_target(strategy, item["target"])):
+            return None
+        if strategy == "d25":
+            if not _d25_evidence(item, outcomes[profile]):
                 return None
-            strategy, model_hash, report_hash = (head.get(key) for key in ("strategy", "model_hash", "report_hash"))
-            if (not isinstance(strategy, str) or strategy not in {"tomorrow", "d25"} or strategy in strategies
-                    or head.get("status") != "engineering_ready"
-                    or not isinstance(model_hash, str) or not model_hash or not isinstance(report_hash, str) or not report_hash):
+        else:
+            head = tomorrow[profile]
+            assessment_rows = head.get("assessment_rows")
+            if (head.get("ready") is not True or head.get("target") != item["target"]
+                    or not _matches_threshold(item["target"], head.get("threshold_bps"))
+                    or type(assessment_rows) is not int or assessment_rows < 0
+                    or head.get("model_identity") != item["model_hash"] or head.get("history_snapshot_hash") != item["input_hash"]):
                 return None
-            strategies.add(strategy)
-            identities.append((profile, input_hash, strategy, model_hash, report_hash))
-    return tuple(sorted(identities))
+        identities[profile, strategy] = item
+    return tuple(identities[key] for key in sorted(identities))
+
+
+def _artifact_inputs(identities: Sequence[Mapping[str, str]]) -> tuple[tuple[str, str, str, str], ...]:
+    return tuple((row["profile"], row["strategy"], row["input_hash"], row["target"]) for row in identities)
 
 
 def BuildTrainingBenchmarkCommands(options: TrainingOptions, python_executable: str) -> tuple[DiagnosticCommand, ...]:
@@ -338,7 +476,7 @@ def _summarize_single(results: Sequence[DiagnosticResult]) -> dict[str, object]:
             result.return_code == 0 and result.payload is not None and result.payload.get("status") == "passed"
             for result in selected
         )
-        fingerprints = []
+        fingerprints: list[tuple[tuple[str, str], ...]] = []
         peak = 0
         initial_times = []
         repeat_times = []
@@ -361,10 +499,6 @@ def _summarize_single(results: Sequence[DiagnosticResult]) -> dict[str, object]:
                 initial_times.append(initial_seconds)
                 repeat_times.append(repeat_seconds)
             ready = ready and bool(initial.get("complete")) and bool(repeat.get("complete"))
-            profiles = initial.get("profiles")
-            if not isinstance(profiles, list) or not all(isinstance(profile, Mapping) for profile in profiles):
-                ready = False
-                continue
             expected = result.name.rsplit(":", 1)[-1].split(",")
             reuse_failures.extend(TrainingReuseFailures(initial, repeat, expected))
             scenario = summary.get("sample_reuse")
@@ -374,27 +508,12 @@ def _summarize_single(results: Sequence[DiagnosticResult]) -> dict[str, object]:
                 seconds = _seconds(sample_run.get("seconds")) if isinstance(sample_run, Mapping) else None
                 if seconds is not None:
                     sample_times.append(seconds)
-            if _reuse_identity(profiles, expected) is None:
+            artifact_evidence = TrainingArtifactEvidence(initial, expected)
+            if artifact_evidence is None:
                 ready = False
                 continue
-            if len(profiles) != len(expected) or {profile.get("profile") for profile in profiles} != set(expected):
-                ready = False
             peak = max(peak, int(summary.get("process_peak_rss_bytes") or 0))
-            for profile in profiles:
-                ready = ready and bool(profile.get("training_input_hash")) and len(profile.get("heads", ())) == 2
-                ready = ready and all(
-                    head.get("model_hash") and head.get("report_hash") for head in profile.get("heads", ())
-                )
-                fingerprints.append(
-                    (
-                        profile["profile"],
-                        profile.get("training_input_hash"),
-                        tuple(
-                            (head["strategy"], head.get("model_hash"), head.get("report_hash"))
-                            for head in profile.get("heads", ())
-                        ),
-                    )
-                )
+            fingerprints.extend(tuple(sorted(row.items())) for row in artifact_evidence)
         identities.append(tuple(sorted(fingerprints)))
         rounds.append(
             {
@@ -500,9 +619,8 @@ def _repeated_identity(result: DiagnosticResult) -> tuple[object, ...] | None:
     initial = summary.get("initial")
     if not isinstance(initial, Mapping):
         return None
-    profiles = initial.get("profiles")
     expected = ("v1", "v2", "v3", "v5")
-    identities = _reuse_identity(profiles, expected)
+    identities = TrainingArtifactEvidence(initial, expected)
     fingerprints = _fingerprint_values(initial.get("numeric_fingerprints"), expected)
     if identities is None or fingerprints is None:
         return None
@@ -512,8 +630,7 @@ def _repeated_identity(result: DiagnosticResult) -> tuple[object, ...] | None:
     if type(writes) is not int or writes != 0 or summary.get("source_files_unchanged") is not True:
         return None
     # Model/report hashes legitimately include source and CPU-request identities.
-    inputs = tuple(sorted({(item[0], item[1]) for item in identities}))
-    return summary.get("training_configuration_sha256"), inputs, fingerprints
+    return summary.get("training_configuration_sha256"), _artifact_inputs(identities), fingerprints
 
 
 def _repeated_policy(result: DiagnosticResult) -> str | None:
@@ -602,12 +719,9 @@ def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, objec
         if not isinstance(initial, Mapping) or not isinstance(repeat, Mapping):
             initial, repeat = {}, {}
             complete = False
-        runs = initial.get("profiles")
-        if not isinstance(runs, list) or not all(isinstance(profile, Mapping) for profile in runs):
-            runs = []
-            complete = False
-        profiles.append(tuple((profile.get("profile"), profile.get("training_input_hash")) for profile in runs))
         expected = selected[0].name.rsplit(":", 1)[-1].split(",") if selected else []
+        artifact_evidence = TrainingArtifactEvidence(initial, expected)
+        profiles.append(_artifact_inputs(artifact_evidence) if artifact_evidence is not None else None)
         reuse_failures = TrainingReuseFailures(initial, repeat, expected)
         sample_reuse = summary.get("sample_reuse")
         sample_failures = TrainingSampleReuseFailures(initial, sample_reuse, expected)
@@ -620,9 +734,8 @@ def _summarize_checkouts(results: Sequence[DiagnosticResult]) -> dict[str, objec
             and bool(initial.get("complete"))
             and bool(repeat.get("complete"))
             and bool(summary.get("source_identity_unchanged"))
-            and len(runs) == len(expected)
-            and {profile.get("profile") for profile in runs} == set(expected)
-            and all(profile.get("training_input_hash") for profile in runs)
+            and artifact_evidence is not None
+            and TrainingArtifactEvidence(repeat, expected) is not None
             and (mode != "candidate" or not reuse_failures)
             and not sample_failures
         )
@@ -681,8 +794,10 @@ def _seconds(value: object) -> float | None:
     return None
 
 
-def _fingerprint_values(value: object, profiles: Sequence[str]) -> tuple[tuple[str, str, str], ...] | None:
-    expected = {(profile, strategy) for profile in profiles for strategy in ("tomorrow", "d25")}
+def _fingerprint_values(
+    value: object, profiles: Sequence[str], *, d25_only: bool = False,
+) -> tuple[tuple[str, str, str], ...] | None:
+    expected = {(profile, strategy) for profile in profiles for strategy in (("d25",) if d25_only else ("tomorrow", "d25"))}
     if not isinstance(value, (tuple, list)) or len(value) != len(expected):
         return None
     parsed: dict[tuple[str, str], str] = {}

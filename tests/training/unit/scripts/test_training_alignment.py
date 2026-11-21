@@ -79,20 +79,19 @@ def _publish_industry(history, sqlite_policy):
         ).fetch(now, universe, (date(2024, 1, 1), now.date()))
 
 
-@pytest.mark.parametrize("reported_profile", ("v1", "v2"))
-def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, monkeypatch, reported_profile):
+@pytest.mark.parametrize(("reported_profile", "report_matches"), (("v1", True), ("v2", True), ("v1", False)))
+def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, monkeypatch, reported_profile, report_matches):
     from scripts.training.jobs import training_alignment
+    from tests.helpers.training.scripts.training_execution_performance import _run
     from trader import bootstrap
 
-    profile = {"profile": reported_profile, "status": "engineering_ready", "message": "训练完成"}
-    execution = {
-
-        "status": "completed",
-        "profiles": [reported_profile],
-        "training_status": "completed",
-        "history_rows_read": 0,
-        "timing": {"source_read_seconds": 0.0, "profiles": [{"profile": reported_profile, "queue_send_seconds": 1.25}]},
-    }
+    fixture = _run("pretty_reports", (reported_profile,), 1.0, False)
+    profile = dict(fixture["profiles"][0], message="训练完成")
+    if not report_matches:
+        profile["heads"][0]["report_hash"] = "f" * 64
+    execution = dict(fixture["execution"], timing={
+        "source_read_seconds": 0.0, "profiles": [{"profile": reported_profile, "queue_send_seconds": 1.25}],
+    })
     industry = CurrentIndustrySnapshotFixture(("600001",))
 
     def train(*args, **kwargs):
@@ -102,12 +101,10 @@ def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, m
         return 0
 
     monkeypatch.setattr(bootstrap, "ExecuteSelectedTraining", train)
-    monkeypatch.setattr(training_alignment, "_load_event_values", lambda _runtime, _root, profiles: {
-        (profile, strategy): {} for profile in profiles for strategy in ("tomorrow", "d25")
-    })
-    monkeypatch.setattr(training_alignment, "_numeric_fingerprints", lambda *args: ())
+    monkeypatch.setattr(training_alignment, "_load_artifact_evidence", lambda *args, **kwargs: (fixture["artifacts"], {}))
+    monkeypatch.setattr(training_alignment, "_numeric_fingerprints", lambda *args, **kwargs: ())
     result = training_alignment._train_once(None, tmp_path / "history", tmp_path / "work", ("v1",), industry_snapshot=industry)
-    assert result["complete"] is (reported_profile == "v1")
+    assert result["complete"] is (reported_profile == "v1" and report_matches)
     assert result["profiles"] == [profile]
     assert result["execution"] == execution
 
@@ -631,18 +628,25 @@ def test_training_resource_observer_reports_filesystem_space_without_claiming_ow
 def test_real_published_history_training_never_persists_due_observations(tmp_path, monkeypatch, computation_candidate):
     from scripts.training.jobs import training_alignment
     from scripts.training.samples.training_read_comparison import PrepareTrainingHistory
+    from tests.helpers.training.scripts.training_execution_performance import (
+        _install_published_d25_history_prices, _install_tomorrow_history,
+    )
+    from trader.download.infra.history_snapshot_inspection import LoadPublishedHistorySnapshot
     from trader.infra.settings import LoadRuntimeSettings
     from trader.infra.settings.data_paths import DataPaths
     from trader.training.infra import selected_training
-    from trader.training.infra.training_settings import LoadProfileTrainingSettings
+    from trader.training.infra.training_settings import LoadD25TrainingSettings
 
     project = Path(__file__).resolve().parents[4]
     runtime = replace(LoadRuntimeSettings(project / "config/runtime.json"), data_paths=DataPaths(tmp_path / "source"))
+    _install_published_d25_history_prices(monkeypatch)
     history = PrepareTrainingHistory(tmp_path / "source", size=4, sessions=2000, sqlite_policy=SqlitePolicyFixture())
     _publish_industry(history, SqlitePolicyFixture())
-    settings = LoadProfileTrainingSettings(project, "v3")
+    published = LoadPublishedHistorySnapshot(history, sqlite_policy=SqlitePolicyFixture())
+    _install_tomorrow_history(monkeypatch, published.calendar.open_dates, published.snapshot.content_hash)
+    settings = LoadD25TrainingSettings(project, "v3")
     settings = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=10))
-    monkeypatch.setattr(selected_training, "LoadProfileTrainingSettings", lambda *_args: settings)
+    monkeypatch.setattr(selected_training, "LoadD25TrainingSettings", lambda *_args: settings)
     monkeypatch.setattr("trader.infra.settings.LoadRuntimeSettings", lambda _path: runtime)
     # This checks file protection and report boundaries; host-pressure guards have dedicated tests.
     monkeypatch.setattr("trader.training.infra.memory_admission.FittingMemoryCapacity", lambda _settings: 512 * 1024**2)

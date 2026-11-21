@@ -179,7 +179,10 @@ def Run(
         report = _unavailable_report("model_unavailable")
         report.update(
             profile_results=profile_results,
-            workload={"profiles": list(selected), "profile_count": len(selected), "model_heads": 1 + len(selected)},
+            workload={
+                "profiles": list(selected), "profile_count": len(selected),
+                "model_heads": sum(len(profile.models) for profile in prepared.profiles),
+            },
         )
         return report
     first = workloads[0]
@@ -189,15 +192,7 @@ def Run(
         "scoring_profile": ",".join(selected),
         "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
         "fixture_sha256": ContentHash(tuple((item.profile.profile_id, item.features) for item in workloads)),
-        "models_sha256": ContentHash(
-            tuple(
-                (
-                    item.profile.profile_id,
-                    tuple((head.value, runtime.predictor.model_hash) for head, runtime in item.profile.heads.items()),
-                )
-                for item in workloads
-            )
-        ),
+        "models_sha256": ContentHash(tuple((profile.profile_id, profile.models) for profile in prepared.profiles)),
         "strategy_contracts_sha256": CanonicalDigest(tuple(item.policy for item in workloads)),
         "cost_policy_sha256": ContentHash(workloads[0].cost_policy),
         "performance_budgets_sha256": ContentHash(budgets),
@@ -344,6 +339,7 @@ def _steady_report(
     return {
         "status": "failed" if failures else "passed",
         "identity": {**identity, "measurement_scope": "model_steady_only"},
+        "profile_results": _project_profile_loads(prepared.profiles),
         "workload": {"profiles": [item.profile.profile_id for item in prepared.workloads],
                      "model_heads": sum(len(item.strategies) for item in prepared.workloads), "tick_count": steady.ticks,
                      "evidence_scope": "generated_fixture_real_loaded_models_no_release_authority",
@@ -444,6 +440,7 @@ def _continuous_report(
         "profile_results": _project_profile_loads(prepared.profiles),
         "workload": {
             "profiles": [item.model.profile.profile_id for item in workloads],
+            "model_heads": sum(len(profile.models) for profile in prepared.profiles),
             "market_rows": len(prepared.market_quotes),
             "configured_market_rows": settings.performance_budgets.workload.market_rows,
             "acceptance": "diagnostic_execution_only_not_full_market_acceptance",
@@ -494,6 +491,16 @@ def _prepare_profiles(
         except (OSError, ValueError, RuntimeError):
             profiles.append(_ProfileLoad(profile_id, "d25_target_model_unavailable"))
             continue
+        d25_identity = (Strategy.D25.value, loaded.heads[Strategy.D25].predictor.model_hash)
+        try:
+            tomorrow = LoadTomorrowProbabilityModel(
+                settings.data_paths.models, profile_id, tomorrow_target, project_root=settings.project_root,
+            )
+        except (OSError, ValueError, RuntimeError):
+            tomorrow = None
+        if tomorrow is None:
+            profiles.append(_ProfileLoad(profile_id, "tomorrow_target_model_unavailable", models=(d25_identity,)))
+            continue
         started = time.perf_counter()
         training = LoadRuntimeTrainingSettings(settings.project_root, profile_id)
         market, market_quotes, features = BuildPerformanceFixtures(
@@ -506,10 +513,7 @@ def _prepare_profiles(
         workloads.append(
             PerformanceProfileWorkload(
                 loaded, BuildRecommendationPolicy(strategy), features, settings.config_version, cost_policy,
-                LoadTomorrowProbabilityModel(
-                    settings.data_paths.models, profile_id, tomorrow_target, project_root=settings.project_root,
-                ),
-                tomorrow_target, d25_target,
+                tomorrow, tomorrow_target, d25_target,
             )
         )
         profiles.append(
@@ -517,7 +521,7 @@ def _prepare_profiles(
                 profile_id,
                 None,
                 len(features),
-                tuple((head.value, runtime.predictor.model_hash) for head, runtime in loaded.heads.items()),
+                ((Strategy.TOMORROW.value, tomorrow.identity), d25_identity),
             )
         )
         if not inputs:
@@ -527,7 +531,10 @@ def _prepare_profiles(
 
 def _project_profile_loads(profiles: tuple[_ProfileLoad, ...]) -> dict[str, object]:
     return {
-        profile.profile_id: {"status": "unverified", "reason": profile.reason}
+        profile.profile_id: {
+            "status": "unverified", "reason": profile.reason,
+            **({"models": dict(profile.models)} if profile.models else {}),
+        }
         if profile.reason is not None
         else {"status": "ready", "input_count": profile.input_count, "models": dict(profile.models)}
         for profile in profiles

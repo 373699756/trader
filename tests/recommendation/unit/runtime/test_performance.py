@@ -3,20 +3,58 @@ from __future__ import annotations
 import json
 
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from tests.helpers.recommendation.runtime.performance_fixtures import _budgets
-
-from tests.helpers.recommendation.scoring.performance_models import _workload
+from tests.helpers.recommendation.runtime.performance_fixtures import _budgets, _profile
+from tests.helpers.recommendation.scoring.performance_models import _Predictor as _UtilityFixturePredictor
 
 from trader.entrypoints import performance
 
+from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.infra.scoring.profile_factory import ScoringModelsMissingError
+from trader.recommendation.domain.publication.models import Strategy
 
 from tests.helpers.recommendation.runtime.performance import (
     _baseline_identity,
 )
+
+
+class _D25FixturePredictor(_UtilityFixturePredictor):
+    def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+        return tuple(replace(item, target_probability=0.75) for item in super().predict(inputs))
+
+
+class _TomorrowFixturePredictor:
+    def __init__(self, profile: str) -> None:
+        self.identity = f"{int(profile[1:]):064x}"
+
+    def predict_probability(self, features: tuple[float, ...]) -> float:
+        return 0.75
+
+    def predict_probabilities(self, rows: tuple[tuple[float, ...], ...]) -> tuple[float, ...]:
+        return tuple(self.predict_probability(row) for row in rows)
+
+
+@pytest.fixture
+def performance_models(monkeypatch):
+    def load_utility(profile, **_settings):
+        loaded = _profile(profile)
+        return replace(loaded, heads={Strategy.D25: loaded.heads[Strategy.D25]})
+
+    def bind_d25(_root, loaded, target):
+        assert target.strategy is Strategy.D25
+        head = loaded.heads[Strategy.D25]
+        return replace(loaded, heads={Strategy.D25: replace(head, predictor=_D25FixturePredictor(head.predictor))})
+
+    monkeypatch.setattr(performance, "LoadD25UtilityProfile", load_utility)
+    monkeypatch.setattr("trader.training.infra.d25.artifact.LoadD25ScoringProfile", bind_d25)
+    monkeypatch.setattr(
+        "trader.training.infra.tomorrow.artifact.LoadTomorrowProbabilityModel",
+        lambda _root, profile, _target, **_settings: _TomorrowFixturePredictor(profile),
+    )
 
 
 def test_missing_model_produces_bounded_performance_report(tmp_path, monkeypatch, capsys) -> None:
@@ -33,16 +71,88 @@ def test_missing_model_produces_bounded_performance_report(tmp_path, monkeypatch
     assert "private model path" not in captured.out + captured.err
 
 
-def test_steady_only_uses_existing_100_tick_measurement_without_claiming_pipeline_latency(monkeypatch, tmp_path):
-    from pathlib import Path
+def test_replay_identity_binds_each_loaded_tomorrow_and_d25_model(monkeypatch) -> None:
+    config = Path("config/runtime.json")
+    profiles = ("v1", "v2", "v3", "v5")
+    tomorrow_models = {profile: f"tomorrow-{profile}" for profile in profiles}
+    calls = []
 
+    def load_tomorrow(_root, profile, target, **_settings):
+        calls.append((profile, target))
+        identity = tomorrow_models.get(profile)
+        return SimpleNamespace(identity=identity) if identity is not None else None
+
+    def bind_d25(_root, profile, _target):
+        head = SimpleNamespace(predictor=SimpleNamespace(model_hash=f"bound-d25-{profile}"))
+        return SimpleNamespace(profile_id=profile, heads={Strategy.D25: head})
+
+    def report_preparation(_settings, prepared, identity, *_options):
+        return {"identity": identity, "profile_results": performance._project_profile_loads(prepared.profiles)}
+
+    monkeypatch.setattr(performance, "LoadD25UtilityProfile", lambda profile, **_: profile)
+    monkeypatch.setattr("trader.training.infra.d25.artifact.LoadD25ScoringProfile", bind_d25)
+    monkeypatch.setattr("trader.training.infra.tomorrow.artifact.LoadTomorrowProbabilityModel", load_tomorrow)
+    monkeypatch.setattr(performance, "BuildPerformanceFixtures", lambda *_args, **_options: ((), (), (1,)))
+    monkeypatch.setattr(performance, "_continuous_report", report_preparation)
+    first = performance.Run(config, scoring_profile=",".join(profiles), replay_ticks=1)
+    assert [profile for profile, _ in calls] == list(profiles)
+    assert all(target.strategy is Strategy.TOMORROW and target.threshold_bps == 500 for _, target in calls)
+    for profile in profiles:
+        assert first["profile_results"][profile]["models"] == {
+            "tomorrow": f"tomorrow-{profile}", "d25": f"bound-d25-{profile}",
+        }
+
+    tomorrow_models["v3"] = "updated-tomorrow-v3"
+    second = performance.Run(config, scoring_profile=",".join(profiles), replay_ticks=1)
+    assert second["identity"]["fixture_sha256"] == first["identity"]["fixture_sha256"]
+    assert second["identity"]["models_sha256"] != first["identity"]["models_sha256"]
+
+    del tomorrow_models["v3"]
+    missing = performance.Run(config, scoring_profile="v3", replay_ticks=1)
+    assert missing["failures"] == ["model_unavailable"]
+    assert missing["workload"]["model_heads"] == 1
+    assert missing["profile_results"]["v3"] == {
+        "status": "unverified", "reason": "tomorrow_target_model_unavailable", "models": {"d25": "bound-d25-v3"},
+    }
+
+
+@pytest.mark.usefixtures("performance_models")
+def test_offline_tomorrow_counts_actual_v5_batches_without_changing_scoring_status() -> None:
+    config = Path("config/runtime.json")
+    settings = replace(performance.LoadRuntimeSettings(config), performance_budgets=_budgets())
+    workload, = performance._prepare_profiles(settings, ("v5",), config).workloads
+    scoring = workload.scoring()
+    template = workload.features[0]
+    sequence = template.model_sequence
+    assert sequence is not None
+    features = tuple(
+        replace(template, quote=replace(template.quote, code=code), model_sequence=replace(sequence, code=code))
+        for code in (f"{index:06}" for index in range(1, 258))
+    )
+    assert workload.computation_status(scoring, Strategy.TOMORROW).predictor_batch_count == 0
+    empty = scoring.score(Strategy.TOMORROW, ())
+    assert empty is not None and empty.predictions == ()
+    assert workload.computation_status(scoring, Strategy.TOMORROW).predictor_batch_count == 0
+    result = scoring.score(Strategy.TOMORROW, features)
+    assert result is not None and len(result.predictions) == 257
+    measured = workload.computation_status(scoring, Strategy.TOMORROW)
+    assert measured.predictor_batch_count == 2
+    stage, = measured.stage_durations
+    assert (stage.calculator_group, stage.execution_count) == ("batch_prediction", 2)
+    assert stage.cumulative_duration_ms >= stage.last_duration_ms >= 0
+    runtime = scoring.status()
+    assert runtime is not None and runtime.heads[Strategy.TOMORROW].computation.predictor_batch_count == 0
+
+
+@pytest.mark.usefixtures("performance_models")
+def test_steady_only_uses_existing_100_tick_measurement_without_claiming_pipeline_latency(monkeypatch, tmp_path):
     settings = replace(performance.LoadRuntimeSettings(Path("config/runtime.json")), performance_budgets=_budgets())
     monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _: settings)
-    monkeypatch.setattr(performance, "LoadD25UtilityProfile", lambda profile, **_: _workload(profile).profile)
     monkeypatch.setattr(performance, "_operations", lambda *_: pytest.fail("steady-only must not run cold pipeline probes"))
     report = performance.Run(Path("config/runtime.json"), scoring_profile="v1,v2,v3,v5", steady_only=True)
     assert report["workload"]["tick_count"] == 100
     assert report["workload"]["model_heads"] == 8
+    assert all(set(result["models"]) == {"tomorrow", "d25"} for result in report["profile_results"].values())
     assert report["memory"]["rss_before_bytes"] > 0
     assert report["measurements"] == {}
     assert report["hot_path_baseline"]["status"] == "unverified"
@@ -57,9 +167,9 @@ def test_steady_only_uses_existing_100_tick_measurement_without_claiming_pipelin
 
 
 @pytest.mark.parametrize("skip_pipeline", (False, True))
+@pytest.mark.usefixtures("performance_models")
 def test_full_four_profile_report_runs_real_scoring_and_never_claims_unmeasured_equivalence(monkeypatch, skip_pipeline):
     import socket
-    from pathlib import Path
 
     def no_network(*_args, **_kwargs):
         raise AssertionError("offline performance must not connect to a network")
@@ -69,7 +179,6 @@ def test_full_four_profile_report_runs_real_scoring_and_never_claims_unmeasured_
     original = performance.LoadRuntimeSettings(Path("config/runtime.json").resolve())
     settings = replace(original, performance_budgets=_budgets())
     monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _path: settings)
-    monkeypatch.setattr(performance, "LoadD25UtilityProfile", lambda profile, **_kwargs: _workload(profile).profile)
     if skip_pipeline:
         measure = performance.MeasureModelWorkload
 
@@ -96,6 +205,7 @@ def test_full_four_profile_report_runs_real_scoring_and_never_claims_unmeasured_
         assert len(scenario["heads"]) == 8
         if not skip_pipeline or name != "quote_to_draft":
             assert all(head["input_count"] == head["predicted_count"] == 12 for head in scenario["heads"])
+            assert all(head["predictor_calls"] > 0 for head in scenario["heads"] if head["strategy"] == "tomorrow")
     assert report["identity"]["fixture_sha256"] and report["identity"]["models_sha256"]
 
 

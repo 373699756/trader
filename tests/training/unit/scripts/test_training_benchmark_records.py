@@ -52,7 +52,7 @@ def _payload(number: int = 1, mode: str = "candidate") -> dict[str, object]:
     for name in ("initial", "repeat"):
         _mapping(summary[name]).update(exit_code=0, reloaded_heads=8, resources=_resources())
     scenario = _mapping(summary["sample_reuse"])
-    _mapping(scenario["run"]).update(exit_code=0, reloaded_heads=6, resources=_resources())
+    _mapping(scenario["run"]).update(exit_code=0, reloaded_heads=3, resources=_resources())
     scenario.update(
         cache_transfer_method="hardlink", linked_bytes=4096, copied_bytes=0,
         preparation_cache_released_after_verification=True,
@@ -144,7 +144,9 @@ def test_non_numeric_evidence_precedes_an_actual_numeric_difference(
         summary["training_configuration_sha256"] = "f" * 64
     else:
         for name in ("initial", "repeat"):
-            _mapping(_mapping(summary[name])["profiles"][0])["training_input_hash"] = "f" * 64
+            run = _mapping(summary[name])
+            _mapping(run["profiles"][0])["training_input_hash"] = "f" * 64
+            next(row for row in run["artifacts"] if row["profile"] == "v1" and row["strategy"] == "d25")["input_hash"] = "f" * 64
         _refresh_failures(payload)
     _record, rejected = _review(tmp_path, payload, "mixed")
     assert rejected["status"] == "failed" and rejected["failure_kind"] == failure_kind
@@ -218,6 +220,10 @@ def test_first_valid_child_seals_identity_and_returns_only_named_evidence(tmp_pa
     assert _mapping(workloads["initial"])["seconds"] == 80.0
     assert _mapping(workloads["repeat"])["history_scan_passes"] == 0
     assert _mapping(workloads["sample_reuse"])["history_rows_read"] == 0
+    assert {(row["profile"], row["strategy"]) for row in identity["inputs"]} == {
+        (profile, strategy) for profile in ("v1", "v2", "v3", "v5") for strategy in ("tomorrow", "d25")
+    }
+    assert all("utility_report_hash" not in row for row in details["heads"] if row["strategy"] == "tomorrow")
     assert "not-for-review-output" not in record.read_text()
     assert reviewed["performance_acceptance"] is False and reviewed["production_authority"] is False
 
@@ -314,7 +320,8 @@ def test_external_history_and_copied_samples_keep_the_original_evidence_contract
     "not_passed", "source_writes_bool", "source_files", "source_identity", "guard", "initial_scan",
     "initial_rows", "initial_reused", "missing_head", "repeat_scan", "repeat_artifact", "repeat_numeric",
     "sample_scan", "sample_reused", "sample_numeric", "sample_signature", "hardlink_retained", "resources",
-    "sampling_failed", "baseline_candidate",
+    "sampling_failed", "baseline_candidate", "initial_post_commit_cleanup", "repeat_delivery_issues",
+    "repeat_results_mismatch", "repeat_missing_outcome", "sample_shutdown_incomplete", "sample_exit_bool",
 ))
 def test_incomplete_or_changed_evidence_never_seals_an_identity(tmp_path: Path, mutation: str) -> None:
     payload = _payload(mode="baseline_before" if mutation == "baseline_candidate" else "candidate")
@@ -351,6 +358,20 @@ def test_incomplete_or_changed_evidence_never_seals_an_identity(tmp_path: Path, 
         del _mapping(initial["resources"])["filesystem_minimum_free_bytes"]
     elif mutation == "sampling_failed":
         _mapping(repeat["resources"])["sampling_failures"] = 1
+    elif mutation == "initial_post_commit_cleanup":
+        _mapping(initial["profiles"][0])["post_commit_issues"] = [{"stage": "sample_cleanup"}]
+        _mapping(_mapping(initial["execution"])["results"][0])["post_commit_issues"] = [{"stage": "sample_cleanup"}]
+    elif mutation == "repeat_delivery_issues":
+        _mapping(repeat["profiles"][0])["delivery_issues"] = [{"stage": "result_delivery"}]
+        _mapping(_mapping(repeat["execution"])["results"][0])["delivery_issues"] = [{"stage": "result_delivery"}]
+    elif mutation == "repeat_results_mismatch":
+        _mapping(_mapping(repeat["execution"])["results"][0])["exit_code"] = 1
+    elif mutation == "repeat_missing_outcome":
+        _mapping(repeat["execution"])["results"].pop()
+    elif mutation == "sample_shutdown_incomplete":
+        _mapping(sample["execution"])["progress_shutdown"].pop()
+    elif mutation == "sample_exit_bool":
+        _mapping(_mapping(sample["execution"])["results"][0])["exit_code"] = False
     else:
         _mapping(summary["execution_candidate"])["cpu"] = "three_single"
     _record, reviewed = _review(tmp_path, payload)
@@ -374,6 +395,7 @@ def test_later_identity_drift_is_rejected_without_overwriting_the_first_child(tm
             run = _mapping(summary[name])
             if mutation == "input":
                 _mapping(run["profiles"][0])["training_input_hash"] = "f" * 64
+                next(row for row in run["artifacts"] if row["profile"] == "v1" and row["strategy"] == "d25")["input_hash"] = "f" * 64
             else:
                 _mapping(run["numeric_fingerprints"][0])["model_values_and_metrics_sha256"] = "f" * 64
     _record, reviewed = _review(tmp_path, payload, "changed")
