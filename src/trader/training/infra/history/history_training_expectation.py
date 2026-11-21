@@ -11,7 +11,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingProfileThreads
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.tcn.settings import TcnFittingParameters
 from trader.training.infra.training_contract import BuildTrainingContractHash
 from trader.training.infra.training_settings import ProfileTrainingSettings
 

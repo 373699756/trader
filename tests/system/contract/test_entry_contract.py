@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from tests.helpers.shared.cold_start import _empty_config
 
 import ast
 import json
@@ -21,6 +22,7 @@ from trader.entrypoints.cli import BuildParser, Main
 from trader.entrypoints.server import BuildParser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
 from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
 from trader.training.infra.research.h1_point_in_time_snapshot import H1PointInTimeSnapshotConflictError
 from trader.training.infra.research.tomorrow_research_evidence import TomorrowResearchEvidenceIndexError
@@ -200,6 +202,8 @@ def test_run_script_help_lists_retained_download_and_training_commands(tmp_path:
         "./run.sh sync history",
         "./run.sh sync company", "./run.sh sync company fill",
         "./run.sh train", "./run.sh train v1,v5",
+        "./run.sh train tomorrow", "./run.sh train d25",
+        "./run.sh train tomorrow v3", "./run.sh train d25 v5",
     ]
     for removed in ("高级配置", "scripts/tools.py", "--repair-codes", "--json", "--diagnostics", "--fill"):
         assert removed not in completed.stdout
@@ -238,6 +242,10 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
         ("train", "--mode", "update"),
         ("train", "--json"),
         ("train", "v1", "--json"),
+        ("train", "v3", "--strategy", "tomorrow"),
+        ("train", "v3", "tomorrow"),
+        ("train", "tomorrow", "unknown"),
+        ("train", "d25", "v5,v5"),
         ("train", "--diagnostics", "report.json"),
         ("train", "v1", "v5"),
         ("train", "v1,v1"),
@@ -397,10 +405,12 @@ def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
     assert completed.stdout == f"server:--config {config} {profile}\n"
 
 
-@pytest.mark.parametrize("profile_args", (
-    (), ("v1",), ("v1,v5",), ("v2",), ("v2,v3",), ("v1,v2,v3,v5",),
+@pytest.mark.parametrize("arguments", (
+    ("train",), ("train", "v1"), ("train", "v1,v5"), ("train", "v2"), ("train", "v2,v3"),
+    ("train", "v1,v2,v3,v5"), ("train", "tomorrow"), ("train", "d25"),
+    ("train", "tomorrow", "v3"), ("train", "d25", "v5"), ("train", "d25", "v1,v2"),
 ))
-def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, profile_args: tuple[str, ...]) -> None:
+def test_run_script_forwards_training_profiles_and_strategies(tmp_path: Path, arguments: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
     _write_fake_entrypoint(venv_bin / "python3", f'exec "{sys.executable}" "$@"')
@@ -410,7 +420,7 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "train", *profile_args),
+        ("bash", str(ROOT / "run.sh"), *arguments),
         cwd=ROOT,
         env={
             **os.environ,
@@ -424,8 +434,35 @@ def test_run_script_forwards_default_or_explicit_v1_training(tmp_path: Path, pro
     )
 
     assert completed.returncode == 0
-    suffix = " " + " ".join(profile_args) if profile_args else ""
-    assert completed.stdout == f"cli:--config {config} train{suffix}\n"
+    assert completed.stdout == f"cli:--config {config} {' '.join(arguments)}\n"
+
+
+def test_train_cli_accepts_profile_without_strategy_switch() -> None:
+    parser = BuildParser()
+    assert parser.parse_args(["train", "v3"]).profiles == ("v3",)
+    with pytest.raises(SystemExit) as rejected:
+        parser.parse_args(["train", "v3", "--strategy", "tomorrow"])
+    assert rejected.value.code == 2
+
+
+@pytest.mark.parametrize(("arguments", "profiles", "strategy"), (
+    (("train",), ("v1", "v2", "v3", "v5"), None),
+    (("train", "v3"), ("v3",), None),
+    (("train", "tomorrow"), ("v1", "v2", "v3", "v5"), Strategy.TOMORROW),
+    (("train", "d25"), ("v1", "v2", "v3", "v5"), Strategy.D25),
+    (("train", "tomorrow", "v3"), ("v3",), Strategy.TOMORROW),
+    (("train", "d25", "v1,v5"), ("v1", "v5"), Strategy.D25),
+))
+def test_training_command_selects_profiles_and_strategy(arguments, profiles, strategy, tmp_path, monkeypatch):
+    calls = []
+
+    def train(_runtime, selected_profiles, **options):
+        calls.append((selected_profiles, options["strategy"]))
+        return 0
+
+    monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", train)
+    assert Main(["--config", str(_empty_config(tmp_path)), *arguments]) == 0
+    assert calls == [(profiles, strategy)]
 
 
 @pytest.mark.parametrize("arguments", (
@@ -466,8 +503,8 @@ def test_train_reports_local_failure_without_exposing_details(tmp_path, monkeypa
         layout_reads.append(True)
         return tomorrow_training_progress.TrainingProgressLayout(96)
 
-    def train(_runtime, _profiles, *, started_at, terminal_columns, report_output):
-        assert started_at >= 0 and terminal_columns == 96
+    def train(_runtime, _profiles, *, started_at, terminal_columns, report_output, strategy):
+        assert started_at >= 0 and terminal_columns == 96 and strategy is None
         raise error("private training details")
 
     monkeypatch.setattr(tomorrow_training_progress, "ReadTrainingProgressLayout", read_layout)

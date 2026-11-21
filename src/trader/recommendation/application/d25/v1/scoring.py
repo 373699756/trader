@@ -1,0 +1,273 @@
+"""Rank a fixed complete population with the V1 D25 model capability."""
+
+from __future__ import annotations
+
+import math
+import threading
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import replace
+from typing import cast
+
+from trader.recommendation.application.ports.loaded_profile import (
+    LearnedRankPredictorPort,
+    LoadedScoringProfile,
+    ModelComputationStageStatus,
+    ModelComputationStatus,
+    ModelDiagnostics,
+    ModelInput,
+    ModelScoreBatch,
+    ModelScoringContext,
+    ModelScoringDeadlineError,
+    ScoringHeadRuntimeStatus,
+)
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
+from trader.recommendation.domain.market.factors import PercentileReference, RoundScore
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE
+from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
+from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
+
+
+class LearnedRankScoringService:
+    """Keep rank percentiles independent of the existing local action/risk score."""
+
+    history_required_sessions = 251
+
+    def __init__(
+        self,
+        profile: LoadedScoringProfile,
+        strategy: Strategy,
+        *,
+        cost_policy: ExecutionCostPolicy,
+        content_hash: Callable[[object], str],
+        monotonic: Callable[[], float] = time.monotonic,
+        prediction_target: PredictionTarget | None = None,
+    ) -> None:
+        if profile.profile_id != "v1" or strategy not in profile.heads:
+            raise ValueError("learned rank requires its own complete profile head")
+        self._head = profile.heads[strategy]
+        self._predictor = cast(LearnedRankPredictorPort, self._head.predictor)
+        self._strategy = strategy
+        self._prediction_target = prediction_target
+        self._cost_policy = cost_policy
+        self._content_hash = content_hash
+        self._monotonic = monotonic
+        self._request_count = 0
+        self._predictor_batch_count = 0
+        self._prediction_inflight_count = 0
+        self._candidate_count = 0
+        self._lock = threading.RLock()
+        self._status_lock = threading.Lock()
+        self._prediction_ms = 0.0
+        self._cumulative_prediction_ms = 0.0
+        self._contract_hash = content_hash(
+            (
+                "completed_daily_251",
+                self._predictor.model_hash,
+                self._predictor.feature_ids,
+                LEARNED_RANK_SCORE_SCALE,
+                cost_policy,
+            )
+        )
+        self._status_snapshot = self._status_locked()
+
+    @property
+    def model_version(self) -> str:
+        return f"{self._predictor.model_id}:{self._predictor.model_hash}"
+
+    def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
+        if feature.model_history_quality is not None and feature.model_history_quality.failure:
+            return False
+        market_day = (
+            feature.preview_context.market_trade_date
+            if feature.preview_context is not None
+            else ShanghaiNow(feature.observed_at).date()
+        )
+        if feature.model_industry is None or feature.model_industry.effective_date > market_day:
+            return False
+        return (
+            feature.history_days >= self.history_required_sessions
+            and all(
+                isinstance(value := feature.values.get(name), (float, int))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                for name in self._predictor.feature_ids
+            )
+            and feature.optional_value("qfq_amihud_20d") is not None
+        )
+
+    def score(
+        self, features: Sequence[FeatureSnapshot], *, context: ModelScoringContext | None = None
+    ) -> ModelScoreBatch:
+        deadline = (
+            self._monotonic() + context.time_budget_seconds
+            if context is not None and context.time_budget_seconds is not None
+            else None
+        )
+        with self._lock:
+            try:
+                return self._score_locked(features, context=context, deadline=deadline)
+            finally:
+                # Publish attempts and failures together after calculation settles
+                # its counters; readers keep the last complete head.
+                snapshot = self._status_locked()
+                with self._status_lock:
+                    self._status_snapshot = snapshot
+
+    def _score_locked(
+        self,
+        features: Sequence[FeatureSnapshot],
+        *,
+        context: ModelScoringContext | None,
+        deadline: float | None,
+    ) -> ModelScoreBatch:
+        self._request_count += 1
+        self._candidate_count = len(features)
+        if deadline is not None and self._monotonic() >= deadline:
+            raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
+        source = (
+            context.population_features if context is not None and context.population_features is not None else features
+        )
+        population = tuple(
+            sorted((item for item in source if self.is_input_eligible(item)), key=lambda item: item.quote.code)
+        )
+        population_codes = tuple(item.quote.code for item in population)
+        requested_codes = tuple(item.quote.code for item in features)
+        if len(set(population_codes)) != len(population_codes) or len(set(requested_codes)) != len(requested_codes):
+            raise ValueError("learned rank population must contain unique codes")
+        if not set(requested_codes) <= {item.quote.code for item in source}:
+            raise ValueError("learned rank requests must belong to the fixed population")
+        inputs = tuple(
+            ModelInput(
+                item.quote.code, tuple(float(cast(float, item.values[name])) for name in self._predictor.feature_ids)
+            )
+            for item in population
+        )
+        if deadline is not None and self._monotonic() >= deadline:
+            raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
+        if inputs:
+            self._predictor_batch_count += 1
+        started = self._monotonic()
+        if inputs:
+            with self._status_lock:
+                self._prediction_inflight_count += 1
+        try:
+            predictions = self._predictor.predict(inputs) if inputs else ()
+        finally:
+            if inputs:
+                with self._status_lock:
+                    self._prediction_inflight_count -= 1
+            self._prediction_ms = max(0.0, (self._monotonic() - started) * 1000.0) if inputs else 0.0
+            self._cumulative_prediction_ms += self._prediction_ms
+        if deadline is not None and self._monotonic() >= deadline:
+            raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
+        if tuple(item.code for item in predictions) != population_codes or any(
+            item.rank_raw is None or self._prediction_target is not None and item.target_probability is None
+            for item in predictions
+        ):
+            raise ValueError("learned rank predictor returned an incomplete population")
+        ranks = PercentileRanks(tuple(cast(float, item.rank_raw) for item in predictions))
+        references = {
+            board: PercentileReference(
+                tuple(
+                    cast(float, item.optional_value("qfq_amihud_20d"))
+                    for item in population
+                    if item.quote.board is board
+                ),
+                0.0,
+                1.0,
+            )
+            for board in {item.quote.board for item in population}
+        }
+        diagnostics: dict[str, ModelDiagnostics] = {}
+        for feature, prediction, rank in zip(population, predictions, ranks, strict=True):
+            cost = self._cost_policy.estimate(
+                references[feature.quote.board].rank(cast(float, feature.optional_value("qfq_amihud_20d")))
+            )
+            diagnostics[prediction.code] = ModelDiagnostics(
+                RoundScore(100.0 * rank),
+                prediction.predicted_excess_return * 100.0,
+                cost * 100.0,
+                (prediction.predicted_excess_return - cost) * 100.0,
+                target_probability=prediction.target_probability,
+            )
+        requested = frozenset(requested_codes)
+        selected = tuple(item for item in predictions if item.code in requested)
+        batch = ModelScoreBatch(
+            self.model_version,
+            {item.code: diagnostics[item.code] for item in selected},
+            selected,
+            tuple(sorted(requested - set(population_codes))),
+            cost_reference_version="learned-rank-cost:"
+            + self._content_hash(
+                (
+                    population_codes,
+                    tuple((item.quote.board.value, item.optional_value("qfq_amihud_20d")) for item in population),
+                )
+            ),
+            score_scale=LEARNED_RANK_SCORE_SCALE,
+            score_model_id=self._predictor.model_id,
+            score_contract_hash=self._contract_hash,
+            production_authority=self._head.evidence.production_authority,
+            prediction_target=self._prediction_target,
+            rank_population_version="learned-rank-population:"
+            + self._content_hash(
+                (
+                    self.model_version,
+                    context.population_identity if context else "",
+                    inputs,
+                    tuple(item.rank_raw for item in predictions),
+                )
+            ),
+        )
+        if deadline is not None and self._monotonic() >= deadline:
+            raise ModelScoringDeadlineError("learned_rank_deadline_exceeded")
+        return batch
+
+    def status(self) -> ScoringHeadRuntimeStatus:
+        with self._status_lock:
+            return replace(self._status_snapshot, prediction_inflight_count=self._prediction_inflight_count)
+
+    def _status_locked(self) -> ScoringHeadRuntimeStatus:
+        evidence = self._head.evidence
+        return ScoringHeadRuntimeStatus(
+            is_enabled=True,
+            profile_id="v1",
+            model_id=self._predictor.model_id,
+            model_hash=self._predictor.model_hash,
+            scoring_version=self.model_version,
+            activation_basis=evidence.activation_basis,
+            historical_status=evidence.historical_status,
+            historical_failure_reasons=evidence.historical_failure_reasons,
+            monitoring_mode=evidence.monitoring_mode,
+            automatic_model_update=False,
+            loss_probability_status="not_modeled",
+            training_anchor=evidence.training_anchor,
+            runtime_anchor=evidence.runtime_anchor,
+            point_in_time_parity=evidence.point_in_time_parity,
+            score_scale=LEARNED_RANK_SCORE_SCALE,
+            production_authority=evidence.production_authority,
+            prediction_target=self._prediction_target,
+            training_label_cutoff=evidence.training_label_cutoff,
+            computation=ModelComputationStatus(
+                candidate_count=self._candidate_count,
+                request_count=self._request_count,
+                predictor_batch_count=self._predictor_batch_count,
+                stage_durations=(
+                    ModelComputationStageStatus(
+                        "prediction",
+                        self._predictor_batch_count,
+                        self._prediction_ms,
+                        self._cumulative_prediction_ms,
+                    ),
+                )
+                if self._predictor_batch_count
+                else (),
+            ),
+        )
+
+
+__all__ = ["LearnedRankScoringService"]

@@ -3,9 +3,8 @@ from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from tests.helpers.recommendation.scoring_helpers import profile_for
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.application.ports.scoring import ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import FeatureSnapshot
@@ -64,7 +63,7 @@ class _IndustryProductionPredictor(_ProductionPredictor):
 
 
 def _router(predictor: object) -> ModelScoringRouter:
-    service = ProductionModelScoringService(
+    service = BuildUtilityScorer(
         profile_for(predictor),
         Strategy.TOMORROW,
         cost_policy=ExecutionCostPolicy(0.002, 1.0),

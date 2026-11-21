@@ -64,7 +64,7 @@ def test_round_rechecks_session_after_preparing_overlays(monkeypatch, jump):
 @pytest.mark.parametrize("invalid_profile", (None, "v1", "v5"))
 def test_batch_checks_every_session_after_waiting_for_other_profiles(invalid_profile):
     events = []
-    rounds = RecommendationRounds(publish_batch_event=lambda sequence, batch: events.append((sequence, batch)))
+    rounds = RecommendationRounds(publish_batch_event=lambda sequence, batch, _head_gaps: events.append((sequence, batch)))
     transaction = RLock()
     template = _round_cleanup_runtime()._dependencies
     runtimes = {

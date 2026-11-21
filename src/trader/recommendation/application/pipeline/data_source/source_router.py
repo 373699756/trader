@@ -76,6 +76,7 @@ from trader.recommendation.application.ports.runtime import (
     DataRefreshPendingError,
     DataRefreshPort,
     DataRefreshUnavailableError,
+    HeadInputFailure,
     PipelineTaskRequest,
     RefreshOutcome,
 )
@@ -699,29 +700,53 @@ class MarketInputCoordinator(DataRefreshPort):
         with SessionGuard(request.session), self._lock:
             self._accept_batch_locked(batch)
 
-    def refresh_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None:
-        """Capture both populations once; later source refreshes belong to the next wave."""
-        first, second = requests
+    def refresh_round_heads(self, requests: tuple[CycleRequest, ...]) -> tuple[HeadInputFailure, ...]:
+        """Use one source cut and report each unavailable scoring input explicitly."""
+        if not requests:
+            return ()
+        first = requests[0]
         if (
-            (first.strategy, second.strategy) != (Strategy.TOMORROW, Strategy.D25)
-            or first.trade_date != second.trade_date
-            or first.observed_at != second.observed_at
-            or first.phase != second.phase
+            tuple(request.strategy for request in requests) not in {
+                (Strategy.TOMORROW,), (Strategy.D25,), (Strategy.TOMORROW, Strategy.D25),
+            }
             or first.phase == "close_fallback"
-            or first.preview_context != second.preview_context
-            or first.session is not second.session
+            or any(
+                first.trade_date != request.trade_date or first.observed_at != request.observed_at
+                or first.phase != request.phase or first.preview_context != request.preview_context
+                or first.session is not request.session
+                for request in requests[1:]
+            )
         ):
             raise DataRefreshUnavailableError("paired_request_identity_mismatch")
         started = self._monotonic()
+        captured: list[tuple[CycleRequest, _SharedInputBatch]] = []
+        failures: list[HeadInputFailure] = []
         with SessionGuard(first.session), self._lock:
-            shared = (self._capture_input_locked(first), self._capture_input_locked(second))
-        batches = tuple(
-            self._prepare_input(request, captured, started)
-            for request, captured in zip(requests, shared, strict=True)
-        )
+            self._require_market_cut_locked(first)
+            for request in requests:
+                try:
+                    captured.append((request, self._capture_input_locked(request)))
+                except DataRefreshUnavailableError as exc:
+                    failures.append(HeadInputFailure(request.strategy, _failure_code(exc)))
+        batches: list[InputBatch] = []
+        for request, shared in captured:
+            try:
+                batches.append(self._prepare_input(request, shared, started))
+            except DataRefreshUnavailableError:
+                failures.append(HeadInputFailure(request.strategy, "scoring_input_preparation_failed"))
         with SessionGuard(first.session), self._lock:
             for batch in batches:
                 self._accept_batch_locked(batch)
+        return tuple(failures)
+
+    def _require_market_cut_locked(self, request: CycleRequest) -> None:
+        if self._candidate_refresh_pending and request.phase != "close_fallback":
+            raise DataRefreshUnavailableError("candidate_quotes_pending")
+        if (
+            not self._latest_market_features or self._candidate_plans is None
+            or self._issuer_eligibility is None or self._candidate_pipeline is None
+        ):
+            raise DataRefreshUnavailableError("market_snapshot_unavailable")
 
     def _accept_batch_locked(self, batch: InputBatch) -> None:
         self._batches[(batch.request.strategy, batch.request.input_version)] = batch

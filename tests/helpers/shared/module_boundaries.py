@@ -252,6 +252,10 @@ def _forbidden_target(module: str, imported: SourceImport, target: str) -> bool:
     if len(dependency) < 2 or dependency[0] != "trader":
         return False
     target_owner, target_layer = dependency[1], dependency[2] if len(dependency) > 2 else ""
+    head = _scoring_head(owner)
+    target_head = _scoring_head(dependency)
+    if head and target_head and head != target_head:
+        return True
     delivery = {"http_api", "web", "entrypoints", "bootstrap"}
     if business in _BUSINESSES and layer in {"domain", "application"}:
         if target_owner in delivery:
@@ -283,8 +287,21 @@ def _forbidden_target(module: str, imported: SourceImport, target: str) -> bool:
         if target_owner in {"infra", "bootstrap", "entrypoints", "download", "training"}:
             return True
         if target_owner == "recommendation":
+            if imported.module == "trader.recommendation.application.history_quotes":
+                return (module, imported.member) not in {
+                    ("trader.http_api.handlers.product_handler", "HistoryQuoteMonth"),
+                    ("trader.http_api.route_services", "HistoryQuotes"),
+                }
             return target_layer != "domain" and imported.module not in _READ_ONLY_MODULES
     return False
+
+
+def _scoring_head(module: list[str]) -> tuple[str, str, str] | None:
+    if len(module) < 5 or module[3] not in {"tomorrow", "d25"} or module[4] not in {"v1", "v2", "v3", "v5"}:
+        return None
+    if tuple(module[1:3]) not in {("training", "infra"), ("recommendation", "application")}:
+        return None
+    return module[1], module[3], module[4]
 
 
 def SourceBoundaryViolations(root: Path) -> tuple[str, ...]:

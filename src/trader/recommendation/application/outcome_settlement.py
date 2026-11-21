@@ -144,17 +144,12 @@ class OutcomeSettlementAdapter:
         self,
         market_data: OutcomeSettlementMarketData,
         service: OutcomeSettlementService,
-        *,
-        settle_d25: Callable[[datetime], object] | None = None,
     ) -> None:
         self._market_data = market_data
         self._service = service
-        self._settle_d25 = settle_d25
 
     def settle(self, at: datetime) -> None:
         try:
-            if self._settle_d25 is not None:
-                self._settle_d25(at)
             features = self._market_data.fetch_market_features(at, force=True) if self._service.requires_benchmark_input(at) else ()
             result = self._service.settle(at, features)
         except MarketDataPendingError as exc:

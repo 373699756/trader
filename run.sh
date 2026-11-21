@@ -23,6 +23,10 @@ usage() {
     "  ./run.sh sync company fill       补齐公司资料缺口" \
     "  ./run.sh train                   使用本地历史训练全部档位" \
     "  ./run.sh train v1,v5             使用本地历史训练指定档位" \
+    "  ./run.sh train tomorrow          训练 Tomorrow 全部档位" \
+    "  ./run.sh train d25               训练 D25 全部档位" \
+    "  ./run.sh train tomorrow v3       只训练 Tomorrow 的 V3" \
+    "  ./run.sh train d25 v5            只训练 D25 的 V5" \
     "" \
     "档位以逗号分隔，可自由组合；省略时选择全部。" \
     "未完成可重跑原命令续传；fill用于补缺，仍需处理具体失败原因。"
@@ -49,6 +53,7 @@ case "${1:-}" in
     ;;
 esac
 
+FORWARD_ARGS=("$@")
 if [[ "$MODE" == "sync" ]]; then
   if (($# > 2)) \
     || { (($# > 0)) && [[ "$1" != "history" && "$1" != "company" ]]; } \
@@ -57,8 +62,11 @@ if [[ "$MODE" == "sync" ]]; then
     exit 2
   fi
 else
+  if [[ "$MODE" == "train" && ( "${1:-}" == "tomorrow" || "${1:-}" == "d25" ) ]]; then
+    shift
+  fi
   if (($# > 1)); then
-    printf '%s\n' '用法：./run.sh [档位列表] 或 ./run.sh train [档位列表]；列表以逗号分隔。' >&2
+    printf '%s\n' '用法：./run.sh [档位列表] 或 ./run.sh train [tomorrow|d25] [档位列表]。' >&2
     exit 2
   fi
   if (($#)); then
@@ -78,7 +86,6 @@ else
     done
   fi
 fi
-FORWARD_ARGS=("$@")
 
 find_python() {
   local candidate

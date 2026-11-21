@@ -60,8 +60,8 @@ from trader.training.infra.history.history_training_expectation import HistoryTr
 from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceIndex
 from trader.training.infra.history.training_reminder_status import ReadTrainingReminderStatus
 from trader.training.infra.model_bundles.bundle_snapshot import PublishedHeadBundle
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 from trader.training.domain.training_input_identity import BuildTrainingInputHash
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))

@@ -41,11 +41,11 @@ from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.reference_index import SQLiteReferenceIndex
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.disk_probe import DiskProbe
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile
 from trader.training.infra.engine import ProfileTrainingRequest, RunProfileTraining
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
-from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
+from trader.training.infra.tcn.network import ConfigureTcnRuntime
+from trader.training.infra.tcn.settings import TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 from scripts.core.reporting import emit_report
@@ -185,7 +185,7 @@ def _probe(source: Path, work: Path, *, sample_settings: TrainingSampleSettings,
         ), sqlite_policy=sqlite_policy
     )
     if result.status == "engineering_ready":
-        loaded = LoadScoringProfile("v5", training_root=work / "models")
+        loaded = LoadDiagnosticScoringProfile("v5", training_root=work / "models")
         reloaded = len(loaded.heads) == 2
     else:
         reloaded = False

@@ -33,12 +33,12 @@ from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectio
 def test_numeric_alignment_rejects_retired_top_level_before_payload_projection(tmp_path, profile, schema):
     from scripts.training.jobs.training_alignment import _numeric_fingerprints
 
-    directory = tmp_path / profile / "tomorrow"
+    directory = tmp_path / profile / "d25"
     directory.mkdir(parents=True)
     (directory / "model.json").write_text("{}", encoding="utf-8")
     (directory / "metadata.json").write_text(json.dumps({"schema_version": schema}), encoding="utf-8")
     with pytest.raises(ValueError, match="current_final_publication_required"):
-        _numeric_fingerprints(tmp_path, (profile,))
+        _numeric_fingerprints(tmp_path, (profile,), {})
 
 
 def _publish_industry(history, sqlite_policy):
@@ -83,7 +83,6 @@ def _publish_industry(history, sqlite_policy):
 def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, monkeypatch, reported_profile):
     from scripts.training.jobs import training_alignment
     from trader import bootstrap
-    from trader.recommendation.infra.scoring import profile_factory
 
     profile = {"profile": reported_profile, "status": "engineering_ready", "message": "训练完成"}
     execution = {
@@ -103,7 +102,9 @@ def test_training_probe_decodes_pretty_profile_and_execution_reports(tmp_path, m
         return 0
 
     monkeypatch.setattr(bootstrap, "ExecuteSelectedTraining", train)
-    monkeypatch.setattr(profile_factory, "LoadScoringProfile", lambda *args, **kwargs: SimpleNamespace(heads=(1, 2)))
+    monkeypatch.setattr(training_alignment, "_load_event_values", lambda _runtime, _root, profiles: {
+        (profile, strategy): {} for profile in profiles for strategy in ("tomorrow", "d25")
+    })
     monkeypatch.setattr(training_alignment, "_numeric_fingerprints", lambda *args: ())
     result = training_alignment._train_once(None, tmp_path / "history", tmp_path / "work", ("v1",), industry_snapshot=industry)
     assert result["complete"] is (reported_profile == "v1")
@@ -495,7 +496,7 @@ def test_training_resource_observer_keeps_unavailable_measurements_unknown(tmp_p
 def test_published_training_source_rejects_writes_and_restores_all_hooks(tmp_path, monkeypatch, failure):
     from scripts.training.jobs.training_source_guard import ReadOnlyTrainingSource
     from trader.training.infra.history import history_training_due
-    from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+    from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 
     source = tmp_path / "source/history"
     source.mkdir(parents=True)

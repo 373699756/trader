@@ -18,10 +18,10 @@ from trader.training.application.tomorrow_training import (
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 from trader.training.domain.v1.learned_rank import BuildLearnedRankDateSplit
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-from trader.training.infra.profile.v1.samples import BuildLearnedRankSamples, LearnedRankSampleIndex, LearnedRankSampleStream
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.d25.v1.samples import BuildLearnedRankSamples, LearnedRankSampleIndex, LearnedRankSampleStream
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_builder import BuildTrainingSamples, TrainingSampleBuildRequest
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
 from trader.training.infra.sample_progress import TrainingSampleProgressTracker

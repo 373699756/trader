@@ -10,12 +10,15 @@ from trader.recommendation.domain.publication.freeze_identity import (
     FreezeIdentity,
     ScoredFreeze,
 )
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import ScoredHeadGap, Strategy
 
 
 class FreezeSnapshotPort(Protocol):
     @property
     def current(self) -> FreezeIdentity | None: ...
+
+    @property
+    def head_gap(self) -> ScoredHeadGap | None: ...
 
 
 class FreezeSealPort(Protocol):

@@ -20,13 +20,16 @@ _PERCENTILE_METRIC = re.compile(r"(?:^|_)p\d+_(?:ms|seconds)(?:$|_)", re.IGNOREC
 @pytest.mark.parametrize(
     ("relative", "allowed"),
     (
-        ("src/trader/training/infra/profile/v1/training.py", True),
+        ("src/trader/training/infra/d25/v1/training.py", True),
+        ("src/trader/training/infra/tomorrow/v3/model.py", True),
+        ("src/trader/recommendation/application/tomorrow/v2/plan.py", True),
+        ("src/trader/training/infra/research/close_return/v3_training.py", True),
         ("src/trader/recommendation/domain/market/v5/features.py", True),
         ("tests/http_api/contract/test_v5_web_contract.py", True),
         ("scripts/training/models/v5_training.py", True),
         ("scripts/training/samples/v5_samples.py", True),
         ("src/trader/recommendation/application/runtime/v5/worker.py", False),
-        ("src/trader/training/infra/profile/v4/training.py", False),
+        ("src/trader/training/infra/d25/v4/training.py", False),
         ("scripts/runtime_diagnostics/runtime_" + "v5.py", False),
     ),
 )
@@ -68,7 +71,8 @@ def _configuration_version_controllers(document: object, document_name: str) -> 
                     location in {"training.json.resources.hdd.cpu.profile_threads", "training.json.resources.ssd.cpu.profile_threads"}
                     and key in SCORING_PROFILE_IDS
                 )
-                if not (profile_sample_resource or profile_cpu_resource) and (
+                profile_prediction_target = location == "selection.json.prediction_targets" and key in SCORING_PROFILE_IDS
+                if not (profile_sample_resource or profile_cpu_resource or profile_prediction_target) and (
                     (_NUMBERED_STAGE.search(key) and not _PERCENTILE_METRIC.search(key))
                     or _NUMBERED_VERSION.search(key)
                 ):

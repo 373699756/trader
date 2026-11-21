@@ -16,7 +16,7 @@ from scripts.training.models import v5_lite
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.training.configuration import TcnFittingParametersFixture
 from trader.training.domain.training_dates import BuildTrainingDateSplit
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
 from trader.training.infra.sample_index import TrainingSample
 from trader.training.infra.sample_sequences import SampleSequenceLayout
@@ -61,7 +61,7 @@ def _source(root, fit_dates=61):
 def test_largest_real_dual_head_fit_or_cancel_closes_mappings_and_preserves_source(tmp_path, monkeypatch, cancel, fit_dates):
     import torch
 
-    from trader.training.infra.profile.v5 import batch_cache, fitting
+    from trader.training.infra.d25.v5 import batch_cache, utility_fitting as fitting
 
     source = tmp_path / "source"
     before = _source(source, fit_dates)

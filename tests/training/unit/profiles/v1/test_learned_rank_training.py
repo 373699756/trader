@@ -35,7 +35,7 @@ from trader.recommendation.domain.market.v1.features import CalculateLearnedRank
 
 from trader.recommendation.domain.publication.models import Strategy
 
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
+from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile, DiagnosticScoringUnavailableError
 
 from trader.training.domain.v1.learned_rank import (
     BuildLearnedRankDateSplit,
@@ -51,7 +51,7 @@ from trader.training.domain.final_fit import FINAL_FIT_CONTRACT
 from trader.training.entrypoints.profile_training import ProjectLearnedRankTrainingResult
 
 
-from trader.training.infra.profile.v1.models import (
+from trader.training.infra.d25.v1.models import (
     LearnedRankPredictor,
     LoadV1ScoringProfile,
     PublishLearnedRankPair,
@@ -59,14 +59,14 @@ from trader.training.infra.profile.v1.models import (
     ReadV1PublicationIdentities,
 )
 
-from trader.training.infra.profile.v1.samples import (
+from trader.training.infra.d25.v1.samples import (
     BuildLearnedRankSamples,
     LearnedRankMatrixRequest,
     LearnedRankSampleIndex,
 )
 
-from trader.training.infra.profile.v1.training import InspectV1Training, RunV1Training
-from trader.training.infra.profile.v1 import training as v1_training
+from trader.training.infra.d25.v1.training import InspectV1Training, RunV1Training
+from trader.training.infra.d25.v1 import training as v1_training
 
 from tests.helpers.training.profiles.v1.learned_rank_training import (
     _History,
@@ -77,7 +77,7 @@ from tests.helpers.training.profiles.v1.learned_rank_training import (
 
 @pytest.mark.parametrize("phase", ("previous", "staging"))
 def test_v1_publication_cleanup_preserves_unknown_content(tmp_path, monkeypatch, caplog, reusable_pair, phase):
-    from trader.training.infra.profile.v1 import models
+    from trader.training.infra.d25.v1 import models
 
     source, _ = reusable_pair
     root = tmp_path / "models"
@@ -136,11 +136,11 @@ def test_matching_v1_pair_reuses_without_scanning_fitting_or_republishing(tmp_pa
     history = _History()
     monkeypatch.setattr(history, "iter_training_rows", lambda _dates: pytest.fail("cache hit scanned history"))
     monkeypatch.setattr(
-        "trader.training.infra.profile.v1.training.BuildLearnedRankSamples",
+        "trader.training.infra.d25.v1.training.BuildLearnedRankSamples",
         lambda *args, **kwargs: pytest.fail("cache hit rebuilt samples"),
     )
     monkeypatch.setattr(
-        "trader.training.infra.profile.v1.training.FitLearnedRankHead",
+        "trader.training.infra.d25.v1.training.FitLearnedRankHead",
         lambda *args, **kwargs: pytest.fail("cache hit fitted model"),
     )
     result = RunV1Training(
@@ -202,10 +202,10 @@ def test_v1_reuse_rejects_any_changed_identity_or_invalid_head(tmp_path, monkeyp
         history.snapshot = replace(history.snapshot, listing_intervals=((history.codes[0], history.dates[0], None),))
     elif changed == "implementation":
         monkeypatch.setattr(
-            "trader.training.infra.profile.v1.training.TrainingImplementationIdentity", lambda: "e" * 64
+            "trader.training.infra.d25.v1.training.TrainingImplementationIdentity", lambda: "e" * 64
         )
     elif changed == "dependency":
-        monkeypatch.setattr("trader.training.infra.profile.v1.training.version", lambda _name: "changed")
+        monkeypatch.setattr("trader.training.infra.d25.v1.training.version", lambda _name: "changed")
     elif changed == "split":
         pair = ReadLearnedRankPair(model_root)
         split = BuildLearnedRankDateSplit(history.dates, replace(settings, fit_dates=29), maturity_sessions=1)
@@ -261,7 +261,7 @@ def test_v1_cache_inspection_propagates_cancellation_and_publication_busy(tmp_pa
 
 
 def test_v1_reserves_shared_matrices_and_releases_memory_before_publishing(tmp_path, monkeypatch):
-    import trader.training.infra.profile.v1.training as training
+    import trader.training.infra.d25.v1.training as training
 
     leases = []
     reserved_leases = []
@@ -509,7 +509,7 @@ def test_d25_scope_trains_and_publishes_only_the_v1_d25_head(tmp_path: Path) -> 
 
 @pytest.mark.parametrize("error", (ValueError, InterruptedError))
 def test_failure_in_second_final_refit_preserves_the_complete_previous_pair(tmp_path, monkeypatch, reusable_pair, error):
-    import trader.training.infra.profile.v1.training as training
+    import trader.training.infra.d25.v1.training as training
 
     root, _ = reusable_pair
     model_root = tmp_path / "models"
@@ -808,7 +808,7 @@ def test_missing_d25_partition_fails_before_either_head_fit_and_reports_coverage
 
     monkeypatch.setattr(LearnedRankSampleIndex, "add_day", missing_second_day)
     monkeypatch.setattr(
-        "trader.training.infra.profile.v1.training.FitLearnedRankHead",
+        "trader.training.infra.d25.v1.training.FitLearnedRankHead",
         lambda *args, **kwargs: pytest.fail("both heads must pass coverage before any expensive fit"),
     )
     result = RunV1Training(
@@ -877,7 +877,7 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
         assert metadata["model_hash"] == model["content_hash"]
         assert set(model["components"]) != set(metadata["training_input"])
     profile = LoadV1ScoringProfile(model_root)
-    public_profile = LoadScoringProfile("v1", training_root=model_root)
+    public_profile = LoadDiagnosticScoringProfile("v1", training_root=model_root)
     assert tuple(public_profile.heads) == (Strategy.TOMORROW, Strategy.D25)
     inputs = tuple(
         ModelInput(code, CalculateLearnedRankFeatures(tuple(history.point(day, index) for day in range(88, 339))))
@@ -920,8 +920,8 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
     missing_path.unlink()
     with pytest.raises(FileNotFoundError, match="head files"):
         LoadV1ScoringProfile(model_root)
-    with pytest.raises(ScoringModelsUnavailableError) as missing:
-        LoadScoringProfile("v1", training_root=model_root)
+    with pytest.raises(DiagnosticScoringUnavailableError) as missing:
+        LoadDiagnosticScoringProfile("v1", training_root=model_root)
     assert missing.value.reason == "missing"
     missing_path.write_bytes(before[missing_path.relative_to(profile_root)])
     path = profile_root / "tomorrow/model.json"
@@ -930,8 +930,8 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="hash differs"):
         LoadV1ScoringProfile(model_root)
-    with pytest.raises(ScoringModelsUnavailableError) as integrity:
-        LoadScoringProfile("v1", training_root=model_root)
+    with pytest.raises(DiagnosticScoringUnavailableError) as integrity:
+        LoadDiagnosticScoringProfile("v1", training_root=model_root)
     assert integrity.value.reason == "integrity_conflict"
     path.write_bytes(before[path.relative_to(profile_root)])
     metadata_path = profile_root / "d25/metadata.json"
@@ -949,8 +949,8 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
     metadata["model_id"] = "wrong_model"
     metadata["content_hash"] = ContentHash({key: value for key, value in metadata.items() if key != "content_hash"})
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    with pytest.raises(ScoringModelsUnavailableError) as contract:
-        LoadScoringProfile("v1", training_root=model_root)
+    with pytest.raises(DiagnosticScoringUnavailableError) as contract:
+        LoadDiagnosticScoringProfile("v1", training_root=model_root)
     assert contract.value.reason == "contract_conflict"
     metadata_path.write_bytes(before[metadata_path.relative_to(profile_root)])
     assert ReadLearnedRankPair(model_root) == pair
@@ -959,7 +959,7 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
 def test_v1_directory_publication_failure_preserves_previous_pair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from trader.training.infra.profile.v1 import models
+    from trader.training.infra.d25.v1 import models
 
     history = _History()
     model_root = tmp_path / "models"
@@ -1068,7 +1068,7 @@ def test_retraining_replaces_obsolete_contract_and_reports_actual_fit_and_public
 def test_publication_recovers_damaged_owned_files_but_preserves_unknown_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from trader.training.infra.profile.v1 import models
+    from trader.training.infra.d25.v1 import models
 
     model_root = tmp_path / "models"
     result = RunV1Training(
@@ -1120,15 +1120,15 @@ def test_publication_recovers_damaged_owned_files_but_preserves_unknown_entries(
 def test_old_single_file_model_and_publication_lock_never_become_new_v1_models(tmp_path: Path) -> None:
     (tmp_path / "learned_rank").mkdir()
     (tmp_path / "learned_rank/model.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(ScoringModelsUnavailableError) as missing:
-        LoadScoringProfile("v1", training_root=tmp_path)
+    with pytest.raises(DiagnosticScoringUnavailableError) as missing:
+        LoadDiagnosticScoringProfile("v1", training_root=tmp_path)
     assert missing.value.reason == "missing"
     (tmp_path / "v1").mkdir()
     (tmp_path / "v1/model.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(ScoringModelsUnavailableError) as corrupt:
-        LoadScoringProfile("v1", training_root=tmp_path)
+    with pytest.raises(DiagnosticScoringUnavailableError) as corrupt:
+        LoadDiagnosticScoringProfile("v1", training_root=tmp_path)
     assert corrupt.value.reason == "corrupt"
     with ProcessLock(tmp_path / ".v1.publication.lock"):
-        with pytest.raises(ScoringModelsUnavailableError) as busy:
-            LoadScoringProfile("v1", training_root=tmp_path)
+        with pytest.raises(DiagnosticScoringUnavailableError) as busy:
+            LoadDiagnosticScoringProfile("v1", training_root=tmp_path)
     assert busy.value.reason == "publication_busy"

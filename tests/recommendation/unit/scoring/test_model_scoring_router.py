@@ -5,10 +5,10 @@ from datetime import timedelta
 
 import pytest
 
-from tests.helpers.recommendation.scoring_helpers import profile_for
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
 from tests.helpers.recommendation.scoring.tomorrow_production_model import NOW, _COST_POLICY
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService, SharedModelFeatureCache
+from trader.recommendation.application.pipeline.local_score.model_scoring import SharedModelFeatureCache
 from trader.recommendation.application.ports.loaded_profile import (
     ModelInput,
     ModelPrediction,
@@ -20,9 +20,9 @@ from trader.recommendation.domain.market.history_alignment import ModelHistoryQu
 from trader.recommendation.domain.market.v5.features import ModelPriceVolumeSequence
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_builder import _finalize_sample_day, _PendingSample
 
 
@@ -166,7 +166,7 @@ def test_model_inputs_match_training_population_before_industry_prediction_filte
         for code in modeled_codes
     }
     assert tuple(expected[code][residual_position] for code in modeled_codes) == pytest.approx((-0.01, 0.01))
-    service = ProductionModelScoringService(profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY)
+    service = BuildUtilityScorer(profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY)
     router = ModelScoringRouter(profile.profile_id, {strategy: service})
     batch = router.score(strategy, tuple(population), context=ModelScoringContext(population_features=tuple(population)))
     assert batch is not None
@@ -196,7 +196,7 @@ def test_unverified_history_price_basis_never_reaches_any_industry_predictor(
         replace(feature, model_history_quality=ModelHistoryQuality("history_price_basis_unavailable"))
         for feature in population
     )
-    service = ProductionModelScoringService(profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY)
+    service = BuildUtilityScorer(profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY)
     assert all(not service.is_input_eligible(feature) for feature in blocked)
     batch = service.score(blocked, context=ModelScoringContext(population_features=blocked))
     assert predictor.inputs == () and batch.predictions == ()
@@ -224,7 +224,7 @@ def test_invalid_reference_peers_do_not_enter_the_v5_training_residual_populatio
     contract = profile.head_for_strategy(strategy)
     auxiliary_count = len(contract.feature_manifest.names) - 360
     predictor = _InputRecordingPredictor("v5", contract.feature_manifest.names[:auxiliary_count])
-    service = ProductionModelScoringService(profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY)
+    service = BuildUtilityScorer(profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY)
     batch = service.score((*population[:2], *reference), context=ModelScoringContext(population_features=(*population[:2], *reference)))
     expected = {sample.code: sample for sample in _finalize_sample_day(pending[:2], profile)}
     assert {item.code for item in predictor.inputs} == {feature.quote.code for feature in population[:2]}
@@ -249,7 +249,7 @@ def test_v5_model_coverage_and_head_replacement_do_not_change_shared_population_
         predictor = _InputRecordingPredictor("v5", contract.feature_manifest.names[:auxiliary_count])
         predictor.industry_ids = industries
         predictor.model_hash = ("a" if strategy is Strategy.TOMORROW else "b") * 64
-        service = ProductionModelScoringService(
+        service = BuildUtilityScorer(
             profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY, shared_features=shared,
         )
         service.score(population[:2], context=ModelScoringContext(population_features=population))
@@ -269,7 +269,7 @@ def test_same_v5_service_invalidates_residual_cache_when_only_unmodeled_referenc
     contract = profile.head_for_strategy(strategy)
     auxiliary_count = len(contract.feature_manifest.names) - 360
     predictor = _InputRecordingPredictor("v5", contract.feature_manifest.names[:auxiliary_count])
-    service = ProductionModelScoringService(profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY)
+    service = BuildUtilityScorer(profile_for(predictor, strategy), strategy, cost_policy=_COST_POLICY)
     first = service.score(population[:2], context=ModelScoringContext(
         population_features=population, population_identity="fixed-population-identity",
     ))

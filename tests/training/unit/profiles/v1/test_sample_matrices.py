@@ -16,7 +16,7 @@ import pytest
 from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 from trader.infra.sqlite_connection import SqliteTransaction
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.profile.v1.samples import LEARNED_RANK_SAMPLE_COLUMNS, LearnedRankMatrixRequest, LearnedRankSampleIndex
+from trader.training.infra.d25.v1.samples import LEARNED_RANK_SAMPLE_COLUMNS, LearnedRankMatrixRequest, LearnedRankSampleIndex
 
 _FIRST_DAY = date(2026, 1, 5)
 _INSERT = "INSERT INTO samples VALUES (" + ",".join("?" for _ in range(16)) + ",NULL)"
@@ -121,7 +121,7 @@ def test_matrix_rejects_a_partition_without_a_target(tmp_path: Path, strategy: S
 
 @pytest.mark.parametrize("failure", ("cancelled", "invalid_values"))
 def test_interrupted_dual_head_read_closes_every_mapping_and_allows_a_new_read(tmp_path, monkeypatch, failure):
-    from trader.training.infra.profile.v1 import samples
+    from trader.training.infra.d25.v1 import samples
 
     buffers = []
     allocate = samples._empty_output

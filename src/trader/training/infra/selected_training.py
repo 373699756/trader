@@ -47,18 +47,16 @@ from trader.training.infra.engine import FitSelectedProfile, InspectSelectedProf
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
-from trader.training.infra.model_bundles.contracts import D25ProfileContract
-from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
-from trader.training.infra.profile.v1.training import InspectV1Training, InspectV1TrainingDates, RunV1Training
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
-from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from trader.training.infra.d25.contracts import StandardD25Profile
+from trader.training.infra.learned_rank_settings import LoadV1TrainingSettings
+from trader.training.infra.d25.v1.training import InspectV1Training, InspectV1TrainingDates, RunV1Training
+from trader.training.infra.research.close_return.selection import CloseReturnResearchMode, ResearchCloseReturnProfile
+from trader.training.infra.tcn.settings import TcnFittingParameters
+from trader.training.infra.training_settings import LoadD25TrainingSettings, LoadProfileTrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.sample_progress import TrainingSampleProgressTracker
-from trader.training.infra.tomorrow_probability_training import OpenTomorrowHistoryInput, TomorrowTrainer
+from trader.training.infra.tomorrow.training import OpenTomorrowHistoryInput, TomorrowTrainer
 
 
 def ResolveTrainingLocations(
@@ -108,6 +106,7 @@ class SelectedTrainingRequest:
     execution_options: TrainingExecutionOptions = field(default_factory=TrainingExecutionOptions, kw_only=True)
     memory_capacity_bytes: int | None = field(default=None, kw_only=True)
     begin_shutdown: Callable[[], ShutdownDeadline] | None = field(default=None, kw_only=True)
+    strategy: Strategy | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -117,12 +116,17 @@ class SelectedTrainingAdapter:
     load_industry_snapshot: Callable[[datetime], CurrentIndustrySnapshot] = field(kw_only=True)
     clock: Callable[[], datetime] = field(kw_only=True)
     train_tomorrow: TomorrowTrainer | None = field(default=None, kw_only=True)
-    prediction_targets: PredictionTargets | None = field(default=None, kw_only=True)
+    prediction_targets: PredictionTargets | CloseReturnResearchMode = field(kw_only=True)
     _measurements: TrainingExecutionMeasurements = field(init=False)
 
     def __post_init__(self) -> None:
-        if (self.train_tomorrow is None) != (self.prediction_targets is None):
-            raise ValueError("production training requires prediction targets and the Tomorrow trainer")
+        if self.request.strategy is Strategy.LONG:
+            raise ValueError("long has no training")
+        if isinstance(self.prediction_targets, CloseReturnResearchMode):
+            if self.request.strategy is not None or self.train_tomorrow is not None:
+                raise ValueError("close-return research owns its own head selection")
+        elif self.request.strategy is not Strategy.D25 and self.train_tomorrow is None:
+            raise ValueError("tomorrow training requires its own trainer")
         object.__setattr__(
             self, "_measurements",
             self.request.measurements if self.request.measurements is not None
@@ -132,6 +136,10 @@ class SelectedTrainingAdapter:
     @property
     def profiles(self) -> tuple[ScoringProfileId, ...]:
         return self.request.profiles
+
+    @property
+    def strategy(self) -> Strategy | None:
+        return self.request.strategy
 
     @property
     def progresses(self) -> tuple[TomorrowTrainingProgressPort, ...]:
@@ -153,6 +161,33 @@ class SelectedTrainingAdapter:
     def on_outcome(self) -> Callable[[SelectedTrainingOutcome[SelectedProfileResult]], None] | None:
         return self.request.on_outcome
 
+    def _hold_inputs(self, scope: ExitStack) -> None:
+        paths = self.request.paths
+        scope.enter_context(HistoryMaintenanceLock(paths.history.with_name(".history.lock")))
+        for profile in sorted(self.request.profiles):
+            scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
+        RequireHistoryRepackIdle(paths.history)
+
+    def _fit_tomorrow(
+        self, request: SelectedTrainingRequest,
+    ) -> tuple[TomorrowProbabilityProfileResult, ...]:
+        if request.strategy is Strategy.D25 or isinstance(self.prediction_targets, CloseReturnResearchMode):
+            return ()
+        train = self.train_tomorrow
+        assert train is not None
+        history = OpenTomorrowHistoryInput(request.paths.history, sqlite_policy=self.sqlite_policy)
+        return train(
+            history, request.paths.models, profiles=request.profiles, prediction_targets=self.prediction_targets,
+            project_root=request.runtime.project_root, cancelled=request.cancelled,
+            cpu_budget=request.cpu_budget, memory=request.memory_admission,
+        )
+
+    def run_tomorrow_only(self) -> SelectedTrainingRun[SelectedProfileResult]:
+        with ExitStack() as scope:
+            self._hold_inputs(scope)
+            tomorrow = self._fit_tomorrow(self.request)
+        return SelectedTrainingRun((), 0, 0, timing=self._measurements.snapshot(), tomorrow_probability=tomorrow)
+
     @contextmanager
     def open(self) -> Iterator[SelectedTrainingSessionPort[SelectedProfileResult]]:
         request, paths = self.request, self.request.paths
@@ -164,19 +199,8 @@ class SelectedTrainingAdapter:
         request = replace(request, cancelled=cancelled)
         scope = ExitStack()
         try:
-            scope.enter_context(HistoryMaintenanceLock(paths.history.with_name(".history.lock")))
-            for profile in request.profiles:
-                scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
-            RequireHistoryRepackIdle(paths.history)
-            tomorrow: tuple[TomorrowProbabilityProfileResult, ...] = ()
-            train = self.train_tomorrow
-            if train is not None and self.prediction_targets is not None:
-                tomorrow_history = OpenTomorrowHistoryInput(paths.history, sqlite_policy=self.sqlite_policy)
-                tomorrow = train(
-                    tomorrow_history, paths.models, profiles=request.profiles, prediction_targets=self.prediction_targets,
-                    project_root=request.runtime.project_root, cancelled=request.cancelled,
-                    cpu_budget=request.cpu_budget, memory=request.memory_admission,
-                )
+            self._hold_inputs(scope)
+            tomorrow = self._fit_tomorrow(request)
             try:
                 industry = self.load_industry_snapshot(self.clock())
             except InterruptedError:
@@ -285,8 +309,7 @@ class _SelectedTrainingSession:
             d25_targets=tuple(
                 (profile, self.factory.prediction_targets.for_profile(profile, Strategy.D25))
                 for profile in self.request.profiles
-                if self.factory.prediction_targets is not None
-            ),
+            ) if isinstance(self.factory.prediction_targets, PredictionTargets) else (),
         )
 
 
@@ -298,7 +321,7 @@ class _TrainingTaskFactory:
     measurements: TrainingExecutionMeasurements
 
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
-    prediction_targets: PredictionTargets | None = field(kw_only=True)
+    prediction_targets: PredictionTargets | CloseReturnResearchMode = field(kw_only=True)
 
     def prepare(
         self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort
@@ -316,7 +339,10 @@ class _TrainingTaskFactory:
         paths = selection.paths
         calendar = self.history.snapshot.calendar.open_dates
         settings = LoadV1TrainingSettings(selection.runtime.project_root)
-        d25_target = self.prediction_targets.for_profile("v1", Strategy.D25) if self.prediction_targets else None
+        d25_target = (
+            self.prediction_targets.for_profile("v1", Strategy.D25)
+            if isinstance(self.prediction_targets, PredictionTargets) else None
+        )
         strategies = (Strategy.D25,) if d25_target is not None else (Strategy.TOMORROW, Strategy.D25)
         reused = InspectV1Training(
             self.history, paths.models, settings, cancel_requested=selection.cancelled,
@@ -360,18 +386,17 @@ class _TrainingTaskFactory:
     ) -> SelectedTrainingTask[SelectedProfileResult]:
         selection = self.selection
         paths = selection.paths
-        contract = next(
-            item
-            for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
-            if item.profile_id == profile
-        )
-        d25_target = self.prediction_targets.for_profile(profile, Strategy.D25) if self.prediction_targets else None
-        if d25_target is not None:
-            contract = D25ProfileContract(contract)
-        settings = LoadProfileTrainingSettings(selection.runtime.project_root, profile)
+        if isinstance(self.prediction_targets, PredictionTargets):
+            contract = StandardD25Profile(profile)
+            d25_target = self.prediction_targets.for_profile(profile, Strategy.D25)
+            settings = LoadD25TrainingSettings(selection.runtime.project_root, profile)
+        else:
+            contract = ResearchCloseReturnProfile(profile)
+            d25_target = None
+            settings = LoadProfileTrainingSettings(selection.runtime.project_root, profile)
         if isinstance(settings.fitting, TcnFittingParameters):
             # Load the optional native library before capturing job-wide thread limits.
-            from trader.training.infra.profile.v5.network import PreserveTcnRuntime
+            from trader.training.infra.tcn.network import PreserveTcnRuntime
 
             self.resources.enter_context(PreserveTcnRuntime())
             logging.getLogger(__name__).warning(

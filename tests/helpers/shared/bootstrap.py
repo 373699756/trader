@@ -3,8 +3,8 @@ import json
 import shutil
 from pathlib import Path
 from tests.helpers.training.profiles.v3.profile import _publish_profile
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.d25.v2.contracts import V2_D25_PROFILE
+from trader.training.infra.d25.v3.contracts import V3_D25_PROFILE
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -22,7 +22,7 @@ def _config(tmp_path: Path) -> Path:
     runtime["long_watchlist"] = str(config_dir / "long_watchlist.json")
     reference_dir = tmp_path / "data/market/reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
-    for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
+    for profile in (V2_D25_PROFILE, V3_D25_PROFILE):
         _publish_profile(tmp_path / "data" / "training" / "models", profile)
     path = config_dir / "runtime.json"
     path.write_text(json.dumps(runtime), encoding="utf-8")

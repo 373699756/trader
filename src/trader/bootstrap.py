@@ -151,7 +151,7 @@ from trader.recommendation.infra.runtime.profiled_application import ProfiledApp
 from trader.recommendation.infra.runtime.startup_readiness import WarnMissingLocalData
 from trader.recommendation.infra.scoring import profile_factory
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
+from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile, ScoringModelsUnavailableError
 from trader.recommendation.infra.status_projection import RuntimeStatus as _runtime_status
 from trader.training.application.research_audit import TryBuildCommittedResearchAudit
 from trader.training.application.research_runtime import ResearchRuntime
@@ -318,6 +318,7 @@ def ExecuteSelectedTraining(
     runtime: RuntimeSettings,
     scoring_profiles: tuple[ScoringProfileId, ...],
     *,
+    strategy: Strategy | None = None,
     history_root: Path | None = None, training_root: Path | None = None, started_at: float | None = None,
     industry_snapshot: CurrentIndustrySnapshot | None = None, terminal_columns: int | None = None,
     report_output: TrainingReportOutput | None = None,
@@ -334,7 +335,7 @@ def ExecuteSelectedTraining(
 
     from trader.training.entrypoints.selected_training import RunSelectedTraining
     from trader.training.infra.selected_training import ResolveTrainingLocations, SelectedTrainingAdapter
-    from trader.training.infra.tomorrow_probability_training import TrainTomorrowProbability
+    from trader.training.infra.tomorrow.training import TrainTomorrowProbability
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
 
     if history_root is not None or training_root is not None:
@@ -345,6 +346,7 @@ def ExecuteSelectedTraining(
                        if industry_snapshot is None else lambda _as_of: industry_snapshot)
     return RunSelectedTraining(
         runtime, scoring_profiles,
+        strategy=strategy,
         executor=BoundedExecutor(
             worker_count=len(scoring_profiles), queue_capacity=0, thread_name_prefix="profile-training"
         ),
@@ -564,22 +566,22 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     profile_id = strategy.scoring_profile
     if prediction_targets is not None and strategy.prediction_targets != prediction_targets:
         raise ValueError("prediction target configuration changed during service composition")
-    tomorrow_target = prediction_targets.for_profile(profile_id, Strategy.TOMORROW) if prediction_targets else None
-    d25_target = prediction_targets.for_profile(profile_id, Strategy.D25) if prediction_targets else None
+    targets = strategy.prediction_targets
+    tomorrow_target = targets.for_profile(profile_id, Strategy.TOMORROW)
+    d25_target = targets.for_profile(profile_id, Strategy.D25)
     paths = settings.data_paths
-    tomorrow_predictor: TomorrowProbabilityPredictor | None = None
-    if tomorrow_target is not None:
-        from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
+    from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel
 
-        try:
-            tomorrow_predictor = LoadTomorrowProbabilityModel(
-                paths.models, profile_id, tomorrow_target, project_root=settings.project_root,
-            )
-        except (OSError, ValueError, RuntimeError) as exc:
-            logging.getLogger(__name__).warning(
-                "tomorrow_probability_model_unavailable profile=%s target=%s category=%s",
-                profile_id, tomorrow_target.identity, type(exc).__name__,
-            )
+    tomorrow_predictor: TomorrowProbabilityPredictor | None = None
+    try:
+        tomorrow_predictor = LoadTomorrowProbabilityModel(
+            paths.models, profile_id, tomorrow_target, project_root=settings.project_root,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        logging.getLogger(__name__).warning(
+            "tomorrow_probability_model_unavailable profile=%s target=%s category=%s",
+            profile_id, tomorrow_target.identity, type(exc).__name__,
+        )
     watchlist = LoadLongWatchlist(settings.long_watchlist_path)
     cost_policy = LoadExecutionCostPolicy(Path(config_path).expanduser().resolve().parent)
     cost_version = ContentHash(cost_policy)[:16]
@@ -627,16 +629,11 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         sqlite_policy=sqlite_policy, tomorrow_target=tomorrow_target,
     )
     model_failure = "production_model_missing"
-    try:
-        loaded_profile = (
-            LoadScoringProfile(profile_id, training_root=paths.models, d25_only=True)
-            if d25_target is not None
-            else LoadScoringProfile(profile_id, training_root=paths.models)
-        )
-        if d25_target is not None:
-            from trader.training.infra.d25_probability import LoadD25ScoringProfile
+    from trader.training.infra.d25.artifact import LoadD25ScoringProfile
 
-            loaded_profile = LoadD25ScoringProfile(paths.models, loaded_profile, d25_target)
+    try:
+        utility = LoadD25UtilityProfile(profile_id, training_root=paths.models)
+        loaded_profile = LoadD25ScoringProfile(paths.models, utility, d25_target)
     except ScoringModelsUnavailableError as exc:
         loaded_profile = None
         model_failure = f"production_model_{exc.reason}"
@@ -691,7 +688,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     model_publications = PublishedTrainingState(
         paths.history, paths.models, loaded_profile.publications if loaded_profile else (), metadata_cache=workers.market_cache,
         maintenance_path=paths.training_maintenance, owned_profile=profile_id, wall_clock=ShanghaiClock(now).now,
-        sqlite_policy=sqlite_policy, d25_only=d25_target is not None,
+        sqlite_policy=sqlite_policy, d25_only=True,
         load_expectation=HistoryTrainingExpectationReader(
             partial(ReadIndustrySnapshot, paths.reference, sqlite_policy=sqlite_policy),
             partial(LoadProfileTrainingSettings, settings.project_root),
@@ -770,15 +767,11 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                 OutcomeSettlementService(
                     market_data, persistence.outcomes, persistence.outcomes, session_distance=calendar.session_distance
                 ),
-                settle_d25=D25OutcomeSettlementService(market_data, persistence.outcomes).settle if d25_target is not None else None,
             ),
-            tomorrow_model_ready=tomorrow_target is None or tomorrow_predictor is not None,
-            d25_model_ready=d25_target is None or loaded_profile is not None,
-            tomorrow_settlement=(
-                TomorrowOutcomeSettlementService(market_data, persistence.outcomes).settle
-                if tomorrow_target is not None
-                else None
-            ),
+            tomorrow_model_ready=tomorrow_predictor is not None,
+            d25_model_ready=loaded_profile is not None,
+            tomorrow_settlement=TomorrowOutcomeSettlementService(market_data, persistence.outcomes).settle,
+            d25_settlement=D25OutcomeSettlementService(market_data, persistence.outcomes).settle,
             research_factory=ResearchRuntime,
             publish_freeze=partial(publication.freeze_events.publish_committed, profile=profile_id),
             publish_overlay=None,

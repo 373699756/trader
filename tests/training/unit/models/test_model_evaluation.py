@@ -21,8 +21,9 @@ from trader.training.infra.model_evaluation import (
     CalibrationUnavailableError,
     PredictionMetricsAccumulator,
 )
-from trader.training.infra.model_fitting import FitIndustryModels, RidgeFittingParameters
-from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
+from trader.training.infra.model_fitting import FitIndustryModels
+from trader.training.infra.fitting_settings import RidgeFittingParameters
+from trader.training.infra.research.close_return.v3_contracts import TOMORROW_HEAD_CONTRACT
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
 
 

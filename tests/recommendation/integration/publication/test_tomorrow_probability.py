@@ -23,6 +23,7 @@ from trader.recommendation.application.pipeline.local_score.model_router import 
 from trader.recommendation.application.pipeline.local_score.tomorrow_probability import TomorrowProbabilityCapability
 from trader.recommendation.application.ports.freeze_records import FreezeRecordConflictError, FreezeRecordUnavailableError
 from trader.recommendation.application.tomorrow_outcome_settlement import TomorrowOutcomeSettlementService
+from trader.recommendation.application.tomorrow.v2.plan import V2_TOMORROW_PLAN
 from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 from trader.recommendation.domain.market.models import Board, Evidence
 from trader.recommendation.domain.market.tomorrow_probability import BuildTomorrowFeatures
@@ -213,7 +214,7 @@ def test_scoring_uses_shared_probability_to_rank_without_a_net_return_gate(appli
         )
     policy = BuildRecommendationPolicy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
     policy = replace(policy, selection=replace(policy.selection, thresholds={"tomorrow": 0.0, "d25": 0.0}))
-    scorer = ModelScoringRouter("v2", {Strategy.TOMORROW: TomorrowProbabilityCapability("v2", Predictor())})
+    scorer = ModelScoringRouter("v2", {Strategy.TOMORROW: TomorrowProbabilityCapability(V2_TOMORROW_PLAN, Predictor())})
     projection = BuildScoredLocal(
         _native_input(tuple(features)),
         policy,

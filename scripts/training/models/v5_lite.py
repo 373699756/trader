@@ -33,9 +33,9 @@ from trader.training.infra.model_bundles.documents import BuildIndustryModelDocu
 from trader.training.infra.model_evaluation import PredictionMetricsAccumulator
 from trader.training.infra.model_fitting import IndustryCoverageFailure
 from trader.training.infra.model_fitting_results import FittedIndustryModel
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
-from trader.training.infra.profile.v5.configuration import ParseTcnParameters, TcnConfigurationDocument
-from trader.training.infra.profile.v5.settings import TcnArchitecture, TcnFittingParameters
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
+from trader.training.infra.tcn.configuration import ParseTcnParameters, TcnConfigurationDocument
+from trader.training.infra.tcn.settings import TcnArchitecture, TcnFittingParameters
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingIndustryCounts
 from trader.training.infra.sample_sequences import SampleSequenceLayout
 from trader.training.infra.sample_schema import SampleFormatId
@@ -44,7 +44,7 @@ from trader.training.infra.sample_schema import SampleFormatId
 def ProbeLiteKernels() -> dict[str, object]:
     import torch
 
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, TcnNetwork
 
     available = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
     cases = [(width, threads) for width in (8, 4) for threads in (1, 2, 4) if threads <= available]
@@ -236,8 +236,8 @@ def _quality(
 ) -> dict[str, object]:
     if baseline[0] != candidate[0] or baseline[1].minimum_industry_training_rows != candidate[1].minimum_industry_training_rows:
         raise ValueError("V5 compute comparison requires identical fit dates and industry thresholds")
-    from trader.training.infra.profile.v5.fitting import FitTcnIndustry
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, PreserveTcnRuntime, TcnNetwork
+    from trader.training.infra.d25.v5.utility_fitting import FitTcnIndustry
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, PreserveTcnRuntime, TcnNetwork
 
     prepared = time.monotonic()
     paths = _prepare(source, work, deadline, baseline[0], sqlite_policy=sqlite_policy)
@@ -350,7 +350,7 @@ class _FitCancelled(InterruptedError):
 
 
 def _reload_model(fitted: FittedIndustryModel, path: Path) -> TrainedTcnModelSnapshot:
-    from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork
+    from trader.training.infra.tcn.tensors import DecodeTcnNetwork
 
     model = fitted.model
     if not isinstance(model, TrainedTcnModelSnapshot):
@@ -383,7 +383,7 @@ def _validate_reload(
     work: Path,
     deadline: float,
 ) -> dict[str, object]:
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, TcnNetwork
 
     model = fitted.model
     if not isinstance(model, TrainedTcnModelSnapshot):
@@ -421,8 +421,8 @@ def _largest(
     cancel_after_batches: int | None = None,
 ) -> dict[str, object]:
     from trader.training.infra.implementation_identity import TrainingImplementationIdentity
-    from trader.training.infra.profile.v5.fitting import FitTcnIndustry
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, PreserveTcnRuntime
+    from trader.training.infra.d25.v5.utility_fitting import FitTcnIndustry
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, PreserveTcnRuntime
 
     paths = _prepare(source, work, deadline, configuration[0], sqlite_policy=sqlite_policy)
     source_stamps = _sample_signature(source)

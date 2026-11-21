@@ -86,6 +86,18 @@ def _static_bootstrap_models(monkeypatch):
 
     monkeypatch.setattr(model_fixtures, "_lightgbm_model", model_text)
 
+    class Predictor:
+        identity = "a" * 64
+
+        def predict_probabilities(self, features):
+            return (0.25,) * len(features)
+
+    monkeypatch.setattr(
+        "trader.training.infra.tomorrow.artifact.LoadTomorrowProbabilityModel",
+        lambda *_args, **_kwargs: Predictor(),
+    )
+    monkeypatch.setattr("trader.training.infra.d25.artifact.LoadD25ScoringProfile", lambda _root, profile, _target: profile)
+
 
 def test_recommendation_pipeline_requires_every_canonical_stage() -> None:
     with pytest.raises(ValueError, match="pipeline stages are invalid"):
@@ -142,7 +154,7 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert not (tmp_path / "data/recommendation").exists()
     assert system.scheduler is not None
     assert system.records is not None
-    assert system.records._database == tmp_path / "data/recommendation/v2/freeze.sqlite3"  # noqa: SLF001
+    assert system.records.profile_records._database == tmp_path / "data/recommendation/v2/freeze.sqlite3"  # noqa: SLF001
     assert system.research_trace is not None
     assert system.quote_pool.status().workers == 4
     assert system.quote_pool.is_running() is False
@@ -162,8 +174,8 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert tomorrow["is_enable"] is True
     assert "active" not in tomorrow
     assert tomorrow["profile_id"] == "v2"
-    assert tomorrow["model_id"] == "v2_industry_lightgbm"
-    assert tomorrow["activation_basis"] == "manual_user_override"
+    assert tomorrow["model_id"] == "a" * 64
+    assert tomorrow["activation_basis"] == "trained_artifact"
     assert tomorrow["runtime_anchor"] == "15:00"
     assert scoring["heads"]["d25"]["runtime_anchor"] == "15:00"
     assert tomorrow["monitoring_mode"] == "automatic_t1_outcome_settlement"
@@ -301,7 +313,9 @@ def test_startup_input_preloader_never_downloads_and_keeps_web_readable(
             scope.setattr(Path, "read_text", lambda *args, **kwargs: pytest.fail("status reread a file"))
             payload = client.get("/api/status").get_json()
         assert payload["market_data"]["published_history_snapshot_hash"] is None
-        assert len(payload["scoring_profile"]["maintenance"]) == 4
+        maintenance = payload["scoring_profile"]["maintenance"]
+        assert len(maintenance) == 2
+        assert {head["strategy"] for head in maintenance} == {"d25"}
         assert not (tmp_path / "data/history").exists()
     finally:
         assert preloader.stop(wait=True).completed is True
@@ -320,24 +334,24 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
     assert status["profile_id"] == "v2"
     assert set(status["heads"]) == {"tomorrow", "d25"}
     assert all(head["is_enable"] is True for head in status["heads"].values())
-    assert status["heads"]["tomorrow"]["model_id"] == "v2_industry_lightgbm"
-    assert status["heads"]["tomorrow"]["activation_basis"] == "manual_user_override"
+    assert status["heads"]["tomorrow"]["model_id"] == "a" * 64
+    assert status["heads"]["tomorrow"]["activation_basis"] == "trained_artifact"
     assert strategy_path.read_bytes() == original
 
 
 def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch) -> None:
-    from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+    from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile
 
     observed: list[Path] = []
     config_path = _config_with_strategy_profile(tmp_path, "v3")
-    v3_profile = LoadScoringProfile("v3", training_root=tmp_path / "data" / "training" / "models")
+    v3_profile = LoadD25UtilityProfile("v3", training_root=tmp_path / "data" / "training" / "models")
 
     def load(profile: str, *, training_root: Path | None = None):
         assert profile == "v3"
         observed.append(training_root or Path())
         return v3_profile
 
-    monkeypatch.setattr("trader.bootstrap.LoadScoringProfile", load)
+    monkeypatch.setattr("trader.bootstrap.LoadD25UtilityProfile", load)
 
     BuildSystem(config_path)
 

@@ -1,0 +1,796 @@
+"""V1 model publication, validation and already-loaded inference."""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import os
+import shutil
+import tempfile
+import uuid
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
+from datetime import date
+from itertools import islice
+from pathlib import Path
+from typing import cast
+
+import lightgbm as lgb
+import numpy as np
+from lightgbm.basic import LightGBMError
+
+from trader.download.domain.baostock_daily import BaoStockCalendar
+from trader.infra.atomic_files import AtomicWriteJson
+from trader.infra.regular_file import ReadRegularFile
+from trader.infra.serialization.canonical import CanonicalValue, ContentHash
+from trader.infra.serialization.fields import IsFiniteNumber, IsInteger, IsNonEmptyText, IsSha256Text, IsTextSequence
+from trader.infra.settings.parser import ConfigurationError, RequireExactKeys
+from trader.recommendation.application.ports.loaded_profile import (
+    HeadRuntime,
+    LoadedScoringProfile,
+    ModelInput,
+    ModelPrediction,
+    ProfileEvidence,
+)
+from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import LEARNED_RANK_SCORE_SCALE, ScoringProfileId
+from trader.training.domain.model_publication import ModelPublicationIdentity
+from trader.training.domain.v1.learned_rank import (
+    LearnedRankDateSplit,
+    LearnedRankHead,
+    LearnedRankFinalHead,
+    LearnedRankFinalPair,
+    LearnedRankPredictionMetrics,
+)
+from trader.training.domain.final_fit import FinalFitDatePlan
+from trader.training.domain.training_dates import MAX_TRAINING_SESSIONS
+from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
+from trader.training.infra.model_bundles.profile_publication import (
+    InspectProfileWorkspace, ProfilePublicationLock, RecoverProfilePublication, RequireProfilePublicationReady,
+)
+from trader.training.infra.model_bundles.composition import SingleHeadCombiner
+from trader.training.infra.learned_rank_settings import ParseV1TrainingSettings
+from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
+from trader.training.infra.training_industry_metadata import (
+    ParseTrainingIndustrySnapshot, ProjectTrainingIndustrySnapshot, ValidateTrainingInputIdentity,
+)
+
+_MAXIMUM_MODEL_DOCUMENT_BYTES = 32 * 1024 * 1024
+_STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
+_MODEL_FIELDS = frozenset(
+    {
+        "transformer_means",
+        "transformer_scales",
+        "ridge_coefficients",
+        "ridge_intercept",
+        "calibration_intercept",
+        "calibration_slope",
+        "rank_model",
+        "rank_iterations",
+    }
+)
+_HEAD_INPUT_FIELDS = frozenset(
+    {
+        "training_contract_hash",
+        "split",
+        "training_rows",
+        "early_stopping_rows",
+        "calibration_rows",
+        "industries",
+    }
+)
+_SHARED_INPUT_FIELDS = frozenset(
+    {
+        "training_input_hash",
+        "source_identity_hash",
+        "calendar_hash",
+        "source_cutoff",
+        "settings",
+        "training_identity_hash",
+        "price_snapshot_hash",
+        "industry_policy",
+        "industry_content_hash",
+        "industry_snapshot",
+    }
+)
+_MODEL_DOCUMENT_FIELDS = frozenset(
+    {"profile_id", "strategy_head", "pair_content_hash", "head_content_hash", "components"}
+)
+_METADATA_DOCUMENT_FIELDS = frozenset(
+    {
+        "profile_id",
+        "strategy_head",
+        "model_id",
+        "score_scale",
+        "pair_content_hash",
+        "head_content_hash",
+        "model_hash",
+        "contract_hash",
+        "feature_ids",
+        "algorithm",
+        "training_input",
+        "validation_report",
+    }
+)
+_VALIDATION_REPORT_FIELDS = frozenset(
+    {
+        "validation",
+        "production_authority",
+        "prediction_return_validation_passed",
+        "point_in_time_parity",
+        "feature_anchor",
+        "label_anchor",
+    }
+)
+_FINAL_VALIDATION_REPORT_FIELDS = _VALIDATION_REPORT_FIELDS | {
+    "diagnostic_head", "diagnostic_head_hash", "evaluation_scope", "calibration_source_model_hash",
+    "calibration_transfer", "final_model_unseen_validation_passed", "selected_rank_iterations", "final_rank_iterations",
+}
+_SHARED_METADATA_FIELDS = _METADATA_DOCUMENT_FIELDS - {
+    "strategy_head",
+    "head_content_hash",
+    "model_hash",
+    "training_input",
+    "validation_report",
+}
+_LOGGER = logging.getLogger(__name__)
+
+
+class LearnedRankPredictor:
+    """No filesystem, model fitting or per-stock predictor construction on this path."""
+
+    def __init__(self, head: LearnedRankHead) -> None:
+        self._head = head
+        self._means = np.asarray(head.transformer_means, dtype=np.float64)
+        self._scales = np.asarray(head.transformer_scales, dtype=np.float64)
+        self._coefficients = np.asarray(head.ridge_coefficients, dtype=np.float64)
+        try:
+            self._ranker = lgb.Booster(model_str=head.rank_model)
+        except LightGBMError as exc:
+            raise ValueError("learned-rank ranking component is invalid") from exc
+        if (
+            self._ranker.num_feature() != len(LEARNED_RANK_FEATURE_IDS)
+            or self._ranker.current_iteration() != head.rank_iterations
+        ):
+            raise ValueError("learned-rank ranking component contract differs")
+
+    @property
+    def profile_id(self) -> ScoringProfileId:
+        return "v1"
+
+    @property
+    def model_id(self) -> str:
+        return "learned_rank"
+
+    @property
+    def model_hash(self) -> str:
+        return self._head.content_hash
+
+    @property
+    def feature_ids(self) -> tuple[str, ...]:
+        return LEARNED_RANK_FEATURE_IDS
+
+    def predict(self, inputs: Sequence[ModelInput]) -> tuple[ModelPrediction, ...]:
+        if not inputs:
+            return ()
+        if len({item.code for item in inputs}) != len(inputs) or any(
+            len(item.alpha_features) != len(self.feature_ids) for item in inputs
+        ):
+            raise ValueError("learned-rank inputs must have unique codes and the exact feature width")
+        matrix = np.asarray([item.alpha_features for item in inputs], dtype=np.float64)
+        matrix -= self._means
+        matrix /= self._scales
+        rank_raw = self._ranker.predict(matrix, num_iteration=self._head.rank_iterations, num_threads=1)
+        gross = self._head.calibration_intercept + self._head.calibration_slope * (
+            self._head.ridge_intercept + matrix @ self._coefficients
+        )
+        return tuple(
+            ModelPrediction(item.code, float(prediction), float(rank))
+            for item, prediction, rank in zip(inputs, gross, rank_raw, strict=True)
+        )
+
+
+def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None:
+    """Publish the selected final-refit heads as one locked profile directory."""
+    if not isinstance(pair, LearnedRankFinalPair):
+        raise ValueError("V1 publication requires a complete final-refit pair")
+    for head in pair.heads:
+        LearnedRankPredictor(head)
+    model_root.mkdir(parents=True, exist_ok=True)
+    profile_root = model_root / "v1"
+    strategies = tuple(head.strategy for head in pair.heads)
+    RecoverLearnedRankPublication(model_root, strategies=strategies)
+    if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
+        raise ValueError("V1 model directory is invalid")
+    staging = Path(tempfile.mkdtemp(prefix=".v1.publication.", dir=model_root))
+    previous = model_root / f".v1.previous.{uuid.uuid4().hex}"
+    old_moved = False
+    try:
+        for head in pair.heads:
+            directory = staging / head.strategy.value
+            values = _object(CanonicalValue(head))
+            model = {
+                "profile_id": "v1",
+                "strategy_head": head.strategy.value,
+                "pair_content_hash": pair.content_hash,
+                "head_content_hash": head.content_hash,
+                "components": {key: values[key] for key in _MODEL_FIELDS},
+            }
+            model["content_hash"] = ContentHash(model)
+            metadata = {
+                "profile_id": "v1",
+                "strategy_head": head.strategy.value,
+                "model_id": "learned_rank",
+                "score_scale": LEARNED_RANK_SCORE_SCALE,
+                "pair_content_hash": pair.content_hash,
+                "head_content_hash": head.content_hash,
+                "model_hash": model["content_hash"],
+                "contract_hash": pair.contract_hash,
+                "feature_ids": list(LEARNED_RANK_FEATURE_IDS),
+                "algorithm": "lightgbm_lambdarank_ridge",
+                "training_input": {
+                    "training_input_hash": pair.training_input_hash,
+                    "price_snapshot_hash": pair.price_snapshot_hash,
+                    "industry_policy": TRAINING_INDUSTRY_POLICY,
+                    "industry_content_hash": pair.industry_snapshot.content_hash,
+                    "industry_snapshot": ProjectTrainingIndustrySnapshot(pair.industry_snapshot),
+                    "source_identity_hash": pair.source_identity_hash,
+                    "calendar_hash": pair.calendar_hash,
+                    "source_cutoff": pair.source_cutoff.isoformat(),
+                    "settings": CanonicalValue(pair.settings),
+                    "training_identity_hash": pair.training_identity_hash,
+                    **{key: values[key] for key in _HEAD_INPUT_FIELDS},
+                    "calendar_dates": [day.isoformat() for day in pair.calendar_dates],
+                    "final_fit": {
+                        **_object(values["final_fit"]), "content_hash": head.final_fit.content_hash,
+                    },
+                },
+                "validation_report": {
+                    "validation": values["validation"],
+                    "production_authority": False,
+                    "prediction_return_validation_passed": False,
+                    "point_in_time_parity": False,
+                    "feature_anchor": "previous_completed_session",
+                    "label_anchor": "signal_close_proxy",
+                    "diagnostic_head": values["diagnostic"],
+                    "diagnostic_head_hash": head.diagnostic.content_hash,
+                    "evaluation_scope": "independent_pre_refit_model",
+                    "calibration_source_model_hash": head.diagnostic.content_hash,
+                    "calibration_transfer": True,
+                    "final_model_unseen_validation_passed": False,
+                    "selected_rank_iterations": head.diagnostic.rank_iterations,
+                    "final_rank_iterations": head.rank_iterations,
+                },
+            }
+            metadata["content_hash"] = ContentHash(metadata)
+            if any(
+                len(json.dumps(document).encode("utf-8")) > _MAXIMUM_MODEL_DOCUMENT_BYTES
+                for document in (model, metadata)
+            ):
+                raise ValueError("V1 model document exceeds its size limit")
+            AtomicWriteJson(directory / "model.json", model)
+            AtomicWriteJson(directory / "metadata.json", metadata)
+            _fsync_directory(directory)
+        _fsync_directory(staging)
+        if _read_pair_directory(staging, strategies) != pair:
+            raise ValueError("learned-rank staged pair differs")
+        with ProfilePublicationLock(profile_root):
+            RequireProfilePublicationReady(profile_root)
+            if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
+                raise ValueError("V1 model directory is invalid")
+            if profile_root.exists():
+                InspectProfileWorkspace(profile_root, allow_partial_heads=True, strategies=strategies)
+                os.replace(profile_root, previous)
+                old_moved = True
+            new_moved = False
+            try:
+                os.replace(staging, profile_root)
+                new_moved = True
+                _fsync_directory(model_root)
+            except OSError:
+                if new_moved:
+                    os.replace(profile_root, staging)
+                if old_moved:
+                    os.replace(previous, profile_root)
+                    old_moved = False
+                raise
+        if old_moved:
+            try:
+                InspectProfileWorkspace(previous, allow_partial_heads=True, strategies=strategies)
+                shutil.rmtree(previous)
+            except (OSError, ValueError):
+                _LOGGER.warning("V1 previous model directory cleanup failed")
+    finally:
+        if staging.exists() or staging.is_symlink():
+            InspectProfileWorkspace(staging, allow_partial_heads=True, strategies=strategies)
+            shutil.rmtree(staging)
+
+
+def RecoverLearnedRankPublication(model_root: Path, *, strategies: tuple[Strategy, ...] = _STRATEGIES) -> None:
+    """Explicit training restores an interrupted V1 pair without promoting staged models."""
+    RecoverProfilePublication(
+        model_root / "v1", lambda path: _read_pair_directory(path, strategies), strategies=strategies,
+    )
+
+
+def ReadLearnedRankPair(model_root: Path, *, strategies: tuple[Strategy, ...] = _STRATEGIES) -> LearnedRankFinalPair:
+    profile_root = model_root / "v1"
+    if not model_root.exists():
+        raise FileNotFoundError(profile_root)
+    with ProfilePublicationLock(profile_root):
+        return _read_pair_directory(profile_root, strategies)
+
+
+def ReadV1PublicationIdentities(
+    model_root: Path,
+    *,
+    cancel_requested: Callable[[], bool],
+    timeout_seconds: float = 1.0,
+    strategies: tuple[Strategy, ...] = _STRATEGIES,
+) -> tuple[ModelPublicationIdentity, ...]:
+    """Observe V1's declared pair identity without model bytes or native predictors."""
+    if cancel_requested():
+        raise InterruptedError("model_publication_observation_cancelled")
+    if not math.isfinite(timeout_seconds) or not 0.0 <= timeout_seconds <= 1.0:
+        raise ValueError("model publication observation timeout is invalid")
+    if not model_root.exists():
+        raise FileNotFoundError(model_root / "v1")
+    profile_root = model_root / "v1"
+    with ProfilePublicationLock(profile_root, timeout_seconds, cancel_requested=cancel_requested):
+        if not profile_root.exists() and not profile_root.is_symlink():
+            raise FileNotFoundError(profile_root)
+        if profile_root.is_symlink() or not profile_root.is_dir():
+            raise ValueError("V1 model directory is invalid")
+        _require_head_directories(profile_root, strategies)
+        documents = []
+        for strategy in strategies:
+            if cancel_requested():
+                raise InterruptedError("model_publication_observation_cancelled")
+            directory = profile_root / strategy.value
+            if not directory.exists() and not directory.is_symlink():
+                raise FileNotFoundError(directory)
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError("V1 head directory is invalid")
+            files = {path.name for path in islice(directory.iterdir(), 3)}
+            if files < {"model.json", "metadata.json"}:
+                raise FileNotFoundError("V1 head files are missing")
+            if files != {"model.json", "metadata.json"}:
+                raise ValueError("V1 head directory has unexpected entries")
+            model_path = directory / "model.json"
+            if model_path.is_symlink() or not model_path.is_file():
+                raise ValueError("V1 head model path is invalid")
+            metadata = _object(json.loads(ReadRegularFile(
+                directory / "metadata.json", maximum_bytes=8 * 1024 * 1024,
+            )))
+            if cancel_requested():
+                raise InterruptedError("model_publication_observation_cancelled")
+            _verify_document(metadata, _METADATA_DOCUMENT_FIELDS, "V1 metadata")
+            _validate_metadata_identity(metadata, strategy)
+            documents.append(metadata)
+        first = documents[0]
+        if any(metadata[key] != first[key] for metadata in documents[1:] for key in _SHARED_METADATA_FIELDS):
+            raise ModelBundleContractError("V1 pair metadata differs")
+        identities = tuple(_metadata_publication_identity(metadata, strategy) for metadata, strategy in zip(
+            documents, strategies, strict=True,
+        ))
+        inputs = tuple(_object(metadata["training_input"]) for metadata in documents)
+        fields = _SHARED_INPUT_FIELDS | {"calendar_dates"}
+        if any(item[key] != inputs[0][key] for item in inputs[1:] for key in fields):
+            raise ModelBundleContractError("V1 pair training input differs")
+        return identities
+
+
+def _validate_metadata_identity(metadata: Mapping[str, object], strategy: Strategy) -> None:
+    expected: Mapping[str, object] = {
+        "profile_id": "v1",
+        "strategy_head": strategy.value,
+        "model_id": "learned_rank",
+        "score_scale": LEARNED_RANK_SCORE_SCALE,
+        "feature_ids": list(LEARNED_RANK_FEATURE_IDS),
+        "algorithm": "lightgbm_lambdarank_ridge",
+    }
+    if any(
+        type(metadata[key]) is not type(value) or metadata[key] != value for key, value in expected.items()
+    ):
+        raise ModelBundleContractError("V1 model identity is invalid")
+    if any(not IsSha256Text(metadata[key]) for key in (
+        "pair_content_hash", "head_content_hash", "model_hash", "contract_hash",
+    )):
+        raise ModelBundleIntegrityError("V1 publication hash is invalid")
+
+
+def _metadata_publication_identity(metadata: Mapping[str, object], strategy: Strategy) -> ModelPublicationIdentity:
+    training = _object(metadata["training_input"])
+    fields = _SHARED_INPUT_FIELDS | _HEAD_INPUT_FIELDS | {"calendar_dates", "final_fit"}
+    RequireExactKeys(training, set(fields), "learned_rank_training_input")
+    ValidateTrainingInputIdentity(training)
+    split = _split(training["split"])
+    cutoff = date.fromisoformat(_text(training, "source_cutoff"))
+    if split.label_cutoff >= cutoff or split.maturity_sessions != (1 if strategy is Strategy.TOMORROW else 5):
+        raise ModelBundleContractError("V1 publication dates are invalid")
+    contract = _text(metadata, "contract_hash")
+    plan = _final_fit_plan(training["final_fit"])
+    if (
+        plan.source_cutoff != cutoff or plan.maturity_sessions != split.maturity_sessions
+        or plan.fit_dates[-1] != split.label_cutoff
+    ):
+        raise ModelBundleContractError("V1 publication final-fit dates differ")
+    metadata_hash = LearnedRankMetadataHash(contract, split, plan)
+    label_cutoff = plan.fit_dates[-1]
+    return ModelPublicationIdentity(
+        "v1",
+        strategy,
+        _text(metadata, "head_content_hash"),
+        metadata_hash,
+        label_cutoff,
+        _text(training, "training_input_hash"),
+        _text(metadata, "pair_content_hash"),
+    )
+
+
+def LearnedRankMetadataHash(contract: str, split: LearnedRankDateSplit, plan: FinalFitDatePlan) -> str:
+    return ContentHash((contract, split, plan))
+
+
+def _require_head_directories(profile_root: Path, strategies: tuple[Strategy, ...]) -> None:
+    if strategies not in {_STRATEGIES, (Strategy.D25,)}:
+        raise ValueError("V1 model strategy contract is invalid")
+    head_names = {path.name for path in profile_root.iterdir()}
+    expected_heads = {strategy.value for strategy in strategies}
+    if head_names < expected_heads:
+        raise FileNotFoundError("V1 model requires both heads")
+    if head_names != expected_heads:
+        raise ValueError("V1 model directory has unexpected entries")
+
+
+def _read_pair_directory(profile_root: Path, strategies: tuple[Strategy, ...] = _STRATEGIES) -> LearnedRankFinalPair:
+    if not profile_root.exists() and not profile_root.is_symlink():
+        raise FileNotFoundError(profile_root)
+    if not profile_root.is_dir() or profile_root.is_symlink():
+        raise ValueError("V1 model directory is invalid")
+    _require_head_directories(profile_root, strategies)
+    documents: list[tuple[Mapping[str, object], Mapping[str, object]]] = []
+    for strategy in strategies:
+        directory = profile_root / strategy.value
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("V1 head directory is invalid")
+        file_names = {path.name for path in directory.iterdir()}
+        expected_files = {"model.json", "metadata.json"}
+        if file_names < expected_files:
+            raise FileNotFoundError("V1 head files are missing")
+        if file_names != expected_files:
+            raise ValueError("V1 head directory has unexpected entries")
+        paths = (directory / "model.json", directory / "metadata.json")
+        if any(
+            path.is_symlink() or not path.is_file() or path.stat().st_size > _MAXIMUM_MODEL_DOCUMENT_BYTES
+            for path in paths
+        ):
+            raise ValueError("learned-rank head path or size is invalid")
+        model, metadata = (_object(json.loads(path.read_text(encoding="utf-8"))) for path in paths)
+        _verify_document(model, _MODEL_DOCUMENT_FIELDS, "V1 model")
+        _verify_document(metadata, _METADATA_DOCUMENT_FIELDS, "V1 metadata")
+        if metadata["model_hash"] != model["content_hash"]:
+            raise ModelBundleIntegrityError("V1 model and metadata hash differ")
+        _validate_metadata_identity(metadata, strategy)
+        expected: Mapping[str, object] = {
+            "profile_id": "v1",
+            "strategy_head": strategy.value,
+            "pair_content_hash": model["pair_content_hash"],
+            "head_content_hash": model["head_content_hash"],
+        }
+        if any(model[key] != value or metadata[key] != value for key, value in expected.items()):
+            raise ModelBundleContractError("V1 head identity differs")
+        documents.append((model, metadata))
+    first = documents[0][1]
+    if any(metadata[key] != first[key] for _, metadata in documents[1:] for key in _SHARED_METADATA_FIELDS):
+        raise ModelBundleContractError("V1 pair metadata differs")
+    expected_report: Mapping[str, object] = {
+        "production_authority": False,
+        "prediction_return_validation_passed": False,
+        "point_in_time_parity": False,
+        "feature_anchor": "previous_completed_session",
+        "label_anchor": "signal_close_proxy",
+    }
+    heads: list[LearnedRankFinalHead] = []
+    inputs: list[Mapping[str, object]] = []
+    for model, metadata in documents:
+        components = _object(model["components"])
+        training = _object(metadata["training_input"])
+        report = _object(metadata["validation_report"])
+        RequireExactKeys(components, set(_MODEL_FIELDS), "learned_rank_components")
+        input_fields = _SHARED_INPUT_FIELDS | _HEAD_INPUT_FIELDS | {"calendar_dates", "final_fit"}
+        RequireExactKeys(training, set(input_fields), "learned_rank_training_input")
+        ValidateTrainingInputIdentity(training)
+        RequireExactKeys(
+            report,
+            set(_FINAL_VALIDATION_REPORT_FIELDS),
+            "learned_rank_validation_report",
+        )
+        if any(type(report[key]) is not type(value) or report[key] != value for key, value in expected_report.items()):
+            raise ModelBundleContractError("V1 validation report identity is invalid")
+        head_values = {
+            "strategy": metadata["strategy_head"],
+            **components,
+            **{key: training[key] for key in _HEAD_INPUT_FIELDS},
+            "validation": report["validation"],
+        }
+        head = _final_head(head_values, training["final_fit"], report)
+        if head.content_hash != metadata["head_content_hash"]:
+            raise ModelBundleIntegrityError("V1 head hash differs")
+        heads.append(head)
+        inputs.append(training)
+    shared_input_fields = _SHARED_INPUT_FIELDS | {"calendar_dates"}
+    if any(item[key] != inputs[0][key] for item in inputs[1:] for key in shared_input_fields):
+        raise ModelBundleContractError("V1 pair training input differs")
+    first_input = inputs[0]
+    industry = ParseTrainingIndustrySnapshot(first_input["industry_snapshot"])
+    if industry.content_hash != _text(first_input, "industry_content_hash"):
+        raise ModelBundleIntegrityError("V1 industry snapshot semantic identity differs")
+    calendar_dates = _date_vector(first_input["calendar_dates"])
+    if BaoStockCalendar(calendar_dates).content_hash != _text(first_input, "calendar_hash"):
+        raise ModelBundleContractError("V1 final calendar differs from its published identity")
+    pair = LearnedRankFinalPair(
+        _text(first_input, "training_input_hash"),
+        _text(first_input, "source_identity_hash"),
+        _text(first_input, "calendar_hash"),
+        date.fromisoformat(_text(first_input, "source_cutoff")),
+        ParseV1TrainingSettings(_object(first_input["settings"])),
+        tuple(heads),
+        _text(first_input, "training_identity_hash"),
+        calendar_dates,
+        price_snapshot_hash=_text(first_input, "price_snapshot_hash"), industry_snapshot=industry,
+    )
+    if first["pair_content_hash"] != pair.content_hash:
+        raise ModelBundleIntegrityError("V1 pair content hash differs")
+    if first["contract_hash"] != pair.contract_hash:
+        raise ModelBundleContractError("V1 pair contract hash differs")
+    return pair
+
+
+def _verify_document(raw: Mapping[str, object], fields: frozenset[str], label: str) -> None:
+    try:
+        RequireExactKeys(raw, set(fields) | {"content_hash"}, label)
+    except ConfigurationError as exc:
+        raise ModelBundleContractError(f"{label} identity fields are invalid") from exc
+    if raw["content_hash"] != ContentHash({key: raw[key] for key in fields}):
+        raise ModelBundleIntegrityError(f"{label} content hash differs")
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def LoadV1ScoringProfile(model_root: Path, *, strategies: tuple[Strategy, ...] = _STRATEGIES) -> LoadedScoringProfile:
+    pair = ReadLearnedRankPair(model_root, strategies=strategies)
+    evidence = ProfileEvidence(
+        "historical_unavailable",
+        ("prediction_return_validation_not_passed", "point_in_time_parity_unverified"),
+        "manual_user_override",
+        training_anchor="15:00_close_proxy",
+        point_in_time_parity=False,
+        # Runtime use is explicitly authorized; historical validation above
+        # and the immutable training report retain their original evidence.
+        production_authority=True,
+    )
+    return LoadedScoringProfile(
+        "v1",
+        {
+            head.strategy: HeadRuntime(
+                head.strategy,
+                LearnedRankPredictor(head),
+                SingleHeadCombiner(),
+                replace(evidence, training_label_cutoff=head.final_fit.fit_dates[-1]),
+            )
+            for head in pair.heads
+        },
+        tuple(
+            ModelPublicationIdentity(
+                "v1",
+                head.strategy,
+                head.content_hash,
+                LearnedRankMetadataHash(pair.contract_hash, head.split, head.final_fit),
+                head.final_fit.fit_dates[-1],
+                pair.training_input_hash,
+                pair.content_hash,
+            )
+            for head in pair.heads
+        ),
+    )
+
+
+def _object(value: object) -> Mapping[str, object]:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise ValueError("V1 model requires an object")
+    return cast(Mapping[str, object], value)
+
+
+def _text(values: Mapping[str, object], key: str) -> str:
+    value = values[key]
+    if not IsNonEmptyText(value):
+        raise ValueError("V1 model requires text")
+    return value
+
+
+def _number(values: Mapping[str, object], key: str) -> float:
+    value = values[key]
+    if not IsFiniteNumber(value):
+        raise ValueError("V1 model requires a finite number")
+    return float(value)
+
+
+def _integer(values: Mapping[str, object], key: str) -> int:
+    value = values[key]
+    if not IsInteger(value):
+        raise ValueError("V1 model requires an integer")
+    return value
+
+
+def _vector(values: Mapping[str, object], key: str) -> tuple[float, ...]:
+    value = values[key]
+    if not isinstance(value, list) or not all(IsFiniteNumber(item) for item in value):
+        raise ValueError("V1 model requires a finite vector")
+    return tuple(float(item) for item in value)
+
+
+def _split(raw: object) -> LearnedRankDateSplit:
+    values = _object(raw)
+    RequireExactKeys(
+        values,
+        {
+            "fitting",
+            "early_stopping",
+            "calibration",
+            "validation",
+            "label_cutoff",
+            "feature_cutoff",
+            "maturity_sessions",
+            "embargo_sessions",
+        },
+        "learned_rank_split",
+    )
+    partitions: list[tuple[date, ...]] = []
+    for key in ("fitting", "early_stopping", "calibration", "validation"):
+        dates = values[key]
+        if not IsTextSequence(dates):
+            raise ValueError("learned-rank split dates are invalid")
+        partitions.append(tuple(date.fromisoformat(day) for day in dates))
+    return LearnedRankDateSplit(
+        partitions[0],
+        partitions[1],
+        partitions[2],
+        partitions[3],
+        date.fromisoformat(_text(values, "label_cutoff")),
+        date.fromisoformat(_text(values, "feature_cutoff")),
+        _integer(values, "maturity_sessions"),
+        _integer(values, "embargo_sessions"),
+    )
+
+
+def _head(raw: object) -> LearnedRankHead:
+    values = _object(raw)
+    RequireExactKeys(
+        values,
+        {
+            "strategy",
+            "training_contract_hash",
+            "split",
+            "transformer_means",
+            "transformer_scales",
+            "ridge_coefficients",
+            "ridge_intercept",
+            "calibration_intercept",
+            "calibration_slope",
+            "rank_model",
+            "rank_iterations",
+            "training_rows",
+            "early_stopping_rows",
+            "calibration_rows",
+            "industries",
+            "validation",
+        },
+        "learned_rank_head",
+    )
+    industries = values["industries"]
+    if not IsTextSequence(industries):
+        raise ValueError("learned-rank coverage is invalid")
+    metrics = _object(values["validation"])
+    counts = ("source_rows", "predicted_rows", "covered_codes", "covered_dates", "covered_industries")
+    measures = ("mean_absolute_error", "root_mean_squared_error", "mean_daily_rank_ic", "mean_daily_ndcg_at_6")
+    RequireExactKeys(metrics, {*counts, *measures}, "learned_rank_validation")
+    validation = LearnedRankPredictionMetrics(
+        *(_integer(metrics, key) for key in counts), *(_number(metrics, key) for key in measures)
+    )
+    return LearnedRankHead(
+        Strategy(_text(values, "strategy")),
+        _text(values, "training_contract_hash"),
+        _split(values["split"]),
+        _vector(values, "transformer_means"),
+        _vector(values, "transformer_scales"),
+        _vector(values, "ridge_coefficients"),
+        _number(values, "ridge_intercept"),
+        _number(values, "calibration_intercept"),
+        _number(values, "calibration_slope"),
+        _text(values, "rank_model"),
+        _integer(values, "rank_iterations"),
+        _integer(values, "training_rows"),
+        _integer(values, "early_stopping_rows"),
+        _integer(values, "calibration_rows"),
+        tuple(industries),
+        validation,
+    )
+
+
+def _date_vector(raw: object) -> tuple[date, ...]:
+    if not IsTextSequence(raw) or not 1 <= len(raw) <= MAX_TRAINING_SESSIONS:
+        raise ModelBundleContractError("V1 final-fit date evidence is invalid")
+    return tuple(date.fromisoformat(day) for day in raw)
+
+
+def _final_head(raw: object, raw_plan: object, report: Mapping[str, object]) -> LearnedRankFinalHead:
+    head, diagnostic = _head(raw), _head(report["diagnostic_head"])
+    plan = _final_fit_plan(raw_plan)
+    if (
+        report["evaluation_scope"] != "independent_pre_refit_model"
+        or report["calibration_transfer"] is not True
+        or report["final_model_unseen_validation_passed"] is not False
+        or _text(report, "diagnostic_head_hash") != diagnostic.content_hash
+        or _text(report, "calibration_source_model_hash") != diagnostic.content_hash
+        or _integer(report, "selected_rank_iterations") != diagnostic.rank_iterations
+        or _integer(report, "final_rank_iterations") != head.rank_iterations
+    ):
+        raise ModelBundleContractError("V1 final-fit diagnostic or calibration provenance differs")
+    LearnedRankPredictor(diagnostic)
+    return LearnedRankFinalHead(
+        head.strategy,
+        head.training_contract_hash,
+        head.split,
+        head.transformer_means,
+        head.transformer_scales,
+        head.ridge_coefficients,
+        head.ridge_intercept,
+        head.calibration_intercept,
+        head.calibration_slope,
+        head.rank_model,
+        head.rank_iterations,
+        head.training_rows,
+        head.early_stopping_rows,
+        head.calibration_rows,
+        head.industries,
+        head.validation,
+        plan,
+        diagnostic,
+    )
+
+
+def _final_fit_plan(raw_plan: object) -> FinalFitDatePlan:
+    plan_values = _object(raw_plan)
+    RequireExactKeys(
+        plan_values, {"source_cutoff", "maturity_sessions", "fit_dates", "content_hash"}, "learned_rank_final_fit_plan",
+    )
+    plan = FinalFitDatePlan(
+        date.fromisoformat(_text(plan_values, "source_cutoff")),
+        _integer(plan_values, "maturity_sessions"),
+        _date_vector(plan_values["fit_dates"]),
+    )
+    if plan.content_hash != _text(plan_values, "content_hash"):
+        raise ModelBundleIntegrityError("V1 final-fit plan hash differs")
+    return plan
+
+
+__all__ = [
+    "LearnedRankMetadataHash",
+    "LearnedRankPredictor",
+    "LoadV1ScoringProfile",
+    "PublishLearnedRankPair",
+    "ReadLearnedRankPair",
+    "ReadV1PublicationIdentities",
+    "RecoverLearnedRankPublication",
+]

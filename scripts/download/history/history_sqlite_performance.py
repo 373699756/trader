@@ -49,13 +49,13 @@ from trader.recommendation.infra.market_data.published_history_cache import Publ
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.training.infra.training_settings import LoadRuntimeTrainingSettings
-from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
-from trader.training.infra.d25_probability import LoadD25ScoringProfile
+from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel
+from trader.training.infra.d25.artifact import LoadD25ScoringProfile
 from trader.recommendation.infra.runtime.initialization import FixedCacheTtl
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.performance.history_context_reuse import ReusableHistoryContexts
@@ -237,7 +237,7 @@ def _measure_preload(
     models = tuple(
         LoadD25ScoringProfile(
             settings.data_paths.models,
-            LoadScoringProfile(profile, training_root=settings.data_paths.models, d25_only=True),
+            LoadD25UtilityProfile(profile, training_root=settings.data_paths.models),
             targets.for_profile(profile, Strategy.D25),
         )
         for profile in selected

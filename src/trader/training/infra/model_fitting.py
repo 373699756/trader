@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager, closing, nullcontext
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 import lightgbm as lgb
@@ -21,6 +21,9 @@ from trader.training.application.tomorrow_training import (
 from trader.training.domain.training_dates import TrainingDateSplit
 from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan
 from trader.training.domain.final_fit import FinalFitDatePlan
+from trader.training.infra.d25.v2.utility import FitD25UtilityTree
+from trader.training.infra.d25.v3.utility import FitD25UtilityRidge
+from trader.training.infra.fitting_settings import LightGBMFittingParameters, ModelFittingParameters, RidgeFittingParameters
 from trader.training.infra.model_bundles.bundle_codec import (
     TrainedLightGBMModelSnapshot,
     TrainedRidgeModelSnapshot,
@@ -40,48 +43,19 @@ from trader.training.infra.model_fitting_results import (
     IndustryFitFailure,
     IndustryFitResult,
 )
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.tcn.settings import TcnFittingParameters
 from trader.training.infra.sample_index import (
     SQLiteTrainingSampleIndex,
     TrainingIndustryCounts,
     FinalFitIndustryCounts,
     TrainingSampleBatch,
-    TrainingSampleMatrix,
 )
 
 if TYPE_CHECKING:
-    from trader.training.infra.profile.v5.network import TcnNetwork
+    from trader.training.infra.tcn.network import TcnNetwork
 
 _MINIMUM_CALIBRATION_SAMPLES = 2
 _MINIMUM_FEATURE_DEVIATION = 1e-12
-
-
-@dataclass(frozen=True)
-class LightGBMFittingParameters:
-    minimum_industry_training_rows: int
-    learning_rate: float
-    max_depth: int
-    num_leaves: int
-    minimum_leaf_rows: int
-    boosting_rounds: int
-    early_stopping_rounds: int
-    maximum_bins: int
-    histogram_pool_mib: int
-    seed: int
-
-
-@dataclass(frozen=True)
-class RidgeFittingParameters:
-    minimum_industry_training_rows: int
-    penalty: float
-
-
-ModelFittingParameters = LightGBMFittingParameters | RidgeFittingParameters | TcnFittingParameters
-
-
-def FittingParameterDocument(parameters: ModelFittingParameters) -> dict[str, object]:
-    """Project fitting identity at the persisted contract boundary."""
-    return asdict(parameters)
 
 
 @dataclass(frozen=True)
@@ -129,7 +103,7 @@ def FitIndustryModels(
     if type(compute_threads) is not int or compute_threads < 1:
         raise ValueError("training_compute_threads_invalid")
     if isinstance(parameters, TcnFittingParameters):
-        from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
+        from trader.training.infra.tcn.network import ConfigureTcnRuntime
 
         ConfigureTcnRuntime(training=True, compute_threads=compute_threads)
     samples.require_split(split)
@@ -200,7 +174,7 @@ def RefitIndustryModels(
         )
         observer.heartbeat()
         if isinstance(parameters, TcnFittingParameters):
-            from trader.training.infra.profile.v5.fitting import RefitTcnIndustry
+            from trader.training.infra.d25.v5.utility_fitting import RefitTcnIndustry
 
             model = RefitTcnIndustry(samples, selected, contract, plan, parameters, original,
                                      observer.heartbeat, report=observer.publish)
@@ -242,13 +216,13 @@ def _refit_industry(
             if not isinstance(original.model, TrainedLightGBMModelSnapshot):
                 raise ValueError("final_fit_diagnostic_algorithm_mismatch")
             rounds = original.model.lightgbm_best_iteration
-            booster = _fit_lightgbm(data, None, replace(parameters, boosting_rounds=rounds), heartbeat, compute_threads)
+            booster = FitD25UtilityTree(data, None, replace(parameters, boosting_rounds=rounds), heartbeat, compute_threads)
             actual_rounds = booster.current_iteration()
             model: FittedModelSnapshot = TrainedLightGBMModelSnapshot(
                 *common, booster.model_to_string(num_iteration=actual_rounds), actual_rounds,
             )
         else:
-            coefficients = _ridge_coefficients(data.features, data.labels, parameters.penalty)
+            coefficients = FitD25UtilityRidge(data.features, data.labels, parameters.penalty)
             model = TrainedRidgeModelSnapshot(
                 *common, float(coefficients[0]), tuple(float(value) for value in coefficients[1:]),
             )
@@ -341,7 +315,7 @@ def _attempt_industry_fit(
         return None, failure
     try:
         if isinstance(parameters, TcnFittingParameters):
-            from trader.training.infra.profile.v5.fitting import FitTcnIndustry
+            from trader.training.infra.d25.v5.utility_fitting import FitTcnIndustry
 
             return FitTcnIndustry(samples, counts, contract, parameters, heartbeat, report=report), ""
         report(TrainingFitDetail(counts.industry, counts.training, "training"))
@@ -409,12 +383,12 @@ def _fit_industry(
             early_features = data.early_stopping.features
             early_features -= means
             early_features /= scales
-            booster = _fit_lightgbm(train, data.early_stopping, parameters, heartbeat, compute_threads)
+            booster = FitD25UtilityTree(train, data.early_stopping, parameters, heartbeat, compute_threads)
             predicted = np.asarray(
                 booster.predict(calibration_features, num_iteration=booster.best_iteration, num_threads=compute_threads)
             )
         else:
-            coefficients = _ridge_coefficients(normalized, train.labels, parameters.penalty)
+            coefficients = FitD25UtilityRidge(normalized, train.labels, parameters.penalty)
             predicted = PredictRidgeBatch(calibration_features, coefficients[1:], intercept=float(coefficients[0]))
         calibration = CalibrationAccumulator()
         calibration.add(predicted, data.calibration.labels, data.calibration_dates)
@@ -447,7 +421,7 @@ class _ValidationPredictor:
         )
         self._network: TcnNetwork | None = None
         if isinstance(model, TrainedTcnModelSnapshot):
-            from trader.training.infra.profile.v5.network import TcnNetwork
+            from trader.training.infra.tcn.network import TcnNetwork
 
             self._network = TcnNetwork(len(model.transformer_means) - 360, model.dropout, model.architecture)
             self._network.load_tensors(model.weights)
@@ -551,64 +525,8 @@ def _evaluate_validation_pairs(
     return tuple(completed.get(position) for position in range(len(states)))
 
 
-def _ridge_coefficients(features: np.ndarray, labels: np.ndarray, penalty_value: float) -> np.ndarray:
-    width = features.shape[1] + 1
-    penalty = np.eye(width, dtype=np.float64) * penalty_value
-    penalty[0, 0] = 0.0
-    gram = np.empty((width, width), dtype=np.float64)
-    sums = features.sum(axis=0)
-    gram[0, 0] = len(features)
-    gram[0, 1:] = sums
-    gram[1:, 0] = sums
-    gram[1:, 1:] = features.T @ features
-    target = np.empty(width, dtype=np.float64)
-    target[0] = labels.sum()
-    target[1:] = features.T @ labels
-    return np.linalg.solve(gram + penalty, target)
-
-
-def _fit_lightgbm(
-    training: TrainingSampleMatrix,
-    early: TrainingSampleMatrix | None,
-    parameters: LightGBMFittingParameters,
-    heartbeat: Callable[[], None],
-    compute_threads: int,
-) -> lgb.Booster:
-    booster = lgb.train(
-        {
-            "objective": "regression_l2",
-            "learning_rate": parameters.learning_rate,
-            "max_depth": parameters.max_depth,
-            "num_leaves": parameters.num_leaves,
-            "min_data_in_leaf": parameters.minimum_leaf_rows,
-            "num_boost_round": parameters.boosting_rounds,
-            "max_bin": parameters.maximum_bins,
-            "deterministic": True,
-            "seed": parameters.seed,
-            "feature_fraction_seed": parameters.seed,
-            "bagging_seed": parameters.seed,
-            "data_random_seed": parameters.seed,
-            "num_threads": compute_threads,
-            "force_col_wise": True,
-            "histogram_pool_size": parameters.histogram_pool_mib,
-            "verbosity": -1,
-        },
-        lgb.Dataset(training.features, label=training.labels),
-        num_boost_round=parameters.boosting_rounds,
-        valid_sets=[lgb.Dataset(early.features, label=early.labels)] if early is not None else None,
-        callbacks=[*( [lgb.early_stopping(parameters.early_stopping_rounds, verbose=False)] if early is not None else []),
-                   lambda _env: heartbeat()],
-    )
-    booster.free_dataset()
-    return booster
-
-
 __all__ = [
     "IndustryCoverageFailure",
-    "LightGBMFittingParameters",
-    "ModelFittingParameters",
-    "FittingParameterDocument",
-    "RidgeFittingParameters",
     "FitIndustryModels",
     "RefitIndustryModels",
 ]

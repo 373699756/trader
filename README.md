@@ -44,6 +44,10 @@ Windows CMD执行run.bat。脚本按需创建.venv并安装项目，默认同进
 | 补齐公司资料缺口 | ./run.sh sync company fill |
 | 训练四档各自的 Tomorrow 和 D25 | ./run.sh train |
 | 训练 V1、V5 各自的 Tomorrow 和 D25 | ./run.sh train v1,v5 |
+| 训练 Tomorrow 的四个档位 | ./run.sh train tomorrow |
+| 训练 D25 的四个档位 | ./run.sh train d25 |
+| 只训练 Tomorrow 的 V3 | ./run.sh train tomorrow v3 |
+| 只训练 D25 的 V5 | ./run.sh train d25 v5 |
 | 只启动V3 | ./run.sh v3 |
 | 同进程启动任意组合 | ./run.sh v1,v2,v3 |
 

@@ -321,7 +321,7 @@
 
 **当前回答：原问题不能仅凭新训练代码存在就关闭。** 新训练路径已要求近期诊断、按各头最新成熟标签最终拟合，并在复用时拒绝不具备相应证据的旧工件；线上reader仍允许旧schema，之后按既有人工授权构造生产authority。保留旧工件用于历史解释或已有显式授权是有效边界；代码升级不会自动更新这些工件，enabled/authority也不是近期重拟合或收益通过声明，不能据此认定已有模型完成了新流程。
 
-**证据：** `bootstrap.py:875`调用`LoadScoringProfile`；[profile_factory.py:118](../src/trader/recommendation/infra/scoring/profile_factory.py#L118)经[profile_publication.py:179–184](../src/trader/training/infra/model_bundles/profile_publication.py#L179)解码及验证双头互同身份，但不调用第227行的近期诊断检查；该检查只在新writer路径执行。[profile.py:69–76](../src/trader/training/infra/model_bundles/profile.py#L69)直接设置`production_authority=True`。V1的[models.py:362–364](../src/trader/training/infra/profile/v1/models.py#L362)同样接受新旧schema，并在第471–481行授予原人工授权。最终选席投影只读取该authority，没有新的最终拟合证据门。
+**证据：** `bootstrap.py:875`调用`LoadScoringProfile`；[profile_factory.py:118](../src/trader/recommendation/infra/scoring/profile_factory.py#L118)经[profile_publication.py:179–184](../src/trader/training/infra/model_bundles/profile_publication.py#L179)解码及验证双头互同身份，但不调用第227行的近期诊断检查；该检查只在新writer路径执行。[profile.py:69–76](../src/trader/training/infra/model_bundles/profile.py#L69)直接设置`production_authority=True`。V1的[models.py:362–364](../src/trader/training/infra/d25/v1/models.py#L362)同样接受新旧schema，并在第471–481行授予原人工授权。最终选席投影只读取该authority，没有新的最终拟合证据门。
 
 本机默认工件目录八头只读核对仍为旧schema、无`final_fit`。V1的`training_input.split.fitting`实际末日也明显早于`source_cutoff`及验证末日，不能用资料截止或`label_cutoff`冒充实际拟合截止。对本机V3两头执行`DecodeHeadBundle → BuildTrainedScoringProfile → BuildProfileScoring.status`，实际输出为：
 
@@ -517,7 +517,7 @@ Q24的价格差异检查只比较同源qfq OHLC，不因量额单独变化触发
 
 | 问题／原归属 | 当前回答与源码证据 | 还需什么才可关闭 |
 | --- | --- | --- |
-| 344：全部reader只接受当前工件 | **代码仍未交付。** 已推送[标准decoder](../src/trader/training/infra/model_bundles/bundle_codec.py#L261)仍接受普通／旧refit，[V1 reader](../src/trader/training/infra/profile/v1/models.py#L478)仍接受旧诊断顶层；[正式根恢复](../src/trader/training/infra/model_bundles/profile_publication.py#L71)仍只核目录形状早返。当前结构收口和内容校验修复位于原WIP，不能用e/g目标文字判为已完成 | 在原344批次整合新上游、复核全部loader／身份观察／恢复／复用／到期／诊断消费者，并完成当前正例、旧结构拒绝和正式组／唯一previous保护回归后提交。保留current final内部诊断／校准，不迁移、删除模型或重建旧兼容层 |
+| 344：全部reader只接受当前工件 | **代码仍未交付。** 已推送[标准decoder](../src/trader/training/infra/model_bundles/bundle_codec.py#L261)仍接受普通／旧refit，[V1 reader](../src/trader/training/infra/d25/v1/models.py#L478)仍接受旧诊断顶层；[正式根恢复](../src/trader/training/infra/model_bundles/profile_publication.py#L71)仍只核目录形状早返。当前结构收口和内容校验修复位于原WIP，不能用e/g目标文字判为已完成 | 在原344批次整合新上游、复核全部loader／身份观察／恢复／复用／到期／诊断消费者，并完成当前正例、旧结构拒绝和正式组／唯一previous保护回归后提交。保留current final内部诊断／校准，不迁移、删除模型或重建旧兼容层 |
 | 281：真实繁忙监督工具与物理请求关联 | **工具仍是未提交WIP，且采集关联尚未实现。** 原副本已有typed close-work和189项回归；但`SourceCoordinator._route_source`在一线程等Future，物理HTTP在`LatestRequestLane._execute`另一线程。probe只认同调用链的job，尚无同一Future对象的严格关联，因此当前异线程collection应缺证拒签 | 沿原281诊断owner补“同一实际Future＋同job＋同执行帧／native线程”证据及排队／不同Future串组负例，不改变业务或注入sleep。Review、必要回归和提交后，再运行两个自有真实实例分别覆盖采集与模型繁忙；189项fixture不代替实测 |
 | 332：免费结构化来源到正式公司事实 | **确有供数链尚未接齐。** `DecodeCompanyStructuredFields`仅供来源审计工具消费；正常[结构化源](../src/trader/download/infra/company_structured_source.py#L175)主要接财务／质押／解禁，回购、股东增减持及重大合同仍未形成完整正常采集→编译→正式凭据→reader链，已有年度营收和有限正文提取不重做 | B沿332逐类核主体、同案、计划／实际、币种／单位、分母及披露修订后接入；保留未披露、歧义与未取得，不以来源HTTP有值代替正式事实 |
 | 332：全部适用字段的证据闭环 | **当前窄证明不等于全部字段完成。** [字段发布](../src/trader/download/infra/company_field_publication.py#L28)自动证明仅覆盖`actual_pct`和`repurchase_purpose`；其余字段及逐原文独立质量仍欠，旧54条状态集合只有6份材料窄核验，不能将余48份视为已验 | 对稳定同身份副本重新定位适用分母，逐字段原文→规范值→正式读回→精确receipt，并报告正确／漏提／误提／未知。不能把4402股正式行、valid数、NULL率或处理正文数作为关闭依据 |
@@ -561,7 +561,7 @@ Q24的价格差异检查只比较同源qfq OHLC，不因量额单独变化触发
 
 | 问题 | 当前回答与证据 | 仍需确认的范围 |
 | --- | --- | --- |
-| 344旧工件reader是否已经收口？ | 没有。[标准decoder](../src/trader/training/infra/model_bundles/bundle_codec.py#L261)仍接受普通／旧refit，[V1](../src/trader/training/infra/profile/v1/models.py#L478)仍接受诊断顶层。现有test_publisher_rejects_old_staged_models_before_any_directory_write先成功DecodeHeadBundle，再验证writer拒绝；本次31项通过不能升级为reader严格验收。 | 全部实际loader／身份观察／恢复／复用／到期／诊断是否共同只接受当前writer结构；保留final内部合法近期诊断。旧WIP不是交付证据。 |
+| 344旧工件reader是否已经收口？ | 没有。[标准decoder](../src/trader/training/infra/model_bundles/bundle_codec.py#L261)仍接受普通／旧refit，[V1](../src/trader/training/infra/d25/v1/models.py#L478)仍接受诊断顶层。现有test_publisher_rejects_old_staged_models_before_any_directory_write先成功DecodeHeadBundle，再验证writer拒绝；本次31项通过不能升级为reader严格验收。 | 全部实际loader／身份观察／恢复／复用／到期／诊断是否共同只接受当前writer结构；保留final内部合法近期诊断。旧WIP不是交付证据。 |
 | 353八条依赖与原生SQL是不是同一问题？ | 不是。本次architecture／business_boundaries共236项，235通过；唯一失败仍列26处原生SQL，位于下载审计脚本。八条下载依赖方向、唯一组合根及资源创建已通过。 | SQL工程边界及完整Linux仍需核销，不能扩白名单；这不重开用户已验收的history／qfq下载功能，也不把通过的依赖门继续报失败。 |
 | 旧32项helper类型错误是否仍是32项？ | 本次明确选择input_runtime、recommendation_boundaries、performance_models，mypy实际36项／5文件；另涉及scoring_helpers与performance_fixtures，含未注解、Any返回、Predictor签名及DatabasePerformanceSettings类型冲突。 | 这些测试消费者的真实端口类型；不是产品类型失败数量，也不能从旧32推断当前没有新增差异。 |
 | 356留下的两个旧失败是否已消失？ | 没有。history测试仍访问已删除的_industry_cache；V1篡改模型实际被ModelBundleIntegrityError拒绝，测试仅因期待hash differ而失败。本次old-consumers.xml两失败。 | 前者按358现行历史入口修消费者；后者核合法身份／完整性类别，不能恢复旧字段或放宽拒绝来凑通过。 |
@@ -634,7 +634,7 @@ turnover_shock_for_quote_2pct=100.0
 
 ### 13.3 Q37／P1：训练丢弃确认停牌日已知估值，随后将旧价用作真实标签
 
-**当前回答：合法输入上的训练／线上差异已确认。** [history_prices.py:1232](../src/trader/download/infra/history_prices.py#L1232)的训练窄投影仅在raw与qfq状态都为`trading`时建立`HistoryTrainingPoint`；确认停牌即使带合法qfq收盘也变成`point=None`。[AlignTrainingRows](../src/trader/training/infra/history/aligned_training_rows.py#L65)因此以前收估值，仍保留`supplier_marked_suspended`；[sample_builder.py:143](../src/trader/training/infra/sample_builder.py#L143)及[V1 samples.py:438](../src/trader/training/infra/profile/v1/samples.py#L438)允许该状态作为未来真实标签。
+**当前回答：合法输入上的训练／线上差异已确认。** [history_prices.py:1232](../src/trader/download/infra/history_prices.py#L1232)的训练窄投影仅在raw与qfq状态都为`trading`时建立`HistoryTrainingPoint`；确认停牌即使带合法qfq收盘也变成`point=None`。[AlignTrainingRows](../src/trader/training/infra/history/aligned_training_rows.py#L65)因此以前收估值，仍保留`supplier_marked_suspended`；[sample_builder.py:143](../src/trader/training/infra/sample_builder.py#L143)及[V1 samples.py:438](../src/trader/training/infra/d25/v1/samples.py#L434)允许该状态作为未来真实标签。
 
 线上[aligned_history_bars.py:59](../src/trader/recommendation/infra/market_data/aligned_history_bars.py#L59)却把来源估值交给同一[AlignMarketSession](../src/trader/recommendation/domain/market/history_alignment.py#L103)，保留确认停牌的正价格。两日纯内存反例：前日正常10，次日确认停牌、来源qfq估值8，训练投影变None后对齐为10，线上为8；未来收益可分别为0和−20%。该反例不证明现实证券出现过这次变化，影响范围尚未扫描。
 
@@ -650,7 +650,7 @@ turnover_shock_for_quote_2pct=100.0
 
 ### 13.5 Q39／P2：V1训练要求有效行业，线上缺失或未来行业仍被预测
 
-**当前回答：准入总体不一致已确认。** [V1 samples.py:447](../src/trader/training/infra/profile/v1/samples.py#L447)在缺行业时跳过样本，且拒绝非法行业身份；[V1 scoring.py:77](../src/trader/recommendation/application/pipeline/local_score/v1/scoring.py#L77)只核251日历史、必需数值及Amihud，没有核`model_industry`。第120–136行据此建立预测及百分位总体。[candidate_quote_cache.py:271](../src/trader/recommendation/infra/market_data/candidate_quote_cache.py#L271)把缺失／尚未生效的行业引用置None，后续也没有统一行业门替其阻断。
+**当前回答：准入总体不一致已确认。** [V1 samples.py:447](../src/trader/training/infra/d25/v1/samples.py#L443)在缺行业时跳过样本，且拒绝非法行业身份；[V1 scoring.py:77](../src/trader/recommendation/application/d25/v1/scoring.py#L77)只核251日历史、必需数值及Amihud，没有核`model_industry`。第120–136行据此建立预测及百分位总体。[candidate_quote_cache.py:271](../src/trader/recommendation/infra/market_data/candidate_quote_cache.py#L271)把缺失／尚未生效的行业引用置None，后续也没有统一行业门替其阻断。
 
 实际V1服务配测试预测端口的纯内存探针：`model_industry=None`时`is_input_eligible=True`，`score`仍返回该证券预测；未来生效行业同样通过。V1虽是全市场模型，该差异仍让训练排除的缺项证券进入线上排名和分板成本总体，不只是展示少一个行业名称。
 
@@ -658,7 +658,7 @@ turnover_shock_for_quote_2pct=100.0
 
 ### 13.6 Q26／344旧问题：新writer拒绝的旧工件，reader仍可授予生产能力
 
-**当前回答：代码缺口仍在；本机当前八头均新版，不能混称当前仍加载旧模型。** [bundle_codec.py:261](../src/trader/training/infra/model_bundles/bundle_codec.py#L261)仍接受普通／旧refit／recent-refit；V1 [models.py:393](../src/trader/training/infra/profile/v1/models.py#L393)接受诊断及final顶层。`InspectPublishedProfileBundles → BuildTrainedScoringProfile`没有writer的近期诊断门，后者[profile.py:69](../src/trader/training/infra/model_bundles/profile.py#L69)按既有授权设置`production_authority=True`。
+**当前回答：代码缺口仍在；本机当前八头均新版，不能混称当前仍加载旧模型。** [bundle_codec.py:261](../src/trader/training/infra/model_bundles/bundle_codec.py#L261)仍接受普通／旧refit／recent-refit；V1 [models.py:393](../src/trader/training/infra/d25/v1/models.py#L393)接受诊断及final顶层。`InspectPublishedProfileBundles → BuildTrainedScoringProfile`没有writer的近期诊断门，后者[profile.py:69](../src/trader/training/infra/model_bundles/profile.py#L69)按既有授权设置`production_authority=True`。
 
 本轮用旧V3双头fixture纯内存执行`DecodeHeadBundle → BuildTrainedScoringProfile`，输出`final_fit=[False,False]`、`diagnostic_plan=[False,False]`、`production_authority=[True,True]`。这证明旧目录恢复／误放旧文件时仍可能绕过当前工件结构要求，不证明当前进程实际用了旧头，也不撤销原人工生产授权。继续沿344核全部reader、恢复、到期、观察及诊断消费者，不新增兼容或自动删模型。
 

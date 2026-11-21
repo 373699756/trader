@@ -1,0 +1,395 @@
+"""Pinned V1 input, disposable samples and native fitting resource adapters."""
+
+from __future__ import annotations
+
+import platform
+import sqlite3
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, closing, contextmanager, nullcontext
+from dataclasses import dataclass, field
+from importlib.metadata import version
+from pathlib import Path
+
+import numpy as np
+from lightgbm.basic import LightGBMError
+
+from trader.download.domain.history_revision import HistoryTrainingRow
+from trader.download.infra.history_control_index import HistoryMaintenanceLock
+from trader.download.infra.history_partition_repack import RequireHistoryRepackIdle
+from trader.infra.serialization.canonical import ContentHash
+from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.publication.models import Strategy
+from trader.training.application import learned_rank_training
+from trader.training.application.resources import (
+    TrainingCpuAdmission, TrainingExecutionObserver, TrainingMemoryAdmission, TrainingSampleSettings,
+)
+from trader.training.application.tomorrow_training import (
+    TOMORROW_TRAINING_COMPUTE_THREADS, TomorrowTrainingProgressPort,
+)
+from trader.training.domain.final_fit import FINAL_FIT_CONTRACT, FinalFitDatePlan
+from trader.training.domain.v1.learned_rank import (
+    LEARNED_RANK_CONTRACT, LearnedRankDateSplit, LearnedRankFinalHead, LearnedRankFinalPair,
+    LearnedRankHead, V1TrainingSettings,
+)
+from trader.training.domain.v1.training_plan import (
+    BuildLearnedRankTrainingPlan, LearnedRankTrainingDateRequirements, LearnedRankTrainingPlan, LearnedRankTrainingSource,
+)
+from trader.training.domain.training_date_coverage import TrainingDateCoverage
+from trader.training.infra.execution_options import BASELINE_EXECUTION_OPTIONS, TrainingExecutionOptions
+from trader.training.infra.d25.artifact import D25ProbabilityBinding, HasD25Probability, PublishD25Probability
+from trader.training.infra.d25.v1.probability import FitV1D25Probability
+from trader.training.infra.fitting_resources import ReserveTrainingFittingResources
+from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
+from trader.training.infra.implementation_identity import LaneTrainingImplementationIdentity, TrainingImplementationIdentity
+from trader.training.infra.d25.v1.fitting import FitLearnedRankHead, LearnedRankPartitions, RefitLearnedRankHead
+from trader.training.infra.d25.v1.models import (
+    LearnedRankMetadataHash, LearnedRankPredictor, PublishLearnedRankPair, ReadLearnedRankPair, RecoverLearnedRankPublication,
+)
+from trader.training.infra.d25.v1.samples import (
+    BuildLearnedRankSamples, LearnedRankInputPort, LearnedRankMatrixRequest,
+    LearnedRankSampleIndex, LearnedRankSampleStream,
+)
+from trader.training.infra.sample_cache import TemporaryTrainingSamples
+from trader.training.infra.ranking import CheckV1Cancellation
+
+
+def _training_identity(
+    snapshot: HistoryTrainingInputSnapshot,
+    settings: V1TrainingSettings,
+    compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
+    *,
+    strategies: tuple[Strategy, ...],
+) -> str:
+    return ContentHash((
+        snapshot.training_input_hash, snapshot.source_identity_hash, snapshot.calendar_hash,
+        snapshot.source_cutoff, snapshot.label_cutoff, snapshot.training_codes,
+        snapshot.input_scope, snapshot.input_descriptor_hash, snapshot.listing_intervals,
+        settings,
+        compute_threads,
+        LEARNED_RANK_CONTRACT,
+        FINAL_FIT_CONTRACT,
+        LaneTrainingImplementationIdentity(Strategy.D25, "v1") if strategies == (Strategy.D25,)
+        else TrainingImplementationIdentity(),
+        (platform.python_version(), version("numpy"), version("lightgbm")),
+    ))
+
+
+def _training_source(
+    source: LearnedRankInputPort, settings: V1TrainingSettings, compute_threads: int,
+    strategies: tuple[Strategy, ...],
+) -> LearnedRankTrainingSource:
+    snapshot = source.snapshot
+    return LearnedRankTrainingSource(
+        snapshot.snapshot_hash, snapshot.source_identity_hash, snapshot.calendar_hash, snapshot.source_cutoff,
+        snapshot.calendar.open_dates, _training_identity(snapshot, settings, compute_threads, strategies=strategies),
+        industry_snapshot=snapshot.industry_snapshot, strategies=strategies,
+    )
+
+
+@contextmanager
+def _operation_boundary() -> Iterator[None]:
+    try:
+        yield
+    except (InterruptedError, learned_rank_training.LearnedRankTrainingOperationError):
+        raise
+    except (OSError, RuntimeError, ValueError, sqlite3.Error, LightGBMError, np.linalg.LinAlgError) as exc:
+        known_reasons = {
+            "learned_rank_calendar_insufficient",
+            "learned_rank_sample_partition_empty",
+            "learned_rank_training_rows_insufficient",
+            "learned_rank_validation_predictions_invalid",
+            "learned-rank prediction metrics are invalid",
+            "learned-rank head is invalid",
+            "learned-rank pair provenance is invalid",
+        }
+        reason = str(exc)
+        failure = reason if reason in known_reasons else type(exc).__name__
+        raise learned_rank_training.LearnedRankTrainingOperationError(failure) from exc
+
+
+@dataclass(frozen=True)
+class _LearnedRankInspection:
+    source: LearnedRankTrainingSource
+    settings: V1TrainingSettings
+    model_root: Path
+    cancel_requested: Callable[[], bool] | None
+    d25_target: PredictionTarget | None = field(default=None, kw_only=True)
+
+    def check_cancelled(self) -> None:
+        CheckV1Cancellation(self.cancel_requested)
+
+    def read_pair(self) -> LearnedRankFinalPair | None:
+        RecoverLearnedRankPublication(self.model_root, strategies=self.source.strategies)
+        try:
+            pair = ReadLearnedRankPair(self.model_root, strategies=self.source.strategies)
+        except InterruptedError:
+            raise
+        except (OSError, ValueError, LightGBMError):
+            return None
+        return pair
+
+    def validate_pair(self, pair: LearnedRankFinalPair) -> bool:
+        try:
+            for head in pair.heads:
+                self.check_cancelled()
+                LearnedRankPredictor(head)
+                if head.strategy is Strategy.D25 and self.d25_target is not None and not HasD25Probability(
+                    self.model_root / "v1", "v1", LEARNED_RANK_FEATURE_IDS,
+                    D25ProbabilityBinding(
+                        self.d25_target, head.content_hash, pair.training_input_hash,
+                        LearnedRankMetadataHash(pair.contract_hash, head.split, head.final_fit),
+                    ),
+                ):
+                    return False
+        except InterruptedError:
+            raise
+        except (OSError, ValueError, LightGBMError):
+            return False
+        return True
+
+
+@dataclass(frozen=True)
+class LearnedRankTrainingAdapter:
+    input_factory: Callable[[], LearnedRankInputPort]
+    model_root: Path
+    sample_root: Path
+    sample_settings: TrainingSampleSettings
+    history_root: Path
+    settings: V1TrainingSettings
+    progress: TomorrowTrainingProgressPort | None
+    cancel_requested: Callable[[], bool] | None
+    aligned_rows: Iterator[HistoryTrainingRow] | None
+    memory_admission: TrainingMemoryAdmission | None
+    sqlite_policy: SqliteIoPolicy
+    cpu_admission: TrainingCpuAdmission | None
+    compute_threads: int
+    execution_options: TrainingExecutionOptions
+    execution_observer: TrainingExecutionObserver | None
+    strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25)
+    d25_target: PredictionTarget | None = None
+
+    @contextmanager
+    def open(self) -> Iterator[learned_rank_training.LearnedRankTrainingSessionPort]:
+        with (
+            _operation_boundary(),
+            HistoryMaintenanceLock(self.history_root.with_name(".history.lock"))
+            if self.aligned_rows is None else nullcontext(),
+            HistoryMaintenanceLock(self.model_root / ".v1.training.lock")
+            if self.aligned_rows is None else nullcontext(),
+        ):
+            CheckV1Cancellation(self.cancel_requested)
+            RequireHistoryRepackIdle(self.history_root)
+            input_source = self.input_factory()
+            yield _PinnedLearnedRankSession(
+                _training_source(input_source, self.settings, self.compute_threads, self.strategies), self.settings,
+                self.model_root, self.cancel_requested, self, input_source, d25_target=self.d25_target,
+            )
+
+
+@dataclass(frozen=True)
+class _PinnedLearnedRankSession(_LearnedRankInspection):
+    adapter: LearnedRankTrainingAdapter
+    input_source: LearnedRankInputPort
+
+    @property
+    def progress(self) -> TomorrowTrainingProgressPort | None:
+        return self.adapter.progress
+
+    def date_upper_bounds(self, plan: LearnedRankTrainingPlan) -> tuple[TrainingDateCoverage, ...]:
+        return self.input_source.snapshot.date_upper_bounds(
+            LearnedRankTrainingDateRequirements(plan), history_sessions=plan.settings.history_sessions,
+            history_excludes_signal=True,
+        )
+
+    @contextmanager
+    def samples(self) -> Iterator[learned_rank_training.LearnedRankSamplesPort]:
+        with TemporaryTrainingSamples(self.adapter.sample_root, "v1") as directory:
+            yield _LearnedRankSamples(self, directory)
+
+    def publish_pair(self, pair: LearnedRankFinalPair) -> None:
+        PublishLearnedRankPair(self.model_root, pair)
+
+
+@dataclass(frozen=True)
+class _LearnedRankSamples:
+    session: _PinnedLearnedRankSession
+    directory: Path
+
+    def build(self, plan: LearnedRankTrainingPlan) -> learned_rank_training.PreparedLearnedRankSamples:
+        adapter = self.session.adapter
+        sample_path = self.directory / "samples.sqlite3"
+        with closing(LearnedRankSampleIndex(
+            sample_path, sample_settings=adapter.sample_settings, sqlite_policy=adapter.sqlite_policy,
+        )) as index:
+            with adapter.execution_observer.sample_build("v1") if adapter.execution_observer is not None else nullcontext():
+                counts = BuildLearnedRankSamples(
+                    self.session.input_source,
+                    plan.splits,
+                    index,
+                    history_sessions=plan.settings.history_sessions,
+                    stream=LearnedRankSampleStream(adapter.progress, adapter.cancel_requested, adapter.aligned_rows),
+                    final_fit_plans=plan.final_fit_plans,
+                    d25_target=adapter.d25_target,
+                )
+            coverage = index.coverage(plan.splits, final_fit_plans=plan.final_fit_plans)
+            dates = tuple(
+                requirement.observe(tuple(day for day in requirement.required_dates if day not in next(
+                    item.missing_dates for item in coverage
+                    if item.strategy is requirement.strategy and item.partition == requirement.partition
+                )), "sample_index")
+                for requirement in LearnedRankTrainingDateRequirements(plan)
+            )
+            return learned_rank_training.PreparedLearnedRankSamples(
+                counts, coverage, sample_path.stat().st_size, date_coverage=dates,
+            )
+
+    @contextmanager
+    def fitting(self, required_bytes: int) -> Iterator[learned_rank_training.LearnedRankFittingPort]:
+        adapter = self.session.adapter
+        with (
+            closing(LearnedRankSampleIndex(
+                self.directory / "samples.sqlite3", sample_settings=adapter.sample_settings,
+                read_only=True, sqlite_policy=adapter.sqlite_policy,
+            )) as index,
+            ReserveTrainingFittingResources(
+                adapter.cpu_admission,
+                adapter.memory_admission,
+                adapter.compute_threads,
+                lambda: required_bytes,
+                self.session.check_cancelled,
+                memory_first=adapter.execution_options.memory_first,
+            ) as reservation,
+        ):
+            yield _LearnedRankFitter(
+                index, self.directory, adapter, reservation.compute_threads, self.session.source.training_input_hash,
+            )
+
+
+@dataclass(frozen=True)
+class _LearnedRankFitter:
+    index: LearnedRankSampleIndex
+    directory: Path
+    adapter: LearnedRankTrainingAdapter
+    compute_threads: int
+    training_input_hash: str
+
+    def fit_diagnostic(self, strategy: Strategy, split: LearnedRankDateSplit) -> LearnedRankHead:
+        requests = tuple(
+            LearnedRankMatrixRequest(dates, strategy)
+            for dates in (split.fitting, split.early_stopping, split.calibration, split.validation)
+        )
+        with ExitStack() as resources:
+            matrices = self.index.read_matrices(
+                requests, self.directory / "matrices", resources, cancel_requested=self.adapter.cancel_requested,
+            )
+            return FitLearnedRankHead(
+                strategy, split, LearnedRankPartitions(*matrices), self.adapter.settings,
+                cancel_requested=self.adapter.cancel_requested, compute_threads=self.compute_threads,
+                progress=self.adapter.progress,
+            )
+
+    def refit(self, diagnostic: LearnedRankHead, plan: FinalFitDatePlan) -> LearnedRankFinalHead:
+        with ExitStack() as resources:
+            matrices = self.index.read_matrices(
+                (LearnedRankMatrixRequest(plan.fit_dates, diagnostic.strategy),),
+                self.directory / "matrices", resources, cancel_requested=self.adapter.cancel_requested,
+            )
+            final = RefitLearnedRankHead(
+                diagnostic, plan, matrices[0], self.adapter.settings,
+                compute_threads=self.compute_threads, cancel_requested=self.adapter.cancel_requested,
+            )
+        target = self.adapter.d25_target
+        if target is not None and final.strategy is Strategy.D25:
+            artifact = FitV1D25Probability(
+                self.index, self.directory / "d25-probability", diagnostic.split, self.adapter.settings,
+                D25ProbabilityBinding(
+                    target, final.content_hash, self.training_input_hash,
+                    LearnedRankMetadataHash(final.training_contract_hash, final.split, final.final_fit),
+                ),
+                compute_threads=self.compute_threads, cancel_requested=self.adapter.cancel_requested,
+            )
+            CheckV1Cancellation(self.adapter.cancel_requested)
+            PublishD25Probability(self.adapter.model_root / "v1", artifact)
+        return final
+
+
+def InspectV1Training(
+    source: LearnedRankInputPort,
+    model_root: Path,
+    settings: V1TrainingSettings,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
+    compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
+    strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25),
+    d25_target: PredictionTarget | None = None,
+) -> learned_rank_training.V1TrainingResult | None:
+    """Validate the stored native pair against a pinned source and implementation."""
+    if type(compute_threads) is not int or compute_threads < 1:
+        raise ValueError("training_cpu_request_invalid")
+    CheckV1Cancellation(cancel_requested)
+    return learned_rank_training.InspectLearnedRankTraining(_LearnedRankInspection(
+        _training_source(source, settings, compute_threads, strategies), settings, model_root, cancel_requested,
+        d25_target=d25_target,
+    ))
+
+
+def InspectV1TrainingDates(
+    source: LearnedRankInputPort, settings: V1TrainingSettings, *,
+    compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
+    strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25),
+) -> learned_rank_training.V1TrainingResult | None:
+    identity = _training_source(source, settings, compute_threads, strategies)
+    try:
+        plan = BuildLearnedRankTrainingPlan(identity, settings)
+    except ValueError as exc:
+        if str(exc) != "learned_rank_calendar_insufficient":
+            raise
+        return learned_rank_training.V1TrainingResult(
+            "blocked", identity.identity_hash, identity.training_input_hash, 0, failure_reasons=(str(exc),),
+        )
+    bounds = source.snapshot.date_upper_bounds(
+        LearnedRankTrainingDateRequirements(plan), history_sessions=settings.history_sessions, history_excludes_signal=True,
+    )
+    return learned_rank_training.InspectLearnedRankDateAdmission(plan, bounds, basis="metadata_upper_bound")
+
+
+def RunV1Training(
+    input_factory: Callable[[], LearnedRankInputPort],
+    model_root: Path,
+    *,
+    sample_root: Path,
+    sample_settings: TrainingSampleSettings,
+    history_root: Path,
+    settings: V1TrainingSettings,
+    progress: TomorrowTrainingProgressPort | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
+    aligned_rows: Iterator[HistoryTrainingRow] | None = None,
+    memory_admission: TrainingMemoryAdmission | None = None,
+    sqlite_policy: SqliteIoPolicy,
+    cpu_admission: TrainingCpuAdmission | None = None,
+    compute_threads: int = TOMORROW_TRAINING_COMPUTE_THREADS,
+    execution_options: TrainingExecutionOptions = BASELINE_EXECUTION_OPTIONS,
+    execution_observer: TrainingExecutionObserver | None = None,
+    strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25),
+    d25_target: PredictionTarget | None = None,
+) -> learned_rank_training.V1TrainingResult:
+    """Hold the pinned source and all disposable resources for the application run."""
+    if type(compute_threads) is not int or compute_threads < 1:
+        raise ValueError("training_cpu_request_invalid")
+    if d25_target is not None and (d25_target.strategy is not Strategy.D25 or strategies != (Strategy.D25,)):
+        raise ValueError("d25_probability_requires_d25_head")
+    return learned_rank_training.TrainLearnedRank(LearnedRankTrainingAdapter(
+        input_factory, model_root, sample_root, sample_settings, history_root, settings,
+        progress, cancel_requested, aligned_rows, memory_admission, sqlite_policy, cpu_admission,
+        compute_threads, execution_options, execution_observer, strategies, d25_target,
+    ))
+
+
+__all__ = [
+    "LearnedRankTrainingAdapter",
+    "InspectV1Training",
+    "InspectV1TrainingDates",
+    "RunV1Training",
+]

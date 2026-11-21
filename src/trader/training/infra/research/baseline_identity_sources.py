@@ -13,7 +13,7 @@ from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.training.application.baseline_identity_audit import BaselineIdentityEvidence
 from trader.training.domain.evaluation.baseline_identity import BaselineIdentityClaim, SourceHash
 from trader.training.domain.evaluation.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
-from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel, TomorrowProbabilityModelPath
+from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel, TomorrowProbabilityModelPath
 from trader.training.infra.research.tomorrow_historical_evidence import (
     TomorrowHistoricalEvidenceConflictError,
     TomorrowHistoricalEvidenceIndex,

@@ -21,7 +21,7 @@ from trader.training.infra.model_bundles.bundle_codec import (
 )
 
 if TYPE_CHECKING:
-    from trader.training.infra.profile.v5.network import TcnNetwork
+    from trader.training.infra.tcn.network import TcnNetwork
 
 
 _PREDICTION_BATCH_SIZE = 256
@@ -80,7 +80,7 @@ class TrainedHeadPredictor:
         }
         self._tcn: dict[str, TcnNetwork] = {}
         if bundle.algorithm == "tcn":
-            from trader.training.infra.profile.v5.network import TcnNetwork
+            from trader.training.infra.tcn.network import TcnNetwork
 
             for industry, model in bundle.industries:
                 if not isinstance(model, TrainedTcnModelSnapshot):

@@ -12,8 +12,8 @@ import torch
 from torch import nn
 from torch.nn import functional
 
-from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
-from trader.training.infra.profile.v5.settings import TcnArchitecture
+from trader.training.infra.tcn.network import ConfigureTcnRuntime, TcnNetwork
+from trader.training.infra.tcn.settings import TcnArchitecture
 
 
 class _ReferenceBlock(Protocol):

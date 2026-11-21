@@ -17,7 +17,7 @@ from trader.recommendation.application.ports.loaded_profile import ModelInput
 
 from trader.recommendation.domain.publication.models import Strategy
 
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile
 
 from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, LoadHeadBundle, ModelBundleContractError
 
@@ -31,9 +31,9 @@ from trader.training.infra.model_bundles.profile_publication import (
 )
 
 
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
 
-from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT, V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import TOMORROW_HEAD_CONTRACT, V3_TRAINING_PROFILE
 
 from tests.helpers.training.profiles.v3.profile import (
     _documents,
@@ -63,7 +63,7 @@ def test_two_file_pair_loads_both_heads(profile: TrainedProfileContract, tmp_pat
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         assert {path.name for path in (root / strategy.value).iterdir()} == {"model.json", "metadata.json"}
     located = InspectPublishedProfileBundles(root, profile)
-    scoring = LoadScoringProfile(profile.profile_id, training_root=tmp_path)
+    scoring = LoadDiagnosticScoringProfile(profile.profile_id, training_root=tmp_path)
     assert tuple(item.strategy for item in located) == (Strategy.TOMORROW, Strategy.D25)
     assert all(item.model.diagnostic_plan is not None for item in located)
     assert tuple(scoring.heads) == (Strategy.TOMORROW, Strategy.D25)
@@ -80,11 +80,11 @@ def test_missing_or_tampered_file_invalidates_whole_profile(
     original = path.read_bytes()
     path.unlink()
     with pytest.raises(RuntimeError):
-        LoadScoringProfile(profile.profile_id, training_root=tmp_path)
+        LoadDiagnosticScoringProfile(profile.profile_id, training_root=tmp_path)
     path.write_bytes(original)
     path.write_text("{}", encoding="utf-8")
     with pytest.raises(RuntimeError):
-        LoadScoringProfile(profile.profile_id, training_root=tmp_path)
+        LoadDiagnosticScoringProfile(profile.profile_id, training_root=tmp_path)
 
 
 def test_pair_with_conflicting_training_run_is_rejected(tmp_path: Path) -> None:

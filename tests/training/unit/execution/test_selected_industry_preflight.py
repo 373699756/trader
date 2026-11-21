@@ -39,6 +39,7 @@ from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.memory_admission import TrainingMemoryBudget
+from trader.training.infra.research.close_return.selection import CloseReturnResearchMode
 from trader.training.infra.selected_training import SelectedTrainingAdapter, SelectedTrainingRequest
 
 _ROOT = Path(__file__).resolve().parents[4]
@@ -142,7 +143,7 @@ def test_source_failure_cancels_cached_fitting_and_retains_locks_until_actual_ex
         expected = OSError if cooperative else SelectedTrainingDrainError
         with pytest.raises(expected) as caught:
             TrainSelectedProfiles(
-                SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _as_of: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),
+                SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _as_of: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),
                 executor,
             )
         assert len(deadlines) == 1
@@ -183,7 +184,7 @@ def test_missing_industry_rejects_v1_before_reading_prices_or_fitting(tmp_path, 
         lambda *_args, **_kwargs: pytest.fail("missing industry must not invoke fitting"),
     )
     with ThreadPoolExecutor(max_workers=1) as executor:
-        result = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: CurrentIndustrySnapshotFixture(()), clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
+        result = TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: CurrentIndustrySnapshotFixture(()), clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
     assert result.history_scan_passes == result.history_rows_read == 0
     assert result.outcomes[0].failure is None
     assert result.outcomes[0].result.status == "blocked"
@@ -203,7 +204,7 @@ def test_current_industry_applies_to_all_signal_dates_regardless_of_old_interval
     with ExitStack() as resources:
         factory = selected_training._TrainingTaskFactory(
             request, source, resources, TrainingExecutionMeasurements(("v1",), lambda: 0),
-            sqlite_policy=SqlitePolicyFixture(), prediction_targets=None,
+            sqlite_policy=SqlitePolicyFixture(), prediction_targets=CloseReturnResearchMode.BOTH_HEADS,
         )
         task = factory.prepare("v1", request.progresses[0])
     assert task.profile == "v1" and task.readable_dates
@@ -228,7 +229,7 @@ def test_selected_profiles_freeze_one_clock_and_current_industry_load_for_the_ru
         return SelectedTrainingTask(profile, frozenset(), lambda _rows: None)
 
     monkeypatch.setattr(selected_training._TrainingTaskFactory, "prepare", prepare)
-    adapter = SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=load, clock=clock)
+    adapter = SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=load, clock=clock)
     with adapter.open() as session:
         for profile, progress in zip(request.profiles, request.progresses, strict=True):
             assert session.prepare_task(profile, progress).profile == profile
@@ -269,6 +270,42 @@ def test_tomorrow_can_read_the_published_prices_before_d25_checks_industry(tmp_p
     assert blocked.value.tomorrow_probability[0].result.ready
 
 
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_selected_strategy_reads_only_its_own_inputs(tmp_path, strategy):
+    request = replace(_request(tmp_path, industry=False), strategy=strategy)
+    opened = []
+
+    def fit_tomorrow(history, _root, *, profiles, prediction_targets, **_resources):
+        assert strategy is Strategy.TOMORROW
+        opened.append("tomorrow")
+        return tuple(TomorrowProbabilityProfileResult(
+            prediction_targets.for_profile(profile, Strategy.TOMORROW), profile,
+            TomorrowProbabilityTrainingResult(history.snapshot_hash, "b" * 64, "lambdarank"),
+        ) for profile in profiles)
+
+    def load(_now):
+        assert strategy is Strategy.D25
+        opened.append("industry")
+        return _CURRENT_INDUSTRY
+
+    adapter = SelectedTrainingAdapter(
+        request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=load,
+        clock=lambda: _CURRENT_INDUSTRY.observed_at, train_tomorrow=fit_tomorrow,
+        prediction_targets=LoadPredictionTargets(request.runtime.strategy_config_path),
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        run = TrainSelectedProfiles(adapter, executor)
+    assert opened == (["tomorrow"] if strategy is Strategy.TOMORROW else ["industry"])
+    if strategy is Strategy.TOMORROW:
+        assert tuple(head.profile for head in run.tomorrow_probability) == request.profiles
+        assert not run.outcomes and not run.d25_targets and run.industry_snapshot is None
+    else:
+        assert not run.tomorrow_probability and run.industry_snapshot is not None
+        assert run.industry_snapshot.publication_hash == _CURRENT_INDUSTRY.publication_hash
+        assert tuple(member.code for member in run.industry_snapshot.members) == ("000001",)
+        assert tuple(profile for profile, _target in run.d25_targets) == request.profiles
+
+
 def test_reusable_v1_model_skips_industry_preflight_and_price_scan(tmp_path, monkeypatch):
     request = _request(tmp_path, industry=False)
     reused = V1TrainingResult("engineering_ready", "fixture", "a" * 64, 0, reused=True)
@@ -287,6 +324,6 @@ def test_reusable_v1_model_skips_industry_preflight_and_price_scan(tmp_path, mon
         lambda *_args, **_kwargs: pytest.fail("model reuse must not invoke fitting"),
     )
     with ThreadPoolExecutor(max_workers=1) as executor:
-        result = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
+        result = TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
     assert result.history_scan_passes == result.history_rows_read == 0
     assert result.outcomes[0].failure is None and result.outcomes[0].result is reused

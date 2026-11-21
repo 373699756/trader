@@ -47,9 +47,9 @@ from trader.training.infra.history.repack_training_evidence import (
     VerifyHistoryRepackTraining,
 )
 from trader.training.infra.model_bundles.bundle_snapshot import PublishedHeadBundle
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v3.training import RunRepackTomorrowTraining, RunRepackV3Training
-from trader.training.infra.profile.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_training import RunRepackTomorrowTraining, RunRepackV3Training
+from trader.training.infra.research.close_return.v3_memory_evidence import TomorrowTrainingMemoryEvidence
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))

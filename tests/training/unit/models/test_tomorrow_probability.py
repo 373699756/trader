@@ -13,15 +13,15 @@ from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseG
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.infra.settings.loading import LoadPredictionTargets
-from trader.training.infra.tomorrow_probability import (
+from trader.training.infra.tomorrow.artifact import (
     LoadTomorrowProbabilityModel, PublishTomorrowProbabilityModel, TomorrowFeatureNames,
 )
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.memory_admission import TrainingMemoryBudget
-from trader.training.infra.tomorrow_probability_training import (
+from trader.training.infra.tomorrow.training import (
     TrainTomorrowProbability, _collect_samples, _label,
 )
-from trader.training.infra.tomorrow_settings import LoadTomorrowFitSettings
+from trader.training.infra.tomorrow.settings import LoadTomorrowFitSettings
 
 _ROOT = Path(__file__).resolve().parents[4]
 _TARGET = PredictionTarget(Strategy.TOMORROW, 500)
@@ -133,7 +133,7 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
     assert restored is not None and restored.identity == tree_model.identity
     fitting = LoadTomorrowFitSettings(_ROOT, "v2")
     monkeypatch.setattr(
-        "trader.training.infra.tomorrow_probability.LoadTomorrowFitSettings",
+        "trader.training.infra.tomorrow.artifact.LoadTomorrowFitSettings",
         lambda *_args: replace(fitting, fit_dates=fitting.fit_dates - 1),
     )
     with pytest.raises(ValueError, match="tomorrow_probability_training_contract_mismatch"):

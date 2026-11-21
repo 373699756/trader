@@ -6,6 +6,10 @@ import pytest
 from tests.helpers.recommendation.publication.tomorrow_projection import EVALUATED_AT
 from trader.recommendation.application.pipeline.local_score.tomorrow_probability import TomorrowProbabilityCapability
 from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringDeadlineError
+from trader.recommendation.application.tomorrow.v1.plan import V1_TOMORROW_PLAN
+from trader.recommendation.application.tomorrow.v2.plan import V2_TOMORROW_PLAN
+from trader.recommendation.application.tomorrow.v3.plan import V3_TOMORROW_PLAN
+from trader.recommendation.application.tomorrow.v5.plan import V5_TOMORROW_PLAN
 from trader.recommendation.domain.market.history_alignment import ModelHistoryQuality
 from trader.recommendation.domain.market.tomorrow_probability import (
     TOMORROW_FEATURE_NAMES,
@@ -38,7 +42,9 @@ def test_each_tomorrow_profile_supplies_the_model_input_contract(profile, applic
     sequence = ModelPriceVolumeSequence(quote.code, dates, values, "published-history")
     feature = replace(feature, quote=quote, model_sequence=sequence if profile == "v5" else None)
     predictor = _RecordingPredictor()
-    capability = TomorrowProbabilityCapability(profile, predictor)
+    capability = TomorrowProbabilityCapability(
+        {"v1": V1_TOMORROW_PLAN, "v2": V2_TOMORROW_PLAN, "v3": V3_TOMORROW_PLAN, "v5": V5_TOMORROW_PLAN}[profile], predictor,
+    )
 
     assert capability.history_required_sessions == (61 if profile == "v5" else 20)
     assert capability.is_input_eligible(feature)
@@ -62,7 +68,7 @@ def test_v5_tomorrow_keeps_incomplete_or_wrong_session_sequences_unready(applica
     preview = PreviewContext("tomorrow-preview", EVALUATED_AT.date(), started)
     feature = replace(feature, quote=quote, observed_at=started, preview_context=preview)
     predictor = _RecordingPredictor()
-    capability = TomorrowProbabilityCapability("v5", predictor)
+    capability = TomorrowProbabilityCapability(V5_TOMORROW_PLAN, predictor)
 
     assert capability.is_input_eligible(replace(feature, model_sequence=sequence))
     invalid_inputs = (
@@ -103,7 +109,7 @@ def test_v5_tomorrow_bounds_native_batches_and_discards_expired_results(
         for code in (f"{600000 + index}" for index in range(257))
     )
     predictor = _TimedPredictor()
-    capability = TomorrowProbabilityCapability("v5", predictor, monotonic=lambda: current_time)
+    capability = TomorrowProbabilityCapability(V5_TOMORROW_PLAN, predictor, monotonic=lambda: current_time)
     context = ModelScoringContext(time_budget_seconds=budget_seconds)
 
     if budget_seconds < 2.0:

@@ -679,7 +679,8 @@
         }
       }
       // An SSE update received during the request wins for the whole batch.
-      if ([...replacements.keys()].some((cacheKey) => state.payloads.get(cacheKey) !== before.get(cacheKey))) return;
+      if (state.inflight.get(key) !== request
+        || [...replacements.keys()].some((cacheKey) => state.payloads.get(cacheKey) !== before.get(cacheKey))) return;
       state.payloads = new Map([...state.payloads, ...replacements]);
       for (const cacheKey of replacements.keys()) state.etags.delete(cacheKey);
       diagnostics.recommendationFullResponses += 1;
@@ -832,6 +833,7 @@
     payload = longGroups.displayPayload(payload);
     state.projectionVersion = patches.projectionVersion(payload);
     const items = Array.isArray(payload.items) ? payload.items : [], historical = payload.historical === true;
+    const availability = !historical ? payload.head_availability : null;
     stateRenderer.setLongControls(payload.strategy === "long" && !historical);
     stateRenderer.setLongLayout(payload.strategy === "long" && payload.status === "ready" && !historical);
     longGroups.renderBar(els, state, payload.status === "ready" ? payload : null);
@@ -866,8 +868,12 @@
     if (payload.status === "not_ready" && recommendations.length === 0) {
       const readinessStatus = statusView.recommendationReadinessStatus(payload, state.statusPayload);
       const notReady = patches.notReadyMessage(payload, readinessStatus);
-      stateRenderer.renderTableState(notReady.message, window.TraderRender.tableColumnCount(payload));
-      stateRenderer.setNotice(notReady.notice, notReady.level);
+      const unavailable = availability && availability.status === "unavailable";
+      stateRenderer.renderTableState(unavailable ? "本轮评分暂不可用" : notReady.message, window.TraderRender.tableColumnCount(payload));
+      stateRenderer.setNotice(
+        unavailable ? window.TraderRender.reasonLabels([availability.reason]).join("、") : notReady.notice,
+        unavailable ? "warn" : notReady.level,
+      );
       updateQuoteAge();
       return;
     }
@@ -891,7 +897,12 @@
       payload,
       statusView.recommendationReadinessStatus(payload, state.statusPayload),
     );
-    stateRenderer.setNotice(notice.message, notice.level);
+    if (availability && availability.status === "retained") {
+      const reason = window.TraderRender.reasonLabels([availability.reason]).join("、");
+      stateRenderer.setNotice(`本轮评分未完成，保留上一份结果。${reason}`, "warn");
+    } else {
+      stateRenderer.setNotice(notice.message, notice.level);
+    }
     stampRowIdentities(payload);
     updateQuoteAge();
   }
@@ -1183,6 +1194,13 @@
       requestRecommendationResync("batch_schema_mismatch");
       return false;
     }
+    if (batch.round_head_gaps && Object.keys(batch.round_head_gaps).length > 0) {
+      // The complete read carries original identity and availability for retained heads.
+      state.inflight.delete("current_batch");
+      if (state.date || state.strategy === "long") requestCurrentBatch().catch(() => {});
+      else requestRecommendationResync("round_head_gap");
+      return false;
+    }
     const replacements = new Map();
     const etags = new Map(state.etags);
     let tradeDate = null;
@@ -1219,6 +1237,7 @@
         replacements.set(key, {
           ...patches.replacementPayload(current || {}, patch, patch.upserts),
           round_sequence: batch.round_sequence,
+          head_availability: null,
         });
         etags.delete(key);
       }

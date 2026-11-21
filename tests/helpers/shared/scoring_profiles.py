@@ -8,8 +8,11 @@ _PROFILE_DIRECTORY_OWNERS = frozenset(
     {
         "src/trader/recommendation/infra/scoring/profiles",
         "src/trader/recommendation/application/pipeline/local_score",
+        "src/trader/recommendation/application/tomorrow",
+        "src/trader/recommendation/application/d25",
         "src/trader/recommendation/domain/market",
-        "src/trader/training/infra/profile",
+        "src/trader/training/infra/tomorrow",
+        "src/trader/training/infra/d25",
         "src/trader/training/domain",
         "src/trader/training/entrypoints",
         "tests/training/unit/profiles",
@@ -28,6 +31,8 @@ def IsScoringProfilePath(relative: Path) -> bool:
         if relative.parent.as_posix() == "tests/helpers/recommendation/selection":
             return any(relative.name.startswith(f"{profile}_") for profile in SCORING_PROFILE_IDS)
         return any(relative.name.startswith(f"test_{profile}_") for profile in SCORING_PROFILE_IDS)
-    if relative.parent.as_posix() in {"scripts/training/models", "scripts/training/samples"}:
+    if relative.parent.as_posix() in {
+        "scripts/training/models", "scripts/training/samples", "src/trader/training/infra/research/close_return",
+    }:
         return any(relative.name.startswith(f"{profile}_") for profile in SCORING_PROFILE_IDS)
     return False

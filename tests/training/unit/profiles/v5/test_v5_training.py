@@ -25,13 +25,13 @@ from trader.recommendation.domain.market.v5.features import CalculatePriceVolume
 
 from trader.recommendation.domain.publication.models import Strategy
 
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile
 
 
 
-from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork, DecodeTcnTensors, TensorShapes
+from trader.training.infra.tcn.tensors import DecodeTcnNetwork, DecodeTcnTensors, TensorShapes
 
-from trader.training.infra.profile.v5.training import RunV5Training
+from trader.training.infra.research.close_return.v5_training import RunV5Training
 
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
@@ -85,7 +85,7 @@ def test_missing_future_label_reports_exact_partition_without_discarding_other_h
 
 @pytest.mark.skipif(find_spec("torch") is None, reason="V5 optional CPU dependency")
 def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tmp_path, monkeypatch):
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime
 
     ConfigureTcnRuntime(training=True)
     history = _history(tmp_path / "history")
@@ -151,7 +151,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
         "v5/tomorrow/model.json",
     ]
     assert not (tmp_path / "samples").exists()
-    loaded = LoadScoringProfile("v5", training_root=models)
+    loaded = LoadDiagnosticScoringProfile("v5", training_root=models)
     dates = history.snapshot.calendar.open_dates[:61]
     points = tuple(_point(d, i, 0) for i, d in enumerate(dates))
     sequence = CalculatePriceVolumeSequence(
@@ -168,7 +168,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
     for strategy, width in ((Strategy.TOMORROW, 6), (Strategy.D25, 5)):
         inputs = (ModelInput("600000", (0.1,) * width, "capco:J66货币金融服务", sequence),)
         first = loaded.heads[strategy].predictor.predict(inputs)[0].predicted_excess_return
-        second = LoadScoringProfile("v5", training_root=models).heads[strategy].predictor.predict(inputs)[0]
+        second = LoadDiagnosticScoringProfile("v5", training_root=models).heads[strategy].predictor.predict(inputs)[0]
         np.testing.assert_allclose(first, second.predicted_excess_return, rtol=1e-10, atol=1e-12)
         with pytest.raises(ValueError, match="sequence"):
             loaded.heads[strategy].predictor.predict((ModelInput("600000", (0.1,) * width, "capco:J66货币金融服务"),))
@@ -198,7 +198,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
 
 
 def test_v5_tensor_codec_rejects_duplicate_wrong_shape_and_nonfinite():
-    from trader.training.infra.profile.v5.settings import TcnArchitecture
+    from trader.training.infra.tcn.settings import TcnArchitecture
 
     architecture = TcnArchitecture(8, "float32")
     weights = [
@@ -216,7 +216,7 @@ def test_v5_tensor_codec_rejects_duplicate_wrong_shape_and_nonfinite():
 @pytest.mark.parametrize("suffix", ("", "_v1", "_v999"))
 def test_v5_network_accepts_only_the_current_architecture_description(suffix):
     from trader.recommendation.domain.market.v5.features import SEQUENCE_CONTRACT
-    from trader.training.infra.profile.v5.settings import TCN_NETWORK_CONTRACT, TcnArchitecture
+    from trader.training.infra.tcn.settings import TCN_NETWORK_CONTRACT, TcnArchitecture
 
     architecture = TcnArchitecture(8, "float32")
     network = {

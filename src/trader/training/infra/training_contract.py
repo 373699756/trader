@@ -6,16 +6,17 @@ from importlib.metadata import version
 
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS, TOMORROW_TRAINING_PEAK_RSS_MIB
 from trader.training.domain.final_fit import FINAL_FIT_CONTRACT
 from trader.training.domain.label_benchmark import TRAINING_LABEL_BENCHMARK_CONTRACT
 from trader.training.domain.production_diagnostic_dates import PRODUCTION_DIAGNOSTIC_CONTRACT
 from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
-from trader.training.infra.implementation_identity import TrainingImplementationIdentity
+from trader.training.infra.implementation_identity import LaneTrainingImplementationIdentity, TrainingImplementationIdentity
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.training.infra.model_evaluation import RECENT_PREDICTION_EVALUATION_CONTRACT
-from trader.training.infra.model_fitting import FittingParameterDocument, LightGBMFittingParameters
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.fitting_settings import FittingParameterDocument, LightGBMFittingParameters
+from trader.training.infra.tcn.settings import TcnFittingParameters
 from trader.training.infra.training_settings import ProfileTrainingSettings
 
 
@@ -29,7 +30,8 @@ def BuildTrainingContractHash(
     fitting = settings.fitting
     return ContentHash(
         {
-            "implementation_identity": TrainingImplementationIdentity(),
+            "implementation_identity": LaneTrainingImplementationIdentity(Strategy.D25, profile.profile_id)
+            if len(profile.heads) == 1 and contract.strategy is Strategy.D25 else TrainingImplementationIdentity(),
             "dependencies": {"numpy": version("numpy"), "lightgbm": version("lightgbm")}
             if profile.algorithm == "lightgbm"
             else {"numpy": version("numpy"), "torch": version("torch")}

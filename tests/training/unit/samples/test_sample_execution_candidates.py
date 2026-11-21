@@ -16,10 +16,11 @@ from trader.training.infra import model_fitting
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.bundle_codec import TrainedRidgeModelSnapshot
 from trader.training.infra.model_evaluation import CalibrationResult
-from trader.training.infra.model_fitting import FitIndustryModels, RidgeFittingParameters
+from trader.training.infra.model_fitting import FitIndustryModels
+from trader.training.infra.fitting_settings import RidgeFittingParameters
 from trader.training.infra.model_fitting_results import FittedIndustryModel
-from trader.training.infra.profile.v3.contracts import HEAD_CONTRACTS
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import HEAD_CONTRACTS
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample, TrainingSampleBatch
 from trader.training.infra.sample_sequences import SampleSequenceLayout
 

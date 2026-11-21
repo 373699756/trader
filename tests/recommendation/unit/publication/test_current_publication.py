@@ -17,8 +17,8 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
 from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
 from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
 from trader.recommendation.application.runtime.schedule import MarketPhase
-from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.freeze_identity import FreezeOverlay, ScoredFreeze
+from trader.recommendation.domain.publication.models import ScoredHeadGap, Strategy
 
 
 @dataclass
@@ -117,6 +117,58 @@ def test_any_profile_with_closed_window_rejects_all_profiles():
     assert UnifiedFreezeIndex.snapshot_batch(tuple(pair.index for pair in pairs)) == previous
 
 
+def test_retained_head_preserves_identity_and_cannot_seal_until_scored_again():
+    pairs = _pairs(("v1", "v5"), _Clock(NOW), RLock())
+    profile = pairs[1]
+    retained = profile.index.snapshot(Strategy.TOMORROW)
+    original = retained.current
+    assert isinstance(original, ScoredFreeze)
+    gap = ScoredHeadGap(Strategy.TOMORROW, NOW.date(), NOW, "model_input_pending")
+    affected = replace(
+        profile, freezes=profile.freezes[1:], overlays=profile.overlays[1:],
+        expected_versions=profile.expected_versions[1:], head_gaps=(gap,),
+    )
+    result = PublishCurrentBatch((pairs[0], affected))
+    assert result.accepted and result.head_gaps == (("v5", (gap,)),)
+    assert pairs[0].index.snapshot(Strategy.TOMORROW).current == pairs[0].freezes[0]
+    assert profile.index.snapshot(Strategy.D25).current == profile.freezes[1]
+    assert profile.index.snapshot(Strategy.TOMORROW) == replace(retained, head_gap=gap)
+    close = NOW.replace(hour=15, minute=0)
+    assert not profile.index.seal_for_freeze(Strategy.TOMORROW, boundary_at=close).accepted
+    assert not profile.index.seal_close_fallback(original, boundary_at=close, official_close_version="official-close:new").accepted
+
+    fresh, overlay = profile.freezes[0], profile.overlays[0]
+    recovered = profile.index.publish_scored(fresh, overlay, expected_version=original.version)
+    assert recovered.accepted and profile.index.snapshot(Strategy.TOMORROW).head_gap is None
+    seal = profile.index.seal_for_freeze(Strategy.TOMORROW, boundary_at=close)
+    assert seal.accepted
+
+    assert PublishCurrentBatch((replace(affected, freezes=(), overlays=(), expected_versions=()),)).reason == "freeze_sealed"
+    assert profile.index.seal_for_freeze(Strategy.TOMORROW, boundary_at=close).freeze == seal.freeze
+
+
+def test_round_with_only_unavailable_heads_still_notifies_one_batch():
+    events = []
+    rounds = RecommendationRounds(monotonic=lambda: 0.0, publish_batch_event=lambda *batch: events.append(batch))
+    rounds.register("v5")
+    task = ScheduledPipelineTask(PipelineTask.SCORE, NOW, MarketPhase.BEFORE_CLOSE)
+    admission = rounds.enter("v5", (task,))
+    assert admission is not None
+    index = UnifiedFreezeIndex()
+    gaps = tuple(ScoredHeadGap(strategy, NOW.date(), NOW, "model_input_pending") for strategy in (
+        Strategy.TOMORROW, Strategy.D25,
+    ))
+    pair = PreparedCurrentPair("v5", index, (), (), (), None, (None, None), _Clock(NOW), None, gaps)
+    result = rounds.stage("v5", admission.sequence, pair)
+    rounds.finish("v5", admission.sequence)
+
+    assert result.accepted and result.events == ()
+    assert events == [(admission.sequence, (("v5", ()),), (("v5", gaps),))]
+    for gap in gaps:
+        snapshot = index.snapshot(gap.strategy)
+        assert snapshot.current is None and snapshot.head_gap == gap
+
+
 @pytest.mark.parametrize("failure", ("close", "event_error"))
 def test_all_event_preparation_precedes_final_eligibility_and_every_index_write(monkeypatch, failure):
     clock = _Clock(NOW)
@@ -160,7 +212,7 @@ def test_publication_exception_releases_peers_and_next_round_can_publish(monkeyp
             raise error
         return original(identity, projection_version=projection_version)
 
-    def notify(sequence, events):
+    def notify(sequence, events, _head_gaps):
         if fail and failure_at == "batch_notification":
             raise error
         notifications.append((sequence, events))

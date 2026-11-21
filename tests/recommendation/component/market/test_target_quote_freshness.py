@@ -15,7 +15,7 @@ from tests.helpers.recommendation.publication.tomorrow_projection import (
 )
 from tests.helpers.recommendation.runtime.input_runtime import _policy
 from tests.helpers.recommendation.runtime.tomorrow_freezing import _Clock
-from tests.helpers.recommendation.scoring_helpers import profile_for
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.infra.http_contracts import HttpConnectionError, HttpTimeout
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
@@ -28,7 +28,6 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
 from trader.recommendation.domain.candidate.filters import HardFilter
@@ -111,7 +110,7 @@ def _project_and_freeze(quotes, native_type, feature_factory, tmp_path):
     )
     strategy = native_type.strategy
     policy = _policy()
-    scorer = ProductionModelScoringService(
+    scorer = BuildUtilityScorer(
         profile_for(_ProductionPredictor(), strategy), strategy, cost_policy=ExecutionCostPolicy(0.002, 1.0),
     )
     native = native_type(

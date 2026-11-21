@@ -64,10 +64,10 @@ from trader.training.infra.history.history_training_input import (
     HistoryTrainingInputSnapshot,
     SQLiteHistoryTrainingInputSnapshot,
 )
-from trader.training.infra.implementation_identity import TrainingImplementationIdentity
+from trader.training.infra.implementation_identity import LaneTrainingImplementationIdentity, TrainingImplementationIdentity
 from trader.training.infra.execution_options import TrainingExecutionOptions
-from trader.training.infra.d25_probability import D25ProbabilityBinding, HasD25Probability, PublishD25Probability
-from trader.training.infra.d25_probability_training import D25IndustryFitRequest, FitIndustryD25Probability
+from trader.training.infra.d25.artifact import D25ProbabilityBinding, HasD25Probability, PublishD25Probability
+from trader.training.infra.d25.training import D25IndustryFitRequest, FitIndustryD25Probability
 from trader.training.infra.fitting_resources import ReserveTrainingFittingResources, TrainingFittingReservation
 from trader.training.infra.model_bundles.bundle_snapshot import (
     MakeBundleStagingDirectory,
@@ -86,11 +86,12 @@ from trader.training.infra.model_bundles.profile_publication import (
     RecoverProfileBundles,
 )
 from trader.training.infra.model_evaluation import RECENT_PREDICTION_EVALUATION_CONTRACT
-from trader.training.infra.model_fitting import FitIndustryModels, LightGBMFittingParameters, RefitIndustryModels
+from trader.training.infra.model_fitting import FitIndustryModels, RefitIndustryModels
+from trader.training.infra.fitting_settings import LightGBMFittingParameters
 from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
 from trader.training.infra.model_bundles.final_fit_evidence import BuildFinalFitEvidence
-from trader.training.infra.profile.v5.configuration import TcnConfigurationDocument
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.tcn.configuration import TcnConfigurationDocument
+from trader.training.infra.tcn.settings import TcnFittingParameters
 from trader.training.infra.sample_builder import (
     BuildTrainingSamples,
     TrainingHistorySource,
@@ -559,7 +560,8 @@ def _sample_cache_for(
     sequence_layout = SampleSequenceLayout(feature_count - 60 * 6, 60, 6) if request.profile.algorithm == "tcn" else None
     cache_identity = ContentHash(
         (
-            TrainingImplementationIdentity(),
+            LaneTrainingImplementationIdentity(Strategy.D25, request.profile.profile_id)
+            if request.d25_target is not None else TrainingImplementationIdentity(),
             snapshot.training_input_hash,
             snapshot.input_descriptor_hash,
             request.profile.profile_id,

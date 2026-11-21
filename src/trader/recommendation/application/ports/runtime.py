@@ -133,6 +133,12 @@ class DataRefreshPendingError(DataRefreshUnavailableError):
     """A refresh is waiting for a local dependency and has not failed."""
 
 
+@dataclass(frozen=True, slots=True)
+class HeadInputFailure:
+    strategy: Strategy
+    reason: str
+
+
 class FreezeUnavailableError(RuntimeError):
     """A local freeze could not be produced from the retained data plane."""
 
@@ -160,7 +166,7 @@ class DataRefreshPort(Protocol):
 
     def refresh(self, request: CycleRequest) -> None: ...
 
-    def refresh_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None: ...
+    def refresh_round_heads(self, requests: tuple[CycleRequest, ...]) -> tuple[HeadInputFailure, ...]: ...
 
     def release_scoring_input(self, request: CycleRequest) -> None: ...
 
@@ -261,6 +267,7 @@ __all__ = [
     "DataRefreshPendingError",
     "FreezeBuilderPort",
     "FreezeUnavailableError",
+    "HeadInputFailure",
     "DeepSeekUpgradePort",
     "FreezePort",
     "SealUnavailableError",

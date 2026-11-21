@@ -11,13 +11,13 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import BuildProfileScoring
+from trader.recommendation.infra.scoring.profile_factory import BuildDiagnosticProfileScoring
 from trader.training.infra.model_bundles.bundle_codec import TrainedHeadModelBundle
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.domain.final_fit import BuildFinalFitDatePlan
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 
@@ -109,7 +109,7 @@ def test_loaded_dual_head_authority_matches_artifact_admission(profile, authorit
     # Codec validation has separate coverage; isolate assembly from optional tensor loading.
     monkeypatch.setattr("trader.training.infra.model_bundles.profile.TrainedHeadPredictor", _Predictor)
     loaded = BuildTrainedScoringProfile(profile.profile_id, tuple(_bundle(profile, head) for head in profile.heads))
-    scorer = BuildProfileScoring(
+    scorer = BuildDiagnosticProfileScoring(
         profile.profile_id,
         loaded,
         history_sessions=profile.history_sessions,
@@ -133,7 +133,7 @@ def test_loaded_dual_head_authority_matches_artifact_admission(profile, authorit
 
 @pytest.mark.parametrize(("profile_id", "authority"), (("v1", True), ("v2", True), ("v3", True), ("v5", True)))
 def test_missing_dual_head_status_preserves_profile_authority(profile_id, authority):
-    scorer = BuildProfileScoring(
+    scorer = BuildDiagnosticProfileScoring(
         profile_id,
         None,
         history_sessions=61,

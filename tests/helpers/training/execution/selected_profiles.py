@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date
+from functools import partial
 from pathlib import Path
 import pytest
 from tests.helpers.training.profiles.v1.learned_rank_training import _settings
@@ -18,9 +19,10 @@ from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.application.resources import TrainingProfileThreads
 from trader.training.infra.execution_options import TrainingExecutionOptions
+from trader.training.infra.research.close_return.selection import CloseReturnResearchMode
 from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
 from trader.training.application.selected_training import TrainSelectedProfiles
-from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from trader.training.infra.training_settings import LoadD25TrainingSettings, LoadProfileTrainingSettings
 from tests.helpers.training.configuration import TcnFittingParametersFixture
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -57,7 +59,7 @@ def BuildFourProfileRequest(
     tcn_threads: list[int],
 ) -> SelectedTrainingRequest:
     import torch
-    from trader.training.infra.profile.v5 import network
+    from trader.training.infra.tcn import network
 
     configure = network.ConfigureTcnRuntime
 
@@ -85,8 +87,8 @@ def BuildFourProfileRequest(
     )
     monkeypatch.setattr("trader.training.infra.selected_training.LoadV1TrainingSettings", lambda _p: _settings())
 
-    def settings(project, profile):
-        result = LoadProfileTrainingSettings(project, profile)
+    def settings(load, project, profile):
+        result = load(project, profile)
         if profile == "v5":
             return replace(
                 result,
@@ -101,7 +103,12 @@ def BuildFourProfileRequest(
             fitting = replace(fitting, boosting_rounds=12, early_stopping_rounds=3, minimum_leaf_rows=5)
         return replace(result, fitting=fitting)
 
-    monkeypatch.setattr("trader.training.infra.selected_training.LoadProfileTrainingSettings", settings)
+    monkeypatch.setattr(
+        "trader.training.infra.selected_training.LoadProfileTrainingSettings", partial(settings, LoadProfileTrainingSettings),
+    )
+    monkeypatch.setattr(
+        "trader.training.infra.selected_training.LoadD25TrainingSettings", partial(settings, LoadD25TrainingSettings),
+    )
     candidate = execution_case == "combined"
     cpu_settings = TrainingResourceSettingsFixture().cpu
     if candidate:
@@ -139,7 +146,7 @@ def four_profile_seed(request: pytest.FixtureRequest, tmp_path_factory: pytest.T
     with pytest.MonkeyPatch.context() as patches:
         selection = BuildFourProfileRequest(directory, execution_case, patches, scans, tcn_threads)
         with ThreadPoolExecutor(max_workers=4) as executor:
-            result = TrainSelectedProfiles(SelectedTrainingAdapter(selection, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
+            result = TrainSelectedProfiles(SelectedTrainingAdapter(selection, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
         assert len(scans) == result.history_scan_passes == 1
         assert tuple(item.profile for item in result.outcomes) == selection.profiles
         assert all(item.failure is None and item.result.status == "engineering_ready" for item in result.outcomes), result

@@ -18,28 +18,25 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 from trader.training.domain.v1.learned_rank import BuildLearnedRankDateSplit
-from trader.training.infra.d25_label import D25HitLabel
-from trader.training.infra.d25_probability import (
+from trader.training.infra.d25.labels import D25HitLabel
+from trader.training.infra.d25.artifact import (
     D25ProbabilityBinding,
-    D25TreeModel,
     HasD25Probability,
     LoadD25ScoringProfile,
     PublishD25Probability,
     _path,
 )
-from trader.training.infra.d25_probability_training import (
+from trader.training.infra.d25.training import (
     D25IndustryFitRequest,
     FitIndustryD25Probability,
-    FitV1D25Probability,
 )
-from trader.training.infra.model_bundles.contracts import D25ProfileContract
-from trader.training.infra.model_fitting import LightGBMFittingParameters, RidgeFittingParameters
-from trader.training.infra.profile.v1.samples import LearnedRankCandidate, LearnedRankPendingDay, LearnedRankSampleIndex
-from trader.training.infra.profile.v1.models import LoadV1ScoringProfile
-from trader.training.infra.profile.v1.training import RunV1Training
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.d25.v1.probability import FitV1D25Probability
+from trader.training.infra.d25.tree import D25TreeModel
+from trader.training.infra.d25.contracts import StandardD25Profile
+from trader.training.infra.fitting_settings import LightGBMFittingParameters, RidgeFittingParameters
+from trader.training.infra.d25.v1.samples import LearnedRankCandidate, LearnedRankPendingDay, LearnedRankSampleIndex
+from trader.training.infra.d25.v1.models import LoadV1ScoringProfile
+from trader.training.infra.d25.v1.training import RunV1Training
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSampleBatch
 
 _TARGET = PredictionTarget(Strategy.D25, 100)
@@ -126,8 +123,7 @@ def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Pat
 def test_d25_industry_models_fit_the_new_event_with_separate_utility_identity(
     tmp_path: Path, profile_id: ScoringProfileId,
 ) -> None:
-    profiles = {p.profile_id: p for p in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)}
-    contract = D25ProfileContract(profiles[profile_id]).heads[0]
+    contract = StandardD25Profile(profile_id).heads[0]
     width = len(contract.feature_positions)
     split = BuildProductionDiagnosticDatePlan(
         _CALENDAR, source_cutoff=_CALENDAR[-1], fit_sessions=10, early_stopping_sessions=0, history_sessions=61,
@@ -153,7 +149,7 @@ def test_d25_industry_models_fit_the_new_event_with_separate_utility_identity(
     request = D25IndustryFitRequest(profile_id, contract, split, parameters, (industry,), 1, _BINDING)
     if profile_id == "v5":
         pytest.importorskip("torch")
-        from trader.training.infra.profile.v5.network import PreserveTcnRuntime
+        from trader.training.infra.tcn.network import PreserveTcnRuntime
 
         with PreserveTcnRuntime():
             artifact = FitIndustryD25Probability(samples, request, lambda: None)

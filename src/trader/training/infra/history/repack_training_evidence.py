@@ -12,7 +12,7 @@ from trader.infra.serialization.fields import AsSequence
 from trader.training.application.tomorrow_training import TomorrowTrainingStage
 from trader.training.infra.memory_evidence import TomorrowTrainingMemoryEvidence, TomorrowTrainingStageDuration
 from trader.training.infra.model_bundles.profile_publication import InspectPublishedProfileBundles
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 
 
 class TrainingRepackEvidenceError(ValueError):

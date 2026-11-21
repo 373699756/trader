@@ -35,7 +35,7 @@ def test_composed_preview_long_publishes_without_formal_database_or_models(
         )
 
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: STARTED_AT)
-    monkeypatch.setattr("trader.bootstrap.LoadScoringProfile", missing_model)
+    monkeypatch.setattr("trader.bootstrap.LoadD25UtilityProfile", missing_model)
     monkeypatch.setattr("trader.bootstrap.PublishedReferences.initialize", lambda self: None)
     monkeypatch.setattr("trader.bootstrap.ChinaTradingCalendar.open_dates", lambda self: (MARKET_DATE,))
     monkeypatch.setattr("trader.bootstrap.MarketDataGateway.fetch_long_quotes", quotes)
@@ -60,7 +60,7 @@ def test_composed_preview_long_publishes_without_formal_database_or_models(
         primary.scheduler.submit_due()
         assert primary.scheduler.wait_idle(3.0)
         assert primary.long_runtime.wait_idle(3.0)
-        assert primary.scheduler.status().preview_error == "production_model_missing"
+        assert primary.scheduler.status().preview_error == "tomorrow_probability_model_unavailable"
         assert primary.long_runtime.status().worker.failed_count == 0
         client = system.app.test_client()
         payload = client.get("/api/freezes/long/current").get_json()
@@ -117,7 +117,7 @@ def test_preview_long_recovers_missing_quotes_on_cadence_then_stops(
         )
 
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: wall[0])
-    monkeypatch.setattr("trader.bootstrap.LoadScoringProfile", missing_model)
+    monkeypatch.setattr("trader.bootstrap.LoadD25UtilityProfile", missing_model)
     monkeypatch.setattr("trader.bootstrap.PublishedReferences.initialize", lambda self: None)
     monkeypatch.setattr("trader.bootstrap.ChinaTradingCalendar.open_dates", lambda self: (MARKET_DATE,))
     monkeypatch.setattr("trader.bootstrap.MarketDataGateway.fetch_long_quotes", quotes)
@@ -156,7 +156,7 @@ def test_preview_long_recovers_missing_quotes_on_cadence_then_stops(
         assert len(calls) == 2
         assert all((deadline - observed).total_seconds() == 3.0 for observed, deadline, _ in calls)
         assert all(context == primary.run_scope.preview for _, _, context in calls)
-        assert primary.scheduler.status().preview_error == "production_model_missing"
+        assert primary.scheduler.status().preview_error == "tomorrow_probability_model_unavailable"
         assert primary.tomorrow_index.snapshot(Strategy.LONG).formal is None
         assert not (tmp_path / "data/recommendation").exists()
     finally:

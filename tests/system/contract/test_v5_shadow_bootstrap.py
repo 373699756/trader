@@ -37,10 +37,10 @@ def test_missing_v5_build_closes_both_freezers_and_preserves_read_only_status(tm
     scoring = response.get_json()["scoring_profile"]
     assert scoring["profile_id"] == "v5"
     assert set(scoring["heads"]) == {"tomorrow", "d25"}
-    for head in scoring["heads"].values():
+    for strategy, head in scoring["heads"].items():
         assert head["is_enable"] is False
         assert head["production_authority"] is True
-        assert head["activation_basis"] == "manual_user_override"
+        assert head["activation_basis"] == ("trained_artifact" if strategy == "tomorrow" else "manual_user_override")
 
     now = datetime(2026, 10, 23, 15, 5, tzinfo=ZoneInfo("Asia/Shanghai"))
     freezers = system.scheduler._dependencies.sealing._freezers
@@ -49,7 +49,7 @@ def test_missing_v5_build_closes_both_freezers_and_preserves_read_only_status(tm
         assert system.tomorrow_index.snapshot(strategy).current is None
         monkeypatch.setattr(freezer, "_clock", _Clock(now))
         result = freezer.freeze_scheduled()
-        assert result.status == "no_eligible_freeze"
+        assert result.status == "shadow_only"
         assert result.record is None
         assert not system.tomorrow_index.is_sealed(strategy, now.date())
         assert system.records.load(strategy, now.date()) is None

@@ -30,8 +30,8 @@ from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPriceWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 from trader.training.infra.sample_builder import _SampleBuildState
 
 DAYS = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))

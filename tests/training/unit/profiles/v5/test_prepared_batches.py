@@ -16,8 +16,8 @@ from tests.helpers.training.configuration import TcnFittingParametersFixture
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.execution_options import TrainingExecutionOptions
-from trader.training.infra.profile.v5 import batch_cache
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.d25.v5 import batch_cache
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
 
 pytestmark = pytest.mark.skipif(find_spec("torch") is None, reason="V5 requires the optional CPU tensor dependency")
@@ -60,8 +60,8 @@ def _samples(root: Path, limit: int):
 @pytest.mark.parametrize("limit", (1, 256 * 1024**2))
 def test_prepared_tensors_preserve_real_ten_epoch_fit_and_rng(tmp_path, monkeypatch, dtype, head, limit):
     import torch
-    from trader.training.infra.profile.v5 import fitting
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, PreserveTcnRuntime
+    from trader.training.infra.d25.v5 import utility_fitting as fitting
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, PreserveTcnRuntime
 
     contract = V5_TRAINING_PROFILE.heads[head]
     parameters = TcnFittingParametersFixture(
@@ -177,8 +177,8 @@ def test_transition_budget_maps_prepared_arrays_and_cancellation_closes_all_buff
 
 @pytest.mark.slow_training
 def test_cancelled_prepared_real_fit_closes_inputs_and_preserves_samples(tmp_path, monkeypatch):
-    from trader.training.infra.profile.v5 import fitting
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, PreserveTcnRuntime
+    from trader.training.infra.d25.v5 import utility_fitting as fitting
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, PreserveTcnRuntime
 
     contract = V5_TRAINING_PROFILE.heads[0]
     parameters = TcnFittingParametersFixture(minimum_industry_training_rows=1, batch_size=4, compute_threads=1)

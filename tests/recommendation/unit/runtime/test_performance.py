@@ -38,7 +38,7 @@ def test_steady_only_uses_existing_100_tick_measurement_without_claiming_pipelin
 
     settings = replace(performance.LoadRuntimeSettings(Path("config/runtime.json")), performance_budgets=_budgets())
     monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _: settings)
-    monkeypatch.setattr(performance, "LoadScoringProfile", lambda profile, **_: _workload(profile).profile)
+    monkeypatch.setattr(performance, "LoadD25UtilityProfile", lambda profile, **_: _workload(profile).profile)
     monkeypatch.setattr(performance, "_operations", lambda *_: pytest.fail("steady-only must not run cold pipeline probes"))
     report = performance.Run(Path("config/runtime.json"), scoring_profile="v1,v2,v3,v5", steady_only=True)
     assert report["workload"]["tick_count"] == 100
@@ -69,7 +69,7 @@ def test_full_four_profile_report_runs_real_scoring_and_never_claims_unmeasured_
     original = performance.LoadRuntimeSettings(Path("config/runtime.json").resolve())
     settings = replace(original, performance_budgets=_budgets())
     monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _path: settings)
-    monkeypatch.setattr(performance, "LoadScoringProfile", lambda profile, **_kwargs: _workload(profile).profile)
+    monkeypatch.setattr(performance, "LoadD25UtilityProfile", lambda profile, **_kwargs: _workload(profile).profile)
     if skip_pipeline:
         measure = performance.MeasureModelWorkload
 
@@ -108,7 +108,7 @@ def test_all_profiles_report_load_failures_without_fabricating_measurements(monk
     def unavailable(*_args, **_kwargs):
         raise ScoringModelsUnavailableError(reason)
 
-    monkeypatch.setattr(performance, "LoadScoringProfile", unavailable)
+    monkeypatch.setattr(performance, "LoadD25UtilityProfile", unavailable)
     report = performance.Run(Path("config/runtime.json"), scoring_profile="v1,v2,v3,v5")
     assert report["measurements"] == {} and report["memory"] == {}
     assert report["failures"] == ["model_unavailable"]

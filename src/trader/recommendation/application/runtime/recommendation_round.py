@@ -15,12 +15,14 @@ from trader.recommendation.application.pipeline.freeze_publish.current_publisher
     PreparedCurrentPair,
     PublishCurrentBatch,
 )
+from trader.recommendation.application.pipeline.freeze_publish.freeze_events import FreezeCommitted
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (
     UnifiedPairedPublishResult,
     UnifiedProfiledPublishResult,
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
 from trader.recommendation.application.runtime.round_inputs import ProfileRoundInputs, RoundInputs
+from trader.recommendation.domain.publication.models import ScoredHeadGap
 
 ROUND_TIMEOUT_SECONDS = 120.0
 
@@ -58,7 +60,10 @@ class RecommendationRounds:
         publish_batch: Callable[
             [tuple[PreparedCurrentPair, ...], Callable[[], bool]], UnifiedProfiledPublishResult
         ] = PublishCurrentBatch,
-        publish_batch_event: Callable[[int, tuple], object] | None = None,
+        publish_batch_event: Callable[
+            [int, tuple[tuple[str, tuple[FreezeCommitted, ...]], ...], tuple[tuple[str, tuple[ScoredHeadGap, ...]], ...]],
+            object,
+        ] | None = None,
     ) -> None:
         if not math.isfinite(round_timeout_seconds) or not 0.0 < round_timeout_seconds <= ROUND_TIMEOUT_SECONDS:
             raise ValueError("recommendation round timeout must be within 120 seconds")
@@ -278,8 +283,11 @@ class RecommendationRounds:
             raise
         self._publication = publication
         self._outcome = "published" if publication.accepted else publication.reason
-        if publication.accepted and self._publish_batch_event is not None and any(items for _, items in publication.events):
-            self._publish_batch_event(sequence, publication.events)
+        if (
+            publication.accepted and self._publish_batch_event is not None
+            and (publication.head_gaps or any(items for _, items in publication.events))
+        ):
+            self._publish_batch_event(sequence, publication.events, publication.head_gaps)
 
     def _wait_for_collection(self, profile: str, sequence: int, remaining_profiles: set[str]) -> bool:
         with self._condition:

@@ -32,7 +32,7 @@ from trader.recommendation.domain.publication.historical_pipeline import (
     HistoricalStageSnapshot,
     HistoricalStageStatus,
 )
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import ScoredHeadGap, Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.publication.score_ledger import ScoreLedgerPayload
 
@@ -48,6 +48,13 @@ def SerializeFreezeView(view: FreezeView, *, configured_target: PredictionTarget
         "trade_date": view.trade_date.isoformat() if view.trade_date is not None else None,
         "view": view.view,
         "score_status": view.score_status,
+        **(
+            {"head_availability": {
+                **_serialize_head_gap(view.head_gap),
+                "status": "retained" if view.freeze_version is not None else "unavailable",
+            }}
+            if view.head_gap is not None else {}
+        ),
         "freeze_version": view.freeze_version,
         "publication_id": view.freeze_version,
         "projection_version": view.projection_version,
@@ -374,6 +381,13 @@ def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
             profiles=profiles,
             published_strategies={profile: list(pair) for profile, pair in profiles.items()},
         )
+        head_gaps = {
+            profile.profile: [_serialize_head_gap(gap) for gap in profile.head_gaps]
+            for profile in payload.profiles
+            if profile.head_gaps
+        }
+        if head_gaps:
+            common["round_head_gaps"] = head_gaps
     elif isinstance(payload, FreezeEventPayload):
         common.update(
             strategy=payload.strategy.value,
@@ -402,6 +416,15 @@ def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
     elif isinstance(payload, ResyncEventPayload):
         common["reason"] = payload.reason
     return common
+
+
+def _serialize_head_gap(gap: ScoredHeadGap) -> dict[str, object]:
+    return {
+        "strategy": gap.strategy.value,
+        "trade_date": gap.trade_date.isoformat(),
+        "failed_at": _time(gap.failed_at),
+        "reason": gap.reason,
+    }
 
 
 def _serialize_freeze_event(payload: FreezeEventPayload) -> dict[str, object]:

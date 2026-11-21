@@ -133,6 +133,11 @@
     cross_source_deviation: "跨源价格校验存在偏差",
     history_data_degraded: "历史行情数据可靠度不足",
     model_unavailable: "模型服务暂不可用",
+    model_scoring_deadline: "该组合的模型评分超时",
+    model_scoring_unavailable: "该组合的模型评分暂不可用",
+    scoring_input_preparation_failed: "该组合未能准备评分输入",
+    scoring_output_unavailable: "该组合未生成评分结果",
+    freeze_unavailable: "该组合未能生成荐股快照",
     no_positive_net_utility: "模型预测成本后净超额均未转正",
     quote_fallback: "行情已使用备用数据",
   };

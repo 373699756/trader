@@ -10,10 +10,10 @@ import pytest
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from trader.training.application.resources import TrainingProfileThreads
 from trader.training.infra.history.history_training_expectation import HistoryTrainingExpectationReader
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
+from trader.training.infra.tcn.settings import TcnFittingParameters
 from trader.training.infra.training_contract import BuildTrainingContractHash
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 

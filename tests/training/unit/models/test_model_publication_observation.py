@@ -19,7 +19,7 @@ from trader.infra.regular_file import ReadRegularFile
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile
 from trader.training.domain.final_fit import BuildFinalFitDatePlan
 from trader.training.domain.training_input_identity import BuildTrainingInputHash
 from trader.training.domain.v1.learned_rank import (
@@ -38,14 +38,14 @@ from trader.training.infra.model_bundles.profile_publication import (
     ProfilePublicationLock,
     ReadPublishedProfileIdentities,
 )
-from trader.training.infra.profile.v1 import models as v1_models
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.d25.v1 import models as v1_models
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 from trader.training.infra.history.history_training_due import PublishedTrainingState
 
 
 def test_standard_observation_matches_loaded_identity_without_reading_model_payload(tmp_path, monkeypatch):
     _publish_profile(tmp_path, V3_TRAINING_PROFILE)
-    expected = LoadScoringProfile("v3", training_root=tmp_path).publications
+    expected = LoadDiagnosticScoringProfile("v3", training_root=tmp_path).publications
     reads = []
 
     def metadata_only(path, *, maximum_bytes):
@@ -343,7 +343,7 @@ def test_v1_observation_rejects_self_hash_conflicts_and_pre_cancelled_read(tmp_p
 @pytest.mark.parametrize("initial_busy", [False, True])
 def test_model_observation_updates_restart_hint_and_preserves_loaded_identity_on_busy(tmp_path, monkeypatch, initial_busy):
     _publish_profile(tmp_path, V3_TRAINING_PROFILE)
-    loaded = LoadScoringProfile("v3", training_root=tmp_path).publications
+    loaded = LoadDiagnosticScoringProfile("v3", training_root=tmp_path).publications
     state = PublishedTrainingState(
         tmp_path / "history", tmp_path, loaded, owned_profile="v3",
         maintenance_path=tmp_path / "maintenance.sqlite3",

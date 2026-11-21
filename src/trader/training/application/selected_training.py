@@ -17,6 +17,7 @@ from trader.infra.shutdown import ShutdownDeadline
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.profile_training import TrainingRunResult
@@ -111,6 +112,9 @@ class SelectedTrainingSessionPort(Protocol[ResultT]):
 
 class SelectedTrainingPort(Protocol[ResultT]):
     @property
+    def strategy(self) -> Strategy | None: ...
+
+    @property
     def profiles(self) -> tuple[ScoringProfileId, ...]: ...
 
     @property
@@ -130,11 +134,15 @@ class SelectedTrainingPort(Protocol[ResultT]):
 
     def open(self) -> AbstractContextManager[SelectedTrainingSessionPort[ResultT]]: ...
 
+    def run_tomorrow_only(self) -> SelectedTrainingRun[ResultT]: ...
+
 
 def TrainSelectedProfiles(operations: SelectedTrainingPort[ResultT], executor: Executor) -> SelectedTrainingRun[ResultT]:
     """Prepare every selected profile and own the one-scan fan-out execution order."""
     if not operations.profiles or len(set(operations.profiles)) != len(operations.profiles):
         raise ValueError("training_requires_unique_selected_profiles")
+    if operations.strategy is Strategy.TOMORROW:
+        return operations.run_tomorrow_only()
     with operations.open() as session:
         tasks = []
         for profile, progress in zip(operations.profiles, operations.progresses, strict=True):

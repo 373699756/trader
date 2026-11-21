@@ -10,7 +10,7 @@ import pytest
 
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra import sample_sequences
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
 from trader.training.infra.sample_sequences import SampleSequenceLayout

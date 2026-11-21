@@ -1,0 +1,321 @@
+"""Shared cross-industry LambdaRank and independently calibrated gross-return Ridge."""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+
+import lightgbm as lgb
+import numpy as np
+
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
+from trader.training.domain.v1.learned_rank import (
+    LearnedRankContractHash,
+    LearnedRankFinalContractHash,
+    LearnedRankDateSplit,
+    LearnedRankHead,
+    LearnedRankFinalHead,
+    LearnedRankPredictionMetrics,
+    LearnedRankRelevance,
+    V1TrainingSettings,
+)
+from trader.training.domain.final_fit import FinalFitDatePlan
+from trader.training.infra.d25.v1.samples import LearnedRankMatrix
+from trader.training.infra.ranking import CheckV1Cancellation, DailyBinaryRankRows, DailyRankWeights, FitDailyBinaryRanker, RankerParameters, TrainRankDatasets
+from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort, TrainingFitCounts, TrainingValidationProgress
+
+_CHUNK_ROWS = 8192
+
+
+@dataclass(frozen=True)
+class LearnedRankPartitions:
+    fitting: LearnedRankMatrix
+    early_stopping: LearnedRankMatrix
+    calibration: LearnedRankMatrix
+    validation: LearnedRankMatrix
+
+
+def FitLearnedRankHead(
+    strategy: Strategy,
+    split: LearnedRankDateSplit,
+    partitions: LearnedRankPartitions,
+    settings: V1TrainingSettings,
+    *,
+    compute_threads: int,
+    cancel_requested: Callable[[], bool] | None = None,
+    progress: TomorrowTrainingProgressPort | None = None,
+) -> LearnedRankHead:
+    """Read validation only after fitting, early stopping and past calibration finish."""
+
+    if type(compute_threads) is not int or compute_threads < 1:
+        raise ValueError("training_compute_threads_invalid")
+    fitting, early, calibration, validation = (
+        partitions.fitting,
+        partitions.early_stopping,
+        partitions.calibration,
+        partitions.validation,
+    )
+    if len(fitting.targets) < settings.minimum_training_rows:
+        raise ValueError("learned_rank_training_rows_insufficient")
+    weights = _daily_weights(fitting)
+    means, scales = _transform(fitting, weights)
+    for matrix in (fitting, early, calibration, validation):
+        for start, end in _chunks(len(matrix.targets)):
+            CheckV1Cancellation(cancel_requested)
+            matrix.features[start:end] -= means
+            matrix.features[start:end] /= scales
+    coefficients, intercept = _ridge(fitting, weights, settings.ridge_penalty, cancel_requested)
+    del weights
+
+    booster = _fit_ranker(
+        fitting,
+        settings,
+        early=early,
+        rounds=settings.boosting_rounds,
+        compute_threads=compute_threads,
+        cancel_requested=cancel_requested,
+    )
+    CheckV1Cancellation(cancel_requested)
+    calibration_predictions = intercept + calibration.features @ coefficients
+    calibration_weights = _daily_weights(calibration)
+    x_mean = float(np.average(calibration_predictions, weights=calibration_weights))
+    y_mean = float(np.average(calibration.targets, weights=calibration_weights))
+    centered = calibration_predictions - x_mean
+    variance = float(np.average(centered * centered, weights=calibration_weights))
+    covariance = float(np.average(centered * (calibration.targets - y_mean), weights=calibration_weights))
+    slope = covariance / (variance + 1e-12)
+    calibration_intercept = y_mean - slope * x_mean
+    if progress is not None:
+        progress.publish(TomorrowTrainingProgress(
+            "model_fit", "running", 0, 1, strategy=strategy,
+            validation=TrainingValidationProgress(0, len(validation.targets)),
+            fit_counts=TrainingFitCounts(0, 1, 0, 0),
+        ))
+    predicted = calibration_intercept + slope * (intercept + validation.features @ coefficients)
+    rank_raw = np.asarray(booster.predict(validation.features, num_threads=compute_threads), dtype=np.float64)
+    metrics = _metrics(validation, predicted, rank_raw)
+    if progress is not None:
+        progress.publish(TomorrowTrainingProgress(
+            "model_fit", "running", 0, 1, strategy=strategy,
+            validation=TrainingValidationProgress(len(validation.targets), len(validation.targets)),
+            fit_counts=TrainingFitCounts(0, 1, 0, 0),
+        ))
+    return LearnedRankHead(
+        strategy,
+        LearnedRankContractHash(settings),
+        split,
+        tuple(float(value) for value in means),
+        tuple(float(value) for value in scales),
+        tuple(float(value) for value in coefficients),
+        intercept,
+        calibration_intercept,
+        slope,
+        booster.model_to_string(),
+        max(1, booster.best_iteration),
+        len(fitting.targets),
+        len(early.targets),
+        len(calibration.targets),
+        tuple(sorted(set(fitting.industries))),
+        metrics,
+    )
+
+
+def RefitLearnedRankHead(
+    diagnostic: LearnedRankHead,
+    final_fit: FinalFitDatePlan,
+    matrix: LearnedRankMatrix,
+    settings: V1TrainingSettings,
+    *,
+    compute_threads: int,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> LearnedRankFinalHead:
+    """Refit fresh raw matrices; freeze the prior round count and transferred calibrator."""
+    if (
+        type(compute_threads) is not int or compute_threads < 1
+        or type(diagnostic) is not LearnedRankHead
+        or diagnostic.training_contract_hash != LearnedRankContractHash(settings)
+        or final_fit.maturity_sessions != diagnostic.split.maturity_sessions
+        or len(final_fit.fit_dates) != settings.fit_dates
+        or tuple(sorted(set(matrix.dates))) != final_fit.fit_dates
+        or len(matrix.targets) < settings.minimum_training_rows
+    ):
+        raise ValueError("learned_rank_final_fit_input_invalid")
+    weights = _daily_weights(matrix)
+    means, scales = _transform(matrix, weights)
+    for start, end in _chunks(len(matrix.targets)):
+        CheckV1Cancellation(cancel_requested)
+        matrix.features[start:end] -= means
+        matrix.features[start:end] /= scales
+    coefficients, intercept = _ridge(matrix, weights, settings.ridge_penalty, cancel_requested)
+    del weights
+    booster = _fit_ranker(
+        matrix,
+        settings,
+        early=None,
+        rounds=diagnostic.rank_iterations,
+        compute_threads=compute_threads,
+        cancel_requested=cancel_requested,
+    )
+    CheckV1Cancellation(cancel_requested)
+    return LearnedRankFinalHead(
+        diagnostic.strategy,
+        LearnedRankFinalContractHash(settings),
+        diagnostic.split,
+        tuple(float(value) for value in means),
+        tuple(float(value) for value in scales),
+        tuple(float(value) for value in coefficients),
+        intercept,
+        diagnostic.calibration_intercept,
+        diagnostic.calibration_slope,
+        booster.model_to_string(),
+        booster.current_iteration(),
+        len(matrix.targets),
+        diagnostic.early_stopping_rows,
+        diagnostic.calibration_rows,
+        tuple(sorted(set(matrix.industries))),
+        diagnostic.validation,
+        final_fit,
+        diagnostic,
+    )
+
+
+def _fit_ranker(
+    fitting: LearnedRankMatrix,
+    settings: V1TrainingSettings,
+    *,
+    early: LearnedRankMatrix | None,
+    rounds: int,
+    compute_threads: int,
+    cancel_requested: Callable[[], bool] | None,
+) -> lgb.Booster:
+    validation = None if early is None else lgb.Dataset(
+        early.features,
+        label=_relevance(early, settings),
+        weight=_daily_weights(early),
+        group=np.asarray(early.groups, dtype=np.int32),
+    )
+    training = lgb.Dataset(
+        fitting.features,
+        label=_relevance(fitting, settings),
+        weight=_daily_weights(fitting),
+        group=np.asarray(fitting.groups, dtype=np.int32),
+    )
+    return TrainRankDatasets(
+        training, validation, settings, RankerParameters(settings, compute_threads), rounds, cancel_requested,
+    )
+
+
+def FitD25LearnedRankClassifier(
+    fitting: LearnedRankMatrix, early: LearnedRankMatrix, settings: V1TrainingSettings,
+    *, compute_threads: int, cancel_requested: Callable[[], bool] | None,
+) -> lgb.Booster:
+    if len(fitting.targets) < settings.minimum_training_rows or not (
+        np.any(fitting.targets == 1) and np.any(fitting.targets == 0)
+    ):
+        raise ValueError("d25_probability_ranker_labels_insufficient")
+    return FitDailyBinaryRanker(
+        DailyBinaryRankRows(fitting.features, fitting.targets, fitting.groups),
+        DailyBinaryRankRows(early.features, early.targets, early.groups), settings,
+        compute_threads=compute_threads, cancel_requested=cancel_requested,
+    )
+
+
+def _chunks(size: int) -> Iterator[tuple[int, int]]:
+    for start in range(0, size, _CHUNK_ROWS):
+        yield start, min(size, start + _CHUNK_ROWS)
+
+
+def _daily_weights(matrix: LearnedRankMatrix) -> np.ndarray:
+    return DailyRankWeights(len(matrix.targets), matrix.groups)
+
+
+def _transform(matrix: LearnedRankMatrix, weights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    total = float(np.sum(weights))
+    means = np.zeros(matrix.features.shape[1], dtype=np.float64)
+    for start, end in _chunks(len(matrix.targets)):
+        means += weights[start:end] @ matrix.features[start:end] / total
+    variance = np.zeros_like(means)
+    for start, end in _chunks(len(matrix.targets)):
+        centered = matrix.features[start:end] - means
+        variance += weights[start:end] @ (centered * centered) / total
+    scales = np.sqrt(variance)
+    scales[scales < 1e-12] = 1.0
+    return means, scales
+
+
+def _ridge(
+    matrix: LearnedRankMatrix, weights: np.ndarray, penalty: float, cancel_requested: Callable[[], bool] | None
+) -> tuple[np.ndarray, float]:
+    width = matrix.features.shape[1]
+    gram = np.eye(width, dtype=np.float64) * penalty
+    target = np.zeros(width, dtype=np.float64)
+    intercept = float(np.average(matrix.targets, weights=weights))
+    for start, end in _chunks(len(matrix.targets)):
+        CheckV1Cancellation(cancel_requested)
+        values = matrix.features[start:end]
+        weighted = values * weights[start:end, None]
+        gram += values.T @ weighted
+        target += weighted.T @ (matrix.targets[start:end] - intercept)
+    return np.linalg.solve(gram, target), intercept
+
+
+def _relevance(matrix: LearnedRankMatrix, settings: V1TrainingSettings) -> np.ndarray:
+    result = np.empty(len(matrix.targets), dtype=np.int32)
+    start = 0
+    for size in matrix.groups:
+        result[start : start + size] = LearnedRankRelevance(
+            tuple(float(value) - settings.ranking_round_trip_cost for value in matrix.targets[start : start + size])
+        )
+        start += size
+    return result
+
+
+def _metrics(matrix: LearnedRankMatrix, predicted: np.ndarray, rank_raw: np.ndarray) -> LearnedRankPredictionMetrics:
+    if (
+        predicted.shape != matrix.targets.shape
+        or rank_raw.shape != matrix.targets.shape
+        or not np.all(np.isfinite(predicted))
+        or not np.all(np.isfinite(rank_raw))
+    ):
+        raise ValueError("learned_rank_validation_predictions_invalid")
+    daily_ic: list[float] = []
+    daily_ndcg: list[float] = []
+    start = 0
+    for size in matrix.groups:
+        end = start + size
+        target_ranks = np.asarray(PercentileRanks(tuple(float(value) for value in matrix.targets[start:end])))
+        prediction_ranks = np.asarray(PercentileRanks(tuple(float(value) for value in rank_raw[start:end])))
+        denominator = float(np.std(target_ranks) * np.std(prediction_ranks))
+        daily_ic.append(
+            float(np.mean((target_ranks - np.mean(target_ranks)) * (prediction_ranks - np.mean(prediction_ranks))))
+            / denominator
+            if denominator > 0
+            else 0.0
+        )
+        relevance = LearnedRankRelevance(tuple(float(value) for value in matrix.targets[start:end]))
+        order = sorted(
+            range(size), key=lambda offset: (-float(rank_raw[start + offset]), matrix.codes[start + offset])
+        )[:6]
+        ideal = sorted(relevance, reverse=True)[:6]
+        dcg = math.fsum(relevance[index] / math.log2(position + 2) for position, index in enumerate(order))
+        idcg = math.fsum(value / math.log2(position + 2) for position, value in enumerate(ideal))
+        daily_ndcg.append(dcg / idcg if idcg > 0 else 1.0)
+        start = end
+    weights = _daily_weights(matrix)
+    error = predicted - matrix.targets
+    return LearnedRankPredictionMetrics(
+        len(matrix.targets),
+        len(predicted),
+        len(set(matrix.codes)),
+        len(matrix.groups),
+        len(set(matrix.industries)),
+        float(np.average(np.abs(error), weights=weights)),
+        math.sqrt(float(np.average(error * error, weights=weights))),
+        math.fsum(daily_ic) / len(daily_ic),
+        math.fsum(daily_ndcg) / len(daily_ndcg),
+    )
+
+
+__all__ = ["FitLearnedRankHead", "RefitLearnedRankHead", "LearnedRankPartitions"]

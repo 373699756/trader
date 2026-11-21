@@ -91,7 +91,7 @@ from trader.recommendation.infra.performance.raw_factor_reuse import RAW_FACTOR_
 from trader.recommendation.infra.performance.candidate_selection import SCORING_CANDIDATES
 from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
+from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile, ScoringModelsUnavailableError
 from trader.training.infra.training_settings import LoadRuntimeTrainingSettings
 from trader.web import CreateApp
 
@@ -477,8 +477,8 @@ def _prepare_profiles(
     quotes: tuple[MarketQuote, ...] = ()
     fixture_seconds = 0.0
     cost_policy = LoadExecutionCostPolicy(config_path.parent)
-    from trader.training.infra.d25_probability import LoadD25ScoringProfile
-    from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
+    from trader.training.infra.d25.artifact import LoadD25ScoringProfile
+    from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel
 
     targets = LoadPredictionTargets(settings.strategy_config_path)
     for profile_id in selected:
@@ -486,7 +486,7 @@ def _prepare_profiles(
         tomorrow_target = targets.for_profile(profile_id, Strategy.TOMORROW)
         d25_target = targets.for_profile(profile_id, Strategy.D25)
         try:
-            loaded = LoadScoringProfile(profile_id, training_root=settings.data_paths.models, d25_only=True)
+            loaded = LoadD25UtilityProfile(profile_id, training_root=settings.data_paths.models)
             loaded = LoadD25ScoringProfile(settings.data_paths.models, loaded, d25_target)
         except ScoringModelsUnavailableError as exc:
             profiles.append(_ProfileLoad(profile_id, exc.reason))

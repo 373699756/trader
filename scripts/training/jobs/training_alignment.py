@@ -15,6 +15,7 @@ import sys
 import time
 from collections import Counter
 from contextlib import AbstractContextManager, nullcontext, redirect_stdout
+from dataclasses import asdict
 from datetime import datetime
 from datetime import time as daytime
 from pathlib import Path
@@ -670,7 +671,6 @@ def _train_once(
 ) -> dict[str, object]:
     from trader.bootstrap import ExecuteSelectedTraining
     from trader.training.entrypoints.report_output import TrainingReportOutput
-    from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 
     captured = io.StringIO()
     started = time.monotonic()
@@ -682,22 +682,60 @@ def _train_once(
     seconds = time.monotonic() - started
     reports = ReadJsonReports(captured.getvalue())
     results = [item for item in reports if "profile" in item]
-    reloaded_heads = sum(
-        len(LoadScoringProfile(profile, training_root=work / "models").heads)
-        for profile in profiles
+    execution = next((item for item in reports if "profiles" in item and "training_status" in item), None)
+    ready_profiles = tuple(
+        profile for profile in profiles
         if any(item.get("profile") == profile and item.get("status") == "engineering_ready" for item in results)
     )
+    event_values = _load_event_values(runtime, work / "models", ready_profiles)
+    reloaded_heads = len(event_values)
     complete = code == 0 and reloaded_heads == len(profiles) * 2 and len(results) == len(profiles)
     return {
         "complete": complete,
         "exit_code": code,
         "profiles": results,
-        "execution": next((item for item in reports if "profiles" in item and "training_status" in item), None),
+        "execution": execution,
         "reloaded_heads": reloaded_heads,
         "seconds": seconds,
         "resources": measurement.result,
-        "numeric_fingerprints": _numeric_fingerprints(work / "models", profiles) if complete else (),
+        "numeric_fingerprints": _numeric_fingerprints(work / "models", profiles, event_values) if complete else (),
     }
+
+
+def _load_event_values(
+    runtime: RuntimeSettings, model_root: Path, profiles: tuple[ScoringProfileId, ...],
+) -> dict[tuple[ScoringProfileId, str], object]:
+    from trader.recommendation.domain.publication.models import Strategy
+    from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile
+    from trader.recommendation.infra.settings.loading import LoadPredictionTargets
+    from trader.training.infra.d25.artifact import ReadD25ProbabilityArtifact
+    from trader.training.infra.d25.tree import D25TreeModel
+    from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel
+
+    targets = LoadPredictionTargets(runtime.strategy_config_path)
+    values: dict[tuple[ScoringProfileId, str], object] = {}
+    for profile in profiles:
+        tomorrow = LoadTomorrowProbabilityModel(
+            model_root, profile, targets.for_profile(profile, Strategy.TOMORROW), project_root=runtime.project_root,
+        )
+        if tomorrow is not None:
+            artifact = tomorrow.artifact
+            values[(profile, "tomorrow")] = (
+                artifact.calibration_intercept, artifact.calibration_slope,
+                _lightgbm_fingerprint_model(artifact.lightgbm) if artifact.lightgbm is not None else
+                asdict(artifact.logistic) if artifact.logistic is not None else
+                asdict(artifact.tcn) if artifact.tcn is not None else None,
+            )
+        utility = LoadD25UtilityProfile(profile, training_root=model_root)
+        d25 = ReadD25ProbabilityArtifact(model_root, utility, targets.for_profile(profile, Strategy.D25))
+        values[(profile, "d25")] = (
+            d25.calibration,
+            tuple(
+                (key, _lightgbm_fingerprint_model(model.tree) if isinstance(model, D25TreeModel) else asdict(model))
+                for key, model in d25.industry_models
+            ),
+        )
+    return values
 
 
 def _fingerprint_model_object(value: object) -> dict[str, object]:
@@ -746,7 +784,10 @@ def _fingerprint_model_values(profile: ScoringProfileId, model: dict[str, object
     return model["industries"]
 
 
-def _numeric_fingerprints(model_root: Path, profiles: tuple[ScoringProfileId, ...]) -> tuple[dict[str, object], ...]:
+def _numeric_fingerprints(
+    model_root: Path, profiles: tuple[ScoringProfileId, ...],
+    event_values: dict[tuple[ScoringProfileId, str], object],
+) -> tuple[dict[str, object], ...]:
     fingerprints: list[dict[str, object]] = []
     metric_fields = (
         "prediction_metrics",
@@ -759,49 +800,50 @@ def _numeric_fingerprints(model_root: Path, profiles: tuple[ScoringProfileId, ..
         "validation_rows",
     )
     for profile in profiles:
-        for strategy in ("tomorrow", "d25"):
-            directory = model_root / profile / strategy
-            documents = []
-            for name in ("model.json", "metadata.json"):
-                path = directory / name
-                if path.stat().st_size > 32 * 1024**2:
-                    raise ValueError("training_alignment_model_document_too_large")
-                value: object = json.loads(path.read_text(encoding="utf-8"))
-                documents.append(_fingerprint_model_object(value))
-            model, metadata = documents
-            training = metadata.get("training_input") if profile == "v1" else metadata
-            if not isinstance(training, dict) or "final_fit" not in training:
-                raise ValueError("training_alignment_current_final_publication_required")
-            report = metadata["validation_report"]
-            if not isinstance(report, dict):
-                raise ValueError("training_alignment_validation_report_invalid")
-            components = _fingerprint_model_values(profile, model)
-            # Project both current estimators; date plans and calibration policy belong
-            # to bundle identity rather than the numeric alignment fingerprint.
-            if profile == "v1":
-                diagnostic = _fingerprint_model_object(report.get("diagnostic_head"))
-                fields = _fingerprint_model_object(model["components"])
-                if not fields.keys() <= diagnostic.keys():
-                    raise ValueError("training_alignment_diagnostic_model_document_invalid")
-                diagnostic_values = _fingerprint_model_values(profile, {
-                    "components": {name: diagnostic[name] for name in fields},
-                })
-                components = {"final": components, "diagnostic": diagnostic_values}
-            else:
-                final_fit = _fingerprint_model_object(metadata.get("final_fit"))
-                diagnostic = _fingerprint_model_object(final_fit.get("diagnostic_model"))
-                if "industries" not in diagnostic:
-                    raise ValueError("training_alignment_diagnostic_model_document_invalid")
-                components = {"final": components, "diagnostic": _fingerprint_model_values(profile, diagnostic)}
-            metrics = report["validation"] if profile == "v1" else {field: report[field] for field in metric_fields}
-            numeric = json.dumps((components, metrics), ensure_ascii=True, sort_keys=True, allow_nan=False).encode()
-            fingerprints.append(
-                {
-                    "profile": profile,
-                    "strategy": strategy,
-                    "model_values_and_metrics_sha256": hashlib.sha256(numeric).hexdigest(),
-                }
-            )
+        directory = model_root / profile / "d25"
+        documents = []
+        for name in ("model.json", "metadata.json"):
+            path = directory / name
+            if path.stat().st_size > 32 * 1024**2:
+                raise ValueError("training_alignment_model_document_too_large")
+            value: object = json.loads(path.read_text(encoding="utf-8"))
+            documents.append(_fingerprint_model_object(value))
+        model, metadata = documents
+        training = metadata.get("training_input") if profile == "v1" else metadata
+        if not isinstance(training, dict) or "final_fit" not in training:
+            raise ValueError("training_alignment_current_final_publication_required")
+        report = metadata["validation_report"]
+        if not isinstance(report, dict):
+            raise ValueError("training_alignment_validation_report_invalid")
+        components = _fingerprint_model_values(profile, model)
+        # Project both current estimators; date plans and calibration policy belong
+        # to bundle identity rather than the numeric alignment fingerprint.
+        if profile == "v1":
+            diagnostic = _fingerprint_model_object(report.get("diagnostic_head"))
+            fields = _fingerprint_model_object(model["components"])
+            if not fields.keys() <= diagnostic.keys():
+                raise ValueError("training_alignment_diagnostic_model_document_invalid")
+            diagnostic_values = _fingerprint_model_values(profile, {
+                "components": {name: diagnostic[name] for name in fields},
+            })
+            components = {"final": components, "diagnostic": diagnostic_values}
+        else:
+            final_fit = _fingerprint_model_object(metadata.get("final_fit"))
+            diagnostic = _fingerprint_model_object(final_fit.get("diagnostic_model"))
+            if "industries" not in diagnostic:
+                raise ValueError("training_alignment_diagnostic_model_document_invalid")
+            components = {"final": components, "diagnostic": _fingerprint_model_values(profile, diagnostic)}
+        metrics = report["validation"] if profile == "v1" else {field: report[field] for field in metric_fields}
+        for strategy, values in (
+            ("tomorrow", event_values[(profile, "tomorrow")]),
+            ("d25", (event_values[(profile, "d25")], components, metrics)),
+        ):
+            numeric = json.dumps(values, ensure_ascii=True, sort_keys=True, allow_nan=False).encode()
+            fingerprints.append({
+                "profile": profile,
+                "strategy": strategy,
+                "model_values_and_metrics_sha256": hashlib.sha256(numeric).hexdigest(),
+            })
     return tuple(fingerprints)
 
 

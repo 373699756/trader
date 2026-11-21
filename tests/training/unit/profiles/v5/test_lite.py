@@ -11,13 +11,13 @@ import pytest
 
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.domain.v5.early_stopping import TcnEarlyStopping
-from trader.training.infra.profile.v5.configuration import (
+from trader.training.infra.tcn.configuration import (
     DecodeTcnConfiguration,
     ParseTcnParameters,
     TcnConfigurationDocument,
 )
-from trader.training.infra.profile.v5.settings import TcnArchitecture
-from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork
+from trader.training.infra.tcn.settings import TcnArchitecture
+from trader.training.infra.tcn.tensors import DecodeTcnNetwork
 from tests.helpers.training.configuration import TcnFittingParametersFixture
 
 
@@ -45,9 +45,9 @@ def test_patience_ignores_tiny_improvements_but_keeps_best_weights_and_accumulat
 @pytest.mark.skipif(find_spec("torch") is None, reason="V5 optional CPU dependency")
 def test_training_restores_smallest_loss_weights_not_significant_anchor_or_last_epoch(monkeypatch):
     from trader.training.application.tomorrow_training import TrainingFitDetail
-    from trader.training.infra.profile.v5.batch_cache import TcnBatchCache
-    from trader.training.infra.profile.v5.fitting import _TcnFitState, _TcnProgress
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
+    from trader.training.infra.d25.v5.batch_cache import TcnBatchCache
+    from trader.training.infra.d25.v5.utility_fitting import _TcnFitState, _TcnProgress
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, TcnNetwork
 
     ConfigureTcnRuntime(training=True)
     parameters = TcnFittingParameters(1, epochs=5, early_stopping_rounds=2, early_stopping_relative_delta=0.001)
@@ -157,7 +157,7 @@ def test_configuration_snapshot_roundtrip_hash_and_missing_fields():
 def test_parameterized_network_roundtrip_uses_model_precision(channels, dtype, auxiliary):
     import torch
 
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, TcnNetwork
 
     ConfigureTcnRuntime(training=True)
     architecture = TcnArchitecture(channels, dtype)
@@ -174,7 +174,7 @@ def test_parameterized_network_roundtrip_uses_model_precision(channels, dtype, a
 
 @pytest.mark.skipif(find_spec("torch") is None, reason="V5 optional CPU dependency")
 def test_runtime_rejects_threads_exceeding_cpu_affinity(monkeypatch):
-    from trader.training.infra.profile.v5 import network
+    from trader.training.infra.tcn import network
 
     monkeypatch.setattr(network.os, "sched_getaffinity", lambda _pid: {0}, raising=False)
     with pytest.raises(ValueError, match="CPU capacity"):
@@ -186,7 +186,7 @@ def test_fitting_parameters_invalidate_models_but_only_fit_window_invalidates_sa
     from tests.helpers.training.profiles.v5.v5_training import ROOT, _history
     from trader.training.infra.engine import ProfileTrainingRequest, _sample_cache_for
     from trader.training.infra.training_contract import BuildTrainingContractHash
-    from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+    from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
     profile = V5_TRAINING_PROFILE

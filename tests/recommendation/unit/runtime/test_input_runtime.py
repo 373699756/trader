@@ -322,7 +322,7 @@ def test_pair_capture_keeps_both_populations_when_source_refreshes_during_prepar
     )
     revision = adapter.data._quality_revision
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(adapter.data.refresh_pair, requests)
+        pending = pool.submit(adapter.data.refresh_round_heads, requests)
         try:
             assert entered.wait(2)
             market._features = (replace(original, quote=replace(original.quote, price=99.0)),)
@@ -342,7 +342,7 @@ def test_pair_capture_keeps_both_populations_when_source_refreshes_during_prepar
     assert market.candidate_reads == []
 
 
-def test_pair_preparation_failure_does_not_accept_half_a_wave(application_feature_factory) -> None:
+def test_head_preparation_failure_leaves_healthy_population_ready_for_the_wave(application_feature_factory) -> None:
     class FailingSecondMarket(_Market):
         def prepare_scoring_features(self, features, observed_at, *, include_intraday_tail):
             if not include_intraday_tail:
@@ -360,9 +360,10 @@ def test_pair_preparation_failure_does_not_accept_half_a_wave(application_featur
         _request(TEST_NOW, phase="afternoon"),
         _request(TEST_NOW, strategy=Strategy.D25, phase="afternoon"),
     )
-    with pytest.raises(DataRefreshUnavailableError, match="second_input_failed"):
-        adapter.data.refresh_pair(requests)
-    assert all(adapter.data.batch(request) is None for request in requests)
+    failures = adapter.data.refresh_round_heads(requests)
+    assert [(item.strategy, item.reason) for item in failures] == [(Strategy.D25, "scoring_input_preparation_failed")]
+    assert adapter.data.batch(requests[0]) is not None
+    assert adapter.data.batch(requests[1]) is None
 
 
 def test_refresh_outcome_normalizes_later_utc_completion_to_shanghai(

@@ -22,6 +22,7 @@ from trader.training.domain.training_date_coverage import PossibleTrainingSignal
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.memory_admission import TrainingMemoryBudget
+from trader.training.infra.research.close_return.selection import CloseReturnResearchMode
 from trader.training.infra.selected_training import SelectedTrainingAdapter, SelectedTrainingRequest
 
 
@@ -94,7 +95,7 @@ def test_all_four_profiles_reject_impossible_listing_dates_before_shared_price_s
     with ThreadPoolExecutor(max_workers=4) as executor:
         run = TrainSelectedProfiles(SelectedTrainingAdapter(
             request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _now: current,
-            clock=lambda: current.observed_at,
+            clock=lambda: current.observed_at, prediction_targets=CloseReturnResearchMode.BOTH_HEADS,
         ), executor)
     assert run.history_scan_passes == run.history_rows_read == 0
     assert all(item.failure is None and item.result.status == "blocked" for item in run.outcomes)

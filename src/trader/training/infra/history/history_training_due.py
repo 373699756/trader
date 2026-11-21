@@ -36,20 +36,19 @@ from trader.training.domain.training_due import (
     TrainingDueRequest,
     TrainingDueState,
 )
+from trader.training.infra.d25.contracts import StandardD25Profile
 from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceError, TrainingMaintenanceIndex
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
 from trader.training.infra.model_bundles.bundle_snapshot import (
     PublishedHeadBundle,
 )
-from trader.training.infra.model_bundles.contracts import D25ProfileContract, TrainedProfileContract
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.model_bundles.profile_publication import (
     InspectPublishedProfileBundles,
     ProfilePublicationBusyError,
     ReadPublishedProfileIdentities,
 )
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.selection import ResearchCloseReturnProfile
 
 
 @dataclass(frozen=True)
@@ -374,7 +373,10 @@ def EvaluateAllHistoryTrainingDue(
     persist: bool = True,
 ) -> tuple[HeadTrainingStatus, ...]:
     results: list[HeadTrainingStatus] = []
-    for profile in (selected_profile,) if selected_profile is not None else (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
+    profiles = (selected_profile,) if selected_profile is not None else (
+        ResearchCloseReturnProfile("v2"), ResearchCloseReturnProfile("v3"),
+    )
+    for profile in profiles:
         heads, failure = _inspect_profile(training_root, profile)
         try:
             expectation = load_expectation(profile, observed_at)
@@ -586,17 +588,14 @@ class PublishedTrainingState:
                 self._status = tuple(results)
 
     def _profiles(self) -> tuple[TrainedProfileContract, ...]:
-        profiles = (
-            V2_TRAINING_PROFILE,
-            V3_TRAINING_PROFILE,
-            *((V5_TRAINING_PROFILE,) if self._owned_profile == "v5" else ()),
-        )
-        return tuple(D25ProfileContract(profile) for profile in profiles) if self._strategies == (Strategy.D25,) else profiles
+        profiles: tuple[ScoringProfileId, ...] = ("v2", "v3", "v5") if self._owned_profile == "v5" else ("v2", "v3")
+        contract = StandardD25Profile if self._strategies == (Strategy.D25,) else ResearchCloseReturnProfile
+        return tuple(contract(profile) for profile in profiles)
 
     def _v1_publications(
         self, cancelled: Callable[[], bool]
     ) -> tuple[tuple[ModelPublicationIdentity, ...], str | None]:
-        from trader.training.infra.profile.v1.models import ReadV1PublicationIdentities
+        from trader.training.infra.d25.v1.models import ReadV1PublicationIdentities
 
         try:
             return ReadV1PublicationIdentities(

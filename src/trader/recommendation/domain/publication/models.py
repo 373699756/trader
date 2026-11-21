@@ -6,7 +6,7 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -26,6 +26,14 @@ class Strategy(str, Enum):
     TOMORROW = "tomorrow"
     D25 = "d25"
     LONG = "long"
+
+
+@dataclass(frozen=True, slots=True)
+class ScoredHeadGap:
+    strategy: Strategy
+    trade_date: date
+    failed_at: datetime
+    reason: str
 
 
 class RecommendationAction(str, Enum):
@@ -226,6 +234,7 @@ __all__ = [
     "RecommendationAction",
     "ScoreBreakdown",
     "ScoredDisposition",
+    "ScoredHeadGap",
     "ScoredSelectionResult",
     "ScoredStockEvaluation",
     "SelectionSkip",

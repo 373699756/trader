@@ -26,14 +26,13 @@ from tests.helpers.recommendation.market_data import (
 )
 from tests.helpers.recommendation.market.candidate_history_tail import CALENDAR, NOW, HistoryInput, _cell
 from tests.helpers.recommendation.configuration import HardFilterPolicyFixture
-from tests.helpers.recommendation.scoring_helpers import profile_for
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
 from tests.helpers.recommendation.scoring.tomorrow_production_model import _model_feature
 from tests.helpers.recommendation.selection.v5_model_filtering import _SequencePredictor
 from tests.helpers.recommendation.market.tail import POLICY
 from tests.helpers.recommendation.publication.shared_history_projection import _cache
 from tests.helpers.recommendation.market.market_data_merge import _observation
 from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import DynamicSourceHealth
-from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.candidate.filters import LevelOneFilterRules
@@ -331,7 +330,7 @@ def test_preview_minute_lane_preserves_real_failure_and_retained_close_qualifica
 def test_preview_v5_does_not_admit_a_sequence_including_its_signal_day(application_feature_factory):
     observed = NOW + timedelta(days=2)
     context = PreviewContext("v5-preview", NOW.date(), observed)
-    service = ProductionModelScoringService(
+    service = BuildUtilityScorer(
         profile_for(_SequencePredictor()), Strategy.TOMORROW, cost_policy=ExecutionCostPolicy(0.002, 1.0)
     )
     base = _model_feature(application_feature_factory("600001", observed), offset=0, amihud=1)

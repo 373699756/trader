@@ -8,7 +8,7 @@ from trader.recommendation.domain.market.history_alignment import AlignMarketSes
 from trader.recommendation.domain.market.v5.features import CalculatePriceVolumeSequence, PriceVolumePoint
 from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.infra.history.aligned_training_rows import AlignTrainingRows
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 from trader.training.infra.sample_builder import _finalize_sample_day, _PendingSample
 
 

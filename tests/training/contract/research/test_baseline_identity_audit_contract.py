@@ -12,12 +12,12 @@ from trader.recommendation.domain.outcomes.prediction_target import PredictionTa
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.baseline_identity_audit import BaselineIdentityAuditService
 from trader.training.infra.research.baseline_identity_sources import LoadBaselineIdentityEvidence
-from trader.training.infra.tomorrow_probability import (
-    LogisticTomorrowModel,
+from trader.training.infra.tomorrow.artifact import (
     PublishTomorrowProbabilityModel,
     TomorrowProbabilityArtifact,
 )
-from trader.training.infra.tomorrow_settings import LoadTomorrowFitSettings
+from trader.training.infra.tomorrow.settings import LoadTomorrowFitSettings
+from trader.training.infra.tomorrow.v3.model import LogisticTomorrowModel
 
 ROOT = Path(__file__).resolve().parents[4]
 

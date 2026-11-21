@@ -37,7 +37,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.infra.performance.process_memory import PerformanceMemorySample
-from trader.recommendation.infra.scoring.profile_factory import BuildProfileScoring
+from trader.recommendation.infra.scoring.profile_factory import BuildDiagnosticProfileScoring, BuildProfileScoring
 
 
 @dataclass(frozen=True)
@@ -58,10 +58,18 @@ class PerformanceProfileWorkload:
         return (Strategy.D25,)
 
     def scoring(self) -> ModelScoringPort:
+        history_sessions = max(feature.history_days for feature in self.features)
+        if self.tomorrow_target is None and self.d25_target is None:
+            return BuildDiagnosticProfileScoring(
+                self.profile.profile_id, self.profile, history_sessions=history_sessions,
+                model_failure="", cost_policy=self.cost_policy, maintenance=None,
+            )
+        if self.tomorrow_target is None or self.d25_target is None:
+            raise ValueError("production workload requires both prediction targets")
         return BuildProfileScoring(
             self.profile.profile_id,
             self.profile,
-            history_sessions=max(feature.history_days for feature in self.features),
+            history_sessions=history_sessions,
             model_failure="",
             cost_policy=self.cost_policy,
             maintenance=None,

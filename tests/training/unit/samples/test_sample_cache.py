@@ -16,7 +16,7 @@ from trader.training.domain.training_dates import BuildTrainingDateSplit, Traini
 from trader.training.infra.sample_cache import PruneEmptySampleDirectories, TrainingSampleCache
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
 from trader.training.infra.sample_schema import TrainingFeatureNames
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 
 
 def test_read_only_samples_check_structure_and_split_without_a_format_number(tmp_path):

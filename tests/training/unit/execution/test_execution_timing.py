@@ -551,6 +551,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
     from trader.training.application.selected_training import SelectedTrainingOutcome, SelectedTrainingRun, TrainingLocations
     from trader.training.entrypoints.selected_training import RunSelectedTraining
     from trader.training.entrypoints.report_output import TrainingReportOutput
+    from trader.training.infra.research.close_return.selection import CloseReturnResearchMode
     from trader.training.infra.selected_training import SelectedTrainingAdapter
     from trader.training.application.learned_rank_training import V1TrainingResult
 
@@ -583,7 +584,7 @@ def test_entry_reports_finished_reservations_on_success_failure_and_cancel(
         paths=TrainingLocations(tmp_path / "history", tmp_path / "models", tmp_path / "samples", tmp_path / "maintenance.sqlite3"),
         sqlite_policy=SqlitePolicyFixture(),
         load_expectation=HistoryTrainingExpectationFixture,
-        prepare_training=lambda request: SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),
+        prepare_training=lambda request: SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at),
         fanout_settings=TrainingResourceSettingsFixture().fanout,
         sample_settings=TrainingSampleSettingsFixture(),
     ) == expected_exit

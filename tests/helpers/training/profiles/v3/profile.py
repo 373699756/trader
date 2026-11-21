@@ -13,7 +13,7 @@ from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRAC
 from trader.training.infra.model_evaluation import RECENT_PREDICTION_EVALUATION_CONTRACT
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan, PRODUCTION_DIAGNOSTIC_CONTRACT
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 from trader.training.domain.training_input_identity import BuildTrainingInputHash, TRAINING_INDUSTRY_POLICY
 from trader.training.infra.training_industry_metadata import ProjectTrainingIndustrySnapshot
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture

@@ -2400,6 +2400,14 @@ async function verifyAtomicBatchCache() {
   assert.strictEqual(painted.length, 1);
   assert.strictEqual(resyncs.length, 1);
 
+  const withGap = batch(2);
+  delete withGap.profiles.v5.d25;
+  withGap.published_strategies.v5 = ["tomorrow"];
+  withGap.round_head_gaps = { v5: [{ strategy: "d25", reason: "scoring_failed" }] };
+  assert.strictEqual(dashboard.applyRecommendationBatch(withGap), false);
+  assert.strictEqual(ui.payloads, before, "gap must reconcile the entire batch before replacing any entry");
+  assert.strictEqual(resyncs.at(-1), "round_head_gap");
+
   ui.date = "2026-07-22";
   const historical = ui.payload;
   assert.strictEqual(dashboard.applyRecommendationBatch(batch(2)), false);

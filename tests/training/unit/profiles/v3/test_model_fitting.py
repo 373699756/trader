@@ -20,8 +20,8 @@ from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.model_evaluation import CalibrationResult, PredictionMetricsAccumulator
 from trader.training.infra.model_fitting import FitIndustryModels
 from trader.training.infra.model_fitting_results import FittedIndustryModel
-from trader.training.infra.profile.v2.contracts import V2_HEAD_CONTRACTS, V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import HEAD_CONTRACTS, V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_contracts import V2_HEAD_CONTRACTS, V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import HEAD_CONTRACTS, V3_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
 from trader.training.infra.sample_index import TrainingSample, TrainingSampleBatch
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
@@ -58,7 +58,7 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
         scales = np.where(deviations > 1e-12, deviations, 1.0)
         expected_training = (data.training.features - means) / scales
         expected_early = (data.early_stopping.features - means) / scales
-        reference_fit = model_fitting._fit_lightgbm
+        reference_fit = model_fitting.FitD25UtilityTree
 
         def checked_fit(training, early, parameters, heartbeat, compute_threads):
             assert training.features.dtype == early.features.dtype == np.float64
@@ -66,7 +66,7 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
             np.testing.assert_array_equal(early.features, expected_early)
             return reference_fit(training, early, parameters, heartbeat, compute_threads)
 
-        monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
+        monkeypatch.setattr(model_fitting, "FitD25UtilityTree", checked_fit)
 
         first, = FitIndustryModels(index, split, (contract,), settings.fitting, compute_threads=compute_threads, progress=Progress(),
                                    industry_snapshot=CurrentIndustrySnapshotFixture(()))

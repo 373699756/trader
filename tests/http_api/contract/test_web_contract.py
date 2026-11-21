@@ -15,13 +15,13 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
     OutcomeTierSummary,
     UnifiedFreezeQueries,
 )
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex, UnifiedProfilePair
 from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord
 from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes
 from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
-from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.publication.models import RecommendationAction, ScoredHeadGap, Strategy
 from trader.recommendation.domain.scoring.profile_identity import TOMORROW_PROBABILITY_SCORE_SCALE
 from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
@@ -48,6 +48,50 @@ def test_status_exposes_actual_fetch_inflight_count_without_private_source_field
         "physical_fetch_inflight_count": 1, "planned_count": 12,
     }
     assert "must-not-leak" not in response.get_data(as_text=True)
+
+
+def test_current_and_sse_report_head_failures_without_replacing_the_previous_result():
+    index = UnifiedFreezeIndex()
+    stream = UnifiedFreezeEventStream()
+    previous = _freeze()
+    assert index.publish(previous, expected_version=None).accepted
+    services = UnifiedWebServices(
+        UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock()),
+        stream, lambda: {}, profile_id="v3",
+    )
+    client = CreateApp(services=services).test_client()
+    route = "/api/freezes/tomorrow/current"
+    before = client.get(route)
+    gaps = tuple(
+        ScoredHeadGap(strategy, previous.trade_date, NOW, "scoring_failed")
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
+    )
+    result = index.publish_scored_batch((UnifiedProfilePair("v3", index, (), (), (), gaps),))
+    assert result.accepted
+    stream.publish_batch(1, result.events, result.head_gaps)
+
+    changed = client.get(route, headers={"If-None-Match": before.headers["ETag"]})
+    assert changed.status_code == 200
+    retained = changed.get_json()
+    assert retained["head_availability"] == {
+        "strategy": "tomorrow", "trade_date": previous.trade_date.isoformat(),
+        "failed_at": NOW.isoformat(), "reason": "scoring_failed", "status": "retained",
+    }
+    for field in ("freeze_version", "observed_at", "items", "input_versions"):
+        assert retained[field] == before.get_json()[field]
+    unavailable = client.get("/api/freezes/current").get_json()["profiles"]["v3"]["d25"]
+    assert unavailable["head_availability"]["status"] == "unavailable"
+    assert unavailable["freeze_version"] is None and unavailable["items"] == []
+
+    response = client.get("/api/events?cursor=0", buffered=False)
+    try:
+        iterator = iter(response.response)
+        next(iterator)
+        batch = json.loads(next(iterator).decode().split("data: ", 1)[1])
+        assert batch["published_strategies"] == {"v3": []}
+        assert [gap["strategy"] for gap in batch["round_head_gaps"]["v3"]] == ["tomorrow", "d25"]
+    finally:
+        response.close()
 
 
 def test_current_and_events_keep_equal_tomorrow_thresholds_in_independent_profiles():

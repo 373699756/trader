@@ -7,7 +7,7 @@ from trader.infra.shutdown import ShutdownStep
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import AsyncFreezeObserver
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
-from trader.recommendation.application.ports.runtime import CycleRequest, RefreshOutcome, ResearchIntent, ResearchRuntimeStatus, SharedDeepSeekRuntimeContract
+from trader.recommendation.application.ports.runtime import CycleRequest, HeadInputFailure, RefreshOutcome, ResearchIntent, ResearchRuntimeStatus, SharedDeepSeekRuntimeContract
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
@@ -51,9 +51,10 @@ class DataRefresh:
     def scoring_epoch(self) -> str:
         return "test:shared_input"
 
-    def refresh_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None:
+    def refresh_round_heads(self, requests: tuple[CycleRequest, ...]) -> tuple[HeadInputFailure, ...]:
         for request in requests:
             self.refresh(request)
+        return ()
 
     def release_scoring_input(self, request: CycleRequest) -> None:
         self.released_requests.append(request)

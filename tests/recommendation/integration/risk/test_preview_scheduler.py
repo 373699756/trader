@@ -103,7 +103,7 @@ def test_preview_subset_publishes_only_a_complete_round(outcome, profiles):
     elapsed = [0.0]
     events = []
     rounds = RecommendationRounds(
-        monotonic=lambda: elapsed[0], publish_batch_event=lambda sequence, batch: events.append((sequence, batch))
+        monotonic=lambda: elapsed[0], publish_batch_event=lambda sequence, batch, gaps: events.append((sequence, batch, gaps))
     )
     transaction = threading.RLock()
     fast_ready, slow_ready, release = threading.Event(), threading.Event(), threading.Event()
@@ -156,23 +156,33 @@ def test_preview_subset_publishes_only_a_complete_round(outcome, profiles):
             elapsed[0] = 120.0
         release.set()
         assert all(runtime.wait_idle(3.0) for runtime in runtimes)
-        assert len(events) == (1 if outcome == "ready" else 0)
+        publishes = outcome in {"ready", "failed"}
+        assert len(events) == int(publishes)
         round_status = rounds.status()
         assert round_status.finished
         assert round_status.profiles == profiles
         assert round_status.database.connection_attempts == round_status.database.statements == 0
         assert round_status.database.worker_inflight == 0
-        for runtime in runtimes:
-            expected_state = "waiting_inputs" if outcome == "pending" else "ready" if outcome == "ready" else "failed"
+        for profile, runtime in zip(profiles, runtimes, strict=True):
+            failed_head = outcome == "failed" and profile == profiles[-1]
+            if outcome == "pending":
+                expected_state = "waiting_inputs"
+            else:
+                expected_state = "ready" if publishes and not failed_head else "failed"
             assert runtime.status().preview_state == expected_state
             for strategy in (Strategy.TOMORROW, Strategy.D25):
                 snapshot = runtime._dependencies.index.snapshot(strategy)
-                assert (snapshot.current is not None) == (outcome == "ready")
+                has_gap = failed_head and strategy is Strategy.D25
+                assert (snapshot.current is not None) == (publishes and not has_gap)
+                assert (snapshot.head_gap is not None) == has_gap
                 assert snapshot.formal is None
             requests = runtime._dependencies.data.preview_requests
             assert all(request.round_deadline == STARTED_AT + timedelta(seconds=120) for request in requests)
         if events:
             assert {profile for profile, _ in events[0][1]} == set(profiles)
+            assert tuple(
+                (profile, gap.strategy) for profile, gaps in events[0][2] for gap in gaps
+            ) == (((profiles[-1], Strategy.D25),) if outcome == "failed" else ())
         if outcome == "pending":
             for runtime in runtimes:
                 runtime.submit_due()
@@ -252,7 +262,7 @@ def test_saturday_after_close_runs_one_preview_without_freeze_settlement_or_evid
         freezes=PreviewFreezes(),
         research_factory=RejectResearch,
         publish_freeze=published.append,
-        rounds=RecommendationRounds(monotonic=lambda: 0.0, publish_batch_event=lambda _sequence, events: published.append(events)),
+        rounds=RecommendationRounds(monotonic=lambda: 0.0, publish_batch_event=lambda _sequence, events, _head_gaps: published.append(events)),
         run_scope=scope,
     )
     runtime = SchedulerRuntime(deps, config_version="preview-fixture", shutdown_timeout_seconds=2.0)

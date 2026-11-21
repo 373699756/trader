@@ -101,8 +101,12 @@ class PreviewCycleRunner:
             self._set_status("failed", FailureCode(exc, "preview_run_failed"))
             return
         strategies = self._dependencies.scored_strategies
-        freezes = tuple(self._dependencies.index.snapshot(strategy).current for strategy in strategies)
-        if freezes and all(isinstance(freeze, ScoredFreeze) and freeze.preview_context == context for freeze in freezes):
+        snapshots = tuple(self._dependencies.index.snapshot(strategy) for strategy in strategies)
+        if snapshots and all(
+            snapshot.head_gap is None and isinstance(snapshot.current, ScoredFreeze)
+            and snapshot.current.preview_context == context
+            for snapshot in snapshots
+        ):
             self._set_status("ready")
         elif self._dependencies.rounds.inputs_pending(sequence):
             self._set_status("waiting_inputs", "preview_inputs_pending")

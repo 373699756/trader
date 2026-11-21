@@ -64,6 +64,7 @@ class RuntimeDependencies:
     tomorrow_model_ready: bool = True
     d25_model_ready: bool = True
     tomorrow_settlement: Callable[[datetime], object] | None = None
+    d25_settlement: Callable[[datetime], object] | None = None
 
     @property
     def scored_strategies(self) -> tuple[Strategy, ...]:

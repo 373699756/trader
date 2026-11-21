@@ -18,7 +18,7 @@ from trader.infra.atomic_files.json import AtomicWriteJson
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.training.infra.sample_sequences import SampleSequenceLayout
 from trader.training.infra.sample_schema import SampleFormatId
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from tests.helpers.training.configuration import TcnFittingParametersFixture
 
 

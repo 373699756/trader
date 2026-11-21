@@ -38,26 +38,27 @@ from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.bundle_codec import TrainedLightGBMModelSnapshot, TrainedRidgeModelSnapshot
 from trader.training.infra.model_bundles.profile_publication import ClearProfileStaging
 from trader.training.infra.model_evaluation import CalibrationResult, CalibrationUnavailableError, PredictionMetrics
-from trader.training.infra.model_fitting import FitIndustryModels, RidgeFittingParameters
+from trader.training.infra.model_fitting import FitIndustryModels
+from trader.training.infra.fitting_settings import RidgeFittingParameters
 from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v2.training import RunV2Training as _run_v2_training
-from trader.training.infra.profile.v3.contracts import (
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_training import RunV2Training as _run_v2_training
+from trader.training.infra.research.close_return.v3_contracts import (
     HEAD_CONTRACTS,
     TOMORROW_HEAD_CONTRACT,
     V3_TRAINING_PROFILE,
 )
-from trader.training.infra.profile.v3.sample_builder import (
+from trader.training.infra.research.close_return.v3_sample_builder import (
     AlignedSampleDates,
     BuildTrainingSamples,
     ResidualizeSampleDay,
     TrainingAlphaTarget,
 )
-from trader.training.infra.profile.v3.training import (
+from trader.training.infra.research.close_return.v3_training import (
     RunTomorrowTraining as _run_tomorrow_training,
 )
-from trader.training.infra.profile.v3.training import RunV3Training as _run_v3_training
-from trader.training.infra.profile.v3.training_sample_index import (
+from trader.training.infra.research.close_return.v3_training import RunV3Training as _run_v3_training
+from trader.training.infra.research.close_return.v3_sample_index import (
     SQLiteV3TrainingSampleIndex,
     V3TrainingIndustryCounts,
     V3TrainingSample,

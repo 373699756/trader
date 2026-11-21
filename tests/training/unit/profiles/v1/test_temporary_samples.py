@@ -15,7 +15,7 @@ from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteTransaction
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.profile.v1.samples import LearnedRankMatrixRequest, LearnedRankSampleIndex
+from trader.training.infra.d25.v1.samples import LearnedRankMatrixRequest, LearnedRankSampleIndex
 from trader.training.infra.sample_cache import TemporaryTrainingSamples
 
 _DAY = date(2026, 1, 5)

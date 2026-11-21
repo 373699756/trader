@@ -5,13 +5,13 @@ from dataclasses import replace
 
 import pytest
 
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer
 from trader.infra.serialization.canonical import ContentHash
 
 from trader.infra.settings.models import PerformanceWorkloadSettings
 
-from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 
-from trader.recommendation.application.pipeline.local_score.v1.scoring import LearnedRankScoringService
+from trader.recommendation.application.d25.v1.scoring import LearnedRankScoringService
 
 
 
@@ -58,7 +58,7 @@ def test_profile_fixtures_qualify_for_both_actual_scoring_services(profile_id):
                 profile, strategy, cost_policy=ExecutionCostPolicy(0.002, 1.0), content_hash=ContentHash
             )
             if profile_id == "v1"
-            else ProductionModelScoringService(profile, strategy, cost_policy=ExecutionCostPolicy(0.002, 1.0))
+            else BuildUtilityScorer(profile, strategy, cost_policy=ExecutionCostPolicy(0.002, 1.0))
         )
         assert all(service.is_input_eligible(feature) for feature in features)
     if profile_id == "v5":

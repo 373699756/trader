@@ -30,15 +30,16 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_observers 
 
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
 
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex, UnifiedProfilePair
 
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 
-from trader.recommendation.application.ports.runtime import CycleRequest, DataRefreshPendingError, DataRefreshUnavailableError, FreezeUnavailableError, RefreshOutcome, SettlementUnavailableError, TradingCalendarUnavailableError
+from trader.recommendation.application.ports.runtime import CycleRequest, DataRefreshPendingError, DataRefreshUnavailableError, FreezeUnavailableError, HeadInputFailure, RefreshOutcome, SettlementUnavailableError, TradingCalendarUnavailableError
 
 from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask, SchedulePointKey, SchedulePointStatus
 
 from trader.recommendation.application.runtime.latest_wins import LatestWinsOffer
+from trader.recommendation.application.runtime.recommendation_round import RecommendationRounds
 
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 
@@ -48,7 +49,7 @@ from trader.recommendation.application.runtime.scheduler_runtime import Schedule
 
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord, FreezeOverlay, ScoredFreeze
 
-from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.publication.models import RecommendationAction, ScoredHeadGap, Strategy
 
 from trader.infra.settings.models import HistoryPreloadSettings
 
@@ -1038,19 +1039,35 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_
     assert isinstance(index.snapshot(Strategy.D25).current, ScoredFreeze)
 
 
-def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> None:
+@pytest.mark.parametrize("bad_strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize("failure", ("head_scoring", "head_inputs", "head_overlay", "market_cut"))
+def test_scoring_wave_isolates_head_failures_but_requires_shared_market_cut(bad_strategy, failure) -> None:
     observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
     index = UnifiedFreezeIndex()
     originals = (freeze(Strategy.TOMORROW), freeze(Strategy.D25))
     for original in originals:
         assert index.publish(original, expected_version=None).accepted
 
-    class FailedD25(Freezes):
+    class FaultedInputs(DataRefresh):
+        def refresh_round_heads(self, requests):
+            if failure == "market_cut":
+                raise DataRefreshUnavailableError("market_snapshot_unavailable")
+            super().refresh_round_heads(requests)
+            return (HeadInputFailure(bad_strategy, "discovery_population_unavailable"),) if failure == "head_inputs" else ()
+
+    class FaultedFreezes(Freezes):
         def build_local(self, request: CycleRequest):
-            if request.strategy is Strategy.D25:
-                raise FreezeUnavailableError("model_input_pending")
+            if request.strategy is bad_strategy and failure == "head_scoring":
+                raise FreezeUnavailableError("private_model_trace")
             return super().build_local(request)
 
+        def initial_overlay(self, local):
+            if local.strategy is bad_strategy and failure == "head_overlay":
+                raise FreezeUnavailableError("freeze_quote_unavailable")
+            return super().initial_overlay(local)
+
+    batch_events = []
+    rounds = RecommendationRounds(publish_batch_event=lambda seq, events, gaps: batch_events.append((seq, events, gaps)))
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -1062,8 +1079,8 @@ def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> 
             clock=FixedClock(observed_at),
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
-            data=DataRefresh(),
-            freezes=FailedD25(),
+            data=FaultedInputs(),
+            freezes=FaultedFreezes(),
             reviews=SharedReviews(),
             index=index,
             observer=AsyncFreezeObserver((), capacity=4, thread_name="test-paired-failure-observer"),
@@ -1072,6 +1089,7 @@ def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> 
             research_factory=noop_research_factory,
             publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
+            rounds=rounds,
         ),
         config_version="runtime-current",
         shutdown_timeout_seconds=2.0,
@@ -1082,7 +1100,26 @@ def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> 
         assert runtime.wait_idle(2.0)
     finally:
         runtime.stop(ShutdownDeadline.start(2.0))
-    assert tuple(index.snapshot(item.strategy).current for item in originals) == originals
+    if failure == "market_cut":
+        assert not batch_events
+        assert tuple(index.snapshot(item.strategy).current for item in originals) == originals
+        assert all(index.snapshot(item.strategy).head_gap is None for item in originals)
+        return
+    assert len(batch_events) == 1
+    _, events, gaps = batch_events[0]
+    retained = index.snapshot(bad_strategy)
+    healthy = next(item for item in originals if item.strategy is not bad_strategy)
+    healthy_view = index.snapshot(healthy.strategy)
+    assert healthy_view.current != healthy and healthy_view.head_gap is None
+    assert retained.current == next(item for item in originals if item.strategy is bad_strategy)
+    assert retained.head_gap is not None
+    assert retained.head_gap.reason == {
+        "head_scoring": "freeze_unavailable",
+        "head_inputs": "discovery_population_unavailable",
+        "head_overlay": "freeze_quote_unavailable",
+    }[failure]
+    assert gaps == (("default", (retained.head_gap,)),)
+    assert tuple(event.strategy for _, profiles in events for event in profiles) == (healthy.strategy,)
 
 
 def test_scoring_wave_uses_captured_pair_when_live_source_advances() -> None:
@@ -1766,7 +1803,8 @@ def test_midday_recovery_does_not_queue_duplicate_while_lane_is_running() -> Non
     assert score_lane.pending is False
 
 
-def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> None:
+@pytest.mark.parametrize("retained_head", (None, Strategy.TOMORROW, Strategy.D25))
+def test_after_close_current_reuse_requires_a_non_retained_head(retained_head) -> None:
     before_close = datetime(2026, 8, 11, 14, 49, 55, tzinfo=SHANGHAI)
     after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     data = DataRefresh()
@@ -1804,16 +1842,21 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
             observed_at=before_close,
         )
         assert index.publish(current, expected_version=None).accepted
+    if retained_head is not None:
+        gap = ScoredHeadGap(retained_head, before_close.date(), before_close, "model_input_pending")
+        prepared = UnifiedProfilePair("default", index, (), (), (), head_gaps=(gap,))
+        assert UnifiedFreezeIndex.publish_scored_batch((prepared,)).accepted
 
     runtime.start()
     runtime.submit_due(after_close)
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert [request.strategy for request in data.requests if request.phase != "quote_overlay"] == [Strategy.LONG]
+    expected_requests = {Strategy.LONG} if retained_head is None else {Strategy.LONG, retained_head}
+    assert {request.strategy for request in data.requests if request.phase != "quote_overlay"} == expected_requests
     assert {(strategy, recovery_path) for strategy, recovery_path, _version in sealing.close_fallback_calls} == {
-        (Strategy.TOMORROW, "current"),
-        (Strategy.D25, "current"),
+        (strategy, "close_rebuild" if strategy is retained_head else "current")
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
     }
     assert all(
         index.snapshot(strategy).formal.commit_kind == "close_fallback"
@@ -1822,12 +1865,25 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
     assert index.snapshot(Strategy.LONG).formal is None
 
 
-def test_after_close_formal_records_only_refresh_selected_overlays_without_full_market_recovery() -> None:
+@pytest.mark.parametrize("missing_head", (None, Strategy.TOMORROW, Strategy.D25))
+def test_after_close_target_settlement_does_not_wait_for_new_formal_records(missing_head) -> None:
     after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
-    data = DataRefresh()
+
+    class PendingCloseInput(DataRefresh):
+        def refresh_task(self, request):
+            if missing_head is not None and request.task is PipelineTask.CLOSE_QUOTES:
+                self.task_requests.append(request)
+                raise DataRefreshPendingError("close_input_pending")
+            return super().refresh_task(request)
+
+    data = PendingCloseInput()
     index = UnifiedFreezeIndex()
     settlement = Settlement()
+    tomorrow_settlements: list[datetime] = []
+    d25_settlements: list[datetime] = []
     for strategy in (Strategy.TOMORROW, Strategy.D25):
+        if strategy is missing_head:
+            continue
         formal = replace(freeze(strategy, sequence=1), trade_date=after_close.date())
         assert index.restore_formal(CommittedFreezeRecord(formal, after_close, "scheduled"))
     existing = {strategy: index.snapshot(strategy).formal for strategy in (Strategy.TOMORROW, Strategy.D25)}
@@ -1849,6 +1905,8 @@ def test_after_close_formal_records_only_refresh_selected_overlays_without_full_
             observer=AsyncFreezeObserver((), capacity=4, thread_name="test-after-close-formal-observer"),
             sealing=Sealing(),
             settlement=settlement,
+            tomorrow_settlement=tomorrow_settlements.append,
+            d25_settlement=d25_settlements.append,
             research_factory=noop_research_factory,
             publish_freeze=lambda _event: None,
             publish_overlay=lambda _overlay: None,
@@ -1862,9 +1920,10 @@ def test_after_close_formal_records_only_refresh_selected_overlays_without_full_
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert PipelineTask.CLOSE_QUOTES not in {request.task for request in data.task_requests}
+    assert (PipelineTask.CLOSE_QUOTES in {request.task for request in data.task_requests}) is (missing_head is not None)
     assert not [request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES]
-    assert settlement.calls == [after_close]
+    assert tomorrow_settlements == d25_settlements == [after_close]
+    assert settlement.calls == ([after_close] if missing_head is None else [])
     assert {strategy: index.snapshot(strategy).formal for strategy in existing} == existing
     assert index.snapshot(Strategy.LONG).current is not None
     assert index.snapshot(Strategy.LONG).formal is None
@@ -2672,7 +2731,8 @@ def test_only_a_complete_round_recovers_its_global_collection_timeout(monkeypatc
             runtime._cycles.execute_round_pair(requests, round_sequence=following.sequence)
             assert dependencies.rounds.status().outcome == "published"
         else:
-            runtime._cycles.execute_pair(requests)
+            for request in requests:
+                runtime._cycles.execute(request)
         status = runtime.status()
         assert status.local_publish_count == 2
         issues = {issue.code: issue for issue in status.recent_errors}

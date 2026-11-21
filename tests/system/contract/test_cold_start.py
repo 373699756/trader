@@ -26,9 +26,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 
 from trader.training.infra.model_bundles.profile_publication import InspectPublishedProfileBundles
-from trader.training.infra.model_bundles.contracts import D25ProfileContract
-
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.d25.v3.contracts import V3_D25_PROFILE
 
 from tests.helpers.shared.cold_start import (
     _empty_config,
@@ -74,14 +72,14 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
 
 def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, monkeypatch, caplog):
     config = _empty_config(tmp_path)
-    _publish_profile(tmp_path / "data/training/models", D25ProfileContract(V3_TRAINING_PROFILE))
+    _publish_profile(tmp_path / "data/training/models", V3_D25_PROFILE)
     seen = []
 
     def load_target(model_root, profile, target):
         seen.append((profile.profile_id, target.threshold_bps))
         return profile
 
-    monkeypatch.setattr("trader.training.infra.d25_probability.LoadD25ScoringProfile", load_target)
+    monkeypatch.setattr("trader.training.infra.d25.artifact.LoadD25ScoringProfile", load_target)
     system = BuildProfiledSystem(config)
     client = system.app.test_client()
 
@@ -89,8 +87,8 @@ def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, mon
         scoring = client.get(f"/api/status?profile={profile}").get_json()["scoring_profile"]
         assert scoring["heads"]["d25"]["is_enable"] is is_enabled
         assert not scoring["heads"]["tomorrow"]["is_enable"]
-    assert "V2 双头模型工件缺失" in caplog.text
-    assert "V3 双头模型工件缺失" not in caplog.text
+    assert "V2 D25 模型工件缺失" in caplog.text
+    assert "V3 D25 模型工件缺失" not in caplog.text
     assert seen == [("v3", 100)]
 
 
@@ -108,7 +106,7 @@ def test_all_tomorrow_profiles_load_independently_with_equal_targets(tmp_path, m
         calls.append((profile, target.threshold_bps))
         return Predictor(profile[-1] * 64)
 
-    monkeypatch.setattr("trader.training.infra.tomorrow_probability.LoadTomorrowProbabilityModel", load)
+    monkeypatch.setattr("trader.training.infra.tomorrow.artifact.LoadTomorrowProbabilityModel", load)
     system = BuildProfiledSystem(_empty_config(tmp_path))
     client = system.app.test_client()
     assert sorted(calls) == [(profile, 500) for profile in SCORING_PROFILE_IDS]
@@ -137,7 +135,7 @@ def test_changing_one_tomorrow_target_does_not_disable_other_profiles(tmp_path, 
             raise FileNotFoundError
         return Predictor()
 
-    monkeypatch.setattr("trader.training.infra.tomorrow_probability.LoadTomorrowProbabilityModel", load)
+    monkeypatch.setattr("trader.training.infra.tomorrow.artifact.LoadTomorrowProbabilityModel", load)
     system = BuildProfiledSystem(config, profiles=("v1", "v5", "v3", "v2"))
     assert sorted(loaded) == [("v1", 600), ("v2", 500), ("v3", 500), ("v5", 500)]
     client = system.app.test_client()
@@ -150,20 +148,20 @@ def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_fai
     now = datetime(2026, 10, 20, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: now)
     config = _empty_config(tmp_path)
-    contract = V3_TRAINING_PROFILE.heads[0]
+    contract = V3_D25_PROFILE.heads[0]
     _write_bundle(tmp_path / "data/training/models/v3" / contract.directory_name, contract)
     system = BuildSystem(config, scoring_profile="v3")
     scoring = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
     assert all(head["is_enable"] is False for head in scoring["heads"].values())
     original = record()
-    system.records.initialize()
-    system.records.commit(original)
+    system.records.shared_history.initialize()
+    system.records.shared_history.commit(original)
     route = f"/api/freezes/tomorrow/history?date={original.trade_date.isoformat()}"
     before = system.app.test_client().get(route).get_json()
 
-    _publish_profile(tmp_path / "data/training/models", V3_TRAINING_PROFILE)
+    _publish_profile(tmp_path / "data/training/models", V3_D25_PROFILE)
     metadata = (
-        InspectPublishedProfileBundles(tmp_path / "data/training/models/v3", V3_TRAINING_PROFILE)[0].model_path.parent
+        InspectPublishedProfileBundles(tmp_path / "data/training/models/v3", V3_D25_PROFILE)[0].model_path.parent
         / "metadata.json"
     )
     metadata.write_text("{}", encoding="utf-8")
@@ -172,9 +170,10 @@ def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_fai
     assert client.get("/").status_code == 200
     scoring = client.get("/api/status").get_json()["scoring_profile"]
     assert scoring["profile_id"] == "v3"
-    for head in scoring["heads"].values():
-        assert head["is_enable"] is False
-        assert head["historical_failure_reasons"] == ["production_model_integrity_conflict"]
+    assert not scoring["heads"]["tomorrow"]["is_enable"]
+    assert scoring["heads"]["tomorrow"]["historical_failure_reasons"] == ["tomorrow_probability_model_unavailable"]
+    assert not scoring["heads"]["d25"]["is_enable"]
+    assert scoring["heads"]["d25"]["historical_failure_reasons"] == ["production_model_integrity_conflict"]
     after = client.get(route).get_json()
     assert after == before
     assert after["items"][0]["code"] == original.freeze.items[0].code

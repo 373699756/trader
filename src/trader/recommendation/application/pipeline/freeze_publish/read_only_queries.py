@@ -43,7 +43,7 @@ from trader.recommendation.domain.publication.freeze_identity import (
 )
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
 from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord, HistoricalFreezeSnapshot
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import ScoredHeadGap, Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.publication.score_ledger import ScoreLedger
 
@@ -210,6 +210,7 @@ class FreezeView:
     pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
     outcome_summaries: tuple[OutcomeTierSummary, ...] = ()
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
+    head_gap: ScoredHeadGap | None = field(default=None, kw_only=True)
 
     @property
     def projection_version(self) -> str | None:
@@ -272,8 +273,11 @@ class UnifiedFreezeQueries:
         if strategy is Strategy.LONG:
             return _long_current(snapshot, now)
         freeze, formal = _current_scored(snapshot, strategy, now)
+        gap = _current_head_gap(snapshot, now) if formal is None else None
         if freeze is None:
             empty = _empty_view(strategy, now.date(), "current", "scored", "current_freeze_unavailable")
+            if gap is not None:
+                return _with_head_gap(empty, gap)
             draft = _current_draft(self._drafts.snapshot(strategy), strategy, now)
             if draft is None:
                 return empty
@@ -289,7 +293,8 @@ class UnifiedFreezeQueries:
             formal,
             classified_industries,
         )
-        return _scored_view(freeze, now, view_input)
+        view = _scored_view(freeze, now, view_input)
+        return _with_head_gap(view, gap) if gap is not None else view
 
     def _classified_industries(self, freeze: ScoredFreeze, now: datetime) -> Mapping[str, str]:
         source = self._industry_classifications
@@ -442,12 +447,25 @@ def _current_scored(
     )
     if now >= boundary:
         formal = snapshot.formal
-        if formal is None or formal.trade_date != now.date():
-            return None, None
-        return formal.freeze, formal
+        if formal is not None and formal.trade_date == now.date():
+            return formal.freeze, formal
+    if _current_head_gap(snapshot, now) is not None and isinstance(current, ScoredFreeze):
+        return current, None
+    if now >= boundary:
+        return None, None
     if not isinstance(current, ScoredFreeze) or current.trade_date != now.date():
         return None, None
     return current, None
+
+
+def _with_head_gap(view: FreezeView, gap: ScoredHeadGap) -> FreezeView:
+    failure_identity = f"{gap.trade_date.isoformat()}:{gap.failed_at.isoformat()}:{gap.reason}"
+    return replace(view, head_gap=gap, etag=f"{view.etag or ''}+head-gap:{failure_identity}")
+
+
+def _current_head_gap(snapshot: UnifiedFreezeSnapshot, now: datetime) -> ScoredHeadGap | None:
+    gap = snapshot.head_gap
+    return gap if gap is not None and gap.failed_at.date() == now.date() else None
 
 
 def _current_draft(freeze: ScoredFreeze | None, strategy: Strategy, now: datetime) -> ScoredFreeze | None:

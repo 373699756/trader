@@ -24,7 +24,7 @@ from trader.recommendation.domain.publication.freeze_identity import (
     VisibleScoredSeats,
 )
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import ScoredHeadGap, Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 
 ResyncReason = Literal[
@@ -87,6 +87,7 @@ class ResyncEventPayload:
 class ProfileFreezeBatch:
     profile: str
     freezes: tuple[FreezeEventPayload, ...]
+    head_gaps: tuple[ScoredHeadGap, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -152,15 +153,18 @@ class UnifiedFreezeEventStream:
         self,
         round_sequence: int,
         events: tuple[tuple[str, tuple[FreezeCommitted, ...]], ...],
+        head_gaps: tuple[tuple[str, tuple[ScoredHeadGap, ...]], ...] = (),
     ) -> UnifiedPublishedEvent:
         if round_sequence < 1 or not events:
             raise ValueError("freeze batch requires a positive round and profile events")
+        gaps_by_profile = dict(head_gaps)
         payload = FreezeBatchPayload(
             round_sequence,
             tuple(
                 ProfileFreezeBatch(
                     profile,
                     tuple(_freeze_payload(item, profile=profile) for item in items),
+                    gaps_by_profile.get(profile, ()),
                 )
                 for profile, items in events
             ),

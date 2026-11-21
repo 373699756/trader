@@ -19,11 +19,12 @@ from tests.helpers.training.profiles.v5.v5_training import _history
 from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
+from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile, DiagnosticScoringUnavailableError
 from trader.recommendation.infra.settings.loading import LoadPredictionTargets
 from trader.training.application.selected_training import SelectedTrainingTask, TrainingLocations
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.cpu_admission import TrainingCpuBudget
+from trader.training.infra.research.close_return.selection import CloseReturnResearchMode
 from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
 from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult, TomorrowProbabilityTrainingResult
 from trader.training.application.selected_training import TrainSelectedProfiles
@@ -77,8 +78,8 @@ def test_selected_train_delivers_four_independent_tomorrow_and_d25_heads(tmp_pat
         fit_targets.append(request.binding.target.threshold_bps)
         return object()
 
-    monkeypatch.setattr("trader.training.infra.profile.v1.training.FitV1D25Probability", fit_v1)
-    monkeypatch.setattr("trader.training.infra.profile.v1.training.PublishD25Probability", lambda *_args: None)
+    monkeypatch.setattr("trader.training.infra.d25.v1.training.FitV1D25Probability", fit_v1)
+    monkeypatch.setattr("trader.training.infra.d25.v1.training.PublishD25Probability", lambda *_args: None)
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryD25Probability", fit_industry)
     monkeypatch.setattr("trader.training.infra.engine.PublishD25Probability", lambda *_args: None)
     targets = LoadPredictionTargets(request.runtime.strategy_config_path)
@@ -160,9 +161,9 @@ def test_shared_reader_closes_nested_streams_even_when_callers_retain_them(tmp_p
     with ThreadPoolExecutor(max_workers=2) as executor:
         if terminal in ("source_failure", "cancelled"):
             with pytest.raises(OSError if terminal == "source_failure" else InterruptedError):
-                TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
+                TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
         else:
-            result = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
+            result = TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
             assert all(item.failure == ("fixture_worker_failure" if terminal == "worker_failure" else None)
                        for item in result.outcomes)
     assert source_closed.is_set()
@@ -176,7 +177,7 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(
     tmp_path, monkeypatch, publication_exit, four_profile_seed: FourProfileSeed,
 ):
     import torch
-    from trader.training.infra.profile.v5 import network
+    from trader.training.infra.tcn import network
 
     original_threads = torch.get_num_threads()
     original_deterministic = torch.are_deterministic_algorithms_enabled()
@@ -207,11 +208,11 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(
         assert root.exists() == (publication_exit == "new_moved")
         assert len(tuple(root.parent.glob(f".{profile}.previous.*"))) == 1
         if publication_exit == "old_moved":
-            with pytest.raises(ScoringModelsUnavailableError):
-                LoadScoringProfile(profile, training_root=request.paths.models)
+            with pytest.raises(DiagnosticScoringUnavailableError):
+                LoadDiagnosticScoringProfile(profile, training_root=request.paths.models)
             assert not root.exists()  # The serving reader never repairs a model directory.
     with ThreadPoolExecutor(max_workers=4) as executor:
-        reused = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
+        reused = TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
     assert not scans
     assert reused.history_scan_passes == reused.history_rows_read == 0
     assert all(item.result.reused for item in reused.outcomes)
@@ -231,7 +232,7 @@ def test_four_real_workers_one_scan_then_standard_model_or_sample_reuse(
 
     monkeypatch.setattr(network, "PreserveTcnRuntime", missing_dependency)
     with ThreadPoolExecutor(max_workers=4) as executor:
-        partial_failure = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
+        partial_failure = TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
     assert all(item.result.reused for item in partial_failure.outcomes[:3])
     assert partial_failure.outcomes[3].failure == "ImportError"
     assert partial_failure.history_scan_passes == 0

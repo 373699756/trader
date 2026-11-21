@@ -22,8 +22,8 @@ def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None
 
     for relative in (
         "src/trader/training/infra/model_bundles/bundle_codec.py",
-        "src/trader/training/infra/profile/v2/contracts.py",
-        "src/trader/training/infra/profile/v3/contracts.py",
+        "src/trader/training/infra/d25/v2/contracts.py",
+        "src/trader/training/infra/d25/v3/contracts.py",
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "trader.training.infra.model_bundles.contracts" in source, relative
@@ -37,7 +37,7 @@ def test_v3_feature_identifiers_are_declared_only_by_the_catalog() -> None:
         "src/trader/training/application/tomorrow_historical_validation.py",
         "src/trader/training/domain/tomorrow_training_input.py",
         "src/trader/training/infra/model_bundles/bundle_codec.py",
-        "src/trader/training/infra/profile/v3/training.py",
+        "src/trader/training/infra/research/close_return/v3_training.py",
     )
     for relative in consumers:
         source = (ROOT / relative).read_text(encoding="utf-8")

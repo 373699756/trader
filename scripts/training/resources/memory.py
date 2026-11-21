@@ -69,7 +69,7 @@ def Main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
     _configure_resources()
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.training.infra.profile.v3.training import RunRepackV3Training
+    from trader.training.infra.research.close_return.v3_training import RunRepackV3Training
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
     from trader.bootstrap import BuildSqlitePolicy, ReadIndustrySnapshot

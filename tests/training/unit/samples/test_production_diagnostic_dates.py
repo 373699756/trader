@@ -13,8 +13,8 @@ from trader.training.domain.production_diagnostic_dates import (
     TrainingSampleDatePartitions,
 )
 from trader.training.domain.training_dates import BuildTrainingDateSplit
-from trader.training.infra.profile.v3.contracts import D25_HEAD_CONTRACT, TOMORROW_HEAD_CONTRACT
-from trader.training.infra.profile.v3.training_sample_index import SQLiteV3TrainingSampleIndex
+from trader.training.infra.research.close_return.v3_contracts import D25_HEAD_CONTRACT, TOMORROW_HEAD_CONTRACT
+from trader.training.infra.research.close_return.v3_sample_index import SQLiteV3TrainingSampleIndex
 from trader.training.infra.sample_index import TrainingSample
 
 

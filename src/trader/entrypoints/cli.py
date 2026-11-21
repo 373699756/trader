@@ -30,6 +30,12 @@ if TYPE_CHECKING:
     from trader.training.entrypoints.report_output import TrainingReportOutput
 
 
+def _parse_training_scope(value: str) -> tuple[ScoringProfileId, ...] | Strategy:
+    if value in (Strategy.TOMORROW.value, Strategy.D25.value):
+        return Strategy(value)
+    return ParseProfileSelection(value)
+
+
 def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trader-cli")
     parser.add_argument(
@@ -55,9 +61,14 @@ def BuildParser() -> argparse.ArgumentParser:
     training.add_argument(
         "profiles",
         nargs="?",
-        type=ParseProfileSelection,
+        type=_parse_training_scope,
         default=SCORING_PROFILE_IDS,
-        help="Comma-separated profiles; defaults to all profiles.",
+        metavar="scope",
+        help="tomorrow, d25, or a comma-separated profile list; omit to train everything.",
+    )
+    training.add_argument(
+        "strategy_profiles", nargs="?", type=ParseProfileSelection, metavar="profiles",
+        help="Comma-separated profiles after tomorrow or d25; defaults to all profiles for that strategy.",
     )
     training.add_argument("--json", action="store_true", help="Print complete result JSON to stdout.")
     training.add_argument("--diagnostics", type=Path, help="Write full diagnostics to a new file; never overwrite.")
@@ -109,6 +120,8 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command == "train":
         if args.profile is not None:
             parser.error("train does not accept --profile")
+        if args.strategy_profiles is not None and not isinstance(args.profiles, Strategy):
+            parser.error("train accepts a second argument only after tomorrow or d25")
         return _run_train(args)
     try:
         config_path = _absolute_config_path(args.config)
@@ -314,13 +327,27 @@ def _execute_train(args: argparse.Namespace, reports: TrainingReportOutput) -> i
             return 130
         output.report_notice("存储检测", "磁盘策略已确定", state="完成")
         output.report_notice("配置检查", "配置准备完成", state="完成")
-        profiles = cast(tuple[ScoringProfileId, ...], args.profiles)
-        output.report_notice("训练范围", f"档位 {', '.join(profile.upper() for profile in profiles)}；仅使用本地已发布资料；缺资料请先执行 ./run.sh sync history", state="完成")
-        return _run_selected_training(runtime, profiles, output=output, reports=reports)
+        scope = cast(tuple[ScoringProfileId, ...] | Strategy, args.profiles)
+        strategy = scope if isinstance(scope, Strategy) else None
+        if isinstance(scope, Strategy):
+            profiles = cast(tuple[ScoringProfileId, ...] | None, args.strategy_profiles) or SCORING_PROFILE_IDS
+        else:
+            profiles = scope
+        strategy_label = strategy.value if strategy is not None else "Tomorrow、D25"
+        output.report_notice(
+            "训练范围",
+            f"档位 {', '.join(profile.upper() for profile in profiles)}；检查 {strategy_label} 工件；"
+            "仅使用本地已发布资料；缺资料请先执行 ./run.sh sync history",
+            state="完成",
+        )
+        return _run_selected_training(runtime, profiles, strategy=strategy, output=output, reports=reports)
 
 
 def _run_selected_training(
-    runtime: RuntimeSettings, profiles: tuple[ScoringProfileId, ...], *,
+    runtime: RuntimeSettings,
+    profiles: tuple[ScoringProfileId, ...],
+    *,
+    strategy: Strategy | None,
     output: StderrTomorrowTrainingProgress,
     reports: TrainingReportOutput,
 ) -> int:
@@ -331,7 +358,7 @@ def _run_selected_training(
     try:
         output.report_notice("执行与收尾", "等待所选档位返回；含资源准备、训练、结果检查与关闭，具体进度见各档位阶段", state="开始")
         code = ExecuteSelectedTraining(runtime, profiles, started_at=output.started_at,
-                                       terminal_columns=output.layout.columns, report_output=reports)
+                                       terminal_columns=output.layout.columns, report_output=reports, strategy=strategy)
         output.report_notice("执行与收尾", f"退出码 {code}", state="取消" if code == 130 else "失败" if code else "完成")
         return code
     except KeyboardInterrupt:
@@ -364,10 +391,10 @@ def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringPr
     from trader.download.infra.download_settings import LoadDownloadFailureConfiguration, LoadHistorySyncConfiguration
     from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
     from trader.training.infra.research_settings import LoadEvaluationCostScenarios
-    from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
-    from trader.training.infra.profile.v5.configuration import TcnConfigurationDocument
-    from trader.training.infra.profile.v5.settings import TcnFittingParameters
+    from trader.training.infra.learned_rank_settings import LoadV1TrainingSettings
     from trader.training.infra.research_settings import LoadResearchSettings
+    from trader.training.infra.tcn.configuration import TcnConfigurationDocument
+    from trader.training.infra.tcn.settings import TcnFittingParameters
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
     config_dir = runtime.config_path.parent

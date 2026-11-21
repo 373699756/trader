@@ -128,9 +128,9 @@ def test_full_fixture_sample_rows_partitions_and_sequences_match_baseline(tmp_pa
     from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
     from trader.training.application.tomorrow_training import TomorrowTrainingWindow
     from trader.training.domain.training_dates import BuildTrainingDateSplit
-    from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-    from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-    from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+    from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+    from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
+    from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
     from pathlib import Path
 

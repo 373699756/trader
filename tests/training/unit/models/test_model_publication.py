@@ -15,8 +15,8 @@ from tests.helpers.training.profiles.v3.profile import _diagnostic_documents, _d
 from tests.helpers.training.history_training_due import HistoryTrainingExpectationFixture
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.scoring import profile_factory
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
+from trader.training.infra.research.close_return import scoring as diagnostic_scoring
+from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile, DiagnosticScoringUnavailableError
 from trader.training.infra.history.history_training_due import PublishedTrainingState
 from trader.training.infra.model_bundles import profile_publication
 from trader.training.infra.model_bundles.profile_publication import (
@@ -26,13 +26,13 @@ from trader.training.infra.model_bundles.profile_publication import (
     ReadPublishedProfileIdentities,
     RecoverProfileBundles,
 )
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, DecodeHeadPublicationIdentity
 from trader.training.infra.model_bundles.bundle_snapshot import InspectPublishedHeadBundle
-from trader.training.infra.model_bundles.contracts import D25ProfileContract
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.d25.contracts import StandardD25Profile
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
 
 
@@ -51,8 +51,8 @@ def test_loading_classifies_actual_document_failures(tmp_path, failure):
             document.pop("content_hash")
             document["content_hash"] = ContentHash(document)
         path.write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(ScoringModelsUnavailableError) as caught:
-        LoadScoringProfile("v3", training_root=tmp_path)
+    with pytest.raises(DiagnosticScoringUnavailableError) as caught:
+        LoadDiagnosticScoringProfile("v3", training_root=tmp_path)
     assert caught.value.reason == failure
 
 
@@ -60,15 +60,15 @@ def test_unexpected_runtime_error_is_not_reclassified_as_missing_models(tmp_path
     def unexpected(*args, **kwargs):
         raise RuntimeError("programming defect")
 
-    monkeypatch.setattr(profile_factory, "InspectPublishedProfileBundles", unexpected)
+    monkeypatch.setattr(diagnostic_scoring, "InspectPublishedProfileBundles", unexpected)
     with pytest.raises(RuntimeError, match="programming defect"):
-        LoadScoringProfile("v3", training_root=tmp_path)
+        LoadDiagnosticScoringProfile("v3", training_root=tmp_path)
 
 
 def test_d25_only_publication_requires_exact_current_head_scope(tmp_path):
     legacy = tmp_path / "paired"
     _publish_profile(legacy, V3_TRAINING_PROFILE)
-    contract = D25ProfileContract(V3_TRAINING_PROFILE)
+    contract = StandardD25Profile("v3")
     root = tmp_path / "models" / "v3"
     staged = legacy / "staging-v3-d25"
 
@@ -166,8 +166,8 @@ def test_installed_old_pair_cannot_load_observe_recover_or_reuse(tmp_path, legac
         (directory / "model.json").write_text(json.dumps(model), encoding="utf-8")
         (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*.json")}
-    with pytest.raises(ScoringModelsUnavailableError) as caught:
-        LoadScoringProfile("v3", training_root=tmp_path)
+    with pytest.raises(DiagnosticScoringUnavailableError) as caught:
+        LoadDiagnosticScoringProfile("v3", training_root=tmp_path)
     assert caught.value.reason == "contract_conflict"
     with pytest.raises(ValueError, match="metadata fields"):
         ReadPublishedProfileIdentities(root, V3_TRAINING_PROFILE, cancel_requested=lambda: False)
@@ -246,7 +246,7 @@ def test_publisher_rechecks_recent_qualification_after_staging_copy(tmp_path, mo
 def test_reader_wait_is_bounded_during_the_directory_switch(tmp_path, monkeypatch):
     _publish_profile(tmp_path, V3_TRAINING_PROFILE)
     root = tmp_path / "v3"
-    loaded = LoadScoringProfile("v3", training_root=tmp_path)
+    loaded = LoadDiagnosticScoringProfile("v3", training_root=tmp_path)
     original = loaded.publications
     moved, release = threading.Event(), threading.Event()
     rename = profile_publication.os.replace
@@ -273,12 +273,12 @@ def test_reader_wait_is_bounded_during_the_directory_switch(tmp_path, monkeypatc
     heads = InspectPublishedProfileBundles(root, V3_TRAINING_PROFILE)
     assert len(heads) == 2
     assert len({head.training_run_hash for head in heads}) == 1
-    assert LoadScoringProfile("v3", training_root=tmp_path).publications == original
+    assert LoadDiagnosticScoringProfile("v3", training_root=tmp_path).publications == original
 
 
 def test_model_publication_state_is_fixed_until_restart_without_constructing_new_predictors(tmp_path, monkeypatch):
     _publish_profile(tmp_path, V3_TRAINING_PROFILE)
-    loaded = LoadScoringProfile("v3", training_root=tmp_path)
+    loaded = LoadDiagnosticScoringProfile("v3", training_root=tmp_path)
     now = datetime(2026, 10, 20, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
     projection = PublishedTrainingState(
         tmp_path / "history", tmp_path, loaded.publications, owned_profile="v3", wall_clock=lambda: now,
@@ -299,14 +299,14 @@ def test_model_publication_state_is_fixed_until_restart_without_constructing_new
         staged.append((contract.strategy, path))
     PublishProfileBundles(tmp_path / "v3", V3_TRAINING_PROFILE, tuple(staged))
     with monkeypatch.context() as scope:
-        scope.setattr(profile_factory, "BuildTrainedScoringProfile", lambda *args: pytest.fail("no hot model loading"))
+        scope.setattr(diagnostic_scoring, "BuildTrainedScoringProfile", lambda *args: pytest.fail("no hot model loading"))
         projection.initialize()
     assert projection.status() == before
     projection.observe_publication(lambda: False)
     current = tuple(head for head in projection.status() if head.owned)
     assert len(current) == 2 and all(head.restart_required for head in current)
     assert tuple(head.loaded for head in current) == loaded.publications
-    updated = LoadScoringProfile("v3", training_root=tmp_path)
+    updated = LoadDiagnosticScoringProfile("v3", training_root=tmp_path)
     assert updated.publications != loaded.publications
     assert tuple(head.disk for head in current) == updated.publications
     restarted = PublishedTrainingState(

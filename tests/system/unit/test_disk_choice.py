@@ -101,9 +101,10 @@ def test_train_entrypoint_saves_choice_before_running(tmp_path, monkeypatch):
     path = _config(tmp_path, monkeypatch)
     monkeypatch.setattr(disk_runtime.sys, "stdin", _Terminal("1\n"))
 
-    def train(runtime, profiles):
+    def train(runtime, profiles, *, strategy, **_options):
         assert runtime.disk_medium == "ssd"
         assert profiles == ("v2",)
+        assert strategy is None
         return 0
 
     monkeypatch.setattr(cli, "_run_selected_training", train)

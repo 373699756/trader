@@ -18,10 +18,10 @@ from trader.training.infra import selected_training
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.memory_admission import TrainingMemoryBudget
-from trader.training.infra.profile.v1 import training as v1_training
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.d25.v1 import training as v1_training
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_builder import TrainingSampleBuildRequest
 from trader.training.infra.sample_cache import TrainingSampleCache
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex

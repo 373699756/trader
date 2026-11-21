@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from trader.infra.sqlite_observation import IndependentSqliteWork
 
 from trader.recommendation.application.pipeline.freeze_publish.current_publisher import (
-    PrepareCurrentPair,
-    PublishCurrentPair,
+    PreparedCurrentPair,
     PublishCurrentSnapshot,
 )
 from trader.recommendation.application.pipeline.freeze_publish.freeze_events import (
     FreezeCommitted,
 )
+from trader.recommendation.application.ports.loaded_profile import ModelScoringDeadlineError
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
@@ -36,15 +36,31 @@ from trader.recommendation.application.runtime.schedule_requests import (
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError
 from trader.recommendation.domain.publication.freeze_identity import (
     FreezeIdentity,
+    FreezeOverlay,
     ScoredFreeze,
 )
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import ScoredHeadGap, Strategy
+
+
+_LOCAL_HEAD_REASONS = frozenset({
+    "model_input_pending", "model_scoring_unavailable", "model_input_unavailable",
+    "current_native_input_is_unavailable", "candidate_observations_are_unavailable",
+    "scoring_input_identity_is_unavailable", "discovery_population_qualifications_are_unavailable",
+    "future_input_time", "freeze_quote_unavailable", "candidate_data_pending",
+})
 
 
 @dataclass(frozen=True)
 class HybridUpgradeRequest:
     local: ScoredFreeze
     cycle: CycleRequest
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedHeadCycle:
+    request: CycleRequest
+    freeze: ScoredFreeze
+    overlay: FreezeOverlay
 
 
 @dataclass(frozen=True)
@@ -83,26 +99,6 @@ class RecommendationCycleExecutor:
         finally:
             self._dependencies.data.release_scoring_input(request)
 
-    def execute_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None:
-        """Publish one local Tomorrow/D25 wave only after both inputs are ready."""
-
-        if (requests[0].strategy, requests[1].strategy) != (Strategy.TOMORROW, Strategy.D25):
-            raise ValueError("paired cycle requires tomorrow and d25")
-        try:
-            with SessionGuard(requests[0].session), SessionGuard(requests[1].session):
-                pass
-            freezes = self._build_pair(requests)
-            if freezes is None or not self._publish_local_pair(requests, freezes):
-                return
-            for request, local in zip(requests, freezes, strict=True):
-                with IndependentSqliteWork():
-                    self._continue_after_local_publish(request, local, self._hooks.local_lane(request.strategy))
-        except StaleSessionError:
-            return
-        finally:
-            for request in requests:
-                self._dependencies.data.release_scoring_input(request)
-
     def execute_round_pair(
         self,
         requests: tuple[CycleRequest, CycleRequest],
@@ -117,30 +113,42 @@ class RecommendationCycleExecutor:
         try:
             with SessionGuard(requests[0].session), SessionGuard(requests[1].session):
                 pass
-            freezes: tuple[ScoredFreeze, ...] | None
-            if len(scored) == 2:
-                freezes = self._build_pair(requests)
-            elif scored:
-                local = self._build_fresh_local(scored[0])
-                freezes = (local,) if isinstance(local, ScoredFreeze) else None
-            else:
-                freezes = ()
-            if freezes is None or self._dependencies.rounds.cancelled(round_sequence):
+            started_at = time.perf_counter()
+            try:
+                input_failures = self._dependencies.data.refresh_round_heads(scored)
+            except DataRefreshUnavailableError as exc:
+                self._hooks.failure("refresh", FailureCode(exc, "refresh_unavailable"), None)
                 return
-            if (
-                requests[0].preview_context is None
-                and ShanghaiNow(self._dependencies.clock.now()) >= requests[0].review_deadline
-            ):
+            self._record_latency("scoring_data_prepare", started_at)
+            failures = {failure.strategy: failure.reason for failure in input_failures}
+            ready: list[_PreparedHeadCycle] = []
+            gaps: list[ScoredHeadGap] = []
+            started_at = time.perf_counter()
+            for request in scored:
+                if self._dependencies.rounds.cancelled(round_sequence):
+                    return
+                input_failure = failures.get(request.strategy)
+                outcome = (
+                    self._head_gap(request, "refresh", input_failure)
+                    if input_failure is not None else self._prepare_round_head(request)
+                )
+                if isinstance(outcome, ScoredHeadGap):
+                    gaps.append(outcome)
+                else:
+                    ready.append(outcome)
+            self._record_latency("local_scoring", started_at)
+            if self._dependencies.rounds.cancelled(round_sequence):
                 return
+            freezes = tuple(head.freeze for head in ready)
             expected = tuple(
                 current.version if current is not None else None
                 for current in (self._dependencies.index.snapshot(item.strategy).current for item in freezes)
             )
-            prepared = PrepareCurrentPair(
+            prepared = PreparedCurrentPair(
                 self._dependencies.round_profile,
                 self._dependencies.index,
-                self._dependencies.freezes,
                 freezes,
+                tuple(head.overlay for head in ready),
                 expected_versions=expected,
                 publication_io=self._dependencies.publication_io,
                 sessions=tuple(request.session for request in requests),
@@ -149,6 +157,7 @@ class RecommendationCycleExecutor:
                     min(request.review_deadline for request in requests)
                     if requests[0].preview_context is None else None
                 ),
+                head_gaps=tuple(gaps),
             )
             publish_started = time.perf_counter()
             result = self._dependencies.rounds.stage(
@@ -161,7 +170,8 @@ class RecommendationCycleExecutor:
                 for request in requests:
                     self._hooks.rejected(result.reason, request.strategy)
                 return
-            for request, local, event in zip(scored, freezes, result.events, strict=True):
+            for head, event in zip(ready, result.events, strict=True):
+                request, local = head.request, head.freeze
                 if request.session is not None:
                     request.session.remember(local.version)
                 self._hooks.batch_published(event, local)
@@ -173,57 +183,24 @@ class RecommendationCycleExecutor:
             for request in scored:
                 self._dependencies.data.release_scoring_input(request)
 
-    def _build_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> tuple[ScoredFreeze, ScoredFreeze] | None:
-        started_at = time.perf_counter()
+    def _prepare_round_head(self, request: CycleRequest) -> _PreparedHeadCycle | ScoredHeadGap:
         try:
-            self._dependencies.data.refresh_pair(requests)
-        except DataRefreshUnavailableError as exc:
-            with SessionGuard(requests[0].session):
-                self._hooks.failure("refresh", FailureCode(exc, "refresh_unavailable"), None)
-            return None
-        self._record_latency("scoring_data_prepare", started_at)
-        started_at = time.perf_counter()
-        tomorrow = self._build_local(requests[0])
-        if not isinstance(tomorrow, ScoredFreeze):
-            return None
-        d25 = self._build_local(requests[1])
-        if not isinstance(d25, ScoredFreeze):
-            return None
-        self._record_latency("local_scoring", started_at)
-        return tomorrow, d25
-
-    def _publish_local_pair(
-        self,
-        requests: tuple[CycleRequest, CycleRequest],
-        freezes: tuple[ScoredFreeze, ScoredFreeze],
-    ) -> bool:
-        expected = tuple(
-            current.version if current is not None else None
-            for current in (self._dependencies.index.snapshot(item.strategy).current for item in freezes)
-        )
-        try:
-            with SessionGuard(requests[0].session), SessionGuard(requests[1].session):
-                result = PublishCurrentPair(
-                    self._dependencies.index,
-                    self._dependencies.freezes,
-                    freezes,
-                    expected_versions=(expected[0], expected[1]),
-                    publication_io=self._dependencies.publication_io,
-                )
-                if result.accepted:
-                    for request, local in zip(requests, freezes, strict=True):
-                        if request.session is not None:
-                            request.session.remember(local.version)
+            local = self._derive_local(request)
+            if not isinstance(local, ScoredFreeze):
+                return self._head_gap(request, "freeze", "scoring_output_unavailable")
+            return _PreparedHeadCycle(request, local, self._dependencies.freezes.initial_overlay(local))
         except FreezeUnavailableError as exc:
-            self._hooks.failure("freeze", FailureCode(exc, "freeze_quote_unavailable"), None)
-            return False
-        if not result.accepted:
-            for request in requests:
-                self._hooks.rejected(result.reason, request.strategy)
-            return False
-        for local, event in zip(freezes, result.events, strict=True):
-            self._hooks.published(False, event, local)
-        return True
+            reason = FailureCode(exc, "freeze_unavailable")
+            if isinstance(exc.__cause__, ModelScoringDeadlineError):
+                reason = "model_scoring_deadline"
+            elif reason not in _LOCAL_HEAD_REASONS:
+                reason = "freeze_unavailable"
+            return self._head_gap(request, "freeze", reason)
+
+    def _head_gap(self, request: CycleRequest, stage: str, reason: str) -> ScoredHeadGap:
+        with SessionGuard(request.session):
+            self._hooks.failure(stage, reason, request.strategy)
+        return ScoredHeadGap(request.strategy, request.trade_date, ShanghaiNow(self._dependencies.clock.now()), reason)
 
     def _execute(self, request: CycleRequest) -> None:
         lane = self._hooks.local_lane(request.strategy)
@@ -239,7 +216,10 @@ class RecommendationCycleExecutor:
             snapshot = self._dependencies.index.snapshot(request.strategy)
             if snapshot.formal is not None and snapshot.formal.trade_date == request.trade_date:
                 return True
-            if isinstance(snapshot.current, ScoredFreeze) and snapshot.current.trade_date == request.trade_date:
+            if (
+                snapshot.head_gap is None and isinstance(snapshot.current, ScoredFreeze)
+                and snapshot.current.trade_date == request.trade_date
+            ):
                 if request.session is not None and not request.session.allows_version(snapshot.current.version):
                     return False
                 versions = dict(snapshot.current.input_versions)
@@ -340,13 +320,15 @@ class RecommendationCycleExecutor:
 
     def _build_local(self, request: CycleRequest) -> FreezeIdentity | None:
         try:
-            local = self._dependencies.freezes.build_local(request)
-            if local is not None:
-                ValidateCycleIdentity(request, local)
+            return self._derive_local(request)
         except FreezeUnavailableError as exc:
             with SessionGuard(request.session):
                 self._hooks.failure("freeze", FailureCode(exc, "freeze_unavailable"), request.strategy)
             return None
+    def _derive_local(self, request: CycleRequest) -> FreezeIdentity | None:
+        local = self._dependencies.freezes.build_local(request)
+        if local is not None:
+            ValidateCycleIdentity(request, local)
         return local
 
     def _publish(self, identity: FreezeIdentity, *, hybrid: bool) -> bool:

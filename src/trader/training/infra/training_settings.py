@@ -8,26 +8,17 @@ from typing import TYPE_CHECKING
 
 from trader.infra.settings.parser import (
     Integer,
-    Number,
     ProfileMapping,
     ReadJsonObject,
     RequireExactKeys,
     RequireMapping,
 )
-from trader.training.infra.resource_settings import ReadTrainingConfiguration
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
-from trader.training.infra.model_fitting import (
-    LightGBMFittingParameters,
-    ModelFittingParameters,
-    RidgeFittingParameters,
-)
-from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.configuration import ParseTcnParameters
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.d25.contracts import StandardD25Profile
+from trader.training.infra.fitting_settings import LoadIndustryFittingSettings, ModelFittingParameters
+from trader.training.infra.learned_rank_settings import LoadV1TrainingSettings
 
 if TYPE_CHECKING:
     from trader.training.infra.model_bundles.contracts import TrainedProfileContract
@@ -58,53 +49,20 @@ class ProfileTrainingSettings:
 
 
 def LoadProfileTrainingSettings(project_root: Path, profile_id: ScoringProfileId) -> ProfileTrainingSettings:
-    if profile_id not in {"v2", "v3", "v5"}:
-        raise ValueError("industry training settings require v2 or v3; V1 owns learned-rank settings")
-    document = ReadTrainingConfiguration(project_root / "config" / "training.json")
-    profile = ProfileMapping(document.get("profiles"), profile_id, "training.profiles")
-    common_keys = {"fit_dates", "minimum_industry_training_rows"}
-    if profile_id == "v2":
-        RequireExactKeys(profile, common_keys | {"lightgbm"}, "training.v2")
-        model = RequireMapping(profile, "lightgbm")
-        RequireExactKeys(
-            model,
-            {
-                "learning_rate",
-                "max_depth",
-                "num_leaves",
-                "minimum_leaf_rows",
-                "boosting_rounds",
-                "early_stopping_rounds",
-                "maximum_bins",
-                "histogram_pool_mib",
-                "seed",
-            },
-            "training.v2.lightgbm",
-        )
-        fitting: ModelFittingParameters = LightGBMFittingParameters(
-            Integer(profile, "minimum_industry_training_rows", minimum=1),
-            Number(model, "learning_rate", minimum=0.000001),
-            Integer(model, "max_depth", minimum=1),
-            Integer(model, "num_leaves", minimum=2),
-            Integer(model, "minimum_leaf_rows", minimum=1),
-            Integer(model, "boosting_rounds", minimum=1),
-            Integer(model, "early_stopping_rounds", minimum=1),
-            Integer(model, "maximum_bins", minimum=2),
-            Integer(model, "histogram_pool_mib", minimum=1),
-            Integer(model, "seed", minimum=0),
-        )
-    elif profile_id == "v5":
-        RequireExactKeys(profile, common_keys | {"tcn"}, "training.v5")
-        model = RequireMapping(profile, "tcn")
-        fitting = ParseTcnParameters(model, Integer(profile, "minimum_industry_training_rows", minimum=1))
-    else:
-        RequireExactKeys(profile, common_keys | {"ridge"}, "training.v3")
-        model = RequireMapping(profile, "ridge")
-        RequireExactKeys(model, {"penalty"}, "training.v3.ridge")
-        fitting = RidgeFittingParameters(
-            Integer(profile, "minimum_industry_training_rows", minimum=1),
-            Number(model, "penalty", minimum=0.000001),
-        )
+    """Read the inputs for explicit paired close-return diagnostics."""
+    return _load_profile_training_settings(project_root, profile_id, paired=True)
+
+
+def LoadD25TrainingSettings(project_root: Path, profile_id: ScoringProfileId) -> ProfileTrainingSettings:
+    settings = _load_profile_training_settings(project_root, profile_id, paired=False)
+    settings.require_profile(StandardD25Profile(profile_id))
+    return settings
+
+
+def _load_profile_training_settings(
+    project_root: Path, profile_id: ScoringProfileId, *, paired: bool,
+) -> ProfileTrainingSettings:
+    fit_dates, fitting = LoadIndustryFittingSettings(project_root, profile_id)
     features = ReadJsonObject(project_root / "config" / "features.json")
     RequireExactKeys(features, {"model_contracts", "factor_index", "factor_contract", "news_signal"}, "features")
     inputs = ProfileMapping(features.get("model_contracts"), profile_id, "features.model_contracts")
@@ -116,7 +74,7 @@ def LoadProfileTrainingSettings(project_root: Path, profile_id: ScoringProfileId
     heads = RequireMapping(inputs, "heads")
     RequireExactKeys(heads, {"tomorrow", "d25"}, f"features.model_contracts.{profile_id}.heads")
     return ProfileTrainingSettings(
-        Integer(profile, "fit_dates", minimum=61 if profile_id == "v5" else 1),
+        fit_dates,
         Integer(inputs, "history_sessions", minimum=61),
         _positive_integer_tuple(
             inputs.get("momentum_horizons"), f"features.model_contracts.{profile_id}.momentum_horizons"
@@ -126,7 +84,7 @@ def LoadProfileTrainingSettings(project_root: Path, profile_id: ScoringProfileId
             f"features.model_contracts.{profile_id}.market_state_momentum_horizons",
             allow_empty=True,
         ),
-        _feature_ids(heads.get("tomorrow"), f"features.model_contracts.{profile_id}.heads.tomorrow"),
+        _feature_ids(heads.get("tomorrow"), f"features.model_contracts.{profile_id}.heads.tomorrow") if paired else (),
         _feature_ids(heads.get("d25"), f"features.model_contracts.{profile_id}.heads.d25"),
         fitting,
     )
@@ -157,10 +115,7 @@ def LoadRuntimeTrainingSettings(
 ) -> ProfileTrainingSettings | V1TrainingSettings:
     if profile_id == "v1":
         return LoadV1TrainingSettings(project_root)
-    settings = LoadProfileTrainingSettings(project_root, profile_id)
-    profile = {"v2": V2_TRAINING_PROFILE, "v3": V3_TRAINING_PROFILE, "v5": V5_TRAINING_PROFILE}[profile_id]
-    settings.require_profile(profile)
-    return settings
+    return LoadD25TrainingSettings(project_root, profile_id)
 
 
-__all__ = ["ProfileTrainingSettings", "LoadProfileTrainingSettings", "LoadRuntimeTrainingSettings"]
+__all__ = ["ProfileTrainingSettings", "LoadD25TrainingSettings", "LoadProfileTrainingSettings", "LoadRuntimeTrainingSettings"]

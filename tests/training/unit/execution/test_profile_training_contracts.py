@@ -23,10 +23,10 @@ from trader.training.infra.research_settings import LoadEvaluationCostScenarios
 from trader.training.application.tomorrow_training import TomorrowTrainingWindow
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.engine import ProfileTrainingRequest
-from trader.training.infra.model_fitting import LightGBMFittingParameters, RidgeFittingParameters
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.fitting_settings import LightGBMFittingParameters, RidgeFittingParameters
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
+from trader.training.infra.tcn.settings import TcnFittingParameters
 from trader.training.infra.research_settings import LoadResearchSettings
 from trader.training.infra.sample_builder import (
     BuildTrainingSamples,
@@ -91,15 +91,16 @@ def test_profile_windows_algorithms_costs_and_research_arms_have_typed_configura
 
 def test_profile_training_modules_do_not_import_each_other() -> None:
     root = PROJECT_ROOT / "src" / "trader"
-    for profile, other in (("v2", "v3"), ("v3", "v2")):
-        files = tuple((root / "training" / "infra" / "profile" / profile).rglob("*.py"))
-        assert {"contracts.py", "training.py"} <= {path.name for path in files}
-        foreign_owner = f"trader.training.infra.profile.{other}"
+    heads = tuple(f"{strategy}.{profile}" for strategy in ("tomorrow", "d25") for profile in ("v1", "v2", "v3", "v5"))
+    for head in heads:
+        files = tuple((root / "training" / "infra" / head.replace(".", "/")).rglob("*.py"))
+        assert ("model.py" if head.startswith("tomorrow") else "probability.py") in {path.name for path in files}
+        foreign_owners = tuple(f"trader.training.infra.{other}." for other in heads if head != other)
         violations = {
             str(path.relative_to(root)): imported
             for path in files
             for imported in SourceImportTargets(path, root)
-            if imported == foreign_owner or imported.startswith(foreign_owner + ".")
+            if imported.startswith(foreign_owners)
         }
         assert violations == {}
 

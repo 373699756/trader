@@ -89,6 +89,9 @@ class ScoredFreezeCoordinator:
             return existing
         if not self._production_authority:
             return FreezeOperationResult("shadow_only")
+        head_gap = self._index.snapshot(self._strategy).head_gap
+        if head_gap is not None and head_gap.trade_date == now.date():
+            return FreezeOperationResult("scored_head_retained")
         current = self._current(now.date())
         if current is not None and IsShadowFreeze(current):
             return FreezeOperationResult("shadow_only")

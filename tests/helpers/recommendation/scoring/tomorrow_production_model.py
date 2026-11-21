@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from tests.helpers.recommendation.scoring_helpers import profile_for
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.domain.market.models import FeatureSnapshot
@@ -16,7 +16,7 @@ _COST_POLICY = ExecutionCostPolicy(0.002, 1.0)
 
 
 def _service(predictor: object) -> ProductionModelScoringService:
-    return ProductionModelScoringService(
+    return BuildUtilityScorer(
         profile_for(predictor),
         Strategy.TOMORROW,
         cost_policy=_COST_POLICY,
@@ -24,7 +24,7 @@ def _service(predictor: object) -> ProductionModelScoringService:
 
 
 def _strategy_service(predictor: object, strategy: Strategy) -> ProductionModelScoringService:
-    return ProductionModelScoringService(
+    return BuildUtilityScorer(
         profile_for(predictor, strategy),
         strategy,
         cost_policy=_COST_POLICY,

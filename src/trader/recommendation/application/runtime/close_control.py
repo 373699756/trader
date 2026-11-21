@@ -61,7 +61,7 @@ class CloseControlCoordinator:
         self._control_pending: set[str] = set()
         self._control_completed: OrderedDict[str, None] = OrderedDict()
         self._close_input: RefreshOutcome | None = None
-        self._last_tomorrow_settlement: float | None = None
+        self._last_target_settlement: dict[Strategy, float] = {}
 
     def rotate_session(self) -> None:
         with self._lock:
@@ -188,9 +188,9 @@ class CloseControlCoordinator:
         except StaleSessionError:
             return
         except SealUnavailableError as exc:
-            if str(exc) == "tomorrow_closing_evidence_pending":
-                missed = True
-            self._hooks.failure("seal", "tomorrow_closing_evidence_pending" if missed else "freeze_unavailable", strategy)
+            reason = str(exc)
+            missed = reason in {"scored_head_retained", f"{strategy.value}_closing_evidence_pending"}
+            self._hooks.failure("seal", reason if missed else "freeze_unavailable", strategy)
         except Exception as exc:
             self._hooks.failure("seal", f"freeze_unexpected:{type(exc).__name__}", strategy)
         else:
@@ -222,29 +222,35 @@ class CloseControlCoordinator:
             self._finish_control(key, success=False)
             self._hooks.failure("settlement", "settlement_capacity_rejected", None)
 
-    def submit_tomorrow_settlement(self, at: datetime) -> None:
-        settle = self._dependencies.tomorrow_settlement
+    def submit_target_settlements(self, at: datetime) -> None:
+        self._submit_target_settlement(Strategy.TOMORROW, self._dependencies.tomorrow_settlement, at)
+        self._submit_target_settlement(Strategy.D25, self._dependencies.d25_settlement, at)
+
+    def _submit_target_settlement(
+        self, strategy: Strategy, settle: Callable[[datetime], object] | None, at: datetime,
+    ) -> None:
         if settle is None:
             return
-        key = "tomorrow_close_gain_settlement"
+        key = f"target_settlement:{strategy.value}"
         with self._lock:
             now = self._dependencies.monotonic()
-            if self._last_tomorrow_settlement is not None and now - self._last_tomorrow_settlement < 60:
+            last = self._last_target_settlement.get(strategy)
+            if last is not None and now - last < 60:
                 return
             if not self._reserve_control(key):
                 return
-            self._last_tomorrow_settlement = now
-        if self._control.submit(self._run_tomorrow_settlement, key, at, settle) is None:
+            self._last_target_settlement[strategy] = now
+        if self._control.submit(self._run_target_settlement, key, strategy, at, settle) is None:
             self._finish_control(key, success=False)
-            self._hooks.failure("settlement", "tomorrow_settlement_capacity_rejected", Strategy.TOMORROW)
+            self._hooks.failure("settlement", f"{strategy.value}_settlement_capacity_rejected", strategy)
 
-    def _run_tomorrow_settlement(
-        self, key: str, at: datetime, settle: Callable[[datetime], object]
+    def _run_target_settlement(
+        self, key: str, strategy: Strategy, at: datetime, settle: Callable[[datetime], object]
     ) -> None:
         try:
             settle(at)
         except (OSError, RuntimeError, ValueError) as exc:
-            self._hooks.failure("settlement", f"tomorrow_settlement:{type(exc).__name__}", Strategy.TOMORROW)
+            self._hooks.failure("settlement", f"{strategy.value}_settlement:{type(exc).__name__}", strategy)
         finally:
             # The next round must still inspect newly committed History.
             self._finish_control(key, success=False)

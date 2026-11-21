@@ -8,7 +8,7 @@ import pytest
 
 from tests.helpers.recommendation.cycle_fixture import build_cycle_fixture
 from tests.helpers.recommendation.review_helpers import review
-from tests.helpers.recommendation.scoring_helpers import profile_for
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
 from tests.helpers.recommendation.runtime.input_runtime import (
     _freeze_build,
     _Market,
@@ -33,7 +33,6 @@ from trader.recommendation.application.pipeline.final_selection.freeze_projectio
 )
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.ports.runtime import PipelineTaskRequest, ReviewUnavailableError
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.application.runtime.cadence import PipelineTask
@@ -287,7 +286,7 @@ def test_non_trading_day_real_adapters_predict_and_register_review_after_15(appl
         router = ModelScoringRouter(
             "v2",
             {
-                strategy: ProductionModelScoringService(
+                strategy: BuildUtilityScorer(
                     profile_for(predictor, strategy), strategy, cost_policy=ExecutionCostPolicy(0.002, 1.0)
                 )
             },

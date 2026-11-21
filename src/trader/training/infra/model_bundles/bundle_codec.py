@@ -36,9 +36,9 @@ from trader.training.infra.model_bundles.evaluation_codec import (
     ValidatePredictionReport,
     ValidatePredictionSampleCounts,
 )
-from trader.training.infra.profile.v5.configuration import DecodeTcnConfiguration
-from trader.training.infra.profile.v5.settings import TcnArchitecture
-from trader.training.infra.profile.v5.tensors import DecodeTcnNetwork, TcnTensor
+from trader.training.infra.tcn.configuration import DecodeTcnConfiguration
+from trader.training.infra.tcn.settings import TcnArchitecture
+from trader.training.infra.tcn.tensors import DecodeTcnNetwork, TcnTensor
 
 
 class ModelBundleIntegrityError(ValueError):

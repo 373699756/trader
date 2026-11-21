@@ -30,9 +30,9 @@ from trader.training.infra.model_evaluation import CalibrationResult
 from trader.training.infra.model_fitting import _refit_industry
 from trader.training.infra.model_fitting_results import FittedIndustryModel
 from trader.training.infra.sample_index import FinalFitIndustryCounts, TrainingSampleMatrix
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.training.configuration import TcnFittingParametersFixture

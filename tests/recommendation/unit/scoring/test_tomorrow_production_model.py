@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from tests.helpers.recommendation.scoring_helpers import profile_for
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
 
 from tests.helpers.training.profiles.v3.profile import _publish_profile
 
@@ -34,9 +34,9 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 
 
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile
 
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
 
 from tests.helpers.recommendation.scoring.tomorrow_production_model import (
     NOW,
@@ -319,13 +319,13 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
     shared = SharedModelFeatureCache()
     d25_predictor = _TrendPredictor()
     tomorrow_predictor = _TomorrowPredictor()
-    d25 = ProductionModelScoringService(
+    d25 = BuildUtilityScorer(
         profile_for(d25_predictor, Strategy.D25),
         Strategy.D25,
         cost_policy=_COST_POLICY,
         shared_features=shared,
     )
-    tomorrow = ProductionModelScoringService(
+    tomorrow = BuildUtilityScorer(
         profile_for(tomorrow_predictor),
         Strategy.TOMORROW,
         cost_policy=_COST_POLICY,
@@ -351,7 +351,7 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
 def test_current_shared_training_bundles_score_all_default_v2_heads(tmp_path, application_feature_factory) -> None:
     training_root = tmp_path / "train"
     _publish_profile(training_root, V2_TRAINING_PROFILE, industry="capco:J66货币金融服务")
-    profile = LoadScoringProfile("v2", training_root=training_root)
+    profile = LoadDiagnosticScoringProfile("v2", training_root=training_root)
     industries = set.intersection(*(set(head.predictor.industry_ids) for head in profile.heads.values()))
     industry = sorted(industries)[0]
     features: list[FeatureSnapshot] = []
@@ -385,7 +385,7 @@ def test_current_shared_training_bundles_score_all_default_v2_heads(tmp_path, ap
     shared = SharedModelFeatureCache()
 
     batches = {
-        strategy: ProductionModelScoringService(
+        strategy: BuildUtilityScorer(
             profile,
             strategy,
             cost_policy=_COST_POLICY,
@@ -794,7 +794,7 @@ def test_industry_batches_check_deadlines_and_keep_the_last_valid_batch(
 
     predictor = _BatchPredictor()
     predictor.profile_id = profile_id
-    service = ProductionModelScoringService(
+    service = BuildUtilityScorer(
         profile_for(predictor), Strategy.TOMORROW, cost_policy=_COST_POLICY, monotonic=lambda: clock[0]
     )
     features = tuple(
@@ -903,7 +903,7 @@ def test_model_status_reads_last_complete_head_snapshots_while_prediction_is_blo
             return super().predict(inputs)
 
     predictor = BlockingPredictor()
-    service = ProductionModelScoringService(
+    service = BuildUtilityScorer(
         profile_for(predictor, strategy),
         strategy,
         cost_policy=_COST_POLICY,

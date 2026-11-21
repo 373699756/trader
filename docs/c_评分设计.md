@@ -291,7 +291,7 @@ flowchart TD
 
 用户最新要求每个评分策略、每个档位保留排名最高的6只；选席前的模型及成本准入与固定后的席位保留分别判断。`0cbacbda`（2026-10-21）已实施模型/成本准入、一次本地风险后固定六席，`62ab1d26`（2026-10-29）授权V5自身模型排序时仍明确保留净效用门和本地动作门。`10002a19`（2026-10-30）修复的是已固定回避席位被SSE校验隐藏；这些记录未授权取消准入。以下字典沿用相应计算，不能将净效用一概降为展示信息，也不能从门或板限存在就判定实现不符合前6要求。来源和后续替代关系见h第1章。
 
-模型来源：`data/training/models/<档位>/<策略>/model.json`、`metadata.json`；训练窗口和算法参数来自 `config/training.json`，特征定义见 `config/features.json` 与各档合同。本地分、风险、成本和动作分别由 `config/scoring.json`、`risk.json`、`cost.json`、`selection.json` 约束。下表对比模型职责，不是数据库列清单。
+Tomorrow 工件按档位和目标加载，D25 按档加载收益工件和与之绑定的达标工件。八组评分能力分别归 `recommendation/application/tomorrow/{v1,v2,v3,v5}` 和 `recommendation/application/d25/{v1,v2,v3,v5}`。训练窗口和算法参数来自 `config/training.json`，特征定义见 `config/features.json` 与各档合同。本地分、风险、成本和动作分别由 `config/scoring.json`、`risk.json`、`cost.json`、`selection.json` 约束。
 
 | 对比项 | V1 | V2 | V3 | V5 |
 | --- | --- | --- | --- | --- |
@@ -302,7 +302,7 @@ flowchart TD
 | 模型门 | 独立收益预测与成本净效用 | 预测及成本净效用 | 预测及成本净效用 | 预测及成本净效用 |
 | 最终排序分 | 排序器独立模型百分位 | `local_score` | `local_score` | 本档预测百分位 |
 | 动作比较 | `local_score` | `local_score` | `local_score` | `local_score` |
-| 加载区别 | 双头排序器及收益门 | 双头各行业树模型 | 双头各行业线性系数 | 双头各行业网络权重 |
+| D25 加载 | 全市场排序器及收益门 | 各行业树模型 | 各行业线性系数 | 各行业网络权重 |
 | 应测资源 | 预测调用、模型数、输入矩阵/RSS | 行业调用与线程、长窗特征 | 矩阵转换与线性校验成本 | 序列解码、张量/线程、最大行业 |
 
 四档不共用预测和排序身份。V1/V5 已获人工生产授权，这不表示收益验证通过；旧 Shadow 记录不升级。V5 独立发展，不能替换 V3。

@@ -17,7 +17,7 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.training.domain.model_publication import ModelPublicationIdentity
 from trader.training.infra.model_bundles.bundle_codec import TrainedHeadModelBundle
 from trader.training.infra.model_bundles.predictor import TrainedHeadPredictor
-from trader.training.infra.profile.composition import SingleHeadCombiner
+from trader.training.infra.model_bundles.composition import SingleHeadCombiner
 
 
 def BuildTrainedScoringProfile(

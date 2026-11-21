@@ -257,20 +257,21 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
     assert not (SOURCE_ROOT / "recommendation/application/ports/tomorrow_model.py").exists()
 
 
-def test_v3_profile_keeps_only_offline_training_implementation() -> None:
-    v3_root = SOURCE_ROOT / "training/infra/profile/v3"
+def test_v3_research_repack_is_separate_from_the_two_production_models() -> None:
+    research = SOURCE_ROOT / "training/infra/research/close_return"
     shared_training_root = SOURCE_ROOT / "training/infra"
 
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
     offline_training_modules = {
-        "sample_builder.py",
-        "training.py",
-        "training_sample_index.py",
+        "v3_sample_builder.py",
+        "v3_training.py",
+        "v3_sample_index.py",
     }
-    assert all((v3_root / name).is_file() for name in offline_training_modules)
+    assert all((research / name).is_file() for name in offline_training_modules)
     assert (shared_training_root / "model_fitting.py").is_file()
-    assert not (v3_root / "model_fitting.py").exists()
-    assert not any((v3_root / "heads").rglob("*.py"))
+    assert (shared_training_root / "tomorrow/v3/model.py").is_file()
+    assert (shared_training_root / "d25/v3/probability.py").is_file()
+    assert not any((shared_training_root / "profile/v3").rglob("*.py"))
 
 
 def test_old_production_chain_has_no_source_files() -> None:
@@ -706,6 +707,19 @@ def test_recommendation_accepts_only_scoped_database_counters(member) -> None:
 def test_database_observation_does_not_grant_database_access(source) -> None:
     module = "trader.recommendation.application.runtime.example"
     assert LayerImportViolations(module, ParseSourceImports(source, module))
+
+
+@pytest.mark.parametrize("owner", ("training.infra", "recommendation.application"))
+def test_scoring_combinations_use_shared_modules_without_importing_peer_heads(owner: str) -> None:
+    module = f"trader.{owner}.tomorrow.v3.fitting"
+    imports = (
+        (f"from trader.{owner}.tomorrow import v2", True),
+        (f"from trader.{owner}.d25.v3 import model", True),
+        (f"from trader.{owner}.tomorrow.v3 import model", False),
+        (f"from trader.{owner}.tomorrow import samples", False),
+    )
+    for source, forbidden in imports:
+        assert bool(LayerImportViolations(module, ParseSourceImports(source, module))) is forbidden
 
 
 def test_core_cannot_hide_imports_behind_a_wildcard() -> None:

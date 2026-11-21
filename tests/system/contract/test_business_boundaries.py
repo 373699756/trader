@@ -18,8 +18,8 @@ from tests.helpers.shared.module_boundaries import (
 )
 from tests.helpers.shared.python_source import source_text, source_tree
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.d25.v2.contracts import V2_D25_PROFILE
+from trader.training.infra.d25.v3.contracts import V3_D25_PROFILE
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src" / "trader"
@@ -68,14 +68,15 @@ def test_product_packages_exist_under_their_business_owners() -> None:
 
 
 def test_production_profiles_have_distinct_tomorrow_and_single_d25_heads() -> None:
-    assert (V2_TRAINING_PROFILE.algorithm, V3_TRAINING_PROFILE.algorithm) == ("lightgbm", "ridge")
-    for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
-        assert tuple(head.strategy for head in profile.heads) == (Strategy.TOMORROW, Strategy.D25)
-        tomorrow = profile.head_for_strategy(Strategy.TOMORROW)
+    for root in ("training/infra", "recommendation/application"):
+        for strategy in ("tomorrow", "d25"):
+            for profile_id in ("v1", "v2", "v3", "v5"):
+                head = SOURCE_ROOT / root / strategy / profile_id
+                assert any(path.name != "__init__.py" for path in head.glob("*.py")), head
+    assert (V2_D25_PROFILE.algorithm, V3_D25_PROFILE.algorithm) == ("lightgbm", "ridge")
+    for profile in (V2_D25_PROFILE, V3_D25_PROFILE):
+        assert tuple(head.strategy for head in profile.heads) == (Strategy.D25,)
         d25 = profile.head_for_strategy(Strategy.D25)
-        assert tomorrow.model_id != d25.model_id
-        assert tomorrow.directory_name != d25.directory_name
-        assert tomorrow.target_column == "target_t1"
         assert d25.target_column == "target_d25_aggregate"
         assert d25.label_target == "pre_cost_mean_excess_return_t2_t5"
 
@@ -138,7 +139,8 @@ def test_retired_source_directories_have_no_python_modules() -> None:
 
 def test_shared_infrastructure_target_owners_exist() -> None:
     assert (SOURCE_ROOT / "infra/serialization").is_dir()
-    assert (SOURCE_ROOT / "training/infra/profile/composition.py").is_file()
+    assert (SOURCE_ROOT / "training/infra/d25/contracts.py").is_file()
+    assert (SOURCE_ROOT / "training/infra/research/close_return/selection.py").is_file()
 
 
 def test_product_import_time_graph_has_no_cycles() -> None:

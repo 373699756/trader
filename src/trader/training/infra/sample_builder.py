@@ -40,7 +40,7 @@ from trader.training.infra.sample_index import (
 )
 from trader.training.infra.sample_progress import TrainingSampleProgressTracker
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
-from trader.training.infra.d25_label import D25HitLabel, VerifiedD25Close
+from trader.training.infra.d25.labels import D25HitLabel, VerifiedD25Close
 from trader.training.infra.price_volume import ProjectSequencePoint
 
 

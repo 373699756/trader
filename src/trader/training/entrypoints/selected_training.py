@@ -17,6 +17,7 @@ from trader.infra.settings import RuntimeSettings
 from trader.infra.shutdown import ShutdownStep
 from trader.infra.signal_cancellation import ManualCancellation, ManualCancellationScope
 from trader.infra.workers import ManagedWorkerExecutor, WorkerFutureExecutor
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingFanoutSettings, TrainingMemoryAdmission, TrainingSampleSettings
 from trader.training.application.selected_training import SelectedD25IndustryUnavailable, SelectedProfileResult, SelectedTrainingOutcome, SelectedTrainingPort, SelectedTrainingRun, TrainSelectedProfiles, TrainingLocations
@@ -41,14 +42,13 @@ from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.training_diagnostics import BuildTrainingOperationIssue
 from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult
 from trader.training.infra.cpu_admission import TrainingCpuBudget
+from trader.training.infra.d25.contracts import StandardD25Profile
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
 from trader.training.infra.history.history_training_expectation import HistoryTrainingExpectation
-from trader.training.infra.model_bundles.contracts import D25ProfileContract, TrainedProfileContract
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.history.history_training_projection import ProjectHeadTrainingStatus
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.selection import ResearchCloseReturnProfile
 from trader.training.infra.selected_training import (
     SelectedTrainingRequest,
 )
@@ -70,6 +70,7 @@ def RunSelectedTraining(
     started_at: float | None = None,
     terminal_columns: int | None = None,
     report_output: TrainingReportOutput | None = None,
+    strategy: Strategy | None = None,
 ) -> int:
     with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
         return _run_selected_training(
@@ -89,6 +90,7 @@ def RunSelectedTraining(
             started_at=started_at,
             terminal_columns=terminal_columns,
             report_output=TrainingReportOutput() if report_output is None else report_output,
+            strategy=strategy,
         )
 
 
@@ -106,6 +108,7 @@ def _run_selected_training(
     started_at: float | None = None,
     terminal_columns: int | None = None,
     report_output: TrainingReportOutput,
+    strategy: Strategy | None,
 ) -> int:
     started = time.monotonic()
     measurements: TrainingExecutionMeasurements | None = None
@@ -132,7 +135,8 @@ def _run_selected_training(
     ), state="完成")
     try:
         measurements = TrainingExecutionMeasurements(profiles, time.monotonic)
-        executor.start()
+        if strategy is not Strategy.TOMORROW:
+            executor.start()
         with ExitStack() as scope:
             outputs = tuple(
                 scope.enter_context(StderrTomorrowTrainingProgress(
@@ -194,6 +198,7 @@ def _run_selected_training(
                 measurements=measurements,
                 memory_capacity_bytes=memory_capacity_bytes,
                 begin_shutdown=cancelled.shutdown_deadline,
+                strategy=strategy,
             )
             run = TrainSelectedProfiles(
                 prepare_training(selection), WorkerFutureExecutor(executor),
@@ -224,13 +229,10 @@ def _run_selected_training(
                 payload["d25_target"] = {"identity": d25_target.identity, "threshold_bps": d25_target.threshold_bps}
             if isinstance(result, TrainingRunResult):
                 if not cancelled.is_set():
-                    contract = next(
-                        item
-                        for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
-                        if item.profile_id == outcome.profile
+                    contract = (
+                        StandardD25Profile(outcome.profile) if outcome.profile in d25_targets
+                        else ResearchCloseReturnProfile(outcome.profile)
                     )
-                    if tomorrow:
-                        contract = D25ProfileContract(contract)
                     try:
                         maintenance = EvaluateAllHistoryTrainingDue(
                             paths.history,
@@ -260,8 +262,9 @@ def _run_selected_training(
         code = 130 if cancelled.is_set() or 130 in codes else int(tomorrow_failed or any(codes))
         summary = {
             "industry": ProjectTrainingIndustryCoverage(run.industry_snapshot) if run.industry_snapshot is not None else None,
+            "strategy": strategy.value if strategy is not None else None,
             "profiles": profiles,
-            "worker_capacity": len(profiles),
+            "worker_capacity": 0 if strategy is Strategy.TOMORROW else len(profiles),
             "available_cpus": cpu_budget.available_cpus,
             "fitting_cpu_capacity": cpu_budget.capacity,
             "native_threads": cpu_budget.native_threads,

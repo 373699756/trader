@@ -21,6 +21,7 @@ from trader.training.application.selected_training import SelectedTrainingRun, T
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.memory_admission import TrainingMemoryBudget
+from trader.training.infra.research.close_return.selection import CloseReturnResearchMode
 from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -78,7 +79,7 @@ def test_cpu_selection_and_cancelled_scope_restore_functions_and_environment(tmp
                 assert (current.memory, current.fanout, current.samples) == (resources.memory, resources.fanout, resources.samples)
                 assert (candidates.training_configuration.LoadTrainingResourceSettings is loader) is (cpu == "baseline")
                 request = _request(tmp_path, current)
-                assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy, load_industry_snapshot=lambda _: _INDUSTRY, clock=lambda: _INDUSTRY.observed_at), pool) is outcome
+                assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=policy, load_industry_snapshot=lambda _: _INDUSTRY, clock=lambda: _INDUSTRY.observed_at), pool) is outcome
                 assert requests[-1] is not request
                 assert request.execution_options == TrainingExecutionOptions()
                 assert requests[-1].execution_options == TrainingExecutionOptions(True, True, True, True, True)
@@ -124,7 +125,7 @@ def test_only_explicit_execution_candidate_options_are_injected(tmp_path, monkey
 
     monkeypatch.setattr(candidates.training_entrypoint, "TrainSelectedProfiles", train)
     with ThreadPoolExecutor(max_workers=1) as pool, candidates.UseTrainingExecutionCandidate(execution, "baseline") as experiment:
-        assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _: _INDUSTRY, clock=lambda: _INDUSTRY.observed_at), pool) is outcome
+        assert candidates.training_entrypoint.TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=SqlitePolicyFixture(), load_industry_snapshot=lambda _: _INDUSTRY, clock=lambda: _INDUSTRY.observed_at), pool) is outcome
         assert requests[-1].execution_options == expected
         assert request.execution_options == TrainingExecutionOptions()
         if execution == "baseline":

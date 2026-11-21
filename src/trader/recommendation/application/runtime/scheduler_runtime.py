@@ -164,7 +164,7 @@ class SchedulerRuntime:
         }
         self._score_lane = LatestWinsWorker(
             "trader-task-score-wave",
-            self._process_score_wave,
+            self._process_recommendation_round,
             order_key=PipelineTaskOrderKey,
             on_discard=self._discard_score_wave,
             telemetry=LatestWinsTelemetry(
@@ -311,7 +311,7 @@ class SchedulerRuntime:
                 self._phase = MarketPhase.CLOSED
             return retry_delay
         if observed_at.time() >= wall_time(15):
-            self._close_control.submit_tomorrow_settlement(observed_at)
+            self._close_control.submit_target_settlements(observed_at)
         batch = self._dependencies.cadence.plan(observed_at, is_trading_day=is_trading_day)
         with self._lock:
             self._phase = (
@@ -512,17 +512,11 @@ class SchedulerRuntime:
         if scheduled.round_sequence is not None:
             self._dependencies.rounds.finish(self._dependencies.round_profile, scheduled.round_sequence)
 
-    def _process_score_wave(self, scheduled: ScheduledPipelineTask) -> None:
-        if scheduled.round_sequence is not None:
-            self._process_recommendation_round(scheduled)
-            return
-        self._execute_score_pair(scheduled)
-
     def _execute_score_pair(
         self,
         scheduled: ScheduledPipelineTask,
         *,
-        round_sequence: int | None = None,
+        round_sequence: int,
     ) -> None:
         try:
             with SessionGuard(scheduled.session):
@@ -545,16 +539,7 @@ class SchedulerRuntime:
                 )
                 for strategy in (Strategy.TOMORROW, Strategy.D25)
             )
-            if round_sequence is None:
-                scored = self._dependencies.scored_strategies
-                if len(scored) == 2:
-                    self._cycles.execute_pair((requests[0], requests[1]))
-                else:
-                    for request in requests:
-                        if request.strategy in scored:
-                            self._cycles.execute(request)
-            else:
-                self._execute_scored_round((requests[0], requests[1]), round_sequence)
+            self._execute_scored_round((requests[0], requests[1]), round_sequence)
         except StaleSessionError:
             return
 

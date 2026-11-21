@@ -19,8 +19,8 @@ from trader.training.infra.model_bundles.bundle_codec import (
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.model_bundles.predictor import TrainedHeadPredictor
 from trader.training.infra.model_fitting import _ValidationPredictor
-from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 
 
 def _bundle(profile: TrainedProfileContract, strategy: Strategy) -> TrainedHeadModelBundle:

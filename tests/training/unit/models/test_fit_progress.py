@@ -16,7 +16,7 @@ from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.bundle_codec import TrainedRidgeModelSnapshot
 from trader.training.infra.model_evaluation import CalibrationResult, PredictionMetrics
 from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
-from trader.training.infra.profile.v3.contracts import HEAD_CONTRACTS
+from trader.training.infra.research.close_return.v3_contracts import HEAD_CONTRACTS
 from trader.training.infra.sample_index import FinalFitIndustryCounts, TrainingIndustryCounts, TrainingSampleBatch
 
 _FIRST = "capco:J66货币金融服务"

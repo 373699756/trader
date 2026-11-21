@@ -11,8 +11,8 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
-from trader.training.infra.profile.v1.settings import LoadV1TrainingSettings
-from trader.training.infra.profile.v5.settings import TcnComputeDtype, TcnFittingParameters
+from trader.training.infra.learned_rank_settings import LoadV1TrainingSettings
+from trader.training.infra.tcn.settings import TcnComputeDtype, TcnFittingParameters
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]

@@ -80,8 +80,8 @@ EXPECTED_DEBT = frozenset(
         ("C901", "recommendation/domain/outcomes/models.py", "RecommendationOutcome.__post_init__"),
         ("C901", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
         ("PLR0912", "training/infra/model_bundles/profile_publication.py", "PublishProfileBundles"),
-        ("PLR0913", "training/infra/profile/v3/training.py", "RunRepackTomorrowTraining"),
-        ("PLR0913", "training/infra/profile/v3/training.py", "RunRepackV3Training"),
+        ("PLR0913", "training/infra/research/close_return/v3_training.py", "RunRepackTomorrowTraining"),
+        ("PLR0913", "training/infra/research/close_return/v3_training.py", "RunRepackV3Training"),
     }
 )
 RUFF_TIMEOUT_SECONDS = 60

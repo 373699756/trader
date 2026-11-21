@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal
 
 from trader.recommendation.domain.market.feature_contracts import FeatureVectorManifest
@@ -64,15 +64,7 @@ class TrainedProfileContract:
             raise ValueError(f"{strategy.value} has no trained model head") from exc
 
 
-def D25ProfileContract(profile: TrainedProfileContract) -> TrainedProfileContract:
-    """Select only the D25 artifact from an independent trained profile."""
-    head = profile.head_for_strategy(Strategy.D25)
-    # Existing D25 vectors omit the previous one-day-only model column.
-    return replace(profile, heads=(replace(head, feature_positions=tuple(range(len(head.feature_positions)))),))
-
-
 __all__ = [
-    "D25ProfileContract",
     "TrainedHeadContract",
     "TrainedAlgorithm",
     "TrainedProfileContract",

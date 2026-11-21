@@ -13,7 +13,7 @@ from trader.training.infra.model_evaluation import (
     RECENT_PREDICTION_EVALUATION_CONTRACT,
 )
 from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
-from trader.training.infra.profile.v5.settings import TCN_NETWORK_CONTRACT
+from trader.training.infra.tcn.settings import TCN_NETWORK_CONTRACT
 from trader.training.infra.sample_index import TargetMetric
 
 

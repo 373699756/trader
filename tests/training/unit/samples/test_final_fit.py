@@ -11,9 +11,9 @@ from trader.training.application.tomorrow_training import ProductionTrainingWind
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FinalFitDatePlan
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 from trader.training.domain.training_dates import BuildTrainingDateSplit
-from trader.training.infra.profile.v3.contracts import D25_HEAD_CONTRACT, TOMORROW_HEAD_CONTRACT
-from trader.training.infra.profile.v3.training_sample_index import SQLiteV3TrainingSampleIndex
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import D25_HEAD_CONTRACT, TOMORROW_HEAD_CONTRACT
+from trader.training.infra.research.close_return.v3_sample_index import SQLiteV3TrainingSampleIndex
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_index import FinalFitIndustryCounts, SQLiteTrainingSampleIndex, TrainingSample
 from trader.training.infra.sample_sequences import SampleSequenceLayout
 

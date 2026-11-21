@@ -24,7 +24,7 @@ from trader.recommendation.domain.publication.freeze_identity import (
     LongProjection,
     ScoredFreeze,
 )
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import ScoredHeadGap, Strategy
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,7 @@ class UnifiedProfilePair:
     freezes: tuple[ScoredFreeze, ...]
     overlays: tuple[FreezeOverlay, ...]
     expected_versions: tuple[str | None, ...]
+    head_gaps: tuple[ScoredHeadGap, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class UnifiedProfiledPublishResult:
     accepted: bool
     reason: str
     events: tuple[tuple[str, tuple[FreezeCommitted, ...]], ...] = ()
+    head_gaps: tuple[tuple[str, tuple[ScoredHeadGap, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,7 @@ class UnifiedFreezeSnapshot:
     current: FreezeIdentity | None
     overlay: FreezeOverlay | None
     formal: CommittedFreezeRecord | None
+    head_gap: ScoredHeadGap | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,7 @@ class UnifiedFreezeIndex:
         self._seals: dict[Strategy, _UnifiedFreezeSeal] = {}
         self._formal: dict[Strategy, CommittedFreezeRecord] = {}
         self._closed: dict[Strategy, tuple[date, datetime]] = {}
+        self._head_gaps: dict[Strategy, ScoredHeadGap] = {}
 
     def publish(
         self,
@@ -117,6 +121,8 @@ class UnifiedFreezeIndex:
             raise ValueError("historical snapshots are read-only")
         with self._lock:
             current = self._current.get(identity.strategy)
+            if isinstance(identity, ScoredFreeze) and identity.stage == "hybrid" and identity.strategy in self._head_gaps:
+                return UnifiedFreezePublishResult(False, "scored_head_retained")
             seal = self._seals.get(identity.strategy)
             if seal is not None and seal.freeze.trade_date == identity.trade_date:
                 return UnifiedFreezePublishResult(False, "freeze_sealed")
@@ -127,6 +133,7 @@ class UnifiedFreezeIndex:
             if rejection is not None:
                 return UnifiedFreezePublishResult(False, rejection)
             self._current[identity.strategy] = identity
+            self._head_gaps.pop(identity.strategy, None)
             if current is not None and identity.trade_date > current.trade_date:
                 self._seals.pop(identity.strategy, None)
                 self._formal.pop(identity.strategy, None)
@@ -149,6 +156,8 @@ class UnifiedFreezeIndex:
             raise ValueError("historical snapshots are read-only")
         with self._lock:
             current = self._current.get(freeze.strategy)
+            if freeze.stage == "hybrid" and freeze.strategy in self._head_gaps:
+                return UnifiedFreezePublishResult(False, "scored_head_retained")
             rejection = _scored_rejection(
                 _ScoredPublishCheck(
                     current,
@@ -163,6 +172,7 @@ class UnifiedFreezeIndex:
                 return UnifiedFreezePublishResult(False, rejection)
             self._current[freeze.strategy] = freeze
             self._overlays[freeze.strategy] = initial_overlay
+            self._head_gaps.pop(freeze.strategy, None)
             if current is not None and freeze.trade_date > current.trade_date:
                 self._seals.pop(freeze.strategy, None)
                 self._formal.pop(freeze.strategy, None)
@@ -201,7 +211,9 @@ class UnifiedFreezeIndex:
 
         if not pairs or len({pair.profile for pair in pairs}) != len(pairs):
             raise ValueError("profiled publication requires unique profiles")
-        if len({freeze.trade_date for pair in pairs for freeze in pair.freezes}) > 1:
+        trade_dates = {freeze.trade_date for pair in pairs for freeze in pair.freezes}
+        trade_dates.update(gap.trade_date for pair in pairs for gap in pair.head_gaps)
+        if len(trade_dates) > 1:
             raise ValueError("profiled publication requires one trade date")
         transaction_lock = pairs[0].index._lock
         if any(pair.index._lock is not transaction_lock for pair in pairs):
@@ -213,6 +225,19 @@ class UnifiedFreezeIndex:
                 )
                 if rejection is not None:
                     return UnifiedProfiledPublishResult(False, rejection)
+                strategies = tuple(freeze.strategy for freeze in pair.freezes) + tuple(gap.strategy for gap in pair.head_gaps)
+                if len(set(strategies)) != len(strategies) or any(strategy is Strategy.LONG for strategy in strategies):
+                    raise ValueError("profiled publication must report one outcome per scored strategy")
+                for gap in pair.head_gaps:
+                    current = pair.index._current.get(gap.strategy)
+                    formal = pair.index._formal.get(gap.strategy)
+                    sealed = pair.index._seals.get(gap.strategy)
+                    if current is not None and current.trade_date > gap.trade_date:
+                        return UnifiedProfiledPublishResult(False, "stale_scored_head_gap")
+                    if sealed is not None and sealed.freeze.trade_date == gap.trade_date:
+                        return UnifiedProfiledPublishResult(False, "freeze_sealed")
+                    if formal is not None and formal.trade_date == gap.trade_date:
+                        return UnifiedProfiledPublishResult(False, "freeze_closed")
             # Materialize every event before checking the final deadline or changing any index.
             published = tuple((pair.profile, _scored_pair_events(pair.freezes, pair.overlays)) for pair in pairs)
             rejection = publication_rejection()
@@ -220,7 +245,11 @@ class UnifiedFreezeIndex:
                 return UnifiedProfiledPublishResult(False, rejection)
             for pair in pairs:
                 pair.index._apply_scored_pair_locked(pair.freezes, pair.overlays)
-            return UnifiedProfiledPublishResult(True, "accepted", published)
+                for gap in pair.head_gaps:
+                    pair.index._head_gaps[gap.strategy] = gap
+            return UnifiedProfiledPublishResult(
+                True, "accepted", published, tuple((pair.profile, pair.head_gaps) for pair in pairs if pair.head_gaps),
+            )
 
     def _paired_rejection_locked(
         self,
@@ -235,6 +264,8 @@ class UnifiedFreezeIndex:
         if len({freeze.trade_date for freeze in freezes}) > 1:
             raise ValueError("profiled publication requires one trade date")
         for freeze, overlay, expected_version in zip(freezes, overlays, expected_versions, strict=True):
+            if freeze.stage == "hybrid" and freeze.strategy in self._head_gaps:
+                return "scored_head_retained"
             rejection = _scored_rejection(
                 _ScoredPublishCheck(
                     self._current.get(freeze.strategy),
@@ -258,6 +289,7 @@ class UnifiedFreezeIndex:
             current = self._current.get(freeze.strategy)
             self._current[freeze.strategy] = freeze
             self._overlays[freeze.strategy] = overlay
+            self._head_gaps.pop(freeze.strategy, None)
             if current is not None and freeze.trade_date > current.trade_date:
                 self._seals.pop(freeze.strategy, None)
                 self._formal.pop(freeze.strategy, None)
@@ -273,6 +305,8 @@ class UnifiedFreezeIndex:
             raise ValueError("historical snapshots are read-only")
         with self._lock:
             current = self._current.get(overlay.strategy)
+            if overlay.strategy in self._head_gaps:
+                return UnifiedOverlayPublishResult(False, "scored_head_retained")
             existing = self._overlays.get(overlay.strategy)
             rejection = _overlay_rejection(current, existing, overlay, expected_version)
             if rejection is not None:
@@ -301,6 +335,7 @@ class UnifiedFreezeIndex:
                 self._current.get(strategy),
                 self._overlays.get(strategy),
                 self._formal.get(strategy),
+                self._head_gaps.get(strategy),
             )
 
     @staticmethod
@@ -352,6 +387,8 @@ class UnifiedFreezeIndex:
             if formal is not None and formal.trade_date == trade_date:
                 return False
             current = self._current.get(strategy)
+            if strategy in self._head_gaps:
+                return False
             if current is not None and current.trade_date == trade_date:
                 self._current.pop(strategy, None)
                 self._overlays.pop(strategy, None)
@@ -378,6 +415,8 @@ class UnifiedFreezeIndex:
                     )
                 return UnifiedFreezeSealResult(False, "different_boundary")
             current = self._current.get(strategy)
+            if strategy in self._head_gaps:
+                return UnifiedFreezeSealResult(False, "scored_head_retained")
             if (
                 isinstance(current, ScoredFreeze)
                 and current.trade_date == boundary_at.date()
@@ -413,6 +452,8 @@ class UnifiedFreezeIndex:
                         existing.source,
                     )
                 return UnifiedFreezeSealResult(False, "scheduled_freeze_pending")
+            if freeze.strategy in self._head_gaps:
+                return UnifiedFreezeSealResult(False, "scored_head_retained")
             reasons = ["close_fallback", "official_close"]
             if freeze.stage == "local":
                 reasons.append("local_only")
@@ -438,6 +479,7 @@ class UnifiedFreezeIndex:
                 return False
             self._current[record.strategy] = record.freeze
             self._overlays.pop(record.strategy, None)
+            self._head_gaps.pop(record.strategy, None)
             self._formal[record.strategy] = record
             self._closed[record.strategy] = (record.trade_date, record.committed_at)
             return True
@@ -460,6 +502,7 @@ class UnifiedFreezeIndex:
                 return False
             self._current[record.strategy] = record.freeze
             self._overlays.pop(record.strategy, None)
+            self._head_gaps.pop(record.strategy, None)
             self._formal[record.strategy] = record
             self._seals[record.strategy] = _UnifiedFreezeSeal(
                 record.committed_at,

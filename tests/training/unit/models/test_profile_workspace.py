@@ -12,7 +12,7 @@ from trader.training.infra.model_bundles.profile_publication import (
     PublishProfileBundles,
     RecoverProfileBundles,
 )
-from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 
 
 def _snapshot(root: Path) -> dict[str, tuple[int, int, int, int, int, int, str | bytes]]:

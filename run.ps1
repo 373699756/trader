@@ -22,6 +22,10 @@ function Show-Usage {
   .\run.ps1 sync company fill       补齐公司资料缺口
   .\run.ps1 train                   使用本地历史训练全部档位
   .\run.ps1 train v1,v5             使用本地历史训练指定档位
+  .\run.ps1 train tomorrow          训练 Tomorrow 全部档位
+  .\run.ps1 train d25               训练 D25 全部档位
+  .\run.ps1 train tomorrow v3       只训练 Tomorrow 的 V3
+  .\run.ps1 train d25 v5            只训练 D25 的 V5
 
 档位以逗号分隔，可自由组合；省略时选择全部。
 未完成可重跑原命令续传；fill用于补缺，仍需处理具体失败原因。
@@ -42,6 +46,11 @@ if ($Mode -in @("help", "-h", "--help")) {
     exit 0
 }
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
+$TrainingScope = @()
+if ($Mode -eq "train" -and $ForwardArgs.Count -gt 0 -and $ForwardArgs[0] -cin @("tomorrow", "d25")) {
+    $TrainingScope = @($ForwardArgs[0])
+    $ForwardArgs = @($ForwardArgs | Select-Object -Skip 1)
+}
 if ($Mode -eq "sync") {
     if ($ForwardArgs.Count -gt 2 -or
         ($ForwardArgs.Count -gt 0 -and $ForwardArgs[0] -cnotin @("history", "company")) -or
@@ -132,5 +141,5 @@ if ($IsServerMode) {
     & $SelectedEntryPoint --config $ConfigPath @ForwardArgs
     exit $LASTEXITCODE
 }
-& $SelectedEntryPoint --config $ConfigPath $Mode @ForwardArgs
+& $SelectedEntryPoint --config $ConfigPath $Mode @TrainingScope @ForwardArgs
 exit $LASTEXITCODE

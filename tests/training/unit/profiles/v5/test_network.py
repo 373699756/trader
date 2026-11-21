@@ -4,7 +4,7 @@ from importlib.util import find_spec
 
 import pytest
 
-from trader.training.infra.profile.v5.settings import TcnArchitecture
+from trader.training.infra.tcn.settings import TcnArchitecture
 
 pytestmark = pytest.mark.skipif(find_spec("torch") is None, reason="V5 requires the optional CPU tensor dependency")
 
@@ -15,7 +15,7 @@ def test_float64_network_matches_reference_outputs_input_and_parameter_gradients
     import torch
 
     from scripts.training.models.v5_kernels import ReferenceTcnNetwork
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, TcnNetwork
 
     ConfigureTcnRuntime(training=True)
     torch.manual_seed(7)
@@ -46,7 +46,7 @@ def test_float64_network_preserves_seeded_adam_updates_and_roundtrip(auxiliary):
     import torch
 
     from scripts.training.models.v5_kernels import ReferenceTcnNetwork
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
+    from trader.training.infra.tcn.network import ConfigureTcnRuntime, TcnNetwork
 
     ConfigureTcnRuntime(training=True)
     torch.manual_seed(7)

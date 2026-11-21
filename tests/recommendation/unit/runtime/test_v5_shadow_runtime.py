@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers.recommendation.scoring_helpers import profile_for
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
 from tests.helpers.recommendation.runtime.input_runtime import _policy
 from tests.helpers.recommendation.scoring.tomorrow_production_model import _model_feature
 from tests.helpers.recommendation.publication.tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
@@ -28,7 +28,6 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.application.ports.loaded_profile import ModelPrediction
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
@@ -117,7 +116,7 @@ def _model_router(strategy, *, production_authority=True):
         profile,
         heads={strategy: replace(head, evidence=replace(head.evidence, production_authority=production_authority))},
     )
-    service = ProductionModelScoringService(profile, strategy, cost_policy=ExecutionCostPolicy(0.002, 1.0))
+    service = BuildUtilityScorer(profile, strategy, cost_policy=ExecutionCostPolicy(0.002, 1.0))
     return ModelScoringRouter("v5", {strategy: service}), predictor
 
 

@@ -4,11 +4,10 @@ from datetime import timedelta
 
 import pytest
 
-from tests.helpers.recommendation.scoring_helpers import profile_for
+from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
 
 from tests.helpers.recommendation.scoring.tomorrow_production_model import NOW, _model_feature, _Predictor
 
-from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 
 from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringDeadlineError
 
@@ -26,7 +25,7 @@ from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EX
 
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 
-from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringModelsUnavailableError
+from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile, ScoringModelsUnavailableError
 
 from tests.helpers.recommendation.selection.v5_model_filtering import (
     _SequencePredictor,
@@ -37,7 +36,7 @@ from tests.helpers.recommendation.selection.v5_model_filtering import (
 def test_v5_sequence_prediction_cost_once_and_missing_input_closes_admission(application_feature_factory, prediction):
     predictor = _SequencePredictor()
     predictor.predicted = prediction
-    service = ProductionModelScoringService(
+    service = BuildUtilityScorer(
         profile_for(predictor), Strategy.TOMORROW, cost_policy=ExecutionCostPolicy(0.002, 1.0)
     )
     base = _model_feature(application_feature_factory("600000", NOW), offset=0, amihud=1)
@@ -66,13 +65,13 @@ def test_v5_sequence_prediction_cost_once_and_missing_input_closes_admission(app
 def test_v5_missing_optional_runtime_is_classified_without_loading_other_models(tmp_path, monkeypatch):
     monkeypatch.setattr("trader.recommendation.infra.scoring.profile_factory.find_spec", lambda _name: None)
     with pytest.raises(ScoringModelsUnavailableError) as error:
-        LoadScoringProfile("v5", training_root=tmp_path)
+        LoadD25UtilityProfile("v5", training_root=tmp_path)
     assert error.value.reason == "dependency_missing"
 
 
 def test_v5_inference_batches_are_bounded_and_report_actual_calls(application_feature_factory):
     predictor = _SequencePredictor()
-    service = ProductionModelScoringService(
+    service = BuildUtilityScorer(
         profile_for(predictor), Strategy.TOMORROW, cost_policy=ExecutionCostPolicy(0.002, 1.0)
     )
     dates = tuple(NOW.date() - timedelta(days=61 - i) for i in range(61))
@@ -100,7 +99,7 @@ def test_v5_late_batch_does_not_publish_a_result(application_feature_factory):
             return output
 
     predictor = _LatePredictor()
-    service = ProductionModelScoringService(
+    service = BuildUtilityScorer(
         profile_for(predictor),
         Strategy.TOMORROW,
         cost_policy=ExecutionCostPolicy(0.002, 1.0),
@@ -129,7 +128,7 @@ def test_v5_ineligible_peer_cannot_change_cost_population_or_receive_prediction(
         predicted = 0.0025
 
     predictor = IndustryPredictor()
-    service = ProductionModelScoringService(
+    service = BuildUtilityScorer(
         profile_for(predictor), Strategy.TOMORROW, cost_policy=ExecutionCostPolicy(0.002, 1.0)
     )
     dates = tuple(NOW.date() - timedelta(days=61 - i) for i in range(61))
@@ -183,7 +182,7 @@ def test_model_status_and_nonempty_empty_missing_batches_keep_explicit_authority
         profile,
         heads={Strategy.TOMORROW: replace(head, evidence=replace(head.evidence, production_authority=authority))},
     )
-    service = ProductionModelScoringService(profile, Strategy.TOMORROW, cost_policy=ExecutionCostPolicy(0.002, 1.0))
+    service = BuildUtilityScorer(profile, Strategy.TOMORROW, cost_policy=ExecutionCostPolicy(0.002, 1.0))
     dates = tuple(NOW.date() - timedelta(days=61 - i) for i in range(61))
     feature = replace(
         _model_feature(application_feature_factory("600000", NOW), offset=0, amihud=1),

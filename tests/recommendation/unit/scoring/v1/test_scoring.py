@@ -16,7 +16,7 @@ from trader.recommendation.application.pipeline.final_selection.freeze_projectio
     ScoredProjectionInputs,
 )
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.v1.scoring import LearnedRankScoringService
+from trader.recommendation.application.d25.v1.scoring import LearnedRankScoringService
 from trader.recommendation.application.ports.loaded_profile import (
     HeadRuntime,
     LoadedScoringProfile,
@@ -33,7 +33,7 @@ from trader.recommendation.domain.publication.freeze_identity import IsShadowFre
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
-from trader.training.infra.profile.composition import SingleHeadCombiner
+from trader.training.infra.model_bundles.composition import SingleHeadCombiner
 
 import threading
 import time

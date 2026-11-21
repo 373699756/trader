@@ -23,6 +23,7 @@ from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.memory_admission import TrainingMemoryBudget
+from trader.training.infra.research.close_return.selection import CloseReturnResearchMode
 from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
 from trader.training.application.selected_training import TrainSelectedProfiles
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
@@ -67,7 +68,7 @@ def test_four_profiles_publish_and_reuse_the_real_history_calendar(tmp_path: Pat
         memory_capacity_bytes=memory_capacity,
     )
     with ThreadPoolExecutor(max_workers=4) as executor:
-        initial = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy, load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
+        initial = TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=policy, load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
         assert initial.history_scan_passes == 1
         for outcome in initial.outcomes:
             assert outcome.failure is None, (outcome.profile, outcome.failure)
@@ -87,7 +88,7 @@ def test_four_profiles_publish_and_reuse_the_real_history_calendar(tmp_path: Pat
                 assert inputs["price_snapshot_hash"] == published.content_hash
                 assert inputs["training_input_hash"] == source.snapshot.training_input_hash
                 assert inputs["source_identity_hash"] == published.source_identity_hash
-        repeated = TrainSelectedProfiles(SelectedTrainingAdapter(request, sqlite_policy=policy, load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
+        repeated = TrainSelectedProfiles(SelectedTrainingAdapter(request, prediction_targets=CloseReturnResearchMode.BOTH_HEADS, sqlite_policy=policy, load_industry_snapshot=lambda _observed: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at), executor)
 
     assert repeated.history_scan_passes == repeated.history_rows_read == 0
     assert all(

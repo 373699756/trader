@@ -45,7 +45,7 @@ from trader.recommendation.domain.market.feature_contracts import (
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, ModelIndustryReference
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.scoring.profile_identity import MODEL_PREDICTION_RANK_SCORE_SCALE
+from trader.recommendation.domain.scoring.profile_identity import MODEL_PREDICTION_RANK_SCORE_SCALE, ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract, ResidualizeExposure
 from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
@@ -56,6 +56,17 @@ _DEFAULT_RETURN_HORIZONS = (1, 3, 5)
 _DEFAULT_MOMENTUM_HORIZONS = (20, 40, 60)
 _PREDICTION_BATCH_SIZE = 256
 _TStage = TypeVar("_TStage")
+
+
+@dataclass(frozen=True)
+class CrossSectionalScoringPlan:
+    """Input requirements and ranking choice owned by a cross-sectional head."""
+
+    profile_id: ScoringProfileId
+    supports_extended_momentum: bool = False
+    sequence_eligible: Callable[[FeatureSnapshot], bool] | None = None
+    rank_predictions: bool = False
+    parallel_industries: bool = False
 
 
 @dataclass(frozen=True)
@@ -247,6 +258,7 @@ class ProductionModelScoringService:
         profile: LoadedScoringProfile,
         strategy: Strategy,
         *,
+        plan: CrossSectionalScoringPlan,
         cost_policy: ExecutionCostPolicy,
         monotonic: Callable[[], float] = time.perf_counter,
         shared_features: SharedModelFeatureCache | None = None,
@@ -256,13 +268,13 @@ class ProductionModelScoringService:
         if head is None:
             raise ValueError(f"{strategy.value} production scoring requires its own head")
         predictor = cast(ModelPredictorPort, head.predictor)
-        if profile.profile_id != predictor.profile_id:
+        if profile.profile_id != predictor.profile_id or profile.profile_id != plan.profile_id:
             raise ValueError("scoring profile identity does not match its head")
         self._evidence = head.evidence
-        if not predictor.model_id or len(predictor.model_hash) != 64 or predictor.profile_id not in {"v2", "v3", "v5"}:
+        if not predictor.model_id or len(predictor.model_hash) != 64:
             raise ValueError(f"{strategy.value} production model identity is invalid")
         try:
-            self._runtime_features = _runtime_feature_contract(profile)
+            self._runtime_features = _runtime_feature_contract(profile, plan)
             self._feature_ids = tuple(predictor.feature_ids)
             if (
                 not self._feature_ids
@@ -276,6 +288,7 @@ class ProductionModelScoringService:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{strategy.value} production model identity is invalid") from exc
         self._strategy = strategy
+        self._plan = plan
         self._prediction_target = prediction_target
         self._cost_policy = cost_policy
         self._predictor = predictor
@@ -324,7 +337,8 @@ class ProductionModelScoringService:
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
         if feature.model_history_quality is not None and feature.model_history_quality.failure:
             return False
-        if self._predictor.profile_id == "v5" and not _valid_sequence(feature):
+        sequence_eligible = self._plan.sequence_eligible
+        if sequence_eligible is not None and not sequence_eligible(feature):
             return False
         row = _raw_row(feature, self._row_contract)
         return row is not None and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
@@ -353,7 +367,7 @@ class ProductionModelScoringService:
             point_in_time_parity=evidence.point_in_time_parity,
             score_scale=(
                 MODEL_PREDICTION_RANK_SCORE_SCALE
-                if self._predictor.profile_id == "v5"
+                if self._plan.rank_predictions
                 else WEIGHTED_EVIDENCE_SCORE_SCALE
             ),
             production_authority=evidence.production_authority,
@@ -426,7 +440,7 @@ class ProductionModelScoringService:
             )
         )
         requested_codes.difference_update(missing_codes)
-        if self._predictor.profile_id == "v5":
+        if self._plan.sequence_eligible is not None:
             input_missing = {code for code in requested_codes if not self.is_input_eligible(population[code])}
             missing_codes = tuple(sorted(set(missing_codes) | input_missing))
             requested_codes.difference_update(input_missing)
@@ -528,7 +542,7 @@ class ProductionModelScoringService:
                     row.code,
                     tuple(vector[feature_id] for feature_id in self._feature_ids),
                     row.industry,
-                    population[row.code].model_sequence if self._predictor.profile_id == "v5" else None,
+                    population[row.code].model_sequence if self._plan.sequence_eligible is not None else None,
                 )
             )
         inputs = tuple(inputs_by_row)
@@ -571,7 +585,7 @@ class ProductionModelScoringService:
             groups = tuple(tuple(values) for values in by_industry.values())
             results = (
                 context.industry_prediction.predict(predict_industry, groups)
-                if self._predictor.profile_id == "v5" and context.industry_prediction is not None
+                if self._plan.parallel_industries and context.industry_prediction is not None
                 else tuple(predict_industry(group) for group in groups)
             )
             if len(results) != len(groups) or any(
@@ -619,7 +633,7 @@ class ProductionModelScoringService:
             costs,
             missing_codes,
             cost_reference.version,
-            ranked=self._predictor.profile_id == "v5",
+            ranked=self._plan.rank_predictions,
             production_authority=self._evidence.production_authority,
             prediction_target=self._prediction_target,
         )
@@ -645,18 +659,19 @@ class ProductionModelScoringService:
         return batch
 
     def _feature_population(self, features: tuple[FeatureSnapshot, ...]) -> tuple[FeatureSnapshot, ...]:
-        if self._predictor.profile_id != "v5":
+        sequence_eligible = self._plan.sequence_eligible
+        if sequence_eligible is None:
             return features
         # Match the training reference before industry fitting qualifies model coverage.
         # Raw-field, history-quality and point-in-time industry checks belong to prepare_rows.
-        return tuple(feature for feature in features if _valid_sequence(feature))
+        return tuple(feature for feature in features if sequence_eligible(feature))
 
     def _cost_reference(
         self,
         features: tuple[FeatureSnapshot, ...],
         population_identity: str,
     ) -> _CostReference:
-        if self._predictor.profile_id == "v5":
+        if self._plan.sequence_eligible is not None:
             features = tuple(feature for feature in features if self.is_input_eligible(feature))
         rows = self._shared_features.prepare_rows(features, self._row_contract).rows
         eligible = tuple(
@@ -760,11 +775,6 @@ class ProductionModelScoringService:
         )
         with self._status_lock:
             self._computation_status = snapshot
-
-
-def _valid_sequence(feature: FeatureSnapshot) -> bool:
-    sequence = feature.model_sequence
-    return sequence is not None and sequence.code == feature.quote.code and sequence.dates[-1] < _market_day(feature)
 
 
 def _score_predictions(
@@ -1032,18 +1042,18 @@ def _optional_finite(value: object) -> float | None:
     return numeric if math.isfinite(numeric) else None
 
 
-def _runtime_feature_contract(profile: LoadedScoringProfile) -> _RuntimeFeatureContract:
+def _runtime_feature_contract(profile: LoadedScoringProfile, plan: CrossSectionalScoringPlan) -> _RuntimeFeatureContract:
     profile_feature_ids = tuple(
         feature_id
         for head in profile.heads.values()
         for feature_id in cast(ModelPredictorPort, head.predictor).feature_ids
     )
-    uses_v2_long_horizon = profile.profile_id == "v2" and any(
+    uses_extended_momentum = plan.supports_extended_momentum and any(
         horizon in feature_id for feature_id in profile_feature_ids for horizon in ("120d", "250d")
     )
     momentum_horizons: tuple[int, ...]
     market_state_horizons: tuple[int, ...]
-    if uses_v2_long_horizon:
+    if uses_extended_momentum:
         manifest = V2_TOMORROW_MODEL_FEATURE_MANIFEST
         catalog = V2_FEATURE_SPEC_CATALOG
         momentum_horizons = (20, 40, 60, 120, 250)
@@ -1093,6 +1103,7 @@ def _market_state_values(
 
 
 __all__ = [
+    "CrossSectionalScoringPlan",
     "ProductionModelScoringService",
     "SharedModelFeatureCache",
 ]

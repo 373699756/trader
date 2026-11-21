@@ -25,7 +25,7 @@ from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.implementation_identity import TrainingImplementationIdentity
-from trader.training.infra.profile.v5.contracts import V5_TRAINING_PROFILE
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_builder import BuildTrainingSamples, TrainingSampleBuildRequest
 from trader.training.infra.sample_cache import TrainingSampleCache
 from trader.training.infra.sample_schema import TrainingFeatureNames
