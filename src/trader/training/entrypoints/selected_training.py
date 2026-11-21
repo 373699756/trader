@@ -39,7 +39,7 @@ from trader.training.entrypoints.report_output import ProjectTrainingError, Trai
 from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.training_diagnostics import BuildTrainingOperationIssue
-from trader.training.domain.tomorrow_probability import TomorrowProbabilityGroupResult
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.history_training_due import EvaluateAllHistoryTrainingDue
@@ -198,19 +198,19 @@ def _run_selected_training(
             run = TrainSelectedProfiles(
                 prepare_training(selection), WorkerFutureExecutor(executor),
             )
-            shared = run.tomorrow_probability
-            shared_failed = any(not group.result.ready for group in shared)
-            for group in shared:
-                target = group.target.threshold_bps / 100
-                group_result = group.result
+            tomorrow = run.tomorrow_probability
+            tomorrow_failed = any(not head.result.ready for head in tomorrow)
+            for head in tomorrow:
+                target = head.target.threshold_bps / 100
+                tomorrow_result = head.result
                 command_output.report_notice(
                     f"Tomorrow ≥{target:g}%模型",
-                    f"{','.join(group.profiles)} | {group_result.failure or group_result.algorithm or '模型未就绪'}",
-                    state="完成" if group_result.ready else "失败",
+                    f"{head.profile} | {tomorrow_result.failure or tomorrow_result.algorithm or '模型未就绪'}",
+                    state="完成" if tomorrow_result.ready else "失败",
                 )
             returned_training_code = (
                 130 if cancelled.is_set() or any(outcome.cancelled for outcome in run.outcomes)
-                else int(shared_failed or any(
+                else int(tomorrow_failed or any(
                     outcome.result is None or outcome.result.status != "engineering_ready" for outcome in run.outcomes
                 ))
             )
@@ -229,7 +229,7 @@ def _run_selected_training(
                         for item in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE, V5_TRAINING_PROFILE)
                         if item.profile_id == outcome.profile
                     )
-                    if shared:
+                    if tomorrow:
                         contract = D25ProfileContract(contract)
                     try:
                         maintenance = EvaluateAllHistoryTrainingDue(
@@ -257,7 +257,7 @@ def _run_selected_training(
                 if outcome.cancelled
                 else int(result is None or result.status != "engineering_ready" or "maintenance_failure" in payload)
             )
-        code = 130 if cancelled.is_set() or 130 in codes else int(shared_failed or any(codes))
+        code = 130 if cancelled.is_set() or 130 in codes else int(tomorrow_failed or any(codes))
         summary = {
             "industry": ProjectTrainingIndustryCoverage(run.industry_snapshot) if run.industry_snapshot is not None else None,
             "profiles": profiles,
@@ -302,8 +302,8 @@ def _run_selected_training(
             ],
             "not_started": [],
         }
-        if shared:
-            summary["tomorrow_probability"] = [_project_shared_tomorrow(group) for group in shared]
+        if tomorrow:
+            summary["tomorrow_probability"] = [_project_tomorrow(head) for head in tomorrow]
         complete_outcome_summary = True
     except (KeyboardInterrupt, InterruptedError, CancelledError) as exc:
         cancelled.set()
@@ -325,7 +325,7 @@ def _run_selected_training(
             "timing": ProjectTrainingExecutionTiming(measurements.snapshot()) if measurements is not None else None,
         }
         if isinstance(exc, SelectedD25IndustryUnavailable):
-            summary["tomorrow_probability"] = [_project_shared_tomorrow(group) for group in exc.tomorrow_probability]
+            summary["tomorrow_probability"] = [_project_tomorrow(head) for head in exc.tomorrow_probability]
             summary["not_started"] = profiles
     finally:
         deadline = cancelled.shutdown_deadline()
@@ -398,13 +398,12 @@ def _run_selected_training(
     return code
 
 
-def _project_shared_tomorrow(group: TomorrowProbabilityGroupResult) -> dict[str, object]:
-    result = group.result
-    selected = result.selection
+def _project_tomorrow(head: TomorrowProbabilityProfileResult) -> dict[str, object]:
+    result = head.result
     return {
-        "target": group.target.identity,
-        "threshold_bps": group.target.threshold_bps,
-        "profiles": group.profiles,
+        "target": head.target.identity,
+        "threshold_bps": head.target.threshold_bps,
+        "profile": head.profile,
         "ready": result.ready,
         "history_snapshot_hash": result.history_snapshot_hash,
         "model_identity": result.model_identity,
@@ -412,15 +411,6 @@ def _project_shared_tomorrow(group: TomorrowProbabilityGroupResult) -> dict[str,
         "failure": result.failure,
         "historical_universe_proven": False,
         "point_in_time_parity": False,
-        "selection_daily_close_proxy": None if selected is None else {
-            "rule_hits": selected.rule_hits,
-            "logistic_hits": selected.logistic_hits,
-            "lightgbm_hits": selected.lightgbm_hits,
-            "comparable_seats": selected.comparable_seats,
-            "rule_unsettled": selected.rule_unsettled,
-            "logistic_unsettled": selected.logistic_unsettled,
-            "lightgbm_unsettled": selected.lightgbm_unsettled,
-        },
         "assessment_rows": result.assessment_rows,
         "assessment_positive_rows": result.assessment_positive_rows,
         "assessment_brier": result.assessment_brier,

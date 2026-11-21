@@ -1,4 +1,4 @@
-"""Route formal Tomorrow records to stable storage across profile selections."""
+"""Write current profile freezes and project immutable Tomorrow history."""
 
 from __future__ import annotations
 
@@ -23,37 +23,32 @@ from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeR
 class StrategyFreezeRecords:
     profile_records: FreezeRecordPort
     shared_history: FreezeRecordPort
-    owns_tomorrow: bool
     grouped_tomorrow: SQLiteFreezeRecords
     profile: ScoringProfileId
     target: PredictionTarget
-    group_profiles: tuple[ScoringProfileId, ...]
-    owns_grouped_database: bool = False
+    owns_legacy_settlement: bool = False
 
     def __post_init__(self) -> None:
-        if self.target.strategy is not Strategy.TOMORROW or self.profile not in self.group_profiles:
-            raise ValueError("Tomorrow profile group is invalid")
+        if self.target.strategy is not Strategy.TOMORROW:
+            raise ValueError("Tomorrow profile target is invalid")
 
     def initialize(self) -> None:
         self.profile_records.initialize()
-        if self.owns_grouped_database:
-            self.grouped_tomorrow.initialize()
 
     def commit(self, record: CommittedFreezeRecord) -> None:
         if record.strategy is Strategy.TOMORROW:
+            versions = dict(record.freeze.input_versions)
             if (
-                not self.owns_tomorrow
-                or dict(record.freeze.input_versions).get("prediction_target") != self.target.identity
+                versions.get("prediction_target") != self.target.identity
+                or versions.get("scoring_profile") != self.profile
             ):
-                raise FreezeRecordUnavailableError("only the shared Tomorrow owner may commit a new Tomorrow record")
+                raise FreezeRecordUnavailableError("Tomorrow record does not belong to this profile")
             if (
                 self.shared_history.load_history(Strategy.TOMORROW, record.trade_date) is not None
-                or self.profile_records.load_history(Strategy.TOMORROW, record.trade_date) is not None
+                or self.grouped_tomorrow.load_tomorrow_history(self.profile, record.trade_date) is not None
             ):
                 raise FreezeRecordConflictError("a historical Tomorrow result is already frozen for that day")
-            self.grouped_tomorrow.commit_tomorrow(record, self.target.identity, self.group_profiles, owner=self.profile)
-        else:
-            self.profile_records.commit(record)
+        self.profile_records.commit(record)
 
     def load(self, strategy: Strategy, trade_date: date) -> CommittedFreezeRecord | None:
         if strategy is Strategy.TOMORROW:
@@ -91,26 +86,20 @@ class StrategyFreezeRecords:
     def list_settlement_dates(
         self, strategy: Strategy, *, after: date | None, limit: int
     ) -> tuple[date, ...]:
-        if strategy is not Strategy.TOMORROW:
-            return self.profile_records.list_settlement_dates(strategy, after=after, limit=limit)
+        profile = self.profile_records.list_settlement_dates(strategy, after=after, limit=limit)
+        if strategy is not Strategy.TOMORROW or not self.owns_legacy_settlement:
+            return profile
         grouped = self.grouped_tomorrow.list_settlement_dates(strategy, after=after, limit=limit)
         shared = self.shared_history.list_settlement_dates(strategy, after=after, limit=limit)
-        return tuple(sorted({*grouped, *shared}))[:limit]
+        return tuple(sorted({*profile, *grouped, *shared}))[:limit]
 
     def tomorrow_settlement_records(self, trade_date: date) -> tuple[CommittedFreezeRecord, ...]:
-        grouped = self.grouped_tomorrow.tomorrow_records(trade_date)
-        if grouped:
-            return grouped
+        record = self.profile_records.load(Strategy.TOMORROW, trade_date)
+        records = () if record is None else (record,)
+        if not self.owns_legacy_settlement:
+            return records
         shared = self.shared_history.load(Strategy.TOMORROW, trade_date)
-        return () if shared is None else (shared,)
+        return records + (() if shared is None else (shared,)) + self.grouped_tomorrow.tomorrow_records(trade_date)
 
     def recover(self) -> FreezeRecordRecoverySummary:
-        profile = self.profile_records.recover()
-        if not self.owns_grouped_database:
-            return profile
-        shared = self.grouped_tomorrow.recover()
-        return FreezeRecordRecoverySummary(
-            profile.recovered + shared.recovered,
-            profile.quarantined + shared.quarantined,
-            profile.orphaned + shared.orphaned,
-        )
+        return self.profile_records.recover()

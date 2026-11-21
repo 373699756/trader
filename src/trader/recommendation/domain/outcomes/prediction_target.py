@@ -62,17 +62,6 @@ class PredictionTargets:
             return targets.d25
         raise ValueError("Long has no prediction target")
 
-    def tomorrow_groups(
-        self, profiles: tuple[ScoringProfileId, ...]
-    ) -> tuple[tuple[PredictionTarget, tuple[ScoringProfileId, ...]], ...]:
-        targets = tuple(self.for_profile(profile, Strategy.TOMORROW) for profile in profiles)
-        return tuple(
-            (target, tuple(profile for profile, value in zip(profiles, targets, strict=True) if value == target))
-            for index, target in enumerate(targets)
-            if target not in targets[:index]
-        )
-
-
 def ParsePredictionTargetIdentity(identity: str | None) -> PredictionTarget | None:
     if identity is None:
         return None

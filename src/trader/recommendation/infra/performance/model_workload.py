@@ -66,7 +66,6 @@ class PerformanceProfileWorkload:
             cost_policy=self.cost_policy,
             maintenance=None,
             tomorrow_predictor=self.tomorrow_predictor,
-            shared_tomorrow=self.tomorrow_predictor is not None,
             tomorrow_target=self.tomorrow_target,
             d25_target=self.d25_target,
         )

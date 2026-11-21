@@ -481,10 +481,6 @@ def _prepare_profiles(
     from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
 
     targets = LoadPredictionTargets(settings.strategy_config_path)
-    tomorrow_models = {
-        target: LoadTomorrowProbabilityModel(settings.data_paths.models, target)
-        for target, _members in targets.tomorrow_groups(selected)
-    }
     for profile_id in selected:
         strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile_id)
         tomorrow_target = targets.for_profile(profile_id, Strategy.TOMORROW)
@@ -510,7 +506,10 @@ def _prepare_profiles(
         workloads.append(
             PerformanceProfileWorkload(
                 loaded, BuildRecommendationPolicy(strategy), features, settings.config_version, cost_policy,
-                tomorrow_models.pop(tomorrow_target, None), tomorrow_target, d25_target,
+                LoadTomorrowProbabilityModel(
+                    settings.data_paths.models, profile_id, tomorrow_target, project_root=settings.project_root,
+                ),
+                tomorrow_target, d25_target,
             )
         )
         profiles.append(

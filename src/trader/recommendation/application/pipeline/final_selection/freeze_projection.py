@@ -56,7 +56,7 @@ from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewO
 from trader.recommendation.domain.market.history_alignment import HISTORY_INPUT_FAILURES
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.tomorrow_probability import IsTomorrowClosingQuote
-from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.outcomes.prediction_target import ParsePredictionTargetIdentity, PredictionTarget
 from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 from trader.recommendation.domain.publication.freeze_identity import (
     FreezeDownside,
@@ -142,6 +142,7 @@ class _FreezeProjectionContext:
     preview_context: PreviewContext | None = None
     official_close_evidence: str | None = None
     prediction_target: PredictionTarget | None = None
+    scoring_profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -475,6 +476,10 @@ def BuildScoredLocal(
                 preview_context=native_input.preview_context,
                 official_close_evidence=official_close_evidence,
                 prediction_target=target,
+                scoring_profile=(
+                    head_status.profile_id
+                    if strategy is Strategy.TOMORROW and target is not None and head_status is not None else None
+                ),
             ),
         ),
         score_model_version=model_version,
@@ -654,6 +659,8 @@ def BuildScoredHybrid(
         policy=freeze_policy,
     )
     epoch = BuildScoredFreezeEpoch(freeze_request, entries=stages.entries)
+    local_versions = dict(projection.local.input_versions)
+    target_identity = local_versions.get("prediction_target")
     freeze = _scored_freeze(
         epoch,
         _FreezeProjectionContext(
@@ -671,6 +678,8 @@ def BuildScoredHybrid(
             production_authority=projection.production_authority,
             rank_population_version=projection.rank_population_version,
             preview_context=projection.native_input.preview_context,
+            prediction_target=ParsePredictionTargetIdentity(target_identity) if target_identity != TOMORROW_CLOSE_GAIN_TARGET else None,
+            scoring_profile=local_versions.get("scoring_profile"),
         ),
     )
     return ScoredReviewProjection(replace(freeze, input_versions=projection.local.input_versions), stages)
@@ -712,6 +721,7 @@ def _scored_freeze(
                     if context.prediction_target is not None
                     else TOMORROW_CLOSE_GAIN_TARGET if context.score_scale == TOMORROW_PROBABILITY_SCORE_SCALE else None,
                 ),
+                ("scoring_profile", context.scoring_profile),
                 (f"{context.strategy.value}_close_evidence", context.official_close_evidence),
             )
             if value is not None

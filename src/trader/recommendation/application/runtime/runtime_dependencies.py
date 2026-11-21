@@ -61,7 +61,6 @@ class RuntimeDependencies:
     rounds: RecommendationRounds = field(default_factory=RecommendationRounds)
     round_profile: str = "default"
     prepare_publication: Callable[[], None] | None = None
-    shared_tomorrow_owner: bool | None = None
     tomorrow_model_ready: bool = True
     d25_model_ready: bool = True
     tomorrow_settlement: Callable[[datetime], object] | None = None
@@ -71,7 +70,7 @@ class RuntimeDependencies:
         return tuple(
             strategy
             for strategy, ready in (
-                (Strategy.TOMORROW, self.shared_tomorrow_owner is not False and self.tomorrow_model_ready),
+                (Strategy.TOMORROW, self.tomorrow_model_ready),
                 (Strategy.D25, self.d25_model_ready),
             )
             if ready

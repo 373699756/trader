@@ -24,7 +24,7 @@ from trader.training.application.resources import TrainingExecutionObserver, Tra
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
 from trader.training.application.training_diagnostics import BuildTrainingOperationIssue, TrainingOperationIssue
 from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
-from trader.training.domain.tomorrow_probability import TomorrowProbabilityGroupResult
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult
 
 ResultT = TypeVar("ResultT")
 SelectedProfileResult = TrainingRunResult | V1TrainingResult
@@ -62,7 +62,7 @@ class SelectedTrainingRun(Generic[ResultT]):
     history_rows_read: int
     timing: TrainingExecutionTiming | None = field(default=None, kw_only=True)
     industry_snapshot: CurrentIndustrySnapshot | None = field(default=None, kw_only=True)
-    tomorrow_probability: tuple[TomorrowProbabilityGroupResult, ...] = field(default=(), kw_only=True)
+    tomorrow_probability: tuple[TomorrowProbabilityProfileResult, ...] = field(default=(), kw_only=True)
     d25_targets: tuple[tuple[ScoringProfileId, PredictionTarget], ...] = field(default=(), kw_only=True)
 
 
@@ -73,7 +73,7 @@ class SelectedTrainingPreparationError(RuntimeError):
 class SelectedD25IndustryUnavailable(RuntimeError):
     """D25 could not start after the independent Tomorrow operation returned."""
 
-    def __init__(self, tomorrow_probability: tuple[TomorrowProbabilityGroupResult, ...]) -> None:
+    def __init__(self, tomorrow_probability: tuple[TomorrowProbabilityProfileResult, ...]) -> None:
         super().__init__("d25_industry_input_unavailable")
         self.tomorrow_probability = tomorrow_probability
 

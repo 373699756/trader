@@ -547,7 +547,7 @@ class SchedulerRuntime:
             )
             if round_sequence is None:
                 scored = self._dependencies.scored_strategies
-                if self._dependencies.shared_tomorrow_owner is None and len(scored) == 2:
+                if len(scored) == 2:
                     self._cycles.execute_pair((requests[0], requests[1]))
                 else:
                     for request in requests:

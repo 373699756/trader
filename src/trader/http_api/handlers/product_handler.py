@@ -140,16 +140,13 @@ def _current_batch(services: WebServices | None) -> RouteResponse:
         else ((services.profile_id, services.queries),)
     )
     batch = UnifiedFreezeQueries.current_batch(profiles)
-    tomorrow_views = {profile: view for profile, pair in batch for view in pair if view.strategy is Strategy.TOMORROW}
-    tomorrow_profiles = services.tomorrow_profiles if isinstance(services, ProfiledWebServices) else None
     response = jsonify({
 
         "profiles": {
             profile: {
                 view.strategy.value: {
                     **SerializeFreezeView(
-                        tomorrow_views[tomorrow_profiles[profile]]
-                        if view.strategy is Strategy.TOMORROW and tomorrow_profiles is not None and not view.frozen else view,
+                        view,
                         configured_target=_configured_target(services, profile, view.strategy),
                     ),
                     "scoring_profile": profile,
@@ -353,7 +350,6 @@ def _events(services: WebServices | None) -> RouteResponse:
         lane.events,
         subscription,
         heartbeat_seconds=lane.config.heartbeat_seconds,
-        tomorrow_profiles=services.tomorrow_profiles if isinstance(services, ProfiledWebServices) else None,
     )
 
 
@@ -398,12 +394,7 @@ def _current_view(
 ) -> FreezeView:
     if strategy is Strategy.LONG and isinstance(services, ProfiledWebServices):
         return services.select_long()[1].queries.current(strategy)
-    view = selected.queries.current(strategy)
-    if strategy is Strategy.TOMORROW and isinstance(services, ProfiledWebServices):
-        owner = services.select_tomorrow(selected.profile_id)
-        if not view.frozen and owner is not selected:
-            return owner.queries.current(strategy)
-    return view
+    return selected.queries.current(strategy)
 
 
 def _configured_target(services: WebServices | None, profile: str, strategy: Strategy) -> PredictionTarget | None:

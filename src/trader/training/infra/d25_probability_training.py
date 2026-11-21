@@ -34,6 +34,7 @@ from trader.training.infra.profile.v1.samples import (
     LearnedRankSampleIndex,
 )
 from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.profile.v5.binary_fitting import FitBinaryTcn
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSampleBatch, TrainingSampleMatrix
 
 
@@ -186,40 +187,12 @@ def _fit_logistic(
 def _fit_tcn(
     training: TrainingSampleMatrix, parameters: TcnFittingParameters, threads: int, check: Callable[[], None],
 ) -> _FittedProbability:
-    import torch
-    from torch.nn.functional import binary_cross_entropy_with_logits
-
-    from trader.training.infra.profile.v5.fitting import FitTcnFeatureTransforms
-    from trader.training.infra.profile.v5.network import ConfigureTcnRuntime, TcnNetwork
-
     if parameters.epochs != 10:
         raise ValueError("d25_probability_v5_requires_10_epochs")
-    ConfigureTcnRuntime(training=True, compute_threads=threads)
-    auxiliary_width = training.features.shape[1] - 360
-    means, scales = FitTcnFeatureTransforms(training, auxiliary_width, parameters.batch_size, check)
-    torch.manual_seed(parameters.seed)
-    network = TcnNetwork(auxiliary_width, parameters.dropout, parameters.architecture)
-    optimizer = torch.optim.AdamW(network.parameters(), lr=parameters.learning_rate, weight_decay=parameters.weight_decay)
-    network.train()
-    for _ in range(parameters.epochs):
-        for start in range(0, len(training.labels), parameters.batch_size):
-            check()
-            end = start + parameters.batch_size
-            inputs = torch.from_numpy((training.features[start:end] - means) / scales).to(network.compute_dtype)
-            targets = torch.from_numpy(training.labels[start:end].copy()).to(network.compute_dtype)
-            optimizer.zero_grad(set_to_none=True)
-            loss = binary_cross_entropy_with_logits(network(inputs), targets)
-            if not torch.isfinite(loss):
-                raise ValueError("d25_probability_tcn_loss_nonfinite")
-            loss.backward()
-            optimizer.step()
-    network.eval()
-
-    def predict(features: np.ndarray) -> np.ndarray:
-        return network.predict((features - means) / scales)
-
+    fitted = FitBinaryTcn(training, parameters, threads, check)
     return _FittedProbability(
-        D25TcnModel(tuple(means), tuple(scales), parameters.dropout, network.tensors(), parameters.architecture), predict,
+        D25TcnModel(tuple(fitted.means), tuple(fitted.scales), parameters.dropout,
+                    fitted.network.tensors(), parameters.architecture), fitted.logits,
     )
 
 

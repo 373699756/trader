@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from trader.infra.serialization.canonical import FileSha256
 from trader.infra.settings import RuntimeSettings
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
-from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.training.application.baseline_identity_audit import BaselineIdentityEvidence
 from trader.training.domain.evaluation.baseline_identity import BaselineIdentityClaim, SourceHash
@@ -34,8 +35,8 @@ def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineId
     design_path = runtime.project_root / "docs/b_系统设计.md"
     strategy_doc_path = runtime.project_root / "docs/c_评分设计.md"
     model_claims = tuple(
-        _tomorrow_model_claim(runtime, target)
-        for target, _members in strategy.prediction_targets.tomorrow_groups(SCORING_PROFILE_IDS)
+        _tomorrow_model_claim(runtime, profile, strategy.prediction_targets.for_profile(profile, Strategy.TOMORROW))
+        for profile in SCORING_PROFILE_IDS
     )
     historical_root = runtime.data_paths.research(strategy.scoring_profile) / "experiments"
     historical_evidence = TomorrowHistoricalEvidenceIndex(historical_root)
@@ -111,19 +112,23 @@ def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineId
     return PackagedBaselineIdentityEvidence(claims)
 
 
-def _tomorrow_model_claim(runtime: RuntimeSettings, target: PredictionTarget) -> BaselineIdentityClaim:
+def _tomorrow_model_claim(
+    runtime: RuntimeSettings, profile: ScoringProfileId, target: PredictionTarget,
+) -> BaselineIdentityClaim:
     models = runtime.data_paths.models
-    source = str(TomorrowProbabilityModelPath(models, target))
+    source = str(TomorrowProbabilityModelPath(models, profile, target))
     identity = SourceHash(source)
     actual: str | None = None
     try:
-        model = LoadTomorrowProbabilityModel(models, target)
+        model = LoadTomorrowProbabilityModel(models, profile, target, project_root=runtime.project_root)
     except (OSError, ValueError):
         actual = "artifact_conflict"
     else:
         if model is not None:
             actual, identity = model.artifact.target.identity, model.identity
-    return BaselineIdentityClaim(f"tomorrow_probability_target_{target.threshold_bps}", target.identity, actual, source, identity)
+    return BaselineIdentityClaim(
+        f"tomorrow_probability_{profile}_target_{target.threshold_bps}", target.identity, actual, source, identity,
+    )
 
 
 def _optional_text(payload: dict[str, object] | None, name: str) -> str | None:

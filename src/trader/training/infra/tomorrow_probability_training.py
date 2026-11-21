@@ -1,13 +1,15 @@
-"""Fit and independently calibrate one pooled next-close hit model."""
+"""Fit the four fixed next-close event models with bounded sample sharing."""
 
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Callable, Generator, Iterable
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from importlib.util import find_spec
 from itertools import groupby
 from pathlib import Path
 from typing import Protocol, TypeAlias
@@ -22,27 +24,45 @@ from trader.download.infra.history_control_index import HistoryControlError, His
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader, HistorySnapshotReadError
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.recommendation.domain.market.models import Board
-from trader.recommendation.domain.market.tomorrow_probability import BuildTomorrowFeatures, TOMORROW_FEATURE_NAMES
-from trader.recommendation.domain.outcomes.prediction_target import EvaluatePredictionTarget, PredictionTarget
+from trader.recommendation.domain.market.tomorrow_probability import (
+    BuildTomorrowFeatures,
+    BuildTomorrowSequenceFeatures,
+    TOMORROW_FEATURE_NAMES,
+)
+from trader.recommendation.domain.market.v5.features import (
+    CalculatePriceVolumeSequence,
+    ModelPriceVolumeSequence,
+    PriceVolumePoint,
+    SEQUENCE_STEPS,
+)
+from trader.recommendation.domain.outcomes.prediction_target import EvaluatePredictionTarget, PredictionTarget, PredictionTargets
 from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingMemoryAdmission
-from trader.training.domain.tomorrow_probability import TomorrowProbabilitySelection, TomorrowProbabilityTrainingResult
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult, TomorrowProbabilityTrainingResult
+from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.logistic_fitting import FitBinaryLogistic
+from trader.training.infra.model_fitting import LightGBMFittingParameters, RidgeFittingParameters
+from trader.training.infra.price_volume import ProjectSequencePoint
+from trader.training.infra.profile.v1.fitting import DailyBinaryRankRows, FitDailyBinaryRanker
+from trader.training.infra.profile.v5.binary_fitting import FitBinaryTcn
+from trader.training.infra.profile.v5.settings import TcnFittingParameters
+from trader.training.infra.sample_index import TrainingSampleMatrix
 from trader.training.infra.tomorrow_probability import (
     LoadTomorrowProbabilityModel,
     LogisticTomorrowModel,
     PublishTomorrowProbabilityModel,
     TomorrowProbabilityArtifact,
+    TomorrowFeatureNames,
+    TomorrowTcnModel,
 )
+from trader.training.infra.tomorrow_settings import LoadTomorrowFitSettings, TomorrowFitSettings
 
-_FIT_SESSIONS = 750
-_FOLD_SESSIONS = 20
-_FOLDS = 2
 _CALIBRATION_SESSIONS = 20
 _ASSESSMENT_SESSIONS = 20
 _EMBARGO_SESSIONS = 5
-_RESERVE_SESSIONS = _FOLD_SESSIONS * _FOLDS + _CALIBRATION_SESSIONS + _ASSESSMENT_SESSIONS + 3 * _EMBARGO_SESSIONS
 _MIN_FITTING_SESSIONS = 60
 _BOARD_SEATS = 4
 _SEATS = 6
@@ -53,7 +73,7 @@ _IntArray: TypeAlias = NDArray[np.int64]
 
 @dataclass(frozen=True, slots=True)
 class _Samples:
-    features: _FloatArray
+    features: np.ndarray
     labels: _FloatArray
     codes: _IntArray
     boards: _IntArray
@@ -63,6 +83,40 @@ class _Samples:
 
     def rows(self, start_day: int, end_day: int) -> slice:
         return slice(self.offsets[start_day], self.offsets[end_day])
+
+
+@dataclass(frozen=True, slots=True)
+class _FitDates:
+    fitting: int
+    early: int = 0
+    calibration: int = _CALIBRATION_SESSIONS
+    assessment: int = _ASSESSMENT_SESSIONS
+    embargo: int = _EMBARGO_SESSIONS
+
+    @property
+    def reserve(self) -> int:
+        return self.early + self.calibration + self.assessment + self.embargo * (3 if self.early else 2)
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingFit:
+    target: PredictionTarget
+    settings: TomorrowFitSettings
+    dates: _FitDates
+
+    @property
+    def profile(self) -> ScoringProfileId:
+        return self.settings.profile
+
+
+def _fit_dates(settings: TomorrowFitSettings) -> _FitDates:
+    parameters = settings.parameters
+    if isinstance(parameters, V1TrainingSettings):
+        return _FitDates(
+            settings.fit_dates, parameters.early_stopping_dates, parameters.calibration_dates,
+            parameters.validation_dates, parameters.embargo_dates,
+        )
+    return _FitDates(settings.fit_dates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,64 +156,111 @@ def OpenTomorrowHistoryInput(root: Path, *, sqlite_policy: SqliteIoPolicy) -> To
     return TomorrowHistoryInput(state, HistorySnapshotReader(root, sqlite_policy=sqlite_policy))
 
 
-class SharedTomorrowTrainer(Protocol):
+class TomorrowTrainer(Protocol):
     def __call__(
         self,
         history: TomorrowHistoryInput,
         model_root: Path,
         *,
-        target: PredictionTarget,
+        profiles: tuple[ScoringProfileId, ...],
+        prediction_targets: PredictionTargets,
+        project_root: Path,
         cancelled: Callable[[], bool],
         cpu_budget: TrainingCpuBudget,
         memory: TrainingMemoryAdmission,
-    ) -> TomorrowProbabilityTrainingResult: ...
+    ) -> tuple[TomorrowProbabilityProfileResult, ...]: ...
 
 
-def TrainSharedTomorrowProbability(
+def TrainTomorrowProbability(
     history: TomorrowHistoryInput,
     model_root: Path,
     *,
-    target: PredictionTarget,
+    profiles: tuple[ScoringProfileId, ...],
+    prediction_targets: PredictionTargets,
+    project_root: Path,
     cancelled: Callable[[], bool],
     cpu_budget: TrainingCpuBudget,
     memory: TrainingMemoryAdmission,
-) -> TomorrowProbabilityTrainingResult:
-    calendar = history.open_dates[-(_FIT_SESSIONS + _RESERVE_SESSIONS + 1) :]
-    cap = len(calendar) * history.universe_count
-    if len(calendar) < _MIN_FITTING_SESSIONS + _RESERVE_SESSIONS + 1:
-        return _failed(history.snapshot_hash, "tomorrow_insufficient_training_dates")
-
+) -> tuple[TomorrowProbabilityProfileResult, ...]:
     def check() -> None:
         if cancelled():
             raise InterruptedError("tomorrow_probability_training_cancelled")
 
-    # Allow for the packed samples, normalized design, IRLS scratch and the native tree dataset.
-    required_bytes = max(1, cap * (5 * len(TOMORROW_FEATURE_NAMES) + 15) * 8)
-    try:
+    results: dict[ScoringProfileId, TomorrowProbabilityProfileResult] = {}
+    pending: dict[tuple[PredictionTarget, bool], list[_PendingFit]] = {}
+    for profile in profiles:
         check()
+        target = prediction_targets.for_profile(profile, Strategy.TOMORROW)
         try:
-            current = LoadTomorrowProbabilityModel(model_root, target)
-        except ValueError:
+            current = LoadTomorrowProbabilityModel(model_root, profile, target, project_root=project_root)
+        except (OSError, RuntimeError, ValueError):
             current = None
         if current is not None and current.artifact.history_snapshot_hash == history.snapshot_hash:
-            return TomorrowProbabilityTrainingResult(history.snapshot_hash, current.identity, current.artifact.algorithm)
+            result = TomorrowProbabilityTrainingResult(history.snapshot_hash, current.identity, current.artifact.algorithm)
+            results[profile] = TomorrowProbabilityProfileResult(target, profile, result)
+        elif profile == "v5" and find_spec("torch") is None:
+            results[profile] = TomorrowProbabilityProfileResult(
+                target, profile, _failed(history.snapshot_hash, "tomorrow_v5_tensor_dependency_unavailable"),
+            )
+        else:
+            settings = LoadTomorrowFitSettings(project_root, profile)
+            request = _PendingFit(target, settings, _fit_dates(settings))
+            pending.setdefault((target, profile == "v5"), []).append(request)
+
+    for requests in pending.values():
+        for head in _train_sample_group(history, model_root, tuple(requests), cpu_budget, memory, check):
+            results[head.profile] = head
+    return tuple(results[profile] for profile in profiles)
+
+
+def _train_sample_group(
+    history: TomorrowHistoryInput, model_root: Path, requests: tuple[_PendingFit, ...],
+    cpu_budget: TrainingCpuBudget, memory: TrainingMemoryAdmission, check: Callable[[], None],
+) -> tuple[TomorrowProbabilityProfileResult, ...]:
+    target = requests[0].target
+    sequence = requests[0].profile == "v5"
+    warmup = SEQUENCE_STEPS + 1 if sequence else 0
+    limit = max(item.dates.fitting + item.dates.reserve for item in requests)
+    calendar = history.open_dates[-(limit + warmup + 1):]
+    cap = max(0, len(calendar) - warmup - 1) * history.universe_count
+    if sequence:
+        width = len(TomorrowFeatureNames("v5"))
+        # Float32 matrix plus one filtered fitting copy and a bounded universe history buffer.
+        required_bytes = 2 * cap * (4 * width + 32) + warmup * history.universe_count * 160 + 64 * 1024**2
+    else:
+        # Packed samples, normalized design, IRLS scratch and the native tree dataset.
+        required_bytes = max(1, cap * (5 * len(TOMORROW_FEATURE_NAMES) + 15) * 8)
+    try:
+        check()
+        if not cap:
+            raise ValueError("tomorrow_insufficient_training_dates")
         with (
-            memory.reserve(required_bytes, check),
+            memory.reserve(max(1, required_bytes), check),
             cpu_budget.reserve(cpu_budget.native_threads, check),
             cpu_budget.native_runtime(),
-            closing(history.iter_training_rows(calendar)) as rows,
         ):
-            samples = _collect_samples(rows, calendar, cap, check, target)
-            return _train(samples, calendar[:-1], history.snapshot_hash, model_root, check, target)
+            with closing(history.iter_training_rows(calendar)) as rows:
+                samples = _collect_samples(
+                    rows, calendar, cap, check, target, warmup=warmup, source_identity=history.snapshot_hash,
+                )
+            return tuple(_fit_pending(
+                item, samples, calendar[warmup:-1], history.snapshot_hash, model_root, check,
+                cpu_budget.native_threads,
+            ) for item in requests)
     except (OSError, ValueError, HistorySnapshotReadError, lgb.basic.LightGBMError, np.linalg.LinAlgError) as exc:
-        if isinstance(exc, InterruptedError):
-            raise
-        detail = str(exc)
-        if detail.startswith("training_memory_request_exceeds_budget:"):
-            reason = "tomorrow_probability_memory_budget_insufficient"
-        else:
-            reason = detail if isinstance(exc, ValueError) and detail.startswith("tomorrow_") else type(exc).__name__
-        return _failed(history.snapshot_hash, reason)
+        result = _training_failure(history.snapshot_hash, exc)
+        return tuple(TomorrowProbabilityProfileResult(item.target, item.profile, result) for item in requests)
+
+
+def _training_failure(snapshot_hash: str, exc: Exception) -> TomorrowProbabilityTrainingResult:
+    if isinstance(exc, InterruptedError):
+        raise exc
+    detail = str(exc)
+    if detail.startswith("training_memory_request_exceeds_budget:"):
+        reason = "tomorrow_probability_memory_budget_insufficient"
+    else:
+        reason = detail if isinstance(exc, ValueError) and detail.startswith("tomorrow_") else type(exc).__name__
+    return _failed(snapshot_hash, reason)
 
 
 def _failed(snapshot_hash: str, reason: str) -> TomorrowProbabilityTrainingResult:
@@ -194,14 +295,19 @@ def _collect_samples(
     cap: int,
     check: Callable[[], None],
     target: PredictionTarget,
+    *,
+    warmup: int = 0,
+    source_identity: str = "",
 ) -> _Samples:
-    features: _FloatArray = np.empty((cap, len(TOMORROW_FEATURE_NAMES)), dtype=np.float64)
+    columns = TomorrowFeatureNames("v5" if warmup else "v3")
+    features = np.empty((cap, len(columns)), dtype=np.float32 if warmup else np.float64)
     labels: _FloatArray = np.empty(cap, dtype=np.float64)
     codes: _IntArray = np.empty(cap, dtype=np.int64)
     boards: _IntArray = np.empty(cap, dtype=np.int64)
     grouped = iter(groupby(rows, key=lambda item: item.trade_date))
     group = next(grouped, None)
     previous: tuple[HistoryTrainingRow, ...] = ()
+    rolling: dict[str, deque[PriceVolumePoint]] = {}
     offsets = [0]
     written = pending = missing_features = 0
     for day_index, day in enumerate(calendar):
@@ -215,7 +321,8 @@ def _collect_samples(
                     raise ValueError("tomorrow_history_duplicate_stock_day")
                 current[row.code] = row
             group = next(grouped, None)
-        if day_index:
+        if day_index > warmup:
+            sequence_dates = calendar[day_index - warmup - 1:day_index - 1] if warmup else ()
             for row in previous:
                 point = row.point
                 if point is None or row.cell_status != "complete":
@@ -227,6 +334,15 @@ def _collect_samples(
                 if vector is None:
                     missing_features += 1
                     continue
+                if warmup:
+                    sequence = _completed_sequence(rolling.get(row.code), sequence_dates, row.code, source_identity)
+                    vector = (
+                        BuildTomorrowSequenceFeatures(vector, sequence, signal_date=row.trade_date)
+                        if sequence is not None else None
+                    )
+                    if vector is None:
+                        missing_features += 1
+                        continue
                 outcome = _label(row, current.get(row.code), target)
                 if written >= cap:
                     raise ValueError("tomorrow_history_population_exceeds_manifest")
@@ -237,12 +353,40 @@ def _collect_samples(
                 boards[written] = _BOARDS.index(row.board)
                 written += 1
             offsets.append(written)
+        if warmup:
+            _append_sequence_points(rolling, previous, warmup)
         previous = tuple(current.values())
     if group is not None:
         raise ValueError("tomorrow_history_stream_out_of_range")
     return _Samples(
         features[:written], labels[:written], codes[:written], boards[:written], tuple(offsets), pending, missing_features,
     )
+
+
+def _completed_sequence(
+    points: deque[PriceVolumePoint] | None, expected_dates: tuple[date, ...], code: str, source_identity: str,
+) -> ModelPriceVolumeSequence | None:
+    if points is None or len(points) != len(expected_dates) or tuple(point.trade_date for point in points) != expected_dates:
+        return None
+    return CalculatePriceVolumeSequence(code, tuple(points), expected_dates=expected_dates, source_identity=source_identity)
+
+
+def _append_sequence_points(
+    rolling: dict[str, deque[PriceVolumePoint]], rows: tuple[HistoryTrainingRow, ...], length: int,
+) -> None:
+    for row in rows:
+        projected = (
+            ProjectSequencePoint(row.point)
+            if row.point is not None and row.cell_status in {"complete", "supplier_marked_suspended"}
+            else None
+        )
+        if projected is None:
+            rolling.pop(row.code, None)
+        else:
+            points = rolling.get(row.code)
+            if points is None:
+                points = rolling[row.code] = deque(maxlen=length)
+            points.append(projected)
 
 
 def _require_labels(labels: _FloatArray) -> None:
@@ -267,12 +411,14 @@ def _sigmoid(scores: _FloatArray) -> _FloatArray:
     return np.asarray(np.exp(-np.logaddexp(0.0, -scores)), dtype=np.float64)
 
 
-def _fit_linear(features: _FloatArray, labels: _FloatArray, check: Callable[[], None]) -> LogisticTomorrowModel:
+def _fit_linear(
+    features: _FloatArray, labels: _FloatArray, penalty: float, check: Callable[[], None],
+) -> LogisticTomorrowModel:
     means = features.mean(axis=0) if len(features) else np.zeros(features.shape[1])
     scales = features.std(axis=0) if len(features) else np.ones(features.shape[1])
     scales = np.where(scales > 1e-9, scales, 1.0)
     _require_labels(labels)
-    intercept, weights = FitBinaryLogistic((features - means) / scales, labels, 5.0, check)
+    intercept, weights = FitBinaryLogistic((features - means) / scales, labels, penalty, check)
     return LogisticTomorrowModel(intercept, tuple(weights), tuple(means), tuple(scales))
 
 
@@ -281,7 +427,10 @@ def _linear_scores(model: LogisticTomorrowModel, features: _FloatArray) -> _Floa
     return np.asarray(normalized @ np.asarray(model.weights) + model.intercept, dtype=np.float64)
 
 
-def _fit_tree(features: _FloatArray, labels: _FloatArray, check: Callable[[], None]) -> lgb.Booster:
+def _fit_tree(
+    features: _FloatArray, labels: _FloatArray, parameters: LightGBMFittingParameters,
+    threads: int, check: Callable[[], None],
+) -> lgb.Booster:
     _require_labels(labels)
 
     def check_iteration(_environment: lgb.callback.CallbackEnv) -> None:
@@ -289,12 +438,14 @@ def _fit_tree(features: _FloatArray, labels: _FloatArray, check: Callable[[], No
 
     return lgb.train(
         {
-            "objective": "binary", "learning_rate": 0.05, "max_depth": 3, "num_leaves": 7,
-            "min_data_in_leaf": 20, "max_bin": 63, "num_threads": 1, "seed": 0,
+            "objective": "binary", "learning_rate": parameters.learning_rate,
+            "max_depth": parameters.max_depth, "num_leaves": parameters.num_leaves,
+            "min_data_in_leaf": parameters.minimum_leaf_rows, "max_bin": parameters.maximum_bins,
+            "histogram_pool_size": parameters.histogram_pool_mib, "num_threads": threads, "seed": parameters.seed,
             "deterministic": True, "force_col_wise": True, "verbosity": -1,
         },
         lgb.Dataset(features, label=labels, feature_name=list(TOMORROW_FEATURE_NAMES)),
-        num_boost_round=100,
+        num_boost_round=parameters.boosting_rounds,
         callbacks=[check_iteration],
     )
 
@@ -333,74 +484,107 @@ def _seat_hits(
     return hits, seats, unsettled
 
 
-def _compare(
-    samples: _Samples, selection_end: int, check: Callable[[], None],
-) -> tuple[TomorrowProbabilitySelection, bool]:
-    rule_hits = linear_hits = tree_hits = seats = 0
-    rule_unsettled = linear_unsettled = tree_unsettled = 0
-    tree_never_worse = True
-    for offset in reversed(range(_FOLDS)):
-        end_day = selection_end - offset * _FOLD_SESSIONS
-        start_day = end_day - _FOLD_SESSIONS
-        fitting_end = start_day - _EMBARGO_SESSIONS
-        if len(_observed_dates(samples, 0, fitting_end)) < _MIN_FITTING_SESSIONS:
-            raise ValueError("tomorrow_fold_training_dates_insufficient")
-        if len(_observed_dates(samples, start_day, end_day)) != _FOLD_SESSIONS:
-            raise ValueError("tomorrow_comparison_dates_incomplete")
-        fitting = samples.rows(0, fitting_end)
-        comparison = samples.rows(start_day, end_day)
-        features, labels = _observed_rows(samples, fitting)
-        values = samples.features[comparison]
-        _require_labels(samples.labels[comparison])
-        linear = _fit_linear(features, labels, check)
-        tree = _fit_tree(features, labels, check)
-        rh, count, ru = _seat_hits(values[:, 0], samples, start_day, end_day)
-        lh, _, lu = _seat_hits(_linear_scores(linear, values), samples, start_day, end_day)
-        th, _, tu = _seat_hits(_tree_scores(tree, values), samples, start_day, end_day)
-        rule_hits += rh
-        linear_hits += lh
-        tree_hits += th
-        seats += count
-        rule_unsettled += ru
-        linear_unsettled += lu
-        tree_unsettled += tu
-        tree_never_worse &= th >= lh + lu
-    summary = TomorrowProbabilitySelection(
-        rule_hits, linear_hits, tree_hits, seats, rule_unsettled, linear_unsettled, tree_unsettled,
+@dataclass(frozen=True, slots=True)
+class _FittedHead:
+    scores: Callable[[np.ndarray], _FloatArray]
+    logistic: LogisticTomorrowModel | None = None
+    tree: str | None = None
+    tcn: TomorrowTcnModel | None = None
+
+
+def _rank_rows(samples: _Samples, start: int, end: int) -> DailyBinaryRankRows:
+    features, labels = _observed_rows(samples, samples.rows(start, end))
+    groups = tuple(
+        count for day in range(start, end)
+        if (count := int(np.isfinite(samples.labels[samples.rows(day, day + 1)]).sum())) > 0
     )
-    return summary, tree_never_worse and tree_hits > linear_hits + linear_unsettled
+    return DailyBinaryRankRows(features, labels, groups)
+
+
+def _fit_head(
+    samples: _Samples, fitting: tuple[int, int], early: tuple[int, int],
+    settings: TomorrowFitSettings, check: Callable[[], None], threads: int,
+) -> _FittedHead:
+    parameters = settings.parameters
+    if isinstance(parameters, V1TrainingSettings):
+        def cancelled() -> bool:
+            check()
+            return False
+
+        fit_rows = _rank_rows(samples, *fitting)
+        early_rows = _rank_rows(samples, *early)
+        if len(fit_rows.labels) < parameters.minimum_training_rows:
+            raise ValueError("tomorrow_ranker_training_rows_insufficient")
+        _require_labels(fit_rows.labels)
+        tree = FitDailyBinaryRanker(
+            fit_rows, early_rows, parameters, compute_threads=threads, cancel_requested=cancelled,
+            feature_names=TOMORROW_FEATURE_NAMES,
+        )
+        return _FittedHead(lambda values: _tree_scores(tree, values), tree=tree.model_to_string())
+
+    features, labels = _observed_rows(samples, samples.rows(*fitting))
+    _require_labels(labels)
+    if isinstance(parameters, LightGBMFittingParameters):
+        tree = _fit_tree(features, labels, parameters, threads, check)
+        return _FittedHead(lambda values: _tree_scores(tree, values), tree=tree.model_to_string())
+    if isinstance(parameters, RidgeFittingParameters):
+        linear = _fit_linear(features, labels, parameters.penalty, check)
+        return _FittedHead(lambda values: _linear_scores(linear, values), logistic=linear)
+
+    fitted = FitBinaryTcn(TrainingSampleMatrix(features, labels), parameters, min(threads, parameters.compute_threads), check)
+    return _FittedHead(
+        fitted.logits,
+        tcn=TomorrowTcnModel(tuple(fitted.means), tuple(fitted.scales), parameters.dropout,
+                             fitted.network.tensors(), parameters.architecture),
+    )
+
+
+def _fit_pending(
+    request: _PendingFit, samples: _Samples, signal_dates: tuple[date, ...], snapshot_hash: str,
+    model_root: Path, check: Callable[[], None], threads: int,
+) -> TomorrowProbabilityProfileResult:
+    try:
+        if isinstance(request.settings.parameters, TcnFittingParameters):
+            from trader.training.infra.profile.v5.network import PreserveTcnRuntime
+
+            with PreserveTcnRuntime():
+                result = _train(request, samples, signal_dates, snapshot_hash, model_root, check, threads)
+        else:
+            result = _train(request, samples, signal_dates, snapshot_hash, model_root, check, threads)
+    except (ImportError, OSError, ValueError, RuntimeError, lgb.basic.LightGBMError, np.linalg.LinAlgError) as exc:
+        result = _training_failure(snapshot_hash, exc)
+    return TomorrowProbabilityProfileResult(request.target, request.profile, result)
 
 
 def _train(
-    samples: _Samples, signal_dates: tuple[date, ...], snapshot_hash: str, model_root: Path,
-    check: Callable[[], None], target: PredictionTarget,
+    request: _PendingFit, samples: _Samples, signal_dates: tuple[date, ...], snapshot_hash: str,
+    model_root: Path, check: Callable[[], None], threads: int,
 ) -> TomorrowProbabilityTrainingResult:
-    assessment_begin = len(signal_dates) - _ASSESSMENT_SESSIONS
-    calibration_end = assessment_begin - _EMBARGO_SESSIONS
-    calibration_begin = calibration_end - _CALIBRATION_SESSIONS
-    fitting_end = calibration_begin - _EMBARGO_SESSIONS
+    dates = request.dates
+    assessment_begin = len(signal_dates) - dates.assessment
+    calibration_end = assessment_begin - dates.embargo
+    calibration_begin = calibration_end - dates.calibration
+    early_end = calibration_begin - dates.embargo
+    early_begin = early_end - dates.early
+    fitting_end = early_begin - (dates.embargo if dates.early else 0)
+    fitting_begin = max(0, fitting_end - dates.fitting)
+    minimum = min(dates.fitting, _MIN_FITTING_SESSIONS)
+    if fitting_end - fitting_begin < minimum or len(_observed_dates(samples, fitting_begin, fitting_end)) < minimum:
+        raise ValueError("tomorrow_insufficient_training_dates")
+    if dates.early and len(_observed_dates(samples, early_begin, early_end)) != dates.early:
+        raise ValueError("tomorrow_early_stopping_dates_incomplete")
     calibrated = _observed_dates(samples, calibration_begin, calibration_end)
-    if len(calibrated) != _CALIBRATION_SESSIONS:
+    if len(calibrated) != dates.calibration:
         raise ValueError("tomorrow_calibration_dates_incomplete")
-    if len(_observed_dates(samples, assessment_begin, len(signal_dates))) != _ASSESSMENT_SESSIONS:
+    if len(_observed_dates(samples, assessment_begin, len(signal_dates))) != dates.assessment:
         raise ValueError("tomorrow_assessment_dates_incomplete")
-    selection, select_tree = _compare(samples, fitting_end, check)
-    fitting = samples.rows(0, fitting_end)
     calibration = samples.rows(calibration_begin, calibration_end)
     assessment = samples.rows(assessment_begin, len(signal_dates))
-    features, labels = _observed_rows(samples, fitting)
-    linear = None if select_tree else _fit_linear(features, labels, check)
-    tree = _fit_tree(features, labels, check) if select_tree else None
-
-    def scores(values: _FloatArray) -> _FloatArray:
-        if linear is not None:
-            return _linear_scores(linear, values)
-        assert tree is not None
-        return _tree_scores(tree, values)
+    fitted = _fit_head(samples, (fitting_begin, fitting_end), (early_begin, early_end), request.settings, check, threads)
 
     calibration_rows, calibration_labels = _observed_rows(samples, calibration)
     _require_labels(calibration_labels)
-    calibration_scores = scores(calibration_rows)
+    calibration_scores = fitted.scores(calibration_rows)
     intercept, weights = FitBinaryLogistic(calibration_scores[:, None], calibration_labels, 0.001, check)
     slope = float(weights[0])
     if not math.isfinite(slope) or slope <= 0:
@@ -409,19 +593,21 @@ def _train(
     assessed = np.isfinite(assessment_labels_all)
     assessment_labels = assessment_labels_all[assessed]
     _require_labels(assessment_labels)
-    probabilities = _sigmoid(intercept + slope * scores(samples.features[assessment]))
+    probabilities = _sigmoid(intercept + slope * fitted.scores(samples.features[assessment]))
     hits, seats, unsettled = _seat_hits(probabilities, samples, assessment_begin, len(signal_dates))
-    fitted_dates = tuple(signal_dates[index] for index in _observed_dates(samples, 0, fitting_end))
+    fitted_dates = tuple(signal_dates[index] for index in (
+        *_observed_dates(samples, fitting_begin, fitting_end), *_observed_dates(samples, early_begin, early_end),
+    ))
     calibrated_dates = tuple(signal_dates[index] for index in calibrated)
     artifact = TomorrowProbabilityArtifact(
-        target, snapshot_hash, fitted_dates, calibrated_dates,
-        intercept, slope, linear, None if tree is None else tree.model_to_string(),
+        request.profile, request.target, snapshot_hash, request.settings.identity, fitted_dates, calibrated_dates,
+        intercept, slope, fitted.logistic, fitted.tree, fitted.tcn,
     )
     check()
     identity = PublishTomorrowProbabilityModel(model_root, artifact)
     return TomorrowProbabilityTrainingResult(
         snapshot_hash, identity, artifact.algorithm,
-        selection=selection, assessment_rows=len(assessment_labels),
+        assessment_rows=len(assessment_labels),
         assessment_positive_rows=int(assessment_labels.sum()),
         assessment_brier=float(np.mean(np.square(probabilities[assessed] - assessment_labels))),
         assessment_hits=hits, assessment_seats=seats, assessment_unsettled=unsettled,
@@ -430,5 +616,5 @@ def _train(
 
 
 __all__ = [
-    "OpenTomorrowHistoryInput", "SharedTomorrowTrainer", "TomorrowHistoryInput", "TrainSharedTomorrowProbability",
+    "OpenTomorrowHistoryInput", "TomorrowTrainer", "TomorrowHistoryInput", "TrainTomorrowProbability",
 ]

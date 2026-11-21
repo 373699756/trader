@@ -25,6 +25,7 @@ from trader.recommendation.domain.outcomes.prediction_target import ParsePredict
 from trader.recommendation.domain.scoring.profile_identity import (
     LEARNED_RANK_SCORE_SCALE,
     MODEL_RANK_SCORE_SCALES,
+    SCORING_PROFILE_IDS,
     TOMORROW_PROBABILITY_SCORE_SCALE,
 )
 
@@ -346,7 +347,7 @@ class ScoredFreeze:
             self,
             "version",
             f"freeze:{self.strategy.value}:{self.trade_date.isoformat()}:{self.stage}:{self.sequence}"
-            + PredictionTargetSuffix(self.strategy, target_identity)
+            + PredictionTargetSuffix(self.strategy, target_identity, model_versions.get("scoring_profile"))
             + (f":preview:{self.preview_context.run_id}" if self.preview_context is not None else "")
             + (":formal" if self.is_formal else ""),
         )
@@ -496,11 +497,12 @@ class CommittedFreezeRecord:
             raise ValueError("formal record cannot predate its freeze")
         if self.commit_kind not in {"scheduled", "close_fallback"}:
             raise ValueError("formal freeze commit kind is invalid")
+        versions = dict(self.freeze.input_versions)
         object.__setattr__(
             self,
             "version",
             f"record:{self.strategy.value}:{self.trade_date.isoformat()}:{self.freeze.stage}:{self.freeze.sequence}"
-            + PredictionTargetSuffix(self.strategy, dict(self.freeze.input_versions).get("prediction_target")),
+            + PredictionTargetSuffix(self.strategy, versions.get("prediction_target"), versions.get("scoring_profile")),
         )
 
     @property
@@ -512,11 +514,15 @@ class CommittedFreezeRecord:
         return self.freeze.trade_date
 
 
-def PredictionTargetSuffix(strategy: Strategy, identity: str | None) -> str:
+def PredictionTargetSuffix(strategy: Strategy, identity: str | None, profile: str | None) -> str:
     target = ParsePredictionTargetIdentity(identity)
+    if profile is not None and (
+        strategy is not Strategy.TOMORROW or target is None or target.identity != identity or profile not in SCORING_PROFILE_IDS
+    ):
+        raise ValueError("Tomorrow freeze profile identity is invalid")
     if target is None or target.strategy is not strategy or target.identity != identity:
         return ""
-    return f":target:{target.identity}"
+    return f":target:{target.identity}" + (f":profile:{profile}" if profile is not None else "")
 
 
 def IdentityCodes(identity: FreezeIdentity) -> frozenset[str]:

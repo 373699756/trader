@@ -1,4 +1,4 @@
-"""Feature and prediction contract for the shared next-close model."""
+"""Feature and prediction contracts for the next-close models."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.models import Board, MarketQuote
+from trader.recommendation.domain.market.v5.features import SEQUENCE_CHANNELS, SEQUENCE_STEPS, ModelPriceVolumeSequence
 
 TOMORROW_FEATURE_NAMES = (
     "close_to_open_return",
@@ -16,6 +17,10 @@ TOMORROW_FEATURE_NAMES = (
     "log_volume_shares",
     "is_chinext",
     "is_star",
+)
+TOMORROW_SEQUENCE_FEATURE_NAMES = (
+    *TOMORROW_FEATURE_NAMES,
+    *(f"sequence_{step}_{channel}" for step in range(SEQUENCE_STEPS) for channel in SEQUENCE_CHANNELS),
 )
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -64,6 +69,19 @@ def BuildTomorrowFeatures(
         float(board is Board.STAR),
     )
     return features if all(math.isfinite(value) for value in features) else None
+
+
+def BuildTomorrowSequenceFeatures(
+    base: tuple[float, ...], sequence: ModelPriceVolumeSequence, *, signal_date: date,
+) -> tuple[float, ...] | None:
+    """Append the pre-signal sequence to the six same-day raw features."""
+    if (
+        len(base) != len(TOMORROW_FEATURE_NAMES)
+        or any(not math.isfinite(value) for value in base)
+        or sequence.dates[-1] >= signal_date
+    ):
+        return None
+    return (*base, *sequence.values)
 
 
 class TomorrowProbabilityPredictor(Protocol):

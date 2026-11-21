@@ -17,6 +17,7 @@ from trader.training.infra.tomorrow_probability import (
     PublishTomorrowProbabilityModel,
     TomorrowProbabilityArtifact,
 )
+from trader.training.infra.tomorrow_settings import LoadTomorrowFitSettings
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -34,11 +35,11 @@ def test_baseline_audit_projection_has_no_future_or_production_authority_fields(
     assert "research-baseline-audit" in source
 
 
-def test_baseline_audit_reads_only_the_shared_production_artifact(tmp_path: Path) -> None:
+def test_baseline_audit_requires_distinct_production_artifacts(tmp_path: Path) -> None:
     runtime = replace(RuntimeSettingsFixture(), data_paths=DataPaths(tmp_path / "data"))
 
     initial = BaselineIdentityAuditService(LoadBaselineIdentityEvidence(runtime)).execute()
-    assert "tomorrow_probability_target_500" in initial.unavailable
+    assert all(f"tomorrow_probability_{profile}_target_500" in initial.unavailable for profile in ("v1", "v2", "v3", "v5"))
     assert not runtime.data_paths.root.exists()
 
     for profile in ("v2", "v3"):
@@ -47,14 +48,16 @@ def test_baseline_audit_reads_only_the_shared_production_artifact(tmp_path: Path
         retired.write_text("retired model", encoding="utf-8")
     width = len(TOMORROW_FEATURE_NAMES)
     model = TomorrowProbabilityArtifact(
-        PredictionTarget(Strategy.TOMORROW, 500), "a" * 64, (date(2024, 1, 2),), (date(2024, 2, 2),), 0, 1,
+        "v3", PredictionTarget(Strategy.TOMORROW, 500), "a" * 64, LoadTomorrowFitSettings(runtime.project_root, "v3").identity,
+        (date(2024, 1, 2),), (date(2024, 2, 2),), 0, 1,
         LogisticTomorrowModel(0, (0.0,) * width, (0.0,) * width, (1.0,) * width), None,
     )
     identity = PublishTomorrowProbabilityModel(runtime.data_paths.models, model)
 
     result = BaselineIdentityAuditService(LoadBaselineIdentityEvidence(runtime)).execute()
-    claim = next(item for item in result.claims if item.name == "tomorrow_probability_target_500")
+    claim = next(item for item in result.claims if item.name == "tomorrow_probability_v3_target_500")
     assert claim.actual == model.target.identity and claim.source_hash == identity
     assert claim.status == "matched"
-    assert result.status == "live_identity_unverified"
+    assert result.status == "baseline_identity_inconsistent"
+    assert "tomorrow_probability_v2_target_500" in result.unavailable
     assert not result.production_authority

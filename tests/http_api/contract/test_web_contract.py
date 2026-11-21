@@ -50,19 +50,20 @@ def test_status_exposes_actual_fetch_inflight_count_without_private_source_field
     assert "must-not-leak" not in response.get_data(as_text=True)
 
 
-def test_current_and_events_route_only_to_profiles_with_the_same_tomorrow_target():
+def test_current_and_events_keep_equal_tomorrow_thresholds_in_independent_profiles():
     lock = RLock()
     stream = UnifiedFreezeEventStream()
     lanes = {}
     events = {}
     source = _freeze()
-    for profile, threshold in (("v1", 500), ("v2", None), ("v3", 800)):
+    for profile, threshold in (("v1", 500), ("v2", 500), ("v3", None), ("v5", 800)):
         index = UnifiedFreezeIndex(transaction_lock=lock)
         events[profile] = ()
         if threshold is not None:
             target = PredictionTarget(Strategy.TOMORROW, threshold)
             current = replace(source, input_versions=(
                 ("prediction_target", target.identity),
+                ("scoring_profile", profile),
                 ("score_scale", TOMORROW_PROBABILITY_SCORE_SCALE),
                 ("score_model", "artifact"),
                 ("score_model_id", "artifact"),
@@ -74,19 +75,19 @@ def test_current_and_events_route_only_to_profiles_with_the_same_tomorrow_target
             UnifiedFreezeQueries(index, UnifiedFreezeDraftIndex(), _FreezeRecords(), _Clock()),
             stream, lambda: {}, profile_id=profile,
         )
-    services = ProfiledWebServices(
-        lanes, default_profile="v2", tomorrow_profiles={"v1": "v1", "v2": "v1", "v3": "v3"},
-    )
+    services = ProfiledWebServices(lanes, default_profile="v2")
     client = CreateApp(services=services).test_client()
     batch = client.get("/api/freezes/current").get_json()["profiles"]
-    for profile, threshold in (("v1", 500), ("v2", 500), ("v3", 800)):
+    for profile, threshold in (("v1", 500), ("v2", 500), ("v5", 800)):
         response = client.get(f"/api/freezes/tomorrow/current?profile={profile}")
         assert response.get_json()["prediction_target"]["threshold_bps"] == threshold
         assert batch[profile]["tomorrow"]["prediction_target"]["threshold_bps"] == threshold
         assert batch[profile]["tomorrow"]["scoring_profile"] == profile
+    assert batch["v1"]["tomorrow"]["freeze_version"] != batch["v2"]["tomorrow"]["freeze_version"]
+    assert batch["v3"]["tomorrow"]["freeze_version"] is None
 
     stream.publish_batch(1, tuple(events.items()))
-    stream.publish_committed(events["v3"][0], profile="v3")
+    stream.publish_committed(events["v5"][0], profile="v5")
     response = client.get("/api/events?profile=v2&cursor=0", buffered=False)
     try:
         iterator = iter(response.response)
@@ -94,9 +95,11 @@ def test_current_and_events_route_only_to_profiles_with_the_same_tomorrow_target
         event_batch = json.loads(next(iterator).decode().split("data: ", 1)[1])["profiles"]
         assert event_batch["v2"]["tomorrow"]["scoring_profile"] == "v2"
         assert event_batch["v2"]["tomorrow"]["prediction_target"]["threshold_bps"] == 500
-        assert event_batch["v3"]["tomorrow"]["prediction_target"]["threshold_bps"] == 800
+        assert "tomorrow" not in event_batch["v3"]
+        assert event_batch["v5"]["tomorrow"]["prediction_target"]["threshold_bps"] == 800
         event = json.loads(next(iterator).decode().split("data: ", 1)[1])
-        assert event["scoring_profiles"] == ["v3"]
+        assert event["scoring_profile"] == "v5"
+        assert "scoring_profiles" not in event
     finally:
         response.close()
 

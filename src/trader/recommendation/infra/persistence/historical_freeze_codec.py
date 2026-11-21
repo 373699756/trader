@@ -44,7 +44,8 @@ def HistoricalRecordFromBytes(payload: bytes) -> HistoricalFreezeRecord:
     freeze_version = _text(raw, "freeze_version")
     coordinate_identity = f"freeze:{strategy.value}:{trade_date.isoformat()}:{stage}:{sequence}"
     input_versions = _pairs(saved, "input_versions")
-    prediction_suffix = PredictionTargetSuffix(strategy, dict(input_versions).get("prediction_target"))
+    versions = dict(input_versions)
+    prediction_suffix = PredictionTargetSuffix(strategy, versions.get("prediction_target"), versions.get("scoring_profile"))
     if freeze_version not in {
         coordinate_identity + prediction_suffix + (":formal" if saved.get("is_formal") is True else ""),
         coordinate_identity + ":" + freeze_hash[:16],

@@ -146,8 +146,10 @@ def LoadFactorInputs(
     cost = LoadExecutionCostPolicy(config.parent)
     models = BuildProfileScoring(
         profile, loaded, history_sessions=training.history_sessions, model_failure="",
-        cost_policy=cost, maintenance=None, shared_tomorrow=True,
-        tomorrow_predictor=LoadTomorrowProbabilityModel(settings.data_paths.models, tomorrow_target),
+        cost_policy=cost, maintenance=None,
+        tomorrow_predictor=LoadTomorrowProbabilityModel(
+            settings.data_paths.models, profile, tomorrow_target, project_root=settings.project_root,
+        ),
         tomorrow_target=tomorrow_target, d25_target=d25_target,
     )
     model_ms = (time.monotonic() - started) * 1000

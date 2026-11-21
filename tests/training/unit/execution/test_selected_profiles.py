@@ -25,7 +25,7 @@ from trader.training.application.selected_training import SelectedTrainingTask, 
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.selected_training import SelectedTrainingRequest, SelectedTrainingAdapter
-from trader.training.domain.tomorrow_probability import TomorrowProbabilityTrainingResult
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult, TomorrowProbabilityTrainingResult
 from trader.training.application.selected_training import TrainSelectedProfiles
 from tests.helpers.training.execution.selected_profiles import (
     ROOT,
@@ -41,7 +41,7 @@ _CURRENT_INDUSTRY = CurrentIndustrySnapshotFixture(("000001", *(f"60000{number}"
 
 
 @pytest.mark.slow_training
-def test_selected_train_separates_shared_tomorrow_from_four_d25_heads(tmp_path, monkeypatch):
+def test_selected_train_delivers_four_independent_tomorrow_and_d25_heads(tmp_path, monkeypatch):
     pytest.importorskip("torch")
     request = BuildFourProfileRequest(tmp_path, "baseline", monkeypatch, [], [])
     from trader.training.infra import selected_training
@@ -50,10 +50,16 @@ def test_selected_train_separates_shared_tomorrow_from_four_d25_heads(tmp_path, 
     monkeypatch.setattr(selected_training, "OpenTomorrowHistoryInput", lambda *_args, **_kwargs: shared_input)
     received = []
 
-    def train_shared(history, models, *, target, **_resources):
+    def train_tomorrow(history, models, *, profiles, prediction_targets, **_resources):
         assert history is shared_input and models == request.paths.models
-        received.append(target.threshold_bps)
-        return TomorrowProbabilityTrainingResult("a" * 64, "b" * 64, "logistic")
+        results = []
+        for profile, algorithm in zip(profiles, ("lambdarank", "lightgbm_binary", "l2_logistic", "tcn_bce"), strict=True):
+            target = prediction_targets.for_profile(profile, Strategy.TOMORROW)
+            received.append(target.threshold_bps)
+            results.append(TomorrowProbabilityProfileResult(
+                target, profile, TomorrowProbabilityTrainingResult("a" * 64, "b" * 64, algorithm),
+            ))
+        return tuple(results)
 
     # Route all production heads through the normal branch while keeping this
     # older history fixture focused on routing. The direct event fits are tested
@@ -81,12 +87,12 @@ def test_selected_train_separates_shared_tomorrow_from_four_d25_heads(tmp_path, 
         run = TrainSelectedProfiles(SelectedTrainingAdapter(
             request, sqlite_policy=SqlitePolicyFixture(),
             load_industry_snapshot=lambda _: _CURRENT_INDUSTRY, clock=lambda: _CURRENT_INDUSTRY.observed_at,
-            train_shared_tomorrow=train_shared,
+            train_tomorrow=train_tomorrow,
             prediction_targets=targets,
         ), executor)
-    assert received == [600, 500]
-    assert tuple(group.profiles for group in run.tomorrow_probability) == (("v1",), ("v2", "v3", "v5"))
-    assert all(group.result.ready for group in run.tomorrow_probability)
+    assert received == [600, 500, 500, 500]
+    assert tuple(head.profile for head in run.tomorrow_probability) == ("v1", "v2", "v3", "v5")
+    assert all(head.result.ready for head in run.tomorrow_probability)
     assert sorted(fit_profiles) == ["v1", "v2", "v3", "v5"]
     assert fit_targets == [100] * 4
     assert tuple(outcome.profile for outcome in run.outcomes) == request.profiles

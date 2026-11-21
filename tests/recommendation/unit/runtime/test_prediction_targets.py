@@ -20,23 +20,20 @@ from trader.recommendation.infra.settings.loading import LoadPredictionTargets
 from tests.helpers.recommendation.configuration import PROJECT_ROOT
 
 
-def test_configuration_groups_only_matching_tomorrow_targets(tmp_path):
+def test_configuration_selects_each_profiles_own_target(tmp_path):
     raw = json.loads((PROJECT_ROOT / "config/selection.json").read_text())
     assert set(raw["prediction_targets"]) == set(SCORING_PROFILE_IDS)
     config_path = tmp_path / "strategy.json"
     selection = tmp_path / "selection.json"
     selection.write_text(json.dumps(raw))
     defaults = LoadPredictionTargets(config_path)
-    assert defaults.tomorrow_groups(SCORING_PROFILE_IDS) == ((PredictionTarget(Strategy.TOMORROW, 500), SCORING_PROFILE_IDS),)
+    assert all(defaults.for_profile(profile, Strategy.TOMORROW).threshold_bps == 500 for profile in SCORING_PROFILE_IDS)
     assert all(defaults.for_profile(profile, Strategy.D25).threshold_bps == 100 for profile in SCORING_PROFILE_IDS)
     raw["prediction_targets"]["v1"]["tomorrow_bps"] = 600
     raw["prediction_targets"]["v5"]["d25_bps"] = 150
     selection.write_text(json.dumps(raw))
     targets = LoadPredictionTargets(config_path)
-    assert targets.tomorrow_groups(SCORING_PROFILE_IDS) == (
-        (PredictionTarget(Strategy.TOMORROW, 600), ("v1",)),
-        (PredictionTarget(Strategy.TOMORROW, 500), ("v2", "v3", "v5")),
-    )
+    assert tuple(targets.for_profile(profile, Strategy.TOMORROW).threshold_bps for profile in SCORING_PROFILE_IDS) == (600, 500, 500, 500)
     assert tuple(targets.for_profile(profile, Strategy.D25).threshold_bps for profile in SCORING_PROFILE_IDS) == (100, 100, 100, 150)
 
 

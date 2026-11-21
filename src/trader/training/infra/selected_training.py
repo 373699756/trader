@@ -42,7 +42,7 @@ from trader.infra.future_cleanup import CloseAfterFutures
 from trader.infra.shutdown import ShutdownDeadline
 from trader.training.domain.v1.training_plan import BuildLearnedRankReadDates
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTargets
-from trader.training.domain.tomorrow_probability import TomorrowProbabilityGroupResult
+from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult
 from trader.training.infra.engine import FitSelectedProfile, InspectSelectedProfile, ProfileTrainingRequest
 from trader.training.infra.execution_timing import TrainingExecutionMeasurements
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
@@ -58,7 +58,7 @@ from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.sample_progress import TrainingSampleProgressTracker
-from trader.training.infra.tomorrow_probability_training import OpenTomorrowHistoryInput, SharedTomorrowTrainer
+from trader.training.infra.tomorrow_probability_training import OpenTomorrowHistoryInput, TomorrowTrainer
 
 
 def ResolveTrainingLocations(
@@ -116,12 +116,12 @@ class SelectedTrainingAdapter:
     sqlite_policy: SqliteIoPolicy = field(kw_only=True)
     load_industry_snapshot: Callable[[datetime], CurrentIndustrySnapshot] = field(kw_only=True)
     clock: Callable[[], datetime] = field(kw_only=True)
-    train_shared_tomorrow: SharedTomorrowTrainer | None = field(default=None, kw_only=True)
+    train_tomorrow: TomorrowTrainer | None = field(default=None, kw_only=True)
     prediction_targets: PredictionTargets | None = field(default=None, kw_only=True)
     _measurements: TrainingExecutionMeasurements = field(init=False)
 
     def __post_init__(self) -> None:
-        if (self.train_shared_tomorrow is None) != (self.prediction_targets is None):
+        if (self.train_tomorrow is None) != (self.prediction_targets is None):
             raise ValueError("production training requires prediction targets and the Tomorrow trainer")
         object.__setattr__(
             self, "_measurements",
@@ -165,21 +165,17 @@ class SelectedTrainingAdapter:
         scope = ExitStack()
         try:
             scope.enter_context(HistoryMaintenanceLock(paths.history.with_name(".history.lock")))
-            if self.train_shared_tomorrow is not None:
-                scope.enter_context(HistoryMaintenanceLock(paths.models / ".tomorrow.training.lock"))
             for profile in request.profiles:
                 scope.enter_context(HistoryMaintenanceLock(paths.models / f".{profile}.training.lock"))
             RequireHistoryRepackIdle(paths.history)
-            tomorrow: tuple[TomorrowProbabilityGroupResult, ...] = ()
-            train = self.train_shared_tomorrow
+            tomorrow: tuple[TomorrowProbabilityProfileResult, ...] = ()
+            train = self.train_tomorrow
             if train is not None and self.prediction_targets is not None:
                 tomorrow_history = OpenTomorrowHistoryInput(paths.history, sqlite_policy=self.sqlite_policy)
-                tomorrow = tuple(
-                    TomorrowProbabilityGroupResult(target, profiles, train(
-                        tomorrow_history, paths.models, target=target, cancelled=request.cancelled,
-                        cpu_budget=request.cpu_budget, memory=request.memory_admission,
-                    ))
-                    for target, profiles in self.prediction_targets.tomorrow_groups(request.profiles)
+                tomorrow = train(
+                    tomorrow_history, paths.models, profiles=request.profiles, prediction_targets=self.prediction_targets,
+                    project_root=request.runtime.project_root, cancelled=request.cancelled,
+                    cpu_budget=request.cpu_budget, memory=request.memory_admission,
                 )
             try:
                 industry = self.load_industry_snapshot(self.clock())
@@ -212,7 +208,7 @@ class _SelectedTrainingSession:
     factory: _TrainingTaskFactory
     measurements: TrainingExecutionMeasurements
     stopped: Event
-    tomorrow: tuple[TomorrowProbabilityGroupResult, ...]
+    tomorrow: tuple[TomorrowProbabilityProfileResult, ...]
     physical_rows: int = 0
 
     def abort(self) -> ShutdownDeadline:

@@ -1,4 +1,4 @@
-"""Reports for the shared next-close probability training job."""
+"""Reports for independently fitted next-close probability models."""
 
 from dataclasses import dataclass
 
@@ -7,22 +7,10 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 
 
 @dataclass(frozen=True, slots=True)
-class TomorrowProbabilitySelection:
-    rule_hits: int
-    logistic_hits: int
-    lightgbm_hits: int
-    comparable_seats: int
-    rule_unsettled: int
-    logistic_unsettled: int
-    lightgbm_unsettled: int
-
-
-@dataclass(frozen=True, slots=True)
 class TomorrowProbabilityTrainingResult:
     history_snapshot_hash: str
     model_identity: str | None
     algorithm: str | None
-    selection: TomorrowProbabilitySelection | None = None
     assessment_rows: int = 0
     assessment_positive_rows: int = 0
     assessment_brier: float | None = None
@@ -39,7 +27,7 @@ class TomorrowProbabilityTrainingResult:
 
 
 @dataclass(frozen=True, slots=True)
-class TomorrowProbabilityGroupResult:
+class TomorrowProbabilityProfileResult:
     target: PredictionTarget
-    profiles: tuple[ScoringProfileId, ...]
+    profile: ScoringProfileId
     result: TomorrowProbabilityTrainingResult

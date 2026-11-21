@@ -34,7 +34,7 @@ from trader.recommendation.application.ports.freeze_records import (
 from trader.recommendation.domain.publication.freeze_identity import CommittedFreezeRecord, IsPreviewFreeze
 from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
 from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
 
@@ -96,6 +96,7 @@ class SQLiteFreezeRecords:
         self._cache_source = "freeze:" + hashlib.sha256(str(path.absolute()).encode()).hexdigest()[:24]
 
     def initialize(self) -> None:
+        self._require_current_archive()
         self._database.parent.mkdir(parents=True, exist_ok=True)
         try:
             if self._database.exists():
@@ -111,6 +112,7 @@ class SQLiteFreezeRecords:
     def _connect(self, *, write: bool = False) -> Iterator[SqliteConnection]:
         try:
             if write:
+                self._require_current_archive()
                 self._validate_current_structure()
             session = self._read_session(self._database) if not write and self._read_session is not None else SqliteSession(
                 self._database,
@@ -131,6 +133,10 @@ class SQLiteFreezeRecords:
     def _validate_current_structure(self) -> None:
         with SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             EnsureSqliteSchema(connection, self._schema, exact=True)
+
+    def _require_current_archive(self) -> None:
+        if self._schema is _GROUPED_SCHEMA:
+            raise FreezeRecordUnavailableError("grouped Tomorrow history is read-only")
 
     def commit(self, record: CommittedFreezeRecord) -> None:
         if not isinstance(record, CommittedFreezeRecord):
@@ -166,8 +172,7 @@ class SQLiteFreezeRecords:
 
     @staticmethod
     def _insert(
-        connection: SqliteConnection, record: CommittedFreezeRecord, payload: bytes, digest: bytes, *,
-        prediction_target: str | None = None,
+        connection: SqliteConnection, record: CommittedFreezeRecord, payload: bytes, digest: bytes,
     ) -> None:
         fields = (
             record.strategy.value,
@@ -179,47 +184,7 @@ class SQLiteFreezeRecords:
             EncodeTime(record.committed_at),
             record.commit_kind,
         )
-        if prediction_target is None:
-            connection.run("INSERT INTO freeze_record VALUES (?,?,?,?,?,?,?,?,'committed',NULL)", fields)
-        else:
-            connection.run(
-                "INSERT INTO freeze_record VALUES (?,?,?,?,?,?,?,?,'committed',NULL,?)", (*fields, prediction_target),
-            )
-
-    def commit_tomorrow(
-        self, record: CommittedFreezeRecord, prediction_target: str, profiles: tuple[ScoringProfileId, ...],
-        *, owner: ScoringProfileId,
-    ) -> None:
-        if (
-            self._schema is not _GROUPED_SCHEMA or record.strategy is not Strategy.TOMORROW
-            or IsPreviewFreeze(record.freeze) or owner not in profiles or set(profiles) - set(SCORING_PROFILE_IDS)
-            or dict(record.freeze.input_versions).get("prediction_target") != prediction_target
-        ):
-            raise FreezeRecordUnavailableError("invalid Tomorrow freeze binding")
-        payload = CommittedRecordBytes(record)
-        digest = _bounded_digest(payload)
-        trade_day = EncodeDate(record.trade_date)
-        with self._lock, self._connect(write=True) as connection:
-            row = connection.run(
-                "SELECT * FROM freeze_record WHERE trade_date=? AND prediction_target=?",
-                (trade_day, prediction_target),
-            ).fetchone()
-            if row is not None:
-                self._load_record(row)
-                if row["record_hash"] != digest or bytes(row["record_bytes"]) != payload:
-                    raise FreezeRecordConflictError("Tomorrow group already has a different formal result")
-            else:
-                self._insert(connection, record, payload, digest, prediction_target=prediction_target)
-            for profile in profiles:
-                binding = connection.run(
-                    "SELECT freeze_id FROM tomorrow_profile_day WHERE profile=? AND trade_date=?", (profile, trade_day),
-                ).fetchone()
-                if binding is None:
-                    connection.run("INSERT INTO tomorrow_profile_day VALUES (?,?,?)", (profile, trade_day, record.version))
-                elif profile == owner and binding["freeze_id"] != record.version:
-                    raise FreezeRecordConflictError("Tomorrow profile already has a different formal result")
-            self._fault_injector("before_commit")
-        self._fault_injector("after_commit")
+        connection.run("INSERT INTO freeze_record VALUES (?,?,?,?,?,?,?,?,'committed',NULL)", fields)
 
     def load_tomorrow_profile(self, profile: ScoringProfileId, trade_date: date) -> CommittedFreezeRecord | None:
         row = self._tomorrow_profile_row(profile, trade_date)

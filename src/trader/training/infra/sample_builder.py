@@ -41,6 +41,7 @@ from trader.training.infra.sample_index import (
 from trader.training.infra.sample_progress import TrainingSampleProgressTracker
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.training.infra.d25_label import D25HitLabel, VerifiedD25Close
+from trader.training.infra.price_volume import ProjectSequencePoint
 
 
 class TrainingHistorySource(Protocol):
@@ -157,7 +158,7 @@ class _SampleBuildState:
         else:
             rolling.points.append(row.point)
             if rolling.sequence_points is not None:
-                rolling.sequence_points.append(_sequence_point(row.point))
+                rolling.sequence_points.append(ProjectSequencePoint(row.point))
             if row.cell_status not in {None, "complete"}:
                 rolling.previous_position = position
                 return
@@ -366,28 +367,6 @@ def _pending_sample(
         close,
     )
 
-
-def _sequence_point(point: HistoryTrainingPoint) -> PriceVolumePoint | None:
-    if any(
-        value is None
-        for value in (
-            point.qfq_open, point.qfq_high, point.qfq_low,
-            point.qfq_close_price, point.raw_volume, point.qfq_amount,
-        )
-    ):
-        return None
-    try:
-        return PriceVolumePoint(
-            point.trade_date,
-            cast(float, point.qfq_open),
-            cast(float, point.qfq_high),
-            cast(float, point.qfq_low),
-            cast(float, point.qfq_close_price),
-            cast(float, point.raw_volume),
-            cast(float, point.qfq_amount),
-        )
-    except ValueError:
-        return None
 
 
 def _training_window_sessions(profile: TrainedProfileContract) -> int:

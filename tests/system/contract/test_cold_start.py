@@ -94,33 +94,33 @@ def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, mon
     assert seen == [("v3", 100)]
 
 
-def test_shared_tomorrow_is_ready_with_no_d25_models(tmp_path, monkeypatch):
+def test_all_tomorrow_profiles_load_independently_with_equal_targets(tmp_path, monkeypatch):
     class Predictor:
-        identity = "a" * 64
+        def __init__(self, identity):
+            self.identity = identity
 
         def predict_probabilities(self, features):
             return (0.25,) * len(features)
 
     calls = []
 
-    def load(model_root, target):
-        calls.append((model_root, target.threshold_bps))
-        return Predictor()
+    def load(model_root, profile, target, *, project_root):
+        calls.append((profile, target.threshold_bps))
+        return Predictor(profile[-1] * 64)
 
     monkeypatch.setattr("trader.training.infra.tomorrow_probability.LoadTomorrowProbabilityModel", load)
-    system = BuildProfiledSystem(_empty_config(tmp_path), profiles=("v1", "v3"))
+    system = BuildProfiledSystem(_empty_config(tmp_path))
     client = system.app.test_client()
-    assert len(calls) == 1
-    assert calls[0][1] == 500
-    for profile in ("v1", "v3"):
+    assert sorted(calls) == [(profile, 500) for profile in SCORING_PROFILE_IDS]
+    for profile in SCORING_PROFILE_IDS:
         heads = client.get(f"/api/status?profile={profile}").get_json()["scoring_profile"]["heads"]
         assert heads["tomorrow"]["is_enable"]
+        assert heads["tomorrow"]["model_hash"] == profile[-1] * 64
         assert not heads["d25"]["is_enable"]
-    assert system.systems[0].scheduler._dependencies.scored_strategies == (Strategy.TOMORROW,)
-    assert system.systems[1].scheduler._dependencies.scored_strategies == ()
+    assert all(lane.scheduler._dependencies.scored_strategies == (Strategy.TOMORROW,) for lane in system.systems)
 
 
-def test_changing_one_tomorrow_target_loads_only_two_groups(tmp_path, monkeypatch):
+def test_changing_one_tomorrow_target_does_not_disable_other_profiles(tmp_path, monkeypatch):
     config = _empty_config(tmp_path)
     path = config.with_name("selection.json")
     document = json.loads(path.read_text())
@@ -131,15 +131,15 @@ def test_changing_one_tomorrow_target_loads_only_two_groups(tmp_path, monkeypatc
     class Predictor:
         identity = "a" * 64
 
-    def load(model_root, target):
-        loaded.append(target.threshold_bps)
-        if target.threshold_bps == 600:
+    def load(model_root, profile, target, *, project_root):
+        loaded.append((profile, target.threshold_bps))
+        if profile == "v1":
             raise FileNotFoundError
         return Predictor()
 
     monkeypatch.setattr("trader.training.infra.tomorrow_probability.LoadTomorrowProbabilityModel", load)
     system = BuildProfiledSystem(config, profiles=("v1", "v5", "v3", "v2"))
-    assert loaded == [600, 500]
+    assert sorted(loaded) == [("v1", 600), ("v2", 500), ("v3", 500), ("v5", 500)]
     client = system.app.test_client()
     for profile in ("v1", "v2", "v3", "v5"):
         payload = client.get(f"/api/status?profile={profile}").get_json()

@@ -11,13 +11,19 @@ from trader.download.domain.history_revision import HistoryTrainingPoint, Histor
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel, PublishTomorrowProbabilityModel
+from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
+from trader.recommendation.infra.settings.loading import LoadPredictionTargets
+from trader.training.infra.tomorrow_probability import (
+    LoadTomorrowProbabilityModel, PublishTomorrowProbabilityModel, TomorrowFeatureNames,
+)
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.tomorrow_probability_training import (
-    TrainSharedTomorrowProbability, _collect_samples, _fit_tree, _label, _train,
+    TrainTomorrowProbability, _collect_samples, _label,
 )
+from trader.training.infra.tomorrow_settings import LoadTomorrowFitSettings
 
+_ROOT = Path(__file__).resolve().parents[4]
 _TARGET = PredictionTarget(Strategy.TOMORROW, 500)
 _HIGHER_TARGET = PredictionTarget(Strategy.TOMORROW, 600)
 
@@ -31,6 +37,9 @@ def _row(day: date, code: str, close: float, *, opening: float = 100, preclose: 
             day,
             close,
             20_000_000,
+            qfq_open=opening,
+            qfq_high=max(close, opening) + 1,
+            qfq_low=min(close, opening) - 1,
             raw_open=opening,
             raw_high=max(close, opening) + 1,
             raw_low=min(close, opening) - 1,
@@ -62,69 +71,105 @@ def test_label_preserves_exact_hit_and_unknown_or_suspension() -> None:
     )), _TARGET) is TomorrowCloseGain.PENDING
 
 
-def test_pooled_model_trains_selects_calibrates_and_reloads(tmp_path: Path) -> None:
+def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path: Path, monkeypatch) -> None:
+    pytest.importorskip("torch")
     first = date(2023, 1, 2)
-    dates = tuple(first + timedelta(days=index) for index in range(180))
-    codes = ("300001", "300002", "300003", "300004", "600001", "600002", "600003", "600004")
+    dates = tuple(first + timedelta(days=index) for index in range(185))
+    codes = tuple(f"{prefix}{index:03d}" for prefix in ("300", "600") for index in range(1, 9))
+    reads = []
 
     def close(day: int, stock: int) -> float:
         return 106.0 if day % 4 == (1 if stock % 2 == 0 else 3) else 100.0
 
-    rows = (
-        _row(
-            day, code, close(day_index, index),
-            opening=close(day_index, index) * (0.94 if close(day_index + 1, index) == 106 else 1.02),
-            preclose=close(day_index - 1, index),
-        )
-        for day_index, day in enumerate(dates) for index, code in enumerate(codes)
+    def rows(selected):
+        reads.append(selected)
+        for day in selected:
+            day_index = (day - first).days
+            for index, code in enumerate(codes):
+                current = close(day_index, index)
+                yield _row(
+                    day, code, current,
+                    opening=current * (0.94 if close(day_index + 1, index) == 106 else 1.02),
+                    preclose=close(day_index - 1, index),
+                )
+
+    history = SimpleNamespace(open_dates=dates, universe_count=len(codes), snapshot_hash="a" * 64, iter_training_rows=rows)
+    targets = LoadPredictionTargets(_ROOT / "config/strategy.json")
+    budget = TrainingCpuBudget(2, TrainingResourceSettingsFixture().cpu)
+    arguments = dict(
+        profiles=SCORING_PROFILE_IDS, prediction_targets=targets, project_root=_ROOT,
+        cancelled=lambda: False, cpu_budget=budget, memory=TrainingMemoryBudget(120 * 1024**2),
     )
-    samples = _collect_samples(rows, dates, len(dates) * len(codes), lambda: None, _TARGET)
-    result = _train(samples, dates[:-1], "a" * 64, tmp_path, lambda: None, _TARGET)
-    assert result.ready
-    assert result.selection is not None
-    assert result.selection.comparable_seats == 6 * 40
-    assert result.assessment_brier is not None and result.assessment_brier < 0.1
-    model = LoadTomorrowProbabilityModel(tmp_path, _TARGET)
-    assert model is not None and model.identity == result.model_identity
-    assert LoadTomorrowProbabilityModel(tmp_path, _HIGHER_TARGET) is None
-    changed = PublishTomorrowProbabilityModel(tmp_path, replace(model.artifact, target=_HIGHER_TARGET))
-    assert changed != model.identity
-    assert LoadTomorrowProbabilityModel(tmp_path, _TARGET) == model
-    assert model.artifact.fitting_dates[-1] < model.artifact.calibration_dates[0]
-    vectors = tuple(tuple(vector) for vector in samples.features[:8])
-    probabilities = model.predict_probabilities(vectors)
-    assert probabilities == pytest.approx(tuple(model.predict_probability(vector) for vector in vectors))
-    for actual, probability in zip(samples.labels[:8], probabilities, strict=True):
-        assert (probability > 0.5) is bool(actual)
-    tree = _fit_tree(samples.features[:60], samples.labels[:60], lambda: None)
-    artifact = replace(
-        model.artifact, logistic=None, lightgbm=tree.model_to_string(), calibration_intercept=0.0, calibration_slope=1.0,
-    )
-    tree_model_root = tmp_path / "tree"
-    PublishTomorrowProbabilityModel(tree_model_root, artifact)
-    tree_model = LoadTomorrowProbabilityModel(tree_model_root, _TARGET)
-    assert tree_model is not None and tree_model.booster is not None
-    batch = tree_model.predict_probabilities(vectors)
-    assert all(0.0 <= value <= 1.0 for value in batch)
-    assert batch == pytest.approx(tuple(tree_model.predict_probability(vector) for vector in vectors))
+    fitted = TrainTomorrowProbability(history, tmp_path, **arguments)
+    assert len(reads) == 2
+    assert tuple(head.profile for head in fitted) == SCORING_PROFILE_IDS
+    assert tuple(head.result.algorithm for head in fitted) == ("lambdarank", "lightgbm_binary", "l2_logistic", "tcn_bce"), fitted
+    assert len({head.result.model_identity for head in fitted}) == 4
+    for head in fitted:
+        assert head.result.ready
+        assert head.result.assessment_seats == 6 * 20
+        assert head.result.assessment_brier is not None and 0 <= head.result.assessment_brier <= 1
+        model = LoadTomorrowProbabilityModel(tmp_path, head.profile, _TARGET, project_root=_ROOT)
+        assert model is not None and model.identity == head.result.model_identity
+        assert model.artifact.profile == head.profile
+        assert model.artifact.fitting_dates[-1] < model.artifact.calibration_dates[0]
+        zero = (0.0,) * len(TomorrowFeatureNames(head.profile))
+        batch = model.predict_probabilities((zero, zero))
+        assert all(0 <= value <= 1 for value in batch)
+        assert batch == pytest.approx((model.predict_probability(zero),) * 2)
+
+    reused = TrainTomorrowProbability(history, tmp_path, **arguments)
+    assert len(reads) == 2 and all(head.result.assessment_rows == 0 for head in reused)
+    assert tuple(head.result.model_identity for head in reused) == tuple(head.result.model_identity for head in fitted)
+
+    assert LoadTomorrowProbabilityModel(tmp_path, "v2", _HIGHER_TARGET, project_root=_ROOT) is None
+    tree_model = LoadTomorrowProbabilityModel(tmp_path, "v2", _TARGET, project_root=_ROOT)
+    assert tree_model is not None
+    changed = PublishTomorrowProbabilityModel(tmp_path, replace(tree_model.artifact, target=_HIGHER_TARGET))
+    assert changed != tree_model.identity
     with pytest.raises(ValueError, match="tomorrow_probability_artifact_tree_invalid"):
-        PublishTomorrowProbabilityModel(tree_model_root, replace(artifact, lightgbm="invalid tree"))
-    restored = LoadTomorrowProbabilityModel(tree_model_root, _TARGET)
+        PublishTomorrowProbabilityModel(tmp_path, replace(tree_model.artifact, lightgbm="invalid tree"))
+    restored = LoadTomorrowProbabilityModel(tmp_path, "v2", _TARGET, project_root=_ROOT)
     assert restored is not None and restored.identity == tree_model.identity
+    fitting = LoadTomorrowFitSettings(_ROOT, "v2")
+    monkeypatch.setattr(
+        "trader.training.infra.tomorrow_probability.LoadTomorrowFitSettings",
+        lambda *_args: replace(fitting, fit_dates=fitting.fit_dates - 1),
+    )
+    with pytest.raises(ValueError, match="tomorrow_probability_training_contract_mismatch"):
+        LoadTomorrowProbabilityModel(tmp_path, "v2", _TARGET, project_root=_ROOT)
 
 
-def test_shared_training_respects_memory_admission_and_cancellation(tmp_path: Path) -> None:
+def test_sequence_ends_on_the_previous_trading_day() -> None:
+    first = date(2023, 1, 2)
+    dates = tuple(first + timedelta(days=index) for index in range(63))
+    closes = (*((100.0,) * 60), 120.0, 160.0, 168.0)
+    rows = tuple(
+        _row(day, "600001", close, preclose=closes[max(0, index - 1)])
+        for index, (day, close) in enumerate(zip(dates, closes, strict=True))
+    )
+    samples = _collect_samples(rows, dates, 1, lambda: None, _TARGET, warmup=61, source_identity="a" * 64)
+    assert samples.features.shape == (1, 366)
+    last_close_return = TomorrowFeatureNames("v5").index("sequence_59_close_return")
+    assert samples.features[0, last_close_return] == pytest.approx(0.2)
+    assert samples.labels[0] == 1
+
+
+def test_training_respects_memory_admission_and_cancellation(tmp_path: Path) -> None:
     first = date(2023, 1, 2)
     dates = tuple(first + timedelta(days=index) for index in range(180))
     # Reserve/check must run before touching the reader or creating the artifact.
     history = SimpleNamespace(open_dates=dates, universe_count=6, snapshot_hash="a" * 64)
     budget = TrainingCpuBudget(2, TrainingResourceSettingsFixture().cpu)
-    blocked = TrainSharedTomorrowProbability(
-        history, tmp_path, target=_TARGET, cancelled=lambda: False, cpu_budget=budget, memory=TrainingMemoryBudget(1),
+    targets = LoadPredictionTargets(_ROOT / "config/strategy.json")
+    blocked, = TrainTomorrowProbability(
+        history, tmp_path, profiles=("v3",), prediction_targets=targets, project_root=_ROOT,
+        cancelled=lambda: False, cpu_budget=budget, memory=TrainingMemoryBudget(1),
     )
-    assert blocked.failure == "tomorrow_probability_memory_budget_insufficient"
+    assert blocked.result.failure == "tomorrow_probability_memory_budget_insufficient"
     with pytest.raises(InterruptedError, match="training_cancelled"):
-        TrainSharedTomorrowProbability(
-            history, tmp_path, target=_TARGET, cancelled=lambda: True, cpu_budget=budget, memory=TrainingMemoryBudget(2**20),
+        TrainTomorrowProbability(
+            history, tmp_path, profiles=("v3",), prediction_targets=targets, project_root=_ROOT,
+            cancelled=lambda: True, cpu_budget=budget, memory=TrainingMemoryBudget(2**20),
         )
-    assert LoadTomorrowProbabilityModel(tmp_path, _TARGET) is None
+    assert LoadTomorrowProbabilityModel(tmp_path, "v3", _TARGET, project_root=_ROOT) is None

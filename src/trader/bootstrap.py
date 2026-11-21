@@ -116,7 +116,7 @@ from trader.recommendation.application.runtime.scheduler_runtime import Schedule
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.application.quote_population import ReadQuotePopulation
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget, PredictionTargets
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTargets
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.infra import policy_settings
@@ -334,7 +334,7 @@ def ExecuteSelectedTraining(
 
     from trader.training.entrypoints.selected_training import RunSelectedTraining
     from trader.training.infra.selected_training import ResolveTrainingLocations, SelectedTrainingAdapter
-    from trader.training.infra.tomorrow_probability_training import TrainSharedTomorrowProbability
+    from trader.training.infra.tomorrow_probability_training import TrainTomorrowProbability
     from trader.training.infra.memory_admission import FittingMemoryCapacity, TrainingMemoryBudget
 
     if history_root is not None or training_root is not None:
@@ -354,7 +354,7 @@ def ExecuteSelectedTraining(
         prepare_training=partial(SelectedTrainingAdapter, sqlite_policy=sqlite_policy,
                                  load_industry_snapshot=industry_reader, clock=ShanghaiClock(_utc_now).now,
                                  prediction_targets=prediction_targets,
-                                 train_shared_tomorrow=TrainSharedTomorrowProbability),
+                                 train_tomorrow=TrainTomorrowProbability),
         load_expectation=HistoryTrainingExpectationReader(
             industry_reader, partial(LoadProfileTrainingSettings, runtime.project_root), lambda: cpu_budget.profile_threads,
         ).read,
@@ -550,11 +550,6 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     recommendation_rounds: RecommendationRounds | None = None,
     publication_lock: threading.RLock | None = None,
     freeze_events: UnifiedFreezeEventStream | None = None,
-    tomorrow_predictor: TomorrowProbabilityPredictor | None = None,
-    shared_tomorrow: bool = False,
-    tomorrow_target: PredictionTarget | None = None,
-    owns_tomorrow: bool | None = None,
-    tomorrow_groups: tuple[tuple[PredictionTarget, tuple[ScoringProfileId, ...]], ...] = (),
     prediction_targets: PredictionTargets | None = None,
 ) -> ApplicationSystem[SQLiteFreezeTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
     settings = LoadRuntimeSettings(config_path)
@@ -569,8 +564,22 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     profile_id = strategy.scoring_profile
     if prediction_targets is not None and strategy.prediction_targets != prediction_targets:
         raise ValueError("prediction target configuration changed during service composition")
-    d25_target = strategy.prediction_targets.for_profile(profile_id, Strategy.D25)
+    tomorrow_target = prediction_targets.for_profile(profile_id, Strategy.TOMORROW) if prediction_targets else None
+    d25_target = prediction_targets.for_profile(profile_id, Strategy.D25) if prediction_targets else None
     paths = settings.data_paths
+    tomorrow_predictor: TomorrowProbabilityPredictor | None = None
+    if tomorrow_target is not None:
+        from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
+
+        try:
+            tomorrow_predictor = LoadTomorrowProbabilityModel(
+                paths.models, profile_id, tomorrow_target, project_root=settings.project_root,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            logging.getLogger(__name__).warning(
+                "tomorrow_probability_model_unavailable profile=%s target=%s category=%s",
+                profile_id, tomorrow_target.identity, type(exc).__name__,
+            )
     watchlist = LoadLongWatchlist(settings.long_watchlist_path)
     cost_policy = LoadExecutionCostPolicy(Path(config_path).expanduser().resolve().parent)
     cost_version = ContentHash(cost_policy)[:16]
@@ -615,17 +624,16 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     )
     persistence = BuildPublicationPersistence(
         context, shared_inputs.budget if shared_inputs else None, budget_path=budget_path,
-        sqlite_policy=sqlite_policy, shared_tomorrow=shared_tomorrow,
-        tomorrow_target=tomorrow_target, owns_tomorrow=owns_tomorrow, tomorrow_groups=tomorrow_groups,
+        sqlite_policy=sqlite_policy, tomorrow_target=tomorrow_target,
     )
     model_failure = "production_model_missing"
     try:
         loaded_profile = (
             LoadScoringProfile(profile_id, training_root=paths.models, d25_only=True)
-            if shared_tomorrow
+            if d25_target is not None
             else LoadScoringProfile(profile_id, training_root=paths.models)
         )
-        if shared_tomorrow:
+        if d25_target is not None:
             from trader.training.infra.d25_probability import LoadD25ScoringProfile
 
             loaded_profile = LoadD25ScoringProfile(paths.models, loaded_profile, d25_target)
@@ -683,7 +691,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     model_publications = PublishedTrainingState(
         paths.history, paths.models, loaded_profile.publications if loaded_profile else (), metadata_cache=workers.market_cache,
         maintenance_path=paths.training_maintenance, owned_profile=profile_id, wall_clock=ShanghaiClock(now).now,
-        sqlite_policy=sqlite_policy, d25_only=shared_tomorrow,
+        sqlite_policy=sqlite_policy, d25_only=d25_target is not None,
         load_expectation=HistoryTrainingExpectationReader(
             partial(ReadIndustrySnapshot, paths.reference, sqlite_policy=sqlite_policy),
             partial(LoadProfileTrainingSettings, settings.project_root),
@@ -694,8 +702,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         profile_id, loaded_profile,
         history_sessions=training_settings.history_sessions, model_failure=model_failure, cost_policy=cost_policy,
         maintenance=model_publications.status,
-        tomorrow_predictor=tomorrow_predictor, shared_tomorrow=shared_tomorrow,
-        tomorrow_target=tomorrow_target, d25_target=d25_target if shared_tomorrow else None,
+        tomorrow_predictor=tomorrow_predictor, tomorrow_target=tomorrow_target, d25_target=d25_target,
     )
     candidate_filtering = CandidateFilteringService(policy, model_scoring)
     local_scoring = LocalScoringService(model_scoring, RankingSelectionService(), RiskControlService())
@@ -763,14 +770,13 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
                 OutcomeSettlementService(
                     market_data, persistence.outcomes, persistence.outcomes, session_distance=calendar.session_distance
                 ),
-                settle_d25=D25OutcomeSettlementService(market_data, persistence.outcomes).settle if shared_tomorrow else None,
+                settle_d25=D25OutcomeSettlementService(market_data, persistence.outcomes).settle if d25_target is not None else None,
             ),
-            shared_tomorrow_owner=owns_tomorrow if shared_tomorrow else None,
-            tomorrow_model_ready=not shared_tomorrow or tomorrow_predictor is not None,
-            d25_model_ready=not shared_tomorrow or loaded_profile is not None,
+            tomorrow_model_ready=tomorrow_target is None or tomorrow_predictor is not None,
+            d25_model_ready=d25_target is None or loaded_profile is not None,
             tomorrow_settlement=(
                 TomorrowOutcomeSettlementService(market_data, persistence.outcomes).settle
-                if shared_tomorrow and owns_shared_runtime
+                if tomorrow_target is not None
                 else None
             ),
             research_factory=ResearchRuntime,
@@ -894,22 +900,7 @@ def BuildProfiledSystem(
     """Build the selected profiles with one shared resource owner and read-only surface."""
     profiles = ParseProfileSelection(",".join(profiles))
     settings = LoadRuntimeSettings(config_path)
-    from trader.training.infra.tomorrow_probability import LoadTomorrowProbabilityModel
-
     targets = LoadPredictionTargets(settings.strategy_config_path)
-    tomorrow_groups = targets.tomorrow_groups(SCORING_PROFILE_IDS)
-    tomorrow_owners: dict[str, ScoringProfileId] = {}
-    predictors: dict[PredictionTarget, TomorrowProbabilityPredictor | None] = {}
-    for target, members in targets.tomorrow_groups(profiles):
-        owner = "v2" if "v2" in members else min(members)
-        tomorrow_owners.update((member, owner) for member in members)
-        try:
-            predictors[target] = LoadTomorrowProbabilityModel(settings.data_paths.models, target)
-        except (OSError, ValueError, RuntimeError) as exc:
-            predictors[target] = None
-            logging.getLogger(__name__).warning(
-                "tomorrow_probability_model_unavailable target=%s category=%s", target.identity, type(exc).__name__
-            )
     default_profile = "v2" if "v2" in profiles else profiles[0]
     publication_lock = threading.RLock()
     freeze_events = UnifiedFreezeEventStream(
@@ -921,7 +912,6 @@ def BuildProfiledSystem(
         round_timeout_seconds=settings.pipeline.round_timeout_seconds,
         publish_batch_event=freeze_events.publish_batch,
     )
-    primary_target = targets.for_profile(default_profile, Strategy.TOMORROW)
     primary = BuildSystem(
         config_path,
         scoring_profile=default_profile,
@@ -929,12 +919,7 @@ def BuildProfiledSystem(
         recommendation_rounds=rounds,
         publication_lock=publication_lock,
         freeze_events=freeze_events,
-        tomorrow_predictor=predictors[primary_target],
-        tomorrow_target=primary_target,
-        owns_tomorrow=tomorrow_owners[default_profile] == default_profile,
-        tomorrow_groups=tomorrow_groups,
         prediction_targets=targets,
-        shared_tomorrow=True,
     )
     shared = composition_inputs.SharedRecommendationInputs(
         primary.workers,
@@ -953,18 +938,12 @@ def BuildProfiledSystem(
         recommendation_rounds=rounds,
         publication_lock=publication_lock,
         freeze_events=freeze_events,
-        tomorrow_groups=tomorrow_groups,
         prediction_targets=targets,
-        shared_tomorrow=True,
     )
     systems = [primary]
     for profile in profiles:
         if profile != default_profile:
-            target = targets.for_profile(profile, Strategy.TOMORROW)
-            systems.append(build_secondary(
-                scoring_profile=profile, runtime_scope=profile, tomorrow_target=target,
-                tomorrow_predictor=predictors[target], owns_tomorrow=tomorrow_owners[profile] == profile,
-            ))
+            systems.append(build_secondary(scoring_profile=profile, runtime_scope=profile))
     web_profiles = {system.profile_id: system.web_services for system in systems}
     history_settings = LoadHistoryQuoteSettings(settings.project_root / "config/history_quotes.json")
     history_client = TencentClient(session_factory=OpenExternalHttp, timeout_seconds=history_settings.timeout_seconds,
@@ -987,7 +966,6 @@ def BuildProfiledSystem(
             profiles={profile: web_profiles[profile] for profile in profiles},
             default_profile=default_profile,
             long_profile=default_profile,
-            tomorrow_profiles=tomorrow_owners,
             prediction_targets=targets,
             config=primary.web_services.config,
             history_quotes=history_quotes,

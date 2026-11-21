@@ -243,9 +243,12 @@ def _measure_preload(
         for profile in selected
     )
     tomorrow_models = {
-        target.identity: model.identity if model is not None else None
-        for target, _members in targets.tomorrow_groups(selected)
-        for model in (LoadTomorrowProbabilityModel(settings.data_paths.models, target),)
+        profile: model.identity if model is not None else None
+        for profile in selected
+        for model in (LoadTomorrowProbabilityModel(
+            settings.data_paths.models, profile, targets.for_profile(profile, Strategy.TOMORROW),
+            project_root=settings.project_root,
+        ),)
     }
     model_seconds = time.monotonic() - model_started
     history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(root, sqlite_policy=sqlite_policy))

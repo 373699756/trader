@@ -188,31 +188,67 @@ def _fit_ranker(
     rounds: int,
     compute_threads: int,
     cancel_requested: Callable[[], bool] | None,
-    binary_relevance: bool = False,
+) -> lgb.Booster:
+    validation = None if early is None else lgb.Dataset(
+        early.features,
+        label=_relevance(early, settings),
+        weight=_daily_weights(early),
+        group=np.asarray(early.groups, dtype=np.int32),
+    )
+    training = lgb.Dataset(
+        fitting.features,
+        label=_relevance(fitting, settings),
+        weight=_daily_weights(fitting),
+        group=np.asarray(fitting.groups, dtype=np.int32),
+    )
+    return _train_rank_datasets(
+        training, validation, settings, _ranker_parameters(settings, compute_threads), rounds, cancel_requested,
+    )
+
+
+def _train_rank_datasets(
+    training: lgb.Dataset, validation: lgb.Dataset | None, settings: V1TrainingSettings,
+    parameters: dict[str, object], rounds: int, cancel_requested: Callable[[], bool] | None,
 ) -> lgb.Booster:
     def cancellation_callback(_environment: lgb.callback.CallbackEnv) -> None:
         CheckV1Cancellation(cancel_requested)
 
-    valid_sets = [] if early is None else [lgb.Dataset(
-        early.features,
-        label=early.targets if binary_relevance else _relevance(early, settings),
-        weight=_daily_weights(early),
-        group=np.asarray(early.groups, dtype=np.int32),
-    )]
     callbacks = [cancellation_callback]
-    if early is not None:
+    if validation is not None:
         callbacks.append(lgb.early_stopping(settings.early_stopping_rounds, verbose=False))
     return lgb.train(
-        {**_ranker_parameters(settings, compute_threads), **({"label_gain": [0, 1]} if binary_relevance else {})},
-        lgb.Dataset(
-            fitting.features,
-            label=fitting.targets if binary_relevance else _relevance(fitting, settings),
-            weight=_daily_weights(fitting),
-            group=np.asarray(fitting.groups, dtype=np.int32),
-        ),
+        parameters,
+        training,
         num_boost_round=rounds,
-        valid_sets=valid_sets,
+        valid_sets=[] if validation is None else [validation],
         callbacks=callbacks,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DailyBinaryRankRows:
+    features: np.ndarray
+    labels: np.ndarray
+    groups: tuple[int, ...]
+
+
+def FitDailyBinaryRanker(
+    fitting: DailyBinaryRankRows, early: DailyBinaryRankRows, settings: V1TrainingSettings,
+    *, compute_threads: int, cancel_requested: Callable[[], bool] | None,
+    feature_names: tuple[str, ...] | None = None,
+) -> lgb.Booster:
+    def dataset(rows: DailyBinaryRankRows) -> lgb.Dataset:
+        if not rows.groups or sum(rows.groups) != len(rows.labels) or any(size < 1 for size in rows.groups):
+            raise ValueError("binary_ranker_groups_invalid")
+        return lgb.Dataset(
+            rows.features, label=rows.labels,
+            weight=_day_weights(len(rows.labels), rows.groups), group=np.asarray(rows.groups, dtype=np.int32),
+            feature_name="auto" if feature_names is None else list(feature_names),
+        )
+
+    return _train_rank_datasets(
+        dataset(fitting), dataset(early), settings, {**_ranker_parameters(settings, compute_threads), "label_gain": [0, 1]},
+        settings.boosting_rounds, cancel_requested,
     )
 
 
@@ -224,9 +260,10 @@ def FitD25LearnedRankClassifier(
         np.any(fitting.targets == 1) and np.any(fitting.targets == 0)
     ):
         raise ValueError("d25_probability_ranker_labels_insufficient")
-    return _fit_ranker(
-        fitting, settings, early=early, rounds=settings.boosting_rounds, compute_threads=compute_threads,
-        cancel_requested=cancel_requested, binary_relevance=True,
+    return FitDailyBinaryRanker(
+        DailyBinaryRankRows(fitting.features, fitting.targets, fitting.groups),
+        DailyBinaryRankRows(early.features, early.targets, early.groups), settings,
+        compute_threads=compute_threads, cancel_requested=cancel_requested,
     )
 
 
@@ -258,10 +295,12 @@ def _chunks(size: int) -> Iterator[tuple[int, int]]:
 
 
 def _daily_weights(matrix: LearnedRankMatrix) -> np.ndarray:
+    return _day_weights(len(matrix.targets), matrix.groups)
+
+
+def _day_weights(samples: int, groups: tuple[int, ...]) -> np.ndarray:
     # Each day has identical total weight; the overall mean row weight is one.
-    return np.repeat(
-        np.asarray([len(matrix.targets) / (len(matrix.groups) * size) for size in matrix.groups]), matrix.groups
-    )
+    return np.repeat(np.asarray([samples / (len(groups) * size) for size in groups]), groups)
 
 
 def _transform(matrix: LearnedRankMatrix, weights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

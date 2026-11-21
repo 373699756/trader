@@ -49,7 +49,6 @@ def BuildProfileScoring(
     cost_policy: ExecutionCostPolicy,
     maintenance: Callable[[], tuple[HeadTrainingStatus, ...]] | None,
     tomorrow_predictor: TomorrowProbabilityPredictor | None = None,
-    shared_tomorrow: bool = False,
     tomorrow_target: PredictionTarget | None = None,
     d25_target: PredictionTarget | None = None,
 ) -> PublishedModelScoringService:
@@ -60,7 +59,7 @@ def BuildProfileScoring(
             profile_id,
             {
                 strategy: TomorrowProbabilityCapability(profile_id, tomorrow_predictor, tomorrow_target)
-                if shared_tomorrow and strategy is Strategy.TOMORROW
+                if tomorrow_target is not None and strategy is Strategy.TOMORROW
                 else LearnedRankScoringService(
                     loaded, strategy, cost_policy=cost_policy, content_hash=ContentHash,
                     prediction_target=d25_target if strategy is Strategy.D25 else None,

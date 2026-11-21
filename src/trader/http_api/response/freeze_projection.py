@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import (
@@ -362,15 +361,14 @@ def SerializeFreezeItem(item: FreezeItemView) -> dict[str, object]:
     }
 
 
-def SerializeEvent(
-    event: UnifiedPublishedEvent,
-    *,
-    tomorrow_profiles: Mapping[str, str] | None = None,
-) -> dict[str, object]:
+def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
     payload = event.payload
     common: dict[str, object] = {}
     if isinstance(payload, FreezeBatchPayload):
-        profiles = _serialize_batch(payload, tomorrow_profiles)
+        profiles = {
+            profile.profile: {freeze.strategy.value: _serialize_freeze_event(freeze) for freeze in profile.freezes}
+            for profile in payload.profiles
+        }
         common.update(
             round_sequence=payload.round_sequence,
             profiles=profiles,
@@ -403,28 +401,7 @@ def SerializeEvent(
         )
     elif isinstance(payload, ResyncEventPayload):
         common["reason"] = payload.reason
-    if (
-        tomorrow_profiles is not None
-        and isinstance(payload, (FreezeEventPayload, OverlayEventPayload))
-        and payload.strategy is Strategy.TOMORROW
-    ):
-        common["scoring_profiles"] = [profile for profile, owner in tomorrow_profiles.items() if owner == payload.profile]
     return common
-
-
-def _serialize_batch(
-    payload: FreezeBatchPayload, tomorrow_profiles: Mapping[str, str] | None,
-) -> dict[str, dict[str, dict[str, object]]]:
-    profiles = {
-        profile.profile: {freeze.strategy.value: _serialize_freeze_event(freeze) for freeze in profile.freezes}
-        for profile in payload.profiles
-    }
-    if tomorrow_profiles is not None:
-        for profile, owner in tomorrow_profiles.items():
-            owner_view = profiles.get(owner, {}).get(Strategy.TOMORROW.value)
-            if profile != owner and profile in profiles and owner_view is not None:
-                profiles[profile][Strategy.TOMORROW.value] = {**owner_view, "scoring_profile": profile}
-    return profiles
 
 
 def _serialize_freeze_event(payload: FreezeEventPayload) -> dict[str, object]:

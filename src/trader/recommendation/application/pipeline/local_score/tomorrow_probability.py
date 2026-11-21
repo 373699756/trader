@@ -1,19 +1,27 @@
-"""Apply the shared Tomorrow model to one prepared market batch."""
+"""Apply a profile's Tomorrow model to one prepared market batch."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 
 from trader.recommendation.application.ports.loaded_profile import (
     ModelScoreBatch,
     ModelScoringContext,
+    ModelScoringDeadlineError,
     ScoringHeadRuntimeStatus,
     TomorrowProbability,
 )
+from trader.recommendation.application.runtime.schedule import TradeDateAt
 from trader.recommendation.domain.candidate.filters import BoardForSnapshot
 from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.market.tomorrow_probability import BuildTomorrowFeatures, TomorrowProbabilityPredictor
+from trader.recommendation.domain.market.tomorrow_probability import (
+    BuildTomorrowFeatures,
+    BuildTomorrowSequenceFeatures,
+    TomorrowProbabilityPredictor,
+)
+from trader.recommendation.domain.market.v5.features import SEQUENCE_STEPS
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.outcomes.tomorrow_target import TOMORROW_CLOSE_GAIN_TARGET
 from trader.recommendation.domain.publication.models import Strategy
@@ -22,12 +30,15 @@ from trader.recommendation.domain.scoring.profile_identity import (
     TOMORROW_PROBABILITY_SCORE_SCALE,
 )
 
+_SEQUENCE_BATCH_SIZE = 256
+
 
 @dataclass(frozen=True, slots=True)
 class TomorrowProbabilityCapability:
     profile_id: ScoringProfileId
     predictor: TomorrowProbabilityPredictor | None
     target: PredictionTarget | None = None
+    monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.target is not None and self.target.strategy is not Strategy.TOMORROW:
@@ -35,11 +46,10 @@ class TomorrowProbabilityCapability:
 
     @property
     def history_required_sessions(self) -> int:
-        # Local downside controls still require the baseline history window.
-        return 20
+        return SEQUENCE_STEPS + 1 if self.profile_id == "v5" else 20
 
     def is_input_eligible(self, feature: FeatureSnapshot) -> bool:
-        return self.predictor is not None and _features(feature) is not None
+        return self.predictor is not None and _features(feature, self.profile_id) is not None
 
     def score(
         self,
@@ -50,19 +60,27 @@ class TomorrowProbabilityCapability:
         predictor = self.predictor
         if predictor is None:
             raise RuntimeError("tomorrow_probability_model_unavailable")
+        deadline = (
+            self.monotonic() + context.time_budget_seconds
+            if self.profile_id == "v5" and context is not None and context.time_budget_seconds is not None
+            else None
+        )
+        self._check_deadline(deadline)
         codes: list[str] = []
         vectors: list[tuple[float, ...]] = []
         missing: list[str] = []
         for feature in sorted(features, key=lambda item: item.quote.code):
-            vector = _features(feature)
+            vector = _features(feature, self.profile_id)
             if vector is None:
                 missing.append(feature.quote.code)
                 continue
             codes.append(feature.quote.code)
             vectors.append(vector)
+        self._check_deadline(deadline)
+        probabilities = self._predict_probabilities(predictor, tuple(vectors), deadline)
         predictions = tuple(
             TomorrowProbability(code, probability)
-            for code, probability in zip(codes, predictor.predict_probabilities(tuple(vectors)), strict=True)
+            for code, probability in zip(codes, probabilities, strict=True)
         )
         return ModelScoreBatch(
             predictor.identity,
@@ -74,6 +92,29 @@ class TomorrowProbabilityCapability:
             score_contract_hash=predictor.identity,
             prediction_target=self.target,
         )
+
+    def _predict_probabilities(
+        self,
+        predictor: TomorrowProbabilityPredictor,
+        rows: tuple[tuple[float, ...], ...],
+        deadline: float | None,
+    ) -> tuple[float, ...]:
+        if self.profile_id != "v5":
+            return predictor.predict_probabilities(rows) if rows else ()
+        probabilities: list[float] = []
+        for start in range(0, len(rows), _SEQUENCE_BATCH_SIZE):
+            self._check_deadline(deadline)
+            batch = rows[start:start + _SEQUENCE_BATCH_SIZE]
+            predicted = predictor.predict_probabilities(batch)
+            self._check_deadline(deadline)
+            if len(predicted) != len(batch):
+                raise ValueError("Tomorrow sequence model returned the wrong batch size")
+            probabilities.extend(predicted)
+        return tuple(probabilities)
+
+    def _check_deadline(self, deadline: float | None) -> None:
+        if deadline is not None and self.monotonic() >= deadline:
+            raise ModelScoringDeadlineError("tomorrow_v5_model_scoring_deadline")
 
     def status(self) -> ScoringHeadRuntimeStatus:
         identity = self.predictor.identity if self.predictor is not None else ""
@@ -96,8 +137,18 @@ class TomorrowProbabilityCapability:
         )
 
 
-def _features(feature: FeatureSnapshot) -> tuple[float, ...] | None:
+def _features(feature: FeatureSnapshot, profile: ScoringProfileId) -> tuple[float, ...] | None:
     quote = feature.quote
-    return BuildTomorrowFeatures(
+    base = BuildTomorrowFeatures(
         quote.open_price, quote.high, quote.low, quote.price, quote.volume, BoardForSnapshot(feature)
     )
+    if base is None or profile != "v5":
+        return base
+    sequence = feature.model_sequence
+    quality = feature.model_history_quality
+    if sequence is None or sequence.code != quote.code or (quality is not None and quality.failure is not None):
+        return None
+    signal_date = feature.preview_context.market_trade_date if feature.preview_context else TradeDateAt(feature.observed_at)
+    if TradeDateAt(quote.source_time) != signal_date:
+        return None
+    return BuildTomorrowSequenceFeatures(base, sequence, signal_date=signal_date)
