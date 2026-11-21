@@ -819,6 +819,48 @@ A来源证据：既有公开sources固定001232／2025-09-30执行修订探针�
 
 旧失败保留：V1读取+5.97%、Parquet首建+81%未达门；283旧market.initial +0.122秒、all/history startup +0.014/+0.013秒的>5%回退未关闭。281 base-cache CPU／墙钟回退12.5%／17.0%、fusion14.93%／15.57%仍拒绝，BoardReference-only仍论证。HDD64份行业已获单独授权采用，不补签性能。
 
+#### 本机HDD接续执行计划
+
+计划待执行，挂回本节原P编号。后台B负责下载队列，C负责训练队列与全局正式计量，A负责荐股队列。三线可同时整理输入、编写候选及做轻量功能核验，每次只排一条真实HDD测量。前台统一核对输入、发放测量窗口、监控阶段、协调排队和审查采纳。按P08–P10先过机器、剩余空间、实际CPU／内存准入与空闲窗口，再依本节安排训练、History、Company和荐股；交易日荐股窗口单独保留，其余作业在成对测量边界调度。业务接力沿正式下载输入、训练工件、荐股验证顺序核对，性能对照复用本次已验收的冻结输入。发现资源争用时只挂起或作废本批受影响的测量，等待空闲重跑。
+
+冻结已验收History序号1与摘要、行业输入、八个模型、源码提交、依赖、配置和交易日。下载以当前正式History及具名Company隔离副本为源，荐股用同一Company发布快照。实际工作、报告和比较用同盘仓库外路径，正式源只读，需写入的样本使用独立副本。离线回放禁外网，DeepSeek用固定响应。每对固定总体、窗口、线程、缓存口径和输出模式，比较顺序交替。预热和启动另列。冷启动的新进程与已确认的冷页缓存分别标记，保留用户进程和系统缓存。采集单调墙钟、阶段样本数及可比较的p50／p95、CPU、进程树峰值RSS、读写字节、设备忙碌、换页、磁盘增量和回收耗时。前台约每30秒查看任务、最新已确认进度、预计剩余和首个错误，收齐退出码与完整报告才判终态。
+
+| 后台 | 第一轮基线 | 按顺序验证的候选 | 业务验收 |
+| --- | --- | --- | --- |
+| B 下载，History，P08–P11／P44／P45／P65 | 固定32股×2000交易日，五次新进程。拆取价／解码、旧价读取、队列等待、回写、提交与关闭、封存。再覆盖首建、增量、无变更、取消及续传。首先用`download/history/write`的发布分段和`download/history/sqlite`；年度恢复样本具备原有效未发布候选时才跑`download/history/repair`。 | 先测年度连接复用，再测现有有界批次。以目前HDD首建8股／16384价格单元、增量16股／8192价格单元为参照。确认主耗时后再试事务分组和布局。现场5小时04分只用于定位。 | 同范围原始价／前复权价、缺价、确认与推定停牌、修复凭据、已发布记录及取消断点一致。保持单写者和FULL持久性，重复请求、价格缺口均不增加。 |
+| B 下载，Company，P39／P40／P45–P48 | 以同一批合法归档原件、同一采集与正式库、同一业务截止，覆盖局部待重证、无变更和中断恢复。按目录、正文、OCR、字段证明、提交分别计时，核正确字段／小时、物理请求、字节、覆盖和新鲜度。现有`download/company/coverage --company-field-replay-keys`可只在独立副本复验字段。 | 先比父发布及旧字段批读，再测变化字段的合并重证。之后独立对照链接、容量、目录以及5／15／30／60秒发布间隔，选满足时效的方案。现场公告至字段确认39–44秒只作为分段线索。 | 字段、原凭据和已有风险逐值一致。真实全量另核4403股、本轮既定覆盖和首次8小时目标。原467／512账本保留，第371步待有效响应凭据期间只排离线回放。 |
+| C 训练，P49–P60 | 先比正常`train d25 v2`、`v3`、`v5`逐档串行与`train d25 v2,v3,v5`联合有界分流。分别核首次训练、适用的样本复用重拟合及全模型复用，随后验证四档双策略完整负载。现有正式工具入口`training/resources/performance`，同提交串与联合先跑一遍，跨版本候选随后用独立基线checkout对照。 | 先拆样本扫描、队列阻塞、SQLite写入和封存。V2和V3现场样本构建约占87％和90％，优先试共享扫描，再单测`indexed_anchors`或`schema_cache`。V5单列TCN批次、验证和重拟合，维持10轮。只有内存、换页和I/O有余量时才逐项试批次或队列大小。 | 全工件复用时零扫描、零拟合，V1样本重拟合场景不适用。八组独立工件、阈值含等号、样本、标签、停牌、训练日及行业覆盖和固定输入预测保持等价。实现摘要变化单独核验。保留HDD拟合预算上限3GiB和主机预留1.5GiB，另核实测RSS。 |
+| A 荐股，P11／P16／P17／P23／P24／P29／P30 | 拆历史核验与预载、行情、特征、模型／本地评分、发布和API／SSE／浏览器。两次非交易日正式轮99.15／72.32秒只作现场观测。用同八个工件在固定回放先取得分项基线，另留交易日五个连续新鲜完整轮和五时段验收。 | 冷启动先对照`metrics_reuse`。热轮先单测`raw_factor_reuse`，再测`prepared_reuse`，最后测V5行业并行。单项过门后才测组合。`combined`只组合准备复用和V5行业并行。维持既有base-cache和fusion拒绝状态。 | Tomorrow原始概率排序、D25 V2／V3扣风险后的本地分排序及V1／V5的模型百分位排序保持一致，逐组比阈值、六席、动作、风险及发布身份。交易日核120秒整轮、正常采集到发布零连接／零SQL、来源年龄、现有绝对子段门、100 tick RSS和取消回收。独立核15:00 first-wins、同日合法fallback、已冻结原件和实际浏览器。 |
+
+下列是各阶段对应的现有入口。前台设定同盘仓库外的`RUNTIME`、`HISTORY`、`OUTPUT`（已有报告父目录）及交易日隔离服务`BASE_URL`。`RUNTIME`按场景选择，每个普通训练对照臂使用独立的可写输出根，读取同一正式History和参考；荐股指向冻结的八组模型和Company副本。每次使用全新的`TRAIN_PROBE`／`COMPANY_PROBE`及报告文件，公司回放另固定合法的`COMPANY_FACTS`、`COMPANY_COLLECTION`、`COMPANY_AT`和实际材料`SOURCE_KEY`。长训练按空闲窗口和工具单个任务7200秒上限拆独立进程，超时记录单独留存。
+
+```bash
+.venv/bin/python3 scripts/tools.py --business download --module history --action write \
+  --history-publication-profile --history-root "$HISTORY" --runtime-config "$RUNTIME" \
+  --command-timeout-seconds 3600 --report "$OUTPUT/history-publication.json"
+
+.venv/bin/python3 scripts/tools.py --business download --module company --action coverage \
+  --runtime-config "$RUNTIME" --company-evidence-database "$COMPANY_FACTS" \
+  --company-collection-database "$COMPANY_COLLECTION" --company-replay-directory "$COMPANY_PROBE" \
+  --company-field-replay-keys "$SOURCE_KEY" --company-replay-observed-at "$COMPANY_AT" \
+  --command-timeout-seconds 930 --report "$OUTPUT/company-field-replay.json"
+
+.venv/bin/python3 -m trader.entrypoints.cli --config "$RUNTIME" train d25 v2,v3,v5
+.venv/bin/python3 scripts/tools.py --business training --module resources --action performance \
+  --runtime-config "$RUNTIME" --history-root "$HISTORY" --training-probe-directory "$TRAIN_PROBE" \
+  --published-history-read-only --command-timeout-seconds 7200 --report "$OUTPUT/training.json"
+
+.venv/bin/python3 scripts/tools.py --business recommendation --module pipeline --action latency \
+  --runtime-config "$RUNTIME" --scoring-profile v1,v2,v3,v5 --performance-replay-ticks 5 \
+  --command-timeout-seconds 1800 --report "$OUTPUT/scoring-baseline.json"
+
+.venv/bin/python3 scripts/tools.py --business recommendation --module web --action health \
+  --base-url "$BASE_URL" --web-complete-rounds 5 --web-observation-seconds 900 \
+  --web-interval-seconds 15 --command-timeout-seconds 930 --report "$OUTPUT/live-five-rounds.json"
+```
+
+前台验收先核业务等价与绝对预算，再按五对至少4胜、适用SQLite／首训／发布的中位改善≥10％、Parquet重复准备≥15％以及其它负载回退≤5％逐项裁决。荐股另外核512MiB共享逻辑缓存、2GiB峰值RSS、100 tick增长≤20％及`config/performance.json`的时延和新鲜度。五个回放tick是单场景的采样设置，连续真实盘中五轮和成对五组性能样本分别保存。功能时间、合成报价和周末预览各有独立证据。通过后由原业务owner在正常入口隔离复验，前台登记采用、拒绝或缺条件及对应P号。真实发布和收益留出仍走原验收与授权。
+
 ### 4.6 历史条件欠项与不得自动执行的操作
 
 | 原阶段／owner | 当前条件与下一步 |
