@@ -10,6 +10,7 @@ from trader.training.domain.evaluation.terminal_holdout import (
     EvaluateTerminalHoldout,
     TerminalHoldoutEvaluation,
     TerminalHoldoutRow,
+    ValidateTerminalRanking,
 )
 
 
@@ -30,7 +31,8 @@ def _rows(count: int = 200, *, positive: bool = True) -> tuple[TerminalHoldoutRo
                     volatility_state=("low", "high")[index % 2],
                     liquidity_state=("high", "low")[index % 2],
                     predicted_net_excess_return=actual,
-                    ranking_score=50.0 + stock, local_score=50.0 + stock,
+                    ranking_score=(50.0 + stock) / 100.0 * 100.0, local_score=50.0 + stock,
+                    target_probability=(50.0 + stock) / 100.0,
                     actual_net_excess_returns=(actual, actual - 0.003, actual - 0.008),
                     baseline_net_excess_returns=(0.0, -0.003, -0.008),
                     selected=selected,
@@ -69,7 +71,7 @@ def test_terminal_holdout_validates_positive_candidate_against_local_baseline() 
 
 
 @pytest.mark.parametrize("profile", ["v1", "v5"])
-def test_model_ranking_metrics_use_final_percentile_instead_of_utility(profile: ScoringProfileId) -> None:
+def test_model_ranking_metrics_use_target_probability_instead_of_utility(profile: ScoringProfileId) -> None:
     rows = tuple(replace(row, predicted_net_excess_return=-row.predicted_net_excess_return) for row in _rows())
     report = EvaluateTerminalHoldout(TerminalHoldoutEvaluation(
         "tomorrow", "score_tomorrow_historical_candidate", "a" * 64, "b" * 64, rows, profile_id=profile,
@@ -81,17 +83,24 @@ def test_model_ranking_metrics_use_final_percentile_instead_of_utility(profile: 
 
 
 @pytest.mark.parametrize("profile", ["v2", "v3"])
-def test_local_score_profiles_reject_an_independent_ranking_score(profile: ScoringProfileId) -> None:
-    rows = tuple(replace(row, ranking_score=99.0) for row in _rows())
+def test_d25_local_score_profiles_reject_an_independent_ranking_score(profile: ScoringProfileId) -> None:
+    row = replace(_rows(1)[0], ranking_score=99.0)
     with pytest.raises(ValueError, match="local-score profile ranking mismatch"):
-        EvaluateTerminalHoldout(TerminalHoldoutEvaluation(
-            "tomorrow", "score_tomorrow_historical_candidate", "a" * 64, "b" * 64, rows, profile_id=profile,
-        ))
+        ValidateTerminalRanking("d25", profile, row)
 
 
-@pytest.mark.parametrize("score", [float("nan"), float("inf"), -0.01, 100.01, 12.345])
-def test_terminal_scores_require_current_rounded_finite_range(score: float) -> None:
-    with pytest.raises(ValueError, match="scores must be rounded"):
+@pytest.mark.parametrize("profile", ["v1", "v2", "v3", "v5"])
+def test_tomorrow_ranking_keeps_the_raw_probability(profile: ScoringProfileId) -> None:
+    probability = 0.753421
+    row = replace(_rows(1)[0], target_probability=probability, ranking_score=100.0 * probability)
+    ValidateTerminalRanking("tomorrow", profile, row)
+    with pytest.raises(ValueError, match="unrounded target probability"):
+        ValidateTerminalRanking("tomorrow", profile, replace(row, ranking_score=75.34))
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), -0.01, 100.01])
+def test_terminal_ranking_scores_require_finite_range(score: float) -> None:
+    with pytest.raises(ValueError, match="ranking score must be within"):
         replace(_rows(1)[0], ranking_score=score)
 
 

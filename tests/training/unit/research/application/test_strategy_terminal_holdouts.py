@@ -19,7 +19,7 @@ def _rows(*, d25: bool = False) -> tuple[TerminalHoldoutRow, ...]:
             volatility_state="low",
             liquidity_state="high",
             predicted_net_excess_return=0.01,
-            ranking_score=80.0, local_score=80.0,
+            ranking_score=80.0, local_score=80.0, target_probability=0.8,
             actual_net_excess_returns=(0.01, 0.007, 0.002),
             baseline_net_excess_returns=(0.0, -0.003, -0.008),
             selected=True,

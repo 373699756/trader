@@ -30,11 +30,22 @@ def test_all_profile_strategy_registrations_round_trip_without_changing_hash(
     assert decoded.content_hash == registration.content_hash
     assert decoded.profile_id == profile_id and decoded.strategy == strategy
     assert all(type(parameter.value) is float for parameter in decoded.parameters)
-    if profile_id == "v1":
-        assert tuple((item.role, item.family) for item in decoded.candidate_components) == (("ranker", "lambdarank"), ("utility", "ridge"))
+    assert decoded.candidate_components[0].role == "target_probability"
+    if profile_id == "v1" and strategy == "d25":
+        assert tuple((item.role, item.family) for item in decoded.candidate_components[1:]) == (("ranker", "lambdarank"), ("utility", "ridge"))
+    if profile_id == "v3":
+        assert decoded.candidate_components[0].family == "logistic"
     if profile_id == "v5":
         assert decoded.candidate_components[0].sequence_length == 60
         assert decoded.candidate_components[0].epochs == 10
+
+
+def test_registered_targets_have_a_canonical_strategy_identity() -> None:
+    registration = CandidateRegistrationFixture("v3", "tomorrow")
+    wrong_target = RegistrationPayloadFixture(registration)
+    wrong_target["prediction_target"] = "mean_close_gain_d2_d5_at_least_100_bps"
+    with pytest.raises(ValueError, match="research_registration_identity_invalid"):
+        DecodeCandidateRegistration(wrong_target)
 
 
 def test_integer_and_float_candidate_parameters_have_one_canonical_identity() -> None:
@@ -89,7 +100,7 @@ def _state_rows() -> tuple[TerminalHoldoutRow, ...]:
                 day.trade_date, code, board, "fixture_industry", market, volatility, liquidity,
                 0.02, (0.018, 0.015, 0.01), (0.008, 0.005, 0.0),
                 False, False, False, False, -0.1, -0.1, False, False, 10_000, 10_000, True,
-                ranking_score=50.0, local_score=50.0,
+                ranking_score=50.0, local_score=50.0, target_probability=0.5,
             ))
     return tuple(result)
 

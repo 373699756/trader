@@ -108,10 +108,35 @@ def test_sqlite_task_failure_preserves_results_and_continues_following_tasks(fai
         assert result.tasks[0].history is history
     if failed_task != "company":
         assert result.tasks[1].company is company
-    assert failures == []
+    assert len(failures) == 1
+    stage, failure = failures[0]
+    assert stage == f"{failed_task}_synchronization"
+    assert isinstance(failure, SyncDatabaseError) and isinstance(failure.__cause__, error)
     projected = ProjectSyncResult(result)
     assert projected["status"] == "failed" and len(projected["tasks"]) == 2
     assert "private database detail" not in json.dumps(projected)
+
+
+def test_company_round_exception_reports_its_safe_source_and_cause():
+    def resume(_reference):
+        try:
+            raise OSError(5, "sensitive provider detail")
+        except OSError as cause:
+            raise ValueError("sensitive local path") from cause
+
+    messages = []
+    progress = SyncProgress(messages.append, lambda: 0.0)
+    result = SyncData(
+        lambda: PreparedFixture(_NOW), lambda _: _history(), resume, lambda: False, progress.report_failure,
+    ).execute("company")
+
+    assert result.tasks == (SyncTaskResult("company", "failed", "ValueError"),)
+    assert len(messages) == 1 and messages[0].finished
+    fields = " | ".join(field.text for field in messages[0].fields)
+    assert "company_synchronization" in fields
+    assert "ValueError:test_sync_data.py:resume:" in fields
+    assert "OSError:errno_5:test_sync_data.py:resume:" in fields
+    assert "sensitive" not in fields
 
 
 def test_database_adapter_preserves_the_cause_from_the_shared_connection():

@@ -92,12 +92,16 @@ class SyncData:
                     if self.cancelled():
                         tasks.append(SyncTaskResult(task, "cancelled", incompatible_company_store=exc.store))
                         return SyncResult(tuple(tasks), cancelled=True)
+                    if self.failures is not None:
+                        self.failures(DownloadFailureContext(f"{task}_synchronization"), exc)
                     tasks.append(SyncTaskResult(task, "failed", "CompanyDatabaseIncompatibleError",
                                                incompatible_company_store=exc.store))
                 except (CancelledError, OSError, RuntimeError, ValueError) as exc:
                     if self.cancelled():
                         tasks.append(SyncTaskResult(task, "cancelled"))
                         return SyncResult(tuple(tasks), cancelled=True)
+                    if self.failures is not None:
+                        self.failures(DownloadFailureContext(f"{task}_synchronization"), exc)
                     tasks.append(SyncTaskResult(task, "failed", _failure_category(exc)))
             return SyncResult(tuple(tasks))
         except KeyboardInterrupt:

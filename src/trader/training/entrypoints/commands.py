@@ -117,13 +117,12 @@ def RunResearchCommand(
 ) -> int:
     profile = options.profile or LoadStrategySettings(runtime.strategy_config_path).scoring_profile
     research_root = runtime.data_paths.research(profile)
-    from trader.training.infra.research_settings import LoadResearchPlan
-
-    plan = LoadResearchPlan(config_path.parent)
     if command == "research-status":
         from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
         from trader.training.domain.evaluation.selection_experiment import SELECTION_RESEARCH_IDENTITY
+        from trader.training.infra.research_settings import LoadResearchPlan
 
+        plan = LoadResearchPlan(config_path.parent, runtime.strategy_config_path)
         trace = SQLiteFreezeTraceIndex(research_root, sqlite_policy=sqlite_policy)
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)

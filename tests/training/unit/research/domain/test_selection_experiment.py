@@ -11,6 +11,7 @@ from trader.training.domain.evaluation.selection_experiment import (
     EvaluatePairedSelectionExperiment,
     PairedSelectionRow,
     PairedSelectionSpecification,
+    ProductionSelectionEvidence,
     SelectionEvidenceTarget,
     SelectionStrategy,
     SelectionTargetEvidence,
@@ -63,11 +64,17 @@ def _target(target: SelectionEvidenceTarget, value: float) -> SelectionTargetEvi
         pooled_lightgbm_prediction_pre_cost=value + 0.002,
         actual_pre_cost_excess_return=value,
         exit_untradable=False,
-        control_prediction_pre_cost=value,
     )
 
 
-def _rows(strategy: SelectionStrategy = "tomorrow") -> tuple[PairedSelectionRow, ...]:
+def _production(strategy: SelectionStrategy, profile_id: ScoringProfileId, score: float) -> ProductionSelectionEvidence:
+    if strategy == "tomorrow":
+        return ProductionSelectionEvidence(True, score / 100, None, None)
+    rank = score if profile_id in {"v1", "v5"} else None
+    return ProductionSelectionEvidence(True, 0.64, rank, 0.01)
+
+
+def _rows(strategy: SelectionStrategy = "tomorrow", profile_id: ScoringProfileId = "v2") -> tuple[PairedSelectionRow, ...]:
     rows: list[PairedSelectionRow] = []
     for index in range(9):
         evidence = (
@@ -98,8 +105,9 @@ def _rows(strategy: SelectionStrategy = "tomorrow") -> tuple[PairedSelectionRow,
                 mae_atr20=-0.2,
                 target_evidence=evidence,
                 point_in_time_parity=True,
-                profile_ranking_score=float(100 - index),
-                control_ranking_score=float(100 - index),
+                local_hard_veto=False,
+                profile_production=_production(strategy, profile_id, float(100 - index)),
+                control_production=_production(strategy, profile_id, float(100 - index)),
             )
         )
     return tuple(rows)
@@ -111,16 +119,23 @@ def test_production_control_and_chain_use_the_profile_ranking_and_local_gates_wi
     rows = tuple(
         replace(
             row, rule_score=float(95 - index) if index < 8 else 10.0,
-            profile_ranking_score=float(90 + index), control_ranking_score=float(100 - (index + 3) % 9),
+            profile_production=_production(strategy, profile_id, float(90 + index)),
+            control_production=_production(strategy, profile_id, float(100 - (index + 3) % 9)),
+            local_hard_veto=index == 7,
             capacity_sufficient=index != 0, risk_eligible=index != 7, action_eligible=index != 4,
         )
-        for index, row in enumerate(_rows(strategy))
+        for index, row in enumerate(_rows(strategy, profile_id))
     )
     report = EvaluatePairedSelectionExperiment(_specification(strategy, profile_id=profile_id), rows)
     target = "tomorrow" if strategy == "tomorrow" else "mean_t2_t5"
     control = next(result for result in report.results if result.variant.arm == "production_control" and result.variant.target == target)
     production = next(result for result in report.results if result.variant.arm == "production_chain" and result.variant.target == target)
-    if profile_id in {"v1", "v5"}:
+    if strategy == "tomorrow":
+        assert control.days[0].fixed_codes == ("600006", "600008", "600000", "600001", "600002", "600003")
+        assert control.days[0].selected_codes == ("600006", "600001", "600002", "600003")
+        assert production.days[0].fixed_codes == ("600008", "600006", "600005", "600004", "600003", "600002")
+        assert production.days[0].selected_codes == ("600006", "600005", "600003", "600002")
+    elif profile_id in {"v1", "v5"}:
         assert control.days[0].fixed_codes == ("600006", "600007", "600008", "600000", "600001", "600002")
         assert control.days[0].selected_codes == ("600006", "600001", "600002")
         assert production.days[0].fixed_codes == ("600008", "600007", "600006", "600005", "600004", "600003")
@@ -144,15 +159,79 @@ def test_every_production_profile_uses_half_up_local_action_threshold(profile_id
     rows = tuple(
         replace(
             row, rule_score=threshold - (below_threshold if index == 0 else 1),
-            profile_ranking_score=float(100 - index), control_ranking_score=float(100 - index), capacity_sufficient=True,
+            capacity_sufficient=True,
         )
-        for index, row in enumerate(_rows(strategy))
+        for index, row in enumerate(_rows(strategy, profile_id))
     )
     report = EvaluatePairedSelectionExperiment(specification, rows)
     for result in report.results:
         if result.variant.arm in {"production_control", "production_chain"}:
             assert len(result.days[0].fixed_codes) == 6
             assert result.days[0].selected_codes == (("600000",) if selected else ())
+
+
+def test_tomorrow_production_requires_real_probability_but_not_positive_utility() -> None:
+    probabilities = (0.750041, 0.750049, 0.60, 0.50, 0.40, 0.0, 0.99, None, 1.0)
+    rows = tuple(
+        replace(
+            row,
+            profile_production=ProductionSelectionEvidence(index != 6, p, None, None),
+            control_production=ProductionSelectionEvidence(index != 6, p, None, None),
+            target_evidence=(_target("t1", -0.01),),
+            local_hard_veto=index == 8,
+            capacity_sufficient=True,
+        )
+        for index, (row, p) in enumerate(zip(_rows(), probabilities, strict=True))
+    )
+    report = EvaluatePairedSelectionExperiment(_specification(), rows)
+    for result in report.results:
+        if result.variant.arm in {"production_control", "production_chain"}:
+            assert result.days[0].fixed_codes == ("600001", "600000", "600002", "600003", "600004", "600005")
+            assert result.days[0].selected_codes == result.days[0].fixed_codes
+        elif result.variant.arm == "rule_model_gate" and result.variant.selection_mode == "model_gate_then_fixed_top6":
+            assert result.days[0].fixed_codes == ()
+
+
+@pytest.mark.parametrize("profile_id", ["v1", "v2", "v3", "v5"])
+def test_d25_production_keeps_independent_cost_gate_across_research_exits(profile_id: ScoringProfileId) -> None:
+    rows = tuple(
+        replace(
+            row,
+            profile_production=replace(row.profile_production, predicted_net_excess_return=0.0 if index == 0 else 0.01),
+            control_production=replace(row.control_production, predicted_net_excess_return=-0.01 if index == 0 else 0.01),
+            target_evidence=tuple(replace(
+                evidence,
+                profile_prediction_pre_cost=0.03 if evidence.target == "predefined_exit" else -0.02,
+            ) for evidence in row.target_evidence),
+            local_hard_veto=index == 1,
+        )
+        for index, row in enumerate(_rows("d25", profile_id))
+    )
+    report = EvaluatePairedSelectionExperiment(_specification("d25", profile_id=profile_id), rows)
+    production = tuple(result for result in report.results if result.variant.arm in {"production_control", "production_chain"})
+    assert len(production) == 8
+    assert all(result.days[0].fixed_codes == tuple(f"600{index:03d}" for index in range(1, 7)) for result in production)
+    assert all(result.days[0].selected_codes == tuple(f"600{index:03d}" for index in range(2, 7)) for result in production)
+    assert len({result.days[0].six_slot_net_excess_returns for result in production}) > 1
+
+
+@pytest.mark.parametrize(
+    "profile_id,evidence",
+    (
+        ("v1", ProductionSelectionEvidence(True, 0.75, None, 0.01)),
+        ("v2", ProductionSelectionEvidence(True, 0.75, 80.0, 0.01)),
+        ("v3", ProductionSelectionEvidence(True, 0.75, None, None)),
+        ("v5", ProductionSelectionEvidence(True, None, 80.0, 0.01)),
+    ),
+)
+def test_d25_refuses_incomplete_or_wrong_profile_production_evidence(
+    profile_id: ScoringProfileId, evidence: ProductionSelectionEvidence,
+) -> None:
+    first, *rest = _rows("d25", profile_id)
+    with pytest.raises(ValueError, match="D25 production evidence must match"):
+        EvaluatePairedSelectionExperiment(
+            _specification("d25", profile_id=profile_id), (replace(first, profile_production=evidence), *rest),
+        )
 
 
 @pytest.mark.parametrize("profile_id", ["v1", "v2", "v3", "v5"])
@@ -169,7 +248,7 @@ def test_preregistered_ablation_arms_keep_their_original_ranking_semantics(
                 pooled_lightgbm_prediction_pre_cost=0.04 - index / 1000,
             ) for target in row.target_evidence),
         )
-        for index, row in enumerate(_rows(strategy))
+        for index, row in enumerate(_rows(strategy, profile_id))
     )
     report = EvaluatePairedSelectionExperiment(_specification(strategy, profile_id=profile_id), rows)
     for result in report.results:
@@ -268,26 +347,7 @@ def test_d25_experiment_compares_only_preregistered_realizable_targets() -> None
 
 def test_experiment_rejects_incomplete_point_in_time_rows() -> None:
     rows = list(_rows())
-    row = rows[0]
-    rows[0] = PairedSelectionRow(
-        trade_date=row.trade_date,
-        code=row.code,
-        board=row.board,
-        industry=row.industry,
-        parent_row_hash=row.parent_row_hash,
-        rule_score=row.rule_score,
-        estimated_round_trip_cost=row.estimated_round_trip_cost,
-        risk_eligible=row.risk_eligible,
-        action_eligible=row.action_eligible,
-        capacity_sufficient=row.capacity_sufficient,
-        execution_capacity=row.execution_capacity,
-        severe_loss=row.severe_loss,
-        mae_atr20=row.mae_atr20,
-        target_evidence=row.target_evidence,
-        point_in_time_parity=False,
-        profile_ranking_score=row.profile_ranking_score,
-        control_ranking_score=row.control_ranking_score,
-    )
+    rows[0] = replace(rows[0], point_in_time_parity=False)
 
     with pytest.raises(ValueError, match="point-in-time"):
         EvaluatePairedSelectionExperiment(_specification(), tuple(rows))
@@ -312,9 +372,9 @@ def test_empty_day_and_selected_mean_keep_distinct_denominators_and_cost_once() 
     assert empty.metrics.empty_portfolio_days == 1
     assert empty.metrics.mean_six_slot_net_excess_returns == (0.0, 0.0, 0.0)
     assert empty.metrics.mean_selected_net_excess_returns == ()
-    single = EvaluatePairedSelectionExperiment(
-        _specification(), rows[:-1] + (replace(rows[-1], rule_score=100, risk_eligible=True),)
-    ).results[0]
+    high = ProductionSelectionEvidence(True, 1.0, None, None)
+    selected = replace(rows[-1], rule_score=100, risk_eligible=True, profile_production=high, control_production=high)
+    single = EvaluatePairedSelectionExperiment(_specification(), rows[:-1] + (selected,)).results[0]
     assert single.metrics.mean_selected_net_excess_returns[0] == pytest.approx(0.008)
     assert single.metrics.mean_six_slot_net_excess_returns[0] == pytest.approx(0.008 / 6)
 
@@ -323,7 +383,8 @@ def test_complete_population_has_no_business_capacity_or_same_industry_cutoff() 
     prototype = replace(_rows()[0], capacity_sufficient=True)
     rows = tuple(
         replace(
-            prototype, code=f"{index:06d}", board=("main", "star")[index % 2], rule_score=90.0 if index == 390 else 80.0
+            prototype, code=f"{index:06d}", board=("main", "star")[index % 2],
+            control_production=ProductionSelectionEvidence(True, 0.90 if index == 390 else 0.80, None, None),
         )
         for index in range(391)
     )

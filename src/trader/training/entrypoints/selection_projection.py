@@ -9,6 +9,12 @@ from trader.training.domain.evaluation.selection_statistics import SelectionInfe
 
 def ProjectSelectionValidation(execution: SelectionResearchExecution) -> dict[str, object]:
     spec, report = execution.specification, execution.report
+    tomorrow = spec.strategy == "tomorrow"
+    score = (
+        "target_probability_unrounded" if tomorrow else
+        "model_percentile_round_half_up_2dp" if spec.profile_id in {"v1", "v5"} else
+        "risk_adjusted_local_score_round_half_up_2dp"
+    )
     return {
         "research_identity": spec.research_identity,
         "status": report.status,
@@ -35,7 +41,12 @@ def ProjectSelectionValidation(execution: SelectionResearchExecution) -> dict[st
         "selection_contract": {
             "pipeline_stages": list(spec.pipeline_stages),
             "population": "full_eligible_population",
-            "score": "model_percentile_round_half_up_2dp" if spec.profile_id in {"v1", "v5"} else "risk_adjusted_local_score_round_half_up_2dp",
+            "score": score,
+            "production_preselection": (
+                "eligible_probability_and_no_local_hard_veto" if tomorrow else
+                "eligible_probability_and_positive_cost_adjusted_utility"
+            ),
+            "prediction_target": spec.registration.prediction_target.identity if spec.registration is not None else None,
             "action_score": "risk_adjusted_local_score_round_half_up_2dp",
             "action_threshold": spec.production_action_threshold,
             "top_k": spec.top_k,
@@ -46,7 +57,7 @@ def ProjectSelectionValidation(execution: SelectionResearchExecution) -> dict[st
             "action_refill": False,
             "production_variant": "production_chain_model_gate_then_fixed_top6",
             "fixed_control_variant": "production_control_model_gate_then_fixed_top6",
-            "production_target": "tomorrow" if spec.strategy == "tomorrow" else "mean_t2_t5",
+            "production_target": "tomorrow" if tomorrow else "mean_t2_t5",
             "cost_bps": list(spec.cost_bps),
             "cost_application": "once_per_horizon",
         },

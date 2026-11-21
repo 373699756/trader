@@ -10,11 +10,14 @@ from datetime import date, datetime, timedelta
 from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 
 _HASH = re.compile(r"[0-9a-f]{64}")
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,95}")
 ResearchStrategy = Literal["tomorrow", "d25"]
+ResearchComponentRole = Literal["target_probability", "ranker", "utility"]
+ResearchModelFamily = Literal["lambdarank", "lightgbm", "logistic", "ridge", "tcn"]
 
 
 class ResearchNotReadyError(ValueError):
@@ -23,8 +26,8 @@ class ResearchNotReadyError(ValueError):
 
 @dataclass(frozen=True)
 class ResearchModelComponent:
-    role: Literal["ranker", "utility"]
-    family: Literal["lambdarank", "lightgbm", "ridge", "tcn"]
+    role: ResearchComponentRole
+    family: ResearchModelFamily
     model_hash: str
     training_hash: str
     feature_hash: str
@@ -32,7 +35,9 @@ class ResearchModelComponent:
     epochs: int
 
     def __post_init__(self) -> None:
-        if self.role not in {"ranker", "utility"} or self.family not in {"lambdarank", "lightgbm", "ridge", "tcn"}:
+        if self.role not in {"target_probability", "ranker", "utility"} or self.family not in {
+            "lambdarank", "lightgbm", "logistic", "ridge", "tcn",
+        }:
             raise ValueError("research_model_component_invalid")
         if any(_HASH.fullmatch(value) is None for value in (self.model_hash, self.training_hash, self.feature_hash)):
             raise ValueError("research_model_identity_invalid")
@@ -43,14 +48,24 @@ class ResearchModelComponent:
             raise ValueError("research_model_sequence_invalid")
 
 
-def ValidateResearchComponents(profile_id: ScoringProfileId, components: tuple[ResearchModelComponent, ...]) -> None:
-    expected = {
+def ValidateResearchComponents(
+    strategy: ResearchStrategy, profile_id: ScoringProfileId, components: tuple[ResearchModelComponent, ...],
+) -> None:
+    if strategy not in {"tomorrow", "d25"} or profile_id not in SCORING_PROFILE_IDS:
+        raise ValueError("research_profile_components_mismatch")
+    probability_families = ("lambdarank", "lightgbm", "logistic", "tcn")
+    expected: tuple[tuple[str, str], ...] = (
+        ("target_probability", probability_families[SCORING_PROFILE_IDS.index(profile_id)]),
+    )
+    d25_utility = {
         "v1": (("ranker", "lambdarank"), ("utility", "ridge")),
         "v2": (("utility", "lightgbm"),),
         "v3": (("utility", "ridge"),),
         "v5": (("utility", "tcn"),),
     }
-    if profile_id not in SCORING_PROFILE_IDS or tuple((item.role, item.family) for item in components) != expected[profile_id]:
+    if strategy == "d25":
+        expected += d25_utility[profile_id]
+    if tuple((item.role, item.family) for item in components) != expected:
         raise ValueError("research_profile_components_mismatch")
 
 
@@ -85,9 +100,11 @@ class CandidateResearchRegistration:
     fixed_control_hash: str
     candidate_components: tuple[ResearchModelComponent, ...]
     control_components: tuple[ResearchModelComponent, ...]
+    prediction_target: PredictionTarget = field(kw_only=True)
 
     def __post_init__(self) -> None:
-        if self.profile_id not in SCORING_PROFILE_IDS or self.strategy not in {"tomorrow", "d25"}:
+        if (self.profile_id not in SCORING_PROFILE_IDS or self.strategy not in {"tomorrow", "d25"}
+                or self.prediction_target.strategy.value != self.strategy):
             raise ValueError("research_registration_identity_invalid")
         names = (*self.registered_candidate_ids, self.candidate_id, self.changed_factor, self.stopping_rule)
         if any(_NAME.fullmatch(value) is None for value in names):
@@ -104,8 +121,8 @@ class CandidateResearchRegistration:
         hashes = (self.registration_receipt, self.qualification_hash, self.population_hash, self.fixed_control_hash)
         if any(_HASH.fullmatch(value) is None for value in hashes):
             raise ValueError("research_registration_receipt_invalid")
-        ValidateResearchComponents(self.profile_id, self.candidate_components)
-        ValidateResearchComponents(self.profile_id, self.control_components)
+        ValidateResearchComponents(self.strategy, self.profile_id, self.candidate_components)
+        ValidateResearchComponents(self.strategy, self.profile_id, self.control_components)
 
     @property
     def content_hash(self) -> str:
@@ -209,6 +226,7 @@ class ResearchStateRegistration:
 
 
 __all__ = [
-    "CandidateResearchRegistration", "ResearchModelComponent", "ResearchNotReadyError", "ResearchParameter",
+    "CandidateResearchRegistration", "ResearchComponentRole", "ResearchModelComponent", "ResearchModelFamily",
+    "ResearchNotReadyError", "ResearchParameter",
     "ResearchStateDay", "ResearchStateRegistration", "ResearchStateRule", "ResearchStrategy", "ValidateResearchComponents",
 ]

@@ -21,6 +21,7 @@ from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeD
 from trader.training.domain.evaluation.selection_experiment import (
     PairedSelectionRow,
     PairedSelectionSpecification,
+    ProductionSelectionEvidence,
     SelectionEvidenceTarget,
     SelectionStrategy,
     SelectionTargetEvidence,
@@ -201,8 +202,9 @@ def _row(raw: Mapping[str, object]) -> PairedSelectionRow:
             "mae_atr20",
             "target_evidence",
             "point_in_time_parity",
-            "profile_ranking_score",
-            "control_ranking_score",
+            "local_hard_veto",
+            "profile_production",
+            "control_production",
         },
         "selection_row",
     )
@@ -218,7 +220,6 @@ def _row(raw: Mapping[str, object]) -> PairedSelectionRow:
                 "pooled_lightgbm_prediction_pre_cost",
                 "actual_pre_cost_excess_return",
                 "exit_untradable",
-                "control_prediction_pre_cost",
             },
             "selection_target",
         )
@@ -230,7 +231,6 @@ def _row(raw: Mapping[str, object]) -> PairedSelectionRow:
                 Number(item, "pooled_lightgbm_prediction_pre_cost"),
                 Number(item, "actual_pre_cost_excess_return"),
                 Boolean(item, "exit_untradable"),
-                control_prediction_pre_cost=Number(item, "control_prediction_pre_cost"),
             )
         )
     return PairedSelectionRow(
@@ -249,9 +249,24 @@ def _row(raw: Mapping[str, object]) -> PairedSelectionRow:
         mae_atr20=Number(raw, "mae_atr20"),
         target_evidence=tuple(targets),
         point_in_time_parity=Boolean(raw, "point_in_time_parity"),
-        profile_ranking_score=Number(raw, "profile_ranking_score"),
-        control_ranking_score=Number(raw, "control_ranking_score"),
+        local_hard_veto=Boolean(raw, "local_hard_veto"),
+        profile_production=_production(RequireMapping(raw, "profile_production")),
+        control_production=_production(RequireMapping(raw, "control_production")),
     )
+
+
+def _production(raw: Mapping[str, object]) -> ProductionSelectionEvidence:
+    RequireExactKeys(raw, {"eligible", "target_probability", "ranking_score", "predicted_net_excess_return"}, "production_selection")
+    return ProductionSelectionEvidence(
+        eligible=Boolean(raw, "eligible"),
+        target_probability=_number_or_none(raw, "target_probability"),
+        ranking_score=_number_or_none(raw, "ranking_score"),
+        predicted_net_excess_return=_number_or_none(raw, "predicted_net_excess_return"),
+    )
+
+
+def _number_or_none(raw: Mapping[str, object], name: str) -> float | None:
+    return None if raw[name] is None else Number(raw, name)
 
 
 def _object(value: object) -> Mapping[str, object]:

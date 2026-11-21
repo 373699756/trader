@@ -52,6 +52,7 @@ _HASH = re.compile(r"^[0-9a-f]{64}$")
 _MODEL_ID = re.compile(r"^[a-z0-9_]{1,96}$")
 _REASON = re.compile(r"^[a-z0-9_]{1,96}$")
 _D25_HORIZONS: tuple[Literal["t2", "t3", "t4", "t5"], ...] = ("t2", "t3", "t4", "t5")
+_PRODUCTION_ARMS = frozenset({"production_control", "production_chain"})
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,6 @@ class SelectionTargetEvidence:
     pooled_lightgbm_prediction_pre_cost: float
     actual_pre_cost_excess_return: float
     exit_untradable: bool
-    control_prediction_pre_cost: float = field(kw_only=True)
 
     def __post_init__(self) -> None:
         values = (
@@ -72,12 +72,36 @@ class SelectionTargetEvidence:
             self.pooled_ridge_prediction_pre_cost,
             self.pooled_lightgbm_prediction_pre_cost,
             self.actual_pre_cost_excess_return,
-            self.control_prediction_pre_cost,
         )
         if self.target not in {"t1", "t2", "t3", "t4", "t5", "predefined_exit"}:
             raise ValueError("selection target evidence target is invalid")
         if any(not math.isfinite(value) for value in values):
             raise ValueError("selection target evidence values must be finite")
+
+
+@dataclass(frozen=True)
+class ProductionSelectionEvidence:
+    """Point-in-time inputs from one candidate or control production decision."""
+
+    eligible: bool
+    target_probability: float | None
+    ranking_score: float | None
+    predicted_net_excess_return: float | None
+
+    def __post_init__(self) -> None:
+        if type(self.eligible) is not bool:
+            raise ValueError("production eligibility must be explicit")
+        probability = self.target_probability
+        ranking = self.ranking_score
+        utility = self.predicted_net_excess_return
+        if probability is not None and (isinstance(probability, bool) or not 0.0 <= probability <= 1.0):
+            raise ValueError("production target probability must be within [0,1]")
+        if ranking is not None and (
+            isinstance(ranking, bool) or not 0.0 <= ranking <= 100.0 or ranking != RoundScore(ranking)
+        ):
+            raise ValueError("production model rank must be a two-decimal percentage")
+        if utility is not None and (isinstance(utility, bool) or not math.isfinite(utility)):
+            raise ValueError("production predicted net excess return must be finite")
 
 
 @dataclass(frozen=True)
@@ -99,8 +123,9 @@ class PairedSelectionRow:
     mae_atr20: float
     target_evidence: tuple[SelectionTargetEvidence, ...]
     point_in_time_parity: bool
-    profile_ranking_score: float = field(kw_only=True)
-    control_ranking_score: float = field(kw_only=True)
+    local_hard_veto: bool = field(kw_only=True)
+    profile_production: ProductionSelectionEvidence = field(kw_only=True)
+    control_production: ProductionSelectionEvidence = field(kw_only=True)
 
     def __post_init__(self) -> None:
         evidence = tuple(self.target_evidence)
@@ -121,8 +146,8 @@ class PairedSelectionRow:
             raise ValueError("paired selection cost, capacity or MAE is invalid")
         if not 0.0 <= self.rule_score <= 100.0:
             raise ValueError("paired selection rule score must be the risk-adjusted local score")
-        if any(not math.isfinite(value) or not 0.0 <= value <= 100.0 for value in (self.profile_ranking_score, self.control_ranking_score)):
-            raise ValueError("paired selection model percentiles must be finite scores")
+        if type(self.local_hard_veto) is not bool:
+            raise ValueError("paired selection local hard veto must be explicit")
         targets = tuple(item.target for item in evidence)
         if len(set(targets)) != len(targets):
             raise ValueError("paired selection target evidence must be unique")
@@ -191,8 +216,11 @@ class PairedSelectionSpecification:
         if self.registration is not None:
             if self.registration.profile_id != self.profile_id or self.registration.strategy != self.strategy:
                 raise ValueError("selection registration profile/strategy mismatch")
-            utility = next(item for item in self.registration.candidate_components if item.role == "utility")
-            if utility.model_hash != self.profile_model_hash:
+            role = "target_probability" if self.strategy == "tomorrow" else "utility"
+            if not any(
+                item.role == role and item.model_hash == self.profile_model_hash
+                for item in self.registration.candidate_components
+            ):
                 raise ValueError("selection registration model mismatch")
         if not math.isfinite(self.production_action_threshold) or not 0 <= self.production_action_threshold <= 100:
             raise ValueError("selection production action threshold invalid")
@@ -240,7 +268,7 @@ class SelectionExperimentVariant:
             raise ValueError("selection experiment profile is invalid")
         if not math.isfinite(self.local_action_threshold) or not 0 <= self.local_action_threshold <= 100:
             raise ValueError("selection action threshold invalid")
-        if self.arm in {"production_control", "production_chain"} and self.selection_mode != "model_gate_then_fixed_top6":
+        if self.arm in _PRODUCTION_ARMS and self.selection_mode != "model_gate_then_fixed_top6":
             raise ValueError("production selection requires its original preselection model gate")
         if self.selection_mode not in SELECTION_MODES:
             raise ValueError("selection experiment mode is invalid")
@@ -506,6 +534,23 @@ def _validate_rows(specification: PairedSelectionSpecification, rows: tuple[Pair
         expected = ("t1",) if specification.strategy == "tomorrow" else (*_D25_HORIZONS, "predefined_exit")
         if targets != expected:
             raise ValueError("paired selection target evidence does not match the strategy")
+        for evidence in (row.profile_production, row.control_production):
+            _validate_production_evidence(specification, evidence)
+
+
+def _validate_production_evidence(
+    specification: PairedSelectionSpecification, evidence: ProductionSelectionEvidence,
+) -> None:
+    if specification.strategy == "tomorrow":
+        if evidence.ranking_score is not None or evidence.predicted_net_excess_return is not None:
+            raise ValueError("Tomorrow production evidence must use its target probability alone")
+        return
+    has_prediction = evidence.target_probability is not None
+    requires_rank = specification.profile_id in {"v1", "v5"}
+    if (evidence.predicted_net_excess_return is not None) != has_prediction or (
+        (evidence.ranking_score is not None) != (has_prediction and requires_rank)
+    ):
+        raise ValueError("D25 production evidence must match the profile utility and ranking contract")
 
 
 @dataclass
@@ -539,8 +584,9 @@ def _evaluate_variant(
     accumulator = _SelectionAccumulator()
     for trade_date in specification.research_dates:
         day = tuple(grouped[trade_date])
-        fixed, selected = _select(day, variant, specification)
-        _accumulate_day(accumulator, day, selected, fixed, variant)
+        predictions = _ordered_predictions(day, variant)
+        fixed, selected = _select(predictions, variant, specification)
+        _accumulate_day(accumulator, day, predictions, selected, fixed, variant)
     means = _mean_costs(accumulator.daily_returns)
     metrics = SelectionExperimentMetrics(
         len(grouped),
@@ -569,11 +615,11 @@ def _evaluate_variant(
 
 
 def _select(
-    candidates: tuple[PairedSelectionRow, ...],
+    predictions: tuple[tuple[float, PairedSelectionRow], ...],
     variant: SelectionExperimentVariant,
     specification: PairedSelectionSpecification,
 ) -> tuple[tuple[PairedSelectionRow, ...], tuple[PairedSelectionRow, ...]]:
-    ordered = tuple(sorted(candidates, key=lambda row: (-_ranking_value(row, variant), row.code)))
+    ordered = tuple(row for _, row in predictions)
     # Both modes fix a board-constrained six before optional veto/action. Only
     # the model gate moves across selection; a rejected fixed seat is never refilled.
     model_eligible = tuple(row for row in ordered if _passes_model_gate(row, variant))
@@ -600,7 +646,9 @@ def _constrained_top_k(
 
 
 def _passes_gates(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> bool:
-    if variant.arm in {"production_control", "production_chain"} and RoundScore(row.rule_score) < variant.local_action_threshold:
+    if variant.arm in _PRODUCTION_ARMS and (
+        row.local_hard_veto or RoundScore(row.rule_score) < variant.local_action_threshold
+    ):
         return False
     if not (row.risk_eligible and row.action_eligible and row.capacity_sufficient):
         return False
@@ -608,17 +656,44 @@ def _passes_gates(row: PairedSelectionRow, variant: SelectionExperimentVariant) 
 
 
 def _passes_model_gate(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> bool:
+    if variant.arm in _PRODUCTION_ARMS:
+        evidence = _production_evidence(row, variant)
+        if not evidence.eligible or evidence.target_probability is None:
+            return False
+        if variant.target == "tomorrow":
+            return not row.local_hard_veto
+        utility = evidence.predicted_net_excess_return
+        return utility is not None and utility > 0.0
     return variant.arm == "rule_only" or _model_utility(row, variant) > 0.0
 
 
-def _ranking_value(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> float:
-    if variant.arm in {"production_control", "production_chain"}:
+def _production_evidence(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> ProductionSelectionEvidence:
+    return row.control_production if variant.arm == "production_control" else row.profile_production
+
+
+def _ranking_value(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> float | None:
+    if variant.arm in _PRODUCTION_ARMS:
+        if not _passes_model_gate(row, variant):
+            return None
+        evidence = _production_evidence(row, variant)
+        if variant.target == "tomorrow":
+            probability = evidence.target_probability
+            return probability * 100.0 if probability is not None else None
         if variant.profile_id in {"v1", "v5"}:
-            return RoundScore(row.control_ranking_score if variant.arm == "production_control" else row.profile_ranking_score)
+            return evidence.ranking_score
         return RoundScore(row.rule_score)
     if variant.arm in {"rule_only", "rule_model_gate"}:
         return RoundScore(row.rule_score)
     return _model_utility(row, variant)
+
+
+def _ordered_predictions(
+    candidates: tuple[PairedSelectionRow, ...], variant: SelectionExperimentVariant,
+) -> tuple[tuple[float, PairedSelectionRow], ...]:
+    ranked = (
+        (score, row) for row in candidates if (score := _ranking_value(row, variant)) is not None
+    )
+    return tuple(sorted(ranked, key=lambda item: (-item[0], item[1].code)))
 
 
 def _model_utility(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> float:
@@ -644,9 +719,7 @@ def _target_predictions(row: PairedSelectionRow, variant: SelectionExperimentVar
 def _selected_prediction_values(
     evidence: Mapping[SelectionEvidenceTarget, SelectionTargetEvidence], variant: SelectionExperimentVariant
 ) -> dict[SelectionEvidenceTarget, float]:
-    if variant.arm == "production_control":
-        return {target: item.control_prediction_pre_cost for target, item in evidence.items()}
-    if variant.arm in {"production_chain", "rule_model_gate", "profile_model_utility"}:
+    if variant.arm in {"rule_model_gate", "profile_model_utility"}:
         return {target: item.profile_prediction_pre_cost for target, item in evidence.items()}
     if variant.pooled_model_family == "ridge":
         return {target: item.pooled_ridge_prediction_pre_cost for target, item in evidence.items()}
@@ -678,6 +751,7 @@ def _target_untradable(row: PairedSelectionRow, target: SelectionTarget) -> bool
 def _accumulate_day(
     accumulator: _SelectionAccumulator,
     population: tuple[PairedSelectionRow, ...],
+    predictions: tuple[tuple[float, PairedSelectionRow], ...],
     selected: tuple[PairedSelectionRow, ...],
     fixed: tuple[PairedSelectionRow, ...],
     variant: SelectionExperimentVariant,
@@ -744,11 +818,11 @@ def _accumulate_day(
     selected_codes = {row.code for row in selected}
     accumulator.oracle_total += len(oracle)
     accumulator.selected_oracle_hits += sum(code in selected_codes for code in oracle)
-    pairs = tuple((_ranking_value(row, variant), actuals[row.code]) for row in population)
+    pairs = tuple((rank, actuals[row.code]) for rank, row in predictions)
     rank_ic = PopulationSpearman(pairs)
     if rank_ic is not None:
         accumulator.rank_ics.append(rank_ic)
-    ndcg = _ndcg_at_6(population, variant)
+    ndcg = _ndcg_at_6(tuple(row for _, row in predictions), actuals)
     if ndcg is not None:
         accumulator.ndcgs.append(ndcg)
     if selected:
@@ -766,16 +840,15 @@ def _accumulate_day(
         )
 
 
-def _ndcg_at_6(candidates: tuple[PairedSelectionRow, ...], variant: SelectionExperimentVariant) -> float | None:
-    if not candidates:
+def _ndcg_at_6(ranked: tuple[PairedSelectionRow, ...], actuals: Mapping[str, float]) -> float | None:
+    if not ranked:
         return None
-    actual = {row.code: _target_actual(row, variant.target) for row in candidates}
-    shift = min(0.0, min(actual.values()))
-    ordered = sorted(candidates, key=lambda row: (-_ranking_value(row, variant), row.code))[:6]
-    ideal = sorted(candidates, key=lambda row: (-actual[row.code], row.code))[:6]
+    shift = min(0.0, min(actuals[row.code] for row in ranked))
+    ordered = ranked[:6]
+    ideal = tuple(sorted(ranked, key=lambda row: (-actuals[row.code], row.code))[:6])
 
-    def discounted(rows: list[PairedSelectionRow]) -> float:
-        return math.fsum((actual[row.code] - shift) / math.log2(index + 2.0) for index, row in enumerate(rows))
+    def discounted(rows: tuple[PairedSelectionRow, ...]) -> float:
+        return math.fsum((actuals[row.code] - shift) / math.log2(index + 2.0) for index, row in enumerate(rows))
 
     ideal_value = discounted(ideal)
     return discounted(ordered) / ideal_value if ideal_value > 0.0 else None
@@ -831,6 +904,7 @@ __all__ = [
     "PairedSelectionExperimentReport",
     "PairedSelectionRow",
     "PairedSelectionSpecification",
+    "ProductionSelectionEvidence",
     "PooledModelFamily",
     "SelectionArm",
     "SelectionExperimentMetrics",

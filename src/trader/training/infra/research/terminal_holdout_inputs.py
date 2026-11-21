@@ -18,9 +18,9 @@ from trader.training.application.terminal_holdout_execution import ResearchCance
 from trader.training.domain.evaluation.terminal_inputs import (
     EstimateTerminalWorkingSet, TerminalHoldoutEvidence, TerminalHoldoutPartition, TerminalInputFootprint,
 )
-from trader.training.domain.evaluation.terminal_holdout import TerminalHoldoutRow, TerminalStrategy
+from trader.training.domain.evaluation.terminal_holdout import TerminalHoldoutRow, TerminalStrategy, ValidateTerminalRanking
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.infra.research.registration_codec import DecodeStateRegistration
+from trader.training.infra.research.registration_codec import DecodeResearchPredictionTarget, DecodeStateRegistration
 from typing import cast
 
 
@@ -107,8 +107,7 @@ class TerminalHoldoutInputFiles:
                 raise ValueError("terminal_outcome_line_or_row_limit")
             digest.update(encoded)
             row = _row(_object(json.loads(encoded)))
-            if partition.profile_id in {"v2", "v3"} and row.ranking_score != row.local_score:
-                raise ValueError("terminal_local_score_profile_ranking_mismatch")
+            ValidateTerminalRanking(partition.strategy, partition.profile_id, row)
             if states.get(row.trade_date) != (row.market_state, row.volatility_state, row.liquidity_state):
                 raise ValueError("terminal_daily_state_differs_from_registration")
             rows.append(row)
@@ -143,7 +142,10 @@ def _object(raw: object) -> Mapping[str, object]:
 
 
 def _partition(raw: Mapping[str, object], strategy: TerminalStrategy) -> TerminalHoldoutPartition:
-    RequireExactKeys(raw, {"parent_hash", "candidate_hash", "trade_dates", "rows_sha256", "row_count", "profile_id", "registration_hash", "state_registration"}, "terminal_partition")
+    RequireExactKeys(raw, {
+        "parent_hash", "candidate_hash", "trade_dates", "rows_sha256", "row_count", "profile_id",
+        "registration_hash", "state_registration", "prediction_target",
+    }, "terminal_partition")
     dates = raw["trade_dates"]
     if not isinstance(dates, list) or len(dates) > 20_000 or any(not isinstance(value, str) for value in dates):
         raise ValueError("terminal partition date metadata is invalid")
@@ -155,6 +157,7 @@ def _partition(raw: Mapping[str, object], strategy: TerminalStrategy) -> Termina
         tuple(date.fromisoformat(value) for value in dates), digest, Integer(raw, "row_count", minimum=1),
         cast(ScoringProfileId, Text(raw, "profile_id")), Text(raw, "registration_hash"),
         None if raw["state_registration"] is None else DecodeStateRegistration(RequireMapping(raw, "state_registration")),
+        DecodeResearchPredictionTarget(Text(raw, "prediction_target")),
     )
 
 
@@ -171,7 +174,7 @@ def _row(raw: Mapping[str, object]) -> TerminalHoldoutRow:
         "predicted_net_excess_return", "ranking_score", "local_score", "actual_net_excess_returns", "baseline_net_excess_returns", "selected",
         "baseline_selected", "severe_loss", "baseline_severe_loss", "mae_atr20", "baseline_mae_atr20",
         "exit_untradable", "baseline_exit_untradable", "capacity", "baseline_capacity", "point_in_time_parity",
-        "horizon_net_excess_returns", "baseline_horizon_net_excess_returns",
+        "horizon_net_excess_returns", "baseline_horizon_net_excess_returns", "target_probability",
     }, "terminal_row")
     actual, baseline = _numbers(raw, "actual_net_excess_returns"), _numbers(raw, "baseline_net_excess_returns")
     if len(actual) != 3 or len(baseline) != 3:
@@ -182,6 +185,7 @@ def _row(raw: Mapping[str, object]) -> TerminalHoldoutRow:
         volatility_state=Text(raw, "volatility_state"), liquidity_state=Text(raw, "liquidity_state"),
         predicted_net_excess_return=Number(raw, "predicted_net_excess_return"),
         ranking_score=Number(raw, "ranking_score"), local_score=Number(raw, "local_score"),
+        target_probability=Number(raw, "target_probability"),
         actual_net_excess_returns=actual,
         baseline_net_excess_returns=baseline,
         selected=Boolean(raw, "selected"), baseline_selected=Boolean(raw, "baseline_selected"),

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTargets
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostScenario
 from trader.training.domain.evaluation.selection_experiment import SELECTION_ABLATION_ARMS, PairedSelectionSpecification
 from trader.training.domain.evaluation.terminal_holdout import TerminalHoldoutParentState, TerminalStrategy
@@ -60,6 +62,7 @@ class ResearchSettings:
 class ResearchExecutionPlan:
     settings: ResearchSettings
     cost_scenarios: tuple[ExecutionCostScenario, ...]
+    prediction_targets: PredictionTargets
 
     def __post_init__(self) -> None:
         expected = tuple(ExecutionCostScenario(f"cost_{bps}bp", bps / 10_000) for bps in (20, 50, 100))
@@ -86,6 +89,10 @@ class ResearchExecutionPlan:
             raise ResearchNotReadyError("research_candidates_unregistered")
         if specification.registration is None:
             raise ResearchNotReadyError("research_candidate_registration_missing")
+        if specification.registration.prediction_target != self.prediction_targets.for_profile(
+            specification.profile_id, Strategy(specification.strategy),
+        ):
+            raise ValueError("selection_prediction_target_differs_from_configuration")
         registered_dates = tuple(item.value for item in specification.registration.parameters if item.name == "fit_dates")
         if (
             specification.configuration_hash != self.configuration_hash
@@ -123,3 +130,5 @@ class ResearchExecutionPlan:
             raise ValueError("terminal_fit_dates_differ_from_registration")
         if parent.registration.profile_id != parent.profile_id or parent.registration.strategy != strategy:
             raise ValueError("terminal_profile_registration_mismatch")
+        if parent.registration.prediction_target != self.prediction_targets.for_profile(parent.profile_id, Strategy(strategy)):
+            raise ValueError("terminal_prediction_target_differs_from_configuration")

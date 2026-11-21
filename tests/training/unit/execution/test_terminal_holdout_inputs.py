@@ -88,7 +88,7 @@ def _seal_parents(root, parents):
 
 def _inputs(root, parents, *, config_dir=_CONFIG, vary_state=False):
     root.mkdir()
-    plan = LoadResearchPlan(config_dir)
+    plan = LoadResearchPlan(config_dir, config_dir / "strategy.json")
     manifest = {"research_plan_hash": plan.content_hash}
     for strategy, parent in zip(("tomorrow", "d25"), parents.values, strict=True):
         encoded = []
@@ -104,7 +104,7 @@ def _inputs(root, parents, *, config_dir=_CONFIG, vary_state=False):
                 False, False, False, False, -0.1, -0.1, False, False, 10_000, 10_000, True,
                 (0.02, 0.02, 0.02, 0.02) if strategy == "d25" else (),
                 (0.01, 0.01, 0.01, 0.01) if strategy == "d25" else (),
-                ranking_score=50.0, local_score=50.0,
+                ranking_score=50.0, local_score=50.0, target_probability=0.5,
             )
             payload = asdict(row)
             payload["trade_date"] = day.isoformat()
@@ -117,6 +117,7 @@ def _inputs(root, parents, *, config_dir=_CONFIG, vary_state=False):
             "rows_sha256": hashlib.sha256(content).hexdigest(), "row_count": len(dates),
             "profile_id": parent.profile_id,
             "registration_hash": parent.registration.content_hash,
+            "prediction_target": parent.registration.prediction_target.identity,
             "state_registration": RegistrationPayloadFixture(state),
         }
     (root / "plan.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -231,6 +232,23 @@ def test_admission_rejection_reads_no_outcomes_and_preserves_the_unopened_partit
     assert not (tmp_path / "inputs/opened.json").exists()
     assert not (tmp_path / "out").exists()
     _assert_full_budget_available(budget)
+
+
+def test_different_target_is_rejected_before_opening_terminal_rows(tmp_path, monkeypatch):
+    parents = _Parents()
+    root = tmp_path / "inputs"
+    data, plan = _inputs(root, parents)
+    manifest = root / "plan.json"
+    payload = json.loads(manifest.read_text())
+    payload["tomorrow"]["prediction_target"] = "next_close_gain_at_least_501_bps"
+    manifest.write_text(json.dumps(payload))
+    access = _observe_outcome_reads(monkeypatch)
+
+    with pytest.raises(ValueError, match="terminal_prediction_target_differs_from_registration"):
+        _use_case(parents, data, TerminalConclusionPublisher(tmp_path / "out"), plan).execute()
+
+    assert access.read_calls == [] and access.descriptors == []
+    assert not (root / "opened.json").exists()
 
 
 @pytest.mark.parametrize("failure_at", ["none", "decode", "evaluation", "publication", "cancel_after_read"])
@@ -393,11 +411,34 @@ def test_terminal_prerequisites_reject_before_opening_missing_rows(tmp_path, con
 def test_blocked_parents_publish_idempotently_without_inspecting_or_opening_inputs(tmp_path):
     data = TerminalHoldoutInputFiles(tmp_path / "missing-inputs", tmp_path / "parents/opened.json")
     publisher = TerminalConclusionPublisher(tmp_path / "out")
-    use_case = _use_case(_Parents("historical_data_insufficient"), data, publisher, LoadResearchPlan(_CONFIG))
+    use_case = _use_case(_Parents("historical_data_insufficient"), data, publisher, LoadResearchPlan(_CONFIG, _CONFIG / "strategy.json"))
     first = use_case.execute()
     assert first == use_case.execute()
     assert not first.tomorrow.terminal_holdout_opened
     assert not first.d25.terminal_holdout_opened
+    assert not (tmp_path / "missing-inputs").exists()
+
+
+def test_daily_close_proxy_cannot_read_or_open_point_in_time_holdout(tmp_path):
+    parents = _Parents()
+    parents.values = tuple(
+        replace(parent, candidate_status="historical_daily_close_proxy_validated")
+        for parent in parents.values
+    )
+    parent_root = tmp_path / "parents"
+    _seal_parents(parent_root, parents)
+    marker = parent_root / "opened.json"
+    data = TerminalHoldoutInputFiles(tmp_path / "missing-inputs", marker)
+    conclusion = _use_case(
+        TerminalHoldoutParentsReader(parent_root, marker), data,
+        TerminalConclusionPublisher(tmp_path / "out"), LoadResearchPlan(_CONFIG, _CONFIG / "strategy.json"),
+    ).execute()
+
+    for report in (conclusion.tomorrow, conclusion.d25):
+        assert report.status == "historical_data_insufficient"
+        assert report.failure_reasons == ("historical_daily_close_proxy_validated",)
+        assert not report.terminal_holdout_opened
+    assert not marker.exists()
     assert not (tmp_path / "missing-inputs").exists()
 
 
@@ -462,7 +503,10 @@ def test_ready_bootstrap_consumes_real_fixture_rows_and_only_publication_can_rep
     parent_root, output = tmp_path / "parents", tmp_path / "out"
     _seal_parents(parent_root, parents)
     command = HoldoutCommand(parent_root, tmp_path / "inputs", output)
-    conclusion = ExecuteResearchEvidence(command, config_dir=config_dir, sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False)
+    conclusion = ExecuteResearchEvidence(
+        command, config_dir=config_dir, strategy_config_path=config_dir / "strategy.json",
+        sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False,
+    )
     assert conclusion.tomorrow.metrics.evaluated_rows == conclusion.d25.metrics.evaluated_rows == 200
     assert conclusion.tomorrow.terminal_holdout_opened and conclusion.d25.terminal_holdout_opened
     assert conclusion.tomorrow.profile_id == conclusion.d25.profile_id == profile_id
@@ -476,7 +520,10 @@ def test_ready_bootstrap_consumes_real_fixture_rows_and_only_publication_can_rep
     assert (output / "cross_strategy/report.json").read_bytes() == original
     (tmp_path / "inputs/tomorrow.jsonl").unlink()
     with pytest.raises(TerminalHoldoutAlreadyOpenedError):
-        ExecuteResearchEvidence(command, config_dir=config_dir, sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False)
+        ExecuteResearchEvidence(
+            command, config_dir=config_dir, strategy_config_path=config_dir / "strategy.json",
+            sqlite_policy=SqlitePolicyFixture(), cancel_requested=lambda: False,
+        )
     assert data.inspect().research_plan_hash == _plan.content_hash
 
 

@@ -248,6 +248,7 @@ def ExecuteSync(
             cancel_requested=cancel_requested, report=report, fill=fill_missing,
         ))),
         cancelled=cancel_requested,
+        failures=report.report_failure,
     ).execute(target)
 
 
@@ -482,7 +483,10 @@ def ExecuteHistoryDownload(
             )
 
 
-def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Path, sqlite_policy: SqliteIoPolicy, cancel_requested: Callable[[], bool]) -> ResearchEvidenceResult:
+def ExecuteResearchEvidence(
+    command: ResearchEvidenceCommand, *, config_dir: Path, strategy_config_path: Path,
+    sqlite_policy: SqliteIoPolicy, cancel_requested: Callable[[], bool],
+) -> ResearchEvidenceResult:
     """Lazily assemble one offline research use case; never build the server runtime."""
     from trader.training.application import research_commands
     from trader.training.infra.research_settings import LoadResearchPlan
@@ -492,7 +496,10 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Pat
         from trader.training.application.selection_execution import ExecuteSelectionResearch
         from trader.training.infra.research.selection_evidence import SelectionEvidenceReader
 
-        return ExecuteSelectionResearch(SelectionEvidenceReader(command.evidence_dir), LoadResearchPlan(config_dir), evaluation_at=ShanghaiClock(_utc_now).now())
+        return ExecuteSelectionResearch(
+            SelectionEvidenceReader(command.evidence_dir), LoadResearchPlan(config_dir, strategy_config_path),
+            evaluation_at=ShanghaiClock(_utc_now).now(),
+        )
     if isinstance(command, research_commands.IndustryAuditCommand):
         from trader.training.application.historical_industry_audit import AuditHistoricalIndustry
 
@@ -507,7 +514,7 @@ def ExecuteResearchEvidence(command: ResearchEvidenceCommand, *, config_dir: Pat
         return ExecuteTerminalHoldout(
             command_evidence.TerminalHoldoutParentsReader(command.parent_artifact_dir, command.parent_artifact_dir / "terminal_opened.json"),
             TerminalHoldoutInputFiles(command.evidence_dir, command.parent_artifact_dir / "terminal_opened.json", cancel_requested=cancel_requested),
-            command_evidence.TerminalConclusionPublisher(command.output_dir), LoadResearchPlan(config_dir),
+            command_evidence.TerminalConclusionPublisher(command.output_dir), LoadResearchPlan(config_dir, strategy_config_path),
             TrainingMemoryBudget(FittingMemoryCapacity(LoadTrainingResourceSettings(config_dir.parent, "unknown").memory)),
             now=ShanghaiClock(_utc_now).now, monotonic=time.monotonic, cancel_requested=cancel_requested,
         ).execute()

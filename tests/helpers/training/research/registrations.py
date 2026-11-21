@@ -8,9 +8,11 @@ from zoneinfo import ZoneInfo
 from typing import Literal, cast
 
 from trader.infra.serialization.canonical import CanonicalJsonText
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.evaluation.research_registration import (
-    CandidateResearchRegistration, ResearchModelComponent, ResearchParameter, ResearchStateDay,
+    CandidateResearchRegistration, ResearchModelComponent, ResearchModelFamily, ResearchParameter, ResearchStateDay,
     ResearchStateRegistration, ResearchStateRule, ResearchStrategy,
 )
 
@@ -18,6 +20,7 @@ from trader.training.domain.evaluation.research_registration import (
 def CandidateRegistrationFixture(
     profile_id: ScoringProfileId = "v2", strategy: ResearchStrategy = "tomorrow", *, model_hash: str = "c" * 64,
     qualification_hash: str = "3" * 64, population_hash: str = "f" * 64, fit_dates: int = 750,
+    threshold_bps: int | None = None,
 ) -> CandidateResearchRegistration:
     families: dict[ScoringProfileId, Literal["ridge", "lightgbm", "tcn"]] = {"v1": "ridge", "v2": "lightgbm", "v3": "ridge", "v5": "tcn"}
     family = families[profile_id]
@@ -25,15 +28,26 @@ def CandidateRegistrationFixture(
         "utility", family, model_hash, "4" * 64, "5" * 64,
         60 if profile_id == "v5" else 0, 10 if profile_id == "v5" else 0,
     )
-    components = (
+    utility_components = (
         (ResearchModelComponent("ranker", "lambdarank", "9" * 64, "4" * 64, "5" * 64, 0, 0), utility)
         if profile_id == "v1" else (utility,)
     )
+    probability_families: dict[ScoringProfileId, ResearchModelFamily] = {
+        "v1": "lambdarank", "v2": "lightgbm", "v3": "logistic", "v5": "tcn",
+    }
+    probability = ResearchModelComponent(
+        "target_probability", probability_families[profile_id], model_hash if strategy == "tomorrow" else "e" * 64,
+        "4" * 64, "5" * 64,
+        60 if profile_id == "v5" else 0, 10 if profile_id == "v5" else 0,
+    )
+    components = (probability,) if strategy == "tomorrow" else (probability, *utility_components)
+    default_threshold = 500 if strategy == "tomorrow" else 100
     return CandidateResearchRegistration(
         profile_id, strategy, "window_candidate", ("window_candidate",), "fit_dates",
         (ResearchParameter("fit_dates", fit_dates, "trading_days"),), "confirm_once",
         datetime(2020, 1, 1, tzinfo=ZoneInfo("Asia/Shanghai")), "6" * 64, qualification_hash,
         population_hash, "7" * 64, components, components,
+        prediction_target=PredictionTarget(Strategy(strategy), default_threshold if threshold_bps is None else threshold_bps),
     )
 
 
@@ -58,4 +72,7 @@ def StateRegistrationFixture(
 
 
 def RegistrationPayloadFixture(value: CandidateResearchRegistration | ResearchStateRegistration) -> dict[str, object]:
-    return cast(dict[str, object], json.loads(CanonicalJsonText(value)))
+    payload = cast(dict[str, object], json.loads(CanonicalJsonText(value)))
+    if isinstance(value, CandidateResearchRegistration):
+        payload["prediction_target"] = value.prediction_target.identity
+    return payload

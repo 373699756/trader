@@ -66,6 +66,7 @@ class TerminalHoldoutRow:
     point_in_time_parity: bool
     ranking_score: float = field(kw_only=True)
     local_score: float = field(kw_only=True)
+    target_probability: float = field(kw_only=True)
     horizon_net_excess_returns: tuple[float, ...] = ()
     baseline_horizon_net_excess_returns: tuple[float, ...] = ()
 
@@ -93,9 +94,12 @@ class TerminalHoldoutRow:
         )
         if any(not math.isfinite(value) for value in values):
             raise ValueError("terminal holdout numeric values must be finite")
-        for score in (self.ranking_score, self.local_score):
-            if not math.isfinite(score) or not 0.0 <= score <= 100.0 or score != RoundScore(score):
-                raise ValueError("terminal holdout scores must be rounded to two decimals within [0,100]")
+        if not math.isfinite(self.local_score) or not 0.0 <= self.local_score <= 100.0 or self.local_score != RoundScore(self.local_score):
+            raise ValueError("terminal holdout local score must be rounded to two decimals within [0,100]")
+        if not math.isfinite(self.ranking_score) or not 0.0 <= self.ranking_score <= 100.0:
+            raise ValueError("terminal holdout ranking score must be within [0,100]")
+        if isinstance(self.target_probability, bool) or not math.isfinite(self.target_probability) or not 0.0 <= self.target_probability <= 1.0:
+            raise ValueError("terminal holdout probability must be within [0,1]")
         if self.mae_atr20 > 0.0 or self.baseline_mae_atr20 > 0.0:
             raise ValueError("terminal holdout MAE values must be non-positive")
         if self.capacity < 0.0 or self.baseline_capacity < 0.0:
@@ -106,6 +110,17 @@ class TerminalHoldoutRow:
             raise ValueError("terminal holdout horizon returns must be paired")
         if self.horizon_net_excess_returns and len(self.horizon_net_excess_returns) not in {4}:
             raise ValueError("terminal holdout horizon returns must contain T+2 through T+5")
+
+
+def ValidateTerminalRanking(strategy: TerminalStrategy, profile_id: ScoringProfileId, row: TerminalHoldoutRow) -> None:
+    if strategy == "tomorrow":
+        if row.ranking_score != 100.0 * row.target_probability:
+            raise ValueError("terminal Tomorrow ranking differs from the unrounded target probability")
+    elif profile_id in {"v2", "v3"}:
+        if row.ranking_score != row.local_score:
+            raise ValueError("terminal local-score profile ranking mismatch")
+    elif row.ranking_score != RoundScore(row.ranking_score):
+        raise ValueError("terminal D25 model percentile must be rounded to two decimals")
 
 
 @dataclass(frozen=True)
@@ -279,7 +294,7 @@ class TerminalHoldoutParentState:
 
     @property
     def ready(self) -> bool:
-        return self.candidate_status in {"historical_candidate_ready", "historical_daily_close_proxy_validated"}
+        return self.candidate_status == "historical_candidate_ready"
 
 
 def EvaluateTerminalHoldout(evaluation: TerminalHoldoutEvaluation) -> TerminalHoldoutReport:
@@ -291,10 +306,10 @@ def EvaluateTerminalHoldout(evaluation: TerminalHoldoutEvaluation) -> TerminalHo
             "historical_rejected",
             ("terminal_holdout_already_opened",),
         )
-    if evaluation.parent_status not in {"historical_candidate_ready", "historical_daily_close_proxy_validated"}:
+    if evaluation.parent_status != "historical_candidate_ready":
         parent_result: TerminalStatus = (
             "historical_data_insufficient"
-            if evaluation.parent_status == "historical_data_insufficient"
+            if evaluation.parent_status in {"historical_data_insufficient", "historical_daily_close_proxy_validated"}
             else "historical_rejected"
         )
         return _closed_report(
@@ -309,8 +324,8 @@ def EvaluateTerminalHoldout(evaluation: TerminalHoldoutEvaluation) -> TerminalHo
         raise ValueError("terminal holdout rows must be unique by date and code")
     if any(not item.point_in_time_parity for item in ordered):
         raise ValueError("terminal holdout point-in-time parity is incomplete")
-    if evaluation.profile_id in {"v2", "v3"} and any(item.ranking_score != item.local_score for item in ordered):
-        raise ValueError("terminal local-score profile ranking mismatch")
+    for row in ordered:
+        ValidateTerminalRanking(evaluation.strategy, evaluation.profile_id, row)
     if evaluation.strategy == "d25" and any(
         len(item.horizon_net_excess_returns) != 4 or len(item.baseline_horizon_net_excess_returns) != 4
         for item in ordered
@@ -789,4 +804,5 @@ __all__ = [
     "TerminalStatus",
     "TerminalStrategy",
     "EvaluateTerminalHoldout",
+    "ValidateTerminalRanking",
 ]

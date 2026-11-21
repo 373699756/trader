@@ -267,8 +267,11 @@ def _run_training_command(
         from trader.training.entrypoints.research_evidence import RunResearchEvidence
 
         with ManualCancellation(timeout_seconds=runtime.pipeline.shutdown_timeout_seconds) as cancelled:
-            return RunResearchEvidence(args, project_root=runtime.project_root, config_dir=runtime.config_path.parent,
-                                       sqlite_policy=sqlite_policy, cancel_requested=cancelled.is_set)
+            return RunResearchEvidence(
+                args, project_root=runtime.project_root, config_dir=runtime.config_path.parent,
+                strategy_config_path=runtime.strategy_config_path, sqlite_policy=sqlite_policy,
+                cancel_requested=cancelled.is_set,
+            )
     from trader.training.entrypoints.commands import ResearchCommandOptions, RunResearchCommand
 
     return RunResearchCommand(

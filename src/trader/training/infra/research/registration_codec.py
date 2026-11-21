@@ -7,9 +7,10 @@ from datetime import date, datetime
 from typing import Literal, cast
 
 from trader.infra.settings.parser import Integer, Number, RequireExactKeys, RequireMapping, Text
+from trader.recommendation.domain.outcomes.prediction_target import ParsePredictionTargetIdentity, PredictionTarget
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.evaluation.research_registration import (
-    CandidateResearchRegistration, ResearchModelComponent, ResearchParameter,
+    CandidateResearchRegistration, ResearchComponentRole, ResearchModelComponent, ResearchModelFamily, ResearchParameter,
     ResearchStateDay, ResearchStateRegistration, ResearchStateRule,
 )
 
@@ -28,22 +29,29 @@ def _objects(raw: Mapping[str, object], name: str, maximum: int) -> tuple[Mappin
 
 def _components(raw: Mapping[str, object], name: str) -> tuple[ResearchModelComponent, ...]:
     result = []
-    for item in _objects(raw, name, 2):
+    for item in _objects(raw, name, 3):
         RequireExactKeys(item, {"role", "family", "model_hash", "training_hash", "feature_hash", "sequence_length", "epochs"}, "research_model")
         result.append(ResearchModelComponent(
-            cast(Literal["ranker", "utility"], Text(item, "role")),
-            cast(Literal["lambdarank", "lightgbm", "ridge", "tcn"], Text(item, "family")),
+            cast(ResearchComponentRole, Text(item, "role")),
+            cast(ResearchModelFamily, Text(item, "family")),
             Text(item, "model_hash"), Text(item, "training_hash"), Text(item, "feature_hash"),
             Integer(item, "sequence_length", minimum=0), Integer(item, "epochs", minimum=0),
         ))
     return tuple(result)
 
 
+def DecodeResearchPredictionTarget(identity: str) -> PredictionTarget:
+    target = ParsePredictionTargetIdentity(identity)
+    if target is None or target.identity != identity:
+        raise ValueError("research_prediction_target_invalid")
+    return target
+
+
 def DecodeCandidateRegistration(raw: Mapping[str, object]) -> CandidateResearchRegistration:
     RequireExactKeys(raw, {
         "profile_id", "strategy", "candidate_id", "registered_candidate_ids", "changed_factor", "parameters",
         "stopping_rule", "registered_at", "registration_receipt", "qualification_hash", "population_hash",
-        "fixed_control_hash", "candidate_components", "control_components",
+        "fixed_control_hash", "candidate_components", "control_components", "prediction_target",
     }, "research_registration")
     names = raw["registered_candidate_ids"]
     if not isinstance(names, list) or len(names) > 3 or any(not isinstance(value, str) for value in names):
@@ -58,6 +66,7 @@ def DecodeCandidateRegistration(raw: Mapping[str, object]) -> CandidateResearchR
         tuple(parameters), Text(raw, "stopping_rule"), datetime.fromisoformat(Text(raw, "registered_at")),
         Text(raw, "registration_receipt"), Text(raw, "qualification_hash"), Text(raw, "population_hash"),
         Text(raw, "fixed_control_hash"), _components(raw, "candidate_components"), _components(raw, "control_components"),
+        prediction_target=DecodeResearchPredictionTarget(Text(raw, "prediction_target")),
     )
 
 
@@ -103,4 +112,4 @@ def DecodeStateRegistration(raw: Mapping[str, object]) -> ResearchStateRegistrat
     )
 
 
-__all__ = ["DecodeCandidateRegistration", "DecodeStateRegistration"]
+__all__ = ["DecodeCandidateRegistration", "DecodeResearchPredictionTarget", "DecodeStateRegistration"]

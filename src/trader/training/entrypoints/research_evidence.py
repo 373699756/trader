@@ -135,7 +135,10 @@ def _timeout(value: float) -> float:
     return value
 
 
-def RunResearchEvidence(args: argparse.Namespace, *, project_root: Path, config_dir: Path, sqlite_policy: SqliteIoPolicy, cancel_requested: Callable[[], bool]) -> int:
+def RunResearchEvidence(
+    args: argparse.Namespace, *, project_root: Path, config_dir: Path, strategy_config_path: Path,
+    sqlite_policy: SqliteIoPolicy, cancel_requested: Callable[[], bool],
+) -> int:
 
     from trader.bootstrap import ExecuteResearchEvidence
     from trader.training.entrypoints.research_evidence_projection import ProjectEvidenceResult
@@ -149,7 +152,10 @@ def RunResearchEvidence(args: argparse.Namespace, *, project_root: Path, config_
             raise ValueError("--include-details requires an external --output path")
         command = ParseEvidenceCommand(args, project_root=project_root)
         _validate_output_separation(command, output)
-        report = ExecuteResearchEvidence(command, config_dir=config_dir, sqlite_policy=sqlite_policy, cancel_requested=cancel_requested)
+        report = ExecuteResearchEvidence(
+            command, config_dir=config_dir, strategy_config_path=strategy_config_path,
+            sqlite_policy=sqlite_policy, cancel_requested=cancel_requested,
+        )
         payload, exit_code = ProjectEvidenceResult(report, include_details=include_details)
         if args.command == "research-selection" and output is not None:
             from trader.training.infra.research.selection_reports import PublishSelectionReport

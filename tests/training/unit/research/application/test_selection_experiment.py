@@ -12,6 +12,7 @@ from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeD
 from trader.training.domain.evaluation.selection_experiment import (
     PairedSelectionRow,
     PairedSelectionSpecification,
+    ProductionSelectionEvidence,
     SelectionTargetEvidence,
 )
 
@@ -82,9 +83,11 @@ def _row(parent_row_hash: str = "1" * 64) -> PairedSelectionRow:
         execution_capacity=1_000_000.0,
         severe_loss=False,
         mae_atr20=-0.2,
-        target_evidence=(SelectionTargetEvidence("t1", 0.01, 0.011, 0.012, 0.013, False, control_prediction_pre_cost=0.01),),
+        target_evidence=(SelectionTargetEvidence("t1", 0.01, 0.011, 0.012, 0.013, False),),
         point_in_time_parity=True,
-        profile_ranking_score=80.0, control_ranking_score=80.0,
+        local_hard_veto=False,
+        profile_production=ProductionSelectionEvidence(True, 0.80, None, None),
+        control_production=ProductionSelectionEvidence(True, 0.80, None, None),
     )
 
 

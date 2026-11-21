@@ -8,6 +8,7 @@ from trader.infra.settings.parser import Integer, Number, ProfileMapping, ReadJs
 from trader.training.domain.evaluation.selection_experiment import SELECTION_ABLATION_ARMS
 from trader.training.domain.evaluation.research_plan import ResearchExecutionPlan, ResearchSettings
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostScenario
+from trader.recommendation.infra.settings.loading import LoadPredictionTargets
 
 _ARMS = SELECTION_ABLATION_ARMS
 
@@ -88,8 +89,12 @@ def LoadEvaluationCostScenarios(config_dir: Path) -> tuple[ExecutionCostScenario
     return tuple(ExecutionCostScenario(f"cost_{bps}bp", bps / 10_000) for bps in bps_values)
 
 
-def LoadResearchPlan(config_dir: Path) -> ResearchExecutionPlan:
-    return ResearchExecutionPlan(LoadResearchSettings(config_dir), LoadEvaluationCostScenarios(config_dir))
+def LoadResearchPlan(config_dir: Path, strategy_config_path: Path) -> ResearchExecutionPlan:
+    return ResearchExecutionPlan(
+        LoadResearchSettings(config_dir),
+        LoadEvaluationCostScenarios(config_dir),
+        LoadPredictionTargets(strategy_config_path),
+    )
 
 
 __all__ = [

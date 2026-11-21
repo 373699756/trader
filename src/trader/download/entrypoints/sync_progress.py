@@ -14,10 +14,12 @@ from trader.infra.progress_format import ProgressDuration
 from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.signal_cancellation import ManualCancellationScope
 from trader.infra.shutdown import ShutdownStep
+from trader.download.domain.download_failure import DownloadFailureContext
+from trader.download.infra.history_sync_failure import HistoryFailureDetail
 from trader.download.infra.progress_projection import ProjectDownloadProgress, WithProgressTime
 from trader.download.application.progress_events import DownloadProgressEvent
 from trader.download.application.progress_message import (
-    ProgressField, ProgressMessage, ProgressTask,
+    ProgressField, ProgressLevel, ProgressMessage, ProgressTask,
 )
 
 _Result = TypeVar("_Result")
@@ -136,6 +138,18 @@ class SyncProgress:
 
     def report_disk(self, text: str) -> None:
         self(ProgressMessage((ProgressField(text),), task=ProgressTask("启动", "disk", "存储检测")))
+
+    def report_failure(self, context: DownloadFailureContext, error: BaseException) -> None:
+        """Expose safe location and cause for a failure that escapes its task."""
+        self(ProgressMessage(
+            (
+                ProgressField(f"阶段 {context.stage}", ProgressLevel.ERROR),
+                ProgressField(f"诊断 {HistoryFailureDetail(error)}", ProgressLevel.ERROR),
+            ),
+            task=ProgressTask("sync", f"failure:{context.stage}", "失败诊断"),
+            state="失败",
+            finished=True,
+        ))
 
     def run(self, owner: str, operation: Callable[[], _Result]) -> _Result:
         try:

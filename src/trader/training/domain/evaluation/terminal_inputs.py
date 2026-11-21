@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.training.domain.evaluation.research_plan import ResearchExecutionPlan
 from trader.training.domain.evaluation.terminal_holdout import TerminalHoldoutParentState, TerminalStrategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
@@ -24,10 +25,11 @@ class TerminalHoldoutPartition:
     profile_id: ScoringProfileId
     registration_hash: str
     state_registration: ResearchStateRegistration | None
+    prediction_target: PredictionTarget
 
     def __post_init__(self) -> None:
         if (
-            self.strategy not in {"tomorrow", "d25"}
+            self.strategy not in {"tomorrow", "d25"} or self.prediction_target.strategy.value != self.strategy
             or any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in (self.parent_hash, self.candidate_hash, self.rows_sha256))
             or not self.trade_dates or self.trade_dates != tuple(sorted(set(self.trade_dates)))
             or len(self.trade_dates) > 20_000 or type(self.row_count) is not int
@@ -64,6 +66,8 @@ class TerminalHoldoutEvidence:
                 plan.validate_terminal_parent(partition.strategy, parent)
                 if parent.registration is None or partition.registration_hash != parent.registration.content_hash:
                     raise ValueError("terminal_profile_or_registration_mismatch")
+                if partition.prediction_target != parent.registration.prediction_target:
+                    raise ValueError("terminal_prediction_target_differs_from_registration")
                 state = partition.state_registration
                 if state is None:
                     raise ResearchNotReadyError("terminal_state_registration_missing")
